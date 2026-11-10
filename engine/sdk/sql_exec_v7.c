@@ -18,7 +18,7 @@
 
 #include <string.h>
 
-#define SQL_EXEC_V7_MAX_NEXT_REQUESTS UINT32_C(252)
+#define SQL_EXEC_V7_MAX_SCAN_PAGES UINT32_C(126)
 
 static int32_t fail_statement(const prdb_host_api_v3 *host, int32_t status) {
     if (status != PRDB_SDK_SQL_EXEC_OK) {
@@ -559,7 +559,7 @@ static int32_t execute_group_internal(
     }
     cursor_open = 1;
     for (;;) {
-        if (page_count >= SQL_EXEC_V7_MAX_NEXT_REQUESTS) {
+        if (page_count >= SQL_EXEC_V7_MAX_SCAN_PAGES) {
             final_status = PRDB_SDK_SQL_EXEC_REQUEST_LIMIT;
             break;
         }
