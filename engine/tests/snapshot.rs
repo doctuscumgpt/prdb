@@ -135,3 +135,35 @@ fn retained_redb_snapshot_is_stable_and_overlay_writes_shadow_it()
     assert_eq!(current_record.payload, b"latest");
     Ok(())
 }
+
+#[test]
+fn policy_target_prefix_scan_ignores_other_policies_for_its_limit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = Database::create(fixture.path())?;
+    let write = database.begin_write()?;
+    let mut catalog = write.open_table(CATALOG)?;
+    for (policy_id, target_id) in [
+        ([1; 16], [2; 16]),
+        ([7; 16], [4; 16]),
+        ([7; 16], [5; 16]),
+        ([7; 16], [6; 16]),
+    ] {
+        let payload = encode_policy_target(&PolicyTarget {
+            policy_id,
+            kind: 1,
+            target_id,
+        })?;
+        catalog.insert(&payload[32..71], &payload[..])?;
+    }
+    drop(catalog);
+    write.commit()?;
+
+    let snapshot = RowSnapshot::new(database.begin_read()?);
+    let targets = snapshot.scan_policy_targets_for_policy([1; 16], 1)?;
+    assert_eq!(targets.len(), 1);
+    assert_eq!(&targets[0].logical_key[3..19], &[1; 16]);
+    assert!(snapshot.scan_catalog_family(14, 1).is_err());
+    assert!(snapshot.scan_policy_targets_for_policy([1; 16], 0).is_err());
+    Ok(())
+}

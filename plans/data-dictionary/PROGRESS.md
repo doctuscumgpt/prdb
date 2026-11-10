@@ -169,6 +169,14 @@
 - Verification: targeted policy reconstruction and DDL tests passed; `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable); workspace Clippy with warnings denied passed.
 - Remaining: complete DD-2 lookup/index coverage for objects.
 
+## DD-2: bounded policy-target prefix reads — verified
+
+- Runtime policy loading reads family-14 rows by the current policy ID prefix on the pinned catalog snapshot. Only target rows for policies on the requested table count against invocation scan work; each policy remains limited to 4,096 targets.
+- Matching target records retain the same canonical CAT1/key checks and exact-byte commit guards. Startup and serialized catalog publication still validate all policy targets globally.
+- Regression evidence: `policy_target_prefix_scan_ignores_other_policies_for_its_limit` proves a one-record policy prefix succeeds while a one-record whole-family scan fails when other policy targets are present. Transaction policy loading uses this bounded prefix path.
+- Verification: focused snapshot tests passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
+- Remaining: complete DD-2 lookup/index coverage for objects.
+
 ## DD-2: table-scoped column name and ordinal lookups — verified
 
 - Added `column_lookups_v1` with table/name and table/zero-based-ordinal key orders. Snapshot lookup verifies each result against its authoritative family-6 column row.

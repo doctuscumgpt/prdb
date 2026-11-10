@@ -337,6 +337,63 @@ impl RowSnapshot {
         Ok(ids)
     }
 
+    /// Copy the bounded target records for one policy from this pinned
+    /// snapshot. The family-14 key begins with the policy ID, so unrelated
+    /// policies do not contribute to the scan limit.
+    pub fn scan_policy_targets_for_policy(
+        &self,
+        policy_id: [u8; 16],
+        max_records: usize,
+    ) -> Result<Vec<CatalogRecord>, Box<dyn std::error::Error>> {
+        self.scan_policy_targets_for_policy_limited(policy_id, max_records)
+            .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+    }
+
+    pub(crate) fn scan_policy_targets_for_policy_limited(
+        &self,
+        policy_id: [u8; 16],
+        max_records: usize,
+    ) -> Result<Vec<CatalogRecord>, SnapshotError> {
+        if policy_id == [0; 16] || max_records == 0 || max_records > MAX_CATALOG_FAMILY_SCAN {
+            return Err(SnapshotError::InvalidCatalogRecord);
+        }
+        let mut prefix = 14u16.to_be_bytes().to_vec();
+        prefix.push(1);
+        prefix.extend_from_slice(&policy_id);
+        let table = self
+            .transaction
+            .open_table(CATALOG)
+            .map_err(|error| SnapshotError::Storage(error.to_string()))?;
+        let mut records = Vec::new();
+        for entry in table
+            .range(prefix.as_slice()..)
+            .map_err(|error| SnapshotError::Storage(error.to_string()))?
+        {
+            let (key, value) = entry.map_err(|error| SnapshotError::Storage(error.to_string()))?;
+            let key = key.value().to_vec();
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            if records.len() == max_records {
+                return Err(SnapshotError::RecordLimitExceeded);
+            }
+            let record = decode_registered_envelope(value.value())
+                .map_err(|_| SnapshotError::InvalidCatalogRecord)?;
+            if record.family_code != 14
+                || record.logical_key != key
+                || key.len() != 39
+                || key[19] != 1
+                || !matches!(u16::from_be_bytes([key[20], key[21]]), 1..=3)
+                || key[22] != 1
+                || key[23..39] == [0; 16]
+            {
+                return Err(SnapshotError::InvalidCatalogRecord);
+            }
+            records.push(record);
+        }
+        Ok(records)
+    }
+
     /// Copy a bounded family prefix from the pinned catalog snapshot. Callers
     /// that use returned records for authorization or writes must also record
     /// exact-key guards and guard the owning definition's epoch.

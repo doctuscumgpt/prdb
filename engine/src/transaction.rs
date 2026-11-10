@@ -863,6 +863,38 @@ impl<'db> InvocationTransaction<'db> {
         result
     }
 
+    fn scan_policy_targets_for_policy(
+        &mut self,
+        policy_id: [u8; 16],
+    ) -> Result<Vec<CatalogRecord>, TransactionError> {
+        let result = (|| {
+            let remaining = self.max_scan_work.saturating_sub(self.scanned_work);
+            if remaining == 0 {
+                return Err(TransactionError::ScanBudgetExceeded);
+            }
+            let policy_limit = crate::authorization::MAX_AUTHORIZATION_INPUTS;
+            let limit = remaining.min(policy_limit);
+            let records =
+                self.pinned_snapshot()?
+                    .scan_policy_targets_for_policy_limited(policy_id, limit)
+                    .map_err(|error| match error {
+                        SnapshotError::RecordLimitExceeded if remaining <= policy_limit => {
+                            TransactionError::ScanBudgetExceeded
+                        }
+                        SnapshotError::RecordLimitExceeded
+                        | SnapshotError::InvalidCatalogRecord => TransactionError::CorruptCatalog,
+                        SnapshotError::Storage(error) => TransactionError::Storage(error),
+                        _ => TransactionError::CorruptCatalog,
+                    })?;
+            self.charge_scan_work(records.len())?;
+            Ok(records)
+        })();
+        if matches!(&result, Err(TransactionError::ScanBudgetExceeded)) && !self.aborted {
+            self.abort()?;
+        }
+        result
+    }
+
     fn lookup_catalog_grants_for_grantees(
         &mut self,
         grantees: &HashSet<[u8; 16]>,
@@ -4955,7 +4987,6 @@ impl<'db> InvocationTransaction<'db> {
                     })
                     .collect::<Result<Vec<_>, _>>()?
             };
-            let targets = self.scan_catalog_family(14)?;
             if policies.len() > crate::authorization::MAX_AUTHORIZATION_INPUTS {
                 return Err(TransactionError::CorruptCatalog);
             }
@@ -4978,6 +5009,7 @@ impl<'db> InvocationTransaction<'db> {
                 let policy_id: [u8; 16] = policy_key[3..19]
                     .try_into()
                     .map_err(|_| TransactionError::CorruptCatalog)?;
+                let targets = self.scan_policy_targets_for_policy(policy_id)?;
                 let kind = catalog_u16(&record, 2)?;
                 let operation = match catalog_u16(&record, 3)? {
                     1 => Operation::Select,
@@ -5007,9 +5039,7 @@ impl<'db> InvocationTransaction<'db> {
                 let mut subjects = Vec::new();
                 let mut policy_columns = Vec::new();
                 let mut has_recipient = false;
-                for target_record in targets.iter().filter(|target| {
-                    target.logical_key.len() == 39 && target.logical_key[3..19] == policy_id
-                }) {
+                for target_record in &targets {
                     let target_key = target_record.logical_key.clone();
                     let target_guard = self
                         .read_catalog_record(&target_key)?
