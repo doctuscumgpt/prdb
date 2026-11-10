@@ -184,6 +184,14 @@
 - Verification: focused snapshot and catalog-loader tests passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
 - Remaining: complete DD-2 lookup/index coverage for objects.
 
+## DD-2: table-scoped bounded schema-column lookup — verified
+
+- Table-schema loading now enumerates family-6 column IDs through the pinned table/ordinal index instead of scanning unrelated tables' columns. Each hit is checked against its authoritative family-6 record and charged to invocation scan work; the list is capped at `MAX_COLUMNS`.
+- A bounded family-6 fallback remains when the requested table has no ordinal-index entries, preserving low-level snapshots created before derived-index maintenance. Startup validates/rebuilds the complete column index.
+- Regression evidence: `table_column_scan_is_bounded_to_its_ordinal_prefix` proves unrelated ordinal prefixes do not consume a one-record scan limit. Schema loader coverage verifies typed columns and preserves the no-secondary-index compatibility path.
+- Verification: all 16 catalog-index unit tests and all 73 transaction tests passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
+- Remaining: complete DD-2 lookup/index coverage for objects.
+
 ## DD-2: table-scoped column name and ordinal lookups — verified
 
 - Added `column_lookups_v1` with table/name and table/zero-based-ordinal key orders. Snapshot lookup verifies each result against its authoritative family-6 column row.

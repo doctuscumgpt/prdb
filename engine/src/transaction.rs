@@ -895,6 +895,38 @@ impl<'db> InvocationTransaction<'db> {
         result
     }
 
+    fn scan_column_ids_for_table(
+        &mut self,
+        table_id: [u8; 16],
+    ) -> Result<Vec<[u8; 16]>, TransactionError> {
+        let result = (|| {
+            let remaining = self.max_scan_work.saturating_sub(self.scanned_work);
+            if remaining == 0 {
+                return Err(TransactionError::ScanBudgetExceeded);
+            }
+            let column_limit = crate::tuple::MAX_COLUMNS;
+            let limit = remaining.min(column_limit);
+            let ids =
+                self.pinned_snapshot()?
+                    .scan_column_ids_for_table(table_id, limit)
+                    .map_err(|error| match error {
+                        SnapshotError::RecordLimitExceeded if remaining <= column_limit => {
+                            TransactionError::ScanBudgetExceeded
+                        }
+                        SnapshotError::RecordLimitExceeded
+                        | SnapshotError::InvalidCatalogRecord => TransactionError::CorruptCatalog,
+                        SnapshotError::Storage(error) => TransactionError::Storage(error),
+                        _ => TransactionError::CorruptCatalog,
+                    })?;
+            self.charge_scan_work(ids.len())?;
+            Ok(ids)
+        })();
+        if matches!(&result, Err(TransactionError::ScanBudgetExceeded)) && !self.aborted {
+            self.abort()?;
+        }
+        result
+    }
+
     fn scan_policy_targets_for_policy(
         &mut self,
         policy_id: [u8; 16],
@@ -4054,7 +4086,20 @@ impl<'db> InvocationTransaction<'db> {
                 return Err(TransactionError::CorruptCatalog);
             }
 
-            let records = self.scan_catalog_family(6)?;
+            let column_ids = self.scan_column_ids_for_table(table_id)?;
+            let records = if column_ids.is_empty() {
+                // Preserve the low-level path for snapshots written before
+                // catalog-derived column indexes were maintained.
+                self.scan_catalog_family(6)?
+            } else {
+                column_ids
+                    .into_iter()
+                    .map(|column_id| {
+                        self.read_catalog_record(&catalog_id_key(6, column_id))?
+                            .ok_or(TransactionError::CorruptCatalog)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            };
             let mut columns = Vec::new();
             for record in records.into_iter().filter(|record| {
                 record.family_code == 6
@@ -4068,7 +4113,7 @@ impl<'db> InvocationTransaction<'db> {
                 let guarded = self
                     .read_catalog_record(&key)?
                     .ok_or(TransactionError::CorruptCatalog)?;
-                if guarded != record || key.len() != 19 {
+                if guarded != record || key.len() != 19 || catalog_id(&record, 1)? != table_id {
                     return Err(TransactionError::CorruptCatalog);
                 }
                 columns.push((

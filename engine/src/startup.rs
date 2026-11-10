@@ -2644,7 +2644,7 @@ mod catalog_index_tests {
         lookup_column_id_by_name, lookup_column_id_by_ordinal, lookup_dependencies_for_dependent,
         lookup_dependents_for_referenced, lookup_grants_for_grantee, lookup_grants_for_object,
         lookup_index_id_by_name, lookup_members_for_role, lookup_policies_for_table_operation,
-        lookup_relation_id_by_name, lookup_roles_for_member,
+        lookup_relation_id_by_name, lookup_roles_for_member, scan_column_ids_for_table,
     };
     use crate::schema::{
         CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, GRANTS, INDEX_NAMES, MEMBERSHIPS, POLICIES,
@@ -3161,6 +3161,33 @@ mod catalog_index_tests {
         assert_eq!(
             lookup_column_id_by_ordinal(&read, [0x32; 16], 0).unwrap(),
             Some([0x67; 16])
+        );
+    }
+
+    #[test]
+    fn table_column_scan_is_bounded_to_its_ordinal_prefix() {
+        let database = database();
+        ensure_column_lookup_index(&database).unwrap();
+        let write = database.begin_write().unwrap();
+        let mut index = write.open_table(COLUMN_LOOKUPS).unwrap();
+        for ordinal in 0u32..4 {
+            let mut key = vec![2];
+            key.extend_from_slice(&[0x99; 16]);
+            key.extend_from_slice(&ordinal.to_be_bytes());
+            let indexed_id = [0xf0u8 + ordinal as u8; 16];
+            index.insert(key.as_slice(), &indexed_id[..]).unwrap();
+        }
+        drop(index);
+        write.commit().unwrap();
+
+        let read = database.begin_read().unwrap();
+        assert_eq!(
+            scan_column_ids_for_table(&read, [0x32; 16], 1).unwrap(),
+            vec![[0x67; 16]]
+        );
+        assert_eq!(
+            scan_column_ids_for_table(&read, [0x32; 16], 0),
+            Err(crate::catalog_index::CatalogIndexError::InvalidName)
         );
     }
 

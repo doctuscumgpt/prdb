@@ -12,6 +12,7 @@ use redb::ReadTransaction;
 pub enum CatalogIndexError {
     InvalidName,
     InvalidEntry,
+    RecordLimitExceeded,
     Storage(String),
 }
 
@@ -246,6 +247,60 @@ pub fn lookup_column_id_by_ordinal(
     key.extend_from_slice(&table_id);
     key.extend_from_slice(&ordinal.to_be_bytes());
     lookup_column(transaction, key, table_id, None, Some(ordinal))
+}
+
+/// List one table's column IDs in ordinal order through its pinned secondary
+/// index, checking each result against the authoritative family-6 record.
+pub fn scan_column_ids_for_table(
+    transaction: &ReadTransaction,
+    table_id: [u8; 16],
+    max_records: usize,
+) -> Result<Vec<[u8; 16]>, CatalogIndexError> {
+    if table_id == [0; 16] || max_records == 0 || max_records > crate::tuple::MAX_COLUMNS {
+        return Err(CatalogIndexError::InvalidName);
+    }
+    let mut prefix = vec![2];
+    prefix.extend_from_slice(&table_id);
+    let index = transaction
+        .open_table(COLUMN_LOOKUPS)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let mut ids = Vec::new();
+    for entry in index
+        .range(prefix.as_slice()..)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+    {
+        let (key, value) = entry.map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+        let key = key.value();
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        if key.len() != 21 {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        if ids.len() == max_records {
+            return Err(CatalogIndexError::RecordLimitExceeded);
+        }
+        let ordinal = u32::from_be_bytes(
+            key[17..21]
+                .try_into()
+                .map_err(|_| CatalogIndexError::InvalidEntry)?,
+        );
+        if ordinal as usize != ids.len() {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        let column_id: [u8; 16] = value
+            .value()
+            .try_into()
+            .map_err(|_| CatalogIndexError::InvalidEntry)?;
+        if column_id == [0; 16]
+            || lookup_column(transaction, key.to_vec(), table_id, None, Some(ordinal))?
+                != Some(column_id)
+        {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        ids.push(column_id);
+    }
+    Ok(ids)
 }
 
 fn lookup_column(
