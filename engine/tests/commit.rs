@@ -3,9 +3,10 @@ use prdb_engine::catalog::{
     CatalogField, WireType, decode_registered_envelope, encode_envelope, family_schema,
 };
 use prdb_engine::catalog_index::{
-    lookup_grants_for_grantee, lookup_grants_for_object, lookup_members_for_role,
-    lookup_policies_for_table_operation, lookup_principal_id_by_name, lookup_relation_id_by_name,
-    lookup_roles_for_member, lookup_schema_id_by_name,
+    lookup_dependencies_for_dependent, lookup_dependents_for_referenced, lookup_grants_for_grantee,
+    lookup_grants_for_object, lookup_members_for_role, lookup_policies_for_table_operation,
+    lookup_principal_id_by_name, lookup_relation_id_by_name, lookup_roles_for_member,
+    lookup_schema_id_by_name,
 };
 use prdb_engine::commit::{
     CatalogWrite, CommitError, CommitRequest, ForeignKeyCheck, IndexWrite, RowWrite,
@@ -4973,6 +4974,14 @@ fn membership_indexes_track_both_directions_per_snapshot() -> Result<(), Box<dyn
         lookup_members_for_role(&old_snapshot, role_id)?,
         vec![member_id]
     );
+    assert_eq!(
+        lookup_dependencies_for_dependent(&old_snapshot, member_id)?.len(),
+        1
+    );
+    assert_eq!(
+        lookup_dependents_for_referenced(&old_snapshot, role_id)?.len(),
+        1
+    );
 
     let second_member_id = id(0x86);
     let second_membership = membership_write(second_member_id, role_id);
@@ -5004,6 +5013,14 @@ fn membership_indexes_track_both_directions_per_snapshot() -> Result<(), Box<dyn
     assert_eq!(
         lookup_members_for_role(&new_snapshot, role_id)?,
         vec![member_id, second_member_id]
+    );
+    assert_eq!(
+        lookup_dependencies_for_dependent(&old_snapshot, member_id)?.len(),
+        1
+    );
+    assert_eq!(
+        lookup_dependents_for_referenced(&new_snapshot, role_id)?.len(),
+        2
     );
     Ok(())
 }

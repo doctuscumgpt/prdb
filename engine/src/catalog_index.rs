@@ -2,7 +2,8 @@
 
 use crate::catalog::decode_registered_envelope;
 use crate::schema::{
-    CATALOG, GRANTS, MEMBERSHIPS, POLICIES, PRINCIPAL_NAMES, RELATION_NAMES, SCHEMA_NAMES,
+    CATALOG, DEPENDENCIES, GRANTS, MEMBERSHIPS, POLICIES, PRINCIPAL_NAMES, RELATION_NAMES,
+    SCHEMA_NAMES,
 };
 use redb::ReadTransaction;
 
@@ -463,6 +464,85 @@ pub fn lookup_policies_for_table_operation(
             || field_id(&record, 1)? != table_id
             || field_u16(&record, 3)? != operation
         {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        records.push(record);
+    }
+    Ok(records)
+}
+
+/// Return dependency edges originating at one object in this snapshot.
+pub fn lookup_dependencies_for_dependent(
+    transaction: &ReadTransaction,
+    dependent_id: [u8; 16],
+) -> Result<Vec<crate::catalog::CatalogRecord>, CatalogIndexError> {
+    lookup_dependencies(transaction, 1, dependent_id)
+}
+
+/// Return dependency edges pointing to one referenced object in this snapshot.
+pub fn lookup_dependents_for_referenced(
+    transaction: &ReadTransaction,
+    referenced_id: [u8; 16],
+) -> Result<Vec<crate::catalog::CatalogRecord>, CatalogIndexError> {
+    lookup_dependencies(transaction, 2, referenced_id)
+}
+
+fn lookup_dependencies(
+    transaction: &ReadTransaction,
+    direction: u8,
+    principal_id: [u8; 16],
+) -> Result<Vec<crate::catalog::CatalogRecord>, CatalogIndexError> {
+    if principal_id == [0; 16] {
+        return Err(CatalogIndexError::InvalidName);
+    }
+    let mut prefix = Vec::with_capacity(17);
+    prefix.push(direction);
+    prefix.extend_from_slice(&principal_id);
+    let index = transaction
+        .open_table(DEPENDENCIES)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let catalog = transaction
+        .open_table(CATALOG)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let mut records = Vec::new();
+    for entry in index
+        .range::<&[u8]>(prefix.as_slice()..)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+    {
+        let (key, value) = entry.map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+        let key = key.value();
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        if key.len() != 35 || !value.value().is_empty() {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        let adjacent: [u8; 16] = key[17..33]
+            .try_into()
+            .map_err(|_| CatalogIndexError::InvalidEntry)?;
+        let kind = u16::from_be_bytes([key[33], key[34]]);
+        if adjacent == [0; 16] || !matches!(kind, 1..=5) {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        let (dependent, referenced) = if direction == 1 {
+            (principal_id, adjacent)
+        } else {
+            (adjacent, principal_id)
+        };
+        let mut catalog_key = 15u16.to_be_bytes().to_vec();
+        catalog_key.push(1);
+        catalog_key.extend_from_slice(&dependent);
+        catalog_key.push(1);
+        catalog_key.extend_from_slice(&referenced);
+        catalog_key.push(1);
+        catalog_key.extend_from_slice(&kind.to_be_bytes());
+        let bytes = catalog
+            .get(catalog_key.as_slice())
+            .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+            .ok_or(CatalogIndexError::InvalidEntry)?;
+        let record = decode_registered_envelope(bytes.value())
+            .map_err(|_| CatalogIndexError::InvalidEntry)?;
+        if record.family_code != 15 || record.logical_key != catalog_key {
             return Err(CatalogIndexError::InvalidEntry);
         }
         records.push(record);

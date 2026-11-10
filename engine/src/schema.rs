@@ -20,6 +20,8 @@ pub const MEMBERSHIPS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("mem
 pub const GRANTS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("grants_v1");
 /// Family-13 policy IDs ordered by table and operation.
 pub const POLICIES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("policies_v1");
+/// Family-15 dependency edges ordered by dependent and by referenced object.
+pub const DEPENDENCIES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("dependencies_v1");
 pub const OUTCOMES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("outcomes_v1");
 pub const AUDIT: TableDefinition<&[u8], &[u8]> = TableDefinition::new("audit_v1");
 pub const STATS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("stats_v1");
@@ -38,6 +40,7 @@ pub fn create_tables(write: &WriteTransaction) -> Result<(), Box<dyn std::error:
     drop(write.open_table(MEMBERSHIPS)?);
     drop(write.open_table(GRANTS)?);
     drop(write.open_table(POLICIES)?);
+    drop(write.open_table(DEPENDENCIES)?);
     drop(write.open_table(OUTCOMES)?);
     drop(write.open_table(AUDIT)?);
     drop(write.open_table(STATS)?);

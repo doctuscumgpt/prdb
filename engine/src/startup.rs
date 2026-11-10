@@ -14,8 +14,8 @@ use crate::metadata::{EngineMetadata, Lifecycle};
 use crate::outcome::{InvocationOutcome, OutcomeStatus};
 use crate::row_record::RowRecord;
 use crate::schema::{
-    AUDIT, CATALOG, ENGINE_META, GRANTS, INDEXES, MEMBERSHIPS, OUTCOMES, POLICIES, PRINCIPAL_NAMES,
-    RELATION_NAMES, ROW_INDEXES, ROWS, SCHEMA_NAMES, STATS,
+    AUDIT, CATALOG, DEPENDENCIES, ENGINE_META, GRANTS, INDEXES, MEMBERSHIPS, OUTCOMES, POLICIES,
+    PRINCIPAL_NAMES, RELATION_NAMES, ROW_INDEXES, ROWS, SCHEMA_NAMES, STATS,
 };
 use crate::tuple::{ColumnSchema, decode_tuple};
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableHandle};
@@ -128,6 +128,7 @@ fn validate_persisted_records_for_lifecycle(
     ensure_membership_index(database)?;
     ensure_grant_index(database)?;
     ensure_policy_index(database)?;
+    ensure_dependency_index(database)?;
     let read = database.begin_read().map_err(storage_error)?;
     validate_tables(&read)?;
     let metadata = read_metadata(&read)?;
@@ -764,6 +765,107 @@ fn ensure_policy_index(database: &Database) -> Result<(), StartupError> {
     Ok(())
 }
 
+fn collect_dependency_index_keys<T>(catalog: &T) -> Result<HashSet<Vec<u8>>, StartupError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let prefix = 15u16.to_be_bytes();
+    let mut keys = HashSet::new();
+    for entry in catalog.range(prefix.as_slice()..).map_err(storage_error)? {
+        let (key, value) = entry.map_err(storage_error)?;
+        let key = key.value();
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        let record =
+            decode_registered_envelope(value.value()).map_err(|_| StartupError::InvalidCatalog)?;
+        if record.family_code != 15
+            || record.logical_key != key
+            || key.len() != 39
+            || key[2] != 1
+            || key[19] != 1
+            || key[36] != 1
+        {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let dependent: [u8; 16] = key[3..19]
+            .try_into()
+            .map_err(|_| StartupError::InvalidCatalog)?;
+        let referenced: [u8; 16] = key[20..36]
+            .try_into()
+            .map_err(|_| StartupError::InvalidCatalog)?;
+        let kind = u16::from_be_bytes([key[37], key[38]]);
+        if dependent == [0; 16] || referenced == [0; 16] || !matches!(kind, 1..=5) {
+            return Err(StartupError::InvalidCatalog);
+        }
+        for (direction, first, second) in
+            [(1u8, dependent, referenced), (2u8, referenced, dependent)]
+        {
+            let mut index_key = Vec::with_capacity(35);
+            index_key.push(direction);
+            index_key.extend_from_slice(&first);
+            index_key.extend_from_slice(&second);
+            index_key.extend_from_slice(&kind.to_be_bytes());
+            if !keys.insert(index_key) {
+                return Err(StartupError::InvalidCatalog);
+            }
+        }
+    }
+    Ok(keys)
+}
+
+/// Rebuild dependency lookups in both directions from authoritative family-15 rows.
+fn ensure_dependency_index(database: &Database) -> Result<(), StartupError> {
+    let read = database.begin_read().map_err(storage_error)?;
+    let has_index = read
+        .list_tables()
+        .map_err(storage_error)?
+        .any(|table| table.name() == DEPENDENCIES.name());
+    if has_index {
+        let catalog = read.open_table(CATALOG).map_err(storage_error)?;
+        let expected = collect_dependency_index_keys(&catalog)?;
+        let index = read.open_table(DEPENDENCIES).map_err(storage_error)?;
+        let mut actual = HashSet::new();
+        let mut well_formed = true;
+        for entry in index.iter().map_err(storage_error)? {
+            let (key, value) = entry.map_err(storage_error)?;
+            if !value.value().is_empty() {
+                well_formed = false;
+            }
+            actual.insert(key.value().to_vec());
+        }
+        if well_formed && actual == expected {
+            return Ok(());
+        }
+    }
+    drop(read);
+    let write = database.begin_write().map_err(storage_error)?;
+    let catalog = write.open_table(CATALOG).map_err(storage_error)?;
+    let expected = collect_dependency_index_keys(&catalog)?;
+    let mut index = write.open_table(DEPENDENCIES).map_err(storage_error)?;
+    let stale_keys = index
+        .iter()
+        .map_err(storage_error)?
+        .map(|entry| {
+            entry
+                .map(|(key, _)| key.value().to_vec())
+                .map_err(storage_error)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for key in stale_keys {
+        index.remove(key.as_slice()).map_err(storage_error)?;
+    }
+    for key in expected {
+        index
+            .insert(key.as_slice(), &b""[..])
+            .map_err(storage_error)?;
+    }
+    drop(index);
+    drop(catalog);
+    write.commit().map_err(storage_error)?;
+    Ok(())
+}
+
 fn storage_error(_error: impl std::fmt::Display) -> StartupError {
     StartupError::Storage
 }
@@ -804,6 +906,7 @@ fn validate_tables(read: &ReadTransaction) -> Result<(), StartupError> {
     drop(read.open_table(MEMBERSHIPS).map_err(storage_error)?);
     drop(read.open_table(GRANTS).map_err(storage_error)?);
     drop(read.open_table(POLICIES).map_err(storage_error)?);
+    drop(read.open_table(DEPENDENCIES).map_err(storage_error)?);
     drop(read.open_table(OUTCOMES).map_err(storage_error)?);
     drop(read.open_table(AUDIT).map_err(storage_error)?);
     drop(read.open_table(STATS).map_err(storage_error)?);
@@ -2317,15 +2420,18 @@ fn validate_audit(read: &ReadTransaction) -> Result<usize, StartupError> {
 #[cfg(test)]
 mod catalog_index_tests {
     use super::{
-        ensure_grant_index, ensure_membership_index, ensure_policy_index,
+        ensure_dependency_index, ensure_grant_index, ensure_membership_index, ensure_policy_index,
         ensure_relation_name_index,
     };
     use crate::catalog::{CatalogField, WireType, encode_envelope, family_schema};
     use crate::catalog_index::{
+        lookup_dependencies_for_dependent, lookup_dependents_for_referenced,
         lookup_grants_for_grantee, lookup_grants_for_object, lookup_members_for_role,
         lookup_policies_for_table_operation, lookup_relation_id_by_name, lookup_roles_for_member,
     };
-    use crate::schema::{CATALOG, GRANTS, MEMBERSHIPS, POLICIES, RELATION_NAMES, create_tables};
+    use crate::schema::{
+        CATALOG, DEPENDENCIES, GRANTS, MEMBERSHIPS, POLICIES, RELATION_NAMES, create_tables,
+    };
     use redb::{Database, ReadableDatabase};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -2501,6 +2607,17 @@ mod catalog_index_tests {
         ];
         let policy_value =
             encode_envelope(&family_schema(13).unwrap(), &policy_key, &policy_fields).unwrap();
+        let dependent_id = [0x65; 16];
+        let referenced_id = [0x66; 16];
+        let mut dependency_key = 15u16.to_be_bytes().to_vec();
+        dependency_key.push(1);
+        dependency_key.extend_from_slice(&dependent_id);
+        dependency_key.push(1);
+        dependency_key.extend_from_slice(&referenced_id);
+        dependency_key.push(1);
+        dependency_key.extend_from_slice(&5u16.to_be_bytes());
+        let dependency_value =
+            encode_envelope(&family_schema(15).unwrap(), &dependency_key, &[]).unwrap();
         let mut catalog = write.open_table(CATALOG).unwrap();
         catalog
             .insert(table_key.as_slice(), table_value.as_slice())
@@ -2516,6 +2633,9 @@ mod catalog_index_tests {
             .unwrap();
         catalog
             .insert(policy_key.as_slice(), policy_value.as_slice())
+            .unwrap();
+        catalog
+            .insert(dependency_key.as_slice(), dependency_value.as_slice())
             .unwrap();
         drop(catalog);
         write.commit().unwrap();
@@ -2653,6 +2773,61 @@ mod catalog_index_tests {
         );
         assert_eq!(
             lookup_grants_for_object(&read, [0x52; 16]).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn stale_dependency_directions_are_rebuilt_from_catalog_records() {
+        let database = database();
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(DEPENDENCIES)
+            .unwrap()
+            .insert(&[1, 0x65][..], &b"stale"[..])
+            .unwrap();
+        write.commit().unwrap();
+        ensure_dependency_index(&database).unwrap();
+        let read = database.begin_read().unwrap();
+        assert_eq!(
+            lookup_dependencies_for_dependent(&read, [0x65; 16])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            lookup_dependents_for_referenced(&read, [0x66; 16])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            read.open_table(DEPENDENCIES)
+                .unwrap()
+                .get(&[1, 0x65][..])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn missing_dependency_index_is_rebuilt_from_catalog_records() {
+        let database = database();
+        let write = database.begin_write().unwrap();
+        assert!(write.delete_table(DEPENDENCIES).unwrap());
+        write.commit().unwrap();
+        ensure_dependency_index(&database).unwrap();
+        let read = database.begin_read().unwrap();
+        assert_eq!(
+            lookup_dependencies_for_dependent(&read, [0x65; 16])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            lookup_dependents_for_referenced(&read, [0x66; 16])
+                .unwrap()
+                .len(),
             1
         );
     }

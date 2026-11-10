@@ -163,7 +163,15 @@
 - Policy records are maintained atomically at commit and reconstructed at startup. Policy loading for a table now reads candidate IDs from the pinned index, then guards and validates each authoritative policy row; pre-startup snapshots retain the scan fallback.
 - Regression evidence: startup unit tests rebuild missing/stale indexes; policy DDL integration verifies a committed policy through the indexed lookup, and normal transaction policy loading uses that pinned index.
 - Verification: targeted policy reconstruction and DDL tests passed; `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable); workspace Clippy with warnings denied passed.
-- Remaining: complete DD-2 lookup/index coverage for objects and dependencies.
+- Remaining: complete DD-2 lookup/index coverage for objects.
+
+## DD-2: bidirectional dependency-edge index — verified
+
+- Added `dependencies_v1`, keyed by direction, the dependent/referenced UUID pair, and edge kind. Snapshot lookups validate each index entry against its authoritative family-15 record.
+- Family-15 writes maintain both directions in the commit transaction; startup verifies and reconstructs the index from family-15 catalog rows.
+- Regression evidence: startup unit tests rebuild missing and stale dependency indexes; commit integration coverage confirms both directions and verifies a retained snapshot remains stable after another dependency is committed.
+- Verification: targeted dependency reconstruction and snapshot tests passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
+- Remaining: complete DD-2 lookup/index coverage for objects.
 
 ## DD-2: snapshot-aware relation-name index — verified
 

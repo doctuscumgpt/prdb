@@ -27,6 +27,7 @@ One redb database file is owned by one storage-manager instance. The supervisor,
 | memberships_v1 | direction byte + principal ID + adjacent principal ID | empty marker; family-11 writes atomically maintain member-to-role and role-to-member entries, startup verifies and rebuilds both directions |
 | grants_v1 | direction byte + grantee/object ID + complete family-12 catalog key | empty marker; family-12 writes atomically maintain both orders, startup verifies and rebuilds them |
 | policies_v1 | table ID + operation code + policy ID | empty marker; family-13 writes atomically maintain table/operation lookup, startup verifies and rebuilds it |
+| dependencies_v1 | direction byte + dependent/referenced ID + edge kind | empty marker; family-15 writes atomically maintain dependent-to-reference and reference-to-dependent lookups, startup verifies and rebuilds both directions |
 | relation_names_v1 | schema ID followed by exact normalized relation-name bytes | 16-byte table object ID; family-2/family-5 writes maintain it atomically, startup verifies and rebuilds this derived index from table and object records when missing or stale |
 | outcomes_v1 | invocation ID | principal, terminal status, commit/version, retention state |
 | audit_v1 | 16-byte event ID | bounded AUD1 required administrative audit/outbox payload |

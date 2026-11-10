@@ -6110,6 +6110,9 @@ fn commit_storage_changes_inner_unchecked(
         let mut policies = transaction
             .open_table(crate::schema::POLICIES)
             .map_err(storage_error)?;
+        let mut dependencies = transaction
+            .open_table(crate::schema::DEPENDENCIES)
+            .map_err(storage_error)?;
         let principal_prefix = 10u16.to_be_bytes();
         for write in catalog_writes
             .iter()
@@ -6272,6 +6275,39 @@ fn commit_storage_changes_inner_unchecked(
                     .map_err(storage_error)?;
             }
         }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&15u16.to_be_bytes()))
+        {
+            if write.key.len() != 39
+                || write.key[2] != 1
+                || write.key[19] != 1
+                || write.key[36] != 1
+                || !matches!(u16::from_be_bytes([write.key[37], write.key[38]]), 1..=5)
+            {
+                return Err(CommitError::InvalidCatalog);
+            }
+            let dependent_id = &write.key[3..19];
+            let referenced_id = &write.key[20..36];
+            if dependent_id.iter().all(|byte| *byte == 0)
+                || referenced_id.iter().all(|byte| *byte == 0)
+            {
+                return Err(CommitError::InvalidCatalog);
+            }
+            for (direction, first, second) in [
+                (1u8, dependent_id, referenced_id),
+                (2u8, referenced_id, dependent_id),
+            ] {
+                let mut index_key = Vec::with_capacity(35);
+                index_key.push(direction);
+                index_key.extend_from_slice(first);
+                index_key.extend_from_slice(second);
+                index_key.extend_from_slice(&write.key[37..39]);
+                dependencies
+                    .remove(index_key.as_slice())
+                    .map_err(storage_error)?;
+            }
+        }
         for write in catalog_writes {
             match &write.payload {
                 Some(payload) => {
@@ -6375,6 +6411,33 @@ fn commit_storage_changes_inner_unchecked(
                 .is_some()
             {
                 return Err(CommitError::InvalidCatalog);
+            }
+        }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&15u16.to_be_bytes()))
+        {
+            if write.payload.is_none() {
+                continue;
+            }
+            let dependent_id = &write.key[3..19];
+            let referenced_id = &write.key[20..36];
+            for (direction, first, second) in [
+                (1u8, dependent_id, referenced_id),
+                (2u8, referenced_id, dependent_id),
+            ] {
+                let mut index_key = Vec::with_capacity(35);
+                index_key.push(direction);
+                index_key.extend_from_slice(first);
+                index_key.extend_from_slice(second);
+                index_key.extend_from_slice(&write.key[37..39]);
+                if dependencies
+                    .insert(index_key.as_slice(), &b""[..])
+                    .map_err(storage_error)?
+                    .is_some()
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
             }
         }
     }
