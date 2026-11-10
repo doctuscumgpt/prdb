@@ -10523,26 +10523,73 @@ fn table_drop_ddl_authority_guards(
         .filter(|write| write.key.starts_with(&15u16.to_be_bytes()) && write.payload.is_none())
         .map(|write| write.key.as_slice())
         .collect::<HashSet<_>>();
-    let dependency_prefix = 15u16.to_be_bytes();
+    let dependency_index = read
+        .open_table(crate::schema::DEPENDENCIES)
+        .map_err(storage_error)?;
     let mut dependency_count = 0usize;
-    for entry in catalog
-        .range(dependency_prefix.as_slice()..)
-        .map_err(storage_error)?
-    {
-        let (key, value) = entry.map_err(storage_error)?;
-        let key = key.value();
-        if !key.starts_with(&dependency_prefix) {
-            break;
-        }
-        dependency_count += 1;
-        if dependency_count > crate::snapshot::MAX_CATALOG_FAMILY_SCAN {
-            return Err(CommitError::InvalidCatalog);
-        }
-        let (dependent, referenced, _) = decode_dependency_edge(key, value.value())?;
-        if deleted_ids.contains(&referenced)
-            && !deleted_ids.contains(&dependent)
-            && !deleted_dependency_keys.contains(key)
+    let mut deleted_id_order = deleted_ids.iter().copied().collect::<Vec<_>>();
+    deleted_id_order.sort_unstable();
+    for referenced in &deleted_id_order {
+        let mut prefix = vec![2];
+        prefix.extend_from_slice(referenced);
+        for entry in dependency_index
+            .range::<&[u8]>(prefix.as_slice()..)
+            .map_err(storage_error)?
         {
+            let (index_key, marker) = entry.map_err(storage_error)?;
+            let index_key = index_key.value();
+            if !index_key.starts_with(&prefix) {
+                break;
+            }
+            dependency_count += 1;
+            if dependency_count > crate::snapshot::MAX_CATALOG_FAMILY_SCAN
+                || index_key.len() != 35
+                || !marker.value().is_empty()
+            {
+                return Err(CommitError::InvalidCatalog);
+            }
+            let dependent: [u8; 16] = index_key[17..33]
+                .try_into()
+                .map_err(|_| CommitError::InvalidCatalog)?;
+            let kind = u16::from_be_bytes([index_key[33], index_key[34]]);
+            if !matches!(kind, 1..=5) {
+                return Err(CommitError::InvalidCatalog);
+            }
+            let mut catalog_key = 15u16.to_be_bytes().to_vec();
+            catalog_key.push(1);
+            catalog_key.extend_from_slice(&dependent);
+            catalog_key.push(1);
+            catalog_key.extend_from_slice(referenced);
+            catalog_key.push(1);
+            catalog_key.extend_from_slice(&kind.to_be_bytes());
+            let bytes = catalog
+                .get(catalog_key.as_slice())
+                .map_err(storage_error)?
+                .ok_or(CommitError::InvalidCatalog)?;
+            let (actual_dependent, actual_referenced, actual_kind) =
+                decode_dependency_edge(&catalog_key, bytes.value())?;
+            if actual_dependent != dependent
+                || actual_referenced != *referenced
+                || actual_kind != kind
+            {
+                return Err(CommitError::InvalidCatalog);
+            }
+            if !deleted_ids.contains(&dependent)
+                && !deleted_dependency_keys.contains(catalog_key.as_slice())
+            {
+                return Err(CommitError::TableHasDependencies);
+            }
+        }
+    }
+    for write in catalog_writes
+        .iter()
+        .filter(|write| write.key.starts_with(&15u16.to_be_bytes()))
+    {
+        let Some(bytes) = &write.payload else {
+            continue;
+        };
+        let (dependent, referenced, _) = decode_dependency_edge(&write.key, bytes)?;
+        if deleted_ids.contains(&referenced) && !deleted_ids.contains(&dependent) {
             return Err(CommitError::TableHasDependencies);
         }
     }

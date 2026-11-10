@@ -189,12 +189,12 @@
 - Verification: targeted startup and DDL regressions passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
 - Remaining: implement and validate remaining DD-3 referential-integrity, drop/recreate ID non-reuse, and complete catalog publication checks.
 
-## DD-4: dependency graph scan exhaustion fails atomically — verified
+## DD-4: bounded reverse dependency validation — verified
 
-- The serialized dependency-edge validator rejects a final family scan beyond the 65,536-record bound before catalog publication.
-- Regression evidence: the new boundary case seeds exactly 65,536 family-15 records, attempts one additional dependency, and checks the new edge stays absent, the commit sequence is unchanged, and the invocation outcome is ABORTED.
-- Verification: focused regression passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
-- Remaining: bounded deterministic reverse traversal and concurrent dependency-introduction versus RESTRICT-drop coverage.
+- RESTRICT-drop validation walks `dependencies_v1` in deterministic referenced-ID/edge order, validates each candidate against family 15, and applies a 65,536-candidate bound. The serialized final catalog validator still rechecks the complete graph against the latest state before publication.
+- Regression evidence: the boundary case seeds exactly 65,536 family-15 records, attempts one additional dependency, and checks the edge stays absent, the commit sequence is unchanged, and the outcome is ABORTED. Existing FK-create/table-drop and FK-create/primary-key-drop races confirm only a valid serial order commits.
+- Verification: focused bound and race regressions passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
+- Remaining: DD-5 snapshot retention and lifecycle acceptance continue in later increments.
 
 ## DD-2: bidirectional dependency-edge index — verified
 
