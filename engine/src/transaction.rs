@@ -959,6 +959,70 @@ impl<'db> InvocationTransaction<'db> {
         result
     }
 
+    fn scan_constraint_ids_for_table(
+        &mut self,
+        table_id: [u8; 16],
+    ) -> Result<Vec<[u8; 16]>, TransactionError> {
+        let result = (|| {
+            let remaining = self.max_scan_work.saturating_sub(self.scanned_work);
+            if remaining == 0 {
+                return Err(TransactionError::ScanBudgetExceeded);
+            }
+            let limit = remaining.min(MAX_CATALOG_FAMILY_SCAN);
+            let ids = self
+                .pinned_snapshot()?
+                .scan_constraint_ids_for_table(table_id, limit)
+                .map_err(|error| match error {
+                    SnapshotError::RecordLimitExceeded if remaining <= MAX_CATALOG_FAMILY_SCAN => {
+                        TransactionError::ScanBudgetExceeded
+                    }
+                    SnapshotError::RecordLimitExceeded | SnapshotError::InvalidCatalogRecord => {
+                        TransactionError::CorruptCatalog
+                    }
+                    SnapshotError::Storage(error) => TransactionError::Storage(error),
+                    _ => TransactionError::CorruptCatalog,
+                })?;
+            self.charge_scan_work(ids.len())?;
+            Ok(ids)
+        })();
+        if matches!(&result, Err(TransactionError::ScanBudgetExceeded)) && !self.aborted {
+            self.abort()?;
+        }
+        result
+    }
+
+    fn lookup_catalog_dependents_for_referenced(
+        &mut self,
+        referenced_id: [u8; 16],
+    ) -> Result<Vec<CatalogRecord>, TransactionError> {
+        let result = (|| {
+            let remaining = self.max_scan_work.saturating_sub(self.scanned_work);
+            if remaining == 0 {
+                return Err(TransactionError::ScanBudgetExceeded);
+            }
+            let limit = remaining.min(MAX_CATALOG_FAMILY_SCAN);
+            let records = self
+                .pinned_snapshot()?
+                .lookup_dependents_for_referenced(referenced_id, limit)
+                .map_err(|error| match error {
+                    SnapshotError::RecordLimitExceeded if remaining <= MAX_CATALOG_FAMILY_SCAN => {
+                        TransactionError::ScanBudgetExceeded
+                    }
+                    SnapshotError::RecordLimitExceeded | SnapshotError::InvalidCatalogRecord => {
+                        TransactionError::CorruptCatalog
+                    }
+                    SnapshotError::Storage(error) => TransactionError::Storage(error),
+                    _ => TransactionError::CorruptCatalog,
+                })?;
+            self.charge_scan_work(records.len())?;
+            Ok(records)
+        })();
+        if matches!(&result, Err(TransactionError::ScanBudgetExceeded)) && !self.aborted {
+            self.abort()?;
+        }
+        result
+    }
+
     fn scan_policy_targets_for_policy(
         &mut self,
         policy_id: [u8; 16],
@@ -4356,7 +4420,67 @@ impl<'db> InvocationTransaction<'db> {
         &mut self,
         schema: &CatalogTableSchema,
     ) -> Result<(), TransactionError> {
-        let records = self.scan_catalog_family(8)?;
+        let constraint_ids = self.scan_constraint_ids_for_table(schema.table_id)?;
+        let records = if constraint_ids.is_empty() {
+            // Preserve raw low-level snapshots created before derived indexes
+            // were maintained atomically with family-8 writes.
+            self.scan_catalog_family(8)?
+        } else {
+            let mut candidate_ids = constraint_ids.iter().copied().collect::<HashSet<_>>();
+            let own_records = constraint_ids
+                .into_iter()
+                .map(|constraint_id| {
+                    self.read_catalog_record(&catalog_id_key(8, constraint_id))?
+                        .ok_or(TransactionError::CorruptCatalog)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut referenced_constraint_ids = Vec::new();
+            for record in &own_records {
+                if matches!(catalog_u16(record, 2)?, 2 | 3) {
+                    let constraint_id = record
+                        .logical_key
+                        .get(3..19)
+                        .and_then(|bytes| bytes.try_into().ok())
+                        .ok_or(TransactionError::CorruptCatalog)?;
+                    referenced_constraint_ids.push(constraint_id);
+                }
+            }
+            referenced_constraint_ids.sort_unstable();
+            referenced_constraint_ids.dedup();
+            for referenced_id in referenced_constraint_ids {
+                for edge in self.lookup_catalog_dependents_for_referenced(referenced_id)? {
+                    let edge_kind = edge
+                        .logical_key
+                        .get(37..39)
+                        .and_then(|bytes| bytes.try_into().ok())
+                        .map(u16::from_be_bytes)
+                        .ok_or(TransactionError::CorruptCatalog)?;
+                    if edge.logical_key.len() != 39 {
+                        return Err(TransactionError::CorruptCatalog);
+                    }
+                    if edge_kind == 3 {
+                        let foreign_key_id = edge
+                            .logical_key
+                            .get(3..19)
+                            .and_then(|bytes| bytes.try_into().ok())
+                            .ok_or(TransactionError::CorruptCatalog)?;
+                        if foreign_key_id == [0; 16] {
+                            return Err(TransactionError::CorruptCatalog);
+                        }
+                        candidate_ids.insert(foreign_key_id);
+                    }
+                }
+            }
+            let mut candidate_ids = candidate_ids.into_iter().collect::<Vec<_>>();
+            candidate_ids.sort_unstable();
+            candidate_ids
+                .into_iter()
+                .map(|constraint_id| {
+                    self.read_catalog_record(&catalog_id_key(8, constraint_id))?
+                        .ok_or(TransactionError::CorruptCatalog)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
         for record in records {
             if record.family_code != 8 || record.logical_key.len() != 19 {
                 return Err(TransactionError::CorruptCatalog);
@@ -5289,7 +5413,20 @@ impl<'db> InvocationTransaction<'db> {
     ) -> Result<Vec<Expr>, TransactionError> {
         let result = (|| {
             self.load_catalog_foreign_keys_for_table(schema)?;
-            let records = self.scan_catalog_family(8)?;
+            let constraint_ids = self.scan_constraint_ids_for_table(schema.table_id)?;
+            let records = if constraint_ids.is_empty() {
+                // Retain the bounded low-level path for snapshots whose
+                // family-8 rows predate derived table-constraint indexes.
+                self.scan_catalog_family(8)?
+            } else {
+                constraint_ids
+                    .into_iter()
+                    .map(|constraint_id| {
+                        self.read_catalog_record(&catalog_id_key(8, constraint_id))?
+                            .ok_or(TransactionError::CorruptCatalog)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            };
             let mut checks = Vec::new();
             for record in records {
                 if catalog_id(&record, 1)? != schema.table_id {

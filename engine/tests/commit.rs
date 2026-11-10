@@ -8724,6 +8724,11 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
         })
         .map_err(|error| format!("CHECK constraint creation failed: {error:?}"))?;
     assert_eq!(created.commit_sequence, 3);
+    let constraint_snapshot = database.begin_read()?;
+    assert_eq!(
+        prdb_engine::catalog_index::scan_constraint_ids_for_table(&constraint_snapshot, id(82), 1)?,
+        vec![created.constraint_id]
+    );
     assert!(matches!(
         stale_add_writer.commit(),
         Err(prdb_engine::transaction::TransactionError::Commit(
@@ -8765,6 +8770,15 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
             drop_audit,
         )?,
         4
+    );
+    let dropped_constraint_snapshot = database.begin_read()?;
+    assert!(
+        prdb_engine::catalog_index::scan_constraint_ids_for_table(
+            &dropped_constraint_snapshot,
+            id(82),
+            1
+        )?
+        .is_empty()
     );
     assert!(matches!(
         stale_drop_writer.commit(),

@@ -136,6 +136,55 @@ impl RowSnapshot {
             })
     }
 
+    /// List one table's constraints from this pinned snapshot.
+    pub(crate) fn scan_constraint_ids_for_table(
+        &self,
+        table_id: [u8; 16],
+        max_records: usize,
+    ) -> Result<Vec<[u8; 16]>, SnapshotError> {
+        crate::catalog_index::scan_constraint_ids_for_table(
+            &self.transaction,
+            table_id,
+            max_records,
+        )
+        .map_err(|error| match error {
+            crate::catalog_index::CatalogIndexError::InvalidName
+            | crate::catalog_index::CatalogIndexError::InvalidEntry => {
+                SnapshotError::InvalidCatalogRecord
+            }
+            crate::catalog_index::CatalogIndexError::RecordLimitExceeded => {
+                SnapshotError::RecordLimitExceeded
+            }
+            crate::catalog_index::CatalogIndexError::Storage(error) => {
+                SnapshotError::Storage(error)
+            }
+        })
+    }
+
+    pub(crate) fn lookup_dependents_for_referenced(
+        &self,
+        referenced_id: [u8; 16],
+        max_records: usize,
+    ) -> Result<Vec<CatalogRecord>, SnapshotError> {
+        crate::catalog_index::lookup_dependents_for_referenced_limited(
+            &self.transaction,
+            referenced_id,
+            max_records,
+        )
+        .map_err(|error| match error {
+            crate::catalog_index::CatalogIndexError::InvalidName
+            | crate::catalog_index::CatalogIndexError::InvalidEntry => {
+                SnapshotError::InvalidCatalogRecord
+            }
+            crate::catalog_index::CatalogIndexError::RecordLimitExceeded => {
+                SnapshotError::RecordLimitExceeded
+            }
+            crate::catalog_index::CatalogIndexError::Storage(error) => {
+                SnapshotError::Storage(error)
+            }
+        })
+    }
+
     /// Return grants indexed under one grantee from the pinned catalog
     /// snapshot. Each derived entry is checked against family 12.
     pub(crate) fn lookup_grants_for_grantee(

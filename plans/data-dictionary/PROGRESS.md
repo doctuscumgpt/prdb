@@ -297,3 +297,11 @@
 - Regression evidence: startup fixtures rebuild a missing table-index map and verify that a prefix lookup returns only the requested table's index. The real-redb named-index DDL integration test checks that creating an index publishes its table-index entry.
 - Spec: [data dictionary](../../specs/data-dictionary.md) now describes the pinned lookup and startup consistency check.
 - Verification: the focused startup rebuild and real-redb index DDL tests passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed. The workspace suite reports 4 sandbox fixtures ignored because they require delegated cgroups and built TinyCC fixtures.
+
+## DD-2: table-scoped constraint lookup — verified
+
+- Added `table_constraints_v1`, keyed by owning table and constraint ID. Family-8 catalog writes maintain it atomically; startup verifies or rebuilds it from authoritative records. CHECK/PRIMARY KEY/UNIQUE/NOT NULL loading now reads only the owning table's prefix, with a bounded family-8 fallback for pre-index low-level snapshots.
+- Foreign-key validation gathers outgoing constraints from the same table prefix and incoming references through the existing reverse dependency index. Both candidate sets are charged against the invocation scan-work budget, and dependency reads enforce a family bound.
+- Regression evidence: startup reconstructs a missing index and checks table-prefix isolation; real CHECK creation/drop verifies index maintenance; CHECK and foreign-key DDL plus all 73 transaction integration tests pass.
+- Spec: [data dictionary](../../specs/data-dictionary.md) describes the table-scoped constraint and incoming-FK lookup paths.
+- Verification: the startup prefix/rebuild test, CHECK create/drop integration, FK DDL integration, and all 73 transaction tests passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed. The suite reports 4 sandbox fixtures ignored because they require delegated cgroups and built TinyCC fixtures.
