@@ -358,6 +358,7 @@ int32_t prdb_sdk_optimizer_decode_response_v1(
     prdb_sdk_optimizer_response_v1 *out, uint32_t out_capacity) {
     prdb_sdk_optimizer_response_v1 decoded;
     uint32_t plan_len;
+    size_t decoded_plan_len;
 
     if (payload == NULL || out == NULL ||
         out_capacity < sizeof(prdb_sdk_optimizer_response_v1) ||
@@ -390,10 +391,13 @@ int32_t prdb_sdk_optimizer_decode_response_v1(
         return PRDB_SDK_OPTIMIZER_RESULT_INVALID_RESPONSE;
     }
     if (plan_len == 0 || plan_len > PRDB_SDK_OPTIMIZER_MAX_PLAN_BYTES ||
-        payload_len != (uint64_t)7 + plan_len) {
+        !prdb_decode_optimizer_response_success_plan(
+            payload + PRDB_OPTIMIZER_RESPONSE_SUCCESS_HEADER_BYTES,
+            (size_t)payload_len - PRDB_OPTIMIZER_RESPONSE_SUCCESS_HEADER_BYTES,
+            plan_len, &decoded.plan, &decoded_plan_len) ||
+        decoded_plan_len != plan_len) {
         return PRDB_SDK_OPTIMIZER_RESULT_INVALID_RESPONSE;
     }
-    decoded.plan = payload + 7;
     decoded.plan_len = plan_len;
     *out = decoded;
     return PRDB_SDK_OPTIMIZER_RESULT_OK;

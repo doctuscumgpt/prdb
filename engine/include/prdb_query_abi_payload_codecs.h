@@ -994,14 +994,13 @@ static inline int prdb_encode_optimizer_response_success_plan(uint8_t *payload, 
     return 1;
 }
 
-static inline int prdb_decode_optimizer_response_success_plan(const uint8_t *payload, size_t payload_len, uint32_t encoded_len, uint8_t *bytes, size_t bytes_capacity) {
-    if ((size_t)encoded_len > bytes_capacity || payload_len != (size_t)encoded_len ||
-        (encoded_len != 0 && (payload == NULL || bytes == NULL))) {
+static inline int prdb_decode_optimizer_response_success_plan(const uint8_t *payload, size_t payload_len, uint32_t encoded_len, const uint8_t **bytes, size_t *bytes_len) {
+    if (payload_len != (size_t)encoded_len || bytes == NULL || bytes_len == NULL ||
+        (encoded_len != 0 && payload == NULL)) {
         return 0;
     }
-    for (size_t i = 0; i < (size_t)encoded_len; ++i) {
-        bytes[i] = payload[i];
-    }
+    *bytes = payload;
+    *bytes_len = (size_t)encoded_len;
     return 1;
 }
 

@@ -283,24 +283,29 @@ int main(void) {
     }
     const uint8_t optimizer_plan[3] = {0xaa, 0xbb, 0xcc};
     uint8_t encoded_optimizer_plan[3] = {0};
-    uint8_t decoded_optimizer_plan[3] = {0};
+    const uint8_t *decoded_optimizer_plan = NULL;
+    size_t decoded_optimizer_plan_len = 0;
     if (!prdb_encode_optimizer_response_success_plan(
             encoded_optimizer_plan, sizeof(encoded_optimizer_plan),
             optimizer_plan, sizeof(optimizer_plan)) ||
         memcmp(encoded_optimizer_plan, optimizer_plan, sizeof(optimizer_plan)) != 0 ||
         !prdb_decode_optimizer_response_success_plan(
             encoded_optimizer_plan, sizeof(encoded_optimizer_plan), 3,
-            decoded_optimizer_plan, sizeof(decoded_optimizer_plan)) ||
+            &decoded_optimizer_plan, &decoded_optimizer_plan_len) ||
+        decoded_optimizer_plan_len != sizeof(optimizer_plan) ||
+        decoded_optimizer_plan != encoded_optimizer_plan ||
         memcmp(decoded_optimizer_plan, optimizer_plan, sizeof(optimizer_plan)) != 0) {
         return 72;
     }
-    decoded_optimizer_plan[0] = 0xa5;
+    decoded_optimizer_plan = optimizer_plan;
+    decoded_optimizer_plan_len = 99;
     if (prdb_decode_optimizer_response_success_plan(
-            encoded_optimizer_plan, sizeof(encoded_optimizer_plan), 3,
-            decoded_optimizer_plan, 2) || decoded_optimizer_plan[0] != 0xa5 ||
+            encoded_optimizer_plan, sizeof(encoded_optimizer_plan), 4,
+            &decoded_optimizer_plan, &decoded_optimizer_plan_len) ||
+        decoded_optimizer_plan != optimizer_plan || decoded_optimizer_plan_len != 99 ||
         prdb_decode_optimizer_response_success_plan(
             encoded_optimizer_plan, sizeof(encoded_optimizer_plan) - 1, 3,
-            decoded_optimizer_plan, sizeof(decoded_optimizer_plan))) {
+            &decoded_optimizer_plan, &decoded_optimizer_plan_len)) {
         return 73;
     }
     const uint8_t cancellation_check_expected[3] = {0x00, 0x01, 0x01};

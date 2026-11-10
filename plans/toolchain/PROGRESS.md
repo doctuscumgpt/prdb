@@ -1,5 +1,13 @@
 # Toolchain Progress
 
+## TC-2: TinyCC optimizer uses generated plan-tail decoder — implemented
+
+- Contract: successful optimizer responses expose a borrowed plan span only after the version/status/length prefix and exact tail length validate.
+- Implementation: the generated C raw-byte tail decoder returns a borrowed, length-checked slice. The TinyCC optimizer SDK now uses it to populate the borrowed plan view while retaining maximum-plan-size checks.
+- Regression: the maintained C fixture checks the returned view, exact length, and rejection of inconsistent/truncated lengths without changing output parameters. Generator tests assert the C helper.
+- Verification: schema drift and generator tests and the complete maintained TinyCC SDK suite passed with warnings treated as errors in the pinned Nix shell.
+- Remaining: additional C SDK serializer migrations and TC-2 release/profile acceptance work remain open.
+
 ## TC-2: TinyCC planner and executor relation-name tails — implemented
 
 - Contract: the TinyCC SDK emits the same bounded version/length/name request bytes as the Rust IPC codecs.
