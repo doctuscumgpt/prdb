@@ -57,3 +57,9 @@
 - Regression: `expression_record_matches_independent_catalog_v1_fixture` checks the purpose/version fields, result type and parameters, EIR1 bytes, and a one-entry IDS dependency list against exact family-7 CAT1 bytes.
 - Verification: all seven independent family-1 through family-7 catalog fixtures passed in the focused test run.
 - Remaining: independent byte fixtures for families 8–17 and broader catalog semantics remain open.
+
+## DD-1: independent constraint-record bytes — verified
+
+- Regression: `constraint_record_matches_independent_catalog_v1_fixture` checks a family-8 NOT NULL-shaped record with one source column, an empty referenced-column list, omitted optional references, and fixed action/state fields against exact bytes.
+- Verification: the focused catalog fixture command passed all independent family-1 through family-8 tests.
+- Remaining: independent byte fixtures for families 9–17 and broader catalog semantics remain open.
