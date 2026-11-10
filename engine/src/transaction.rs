@@ -863,6 +863,28 @@ impl<'db> InvocationTransaction<'db> {
         result
     }
 
+    fn lookup_catalog_grants_for_grantees(
+        &mut self,
+        grantees: &HashSet<[u8; 16]>,
+    ) -> Result<Vec<CatalogRecord>, TransactionError> {
+        let mut grantee_ids = grantees.iter().copied().collect::<Vec<_>>();
+        grantee_ids.sort_unstable();
+        let mut records = Vec::new();
+        for grantee_id in grantee_ids {
+            let indexed = self
+                .pinned_snapshot()?
+                .lookup_grants_for_grantee(grantee_id)
+                .map_err(|error| match error {
+                    SnapshotError::Storage(error) => TransactionError::Storage(error),
+                    SnapshotError::InvalidCatalogRecord => TransactionError::CorruptCatalog,
+                    _ => TransactionError::CorruptCatalog,
+                })?;
+            self.charge_scan_work(indexed.len())?;
+            records.extend(indexed);
+        }
+        Ok(records)
+    }
+
     pub fn read(&mut self, id: RowId) -> Result<Option<Vec<u8>>, TransactionError> {
         match self.read_inner(id) {
             Ok(value) => Ok(value),
@@ -4452,7 +4474,7 @@ impl<'db> InvocationTransaction<'db> {
             let roles = self.load_catalog_role_closure(principal_id)?;
             let mut grantees = roles.clone();
             grantees.insert(principal_id);
-            let records = self.scan_catalog_family(12)?;
+            let records = self.lookup_catalog_grants_for_grantees(&grantees)?;
             let mut grants = Vec::new();
             let mut guarded_principals = HashSet::new();
             for record in records {
@@ -4572,7 +4594,7 @@ impl<'db> InvocationTransaction<'db> {
             let roles = self.load_catalog_role_closure(principal_id)?;
             let mut grantees = roles.clone();
             grantees.insert(principal_id);
-            let records = self.scan_catalog_family(12)?;
+            let records = self.lookup_catalog_grants_for_grantees(&grantees)?;
             let mut grants = Vec::new();
             let mut guarded_principals = HashSet::new();
             for record in records {
@@ -4672,7 +4694,7 @@ impl<'db> InvocationTransaction<'db> {
             let roles = self.load_catalog_role_closure(principal_id)?;
             let mut grantees = roles.clone();
             grantees.insert(principal_id);
-            let records = self.scan_catalog_family(12)?;
+            let records = self.lookup_catalog_grants_for_grantees(&grantees)?;
 
             let mut has_schema_usage = false;
             for record in &records {

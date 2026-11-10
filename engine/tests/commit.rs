@@ -9659,6 +9659,51 @@ fn authenticated_role_closure_budget_ignores_unreachable_memberships()
 }
 
 #[test]
+fn catalog_grant_loading_budget_ignores_unrelated_grants() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let user_id = id(0xb1);
+    let other_user = id(0xb2);
+    let grantor = builtin_owner_id();
+    let records = [
+        principal_write_with_name(user_id, 1, 1, "grant_budget_user"),
+        object_write_with_name(user_id, 8, "grant_budget_user"),
+        principal_write_with_name(other_user, 1, 1, "grant_budget_other"),
+        object_write_with_name(other_user, 8, "grant_budget_other"),
+        grant_write(other_user, id(16), 2, 1, id(16), grantor),
+        grant_write(other_user, id(16), 4, 1, id(16), grantor),
+        dependency_write(other_user, id(16), 5),
+    ];
+    let mut audit = identity_audit_event(0xb3, grantor, user_id);
+    audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0xb3), grantor, 9_999, &records, &[audit])?;
+
+    let storage = StorageManager::with_config(
+        &database,
+        StorageManagerConfig {
+            max_invocation_scan_work: 1,
+            ..StorageManagerConfig::default()
+        },
+    )?;
+    let (mut invocation, roles) =
+        storage.begin_authenticated_invocation(id(0xb4), user_id, 9_999, 1, 64)?;
+    assert!(roles.is_empty());
+    let (loaded_roles, grants) = invocation.load_catalog_schema_usage_grants(user_id)?;
+    assert!(loaded_roles.is_empty());
+    assert!(grants.is_empty());
+    invocation.abort()?;
+    assert_eq!(
+        lookup_outcome(&database, id(0xb4), user_id, 1)?
+            .ok_or("missing grant-loader admission outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    Ok(())
+}
+
+#[test]
 fn storage_manager_bounds_active_invocation_snapshots_across_clones()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

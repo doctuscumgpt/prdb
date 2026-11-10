@@ -966,6 +966,7 @@ fn install_relation_discovery_catalog(
     let write = database.begin_write()?;
     {
         let mut catalog = write.open_table(CATALOG)?;
+        let mut grants = write.open_table(prdb_engine::schema::GRANTS)?;
         let mut table_ids = 2u32.to_le_bytes().to_vec();
         table_ids.extend_from_slice(&table_id);
         table_ids.extend_from_slice(&hidden_table_id);
@@ -1222,6 +1223,13 @@ fn install_relation_discovery_catalog(
                 1,
             );
             catalog.insert(&grant_key[..], &grant_value[..])?;
+            for (direction, indexed_id) in [(1u8, [9; 16]), (2u8, object_id)] {
+                let mut index_key = Vec::with_capacity(76);
+                index_key.push(direction);
+                index_key.extend_from_slice(&indexed_id);
+                index_key.extend_from_slice(&grant_key);
+                grants.insert(&index_key[..], &[][..])?;
+            }
         }
         let (restricted_grant_key, restricted_grant_value) = grant_catalog_record(
             [10; 16],
@@ -1233,6 +1241,13 @@ fn install_relation_discovery_catalog(
             1,
         );
         catalog.insert(&restricted_grant_key[..], &restricted_grant_value[..])?;
+        for (direction, indexed_id) in [(1u8, [10; 16]), (2u8, second_visible_schema_id)] {
+            let mut index_key = Vec::with_capacity(76);
+            index_key.push(direction);
+            index_key.extend_from_slice(&indexed_id);
+            index_key.extend_from_slice(&restricted_grant_key);
+            grants.insert(&index_key[..], &[][..])?;
+        }
     }
     write.commit()?;
     Ok(())
@@ -3179,6 +3194,7 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
     let write = database.begin_write()?;
     {
         let mut catalog = write.open_table(CATALOG)?;
+        let mut grants = write.open_table(prdb_engine::schema::GRANTS)?;
         for (key, payload) in [
             (
                 type_write.key.clone(),
@@ -3476,6 +3492,17 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
             ),
         ] {
             catalog.insert(&key[..], &payload[..])?;
+            if key.starts_with(&12u16.to_be_bytes()) {
+                let grantee: [u8; 16] = key[3..19].try_into()?;
+                let object: [u8; 16] = key[20..36].try_into()?;
+                for (direction, indexed_id) in [(1u8, grantee), (2u8, object)] {
+                    let mut index_key = Vec::with_capacity(76);
+                    index_key.push(direction);
+                    index_key.extend_from_slice(&indexed_id);
+                    index_key.extend_from_slice(&key);
+                    grants.insert(&index_key[..], &[][..])?;
+                }
+            }
         }
     }
     write.commit()?;

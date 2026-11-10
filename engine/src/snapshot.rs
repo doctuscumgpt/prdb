@@ -91,6 +91,25 @@ impl RowSnapshot {
         )
     }
 
+    /// Return grants indexed under one grantee from the pinned catalog
+    /// snapshot. Each derived entry is checked against family 12.
+    pub(crate) fn lookup_grants_for_grantee(
+        &self,
+        grantee_id: [u8; 16],
+    ) -> Result<Vec<CatalogRecord>, SnapshotError> {
+        crate::catalog_index::lookup_grants_for_grantee(&self.transaction, grantee_id).map_err(
+            |error| match error {
+                crate::catalog_index::CatalogIndexError::Storage(error) => {
+                    SnapshotError::Storage(error)
+                }
+                crate::catalog_index::CatalogIndexError::InvalidName
+                | crate::catalog_index::CatalogIndexError::InvalidEntry => {
+                    SnapshotError::InvalidCatalogRecord
+                }
+            },
+        )
+    }
+
     /// Return a bounded, ordered page of row IDs from this pinned snapshot.
     /// A full page is reported as incomplete; callers can resume after its last
     /// row ID, and an empty follow-up page confirms completion.
