@@ -165,6 +165,14 @@
 - Verification: targeted policy reconstruction and DDL tests passed; `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable); workspace Clippy with warnings denied passed.
 - Remaining: complete DD-2 lookup/index coverage for objects.
 
+## DD-2: table-scoped column name and ordinal lookups — verified
+
+- Added `column_lookups_v1` with table/name and table/zero-based-ordinal key orders. Snapshot lookup verifies each result against its authoritative family-6 column row.
+- Family-6 writes replace both lookup keys atomically; startup reconstructs missing or stale entries from the catalog.
+- Regression evidence: startup tests rebuild missing and stale lookup tables; column rename integration checks indexed lookups in an old snapshot and the current snapshot, including the stable ordinal.
+- Verification: focused reconstruction and rename/snapshot tests passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
+- Remaining: complete DD-2 lookup/index coverage for named index objects.
+
 ## DD-2: bidirectional dependency-edge index — verified
 
 - Added `dependencies_v1`, keyed by direction, the dependent/referenced UUID pair, and edge kind. Snapshot lookups validate each index entry against its authoritative family-15 record.

@@ -2,8 +2,8 @@
 
 use crate::catalog::decode_registered_envelope;
 use crate::schema::{
-    CATALOG, DEPENDENCIES, GRANTS, MEMBERSHIPS, POLICIES, PRINCIPAL_NAMES, RELATION_NAMES,
-    SCHEMA_NAMES,
+    CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, GRANTS, MEMBERSHIPS, POLICIES, PRINCIPAL_NAMES,
+    RELATION_NAMES, SCHEMA_NAMES,
 };
 use redb::ReadTransaction;
 
@@ -212,6 +212,86 @@ pub fn lookup_relation_id_by_name(
     Ok(Some(relation_id))
 }
 
+/// Resolve a column by exact normalized name within a table in this snapshot.
+pub fn lookup_column_id_by_name(
+    transaction: &ReadTransaction,
+    table_id: [u8; 16],
+    normalized_name: &str,
+) -> Result<Option<[u8; 16]>, CatalogIndexError> {
+    if table_id == [0; 16] || normalized_name.is_empty() || normalized_name.len() > 4096 {
+        return Err(CatalogIndexError::InvalidName);
+    }
+    let mut key = vec![1];
+    key.extend_from_slice(&table_id);
+    key.extend_from_slice(normalized_name.as_bytes());
+    lookup_column(
+        transaction,
+        key,
+        table_id,
+        Some(normalized_name.as_bytes()),
+        None,
+    )
+}
+
+/// Resolve a column by its zero-based catalog ordinal within a table in this snapshot.
+pub fn lookup_column_id_by_ordinal(
+    transaction: &ReadTransaction,
+    table_id: [u8; 16],
+    ordinal: u32,
+) -> Result<Option<[u8; 16]>, CatalogIndexError> {
+    if table_id == [0; 16] {
+        return Err(CatalogIndexError::InvalidName);
+    }
+    let mut key = vec![2];
+    key.extend_from_slice(&table_id);
+    key.extend_from_slice(&ordinal.to_be_bytes());
+    lookup_column(transaction, key, table_id, None, Some(ordinal))
+}
+
+fn lookup_column(
+    transaction: &ReadTransaction,
+    index_key: Vec<u8>,
+    table_id: [u8; 16],
+    name: Option<&[u8]>,
+    ordinal: Option<u32>,
+) -> Result<Option<[u8; 16]>, CatalogIndexError> {
+    let index = transaction
+        .open_table(COLUMN_LOOKUPS)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let Some(value) = index
+        .get(index_key.as_slice())
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let column_id: [u8; 16] = value
+        .value()
+        .try_into()
+        .map_err(|_| CatalogIndexError::InvalidEntry)?;
+    if column_id == [0; 16] {
+        return Err(CatalogIndexError::InvalidEntry);
+    }
+    let catalog = transaction
+        .open_table(CATALOG)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let catalog_key = catalog_id_key(6, column_id);
+    let bytes = catalog
+        .get(catalog_key.as_slice())
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+        .ok_or(CatalogIndexError::InvalidEntry)?;
+    let record =
+        decode_registered_envelope(bytes.value()).map_err(|_| CatalogIndexError::InvalidEntry)?;
+    if record.family_code != 6
+        || record.logical_key != catalog_key
+        || field_id(&record, 1)? != table_id
+        || name.is_some_and(|expected| field_bytes(&record, 3).ok() != Some(expected))
+        || ordinal.is_some_and(|expected| field_u32(&record, 2).ok() != Some(expected))
+    {
+        return Err(CatalogIndexError::InvalidEntry);
+    }
+    Ok(Some(column_id))
+}
+
 fn catalog_id_key(family: u16, id: [u8; 16]) -> Vec<u8> {
     let mut key = family.to_be_bytes().to_vec();
     key.push(1);
@@ -234,6 +314,13 @@ fn field_u16(record: &crate::catalog::CatalogRecord, tag: u16) -> Result<u16, Ca
         .try_into()
         .map_err(|_| CatalogIndexError::InvalidEntry)?;
     Ok(u16::from_le_bytes(bytes))
+}
+
+fn field_u32(record: &crate::catalog::CatalogRecord, tag: u16) -> Result<u32, CatalogIndexError> {
+    let bytes: [u8; 4] = field_bytes(record, tag)?
+        .try_into()
+        .map_err(|_| CatalogIndexError::InvalidEntry)?;
+    Ok(u32::from_le_bytes(bytes))
 }
 
 fn field_bytes(

@@ -3,10 +3,10 @@ use prdb_engine::catalog::{
     CatalogField, WireType, decode_registered_envelope, encode_envelope, family_schema,
 };
 use prdb_engine::catalog_index::{
-    lookup_dependencies_for_dependent, lookup_dependents_for_referenced, lookup_grants_for_grantee,
-    lookup_grants_for_object, lookup_members_for_role, lookup_policies_for_table_operation,
-    lookup_principal_id_by_name, lookup_relation_id_by_name, lookup_roles_for_member,
-    lookup_schema_id_by_name,
+    lookup_column_id_by_name, lookup_column_id_by_ordinal, lookup_dependencies_for_dependent,
+    lookup_dependents_for_referenced, lookup_grants_for_grantee, lookup_grants_for_object,
+    lookup_members_for_role, lookup_policies_for_table_operation, lookup_principal_id_by_name,
+    lookup_relation_id_by_name, lookup_roles_for_member, lookup_schema_id_by_name,
 };
 use prdb_engine::commit::{
     CatalogWrite, CommitError, CommitRequest, ForeignKeyCheck, IndexWrite, RowWrite,
@@ -3100,6 +3100,14 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
         lookup_relation_id_by_name(&old_relation_snapshot, schema.schema_id, "column_drop_me")?,
         Some(table.table_id)
     );
+    assert_eq!(
+        lookup_column_id_by_name(&old_relation_snapshot, table.table_id, "obsolete")?,
+        Some(table.column_ids[0])
+    );
+    assert_eq!(
+        lookup_column_id_by_ordinal(&old_relation_snapshot, table.table_id, 0)?,
+        Some(table.column_ids[0])
+    );
     let rejected_column_rename = id(0x80);
     let mut rejected_column_rename_audit = identity_audit_event(0x81, actor, id(0x82));
     rejected_column_rename_audit.correlation_id = rejected_column_rename;
@@ -3163,6 +3171,19 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
     );
     let column_rename_sequence = column_rename_result?;
     assert!(column_rename_sequence > table.commit_sequence);
+    assert_eq!(
+        lookup_column_id_by_name(&old_relation_snapshot, table.table_id, "obsolete")?,
+        Some(table.column_ids[0])
+    );
+    let renamed_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_column_id_by_name(&renamed_snapshot, table.table_id, "retired")?,
+        Some(table.column_ids[0])
+    );
+    assert_eq!(
+        lookup_column_id_by_ordinal(&renamed_snapshot, table.table_id, 0)?,
+        Some(table.column_ids[0])
+    );
     assert!(matches!(
         stale_column_writer.commit(),
         Err(prdb_engine::transaction::TransactionError::Commit(

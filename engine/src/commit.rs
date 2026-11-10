@@ -6113,6 +6113,9 @@ fn commit_storage_changes_inner_unchecked(
         let mut dependencies = transaction
             .open_table(crate::schema::DEPENDENCIES)
             .map_err(storage_error)?;
+        let mut column_lookups = transaction
+            .open_table(crate::schema::COLUMN_LOOKUPS)
+            .map_err(storage_error)?;
         let principal_prefix = 10u16.to_be_bytes();
         for write in catalog_writes
             .iter()
@@ -6308,6 +6311,31 @@ fn commit_storage_changes_inner_unchecked(
                     .map_err(storage_error)?;
             }
         }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&6u16.to_be_bytes()))
+        {
+            if write.key.len() != 19 || write.key[2] != 1 {
+                return Err(CommitError::InvalidCatalog);
+            }
+            if let Some(current) = table.get(write.key.as_slice()).map_err(storage_error)? {
+                let table_id = catalog_field_bytes(&write.key, current.value(), 6, 1)?;
+                let ordinal = catalog_field_u32(&write.key, current.value(), 6, 2)?;
+                let name = catalog_field_bytes(&write.key, current.value(), 6, 3)?;
+                let mut by_name = vec![1];
+                by_name.extend_from_slice(&table_id);
+                by_name.extend_from_slice(&name);
+                let mut by_ordinal = vec![2];
+                by_ordinal.extend_from_slice(&table_id);
+                by_ordinal.extend_from_slice(&ordinal.to_be_bytes());
+                column_lookups
+                    .remove(by_name.as_slice())
+                    .map_err(storage_error)?;
+                column_lookups
+                    .remove(by_ordinal.as_slice())
+                    .map_err(storage_error)?;
+            }
+        }
         for write in catalog_writes {
             match &write.payload {
                 Some(payload) => {
@@ -6433,6 +6461,39 @@ fn commit_storage_changes_inner_unchecked(
                 index_key.extend_from_slice(&write.key[37..39]);
                 if dependencies
                     .insert(index_key.as_slice(), &b""[..])
+                    .map_err(storage_error)?
+                    .is_some()
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
+            }
+        }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&6u16.to_be_bytes()))
+        {
+            let Some(payload) = &write.payload else {
+                continue;
+            };
+            if write.key.len() != 19 || write.key[2] != 1 {
+                return Err(CommitError::InvalidCatalog);
+            }
+            let table_id = catalog_field_bytes(&write.key, payload, 6, 1)?;
+            let ordinal = catalog_field_u32(&write.key, payload, 6, 2)?;
+            let name = catalog_field_bytes(&write.key, payload, 6, 3)?;
+            if table_id.iter().all(|byte| *byte == 0) || name.is_empty() || name.len() > 4096 {
+                return Err(CommitError::InvalidCatalog);
+            }
+            let column_id = &write.key[3..19];
+            let mut by_name = vec![1];
+            by_name.extend_from_slice(&table_id);
+            by_name.extend_from_slice(&name);
+            let mut by_ordinal = vec![2];
+            by_ordinal.extend_from_slice(&table_id);
+            by_ordinal.extend_from_slice(&ordinal.to_be_bytes());
+            for key in [by_name, by_ordinal] {
+                if column_lookups
+                    .insert(key.as_slice(), column_id)
                     .map_err(storage_error)?
                     .is_some()
                 {

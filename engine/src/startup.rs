@@ -14,8 +14,8 @@ use crate::metadata::{EngineMetadata, Lifecycle};
 use crate::outcome::{InvocationOutcome, OutcomeStatus};
 use crate::row_record::RowRecord;
 use crate::schema::{
-    AUDIT, CATALOG, DEPENDENCIES, ENGINE_META, GRANTS, INDEXES, MEMBERSHIPS, OUTCOMES, POLICIES,
-    PRINCIPAL_NAMES, RELATION_NAMES, ROW_INDEXES, ROWS, SCHEMA_NAMES, STATS,
+    AUDIT, CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, ENGINE_META, GRANTS, INDEXES, MEMBERSHIPS,
+    OUTCOMES, POLICIES, PRINCIPAL_NAMES, RELATION_NAMES, ROW_INDEXES, ROWS, SCHEMA_NAMES, STATS,
 };
 use crate::tuple::{ColumnSchema, decode_tuple};
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableHandle};
@@ -125,6 +125,7 @@ fn validate_persisted_records_for_lifecycle(
     ensure_principal_name_index(database)?;
     ensure_schema_name_index(database)?;
     ensure_relation_name_index(database)?;
+    ensure_column_lookup_index(database)?;
     ensure_membership_index(database)?;
     ensure_grant_index(database)?;
     ensure_policy_index(database)?;
@@ -474,6 +475,103 @@ fn ensure_relation_name_index(database: &Database) -> Result<(), StartupError> {
     for (key, id) in entries {
         index
             .insert(key.as_slice(), &id[..])
+            .map_err(storage_error)?;
+    }
+    drop(index);
+    drop(catalog);
+    write.commit().map_err(storage_error)?;
+    Ok(())
+}
+
+fn collect_column_lookup_entries<T>(catalog: &T) -> Result<HashMap<Vec<u8>, [u8; 16]>, StartupError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let prefix = 6u16.to_be_bytes();
+    let mut entries = HashMap::new();
+    for entry in catalog.range(prefix.as_slice()..).map_err(storage_error)? {
+        let (key, value) = entry.map_err(storage_error)?;
+        let key = key.value();
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        let record =
+            decode_registered_envelope(value.value()).map_err(|_| StartupError::InvalidCatalog)?;
+        if record.family_code != 6 || record.logical_key != key || key.len() != 19 || key[2] != 1 {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let column_id: [u8; 16] = key[3..19]
+            .try_into()
+            .map_err(|_| StartupError::InvalidCatalog)?;
+        let table_id = field_id(&record, 1)?;
+        let ordinal = field_u32(&record, 2)?;
+        let name = field_payload(&record, 3)?;
+        if column_id == [0; 16] || table_id == [0; 16] || name.is_empty() || name.len() > 4096 {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let mut by_name = vec![1];
+        by_name.extend_from_slice(&table_id);
+        by_name.extend_from_slice(name);
+        let mut by_ordinal = vec![2];
+        by_ordinal.extend_from_slice(&table_id);
+        by_ordinal.extend_from_slice(&ordinal.to_be_bytes());
+        if entries.insert(by_name, column_id).is_some()
+            || entries.insert(by_ordinal, column_id).is_some()
+        {
+            return Err(StartupError::InvalidCatalog);
+        }
+    }
+    Ok(entries)
+}
+
+/// Rebuild both table/name and table/ordinal lookups from family-6 records.
+fn ensure_column_lookup_index(database: &Database) -> Result<(), StartupError> {
+    let read = database.begin_read().map_err(storage_error)?;
+    let has_index = read
+        .list_tables()
+        .map_err(storage_error)?
+        .any(|table| table.name() == COLUMN_LOOKUPS.name());
+    if has_index {
+        let catalog = read.open_table(CATALOG).map_err(storage_error)?;
+        let expected = collect_column_lookup_entries(&catalog)?;
+        let index = read.open_table(COLUMN_LOOKUPS).map_err(storage_error)?;
+        let mut actual = HashMap::new();
+        let mut well_formed = true;
+        for entry in index.iter().map_err(storage_error)? {
+            let (key, value) = entry.map_err(storage_error)?;
+            if value.value().len() != 16 {
+                well_formed = false;
+                continue;
+            }
+            let column_id: [u8; 16] = value.value().try_into().unwrap();
+            if actual.insert(key.value().to_vec(), column_id).is_some() {
+                well_formed = false;
+            }
+        }
+        if well_formed && actual == expected {
+            return Ok(());
+        }
+    }
+    drop(read);
+    let write = database.begin_write().map_err(storage_error)?;
+    let catalog = write.open_table(CATALOG).map_err(storage_error)?;
+    let expected = collect_column_lookup_entries(&catalog)?;
+    let mut index = write.open_table(COLUMN_LOOKUPS).map_err(storage_error)?;
+    let stale_keys = index
+        .iter()
+        .map_err(storage_error)?
+        .map(|entry| {
+            entry
+                .map(|(key, _)| key.value().to_vec())
+                .map_err(storage_error)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for key in stale_keys {
+        index.remove(key.as_slice()).map_err(storage_error)?;
+    }
+    for (key, column_id) in expected {
+        index
+            .insert(key.as_slice(), &column_id[..])
             .map_err(storage_error)?;
     }
     drop(index);
@@ -903,6 +1001,7 @@ fn validate_tables(read: &ReadTransaction) -> Result<(), StartupError> {
     drop(read.open_table(PRINCIPAL_NAMES).map_err(storage_error)?);
     drop(read.open_table(SCHEMA_NAMES).map_err(storage_error)?);
     drop(read.open_table(RELATION_NAMES).map_err(storage_error)?);
+    drop(read.open_table(COLUMN_LOOKUPS).map_err(storage_error)?);
     drop(read.open_table(MEMBERSHIPS).map_err(storage_error)?);
     drop(read.open_table(GRANTS).map_err(storage_error)?);
     drop(read.open_table(POLICIES).map_err(storage_error)?);
@@ -2420,17 +2519,19 @@ fn validate_audit(read: &ReadTransaction) -> Result<usize, StartupError> {
 #[cfg(test)]
 mod catalog_index_tests {
     use super::{
-        ensure_dependency_index, ensure_grant_index, ensure_membership_index, ensure_policy_index,
-        ensure_relation_name_index,
+        ensure_column_lookup_index, ensure_dependency_index, ensure_grant_index,
+        ensure_membership_index, ensure_policy_index, ensure_relation_name_index,
     };
     use crate::catalog::{CatalogField, WireType, encode_envelope, family_schema};
     use crate::catalog_index::{
-        lookup_dependencies_for_dependent, lookup_dependents_for_referenced,
-        lookup_grants_for_grantee, lookup_grants_for_object, lookup_members_for_role,
-        lookup_policies_for_table_operation, lookup_relation_id_by_name, lookup_roles_for_member,
+        lookup_column_id_by_name, lookup_column_id_by_ordinal, lookup_dependencies_for_dependent,
+        lookup_dependents_for_referenced, lookup_grants_for_grantee, lookup_grants_for_object,
+        lookup_members_for_role, lookup_policies_for_table_operation, lookup_relation_id_by_name,
+        lookup_roles_for_member,
     };
     use crate::schema::{
-        CATALOG, DEPENDENCIES, GRANTS, MEMBERSHIPS, POLICIES, RELATION_NAMES, create_tables,
+        CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, GRANTS, MEMBERSHIPS, POLICIES, RELATION_NAMES,
+        create_tables,
     };
     use redb::{Database, ReadableDatabase};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2618,6 +2719,54 @@ mod catalog_index_tests {
         dependency_key.extend_from_slice(&5u16.to_be_bytes());
         let dependency_value =
             encode_envelope(&family_schema(15).unwrap(), &dependency_key, &[]).unwrap();
+        let column_id = [0x67; 16];
+        let mut column_key = 6u16.to_be_bytes().to_vec();
+        column_key.push(1);
+        column_key.extend_from_slice(&column_id);
+        let column_fields = [
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::Id,
+                payload: relation_id.to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::U32,
+                payload: 0u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::Text,
+                payload: b"order_id".to_vec(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::Id,
+                payload: [0x68; 16].to_vec(),
+            },
+            CatalogField {
+                tag: 5,
+                wire_type: WireType::Bytes,
+                payload: [0; 8].to_vec(),
+            },
+            CatalogField {
+                tag: 6,
+                wire_type: WireType::Bool,
+                payload: vec![1],
+            },
+            CatalogField {
+                tag: 8,
+                wire_type: WireType::U16,
+                payload: 1u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 9,
+                wire_type: WireType::U64,
+                payload: 1u64.to_le_bytes().to_vec(),
+            },
+        ];
+        let column_value =
+            encode_envelope(&family_schema(6).unwrap(), &column_key, &column_fields).unwrap();
         let mut catalog = write.open_table(CATALOG).unwrap();
         catalog
             .insert(table_key.as_slice(), table_value.as_slice())
@@ -2636,6 +2785,9 @@ mod catalog_index_tests {
             .unwrap();
         catalog
             .insert(dependency_key.as_slice(), dependency_value.as_slice())
+            .unwrap();
+        catalog
+            .insert(column_key.as_slice(), column_value.as_slice())
             .unwrap();
         drop(catalog);
         write.commit().unwrap();
@@ -2829,6 +2981,53 @@ mod catalog_index_tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn missing_column_lookups_are_rebuilt_from_catalog_records() {
+        let database = database();
+        let write = database.begin_write().unwrap();
+        assert!(write.delete_table(COLUMN_LOOKUPS).unwrap());
+        write.commit().unwrap();
+        ensure_column_lookup_index(&database).unwrap();
+        let read = database.begin_read().unwrap();
+        assert_eq!(
+            lookup_column_id_by_name(&read, [0x32; 16], "order_id").unwrap(),
+            Some([0x67; 16])
+        );
+        assert_eq!(
+            lookup_column_id_by_ordinal(&read, [0x32; 16], 0).unwrap(),
+            Some([0x67; 16])
+        );
+    }
+
+    #[test]
+    fn stale_column_lookups_are_rebuilt_from_catalog_records() {
+        let database = database();
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(COLUMN_LOOKUPS)
+            .unwrap()
+            .insert(&[1, 0x32][..], &b"stale"[..])
+            .unwrap();
+        write.commit().unwrap();
+        ensure_column_lookup_index(&database).unwrap();
+        let read = database.begin_read().unwrap();
+        assert_eq!(
+            lookup_column_id_by_name(&read, [0x32; 16], "order_id").unwrap(),
+            Some([0x67; 16])
+        );
+        assert_eq!(
+            lookup_column_id_by_ordinal(&read, [0x32; 16], 0).unwrap(),
+            Some([0x67; 16])
+        );
+        assert!(
+            read.open_table(COLUMN_LOOKUPS)
+                .unwrap()
+                .get(&[1, 0x32][..])
+                .unwrap()
+                .is_none()
         );
     }
 
