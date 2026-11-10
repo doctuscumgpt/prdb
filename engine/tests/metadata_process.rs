@@ -1127,17 +1127,56 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&drop_primary_key_cli.stdout).contains("dropped key constraint")
     );
     admin.alter_column_nullability(created_table.table_id, created_table.column_ids[0], true)?;
-    let check_constraint = admin.create_check_constraint(
-        created_table.table_id,
-        &prdb_engine::authorization::Expr::Literal(Some(prdb_engine::tuple::ScalarValue::Boolean(
-            true,
-        ))),
-        &[],
-    )?;
-    let dropped_check = admin
-        .drop_check_constraint(check_constraint.constraint_id)
-        .map_err(|error| format!("process ADMIN drop_check_constraint failed: {error}"))?;
-    assert!(dropped_check.commit_sequence > check_constraint.commit_sequence);
+    let check_expression = prdb_engine::authorization::Expr::Literal(Some(
+        prdb_engine::tuple::ScalarValue::Boolean(true),
+    ));
+    let check_expression_hex = prdb_engine::expression::encode_expression(&check_expression)?
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let create_check_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "check-create",
+            "--address",
+            &constraint_cli_address,
+            "--credentials",
+            constraint_cli_credentials,
+            "--table-id",
+            &constraint_cli_table_id,
+            "--expression-eir1",
+            &check_expression_hex,
+            "--columns",
+            "",
+        ])
+        .output()?;
+    assert!(
+        create_check_cli.status.success(),
+        "check-create CLI failed: {}",
+        String::from_utf8_lossy(&create_check_cli.stderr)
+    );
+    let check_cli_output = String::from_utf8_lossy(&create_check_cli.stdout);
+    assert!(check_cli_output.contains("created CHECK constraint "));
+    let check_cli_id = check_cli_output
+        .split_whitespace()
+        .nth(3)
+        .ok_or("check-create output omitted the generated ID")?;
+    let drop_check_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "check-drop",
+            "--address",
+            &constraint_cli_address,
+            "--credentials",
+            constraint_cli_credentials,
+            "--constraint-id",
+            check_cli_id,
+        ])
+        .output()?;
+    assert!(
+        drop_check_cli.status.success(),
+        "check-drop CLI failed: {}",
+        String::from_utf8_lossy(&drop_check_cli.stderr)
+    );
+    assert!(String::from_utf8_lossy(&drop_check_cli.stdout).contains("dropped CHECK constraint"));
     let policy = admin.create_policy(AdminCreatePolicyRequest {
         table_id: created_table.table_id,
         name: "process_visible_rows",

@@ -393,3 +393,9 @@
 - Regression: protocol decoder tests accept canonical row-policy create/drop and reject malformed shapes; the real gateway/supervisor process lifecycle creates and drops row SELECT/INSERT/UPDATE/DELETE and cell SELECT/INSERT/UPDATE ALLOW policies, using required USING/WITH CHECK clauses and a live cell target. CLI recipient parser accepts only user/role plus canonical nonzero lowercase IDs.
 - Verification: focused protocol, multi-process, and CLI parser tests passed; updated `prdb-client --help` was inspected. Rust 1.95.0 workspace build, formatting, warning-denied Clippy, and full tests passed; the commit integration target reported 124 passed and 3 cgroup-dependent ignored.
 - Remaining: broader authenticated ADMIN families, repeated race stress, and confined artifact execution remain open.
+
+## SDK-5: CHECK constraint CLI through authenticated processes — verified
+
+- Regression: the gateway/supervisor metadata lifecycle now creates and drops a CHECK constraint through `prdb-client check-create` and `check-drop`, using the CLI's EIR1 input and generated constraint ID. This replaces the test's direct `AdminClient` calls for that lifecycle and verifies the user-facing path reaches storage.
+- Verification: the focused `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` test passed. The full locked workspace build, formatting check, warning-denied Clippy, serial workspace tests, and `git diff --check` passed; the suite reported 138 commit tests passed with 4 delegated-cgroup tests ignored and 1 authenticated metadata-process test passed.
+- Remaining: process-level coverage for additional authenticated ADMIN families, repeated race stress, and confined artifact execution remain open.
