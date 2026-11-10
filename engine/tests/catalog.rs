@@ -133,6 +133,32 @@ fn object_record_matches_independent_catalog_v1_fixture() {
 }
 
 #[test]
+fn schema_record_matches_independent_catalog_v1_fixture() {
+    let key = [vec![0, 3, 1], vec![0x33; 16]].concat();
+    let mut search_path = 1u32.to_le_bytes().to_vec();
+    search_path.extend_from_slice(&[0x44; 16]);
+    let fields = [CatalogField {
+        tag: 1,
+        wire_type: WireType::Ids,
+        payload: search_path,
+    }];
+    let mut expected = vec![
+        b'C', b'A', b'T', b'1', 1, 0, 3, 0, 79, 0, 0, 0, 19, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0,
+    ];
+    expected.extend_from_slice(&key);
+    expected.extend_from_slice(&[1, 0, 9, 0, 20, 0, 0, 0, 1, 0, 0, 0]);
+    expected.extend_from_slice(&[0x44; 16]);
+
+    let schema = family_schema(3).unwrap();
+    assert_eq!(encode_envelope(&schema, &key, &fields).unwrap(), expected);
+    let decoded = prdb_engine::catalog::decode_registered_envelope(&expected).unwrap();
+    assert_eq!(decoded.family_code, 3);
+    assert_eq!(decoded.logical_key, key);
+    assert_eq!(decoded.fields, fields);
+}
+
+#[test]
 fn policy_target_rejects_noncanonical_data() {
     let bytes = encode_policy_target(&example()).unwrap();
     for (offset, value) in [
