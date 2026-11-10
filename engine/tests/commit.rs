@@ -7883,6 +7883,18 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
             .ok_or("missing index object")?
             .value(),
     )?;
+    let owner_id: [u8; 16] = index_object
+        .fields
+        .iter()
+        .find(|field| field.tag == 4)
+        .ok_or("index object has no owner")?
+        .payload
+        .as_slice()
+        .try_into()?;
+    assert!(
+        prdb_engine::catalog_index::scan_object_ids_for_owner(&read, owner_id, 4096)?
+            .contains(&created.index_id)
+    );
     assert!(
         index_object
             .fields

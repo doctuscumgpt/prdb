@@ -1023,6 +1023,38 @@ impl<'db> InvocationTransaction<'db> {
         result
     }
 
+    fn scan_object_ids_for_owner(
+        &mut self,
+        owner_id: [u8; 16],
+    ) -> Result<Vec<[u8; 16]>, TransactionError> {
+        let result = (|| {
+            let remaining = self.max_scan_work.saturating_sub(self.scanned_work);
+            if remaining == 0 {
+                return Err(TransactionError::ScanBudgetExceeded);
+            }
+            let limit = remaining.min(MAX_CATALOG_FAMILY_SCAN);
+            let ids = self
+                .pinned_snapshot()?
+                .scan_object_ids_for_owner(owner_id, limit)
+                .map_err(|error| match error {
+                    SnapshotError::RecordLimitExceeded if remaining <= MAX_CATALOG_FAMILY_SCAN => {
+                        TransactionError::ScanBudgetExceeded
+                    }
+                    SnapshotError::RecordLimitExceeded | SnapshotError::InvalidCatalogRecord => {
+                        TransactionError::CorruptCatalog
+                    }
+                    SnapshotError::Storage(error) => TransactionError::Storage(error),
+                    _ => TransactionError::CorruptCatalog,
+                })?;
+            self.charge_scan_work(ids.len())?;
+            Ok(ids)
+        })();
+        if matches!(&result, Err(TransactionError::ScanBudgetExceeded)) && !self.aborted {
+            self.abort()?;
+        }
+        result
+    }
+
     fn lookup_catalog_dependents_for_referenced(
         &mut self,
         referenced_id: [u8; 16],
@@ -2633,7 +2665,36 @@ impl<'db> InvocationTransaction<'db> {
     ) -> Result<Vec<VisibleSchema>, TransactionError> {
         let roles = self.load_catalog_role_closure(self.principal_id)?;
         let database_admin = roles.contains(&crate::bootstrap::database_admin_role_id());
-        let records = self.scan_catalog_family(2)?;
+        let records = if database_admin {
+            self.scan_catalog_family(2)?
+        } else {
+            let mut owner_ids = roles.clone();
+            owner_ids.insert(self.principal_id);
+            let mut owner_ids = owner_ids.into_iter().collect::<Vec<_>>();
+            owner_ids.sort_unstable();
+            let mut object_ids = Vec::new();
+            for owner_id in owner_ids {
+                object_ids.extend(self.scan_object_ids_for_owner(owner_id)?);
+            }
+            object_ids.sort_unstable();
+            if object_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            if object_ids.is_empty() {
+                // Older low-level snapshots may contain object rows without
+                // the derived owner index; retain the bounded compatibility
+                // path when no indexed owner entry is found.
+                self.scan_catalog_family(2)?
+            } else {
+                object_ids
+                    .into_iter()
+                    .map(|object_id| {
+                        self.read_catalog_record(&catalog_id_key(2, object_id))?
+                            .ok_or(TransactionError::CorruptCatalog)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+        };
         let mut schemas = Vec::new();
         let mut encoded_bytes = 0usize;
         for record in records {

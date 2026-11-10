@@ -23,6 +23,8 @@ pub const TABLE_INDEXES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("t
 /// Family-8 constraints ordered by owning table and constraint ID.
 pub const TABLE_CONSTRAINTS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("table_constraints_v1");
+/// Family-2 objects ordered by owning principal and object ID.
+pub const OBJECT_OWNERS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("object_owners_v1");
 /// Direct membership edges stored in member-to-role and role-to-member orders.
 pub const MEMBERSHIPS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("memberships_v1");
 /// Grant catalog keys ordered by grantee and by protected object.
@@ -50,6 +52,7 @@ pub fn create_tables(write: &WriteTransaction) -> Result<(), Box<dyn std::error:
     drop(write.open_table(INDEX_NAMES)?);
     drop(write.open_table(TABLE_INDEXES)?);
     drop(write.open_table(TABLE_CONSTRAINTS)?);
+    drop(write.open_table(OBJECT_OWNERS)?);
     drop(write.open_table(MEMBERSHIPS)?);
     drop(write.open_table(GRANTS)?);
     drop(write.open_table(POLICIES)?);

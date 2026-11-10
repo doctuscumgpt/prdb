@@ -6142,6 +6142,9 @@ fn commit_storage_changes_inner_unchecked(
         let mut table_constraints = transaction
             .open_table(crate::schema::TABLE_CONSTRAINTS)
             .map_err(storage_error)?;
+        let mut object_owners = transaction
+            .open_table(crate::schema::OBJECT_OWNERS)
+            .map_err(storage_error)?;
         let principal_prefix = 10u16.to_be_bytes();
         for write in catalog_writes
             .iter()
@@ -6245,6 +6248,40 @@ fn commit_storage_changes_inner_unchecked(
                 index_key.extend_from_slice(&name);
                 if index_names
                     .insert(index_key.as_slice(), index_id)
+                    .map_err(storage_error)?
+                    .is_some()
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
+            }
+        }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&schema_prefix))
+        {
+            if let Some(current) = table.get(write.key.as_slice()).map_err(storage_error)? {
+                if write.key.len() != 19 || write.key[2] != 1 {
+                    return Err(CommitError::InvalidCatalog);
+                }
+                let mut owner_key = catalog_field_bytes(&write.key, current.value(), 2, 4)?;
+                owner_key.extend_from_slice(&write.key[3..19]);
+                object_owners
+                    .remove(owner_key.as_slice())
+                    .map_err(storage_error)?;
+            }
+        }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&schema_prefix))
+        {
+            if let Some(payload) = &write.payload {
+                if write.key.len() != 19 || write.key[2] != 1 {
+                    return Err(CommitError::InvalidCatalog);
+                }
+                let mut owner_key = catalog_field_bytes(&write.key, payload, 2, 4)?;
+                owner_key.extend_from_slice(&write.key[3..19]);
+                if object_owners
+                    .insert(owner_key.as_slice(), &b""[..])
                     .map_err(storage_error)?
                     .is_some()
                 {

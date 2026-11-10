@@ -2,8 +2,8 @@
 
 use crate::catalog::decode_registered_envelope;
 use crate::schema::{
-    CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, GRANTS, INDEX_NAMES, MEMBERSHIPS, POLICIES,
-    PRINCIPAL_NAMES, RELATION_NAMES, SCHEMA_NAMES, TABLE_CONSTRAINTS, TABLE_INDEXES,
+    CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, GRANTS, INDEX_NAMES, MEMBERSHIPS, OBJECT_OWNERS,
+    POLICIES, PRINCIPAL_NAMES, RELATION_NAMES, SCHEMA_NAMES, TABLE_CONSTRAINTS, TABLE_INDEXES,
 };
 use redb::ReadTransaction;
 
@@ -287,6 +287,64 @@ pub fn scan_relation_ids_for_schema(
             return Err(CatalogIndexError::InvalidEntry);
         }
         ids.push(relation_id);
+    }
+    Ok(ids)
+}
+
+/// List family-2 objects owned by one principal through the owner index.
+pub fn scan_object_ids_for_owner(
+    transaction: &ReadTransaction,
+    owner_id: [u8; 16],
+    max_records: usize,
+) -> Result<Vec<[u8; 16]>, CatalogIndexError> {
+    if owner_id == [0; 16]
+        || max_records == 0
+        || max_records > crate::snapshot::MAX_CATALOG_FAMILY_SCAN
+    {
+        return Err(CatalogIndexError::InvalidName);
+    }
+    let index = transaction
+        .open_table(OBJECT_OWNERS)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let catalog = transaction
+        .open_table(CATALOG)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let mut ids = Vec::new();
+    for entry in index
+        .range(owner_id.as_slice()..)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+    {
+        let (key, value) = entry.map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+        let key = key.value();
+        if !key.starts_with(&owner_id) {
+            break;
+        }
+        if key.len() != 32 || !value.value().is_empty() {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        if ids.len() == max_records {
+            return Err(CatalogIndexError::RecordLimitExceeded);
+        }
+        let object_id: [u8; 16] = key[16..32]
+            .try_into()
+            .map_err(|_| CatalogIndexError::InvalidEntry)?;
+        if object_id == [0; 16] {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        let object_key = catalog_id_key(2, object_id);
+        let bytes = catalog
+            .get(object_key.as_slice())
+            .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+            .ok_or(CatalogIndexError::InvalidEntry)?;
+        let object = decode_registered_envelope(bytes.value())
+            .map_err(|_| CatalogIndexError::InvalidEntry)?;
+        if object.family_code != 2
+            || object.logical_key != object_key
+            || field_id(&object, 4)? != owner_id
+        {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        ids.push(object_id);
     }
     Ok(ids)
 }

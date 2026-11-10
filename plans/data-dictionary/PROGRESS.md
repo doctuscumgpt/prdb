@@ -312,3 +312,10 @@
 - Replaced global family-5 scans in authorized relation listing, administrative relation listing, and schema-usage grant loading. Matching candidates are charged to the shared invocation scan-work budget; empty-prefix low-level snapshots retain the bounded compatibility scan.
 - Regression evidence: the startup stale-index rebuild fixture now enumerates the expected relation ID; authorized relation listing and administrative metadata authorization tests pass.
 - Verification: focused startup, transaction, and commit tests passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed. The workspace test run reports 4 sandbox fixtures ignored because they require delegated cgroups and built TinyCC fixtures.
+
+## DD-2: owner-scoped object lookup — verified
+
+- Added `object_owners_v1`, keyed by owner principal and family-2 object ID. Family-2 catalog writes maintain the index atomically; startup checks or reconstructs it from authoritative objects.
+- Non-administrator schema discovery now loads candidate objects through the admitted user's and roles' owner prefixes, verifies indexed IDs against family-2 owner fields, and charges the candidates to invocation scan work. Database administrators retain the bounded complete object scan to enumerate schemas across all owners.
+- Regression evidence: startup reconstructs a missing index and checks owner-prefix limits and scope; real index DDL confirms the new index object's owner lookup. Existing administrative metadata authorization tests exercise schema discovery through the owner prefix.
+- Verification: focused owner-index rebuild and DDL tests passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed. The workspace suite reports 4 sandbox fixtures ignored because they require delegated cgroups and built TinyCC fixtures.

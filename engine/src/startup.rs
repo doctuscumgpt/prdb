@@ -15,8 +15,8 @@ use crate::outcome::{InvocationOutcome, OutcomeStatus};
 use crate::row_record::RowRecord;
 use crate::schema::{
     AUDIT, CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, ENGINE_META, GRANTS, INDEX_NAMES, INDEXES,
-    MEMBERSHIPS, OUTCOMES, POLICIES, PRINCIPAL_NAMES, RELATION_NAMES, ROW_INDEXES, ROWS,
-    SCHEMA_NAMES, STATS, TABLE_CONSTRAINTS, TABLE_INDEXES,
+    MEMBERSHIPS, OBJECT_OWNERS, OUTCOMES, POLICIES, PRINCIPAL_NAMES, RELATION_NAMES, ROW_INDEXES,
+    ROWS, SCHEMA_NAMES, STATS, TABLE_CONSTRAINTS, TABLE_INDEXES,
 };
 use crate::tuple::{ColumnSchema, decode_tuple};
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableHandle};
@@ -130,6 +130,7 @@ fn validate_persisted_records_for_lifecycle(
     ensure_index_name_index(database)?;
     ensure_table_index_index(database)?;
     ensure_table_constraint_index(database)?;
+    ensure_object_owner_index(database)?;
     ensure_membership_index(database)?;
     ensure_grant_index(database)?;
     ensure_policy_index(database)?;
@@ -853,6 +854,92 @@ fn ensure_table_constraint_index(database: &Database) -> Result<(), StartupError
     Ok(())
 }
 
+fn collect_object_owner_entries<T>(catalog: &T) -> Result<HashSet<Vec<u8>>, StartupError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let prefix = 2u16.to_be_bytes();
+    let mut entries = HashSet::new();
+    for entry in catalog.range(prefix.as_slice()..).map_err(storage_error)? {
+        let (key, value) = entry.map_err(storage_error)?;
+        let key = key.value();
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        let record =
+            decode_registered_envelope(value.value()).map_err(|_| StartupError::InvalidCatalog)?;
+        if record.family_code != 2 || record.logical_key != key || key.len() != 19 || key[2] != 1 {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let object_id: [u8; 16] = key[3..19]
+            .try_into()
+            .map_err(|_| StartupError::InvalidCatalog)?;
+        let owner_id = field_id(&record, 4)?;
+        if object_id == [0; 16] || owner_id == [0; 16] {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let mut index_key = Vec::with_capacity(32);
+        index_key.extend_from_slice(&owner_id);
+        index_key.extend_from_slice(&object_id);
+        if !entries.insert(index_key) {
+            return Err(StartupError::InvalidCatalog);
+        }
+    }
+    Ok(entries)
+}
+
+/// Rebuild family-2 owner lookups from authoritative object records.
+fn ensure_object_owner_index(database: &Database) -> Result<(), StartupError> {
+    let read = database.begin_read().map_err(storage_error)?;
+    let has_index = read
+        .list_tables()
+        .map_err(storage_error)?
+        .any(|table| table.name() == OBJECT_OWNERS.name());
+    if has_index {
+        let catalog = read.open_table(CATALOG).map_err(storage_error)?;
+        let expected = collect_object_owner_entries(&catalog)?;
+        let index = read.open_table(OBJECT_OWNERS).map_err(storage_error)?;
+        let mut actual = HashSet::new();
+        let mut well_formed = true;
+        for entry in index.iter().map_err(storage_error)? {
+            let (key, value) = entry.map_err(storage_error)?;
+            if key.value().len() != 32 || !value.value().is_empty() {
+                well_formed = false;
+            }
+            actual.insert(key.value().to_vec());
+        }
+        if well_formed && actual == expected {
+            return Ok(());
+        }
+    }
+    drop(read);
+    let write = database.begin_write().map_err(storage_error)?;
+    let catalog = write.open_table(CATALOG).map_err(storage_error)?;
+    let expected = collect_object_owner_entries(&catalog)?;
+    let mut index = write.open_table(OBJECT_OWNERS).map_err(storage_error)?;
+    let stale_keys = index
+        .iter()
+        .map_err(storage_error)?
+        .map(|entry| {
+            entry
+                .map(|(key, _)| key.value().to_vec())
+                .map_err(storage_error)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for key in stale_keys {
+        index.remove(key.as_slice()).map_err(storage_error)?;
+    }
+    for key in expected {
+        index
+            .insert(key.as_slice(), &b""[..])
+            .map_err(storage_error)?;
+    }
+    drop(index);
+    drop(catalog);
+    write.commit().map_err(storage_error)?;
+    Ok(())
+}
+
 fn collect_membership_index_keys<T>(catalog: &T) -> Result<HashSet<Vec<u8>>, StartupError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
@@ -1294,6 +1381,7 @@ fn validate_tables(read: &ReadTransaction) -> Result<(), StartupError> {
     drop(read.open_table(INDEX_NAMES).map_err(storage_error)?);
     drop(read.open_table(TABLE_INDEXES).map_err(storage_error)?);
     drop(read.open_table(TABLE_CONSTRAINTS).map_err(storage_error)?);
+    drop(read.open_table(OBJECT_OWNERS).map_err(storage_error)?);
     drop(read.open_table(MEMBERSHIPS).map_err(storage_error)?);
     drop(read.open_table(GRANTS).map_err(storage_error)?);
     drop(read.open_table(POLICIES).map_err(storage_error)?);
@@ -2812,9 +2900,9 @@ fn validate_audit(read: &ReadTransaction) -> Result<usize, StartupError> {
 mod catalog_index_tests {
     use super::{
         ensure_column_lookup_index, ensure_dependency_index, ensure_grant_index,
-        ensure_index_name_index, ensure_membership_index, ensure_policy_index,
-        ensure_relation_name_index, ensure_table_constraint_index, ensure_table_index_index,
-        validate_name_domains,
+        ensure_index_name_index, ensure_membership_index, ensure_object_owner_index,
+        ensure_policy_index, ensure_relation_name_index, ensure_table_constraint_index,
+        ensure_table_index_index, validate_name_domains,
     };
     use crate::catalog::{CatalogField, WireType, encode_envelope, family_schema};
     use crate::catalog_index::{
@@ -2822,11 +2910,12 @@ mod catalog_index_tests {
         lookup_dependents_for_referenced, lookup_grants_for_grantee, lookup_grants_for_object,
         lookup_index_id_by_name, lookup_members_for_role, lookup_policies_for_table_operation,
         lookup_relation_id_by_name, lookup_roles_for_member, scan_column_ids_for_table,
-        scan_constraint_ids_for_table, scan_index_ids_for_table, scan_relation_ids_for_schema,
+        scan_constraint_ids_for_table, scan_index_ids_for_table, scan_object_ids_for_owner,
+        scan_relation_ids_for_schema,
     };
     use crate::schema::{
-        CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, GRANTS, INDEX_NAMES, MEMBERSHIPS, POLICIES,
-        RELATION_NAMES, TABLE_CONSTRAINTS, TABLE_INDEXES, create_tables,
+        CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, GRANTS, INDEX_NAMES, MEMBERSHIPS, OBJECT_OWNERS,
+        POLICIES, RELATION_NAMES, TABLE_CONSTRAINTS, TABLE_INDEXES, create_tables,
     };
     use redb::{Database, ReadableDatabase, ReadableTable};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -3175,6 +3264,33 @@ mod catalog_index_tests {
         assert_eq!(
             lookup_relation_id_by_name(&read, [0x31; 16], "orders").unwrap(),
             Some([0x32; 16])
+        );
+    }
+
+    #[test]
+    fn object_owner_scan_rebuilds_and_uses_the_owner_prefix() {
+        let database = database();
+        let write = database.begin_write().unwrap();
+        assert!(write.delete_table(OBJECT_OWNERS).unwrap());
+        write.commit().unwrap();
+
+        ensure_object_owner_index(&database).unwrap();
+        let read = database.begin_read().unwrap();
+        assert_eq!(
+            scan_object_ids_for_owner(&read, [0x34; 16], 2).unwrap(),
+            vec![[0x32; 16], [0x69; 16]]
+        );
+        assert_eq!(
+            scan_object_ids_for_owner(&read, [0x34; 16], 1),
+            Err(crate::catalog_index::CatalogIndexError::RecordLimitExceeded)
+        );
+        assert_eq!(
+            read.open_table(OBJECT_OWNERS)
+                .unwrap()
+                .iter()
+                .unwrap()
+                .count(),
+            2
         );
     }
 
