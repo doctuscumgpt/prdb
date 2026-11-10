@@ -33,3 +33,9 @@
 - Regression: `schema_record_matches_independent_catalog_v1_fixture` checks a hand-assembled family-3 CAT1 record and its IDS search-path field, including the little-endian list count, raw ID bytes, field length, and total envelope length.
 - Verification: the focused catalog fixture command passed all three independent family-1, family-2, and family-3 fixtures.
 - Remaining: independent byte fixtures for families 4–17 and broader catalog semantics remain open.
+
+## DD-1: independent built-in type-record bytes — verified
+
+- Regression: `type_record_matches_independent_catalog_v1_fixture` verifies a family-4 CAT1 record containing two U16 and four U32 fields against a hand-assembled byte sequence, then checks the registered decoder's result.
+- Verification: the focused catalog fixture command passed all four independent family-1 through family-4 fixtures.
+- Remaining: independent byte fixtures for families 5–17 and broader catalog semantics remain open.
