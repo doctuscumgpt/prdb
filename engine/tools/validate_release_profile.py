@@ -99,6 +99,7 @@ def main() -> None:
         toolchain_dir / "TCC_CLOSURE.txt",
         toolchain_dir / "TCC_ROOT.txt",
         toolchain_dir / "restore-tcc-closure.sh",
+        cache_dir / "nix-cache-info",
     )
     for path in [
         *binary_paths,
@@ -122,6 +123,28 @@ def main() -> None:
     expected_narinfos = {Path(path).name.split("-", 1)[0] for path in closure_paths}
     if narinfos != expected_narinfos:
         fail("TinyCC binary cache does not contain exactly the manifest closure")
+    referenced_nars = set()
+    for narinfo in cache_dir.glob("*.narinfo"):
+        urls = [
+            line.removeprefix("URL: ")
+            for line in narinfo.read_text().splitlines()
+            if line.startswith("URL: ")
+        ]
+        if len(urls) != 1:
+            fail(f"{narinfo}: expected exactly one NAR URL")
+        nar_path = cache_dir / urls[0]
+        if Path(urls[0]).is_absolute() or ".." in Path(urls[0]).parts:
+            fail(f"{narinfo}: NAR URL escapes the binary cache")
+        try:
+            nar_path.resolve().relative_to(cache_dir.resolve())
+        except ValueError:
+            fail(f"{narinfo}: NAR URL escapes the binary cache")
+        if not nar_path.is_file():
+            fail(f"{narinfo}: referenced NAR is missing")
+        referenced_nars.add(nar_path.resolve())
+    compressed_nars = {path.resolve() for path in cache_dir.rglob("*.nar.xz")}
+    if compressed_nars != referenced_nars:
+        fail("TinyCC binary cache has unreferenced or missing compressed NAR files")
     if not (toolchain_dir / "restore-tcc-closure.sh").stat().st_mode & 0o111:
         fail("TinyCC closure restore script is not executable")
 
