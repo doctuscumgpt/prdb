@@ -6571,6 +6571,16 @@ fn commit_storage_changes_inner_unchecked(
                 }
             }
         }
+        for entry in index_names.iter().map_err(storage_error)? {
+            let (name_key, _) = entry.map_err(storage_error)?;
+            if relation_names
+                .get(name_key.value())
+                .map_err(storage_error)?
+                .is_some()
+            {
+                return Err(CommitError::InvalidCatalog);
+            }
+        }
     }
     {
         let mut table = transaction.open_table(AUDIT).map_err(storage_error)?;

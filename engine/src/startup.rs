@@ -134,6 +134,7 @@ fn validate_persisted_records_for_lifecycle(
     ensure_dependency_index(database)?;
     let read = database.begin_read().map_err(storage_error)?;
     validate_tables(&read)?;
+    validate_name_domains(&read)?;
     let metadata = read_metadata(&read)?;
     if !metadata.supports_current_formats() {
         return Err(StartupError::UnsupportedFormat);
@@ -1064,6 +1065,22 @@ fn ensure_dependency_index(database: &Database) -> Result<(), StartupError> {
 
 fn storage_error(_error: impl std::fmt::Display) -> StartupError {
     StartupError::Storage
+}
+
+fn validate_name_domains(read: &ReadTransaction) -> Result<(), StartupError> {
+    let relation_names = read.open_table(RELATION_NAMES).map_err(storage_error)?;
+    let index_names = read.open_table(INDEX_NAMES).map_err(storage_error)?;
+    for entry in index_names.iter().map_err(storage_error)? {
+        let (key, _) = entry.map_err(storage_error)?;
+        if relation_names
+            .get(key.value())
+            .map_err(storage_error)?
+            .is_some()
+        {
+            return Err(StartupError::InvalidCatalog);
+        }
+    }
+    Ok(())
 }
 
 fn insert_expression_reference_edge(
@@ -2620,7 +2637,7 @@ mod catalog_index_tests {
     use super::{
         ensure_column_lookup_index, ensure_dependency_index, ensure_grant_index,
         ensure_index_name_index, ensure_membership_index, ensure_policy_index,
-        ensure_relation_name_index,
+        ensure_relation_name_index, validate_name_domains,
     };
     use crate::catalog::{CatalogField, WireType, encode_envelope, family_schema};
     use crate::catalog_index::{
@@ -3213,6 +3230,63 @@ mod catalog_index_tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn startup_name_domains_reject_relation_index_collisions() {
+        let database = database();
+        let index_id = [0x69; 16];
+        let index_key = {
+            let mut key = 2u16.to_be_bytes().to_vec();
+            key.push(1);
+            key.extend_from_slice(&index_id);
+            key
+        };
+        let conflict_fields = [
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::U16,
+                payload: 7u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::Id,
+                payload: [0x31; 16].to_vec(),
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::Text,
+                payload: b"orders".to_vec(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::Id,
+                payload: [0x34; 16].to_vec(),
+            },
+            CatalogField {
+                tag: 5,
+                wire_type: WireType::U64,
+                payload: 1u64.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 6,
+                wire_type: WireType::U16,
+                payload: 1u16.to_le_bytes().to_vec(),
+            },
+        ];
+        let conflict_value =
+            encode_envelope(&family_schema(2).unwrap(), &index_key, &conflict_fields).unwrap();
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(CATALOG)
+            .unwrap()
+            .insert(index_key.as_slice(), conflict_value.as_slice())
+            .unwrap();
+        write.commit().unwrap();
+        ensure_relation_name_index(&database).unwrap();
+        ensure_index_name_index(&database).unwrap();
+        let read = database.begin_read().unwrap();
+        assert!(validate_name_domains(&read).is_err());
     }
 
     #[test]

@@ -7704,7 +7704,6 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
     let fixture = Fixture::new();
     let database = initialize(&fixture.path())?;
     let storage = StorageManager::new(&database, Duration::from_millis(100))?;
-    eprintln!("storage manager ready");
     let admin_role = builtin_owner_id();
     let actor = id(0xd0);
     let foreign_key_edge = dependency_write(id(86), id(85), 3).key;
@@ -7762,6 +7761,32 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
         },
         &stale_tuple,
     )?;
+
+    let duplicate_name_invocation = id(0xc0);
+    let mut duplicate_name_audit = identity_audit_event(0xc1, actor, id(82));
+    duplicate_name_audit.correlation_id = duplicate_name_invocation;
+    let duplicate_name = storage.create_index(prdb_engine::storage_manager::CreateIndexRequest {
+        invocation_id: duplicate_name_invocation,
+        authenticated_actor_id: actor,
+        table_id: id(82),
+        name: "object_82".to_owned(),
+        column_ids: vec![id(84)],
+        unique: false,
+        retention_deadline_us: 9_999,
+        audit_event: duplicate_name_audit,
+    });
+    assert!(matches!(
+        duplicate_name,
+        Err(prdb_engine::storage_manager::IndexLifecycleError::Commit(
+            CommitError::InvalidCatalog
+        ))
+    ));
+    assert_eq!(commit_sequence(&database)?, 2);
+    let pre_index_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_index_id_by_name(&pre_index_snapshot, id(80), "object_82")?,
+        None
+    );
 
     let invocation_id = id(0xd7);
     let mut audit = identity_audit_event(0xd8, actor, id(82));

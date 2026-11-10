@@ -181,6 +181,14 @@
 - Verification: focused startup and index lifecycle tests passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
 - Remaining: DD-2 cross-record naming-domain integrity and broader atomic catalog semantics continue under DD-3 and later increments.
 
+## DD-3: shared schema-local relation/index name domain — verified
+
+- Catalog commit checks the final relation-name and index-name lookup tables together, rejecting a table/index name collision in the same schema before publication.
+- Startup performs the same cross-index check after rebuilding each authoritative name index, so persisted collisions fail closed.
+- Regression evidence: DDL attempting to create an index with an existing table name leaves the commit sequence and index lookup unchanged; a deliberately conflicting persisted index object is rejected at startup validation.
+- Verification: targeted startup and DDL regressions passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
+- Remaining: implement and validate remaining DD-3 referential-integrity, drop/recreate ID non-reuse, and complete catalog publication checks.
+
 ## DD-2: bidirectional dependency-edge index — verified
 
 - Added `dependencies_v1`, keyed by direction, the dependent/referenced UUID pair, and edge kind. Snapshot lookups validate each index entry against its authoritative family-15 record.
