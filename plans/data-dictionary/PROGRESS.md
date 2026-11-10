@@ -87,3 +87,9 @@
 - Regression: `grant_record_matches_independent_catalog_v1_fixture` checks the compound family-12 key's grantee, object, versioned privilege, object-scope marker, and repeated target ID, plus grantor/authority epoch fields.
 - Verification: the focused catalog fixture command passed all independent family-1 through family-12 tests.
 - Remaining: independent byte fixtures for families 13–17 and broader catalog semantics remain open.
+
+## DD-1: independent policy-record bytes — verified
+
+- Regression: `policy_record_matches_independent_catalog_v1_fixture` checks the family-13 table ID, row-policy/SELECT/ALLOW codes, included USING expression ID, omitted CHECK expression ID, and authority epoch against exact bytes.
+- Verification: the focused catalog fixture command passed all independent family-1 through family-13 tests.
+- Remaining: independent byte fixtures for families 14–17 and broader catalog semantics remain open.
