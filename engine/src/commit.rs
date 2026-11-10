@@ -6104,6 +6104,9 @@ fn commit_storage_changes_inner_unchecked(
         let mut memberships = transaction
             .open_table(crate::schema::MEMBERSHIPS)
             .map_err(storage_error)?;
+        let mut grants = transaction
+            .open_table(crate::schema::GRANTS)
+            .map_err(storage_error)?;
         let principal_prefix = 10u16.to_be_bytes();
         for write in catalog_writes
             .iter()
@@ -6224,6 +6227,27 @@ fn commit_storage_changes_inner_unchecked(
                     .map_err(storage_error)?;
             }
         }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&12u16.to_be_bytes()))
+        {
+            if write.key.len() != 59
+                || write.key[2] != 1
+                || write.key[19] != 1
+                || write.key[36] != 1
+                || write.key[39] != 1
+                || write.key[42] != 1
+            {
+                return Err(CommitError::InvalidCatalog);
+            }
+            for (direction, indexed_id) in [(1u8, &write.key[3..19]), (2u8, &write.key[20..36])] {
+                let mut index_key = Vec::with_capacity(76);
+                index_key.push(direction);
+                index_key.extend_from_slice(indexed_id);
+                index_key.extend_from_slice(&write.key);
+                grants.remove(index_key.as_slice()).map_err(storage_error)?;
+            }
+        }
         for write in catalog_writes {
             match &write.payload {
                 Some(payload) => {
@@ -6277,6 +6301,27 @@ fn commit_storage_changes_inner_unchecked(
                 index_key.extend_from_slice(first);
                 index_key.extend_from_slice(second);
                 if memberships
+                    .insert(index_key.as_slice(), &b""[..])
+                    .map_err(storage_error)?
+                    .is_some()
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
+            }
+        }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&12u16.to_be_bytes()))
+        {
+            if write.payload.is_none() {
+                continue;
+            }
+            for (direction, indexed_id) in [(1u8, &write.key[3..19]), (2u8, &write.key[20..36])] {
+                let mut index_key = Vec::with_capacity(76);
+                index_key.push(direction);
+                index_key.extend_from_slice(indexed_id);
+                index_key.extend_from_slice(&write.key);
+                if grants
                     .insert(index_key.as_slice(), &b""[..])
                     .map_err(storage_error)?
                     .is_some()

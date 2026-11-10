@@ -14,8 +14,8 @@ use crate::metadata::{EngineMetadata, Lifecycle};
 use crate::outcome::{InvocationOutcome, OutcomeStatus};
 use crate::row_record::RowRecord;
 use crate::schema::{
-    AUDIT, CATALOG, ENGINE_META, INDEXES, MEMBERSHIPS, OUTCOMES, PRINCIPAL_NAMES, RELATION_NAMES,
-    ROW_INDEXES, ROWS, SCHEMA_NAMES, STATS,
+    AUDIT, CATALOG, ENGINE_META, GRANTS, INDEXES, MEMBERSHIPS, OUTCOMES, PRINCIPAL_NAMES,
+    RELATION_NAMES, ROW_INDEXES, ROWS, SCHEMA_NAMES, STATS,
 };
 use crate::tuple::{ColumnSchema, decode_tuple};
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableHandle};
@@ -126,6 +126,7 @@ fn validate_persisted_records_for_lifecycle(
     ensure_schema_name_index(database)?;
     ensure_relation_name_index(database)?;
     ensure_membership_index(database)?;
+    ensure_grant_index(database)?;
     let read = database.begin_read().map_err(storage_error)?;
     validate_tables(&read)?;
     let metadata = read_metadata(&read)?;
@@ -575,6 +576,105 @@ fn ensure_membership_index(database: &Database) -> Result<(), StartupError> {
     Ok(())
 }
 
+fn collect_grant_index_keys<T>(catalog: &T) -> Result<HashSet<Vec<u8>>, StartupError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let prefix = 12u16.to_be_bytes();
+    let mut keys = HashSet::new();
+    for entry in catalog.range(prefix.as_slice()..).map_err(storage_error)? {
+        let (key, value) = entry.map_err(storage_error)?;
+        let key = key.value();
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        let record =
+            decode_registered_envelope(value.value()).map_err(|_| StartupError::InvalidCatalog)?;
+        if record.family_code != 12
+            || record.logical_key != key
+            || key.len() != 59
+            || key[2] != 1
+            || key[19] != 1
+            || key[36] != 1
+            || key[39] != 1
+            || key[42] != 1
+        {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let grantee: [u8; 16] = key[3..19]
+            .try_into()
+            .map_err(|_| StartupError::InvalidCatalog)?;
+        let object: [u8; 16] = key[20..36]
+            .try_into()
+            .map_err(|_| StartupError::InvalidCatalog)?;
+        if grantee == [0; 16] || object == [0; 16] {
+            return Err(StartupError::InvalidCatalog);
+        }
+        for (direction, indexed_id) in [(1u8, grantee), (2u8, object)] {
+            let mut index_key = Vec::with_capacity(76);
+            index_key.push(direction);
+            index_key.extend_from_slice(&indexed_id);
+            index_key.extend_from_slice(key);
+            if !keys.insert(index_key) {
+                return Err(StartupError::InvalidCatalog);
+            }
+        }
+    }
+    Ok(keys)
+}
+
+/// Rebuild grant indexes ordered by grantee and protected object.
+fn ensure_grant_index(database: &Database) -> Result<(), StartupError> {
+    let read = database.begin_read().map_err(storage_error)?;
+    let has_index = read
+        .list_tables()
+        .map_err(storage_error)?
+        .any(|table| table.name() == GRANTS.name());
+    if has_index {
+        let catalog = read.open_table(CATALOG).map_err(storage_error)?;
+        let expected = collect_grant_index_keys(&catalog)?;
+        let index = read.open_table(GRANTS).map_err(storage_error)?;
+        let mut actual = HashSet::new();
+        let mut well_formed = true;
+        for entry in index.iter().map_err(storage_error)? {
+            let (key, value) = entry.map_err(storage_error)?;
+            if !value.value().is_empty() {
+                well_formed = false;
+            }
+            actual.insert(key.value().to_vec());
+        }
+        if well_formed && actual == expected {
+            return Ok(());
+        }
+    }
+    drop(read);
+    let write = database.begin_write().map_err(storage_error)?;
+    let catalog = write.open_table(CATALOG).map_err(storage_error)?;
+    let expected = collect_grant_index_keys(&catalog)?;
+    let mut index = write.open_table(GRANTS).map_err(storage_error)?;
+    let stale_keys = index
+        .iter()
+        .map_err(storage_error)?
+        .map(|entry| {
+            entry
+                .map(|(key, _)| key.value().to_vec())
+                .map_err(storage_error)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for key in stale_keys {
+        index.remove(key.as_slice()).map_err(storage_error)?;
+    }
+    for key in expected {
+        index
+            .insert(key.as_slice(), &b""[..])
+            .map_err(storage_error)?;
+    }
+    drop(index);
+    drop(catalog);
+    write.commit().map_err(storage_error)?;
+    Ok(())
+}
+
 fn storage_error(_error: impl std::fmt::Display) -> StartupError {
     StartupError::Storage
 }
@@ -613,6 +713,7 @@ fn validate_tables(read: &ReadTransaction) -> Result<(), StartupError> {
     drop(read.open_table(SCHEMA_NAMES).map_err(storage_error)?);
     drop(read.open_table(RELATION_NAMES).map_err(storage_error)?);
     drop(read.open_table(MEMBERSHIPS).map_err(storage_error)?);
+    drop(read.open_table(GRANTS).map_err(storage_error)?);
     drop(read.open_table(OUTCOMES).map_err(storage_error)?);
     drop(read.open_table(AUDIT).map_err(storage_error)?);
     drop(read.open_table(STATS).map_err(storage_error)?);
@@ -2125,12 +2226,13 @@ fn validate_audit(read: &ReadTransaction) -> Result<usize, StartupError> {
 
 #[cfg(test)]
 mod relation_name_index_tests {
-    use super::{ensure_membership_index, ensure_relation_name_index};
+    use super::{ensure_grant_index, ensure_membership_index, ensure_relation_name_index};
     use crate::catalog::{CatalogField, WireType, encode_envelope, family_schema};
     use crate::catalog_index::{
-        lookup_members_for_role, lookup_relation_id_by_name, lookup_roles_for_member,
+        lookup_grants_for_grantee, lookup_grants_for_object, lookup_members_for_role,
+        lookup_relation_id_by_name, lookup_roles_for_member,
     };
-    use crate::schema::{CATALOG, MEMBERSHIPS, RELATION_NAMES, create_tables};
+    use crate::schema::{CATALOG, GRANTS, MEMBERSHIPS, RELATION_NAMES, create_tables};
     use redb::{Database, ReadableDatabase};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -2240,6 +2342,34 @@ mod relation_name_index_tests {
             &membership_fields,
         )
         .unwrap();
+        let grantee_id = [0x51; 16];
+        let object_id = [0x52; 16];
+        let target_id = object_id;
+        let mut grant_key = 12u16.to_be_bytes().to_vec();
+        grant_key.push(1);
+        grant_key.extend_from_slice(&grantee_id);
+        grant_key.push(1);
+        grant_key.extend_from_slice(&object_id);
+        grant_key.push(1);
+        grant_key.extend_from_slice(&1u16.to_be_bytes());
+        grant_key.push(1);
+        grant_key.extend_from_slice(&1u16.to_be_bytes());
+        grant_key.push(1);
+        grant_key.extend_from_slice(&target_id);
+        let grant_fields = [
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::Id,
+                payload: [0x54; 16].to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::U64,
+                payload: 1u64.to_le_bytes().to_vec(),
+            },
+        ];
+        let grant_value =
+            encode_envelope(&family_schema(12).unwrap(), &grant_key, &grant_fields).unwrap();
         let mut catalog = write.open_table(CATALOG).unwrap();
         catalog
             .insert(table_key.as_slice(), table_value.as_slice())
@@ -2249,6 +2379,9 @@ mod relation_name_index_tests {
             .unwrap();
         catalog
             .insert(membership_key.as_slice(), membership_value.as_slice())
+            .unwrap();
+        catalog
+            .insert(grant_key.as_slice(), grant_value.as_slice())
             .unwrap();
         drop(catalog);
         write.commit().unwrap();
@@ -2332,6 +2465,61 @@ mod relation_name_index_tests {
         assert_eq!(
             lookup_members_for_role(&read, [0x42; 16]).unwrap(),
             vec![[0x41; 16]]
+        );
+    }
+
+    #[test]
+    fn stale_grant_indexes_are_rebuilt_from_catalog_records() {
+        let database = database();
+        let mut grantee_key = vec![1, 0x51];
+        grantee_key.resize(17, 0x51);
+        grantee_key.extend_from_slice(&[0x61; 59]);
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(GRANTS)
+            .unwrap()
+            .insert(grantee_key.as_slice(), &b"stale"[..])
+            .unwrap();
+        write
+            .open_table(GRANTS)
+            .unwrap()
+            .insert(&b"stale"[..], &b"stale"[..])
+            .unwrap();
+        write.commit().unwrap();
+        ensure_grant_index(&database).unwrap();
+        let read = database.begin_read().unwrap();
+        assert_eq!(
+            lookup_grants_for_grantee(&read, [0x51; 16]).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            lookup_grants_for_object(&read, [0x52; 16]).unwrap().len(),
+            1
+        );
+        assert!(
+            read.open_table(GRANTS)
+                .unwrap()
+                .get(&b"stale"[..])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn missing_grant_indexes_are_rebuilt_from_catalog_records() {
+        let database = database();
+        let write = database.begin_write().unwrap();
+        assert!(write.delete_table(GRANTS).unwrap());
+        write.commit().unwrap();
+        ensure_grant_index(&database).unwrap();
+        let read = database.begin_read().unwrap();
+        assert_eq!(
+            lookup_grants_for_grantee(&read, [0x51; 16]).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            lookup_grants_for_object(&read, [0x52; 16]).unwrap().len(),
+            1
         );
     }
 }

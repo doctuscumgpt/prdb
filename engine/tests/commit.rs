@@ -3,8 +3,9 @@ use prdb_engine::catalog::{
     CatalogField, WireType, decode_registered_envelope, encode_envelope, family_schema,
 };
 use prdb_engine::catalog_index::{
-    lookup_members_for_role, lookup_principal_id_by_name, lookup_relation_id_by_name,
-    lookup_roles_for_member, lookup_schema_id_by_name,
+    lookup_grants_for_grantee, lookup_grants_for_object, lookup_members_for_role,
+    lookup_principal_id_by_name, lookup_relation_id_by_name, lookup_roles_for_member,
+    lookup_schema_id_by_name,
 };
 use prdb_engine::commit::{
     CatalogWrite, CommitError, CommitRequest, ForeignKeyCheck, IndexWrite, RowWrite,
@@ -5004,6 +5005,33 @@ fn membership_indexes_track_both_directions_per_snapshot() -> Result<(), Box<dyn
         lookup_members_for_role(&new_snapshot, role_id)?,
         vec![member_id, second_member_id]
     );
+    Ok(())
+}
+
+#[test]
+fn grant_indexes_track_grantee_and_object_per_snapshot() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let grantee_id = id(0x87);
+    let object_id = builtin_id(1);
+    let mut event = audit_event(0x7c);
+    event.actor_id = Some(builtin_owner_id());
+    commit_catalog_and_audit(
+        &database,
+        id(0x7c),
+        builtin_owner_id(),
+        9_999,
+        &[
+            principal_write_with_name(grantee_id, 1, 1, "grant_index_grantee"),
+            object_write_with_name(grantee_id, 8, "grant_index_grantee"),
+            grant_write(grantee_id, object_id, 7, 1, object_id, builtin_owner_id()),
+            dependency_write(grantee_id, object_id, 5),
+        ],
+        &[event],
+    )?;
+    let snapshot = database.begin_read()?;
+    assert_eq!(lookup_grants_for_grantee(&snapshot, grantee_id)?.len(), 1);
+    assert_eq!(lookup_grants_for_object(&snapshot, object_id)?.len(), 1);
     Ok(())
 }
 

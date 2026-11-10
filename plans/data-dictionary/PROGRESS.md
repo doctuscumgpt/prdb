@@ -149,6 +149,14 @@
 - Verification: membership reconstruction and snapshot regressions passed; `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable); workspace Clippy with warnings denied passed.
 - Remaining: complete DD-2 lookup/index coverage for objects, grants, policies, and dependencies.
 
+## DD-2: grantee/object grant indexes — verified
+
+- Added `grants_v1` with grantee-ordered and object-ordered keys carrying the exact family-12 catalog key. Snapshot lookup APIs validate each indexed key and its authoritative record.
+- Family-12 writes update both orders in the same redb transaction; startup reconstructs both orders from authoritative family-12 records.
+- Regression tests cover reconstruction from missing/stale tables and reading a committed grant through both key orders.
+- Verification: focused grant rebuild/lookup tests passed; `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable); workspace Clippy with warnings denied passed.
+- Remaining: complete DD-2 lookup/index coverage for objects, policies, and dependencies.
+
 ## DD-2: snapshot-aware relation-name index — verified
 
 - Added a schema-scoped `relation_names_v1` lookup key composed of schema ID and exact normalized relation-name bytes. The index points to family-5 table IDs and is checked against the family-5 schema reference and family-2 table object on reads.
