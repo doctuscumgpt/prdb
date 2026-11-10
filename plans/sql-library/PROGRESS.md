@@ -462,3 +462,9 @@
 - Implementation: the shared v5-v18 grouped runner and the separate v4 COUNT runner cap scans at 126 pages. Each page consumes a cancellation check and batch request; resolve/open and a possible early close fit in the remaining stream budget.
 - Specification: [`sql-library.md`](../../specs/sql-library.md) records the page/request relationship for grouped scans.
 - Remaining: further grouped-runner cancellation and pressure stress cases remain open.
+
+## SQL-7 dependency: group cardinality memory ceiling boundary — verified
+
+- Regression: the maintained TinyCC group-kernel fixture now submits exactly `PRDB_SDK_SQL_GROUP_MAX_ROWS` rows with a single repeated key, and verifies successful output with one group, the first row as representative, and the full count. The adjacent 129-row case continues to verify rejection without changing caller outputs.
+- Verification: `nix develop --offline --command make -f engine/sdk/Makefile test` passed the complete maintained TinyCC SDK suite, including the exact 128-row acceptance and over-limit rejection.
+- Remaining: grouped cancellation/pressure stress and mixed-workload measurements remain open.

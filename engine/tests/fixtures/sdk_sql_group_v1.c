@@ -195,6 +195,25 @@ int main(void) {
                unchanged.count == 78);
     }
 
+    {
+        uint8_t key_bytes[PRDB_SDK_SQL_GROUP_MAX_ROWS][4];
+        prdb_sdk_value_v1 boundary_keys[PRDB_SDK_SQL_GROUP_MAX_ROWS];
+        prdb_sdk_sql_count_group_v1 boundary_groups[PRDB_SDK_SQL_GROUP_MAX_ROWS] =
+            {{0}};
+        uint32_t boundary_group_count = UINT32_MAX;
+        for (uint32_t index = 0; index < PRDB_SDK_SQL_GROUP_MAX_ROWS; ++index) {
+            boundary_keys[index] = integer_value(key_bytes[index], 7);
+        }
+        assert(prdb_sdk_sql_group_count_v1(
+                   boundary_keys, PRDB_SDK_SQL_GROUP_MAX_ROWS,
+                   PRDB_SDK_VALUE_TYPE_INTEGER, 0, boundary_groups,
+                   PRDB_SDK_SQL_GROUP_MAX_ROWS, &boundary_group_count) ==
+               PRDB_SDK_SQL_GROUP_OK);
+        assert(boundary_group_count == 1);
+        assert(boundary_groups[0].representative_row == 0 &&
+               boundary_groups[0].count == PRDB_SDK_SQL_GROUP_MAX_ROWS);
+    }
+
     group_count = 999;
     assert(prdb_sdk_sql_group_count_v1(
                NULL, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, NULL, 0,
