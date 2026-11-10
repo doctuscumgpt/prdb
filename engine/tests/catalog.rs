@@ -463,6 +463,84 @@ fn constraint_record_matches_independent_catalog_v1_fixture() {
 }
 
 #[test]
+fn index_record_matches_independent_catalog_v1_fixture() {
+    let key = [vec![0, 9, 1], vec![0x99; 16]].concat();
+    let mut columns = 1u32.to_le_bytes().to_vec();
+    columns.extend_from_slice(&[0x66; 16]);
+    let fields = [
+        CatalogField {
+            tag: 1,
+            wire_type: WireType::Id,
+            payload: vec![0x55; 16],
+        },
+        CatalogField {
+            tag: 2,
+            wire_type: WireType::Ids,
+            payload: columns,
+        },
+        CatalogField {
+            tag: 3,
+            wire_type: WireType::U16,
+            payload: 1u16.to_le_bytes().to_vec(),
+        },
+        CatalogField {
+            tag: 4,
+            wire_type: WireType::Bool,
+            payload: vec![1],
+        },
+        CatalogField {
+            tag: 5,
+            wire_type: WireType::U16,
+            payload: 1u16.to_le_bytes().to_vec(),
+        },
+        CatalogField {
+            tag: 7,
+            wire_type: WireType::Id,
+            payload: vec![0x77; 16],
+        },
+        CatalogField {
+            tag: 8,
+            wire_type: WireType::U16,
+            payload: 1u16.to_le_bytes().to_vec(),
+        },
+        CatalogField {
+            tag: 9,
+            wire_type: WireType::U32,
+            payload: 1u32.to_le_bytes().to_vec(),
+        },
+        CatalogField {
+            tag: 10,
+            wire_type: WireType::U64,
+            payload: 1u64.to_le_bytes().to_vec(),
+        },
+    ];
+    let mut expected = vec![
+        b'C', b'A', b'T', b'1', 1, 0, 9, 0, 194, 0, 0, 0, 19, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0,
+    ];
+    expected.extend_from_slice(&key);
+    expected.extend_from_slice(&[1, 0, 6, 0, 16, 0, 0, 0]);
+    expected.extend_from_slice(&[0x55; 16]);
+    expected.extend_from_slice(&[2, 0, 9, 0, 20, 0, 0, 0, 1, 0, 0, 0]);
+    expected.extend_from_slice(&[0x66; 16]);
+    expected.extend_from_slice(&[3, 0, 1, 0, 2, 0, 0, 0, 1, 0]);
+    expected.extend_from_slice(&[4, 0, 5, 0, 1, 0, 0, 0, 1]);
+    expected.extend_from_slice(&[5, 0, 1, 0, 2, 0, 0, 0, 1, 0]);
+    expected.extend_from_slice(&[7, 0, 6, 0, 16, 0, 0, 0]);
+    expected.extend_from_slice(&[0x77; 16]);
+    expected.extend_from_slice(&[8, 0, 1, 0, 2, 0, 0, 0, 1, 0]);
+    expected.extend_from_slice(&[9, 0, 2, 0, 4, 0, 0, 0, 1, 0, 0, 0]);
+    expected.extend_from_slice(&[10, 0, 3, 0, 8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+
+    let schema = family_schema(9).unwrap();
+    assert_eq!(encode_envelope(&schema, &key, &fields).unwrap(), expected);
+    let decoded = prdb_engine::catalog::decode_registered_envelope(&expected).unwrap();
+    assert_eq!(decoded.family_code, 9);
+    assert_eq!(decoded.logical_key, key);
+    assert_eq!(decoded.fields, fields);
+}
+
+#[test]
 fn policy_target_rejects_noncanonical_data() {
     let bytes = encode_policy_target(&example()).unwrap();
     for (offset, value) in [

@@ -63,3 +63,9 @@
 - Regression: `constraint_record_matches_independent_catalog_v1_fixture` checks a family-8 NOT NULL-shaped record with one source column, an empty referenced-column list, omitted optional references, and fixed action/state fields against exact bytes.
 - Verification: the focused catalog fixture command passed all independent family-1 through family-8 tests.
 - Remaining: independent byte fixtures for families 9–17 and broader catalog semantics remain open.
+
+## DD-1: independent index-record bytes — verified
+
+- Regression: `index_record_matches_independent_catalog_v1_fixture` checks a family-9 index with a one-column IDS key, unique flag, omitted owner constraint, storage object, state, key version, and table schema version against exact bytes.
+- Verification: the focused catalog fixture command passed all independent family-1 through family-9 tests.
+- Remaining: independent byte fixtures for families 10–17 and broader catalog semantics remain open.
