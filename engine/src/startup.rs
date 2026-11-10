@@ -744,6 +744,7 @@ fn validate_catalog(
         return Err(StartupError::InvalidCatalog);
     }
     if database_id != Some(metadata.database_id)
+        || object_kinds.contains_key(&metadata.database_id)
         || dependencies
             .iter()
             .any(|(dependent_id, referenced_id, kind)| {

@@ -1229,6 +1229,22 @@ fn identity_tombstones_are_valid_and_reject_live_id_reuse() -> Result<(), Box<dy
 }
 
 #[test]
+fn database_identity_cannot_have_an_object_record() {
+    let fixture = Fixture::new();
+    let database = fixture.database(0);
+    let database_id = [0x11; 16];
+    let (schema_key, schema_value) = schema_record(database_id);
+    let (object_key, object_value) = object_record(database_id, 1);
+    put_catalog(&database, &schema_key, &schema_value);
+    put_catalog(&database, &object_key, &object_value);
+
+    assert_eq!(
+        validate_persisted_records(&database),
+        Err(StartupError::InvalidCatalog)
+    );
+}
+
+#[test]
 fn validates_ready_image_records_and_references() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
     let database = fixture.database(3);

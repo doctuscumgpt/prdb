@@ -1400,6 +1400,7 @@ fn validate_final_dependency_edges(
         .any(|write| write.key.starts_with(&1u16.to_be_bytes()));
     if database_id.is_some_and(|database_id| database_id != database_uuid)
         || (database_record_changed && *database_id != Some(database_uuid))
+        || object_parents.contains_key(&database_uuid)
         || dependencies
             .iter()
             .any(|(dependent_id, referenced_id, kind)| {

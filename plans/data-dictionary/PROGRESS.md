@@ -111,3 +111,10 @@
 - Regression: `tombstone_record_matches_independent_catalog_v1_fixture` verifies family 17's permanent-reservation key and zero-TLV envelope. Together, the family 1–17 tests now compare every registered family against hand-assembled wire bytes; family 14 is covered by the original independently specified policy-target fixture.
 - Verification: `nix develop --offline --command cargo test --test catalog --locked` passed all 22 catalog integration tests, including all 17 family fixtures, malformed/noncanonical envelope checks, and the complete field-registry check.
 - Remaining: broader semantic cross-record integrity, DDL/bootstrap authority validation, catalog secondary indexes, and comprehensive snapshot-aware catalog operations remain open.
+
+## DD-1: database identity cannot be an object — verified
+
+- Contract: [catalog payloads v1](../../specs/catalog-payloads.md) states that the database record has no family-2 object row. Added commit-time validation that rejects staging the database UUID as any object identity, and startup validation that fails closed if a persisted family-2 record uses the database UUID.
+- Regression evidence: the commit test first demonstrated that the invalid schema/object pair was published (commit sequence advanced); the startup corruption test first demonstrated that the malformed image was accepted. Both now assert rejection, and the commit test verifies no sequence advancement.
+- Verification: focused startup and commit regressions passed under the pinned Nix development shell.
+- Remaining: broader semantic cross-record integrity, DDL/bootstrap authority validation, catalog secondary indexes, and comprehensive snapshot-aware catalog operations remain open.

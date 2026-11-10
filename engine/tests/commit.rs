@@ -23855,6 +23855,27 @@ fn catalog_commit_requires_schema_object_identity_and_kind()
     Ok(())
 }
 
+#[test]
+fn catalog_commit_rejects_database_identity_as_schema_object()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let database_id = [0x33; 16];
+    assert_eq!(
+        commit_catalog_and_audit(
+            &database,
+            id(0x74),
+            id(9),
+            9_999,
+            &[schema_write(database_id), object_write(database_id, 1)],
+            &[audit_event(0x74)],
+        ),
+        Err(CommitError::InvalidCatalog),
+    );
+    assert_eq!(commit_sequence(&database)?, 0);
+    Ok(())
+}
+
 fn principal_write_with_epoch(principal_id: [u8; 16], kind: u16, epoch: u64) -> CatalogWrite {
     let mut key = 10u16.to_be_bytes().to_vec();
     key.push(1);
