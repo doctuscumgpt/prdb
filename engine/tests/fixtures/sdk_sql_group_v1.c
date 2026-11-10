@@ -212,6 +212,21 @@ int main(void) {
         assert(boundary_group_count == 1);
         assert(boundary_groups[0].representative_row == 0 &&
                boundary_groups[0].count == PRDB_SDK_SQL_GROUP_MAX_ROWS);
+
+        for (uint32_t index = 0; index < PRDB_SDK_SQL_GROUP_MAX_ROWS; ++index) {
+            boundary_keys[index] = integer_value(key_bytes[index], (int32_t)index);
+        }
+        boundary_group_count = UINT32_MAX;
+        assert(prdb_sdk_sql_group_count_v1(
+                   boundary_keys, PRDB_SDK_SQL_GROUP_MAX_ROWS,
+                   PRDB_SDK_VALUE_TYPE_INTEGER, 0, boundary_groups,
+                   PRDB_SDK_SQL_GROUP_MAX_ROWS, &boundary_group_count) ==
+               PRDB_SDK_SQL_GROUP_OK);
+        assert(boundary_group_count == PRDB_SDK_SQL_GROUP_MAX_ROWS);
+        for (uint32_t index = 0; index < boundary_group_count; ++index) {
+            assert(boundary_groups[index].representative_row == index);
+            assert(boundary_groups[index].count == 1);
+        }
     }
 
     group_count = 999;

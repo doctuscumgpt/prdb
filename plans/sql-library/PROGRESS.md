@@ -465,6 +465,6 @@
 
 ## SQL-7 dependency: group cardinality memory ceiling boundary — verified
 
-- Regression: the maintained TinyCC group-kernel fixture now submits exactly `PRDB_SDK_SQL_GROUP_MAX_ROWS` rows with a single repeated key, and verifies successful output with one group, the first row as representative, and the full count. The adjacent 129-row case continues to verify rejection without changing caller outputs.
-- Verification: `nix develop --offline --command make -f engine/sdk/Makefile test` passed the complete maintained TinyCC SDK suite, including the exact 128-row acceptance and over-limit rejection.
+- Regression: the maintained TinyCC group-kernel fixture submits exactly `PRDB_SDK_SQL_GROUP_MAX_ROWS` rows both as one repeated key and as 128 distinct keys. It checks the full repeated-key count and every distinct group's representative/count. The adjacent 129-row case continues to verify rejection without changing caller outputs.
+- Verification: `nix develop --offline --command make -f engine/sdk/Makefile test` passed the complete maintained TinyCC SDK suite, including both exact 128-row cases and over-limit rejection.
 - Remaining: grouped cancellation/pressure stress and mixed-workload measurements remain open.
