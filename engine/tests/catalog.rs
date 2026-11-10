@@ -715,6 +715,31 @@ fn policy_record_matches_independent_catalog_v1_fixture() {
 }
 
 #[test]
+fn dependency_record_matches_independent_catalog_v1_fixture() {
+    let key = [
+        vec![0, 15, 1],
+        vec![0x11; 16],
+        vec![1],
+        vec![0x22; 16],
+        vec![1, 0, 1],
+    ]
+    .concat();
+    let fields: [CatalogField; 0] = [];
+    let mut expected = vec![
+        b'C', b'A', b'T', b'1', 1, 0, 15, 0, 71, 0, 0, 0, 39, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0,
+    ];
+    expected.extend_from_slice(&key);
+
+    let schema = family_schema(15).unwrap();
+    assert_eq!(encode_envelope(&schema, &key, &fields).unwrap(), expected);
+    let decoded = prdb_engine::catalog::decode_registered_envelope(&expected).unwrap();
+    assert_eq!(decoded.family_code, 15);
+    assert_eq!(decoded.logical_key, key);
+    assert!(decoded.fields.is_empty());
+}
+
+#[test]
 fn policy_target_rejects_noncanonical_data() {
     let bytes = encode_policy_target(&example()).unwrap();
     for (offset, value) in [
