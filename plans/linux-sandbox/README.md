@@ -22,3 +22,9 @@ Select minimum kernel features, deployment privileges/rootless requirements, nam
 ## Acceptance and Handoff
 
 The hostile-artifact harness is a prerequisite to loading query libraries anywhere in tests. Never use `tcc -run` or a trusted-process loader. Missing confinement means an unverified/failed gate, not a skipped security success. Verify no home/credential/database descriptors, external network, unauthorized IPC or trusted-process access. Record kernel/profile/privileges and known kernel/timing limitations; containment does not attest to query correctness. First behavior: fail-closed capability detection without loading an artifact.
+
+### Delegated cgroup setup for test hosts
+
+The opt-in end-to-end tests require `PRDB_TEST_CGROUP_PARENT` to point to a writable cgroup v2 parent with `cpu`, `memory`, and `pids` available and enabled for children. The test process creates and removes invocation-specific leaves beneath that parent. The host must provide the delegation before the test starts; compiling the SDK fixtures does not provision it. See the [repository test-host setup](../../AGENTS.md#confined-integration-test-host-setup) for diagnostics, rootless/systemd guidance, and the distinction between a missing delegation and a read-only cgroup mount.
+
+Do not treat sudo access as equivalent to delegation. If the process-visible cgroup2 mount is read-only or the host does not provide a writable delegated subtree, the end-to-end gate cannot run in that environment. Record the exact probe output and leave the acceptance unverified until a suitable host or runtime is available. The sandboxed tests are ignored by default; run them explicitly only after the probe and all test-specific runtime/artifact inputs are ready.

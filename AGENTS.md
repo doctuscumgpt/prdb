@@ -58,6 +58,23 @@ tcc -I"$SDK_INCLUDE" "$SDK_TEST_SOURCE" "$BUILD_DIR/libsdk.a" -o "$BUILD_DIR/sdk
 
 Use only maintained SDK unit-test sources for the executable test. Add target/runtime flags from the validated toolchain profile; verify archive relocations and shared-library loading. Run query libraries, constructors, and hostile fixtures only through the sandboxed executor integration harness, never `tcc -run` or a trusted-process loader. Reuse prebuilt SDK archives between query edits.
 
+### Confined integration test host setup
+
+The sandboxed query integration tests are ignored by default. Building `sandbox-query-fixture` only builds their TinyCC artifacts; it does not create or delegate a cgroup. These tests need `PRDB_TEST_CGROUP_PARENT` to name an **absolute path to a writable delegated cgroup v2 parent**. That parent must expose and have enabled the `cpu`, `memory`, and `pids` controllers. The test creates per-invocation child cgroups beneath it.
+
+This is normally rootless **after** the host has delegated a subtree to the test account. A regular user cannot make `/sys/fs/cgroup` writable by creating a directory there or by changing permissions. On systemd hosts, an administrator may need to provide a service or scope with `Delegate=cpu memory pids` and a writable subtree for the test. A `sudo mkdir` at the cgroup root is not a substitute for delegation. If the cgroup2 mount visible to the test process is read-only (for example, inside a container or desktop sandbox), changing directory ownership or running the test with sudo inside that same mount will not fix it; arrange a writable delegated subtree from the host/runtime, or report the acceptance as unavailable.
+
+Check the mount and the process cgroup, then point the built-in probe at the proposed parent:
+
+```sh
+findmnt -no FSTYPE,OPTIONS /sys/fs/cgroup
+cat /proc/self/cgroup
+export PRDB_TEST_CGROUP_PARENT=/absolute/path/to/delegated/parent
+cargo run --locked --bin prdb-sandbox-probe -- "$PRDB_TEST_CGROUP_PARENT"
+```
+
+The probe must report a writable cgroup v2 parent and `cpu memory pids` in both the available controllers and enabled child controllers. Probe success is a preflight, not end-to-end acceptance; run the specific ignored sandbox test with its documented fixture/runtime environment variables. The opt-in tests in `engine/tests/commit.rs` and `engine/tests/metadata_process.rs` state their additional artifact and runtime path variables. Do not count default-ignored tests as passed or use a fake cgroup directory as confinement evidence.
+
 ## Style and Validation
 
 Use rustfmt conventions for Rust and consistent C naming through the public headers. Keep unsafe Rust isolated and documented. Follow the versioned C ABI ownership rules; native structs are not IPC encodings.
