@@ -1,5 +1,12 @@
 # Toolchain Progress
 
+## TC-2: TinyCC planner and executor relation-name tails — implemented
+
+- Contract: the TinyCC SDK emits the same bounded version/length/name request bytes as the Rust IPC codecs.
+- Implementation: planner and executor SDK request paths now serialize schema and relation names with the generated C UTF-8 tail helpers; identifier validation and request-size limits remain in their callers.
+- Regression and verification: existing maintained planner/executor callback fixtures check exact request bytes. Generator drift/schema tests and the complete TinyCC SDK build-and-run suite passed with `-Wall -Wextra -Werror` in the pinned Nix shell.
+- Remaining: other C SDK variable tails and the outstanding TC-2 release and cross-profile acceptance work remain open.
+
 ## TC-2: generated executor relation-name tail codecs — implemented
 
 - Contract: relation-resolution requests carry exact UTF-8 schema and relation names whose byte lengths appear in the generated prefix.

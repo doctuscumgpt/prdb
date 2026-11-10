@@ -312,11 +312,18 @@ int32_t prdb_sdk_planner_describe_relation_v1(
     }
     prdb_encode_executor_resolve_relation_request(
         request, (uint16_t)schema_len, (uint16_t)relation_name_len);
-    memcpy(request + PRDB_EXECUTOR_RESOLVE_RELATION_REQUEST_HEADER_BYTES,
-           schema, schema_len);
-    memcpy(request + PRDB_EXECUTOR_RESOLVE_RELATION_REQUEST_HEADER_BYTES +
-               schema_len,
-           relation_name, relation_name_len);
+    if (!prdb_encode_executor_resolve_relation_request_schema_name(
+            request + PRDB_EXECUTOR_RESOLVE_RELATION_REQUEST_HEADER_BYTES,
+            sizeof(request) - PRDB_EXECUTOR_RESOLVE_RELATION_REQUEST_HEADER_BYTES,
+            schema, schema_len) ||
+        !prdb_encode_executor_resolve_relation_request_relation_name(
+            request + PRDB_EXECUTOR_RESOLVE_RELATION_REQUEST_HEADER_BYTES +
+                schema_len,
+            sizeof(request) - PRDB_EXECUTOR_RESOLVE_RELATION_REQUEST_HEADER_BYTES -
+                schema_len,
+            relation_name, relation_name_len)) {
+        return PRDB_SDK_PLANNER_REQUEST_INVALID_ARGUMENT;
+    }
     request_len = PRDB_EXECUTOR_RESOLVE_RELATION_REQUEST_HEADER_BYTES +
                   schema_len + relation_name_len;
     *response_len = 0;
