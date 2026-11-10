@@ -16,7 +16,7 @@ use crate::row_record::RowRecord;
 use crate::schema::{
     AUDIT, CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, ENGINE_META, GRANTS, INDEX_NAMES, INDEXES,
     MEMBERSHIPS, OUTCOMES, POLICIES, PRINCIPAL_NAMES, RELATION_NAMES, ROW_INDEXES, ROWS,
-    SCHEMA_NAMES, STATS,
+    SCHEMA_NAMES, STATS, TABLE_INDEXES,
 };
 use crate::tuple::{ColumnSchema, decode_tuple};
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableHandle};
@@ -128,6 +128,7 @@ fn validate_persisted_records_for_lifecycle(
     ensure_relation_name_index(database)?;
     ensure_column_lookup_index(database)?;
     ensure_index_name_index(database)?;
+    ensure_table_index_index(database)?;
     ensure_membership_index(database)?;
     ensure_grant_index(database)?;
     ensure_policy_index(database)?;
@@ -679,6 +680,92 @@ fn ensure_index_name_index(database: &Database) -> Result<(), StartupError> {
     Ok(())
 }
 
+fn collect_table_index_entries<T>(catalog: &T) -> Result<HashSet<Vec<u8>>, StartupError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let prefix = 9u16.to_be_bytes();
+    let mut entries = HashSet::new();
+    for entry in catalog.range(prefix.as_slice()..).map_err(storage_error)? {
+        let (key, value) = entry.map_err(storage_error)?;
+        let key = key.value();
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        let record =
+            decode_registered_envelope(value.value()).map_err(|_| StartupError::InvalidCatalog)?;
+        if record.family_code != 9 || record.logical_key != key || key.len() != 19 || key[2] != 1 {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let table_id = field_id(&record, 1)?;
+        let index_id: [u8; 16] = key[3..19]
+            .try_into()
+            .map_err(|_| StartupError::InvalidCatalog)?;
+        if table_id == [0; 16] || index_id == [0; 16] {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let mut index_key = Vec::with_capacity(32);
+        index_key.extend_from_slice(&table_id);
+        index_key.extend_from_slice(&index_id);
+        if !entries.insert(index_key) {
+            return Err(StartupError::InvalidCatalog);
+        }
+    }
+    Ok(entries)
+}
+
+/// Rebuild table-scoped family-9 definition lookups from authoritative rows.
+fn ensure_table_index_index(database: &Database) -> Result<(), StartupError> {
+    let read = database.begin_read().map_err(storage_error)?;
+    let has_index = read
+        .list_tables()
+        .map_err(storage_error)?
+        .any(|table| table.name() == TABLE_INDEXES.name());
+    if has_index {
+        let catalog = read.open_table(CATALOG).map_err(storage_error)?;
+        let expected = collect_table_index_entries(&catalog)?;
+        let index = read.open_table(TABLE_INDEXES).map_err(storage_error)?;
+        let mut actual = HashSet::new();
+        let mut well_formed = true;
+        for entry in index.iter().map_err(storage_error)? {
+            let (key, value) = entry.map_err(storage_error)?;
+            if key.value().len() != 32 || !value.value().is_empty() {
+                well_formed = false;
+            }
+            actual.insert(key.value().to_vec());
+        }
+        if well_formed && actual == expected {
+            return Ok(());
+        }
+    }
+    drop(read);
+    let write = database.begin_write().map_err(storage_error)?;
+    let catalog = write.open_table(CATALOG).map_err(storage_error)?;
+    let expected = collect_table_index_entries(&catalog)?;
+    let mut index = write.open_table(TABLE_INDEXES).map_err(storage_error)?;
+    let stale_keys = index
+        .iter()
+        .map_err(storage_error)?
+        .map(|entry| {
+            entry
+                .map(|(key, _)| key.value().to_vec())
+                .map_err(storage_error)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for key in stale_keys {
+        index.remove(key.as_slice()).map_err(storage_error)?;
+    }
+    for key in expected {
+        index
+            .insert(key.as_slice(), &b""[..])
+            .map_err(storage_error)?;
+    }
+    drop(index);
+    drop(catalog);
+    write.commit().map_err(storage_error)?;
+    Ok(())
+}
+
 fn collect_membership_index_keys<T>(catalog: &T) -> Result<HashSet<Vec<u8>>, StartupError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
@@ -1118,6 +1205,7 @@ fn validate_tables(read: &ReadTransaction) -> Result<(), StartupError> {
     drop(read.open_table(RELATION_NAMES).map_err(storage_error)?);
     drop(read.open_table(COLUMN_LOOKUPS).map_err(storage_error)?);
     drop(read.open_table(INDEX_NAMES).map_err(storage_error)?);
+    drop(read.open_table(TABLE_INDEXES).map_err(storage_error)?);
     drop(read.open_table(MEMBERSHIPS).map_err(storage_error)?);
     drop(read.open_table(GRANTS).map_err(storage_error)?);
     drop(read.open_table(POLICIES).map_err(storage_error)?);
@@ -2637,7 +2725,7 @@ mod catalog_index_tests {
     use super::{
         ensure_column_lookup_index, ensure_dependency_index, ensure_grant_index,
         ensure_index_name_index, ensure_membership_index, ensure_policy_index,
-        ensure_relation_name_index, validate_name_domains,
+        ensure_relation_name_index, ensure_table_index_index, validate_name_domains,
     };
     use crate::catalog::{CatalogField, WireType, encode_envelope, family_schema};
     use crate::catalog_index::{
@@ -2645,12 +2733,13 @@ mod catalog_index_tests {
         lookup_dependents_for_referenced, lookup_grants_for_grantee, lookup_grants_for_object,
         lookup_index_id_by_name, lookup_members_for_role, lookup_policies_for_table_operation,
         lookup_relation_id_by_name, lookup_roles_for_member, scan_column_ids_for_table,
+        scan_index_ids_for_table,
     };
     use crate::schema::{
         CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, GRANTS, INDEX_NAMES, MEMBERSHIPS, POLICIES,
-        RELATION_NAMES, create_tables,
+        RELATION_NAMES, TABLE_INDEXES, create_tables,
     };
-    use redb::{Database, ReadableDatabase};
+    use redb::{Database, ReadableDatabase, ReadableTable};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -3188,6 +3277,92 @@ mod catalog_index_tests {
         assert_eq!(
             scan_column_ids_for_table(&read, [0x32; 16], 0),
             Err(crate::catalog_index::CatalogIndexError::InvalidName)
+        );
+    }
+
+    #[test]
+    fn table_index_scan_rebuilds_and_uses_the_table_prefix() {
+        let database = database();
+        let write = database.begin_write().unwrap();
+        let mut catalog = write.open_table(CATALOG).unwrap();
+        for (index_id, table_id) in [([0x69; 16], [0x32; 16]), ([0x70; 16], [0x88; 16])] {
+            let mut key = 9u16.to_be_bytes().to_vec();
+            key.push(1);
+            key.extend_from_slice(&index_id);
+            let mut columns = 1u32.to_le_bytes().to_vec();
+            columns.extend_from_slice(&[0x67; 16]);
+            let fields = [
+                CatalogField {
+                    tag: 1,
+                    wire_type: WireType::Id,
+                    payload: table_id.to_vec(),
+                },
+                CatalogField {
+                    tag: 2,
+                    wire_type: WireType::Ids,
+                    payload: columns,
+                },
+                CatalogField {
+                    tag: 3,
+                    wire_type: WireType::U16,
+                    payload: 1u16.to_le_bytes().to_vec(),
+                },
+                CatalogField {
+                    tag: 4,
+                    wire_type: WireType::Bool,
+                    payload: vec![0],
+                },
+                CatalogField {
+                    tag: 5,
+                    wire_type: WireType::U16,
+                    payload: 1u16.to_le_bytes().to_vec(),
+                },
+                CatalogField {
+                    tag: 7,
+                    wire_type: WireType::Id,
+                    payload: [0x77; 16].to_vec(),
+                },
+                CatalogField {
+                    tag: 8,
+                    wire_type: WireType::U16,
+                    payload: 1u16.to_le_bytes().to_vec(),
+                },
+                CatalogField {
+                    tag: 9,
+                    wire_type: WireType::U32,
+                    payload: 1u32.to_le_bytes().to_vec(),
+                },
+                CatalogField {
+                    tag: 10,
+                    wire_type: WireType::U64,
+                    payload: 1u64.to_le_bytes().to_vec(),
+                },
+            ];
+            let value = encode_envelope(&family_schema(9).unwrap(), &key, &fields).unwrap();
+            catalog.insert(key.as_slice(), value.as_slice()).unwrap();
+        }
+        drop(catalog);
+        drop(write.open_table(TABLE_INDEXES).unwrap());
+        write.delete_table(TABLE_INDEXES).unwrap();
+        write.commit().unwrap();
+
+        ensure_table_index_index(&database).unwrap();
+        let read = database.begin_read().unwrap();
+        assert_eq!(
+            scan_index_ids_for_table(&read, [0x32; 16], 1).unwrap(),
+            vec![[0x69; 16]]
+        );
+        assert_eq!(
+            scan_index_ids_for_table(&read, [0x32; 16], 0),
+            Err(crate::catalog_index::CatalogIndexError::InvalidName)
+        );
+        assert_eq!(
+            read.open_table(TABLE_INDEXES)
+                .unwrap()
+                .iter()
+                .unwrap()
+                .count(),
+            2
         );
     }
 

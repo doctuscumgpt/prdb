@@ -3,7 +3,7 @@
 use crate::catalog::decode_registered_envelope;
 use crate::schema::{
     CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, GRANTS, INDEX_NAMES, MEMBERSHIPS, POLICIES,
-    PRINCIPAL_NAMES, RELATION_NAMES, SCHEMA_NAMES,
+    PRINCIPAL_NAMES, RELATION_NAMES, SCHEMA_NAMES, TABLE_INDEXES,
 };
 use redb::ReadTransaction;
 
@@ -299,6 +299,64 @@ pub fn scan_column_ids_for_table(
             return Err(CatalogIndexError::InvalidEntry);
         }
         ids.push(column_id);
+    }
+    Ok(ids)
+}
+
+/// List one table's family-9 index IDs through its pinned table index.
+pub fn scan_index_ids_for_table(
+    transaction: &ReadTransaction,
+    table_id: [u8; 16],
+    max_records: usize,
+) -> Result<Vec<[u8; 16]>, CatalogIndexError> {
+    if table_id == [0; 16]
+        || max_records == 0
+        || max_records > crate::snapshot::MAX_CATALOG_FAMILY_SCAN
+    {
+        return Err(CatalogIndexError::InvalidName);
+    }
+    let index = transaction
+        .open_table(TABLE_INDEXES)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let catalog = transaction
+        .open_table(CATALOG)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let mut ids = Vec::new();
+    for entry in index
+        .range(table_id.as_slice()..)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+    {
+        let (key, value) = entry.map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+        let key = key.value();
+        if !key.starts_with(&table_id) {
+            break;
+        }
+        if key.len() != 32 || !value.value().is_empty() {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        if ids.len() == max_records {
+            return Err(CatalogIndexError::RecordLimitExceeded);
+        }
+        let index_id: [u8; 16] = key[16..32]
+            .try_into()
+            .map_err(|_| CatalogIndexError::InvalidEntry)?;
+        if index_id == [0; 16] {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        let catalog_key = catalog_id_key(9, index_id);
+        let bytes = catalog
+            .get(catalog_key.as_slice())
+            .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+            .ok_or(CatalogIndexError::InvalidEntry)?;
+        let record = decode_registered_envelope(bytes.value())
+            .map_err(|_| CatalogIndexError::InvalidEntry)?;
+        if record.family_code != 9
+            || record.logical_key != catalog_key
+            || field_id(&record, 1)? != table_id
+        {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        ids.push(index_id);
     }
     Ok(ids)
 }

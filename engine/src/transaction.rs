@@ -927,6 +927,38 @@ impl<'db> InvocationTransaction<'db> {
         result
     }
 
+    fn scan_index_ids_for_table(
+        &mut self,
+        table_id: [u8; 16],
+    ) -> Result<Vec<[u8; 16]>, TransactionError> {
+        let result = (|| {
+            let remaining = self.max_scan_work.saturating_sub(self.scanned_work);
+            if remaining == 0 {
+                return Err(TransactionError::ScanBudgetExceeded);
+            }
+            let limit = remaining.min(MAX_CATALOG_FAMILY_SCAN);
+            let ids = self
+                .pinned_snapshot()?
+                .scan_index_ids_for_table(table_id, limit)
+                .map_err(|error| match error {
+                    SnapshotError::RecordLimitExceeded if remaining <= MAX_CATALOG_FAMILY_SCAN => {
+                        TransactionError::ScanBudgetExceeded
+                    }
+                    SnapshotError::RecordLimitExceeded | SnapshotError::InvalidCatalogRecord => {
+                        TransactionError::CorruptCatalog
+                    }
+                    SnapshotError::Storage(error) => TransactionError::Storage(error),
+                    _ => TransactionError::CorruptCatalog,
+                })?;
+            self.charge_scan_work(ids.len())?;
+            Ok(ids)
+        })();
+        if matches!(&result, Err(TransactionError::ScanBudgetExceeded)) && !self.aborted {
+            self.abort()?;
+        }
+        result
+    }
+
     fn scan_policy_targets_for_policy(
         &mut self,
         policy_id: [u8; 16],
@@ -4235,7 +4267,20 @@ impl<'db> InvocationTransaction<'db> {
             if trusted_schema != *schema {
                 return Err(TransactionError::InvalidContext);
             }
-            let records = self.scan_catalog_family(9)?;
+            let index_ids = self.scan_index_ids_for_table(schema.table_id)?;
+            let records = if index_ids.is_empty() {
+                // Preserve the low-level path for snapshots whose family-9
+                // records predate derived table-index maintenance.
+                self.scan_catalog_family(9)?
+            } else {
+                index_ids
+                    .into_iter()
+                    .map(|index_id| {
+                        self.read_catalog_record(&catalog_id_key(9, index_id))?
+                            .ok_or(TransactionError::CorruptCatalog)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            };
             let mut indexes = Vec::new();
             let mut seen_index_ids = HashSet::new();
             for record in records {

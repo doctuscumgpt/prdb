@@ -7852,6 +7852,10 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
         lookup_index_id_by_name(&index_name_snapshot, id(80), "source_value_unique")?,
         Some(created.index_id)
     );
+    assert_eq!(
+        prdb_engine::catalog_index::scan_index_ids_for_table(&index_name_snapshot, id(82), 1)?,
+        vec![created.index_id]
+    );
     assert!(matches!(
         stale_writer.commit(),
         Err(prdb_engine::transaction::TransactionError::Commit(

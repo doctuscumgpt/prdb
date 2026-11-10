@@ -290,3 +290,10 @@
 - Environment: direct Rust 1.95 compilation against cached redb 4.4.0 is available. `cargo test --workspace --locked` fails before compilation because crates.io `config.json` cannot be fetched through the configured proxy. TinyCC is not installed/on PATH, so C SDK and sandbox artifact acceptance cannot yet be run. These are validation/toolchain blockers, not design questions.
 - Verification after constraint references and NOT NULL loading: 91 tests across 16 real-redb integration targets passed via direct Rust 1.95 compilation against cached redb 4.4.0. Direct Clippy with `-D warnings`, rustfmt `--check`, and `git diff --check` pass.
 - Next: startup/bootstrap integrity validation, then an authenticated DDL control path.
+
+## DD-2: table-scoped index-definition lookup — verified
+
+- Replaced the invocation loader's global family-9 scan with a prefix lookup keyed by table ID and index ID. The lookup charges only matching entries against the invocation scan-work budget, caps candidates at the catalog-family limit, and verifies each derived entry against its authoritative family-9 record. For an empty prefix, the low-level loader keeps a bounded family-9 fallback for snapshots whose rows predate derived-index maintenance. Startup scans family 9 under the same bound and checks or rebuilds the derived index; catalog commits maintain it atomically with family-9 writes.
+- Regression evidence: startup fixtures rebuild a missing table-index map and verify that a prefix lookup returns only the requested table's index. The real-redb named-index DDL integration test checks that creating an index publishes its table-index entry.
+- Spec: [data dictionary](../../specs/data-dictionary.md) now describes the pinned lookup and startup consistency check.
+- Verification: the focused startup rebuild and real-redb index DDL tests passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed. The workspace suite reports 4 sandbox fixtures ignored because they require delegated cgroups and built TinyCC fixtures.
