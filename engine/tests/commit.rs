@@ -5,8 +5,9 @@ use prdb_engine::catalog::{
 use prdb_engine::catalog_index::{
     lookup_column_id_by_name, lookup_column_id_by_ordinal, lookup_dependencies_for_dependent,
     lookup_dependents_for_referenced, lookup_grants_for_grantee, lookup_grants_for_object,
-    lookup_members_for_role, lookup_policies_for_table_operation, lookup_principal_id_by_name,
-    lookup_relation_id_by_name, lookup_roles_for_member, lookup_schema_id_by_name,
+    lookup_index_id_by_name, lookup_members_for_role, lookup_policies_for_table_operation,
+    lookup_principal_id_by_name, lookup_relation_id_by_name, lookup_roles_for_member,
+    lookup_schema_id_by_name,
 };
 use prdb_engine::commit::{
     CatalogWrite, CommitError, CommitRequest, ForeignKeyCheck, IndexWrite, RowWrite,
@@ -7703,6 +7704,7 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
     let fixture = Fixture::new();
     let database = initialize(&fixture.path())?;
     let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    eprintln!("storage manager ready");
     let admin_role = builtin_owner_id();
     let actor = id(0xd0);
     let foreign_key_edge = dependency_write(id(86), id(85), 3).key;
@@ -7778,6 +7780,11 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
         .map_err(|error| format!("named unique index creation failed: {error:?}"))?;
     assert_ne!(created.index_id, [0; 16]);
     assert_eq!(created.commit_sequence, 3);
+    let index_name_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_index_id_by_name(&index_name_snapshot, id(80), "source_value_unique")?,
+        Some(created.index_id)
+    );
     assert!(matches!(
         stale_writer.commit(),
         Err(prdb_engine::transaction::TransactionError::Commit(
@@ -7983,6 +7990,10 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
             .get(id_catalog_key(2, created.index_id).as_slice())?
             .is_none()
     );
+    assert_eq!(
+        lookup_index_id_by_name(&index_name_snapshot, id(80), "source_value_unique")?,
+        Some(created.index_id)
+    );
     assert!(
         catalog
             .get(dependency_write(created.index_id, id(80), 1).key.as_slice())?
@@ -7990,8 +8001,13 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
     );
     assert_eq!(read.open_table(schema::INDEXES)?.iter()?.count(), 0);
     assert_eq!(read.open_table(schema::ROW_INDEXES)?.iter()?.count(), 0);
+    assert_eq!(
+        lookup_index_id_by_name(&read, id(80), "source_value_unique")?,
+        None
+    );
     drop(catalog);
     drop(read);
+    drop(index_name_snapshot);
 
     let stale_policy_writer_invocation = id(0xdb);
     let stale_policy_row = id(0xdc);

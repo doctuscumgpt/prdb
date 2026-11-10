@@ -16,6 +16,8 @@ pub const SCHEMA_NAMES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("sc
 pub const RELATION_NAMES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("relation_names_v1");
 /// Family-6 columns ordered by table/name and table/ordinal.
 pub const COLUMN_LOOKUPS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("column_lookups_v1");
+/// Family-2 index objects ordered by parent schema and normalized name.
+pub const INDEX_NAMES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("index_names_v1");
 /// Direct membership edges stored in member-to-role and role-to-member orders.
 pub const MEMBERSHIPS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("memberships_v1");
 /// Grant catalog keys ordered by grantee and by protected object.
@@ -40,6 +42,7 @@ pub fn create_tables(write: &WriteTransaction) -> Result<(), Box<dyn std::error:
     drop(write.open_table(SCHEMA_NAMES)?);
     drop(write.open_table(RELATION_NAMES)?);
     drop(write.open_table(COLUMN_LOOKUPS)?);
+    drop(write.open_table(INDEX_NAMES)?);
     drop(write.open_table(MEMBERSHIPS)?);
     drop(write.open_table(GRANTS)?);
     drop(write.open_table(POLICIES)?);

@@ -3215,6 +3215,23 @@ fn catalog_field_bytes(
         .ok_or(CommitError::InvalidCatalog)
 }
 
+fn catalog_optional_field_bytes(
+    key: &[u8],
+    bytes: &[u8],
+    family: u16,
+    tag: u16,
+) -> Result<Option<Vec<u8>>, CommitError> {
+    let record = decode_registered_envelope(bytes).map_err(|_| CommitError::InvalidCatalog)?;
+    if record.family_code != family || record.logical_key != key {
+        return Err(CommitError::InvalidCatalog);
+    }
+    Ok(record
+        .fields
+        .iter()
+        .find(|field| field.tag == tag)
+        .map(|field| field.payload.clone()))
+}
+
 fn catalog_id_list_field(
     key: &[u8],
     bytes: &[u8],
@@ -6116,6 +6133,9 @@ fn commit_storage_changes_inner_unchecked(
         let mut column_lookups = transaction
             .open_table(crate::schema::COLUMN_LOOKUPS)
             .map_err(storage_error)?;
+        let mut index_names = transaction
+            .open_table(crate::schema::INDEX_NAMES)
+            .map_err(storage_error)?;
         let principal_prefix = 10u16.to_be_bytes();
         for write in catalog_writes
             .iter()
@@ -6169,6 +6189,56 @@ fn commit_storage_changes_inner_unchecked(
                 let schema_id = write.key.get(3..19).ok_or(CommitError::InvalidCatalog)?;
                 if schema_names
                     .insert(name.as_slice(), schema_id)
+                    .map_err(storage_error)?
+                    .is_some()
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
+            }
+        }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&schema_prefix))
+        {
+            if write.key.len() != 19 || write.key[2] != 1 {
+                return Err(CommitError::InvalidCatalog);
+            }
+            if let Some(current) = table.get(write.key.as_slice()).map_err(storage_error)?
+                && catalog_field_u16(&write.key, current.value(), 2, 1)? == 7
+            {
+                let Some(schema_id) =
+                    catalog_optional_field_bytes(&write.key, current.value(), 2, 2)?
+                else {
+                    continue;
+                };
+                let name = catalog_field_bytes(&write.key, current.value(), 2, 3)?;
+                let mut index_key = schema_id;
+                index_key.extend_from_slice(&name);
+                index_names
+                    .remove(index_key.as_slice())
+                    .map_err(storage_error)?;
+            }
+        }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&schema_prefix))
+        {
+            if let Some(payload) = &write.payload
+                && catalog_field_u16(&write.key, payload, 2, 1)? == 7
+            {
+                let Some(schema_id) = catalog_optional_field_bytes(&write.key, payload, 2, 2)?
+                else {
+                    continue;
+                };
+                let name = catalog_field_bytes(&write.key, payload, 2, 3)?;
+                if write.key.len() != 19 || write.key[2] != 1 || name.is_empty() {
+                    return Err(CommitError::InvalidCatalog);
+                }
+                let index_id = write.key.get(3..19).ok_or(CommitError::InvalidCatalog)?;
+                let mut index_key = schema_id;
+                index_key.extend_from_slice(&name);
+                if index_names
+                    .insert(index_key.as_slice(), index_id)
                     .map_err(storage_error)?
                     .is_some()
                 {

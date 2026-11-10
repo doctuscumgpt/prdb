@@ -2,8 +2,8 @@
 
 use crate::catalog::decode_registered_envelope;
 use crate::schema::{
-    CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, GRANTS, MEMBERSHIPS, POLICIES, PRINCIPAL_NAMES,
-    RELATION_NAMES, SCHEMA_NAMES,
+    CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, GRANTS, INDEX_NAMES, MEMBERSHIPS, POLICIES,
+    PRINCIPAL_NAMES, RELATION_NAMES, SCHEMA_NAMES,
 };
 use redb::ReadTransaction;
 
@@ -290,6 +290,55 @@ fn lookup_column(
         return Err(CatalogIndexError::InvalidEntry);
     }
     Ok(Some(column_id))
+}
+
+/// Resolve a named index within its parent schema in this snapshot.
+pub fn lookup_index_id_by_name(
+    transaction: &ReadTransaction,
+    schema_id: [u8; 16],
+    normalized_name: &str,
+) -> Result<Option<[u8; 16]>, CatalogIndexError> {
+    if schema_id == [0; 16] || normalized_name.is_empty() || normalized_name.len() > 4096 {
+        return Err(CatalogIndexError::InvalidName);
+    }
+    let mut key = Vec::with_capacity(16 + normalized_name.len());
+    key.extend_from_slice(&schema_id);
+    key.extend_from_slice(normalized_name.as_bytes());
+    let index = transaction
+        .open_table(INDEX_NAMES)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let Some(value) = index
+        .get(key.as_slice())
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let index_id: [u8; 16] = value
+        .value()
+        .try_into()
+        .map_err(|_| CatalogIndexError::InvalidEntry)?;
+    if index_id == [0; 16] {
+        return Err(CatalogIndexError::InvalidEntry);
+    }
+    let catalog = transaction
+        .open_table(CATALOG)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let catalog_key = catalog_id_key(2, index_id);
+    let bytes = catalog
+        .get(catalog_key.as_slice())
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+        .ok_or(CatalogIndexError::InvalidEntry)?;
+    let record =
+        decode_registered_envelope(bytes.value()).map_err(|_| CatalogIndexError::InvalidEntry)?;
+    if record.family_code != 2
+        || record.logical_key != catalog_key
+        || field_u16(&record, 1)? != 7
+        || field_id(&record, 2)? != schema_id
+        || field_bytes(&record, 3)? != normalized_name.as_bytes()
+    {
+        return Err(CatalogIndexError::InvalidEntry);
+    }
+    Ok(Some(index_id))
 }
 
 fn catalog_id_key(family: u16, id: [u8; 16]) -> Vec<u8> {

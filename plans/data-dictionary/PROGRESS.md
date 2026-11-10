@@ -173,12 +173,13 @@
 - Verification: focused reconstruction and rename/snapshot tests passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
 - Remaining: complete DD-2 lookup/index coverage for named index objects.
 
-## DD-2: schema-scoped named index lookup — in progress
+## DD-2: schema-scoped named index lookup — verified
 
-- Added `index_names_v1` for family-2 index objects, keyed by parent schema ID and exact normalized name. Snapshot lookup validates the authoritative object kind, parent, and name.
+- Added `index_names_v1` for schema-parented family-2 index objects, keyed by parent schema ID and exact normalized name. Snapshot lookup validates the authoritative object kind, parent, and name.
 - Family-2 index-object writes maintain the name entry atomically; startup verifies and reconstructs the index from authoritative objects.
-- Pending: run startup reconstruction and index create/drop retained-snapshot regressions, then complete workspace verification.
-- Remaining: complete DD-2 lookup/index coverage for named index objects.
+- Regression evidence: startup tests reconstruct missing and stale name indexes; the named-index DDL integration covers create/drop lookup while a retained snapshot preserves the pre-drop result.
+- Verification: focused startup and index lifecycle tests passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
+- Remaining: DD-2 cross-record naming-domain integrity and broader atomic catalog semantics continue under DD-3 and later increments.
 
 ## DD-2: bidirectional dependency-edge index — verified
 
