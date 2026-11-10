@@ -9611,6 +9611,54 @@ fn storage_manager_admission_requires_a_login_enabled_catalog_user()
 }
 
 #[test]
+fn authenticated_role_closure_budget_ignores_unreachable_memberships()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let user_id = id(0xa1);
+    let first_role = id(0xa2);
+    let second_role = id(0xa3);
+    let third_role = id(0xa4);
+    let mut records = vec![
+        principal_write_with_name(user_id, 1, 1, "role_budget_user"),
+        object_write_with_name(user_id, 8, "role_budget_user"),
+        principal_write_with_name(first_role, 2, 1, "role_budget_first"),
+        object_write_with_name(first_role, 9, "role_budget_first"),
+        principal_write_with_name(second_role, 2, 1, "role_budget_second"),
+        object_write_with_name(second_role, 9, "role_budget_second"),
+        principal_write_with_name(third_role, 2, 1, "role_budget_third"),
+        object_write_with_name(third_role, 9, "role_budget_third"),
+    ];
+    for (member_id, role_id) in [(first_role, second_role), (second_role, third_role)] {
+        records.push(membership_write(member_id, role_id));
+        records.push(dependency_write(member_id, role_id, 5));
+    }
+    let mut audit = identity_audit_event(0xa5, builtin_owner_id(), user_id);
+    audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0xa5), builtin_owner_id(), 9_999, &records, &[audit])?;
+
+    let storage = StorageManager::with_config(
+        &database,
+        StorageManagerConfig {
+            max_invocation_scan_work: 1,
+            ..StorageManagerConfig::default()
+        },
+    )?;
+    let (mut invocation, roles) =
+        storage.begin_authenticated_invocation(id(0xa6), user_id, 9_999, 1, 64)?;
+    assert!(roles.is_empty());
+    invocation.abort()?;
+    assert_eq!(
+        lookup_outcome(&database, id(0xa6), user_id, 1)?
+            .ok_or("missing role-closure admission outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    Ok(())
+}
+
+#[test]
 fn storage_manager_bounds_active_invocation_snapshots_across_clones()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

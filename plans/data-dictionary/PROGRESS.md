@@ -144,9 +144,11 @@
 ## DD-2: bidirectional membership index — verified
 
 - Added `memberships_v1` with separate member-to-role and role-to-member key orders and snapshot lookup APIs. Each returned edge is checked against its authoritative family-11 record.
-- Family-11 catalog writes maintain both entries in the same redb transaction; startup rebuilds both directions from authoritative records. Existing role-closure resolution remains on its validated catalog scan path pending indexed traversal parity.
+- Family-11 catalog writes maintain both entries in the same redb transaction; startup rebuilds both directions from authoritative records. Runtime role-closure resolution walks the pinned member-to-role index, validates every result against family 11, and guards each reachable edge and principal record through commit.
 - Regression evidence: startup unit tests rebuild missing and stale directions; commit tests verify member-to-role and role-to-member results in both the original and a retained snapshot after another grant is published.
 - Verification: membership reconstruction and snapshot regressions passed; `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable); workspace Clippy with warnings denied passed.
+- Regression evidence for indexed closure: an authenticated user with no memberships succeeds under a one-record invocation scan budget even when the pinned catalog contains an unrelated role chain; the test failed before the indexed traversal with `ScanBudgetExceeded`. Existing transitive-closure tests verify reachable roles and stale-edge guards.
+- Verification after indexed traversal: `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
 - Remaining: complete DD-2 lookup/index coverage for objects, grants, policies, and dependencies.
 
 ## DD-2: grantee/object grant indexes — verified

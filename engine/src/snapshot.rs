@@ -72,6 +72,25 @@ impl RowSnapshot {
         Ok(table.get(key)?.map(|value| value.value().to_vec()))
     }
 
+    /// Return the roles granted directly to a member through the validated
+    /// snapshot index. The lookup checks each derived entry against family 11.
+    pub(crate) fn lookup_roles_for_member(
+        &self,
+        member_id: [u8; 16],
+    ) -> Result<Vec<[u8; 16]>, SnapshotError> {
+        crate::catalog_index::lookup_roles_for_member(&self.transaction, member_id).map_err(
+            |error| match error {
+                crate::catalog_index::CatalogIndexError::Storage(error) => {
+                    SnapshotError::Storage(error)
+                }
+                crate::catalog_index::CatalogIndexError::InvalidName
+                | crate::catalog_index::CatalogIndexError::InvalidEntry => {
+                    SnapshotError::InvalidCatalogRecord
+                }
+            },
+        )
+    }
+
     /// Return a bounded, ordered page of row IDs from this pinned snapshot.
     /// A full page is reported as incomplete; callers can resume after its last
     /// row ID, and an empty follow-up page confirms completion.

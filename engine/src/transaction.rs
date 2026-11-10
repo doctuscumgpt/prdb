@@ -4354,38 +4354,49 @@ impl<'db> InvocationTransaction<'db> {
             if principal_id == [0; 16] {
                 return Err(TransactionError::InvalidContext);
             }
-            let records = self.scan_catalog_family(11)?;
-            if records.len() > crate::authorization::MAX_MEMBERSHIP_EDGES {
-                return Err(TransactionError::CorruptCatalog);
-            }
-            let mut memberships = Vec::with_capacity(records.len());
-            let mut principal_ids = HashSet::new();
-            for record in records {
-                let key = record.logical_key.clone();
-                if key.len() != 36 || key[2] != 1 || key[19] != 1 {
-                    return Err(TransactionError::CorruptCatalog);
-                }
-                let guarded = self
-                    .read_catalog_record(&key)?
-                    .ok_or(TransactionError::CorruptCatalog)?;
-                if guarded != record
-                    || catalog_id(&record, 1)? == [0; 16]
-                    || catalog_u64(&record, 2)? == 0
+            let mut memberships = Vec::new();
+            let mut principal_ids = HashSet::from([principal_id]);
+            let mut pending = vec![principal_id];
+            while let Some(member_id) = pending.pop() {
+                let role_ids = self
+                    .pinned_snapshot()?
+                    .lookup_roles_for_member(member_id)
+                    .map_err(|error| match error {
+                        SnapshotError::Storage(error) => TransactionError::Storage(error),
+                        SnapshotError::InvalidCatalogRecord => TransactionError::CorruptCatalog,
+                        _ => TransactionError::CorruptCatalog,
+                    })?;
+                if memberships.len().saturating_add(role_ids.len())
+                    > crate::authorization::MAX_MEMBERSHIP_EDGES
                 {
                     return Err(TransactionError::CorruptCatalog);
                 }
-                let member_id: [u8; 16] = key[3..19]
-                    .try_into()
-                    .map_err(|_| TransactionError::CorruptCatalog)?;
-                let role_id: [u8; 16] = key[20..36]
-                    .try_into()
-                    .map_err(|_| TransactionError::CorruptCatalog)?;
-                memberships.push(Membership { member_id, role_id });
-                principal_ids.insert(member_id);
-                principal_ids.insert(role_id);
+                for role_id in role_ids {
+                    let mut key = 11u16.to_be_bytes().to_vec();
+                    key.push(1);
+                    key.extend_from_slice(&member_id);
+                    key.push(1);
+                    key.extend_from_slice(&role_id);
+                    let record = self
+                        .read_catalog_record(&key)?
+                        .ok_or(TransactionError::CorruptCatalog)?;
+                    if record.family_code != 11
+                        || record.logical_key != key
+                        || catalog_id(&record, 1)? == [0; 16]
+                        || catalog_u64(&record, 2)? == 0
+                    {
+                        return Err(TransactionError::CorruptCatalog);
+                    }
+                    memberships.push(Membership { member_id, role_id });
+                    if principal_ids.insert(role_id) {
+                        pending.push(role_id);
+                    }
+                }
             }
-            let principal_is_membership_endpoint = principal_ids.contains(&principal_id);
-            principal_ids.insert(principal_id);
+            self.charge_scan_work(memberships.len())?;
+            let principal_is_membership_endpoint = memberships
+                .iter()
+                .any(|edge| edge.member_id == principal_id || edge.role_id == principal_id);
             for id in principal_ids {
                 let record = self
                     .read_catalog_record(&catalog_id_key(10, id))?
