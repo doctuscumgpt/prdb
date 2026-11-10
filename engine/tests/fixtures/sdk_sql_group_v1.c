@@ -463,6 +463,12 @@ int main(void) {
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x1E, 0x84};
             static const uint8_t expected_odd[] = {
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x5B, 0x8E};
+            static const uint8_t expected_negative_even[] = {
+                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xE1, 0x7C};
+            static const uint8_t expected_negative_odd[] = {
+                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xA4, 0x72};
             for (uint32_t index = 0; index < 128; ++index) {
                 many_values[index] = integer_value(many_bytes[index], 0);
             }
@@ -482,6 +488,22 @@ int main(void) {
                    PRDB_SDK_SQL_EVAL_OK);
             assert(memcmp(result_bytes, expected_odd, sizeof(expected_odd)) ==
                    0);
+            many_values[0] = integer_value(many_bytes[0], -1);
+            assert(prdb_sdk_sql_avg_v1(
+                       many_values, 128, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0,
+                       &average, sizeof(average), result_bytes,
+                       sizeof(result_bytes), &result_scale) ==
+                   PRDB_SDK_SQL_EVAL_OK);
+            assert(memcmp(result_bytes, expected_negative_even,
+                          sizeof(expected_negative_even)) == 0);
+            many_values[0] = integer_value(many_bytes[0], -3);
+            assert(prdb_sdk_sql_avg_v1(
+                       many_values, 128, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0,
+                       &average, sizeof(average), result_bytes,
+                       sizeof(result_bytes), &result_scale) ==
+                   PRDB_SDK_SQL_EVAL_OK);
+            assert(memcmp(result_bytes, expected_negative_odd,
+                          sizeof(expected_negative_odd)) == 0);
         }
 
         {

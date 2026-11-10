@@ -449,3 +449,9 @@
 - Correction: the earlier progress note incorrectly concluded that the runner could not exercise mixed truth outcomes because each comparison uses the selected aggregate. Different groups supply different aggregate values, so the existing bounded grammar is sufficient.
 - Verification: the focused `sdk-sql-execute-v10` fixture and the complete `make -f engine/sdk/Makefile test` suite passed under the TinyCC Nix shell.
 - Remaining: broader analytical stress/measurement work remains open.
+
+## SQL-7 dependency: AVG negative tie-rounding regression — verified
+
+- Regression: the bounded AVG fixture now checks negative half ties at the 128-row limit. `-1/128` rounds to the even scaled coefficient `-7812`, while `-3/128` rounds to `-23438`, confirming nearest/ties-to-even is symmetric for negative inputs.
+- Verification: the focused `sdk-sql-group-v1` fixture passed under TinyCC with `-Wall -Wextra -Werror`.
+- Remaining: broader analytical stress/measurement work remains open.
