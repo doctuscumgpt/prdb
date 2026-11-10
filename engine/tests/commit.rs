@@ -8190,6 +8190,26 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
         commit_sequence(&database)?,
         created_racing_policy.commit_sequence
     );
+    let recreate_invocation = id(0xe3);
+    let mut recreate_audit = identity_audit_event(0xe4, actor, id(82));
+    recreate_audit.correlation_id = recreate_invocation;
+    let recreated_index =
+        storage.create_index(prdb_engine::storage_manager::CreateIndexRequest {
+            invocation_id: recreate_invocation,
+            authenticated_actor_id: actor,
+            table_id: id(82),
+            name: "source_value_unique".to_owned(),
+            column_ids: vec![id(84)],
+            unique: true,
+            retention_deadline_us: 9_999,
+            audit_event: recreate_audit,
+        })?;
+    assert_ne!(recreated_index.index_id, created.index_id);
+    let recreated_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_index_id_by_name(&recreated_snapshot, id(80), "source_value_unique")?,
+        Some(recreated_index.index_id)
+    );
     prdb_engine::startup::validate_persisted_records(&database)?;
     Ok(())
 }
