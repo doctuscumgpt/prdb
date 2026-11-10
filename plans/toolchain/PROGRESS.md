@@ -1,5 +1,13 @@
 # Toolchain Progress
 
+## TC-2: generated executor relation-name tail codecs — implemented
+
+- Contract: relation-resolution requests carry exact UTF-8 schema and relation names whose byte lengths appear in the generated prefix.
+- Implementation: the generator emits bounded Rust and C UTF-8 tail helpers. Rust executor request encoding and decoding use them while retaining nonempty-name, payload-size, exact-tail, and UTF-8 checks.
+- Regression: an exact Rust wire-vector test checks round-trip, invalid UTF-8, and trailing-byte rejection. The TinyCC fixture checks both C name helpers and byte content; generator tests assert each helper pair.
+- Verification: generator drift/schema tests, focused Rust request regression, warning-denied workspace Clippy, and full maintained TinyCC SDK suite passed in the pinned Nix shell.
+- Remaining: additional executor/planner/supervisor payload migrations and release-profile, signature, runtime-support, timing, and sandbox acceptance gates remain open.
+
 ## TC-2: generated optimizer plan-byte tail codec — implemented
 
 - Contract: a successful optimizer response carries a generated version/status/length prefix and exactly the declared opaque plan bytes; plan structure remains validated by the optimizer-plan codec.

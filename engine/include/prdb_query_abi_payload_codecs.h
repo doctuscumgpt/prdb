@@ -48,6 +48,48 @@ static inline int prdb_decode_executor_resolve_relation_request(const uint8_t *p
     return 1;
 }
 
+static inline int prdb_encode_executor_resolve_relation_request_schema_name(uint8_t *payload, size_t payload_capacity, const uint8_t *bytes, size_t bytes_len) {
+    if (bytes_len > UINT16_MAX || bytes_len > payload_capacity ||
+        (bytes_len != 0 && (payload == NULL || bytes == NULL))) {
+        return 0;
+    }
+    for (size_t i = 0; i < bytes_len; ++i) {
+        payload[i] = bytes[i];
+    }
+    return 1;
+}
+
+static inline int prdb_decode_executor_resolve_relation_request_schema_name(const uint8_t *payload, size_t payload_len, uint16_t schema_name_length, const uint8_t **bytes, size_t *bytes_len) {
+    if (payload_len != (size_t)schema_name_length || bytes == NULL || bytes_len == NULL ||
+        (schema_name_length != 0 && payload == NULL)) {
+        return 0;
+    }
+    *bytes = payload;
+    *bytes_len = (size_t)schema_name_length;
+    return 1;
+}
+
+static inline int prdb_encode_executor_resolve_relation_request_relation_name(uint8_t *payload, size_t payload_capacity, const uint8_t *bytes, size_t bytes_len) {
+    if (bytes_len > UINT16_MAX || bytes_len > payload_capacity ||
+        (bytes_len != 0 && (payload == NULL || bytes == NULL))) {
+        return 0;
+    }
+    for (size_t i = 0; i < bytes_len; ++i) {
+        payload[i] = bytes[i];
+    }
+    return 1;
+}
+
+static inline int prdb_decode_executor_resolve_relation_request_relation_name(const uint8_t *payload, size_t payload_len, uint16_t relation_name_length, const uint8_t **bytes, size_t *bytes_len) {
+    if (payload_len != (size_t)relation_name_length || bytes == NULL || bytes_len == NULL ||
+        (relation_name_length != 0 && payload == NULL)) {
+        return 0;
+    }
+    *bytes = payload;
+    *bytes_len = (size_t)relation_name_length;
+    return 1;
+}
+
 static inline void prdb_encode_executor_resolve_relation_unavailable_response(uint8_t payload[3],
     uint8_t status) {
     payload[0] = (uint8_t)((PRDB_RESOLVE_RELATION_PAYLOAD_VERSION >> 8) & 0xffu);

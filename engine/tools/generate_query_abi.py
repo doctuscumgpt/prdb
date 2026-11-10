@@ -431,6 +431,53 @@ def render(schema):
 
         for trailing_field in trailing_fields:
             encoding = trailing_field["encoding"]
+            if encoding == "utf8":
+                field_name = trailing_field["name"]
+                length_field = trailing_field["length_field"]
+                if generate_rust_codec:
+                    rust_lines.extend(
+                        [
+                            f"pub fn encode_{name.lower()}_{field_name}(value: &str) -> Option<Vec<u8>> {{",
+                            "    u16::try_from(value.len()).ok()?;",
+                            "    Some(value.as_bytes().to_vec())",
+                            "}",
+                            "",
+                            f"pub fn decode_{name.lower()}_{field_name}(payload: &[u8], {length_field}: u16) -> Option<&str> {{",
+                            f"    if payload.len() != usize::from({length_field}) {{",
+                            "        return None;",
+                            "    }",
+                            "    std::str::from_utf8(payload).ok()",
+                            "}",
+                            "",
+                        ]
+                    )
+                if generate_c_codec:
+                    c_codec_lines.extend(
+                        [
+                            f"static inline int prdb_encode_{name.lower()}_{field_name}(uint8_t *payload, size_t payload_capacity, const uint8_t *bytes, size_t bytes_len) {{",
+                            "    if (bytes_len > UINT16_MAX || bytes_len > payload_capacity ||",
+                            "        (bytes_len != 0 && (payload == NULL || bytes == NULL))) {",
+                            "        return 0;",
+                            "    }",
+                            "    for (size_t i = 0; i < bytes_len; ++i) {",
+                            "        payload[i] = bytes[i];",
+                            "    }",
+                            "    return 1;",
+                            "}",
+                            "",
+                            f"static inline int prdb_decode_{name.lower()}_{field_name}(const uint8_t *payload, size_t payload_len, uint16_t {length_field}, const uint8_t **bytes, size_t *bytes_len) {{",
+                            f"    if (payload_len != (size_t){length_field} || bytes == NULL || bytes_len == NULL ||",
+                            f"        ({length_field} != 0 && payload == NULL)) {{",
+                            "        return 0;",
+                            "    }",
+                            "    *bytes = payload;",
+                            f"    *bytes_len = (size_t){length_field};",
+                            "    return 1;",
+                            "}",
+                            "",
+                        ]
+                    )
+                continue
             if encoding == "bytes":
                 field_name = trailing_field["name"]
                 if generate_rust_codec:

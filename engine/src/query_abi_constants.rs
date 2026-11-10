@@ -107,6 +107,30 @@ pub fn decode_executor_resolve_relation_request(payload: &[u8]) -> Option<(u16, 
     Some((u16::from_be_bytes(payload[2..4].try_into().ok()?), u16::from_be_bytes(payload[4..6].try_into().ok()?)))
 }
 
+pub fn encode_executor_resolve_relation_request_schema_name(value: &str) -> Option<Vec<u8>> {
+    u16::try_from(value.len()).ok()?;
+    Some(value.as_bytes().to_vec())
+}
+
+pub fn decode_executor_resolve_relation_request_schema_name(payload: &[u8], schema_name_length: u16) -> Option<&str> {
+    if payload.len() != usize::from(schema_name_length) {
+        return None;
+    }
+    std::str::from_utf8(payload).ok()
+}
+
+pub fn encode_executor_resolve_relation_request_relation_name(value: &str) -> Option<Vec<u8>> {
+    u16::try_from(value.len()).ok()?;
+    Some(value.as_bytes().to_vec())
+}
+
+pub fn decode_executor_resolve_relation_request_relation_name(payload: &[u8], relation_name_length: u16) -> Option<&str> {
+    if payload.len() != usize::from(relation_name_length) {
+        return None;
+    }
+    std::str::from_utf8(payload).ok()
+}
+
 pub const EXECUTOR_RESOLVE_RELATION_UNAVAILABLE_RESPONSE_VERSION_OFFSET: u32 = 0;
 pub const EXECUTOR_RESOLVE_RELATION_UNAVAILABLE_RESPONSE_STATUS_OFFSET: u32 = 2;
 pub const EXECUTOR_RESOLVE_RELATION_UNAVAILABLE_RESPONSE_HEADER_BYTES: u32 = 3;

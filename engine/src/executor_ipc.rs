@@ -64,8 +64,14 @@ impl ResolveRelationRequest {
         }
         let mut payload =
             generated::encode_executor_resolve_relation_request(schema_len, relation_len).to_vec();
-        payload.extend_from_slice(self.schema_name.as_bytes());
-        payload.extend_from_slice(self.relation_name.as_bytes());
+        let schema_name =
+            generated::encode_executor_resolve_relation_request_schema_name(&self.schema_name)
+                .ok_or(ExecutorRequestError::InvalidPayload)?;
+        let relation_name =
+            generated::encode_executor_resolve_relation_request_relation_name(&self.relation_name)
+                .ok_or(ExecutorRequestError::InvalidPayload)?;
+        payload.extend_from_slice(&schema_name);
+        payload.extend_from_slice(&relation_name);
         Ok(payload)
     }
 
@@ -83,12 +89,18 @@ impl ResolveRelationRequest {
             return Err(ExecutorRequestError::InvalidPayload);
         }
         let schema_end = RESOLVE_REQUEST_HEADER_BYTES + schema_len;
-        let schema_name = std::str::from_utf8(&payload[RESOLVE_REQUEST_HEADER_BYTES..schema_end])
-            .map_err(|_| ExecutorRequestError::InvalidPayload)?
-            .to_owned();
-        let relation_name = std::str::from_utf8(&payload[schema_end..])
-            .map_err(|_| ExecutorRequestError::InvalidPayload)?
-            .to_owned();
+        let schema_name = generated::decode_executor_resolve_relation_request_schema_name(
+            &payload[RESOLVE_REQUEST_HEADER_BYTES..schema_end],
+            encoded_schema_len,
+        )
+        .ok_or(ExecutorRequestError::InvalidPayload)?
+        .to_owned();
+        let relation_name = generated::decode_executor_resolve_relation_request_relation_name(
+            &payload[schema_end..],
+            encoded_relation_len,
+        )
+        .ok_or(ExecutorRequestError::InvalidPayload)?
+        .to_owned();
         Ok(Self {
             schema_name,
             relation_name,

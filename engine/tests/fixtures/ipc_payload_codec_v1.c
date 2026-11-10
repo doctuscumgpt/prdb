@@ -653,6 +653,31 @@ int main(void) {
         decoded_schema_name_length != 3 || decoded_relation_name_length != 5) {
         return 61;
     }
+    uint8_t encoded_schema_name[3] = {0};
+    uint8_t encoded_relation_name[5] = {0};
+    const uint8_t *decoded_schema_name = NULL;
+    const uint8_t *decoded_relation_name = NULL;
+    size_t decoded_schema_name_bytes = 0;
+    size_t decoded_relation_name_bytes = 0;
+    if (!prdb_encode_executor_resolve_relation_request_schema_name(
+            encoded_schema_name, sizeof(encoded_schema_name),
+            (const uint8_t *)"app", 3) ||
+        !prdb_encode_executor_resolve_relation_request_relation_name(
+            encoded_relation_name, sizeof(encoded_relation_name),
+            (const uint8_t *)"items", 5) ||
+        memcmp(encoded_schema_name, "app", 3) != 0 ||
+        memcmp(encoded_relation_name, "items", 5) != 0 ||
+        !prdb_decode_executor_resolve_relation_request_schema_name(
+            encoded_schema_name, sizeof(encoded_schema_name), 3,
+            &decoded_schema_name, &decoded_schema_name_bytes) ||
+        !prdb_decode_executor_resolve_relation_request_relation_name(
+            encoded_relation_name, sizeof(encoded_relation_name), 5,
+            &decoded_relation_name, &decoded_relation_name_bytes) ||
+        decoded_schema_name_bytes != 3 || decoded_relation_name_bytes != 5 ||
+        memcmp(decoded_schema_name, "app", 3) != 0 ||
+        memcmp(decoded_relation_name, "items", 5) != 0) {
+        return 74;
+    }
     uint8_t estimate_response[37] = {0};
     uint8_t decoded_estimate_status = 0xff;
     uint64_t decoded_visible_rows = 0;

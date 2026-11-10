@@ -1,6 +1,7 @@
 use prdb_engine::executor_ipc::{
-    MutationAcknowledgement, OpenScanRequest, OpenScanResponse, ResolveRelationResponse,
-    StageDeleteRequest, StageInsertRequest, StageInsertResponse, StageUpdateRequest,
+    MutationAcknowledgement, OpenScanRequest, OpenScanResponse, ResolveRelationRequest,
+    ResolveRelationResponse, StageDeleteRequest, StageInsertRequest, StageInsertResponse,
+    StageUpdateRequest,
 };
 use prdb_engine::metadata_discovery::{
     AuthorizedRelationDescription, EXECUTOR_SCAN_CURSOR_TOKEN_KIND, ExecutorRowHandle,
@@ -108,6 +109,28 @@ fn executor_open_scan_request_round_trips_generated_column_ids() {
     let mut trailing = payload;
     trailing.push(0);
     assert!(OpenScanRequest::decode(&trailing).is_err());
+}
+
+#[test]
+fn executor_resolve_relation_request_uses_generated_utf8_tails() {
+    let request = ResolveRelationRequest {
+        schema_name: "app".to_owned(),
+        relation_name: "items".to_owned(),
+    };
+    let payload = request.encode().unwrap();
+    assert_eq!(
+        payload,
+        [
+            0, 1, 0, 3, 0, 5, b'a', b'p', b'p', b'i', b't', b'e', b'm', b's'
+        ]
+    );
+    assert_eq!(ResolveRelationRequest::decode(&payload).unwrap(), request);
+    let mut invalid_utf8 = payload.clone();
+    invalid_utf8[6] = 0xff;
+    assert!(ResolveRelationRequest::decode(&invalid_utf8).is_err());
+    let mut trailing = payload;
+    trailing.push(0);
+    assert!(ResolveRelationRequest::decode(&trailing).is_err());
 }
 
 #[test]
