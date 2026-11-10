@@ -429,6 +429,93 @@ def render(schema):
                             )
             c_codec_lines.extend(["    return 1;", "}", ""])
 
+        for trailing_field in trailing_fields:
+            if trailing_field["encoding"] != "u64_triplet_array":
+                continue
+            field_name = trailing_field["name"]
+            if generate_rust_codec:
+                rust_lines.extend(
+                    [
+                        f"pub fn encode_{name.lower()}_{field_name}(values: &[[u64; 3]]) -> Option<Vec<u8>> {{",
+                        "    if values.len() > u16::MAX as usize {",
+                        "        return None;",
+                        "    }",
+                        "    let encoded_len = values.len().checked_mul(24)?;",
+                        "    let mut encoded = Vec::with_capacity(encoded_len);",
+                        "    for triplet in values {",
+                        "        for value in triplet {",
+                        "            encoded.extend_from_slice(&value.to_be_bytes());",
+                        "        }",
+                        "    }",
+                        "    Some(encoded)",
+                        "}",
+                        "",
+                        f"pub fn decode_{name.lower()}_{field_name}(payload: &[u8], count: u16) -> Option<Vec<[u64; 3]>> {{",
+                        "    let count = usize::from(count);",
+                        "    let expected_len = count.checked_mul(24)?;",
+                        "    if payload.len() != expected_len {",
+                        "        return None;",
+                        "    }",
+                        "    let mut values = Vec::with_capacity(count);",
+                        "    for triplet in payload.chunks_exact(24) {",
+                        "        values.push([",
+                        "            u64::from_be_bytes(triplet[0..8].try_into().ok()?),",
+                        "            u64::from_be_bytes(triplet[8..16].try_into().ok()?),",
+                        "            u64::from_be_bytes(triplet[16..24].try_into().ok()?),",
+                        "        ]);",
+                        "    }",
+                        "    Some(values)",
+                        "}",
+                        "",
+                    ]
+                )
+            if generate_c_codec:
+                c_codec_lines.extend(
+                    [
+                        f"static inline int prdb_encode_{name.lower()}_{field_name}(uint8_t *payload, size_t payload_capacity, const uint64_t (*values)[3], uint16_t count) {{",
+                        "    if ((size_t)count > SIZE_MAX / 24u) {",
+                        "        return 0;",
+                        "    }",
+                        "    size_t encoded_len = (size_t)count * 24u;",
+                        "    if (encoded_len > payload_capacity ||",
+                        "        (encoded_len != 0 && (payload == NULL || values == NULL))) {",
+                        "        return 0;",
+                        "    }",
+                        "    for (size_t i = 0; i < (size_t)count; ++i) {",
+                        "        for (size_t j = 0; j < 3; ++j) {",
+                        "            for (size_t byte = 0; byte < 8; ++byte) {",
+                        "                payload[i * 24u + j * 8u + byte] =",
+                        "                    (uint8_t)(values[i][j] >> ((7u - byte) * 8u));",
+                        "            }",
+                        "        }",
+                        "    }",
+                        "    return 1;",
+                        "}",
+                        "",
+                        f"static inline int prdb_decode_{name.lower()}_{field_name}(const uint8_t *payload, size_t payload_len, uint16_t count, uint64_t (*values)[3], size_t values_capacity) {{",
+                        "    if ((size_t)count > SIZE_MAX / 24u) {",
+                        "        return 0;",
+                        "    }",
+                        "    size_t expected_len = (size_t)count * 24u;",
+                        "    if ((size_t)count > values_capacity || payload_len != expected_len ||",
+                        "        (expected_len != 0 && (payload == NULL || values == NULL))) {",
+                        "        return 0;",
+                        "    }",
+                        "    for (size_t i = 0; i < (size_t)count; ++i) {",
+                        "        for (size_t j = 0; j < 3; ++j) {",
+                        "            uint64_t value = 0;",
+                        "            for (size_t byte = 0; byte < 8; ++byte) {",
+                        "                value = (value << 8) | payload[i * 24u + j * 8u + byte];",
+                        "            }",
+                        "            values[i][j] = value;",
+                        "        }",
+                        "    }",
+                        "    return 1;",
+                        "}",
+                        "",
+                    ]
+                )
+
     constant_values = {item["rust_name"]: item["value"] for item in constants}
     frame_fields = (
         ("IPC_FRAME_MAGIC_OFFSET", "IPC_FRAME_MAGIC_LEN", "IPC_FRAME_VERSION_OFFSET"),

@@ -1,5 +1,13 @@
 # Toolchain Progress
 
+## TC-2: generated planner population tail codecs — implemented
+
+- Contract: planner estimate responses carry a versioned fixed prefix followed by exactly `column_count` network-byte-order triples of readable, null, and redacted populations.
+- Implementation: the shared ABI generator now emits bounded Rust and C triplet-array codecs. Planner Rust encoding and decoding use those generated codecs instead of hand-written u64 loops; the decoder still enforces the tuple column limit.
+- Regression: generator tests check both languages' helpers. The maintained TinyCC fixture checks exact two-column bytes, round-trip, insufficient encode capacity without partial output, and truncated-tail rejection.
+- Verification: generator drift/schema tests passed; the Rust wire-vector regression passed; the full locked workspace build, format check, warning-denied Clippy, and serial workspace suite passed (129 passed, 4 cgroup-dependent ignored), with the new Rust regression separately passing. The full maintained TinyCC SDK suite, including the C wire-vector fixture, passed in the configured Nix shell.
+- Remaining: other hand-coded IPC layouts and release-profile, signature, runtime-support, timing, and sandbox acceptance gates remain open.
+
 ## TC-2: remove duplicate supervisor control version parsing — implemented
 
 - Contract: supervisor status and administrative-cancel payload versions and exact lengths are validated by their generated operation-specific decoders.

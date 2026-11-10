@@ -195,6 +195,33 @@ mod generated_payload_tests {
     };
 
     #[test]
+    fn generated_planner_population_codec_matches_wire_example() {
+        let values = [
+            [0x0102_0304_0506_0708, 9, 10],
+            [11, 12, 0xfedc_ba98_7654_3210],
+        ];
+        let encoded = super::encode_planner_estimate_scan_response_column_populations(&values)
+            .expect("two population triples fit");
+        let expected = [
+            1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0,
+            0, 0, 11, 0, 0, 0, 0, 0, 0, 0, 12, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
+        ];
+        assert_eq!(encoded, expected);
+        assert_eq!(
+            super::decode_planner_estimate_scan_response_column_populations(&encoded, 2),
+            Some(values.to_vec())
+        );
+        assert_eq!(
+            super::decode_planner_estimate_scan_response_column_populations(&encoded[..47], 2),
+            None
+        );
+        assert_eq!(
+            super::decode_planner_estimate_scan_response_column_populations(&encoded, 1),
+            None
+        );
+    }
+
+    #[test]
     fn generated_supervisor_control_codec_matches_wire_example() {
         let encoded = encode_supervisor_invocation_control_request([0x5a; 16]);
         assert_eq!(

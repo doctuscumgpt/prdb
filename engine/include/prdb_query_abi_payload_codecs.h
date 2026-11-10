@@ -622,6 +622,47 @@ static inline int prdb_decode_planner_estimate_scan_response(const uint8_t *payl
     return 1;
 }
 
+static inline int prdb_encode_planner_estimate_scan_response_column_populations(uint8_t *payload, size_t payload_capacity, const uint64_t (*values)[3], uint16_t count) {
+    if ((size_t)count > SIZE_MAX / 24u) {
+        return 0;
+    }
+    size_t encoded_len = (size_t)count * 24u;
+    if (encoded_len > payload_capacity ||
+        (encoded_len != 0 && (payload == NULL || values == NULL))) {
+        return 0;
+    }
+    for (size_t i = 0; i < (size_t)count; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            for (size_t byte = 0; byte < 8; ++byte) {
+                payload[i * 24u + j * 8u + byte] =
+                    (uint8_t)(values[i][j] >> ((7u - byte) * 8u));
+            }
+        }
+    }
+    return 1;
+}
+
+static inline int prdb_decode_planner_estimate_scan_response_column_populations(const uint8_t *payload, size_t payload_len, uint16_t count, uint64_t (*values)[3], size_t values_capacity) {
+    if ((size_t)count > SIZE_MAX / 24u) {
+        return 0;
+    }
+    size_t expected_len = (size_t)count * 24u;
+    if ((size_t)count > values_capacity || payload_len != expected_len ||
+        (expected_len != 0 && (payload == NULL || values == NULL))) {
+        return 0;
+    }
+    for (size_t i = 0; i < (size_t)count; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            uint64_t value = 0;
+            for (size_t byte = 0; byte < 8; ++byte) {
+                value = (value << 8) | payload[i * 24u + j * 8u + byte];
+            }
+            values[i][j] = value;
+        }
+    }
+    return 1;
+}
+
 static inline void prdb_encode_planner_describe_relation_unavailable_response(uint8_t payload[3],
     uint8_t status) {
     payload[0] = (uint8_t)((PRDB_PLANNER_PAYLOAD_VERSION >> 8) & 0xffu);

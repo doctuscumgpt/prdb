@@ -422,6 +422,37 @@ pub fn decode_planner_estimate_scan_response(payload: &[u8]) -> Option<(u8, u64,
     Some((payload[2], u64::from_be_bytes(payload[3..11].try_into().ok()?), u16::from_be_bytes(payload[11..13].try_into().ok()?)))
 }
 
+pub fn encode_planner_estimate_scan_response_column_populations(values: &[[u64; 3]]) -> Option<Vec<u8>> {
+    if values.len() > u16::MAX as usize {
+        return None;
+    }
+    let encoded_len = values.len().checked_mul(24)?;
+    let mut encoded = Vec::with_capacity(encoded_len);
+    for triplet in values {
+        for value in triplet {
+            encoded.extend_from_slice(&value.to_be_bytes());
+        }
+    }
+    Some(encoded)
+}
+
+pub fn decode_planner_estimate_scan_response_column_populations(payload: &[u8], count: u16) -> Option<Vec<[u64; 3]>> {
+    let count = usize::from(count);
+    let expected_len = count.checked_mul(24)?;
+    if payload.len() != expected_len {
+        return None;
+    }
+    let mut values = Vec::with_capacity(count);
+    for triplet in payload.chunks_exact(24) {
+        values.push([
+            u64::from_be_bytes(triplet[0..8].try_into().ok()?),
+            u64::from_be_bytes(triplet[8..16].try_into().ok()?),
+            u64::from_be_bytes(triplet[16..24].try_into().ok()?),
+        ]);
+    }
+    Some(values)
+}
+
 pub const PLANNER_DESCRIBE_RELATION_UNAVAILABLE_RESPONSE_VERSION_OFFSET: u32 = 0;
 pub const PLANNER_DESCRIBE_RELATION_UNAVAILABLE_RESPONSE_STATUS_OFFSET: u32 = 2;
 pub const PLANNER_DESCRIBE_RELATION_UNAVAILABLE_RESPONSE_HEADER_BYTES: u32 = 3;

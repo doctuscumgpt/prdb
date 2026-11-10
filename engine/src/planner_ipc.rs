@@ -377,6 +377,9 @@ impl EstimateScanResponse {
                 Ok(payload)
             }
             Self::Exact(summary) => {
+                if summary.columns.len() > crate::tuple::MAX_COLUMNS {
+                    return Err(PlannerRequestError::ResponseTooLarge);
+                }
                 let column_count = u16::try_from(summary.columns.len())
                     .map_err(|_| PlannerRequestError::ResponseTooLarge)?;
                 let mut payload = crate::query_abi::encode_planner_estimate_scan_response(
@@ -385,11 +388,17 @@ impl EstimateScanResponse {
                     column_count,
                 )
                 .to_vec();
-                for column in &summary.columns {
-                    payload.extend_from_slice(&column.readable_values.to_be_bytes());
-                    payload.extend_from_slice(&column.nulls.to_be_bytes());
-                    payload.extend_from_slice(&column.redacted.to_be_bytes());
-                }
+                let populations = summary
+                    .columns
+                    .iter()
+                    .map(|column| [column.readable_values, column.nulls, column.redacted])
+                    .collect::<Vec<_>>();
+                let encoded_populations =
+                    crate::query_abi::encode_planner_estimate_scan_response_column_populations(
+                        &populations,
+                    )
+                    .ok_or(PlannerRequestError::ResponseTooLarge)?;
+                payload.extend_from_slice(&encoded_populations);
                 ensure_response_size(&payload)?;
                 Ok(payload)
             }
@@ -408,26 +417,23 @@ impl EstimateScanResponse {
         }
         let count = usize::from(encoded_column_count);
         let header_bytes = PLANNER_ESTIMATE_SCAN_RESPONSE_HEADER_BYTES as usize;
-        let expected = header_bytes
-            .checked_add(
-                count
-                    .checked_mul(24)
-                    .ok_or(PlannerRequestError::InvalidPayload)?,
-            )
-            .ok_or(PlannerRequestError::InvalidPayload)?;
-        if count > crate::tuple::MAX_COLUMNS || expected != payload.len() {
+        if count > crate::tuple::MAX_COLUMNS || payload.len() < header_bytes {
             return Err(PlannerRequestError::InvalidPayload);
         }
-        let mut offset = header_bytes;
-        let mut columns = Vec::with_capacity(count);
-        for _ in 0..count {
-            columns.push(ColumnPopulation {
-                readable_values: read_u64(payload, offset)?,
-                nulls: read_u64(payload, offset + 8)?,
-                redacted: read_u64(payload, offset + 16)?,
-            });
-            offset += 24;
-        }
+        let populations =
+            crate::query_abi::decode_planner_estimate_scan_response_column_populations(
+                &payload[header_bytes..],
+                encoded_column_count,
+            )
+            .ok_or(PlannerRequestError::InvalidPayload)?;
+        let columns = populations
+            .into_iter()
+            .map(|[readable_values, nulls, redacted]| ColumnPopulation {
+                readable_values,
+                nulls,
+                redacted,
+            })
+            .collect();
         Ok(Self::Exact(AuthorizedScanSummary {
             visible_rows,
             columns,
@@ -623,13 +629,4 @@ fn read_u16(payload: &[u8], offset: usize) -> Result<u16, PlannerRequestError> {
         .try_into()
         .map_err(|_| PlannerRequestError::InvalidPayload)?;
     Ok(u16::from_be_bytes(bytes))
-}
-
-fn read_u64(payload: &[u8], offset: usize) -> Result<u64, PlannerRequestError> {
-    let bytes: [u8; 8] = payload
-        .get(offset..offset + 8)
-        .ok_or(PlannerRequestError::InvalidPayload)?
-        .try_into()
-        .map_err(|_| PlannerRequestError::InvalidPayload)?;
-    Ok(u64::from_be_bytes(bytes))
 }

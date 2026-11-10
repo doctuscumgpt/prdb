@@ -615,6 +615,51 @@ int main(void) {
         decoded_population_count != 1) {
         return 57;
     }
+    const uint64_t populations[2][3] = {
+        {UINT64_C(0x0102030405060708), 9, 10},
+        {11, 12, UINT64_C(0xfedcba9876543210)},
+    };
+    const uint8_t populations_expected[48] = {
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0, 0, 0, 0, 0, 0, 0, 9,
+        0, 0, 0, 0, 0, 0, 0, 10,
+        0, 0, 0, 0, 0, 0, 0, 11,
+        0, 0, 0, 0, 0, 0, 0, 12,
+        0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
+    };
+    uint8_t populations_payload[48] = {0};
+    uint64_t decoded_populations[2][3] = {{0}};
+    if (!prdb_encode_planner_estimate_scan_response_column_populations(
+            populations_payload, sizeof(populations_payload), populations, 2)) {
+        return 64;
+    }
+    for (size_t i = 0; i < sizeof(populations_expected); ++i) {
+        if (populations_payload[i] != populations_expected[i]) {
+            return 65;
+        }
+    }
+    if (!prdb_decode_planner_estimate_scan_response_column_populations(
+            populations_payload, sizeof(populations_payload), 2,
+            decoded_populations, 2) ||
+        memcmp(populations, decoded_populations, sizeof(populations)) != 0) {
+        return 66;
+    }
+    decoded_populations[0][0] = UINT64_C(0xa5a5a5a5a5a5a5a5);
+    if (prdb_decode_planner_estimate_scan_response_column_populations(
+            populations_payload, sizeof(populations_payload), 2,
+            decoded_populations, 1) ||
+        decoded_populations[0][0] != UINT64_C(0xa5a5a5a5a5a5a5a5)) {
+        return 68;
+    }
+    memset(populations_payload, 0xa5, sizeof(populations_payload));
+    if (prdb_encode_planner_estimate_scan_response_column_populations(
+            populations_payload, sizeof(populations_payload) - 1, populations, 2) ||
+        populations_payload[0] != 0xa5 ||
+        prdb_decode_planner_estimate_scan_response_column_populations(
+            populations_expected, sizeof(populations_expected) - 1, 2,
+            decoded_populations, 2)) {
+        return 67;
+    }
     uint8_t finalize_request[2] = {0};
     uint8_t abort_request[2] = {0};
     prdb_encode_supervisor_finalize_request(finalize_request);
