@@ -946,17 +946,56 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         AdminObjectPrivilege::References,
         AdminObjectGrantTarget::Column(created_table.column_ids[0]),
     )?;
-    let foreign_key = admin
-        .create_foreign_key(
-            source_table.table_id,
-            &source_table.column_ids,
-            unique_constraint.constraint_id,
-        )
-        .map_err(|error| format!("process ADMIN create_foreign_key failed: {error}"))?;
-    let dropped_foreign_key = admin
-        .drop_foreign_key(foreign_key.foreign_key_id)
-        .map_err(|error| format!("process ADMIN drop_foreign_key failed: {error}"))?;
-    assert!(dropped_foreign_key.commit_sequence > foreign_key.commit_sequence);
+    let foreign_key_cli_address = address.to_string();
+    let foreign_key_cli_credentials = admin_cancel_credentials_path
+        .to_str()
+        .ok_or("credential path is not UTF-8")?;
+    let foreign_key_cli_source_table = encode_id_hex(&source_table.table_id);
+    let foreign_key_cli_source_column = encode_id_hex(&source_table.column_ids[0]);
+    let foreign_key_cli_target_constraint = encode_id_hex(&unique_constraint.constraint_id);
+    let create_foreign_key_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "foreign-key-create",
+            "--address",
+            &foreign_key_cli_address,
+            "--credentials",
+            foreign_key_cli_credentials,
+            "--source-table-id",
+            &foreign_key_cli_source_table,
+            "--source-columns",
+            &foreign_key_cli_source_column,
+            "--target-constraint-id",
+            &foreign_key_cli_target_constraint,
+        ])
+        .output()?;
+    assert!(
+        create_foreign_key_cli.status.success(),
+        "foreign-key-create CLI failed: {}",
+        String::from_utf8_lossy(&create_foreign_key_cli.stderr)
+    );
+    let foreign_key_cli_output = String::from_utf8_lossy(&create_foreign_key_cli.stdout);
+    assert!(foreign_key_cli_output.contains("created foreign key "));
+    let foreign_key_cli_id = foreign_key_cli_output
+        .split_whitespace()
+        .nth(3)
+        .ok_or("foreign-key-create output omitted the generated ID")?;
+    let drop_foreign_key_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "foreign-key-drop",
+            "--address",
+            &foreign_key_cli_address,
+            "--credentials",
+            foreign_key_cli_credentials,
+            "--foreign-key-id",
+            foreign_key_cli_id,
+        ])
+        .output()?;
+    assert!(
+        drop_foreign_key_cli.status.success(),
+        "foreign-key-drop CLI failed: {}",
+        String::from_utf8_lossy(&drop_foreign_key_cli.stderr)
+    );
+    assert!(String::from_utf8_lossy(&drop_foreign_key_cli.stdout).contains("dropped foreign key"));
     let revoked_references = admin.revoke_object_privilege(
         admin_user_id,
         created_table.table_id,
