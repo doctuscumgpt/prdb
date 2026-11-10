@@ -83,6 +83,56 @@ fn database_record_matches_independent_catalog_v1_fixture() {
 }
 
 #[test]
+fn object_record_matches_independent_catalog_v1_fixture() {
+    let key = [vec![0, 2, 1], vec![0x11; 16]].concat();
+    let fields = [
+        CatalogField {
+            tag: 1,
+            wire_type: WireType::U16,
+            payload: 1u16.to_le_bytes().to_vec(),
+        },
+        CatalogField {
+            tag: 3,
+            wire_type: WireType::Text,
+            payload: b"public".to_vec(),
+        },
+        CatalogField {
+            tag: 4,
+            wire_type: WireType::Id,
+            payload: vec![0x22; 16],
+        },
+        CatalogField {
+            tag: 5,
+            wire_type: WireType::U64,
+            payload: 1u64.to_le_bytes().to_vec(),
+        },
+        CatalogField {
+            tag: 6,
+            wire_type: WireType::U16,
+            payload: 1u16.to_le_bytes().to_vec(),
+        },
+    ];
+    let mut expected = vec![
+        b'C', b'A', b'T', b'1', 1, 0, 2, 0, 125, 0, 0, 0, 19, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0,
+    ];
+    expected.extend_from_slice(&key);
+    expected.extend_from_slice(&[1, 0, 1, 0, 2, 0, 0, 0, 1, 0]);
+    expected.extend_from_slice(&[3, 0, 7, 0, 6, 0, 0, 0, b'p', b'u', b'b', b'l', b'i', b'c']);
+    expected.extend_from_slice(&[4, 0, 6, 0, 16, 0, 0, 0]);
+    expected.extend_from_slice(&[0x22; 16]);
+    expected.extend_from_slice(&[5, 0, 3, 0, 8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+    expected.extend_from_slice(&[6, 0, 1, 0, 2, 0, 0, 0, 1, 0]);
+
+    let schema = family_schema(2).unwrap();
+    assert_eq!(encode_envelope(&schema, &key, &fields).unwrap(), expected);
+    let decoded = prdb_engine::catalog::decode_registered_envelope(&expected).unwrap();
+    assert_eq!(decoded.family_code, 2);
+    assert_eq!(decoded.logical_key, key);
+    assert_eq!(decoded.fields, fields);
+}
+
+#[test]
 fn policy_target_rejects_noncanonical_data() {
     let bytes = encode_policy_target(&example()).unwrap();
     for (offset, value) in [

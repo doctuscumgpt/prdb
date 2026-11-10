@@ -21,3 +21,9 @@
 - Regression: `database_record_matches_independent_catalog_v1_fixture` compares the generic family-1 encoder with an independently assembled CAT1 envelope, including the typed UUID logical-key component, empty BYTES field, optional-field omission, TLV order, and exact total/key lengths. The generated decoder is then checked against the same hand-authored bytes.
 - Verification: the focused `cargo test --test catalog database_record_matches_independent_catalog_v1_fixture --locked` passed in the pinned Nix shell; `cargo fmt --all -- --check` passed.
 - Remaining: add independent byte fixtures for the other catalog families; this first fixture does not complete all-family independent coverage.
+
+## DD-1: independent object-record bytes — verified
+
+- Regression: `object_record_matches_independent_catalog_v1_fixture` checks a hand-assembled family-2 CAT1 record with its typed UUID key, omitted optional parent ID, UTF-8 normalized name, nonzero owner ID, and little-endian epoch/kind fields. The generic encoder must match every byte and the registered decoder must recover the same fields.
+- Verification: both independent family-1/family-2 fixtures passed with `cargo test --test catalog record_matches_independent_catalog_v1_fixture --locked` in the pinned Nix shell.
+- Remaining: independent byte fixtures for families 3–17 and broader catalog semantics remain open.
