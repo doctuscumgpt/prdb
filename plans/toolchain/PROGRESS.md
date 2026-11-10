@@ -174,14 +174,6 @@
 - Verification: generator drift, focused control tests, full workspace build/format/warning-denied Clippy/serial tests, and complete TinyCC SDK suite passed.
 - Remaining: generate layouts/codecs for remaining supervisor result and event payloads.
 
-## TC-2: generated optimizer SELECT request prefix — implemented
-
-- Contract: the optimizer's bounded structured SELECT request starts with version, statement tag, and zero flags before its variable relation/projection/predicate fields.
-- Implementation: the shared schema now owns the optimizer request version and SELECT tag constants plus prefix field offsets. The Rust decoder consumes the generated prefix and starts bounded parsing after the generated header size. The generator supports u8 registry constants.
-- Regression: all four optimizer request parser tests pass, including unsupported version/tag, invalid flags, malformed names, and size/depth/collection bounds.
-- Verification: generator drift, focused optimizer request tests, full workspace build/format/warning-denied Clippy/serial tests, and TinyCC SDK suite passed.
-- Remaining: generate layouts and collection codecs for remaining executor/planner/supervisor payloads.
-
 ## TC-2: generated optimizer response variants — implemented
 
 - Contract: optimizer responses use a version/status failure header, or a success header with u32 plan length followed by validated plan bytes.
@@ -604,8 +596,8 @@
 ## TC-2: generated optimizer SELECT request prefix — implemented
 
 - Contract: [internal IPC](../../specs/ipc-protocol.md) and [toolchain](../../specs/toolchain.md). Optimizer SELECT requests begin with version, statement tag, and zero flags before variable relation, projection, predicate, and limit data.
-- Implementation: the shared schema now generates exact Rust and C prefix codecs. Rust consumes the generated decoder after preserving its unsupported-version error; the TinyCC SDK uses the generated encoder before appending the variable request tail.
-- Regression: generator tests assert both helpers; Rust optimizer parser tests cover malformed and unsupported requests, and the maintained TinyCC optimizer fixture checks SDK encoding.
+- Implementation: the shared schema now generates exact Rust and C prefix codecs and supports the u8 registry constants used by the header. Rust consumes the generated decoder after preserving its unsupported-version error; the TinyCC SDK uses the generated encoder before appending the variable request tail.
+- Regression: generator tests assert both helpers; all four Rust optimizer request parser cases cover unsupported version/tag, invalid flags, malformed names, and size/depth/collection bounds; the maintained TinyCC optimizer fixture checks SDK encoding.
 - Verification: generator drift/schema tests, locked workspace build, rustfmt check, warning-denied Clippy, serial workspace tests, and the full maintained TinyCC SDK suite passed in the pinned Nix shell.
 - Remaining: migrate remaining hand-coded executor/planner/supervisor payload serializers and complete release profile and artifact gates.
 
