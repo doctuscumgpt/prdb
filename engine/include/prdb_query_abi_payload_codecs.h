@@ -941,6 +941,28 @@ static inline int prdb_decode_optimizer_response_success(const uint8_t *payload,
     return 1;
 }
 
+static inline int prdb_encode_optimizer_response_success_plan(uint8_t *payload, size_t payload_capacity, const uint8_t *bytes, size_t bytes_len) {
+    if (bytes_len > UINT32_MAX || bytes_len > payload_capacity ||
+        (bytes_len != 0 && (payload == NULL || bytes == NULL))) {
+        return 0;
+    }
+    for (size_t i = 0; i < bytes_len; ++i) {
+        payload[i] = bytes[i];
+    }
+    return 1;
+}
+
+static inline int prdb_decode_optimizer_response_success_plan(const uint8_t *payload, size_t payload_len, uint32_t encoded_len, uint8_t *bytes, size_t bytes_capacity) {
+    if ((size_t)encoded_len > bytes_capacity || payload_len != (size_t)encoded_len ||
+        (encoded_len != 0 && (payload == NULL || bytes == NULL))) {
+        return 0;
+    }
+    for (size_t i = 0; i < (size_t)encoded_len; ++i) {
+        bytes[i] = payload[i];
+    }
+    return 1;
+}
+
 static inline void prdb_encode_optimizer_select_request(uint8_t payload[4],
     uint8_t statement, uint8_t flags) {
     payload[0] = (uint8_t)((PRDB_OPTIMIZER_REQUEST_VERSION >> 8) & 0xffu);

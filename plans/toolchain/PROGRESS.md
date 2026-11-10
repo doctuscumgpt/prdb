@@ -1,5 +1,13 @@
 # Toolchain Progress
 
+## TC-2: generated optimizer plan-byte tail codec — implemented
+
+- Contract: a successful optimizer response carries a generated version/status/length prefix and exactly the declared opaque plan bytes; plan structure remains validated by the optimizer-plan codec.
+- Implementation: the generator emits bounded Rust and C raw-byte tail helpers. Optimizer Rust response encoding and decoding use them while retaining plan-size, exact-length, and structural validation.
+- Regression: existing Rust optimizer response tests cover valid and malformed plans. The TinyCC fixture checks raw tail round-trip, short output capacity without partial writes, and truncated input; generator tests assert both language helpers.
+- Verification: generator drift/schema tests, focused validated-plan response regression, warning-denied workspace Clippy, and full maintained TinyCC SDK suite passed in the pinned Nix shell.
+- Remaining: other hand-coded executor/planner/supervisor tails and release-profile, signature, runtime-support, timing, and sandbox acceptance gates remain open.
+
 ## TC-2: generated executor open-scan column-ID codec — implemented
 
 - Contract: executor open-scan requests carry a versioned prefix followed by exactly `column_count` 16-byte column IDs.

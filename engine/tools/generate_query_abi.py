@@ -431,6 +431,53 @@ def render(schema):
 
         for trailing_field in trailing_fields:
             encoding = trailing_field["encoding"]
+            if encoding == "bytes":
+                field_name = trailing_field["name"]
+                if generate_rust_codec:
+                    rust_lines.extend(
+                        [
+                            f"pub fn encode_{name.lower()}_{field_name}(bytes: &[u8]) -> Option<Vec<u8>> {{",
+                            "    u32::try_from(bytes.len()).ok()?;",
+                            "    Some(bytes.to_vec())",
+                            "}",
+                            "",
+                            f"pub fn decode_{name.lower()}_{field_name}(payload: &[u8], encoded_len: u32) -> Option<Vec<u8>> {{",
+                            "    if payload.len() != usize::try_from(encoded_len).ok()? {",
+                            "        return None;",
+                            "    }",
+                            "    Some(payload.to_vec())",
+                            "}",
+                            "",
+                        ]
+                    )
+                if generate_c_codec:
+                    c_codec_lines.extend(
+                        [
+                            f"static inline int prdb_encode_{name.lower()}_{field_name}(uint8_t *payload, size_t payload_capacity, const uint8_t *bytes, size_t bytes_len) {{",
+                            "    if (bytes_len > UINT32_MAX || bytes_len > payload_capacity ||",
+                            "        (bytes_len != 0 && (payload == NULL || bytes == NULL))) {",
+                            "        return 0;",
+                            "    }",
+                            "    for (size_t i = 0; i < bytes_len; ++i) {",
+                            "        payload[i] = bytes[i];",
+                            "    }",
+                            "    return 1;",
+                            "}",
+                            "",
+                            f"static inline int prdb_decode_{name.lower()}_{field_name}(const uint8_t *payload, size_t payload_len, uint32_t encoded_len, uint8_t *bytes, size_t bytes_capacity) {{",
+                            "    if ((size_t)encoded_len > bytes_capacity || payload_len != (size_t)encoded_len ||",
+                            "        (encoded_len != 0 && (payload == NULL || bytes == NULL))) {",
+                            "        return 0;",
+                            "    }",
+                            "    for (size_t i = 0; i < (size_t)encoded_len; ++i) {",
+                            "        bytes[i] = payload[i];",
+                            "    }",
+                            "    return 1;",
+                            "}",
+                            "",
+                        ]
+                    )
+                continue
             if encoding == "bytes16_array":
                 field_name = trailing_field["name"]
                 if generate_rust_codec:

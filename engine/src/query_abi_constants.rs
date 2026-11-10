@@ -616,6 +616,18 @@ pub fn decode_optimizer_response_success(payload: &[u8]) -> Option<(u8, u32)> {
     Some((payload[2], u32::from_be_bytes(payload[3..7].try_into().ok()?)))
 }
 
+pub fn encode_optimizer_response_success_plan(bytes: &[u8]) -> Option<Vec<u8>> {
+    u32::try_from(bytes.len()).ok()?;
+    Some(bytes.to_vec())
+}
+
+pub fn decode_optimizer_response_success_plan(payload: &[u8], encoded_len: u32) -> Option<Vec<u8>> {
+    if payload.len() != usize::try_from(encoded_len).ok()? {
+        return None;
+    }
+    Some(payload.to_vec())
+}
+
 pub const OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET: u32 = 0;
 pub const OPTIMIZER_SELECT_REQUEST_STATEMENT_OFFSET: u32 = 2;
 pub const OPTIMIZER_SELECT_REQUEST_FLAGS_OFFSET: u32 = 3;

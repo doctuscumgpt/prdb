@@ -84,7 +84,9 @@ impl OptimizerResponse {
                     plan_length,
                 )
                 .to_vec();
-                output.extend_from_slice(plan);
+                let encoded_plan = crate::query_abi::encode_optimizer_response_success_plan(plan)
+                    .ok_or(OptimizerPayloadError::PlanTooLarge)?;
+                output.extend_from_slice(&encoded_plan);
                 Ok(output)
             }
             (OptimizerStatus::Success, None) | (_, Some(_)) => {
@@ -134,7 +136,11 @@ impl OptimizerResponse {
         if len == 0 || len > MAX_PLAN_BYTES || bytes.len() != header_bytes + len {
             return Err(OptimizerPayloadError::InvalidResponse);
         }
-        let plan = bytes[header_bytes..].to_vec();
+        let plan = crate::query_abi::decode_optimizer_response_success_plan(
+            &bytes[header_bytes..],
+            encoded_plan_length,
+        )
+        .ok_or(OptimizerPayloadError::InvalidResponse)?;
         decode_plan_v1(&plan).map_err(|_| OptimizerPayloadError::InvalidPlan)?;
         Ok(Self {
             status,
