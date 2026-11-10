@@ -75,3 +75,9 @@
 - Regression: `principal_record_matches_independent_catalog_v1_fixture` checks the family-10 role kind, normalized UTF-8 name, false login flag, nonzero authority epoch, typed key, and exact envelope bytes.
 - Verification: the focused catalog fixture command passed all independent family-1 through family-10 tests.
 - Remaining: independent byte fixtures for families 11–17 and broader catalog semantics remain open.
+
+## DD-1: independent membership-record bytes — verified
+
+- Regression: `membership_record_matches_independent_catalog_v1_fixture` checks the two typed UUID components in the family-11 logical key and the grantor ID/membership epoch TLVs against independently assembled bytes.
+- Verification: the focused catalog fixture command passed all independent family-1 through family-11 tests.
+- Remaining: independent byte fixtures for families 12–17 and broader catalog semantics remain open.
