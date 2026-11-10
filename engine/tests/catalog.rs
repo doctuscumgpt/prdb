@@ -34,6 +34,55 @@ fn policy_target_matches_the_catalog_v1_fixture() {
 }
 
 #[test]
+fn database_record_matches_independent_catalog_v1_fixture() {
+    let key = [vec![0, 1, 1], vec![0x11; 16]].concat();
+    let fields = [
+        CatalogField {
+            tag: 1,
+            wire_type: WireType::Text,
+            payload: b"db".to_vec(),
+        },
+        CatalogField {
+            tag: 2,
+            wire_type: WireType::U32,
+            payload: 2u32.to_le_bytes().to_vec(),
+        },
+        CatalogField {
+            tag: 3,
+            wire_type: WireType::Bytes,
+            payload: Vec::new(),
+        },
+        CatalogField {
+            tag: 5,
+            wire_type: WireType::U32,
+            payload: 1u32.to_le_bytes().to_vec(),
+        },
+        CatalogField {
+            tag: 6,
+            wire_type: WireType::U32,
+            payload: 1u32.to_le_bytes().to_vec(),
+        },
+    ];
+    let mut expected = vec![
+        b'C', b'A', b'T', b'1', 1, 0, 1, 0, 105, 0, 0, 0, 19, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0,
+    ];
+    expected.extend_from_slice(&key);
+    expected.extend_from_slice(&[1, 0, 7, 0, 2, 0, 0, 0, b'd', b'b']);
+    expected.extend_from_slice(&[2, 0, 2, 0, 4, 0, 0, 0, 2, 0, 0, 0]);
+    expected.extend_from_slice(&[3, 0, 8, 0, 0, 0, 0, 0]);
+    expected.extend_from_slice(&[5, 0, 2, 0, 4, 0, 0, 0, 1, 0, 0, 0]);
+    expected.extend_from_slice(&[6, 0, 2, 0, 4, 0, 0, 0, 1, 0, 0, 0]);
+
+    let schema = family_schema(1).unwrap();
+    assert_eq!(encode_envelope(&schema, &key, &fields).unwrap(), expected);
+    let decoded = prdb_engine::catalog::decode_registered_envelope(&expected).unwrap();
+    assert_eq!(decoded.family_code, 1);
+    assert_eq!(decoded.logical_key, key);
+    assert_eq!(decoded.fields, fields);
+}
+
+#[test]
 fn policy_target_rejects_noncanonical_data() {
     let bytes = encode_policy_target(&example()).unwrap();
     for (offset, value) in [

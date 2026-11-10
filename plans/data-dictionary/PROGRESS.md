@@ -15,3 +15,9 @@
 - Membership graph integrity is now checked against the latest catalog plus staged membership changes during serialized publication. It rejects missing member/role records, non-role targets, disconnected cycles, and graphs over 4096 edges. Real-redb tests verify rollback and ABORTED outcome publication.
 - Family-7 expression records now use bounded EIR1 and are validated on catalog reads/writes. Invocation APIs load purpose-checked default/CHECK expressions from their pinned snapshot and guard their bytes through final commit.
 - Remaining: generated all-family fixtures are not independent hand-checked byte fixtures; broader semantic cross-record integrity, bootstrap, DDL validation/authority checks, catalog secondary indexes, and comprehensive snapshot-aware catalog operations remain unimplemented.
+
+## DD-1: independent database-record bytes — verified
+
+- Regression: `database_record_matches_independent_catalog_v1_fixture` compares the generic family-1 encoder with an independently assembled CAT1 envelope, including the typed UUID logical-key component, empty BYTES field, optional-field omission, TLV order, and exact total/key lengths. The generated decoder is then checked against the same hand-authored bytes.
+- Verification: the focused `cargo test --test catalog database_record_matches_independent_catalog_v1_fixture --locked` passed in the pinned Nix shell; `cargo fmt --all -- --check` passed.
+- Remaining: add independent byte fixtures for the other catalog families; this first fixture does not complete all-family independent coverage.
