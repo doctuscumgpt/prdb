@@ -14,8 +14,8 @@ use crate::metadata::{EngineMetadata, Lifecycle};
 use crate::outcome::{InvocationOutcome, OutcomeStatus};
 use crate::row_record::RowRecord;
 use crate::schema::{
-    AUDIT, CATALOG, ENGINE_META, INDEXES, OUTCOMES, PRINCIPAL_NAMES, RELATION_NAMES, ROW_INDEXES,
-    ROWS, SCHEMA_NAMES, STATS,
+    AUDIT, CATALOG, ENGINE_META, INDEXES, MEMBERSHIPS, OUTCOMES, PRINCIPAL_NAMES, RELATION_NAMES,
+    ROW_INDEXES, ROWS, SCHEMA_NAMES, STATS,
 };
 use crate::tuple::{ColumnSchema, decode_tuple};
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableHandle};
@@ -125,6 +125,7 @@ fn validate_persisted_records_for_lifecycle(
     ensure_principal_name_index(database)?;
     ensure_schema_name_index(database)?;
     ensure_relation_name_index(database)?;
+    ensure_membership_index(database)?;
     let read = database.begin_read().map_err(storage_error)?;
     validate_tables(&read)?;
     let metadata = read_metadata(&read)?;
@@ -478,6 +479,102 @@ fn ensure_relation_name_index(database: &Database) -> Result<(), StartupError> {
     Ok(())
 }
 
+fn collect_membership_index_keys<T>(catalog: &T) -> Result<HashSet<Vec<u8>>, StartupError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let prefix = 11u16.to_be_bytes();
+    let mut keys = HashSet::new();
+    for entry in catalog.range(prefix.as_slice()..).map_err(storage_error)? {
+        let (key, value) = entry.map_err(storage_error)?;
+        let key = key.value();
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        let record =
+            decode_registered_envelope(value.value()).map_err(|_| StartupError::InvalidCatalog)?;
+        if record.family_code != 11
+            || record.logical_key != key
+            || key.len() != 36
+            || key[2] != 1
+            || key[19] != 1
+        {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let member_id: [u8; 16] = key[3..19]
+            .try_into()
+            .map_err(|_| StartupError::InvalidCatalog)?;
+        let role_id: [u8; 16] = key[20..36]
+            .try_into()
+            .map_err(|_| StartupError::InvalidCatalog)?;
+        if member_id == [0; 16] || role_id == [0; 16] {
+            return Err(StartupError::InvalidCatalog);
+        }
+        for (direction, first, second) in [(1u8, member_id, role_id), (2u8, role_id, member_id)] {
+            let mut index_key = Vec::with_capacity(33);
+            index_key.push(direction);
+            index_key.extend_from_slice(&first);
+            index_key.extend_from_slice(&second);
+            if !keys.insert(index_key) {
+                return Err(StartupError::InvalidCatalog);
+            }
+        }
+    }
+    Ok(keys)
+}
+
+/// Rebuild both direct-membership directions from authoritative family-11 rows.
+fn ensure_membership_index(database: &Database) -> Result<(), StartupError> {
+    let read = database.begin_read().map_err(storage_error)?;
+    let has_index = read
+        .list_tables()
+        .map_err(storage_error)?
+        .any(|table| table.name() == MEMBERSHIPS.name());
+    if has_index {
+        let catalog = read.open_table(CATALOG).map_err(storage_error)?;
+        let expected = collect_membership_index_keys(&catalog)?;
+        let index = read.open_table(MEMBERSHIPS).map_err(storage_error)?;
+        let mut actual = HashSet::new();
+        let mut well_formed = true;
+        for entry in index.iter().map_err(storage_error)? {
+            let (key, value) = entry.map_err(storage_error)?;
+            if !value.value().is_empty() {
+                well_formed = false;
+            }
+            actual.insert(key.value().to_vec());
+        }
+        if well_formed && actual == expected {
+            return Ok(());
+        }
+    }
+    drop(read);
+    let write = database.begin_write().map_err(storage_error)?;
+    let catalog = write.open_table(CATALOG).map_err(storage_error)?;
+    let expected = collect_membership_index_keys(&catalog)?;
+    let mut index = write.open_table(MEMBERSHIPS).map_err(storage_error)?;
+    let stale_keys = index
+        .iter()
+        .map_err(storage_error)?
+        .map(|entry| {
+            entry
+                .map(|(key, _)| key.value().to_vec())
+                .map_err(storage_error)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for key in stale_keys {
+        index.remove(key.as_slice()).map_err(storage_error)?;
+    }
+    for key in expected {
+        index
+            .insert(key.as_slice(), &b""[..])
+            .map_err(storage_error)?;
+    }
+    drop(index);
+    drop(catalog);
+    write.commit().map_err(storage_error)?;
+    Ok(())
+}
+
 fn storage_error(_error: impl std::fmt::Display) -> StartupError {
     StartupError::Storage
 }
@@ -515,6 +612,7 @@ fn validate_tables(read: &ReadTransaction) -> Result<(), StartupError> {
     drop(read.open_table(PRINCIPAL_NAMES).map_err(storage_error)?);
     drop(read.open_table(SCHEMA_NAMES).map_err(storage_error)?);
     drop(read.open_table(RELATION_NAMES).map_err(storage_error)?);
+    drop(read.open_table(MEMBERSHIPS).map_err(storage_error)?);
     drop(read.open_table(OUTCOMES).map_err(storage_error)?);
     drop(read.open_table(AUDIT).map_err(storage_error)?);
     drop(read.open_table(STATS).map_err(storage_error)?);
@@ -2027,10 +2125,12 @@ fn validate_audit(read: &ReadTransaction) -> Result<usize, StartupError> {
 
 #[cfg(test)]
 mod relation_name_index_tests {
-    use super::ensure_relation_name_index;
+    use super::{ensure_membership_index, ensure_relation_name_index};
     use crate::catalog::{CatalogField, WireType, encode_envelope, family_schema};
-    use crate::catalog_index::lookup_relation_id_by_name;
-    use crate::schema::{CATALOG, RELATION_NAMES, create_tables};
+    use crate::catalog_index::{
+        lookup_members_for_role, lookup_relation_id_by_name, lookup_roles_for_member,
+    };
+    use crate::schema::{CATALOG, MEMBERSHIPS, RELATION_NAMES, create_tables};
     use redb::{Database, ReadableDatabase};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -2117,12 +2217,38 @@ mod relation_name_index_tests {
         ];
         let object_value =
             encode_envelope(&family_schema(2).unwrap(), &object_key, &object_fields).unwrap();
+        let mut membership_key = 11u16.to_be_bytes().to_vec();
+        membership_key.push(1);
+        membership_key.extend_from_slice(&[0x41; 16]);
+        membership_key.push(1);
+        membership_key.extend_from_slice(&[0x42; 16]);
+        let membership_fields = [
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::Id,
+                payload: [0x43; 16].to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::U64,
+                payload: 1u64.to_le_bytes().to_vec(),
+            },
+        ];
+        let membership_value = encode_envelope(
+            &family_schema(11).unwrap(),
+            &membership_key,
+            &membership_fields,
+        )
+        .unwrap();
         let mut catalog = write.open_table(CATALOG).unwrap();
         catalog
             .insert(table_key.as_slice(), table_value.as_slice())
             .unwrap();
         catalog
             .insert(object_key.as_slice(), object_value.as_slice())
+            .unwrap();
+        catalog
+            .insert(membership_key.as_slice(), membership_value.as_slice())
             .unwrap();
         drop(catalog);
         write.commit().unwrap();
@@ -2166,6 +2292,46 @@ mod relation_name_index_tests {
         assert_eq!(
             lookup_relation_id_by_name(&read, [0x31; 16], "orders").unwrap(),
             Some([0x32; 16])
+        );
+    }
+
+    #[test]
+    fn stale_membership_directions_are_rebuilt_from_catalog_records() {
+        let database = database();
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(MEMBERSHIPS)
+            .unwrap()
+            .insert(&[1, 0x41][..], &b"stale"[..])
+            .unwrap();
+        write.commit().unwrap();
+        ensure_membership_index(&database).unwrap();
+        let read = database.begin_read().unwrap();
+        assert_eq!(
+            lookup_roles_for_member(&read, [0x41; 16]).unwrap(),
+            vec![[0x42; 16]]
+        );
+        assert_eq!(
+            lookup_members_for_role(&read, [0x42; 16]).unwrap(),
+            vec![[0x41; 16]]
+        );
+    }
+
+    #[test]
+    fn missing_membership_index_is_rebuilt_from_catalog_records() {
+        let database = database();
+        let write = database.begin_write().unwrap();
+        assert!(write.delete_table(MEMBERSHIPS).unwrap());
+        write.commit().unwrap();
+        ensure_membership_index(&database).unwrap();
+        let read = database.begin_read().unwrap();
+        assert_eq!(
+            lookup_roles_for_member(&read, [0x41; 16]).unwrap(),
+            vec![[0x42; 16]]
+        );
+        assert_eq!(
+            lookup_members_for_role(&read, [0x42; 16]).unwrap(),
+            vec![[0x41; 16]]
         );
     }
 }

@@ -6101,6 +6101,9 @@ fn commit_storage_changes_inner_unchecked(
         let mut relation_names = transaction
             .open_table(crate::schema::RELATION_NAMES)
             .map_err(storage_error)?;
+        let mut memberships = transaction
+            .open_table(crate::schema::MEMBERSHIPS)
+            .map_err(storage_error)?;
         let principal_prefix = 10u16.to_be_bytes();
         for write in catalog_writes
             .iter()
@@ -6201,6 +6204,26 @@ fn commit_storage_changes_inner_unchecked(
                 .remove(index_key.as_slice())
                 .map_err(storage_error)?;
         }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&11u16.to_be_bytes()))
+        {
+            if write.key.len() != 36 || write.key[2] != 1 || write.key[19] != 1 {
+                return Err(CommitError::InvalidCatalog);
+            }
+            let member_id = &write.key[3..19];
+            let role_id = &write.key[20..36];
+            for (direction, first, second) in [(1u8, member_id, role_id), (2u8, role_id, member_id)]
+            {
+                let mut index_key = Vec::with_capacity(33);
+                index_key.push(direction);
+                index_key.extend_from_slice(first);
+                index_key.extend_from_slice(second);
+                memberships
+                    .remove(index_key.as_slice())
+                    .map_err(storage_error)?;
+            }
+        }
         for write in catalog_writes {
             match &write.payload {
                 Some(payload) => {
@@ -6236,6 +6259,30 @@ fn commit_storage_changes_inner_unchecked(
                 .is_some()
             {
                 return Err(CommitError::InvalidCatalog);
+            }
+        }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&11u16.to_be_bytes()))
+        {
+            if write.payload.is_none() {
+                continue;
+            }
+            let member_id = &write.key[3..19];
+            let role_id = &write.key[20..36];
+            for (direction, first, second) in [(1u8, member_id, role_id), (2u8, role_id, member_id)]
+            {
+                let mut index_key = Vec::with_capacity(33);
+                index_key.push(direction);
+                index_key.extend_from_slice(first);
+                index_key.extend_from_slice(second);
+                if memberships
+                    .insert(index_key.as_slice(), &b""[..])
+                    .map_err(storage_error)?
+                    .is_some()
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
             }
         }
     }

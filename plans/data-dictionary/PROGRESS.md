@@ -141,6 +141,14 @@
 - Verification: focused commit/startup regressions passed; all workspace tests passed (4 sandbox executor fixtures ignored because their delegated cgroup and TinyCC fixtures are unavailable); workspace Clippy with warnings denied and `cargo fmt --all -- --check` passed.
 - Remaining: complete DD-2 lookup/index coverage for objects, memberships, grants, policies, and dependencies.
 
+## DD-2: bidirectional membership index — verified
+
+- Added `memberships_v1` with separate member-to-role and role-to-member key orders and snapshot lookup APIs. Each returned edge is checked against its authoritative family-11 record.
+- Family-11 catalog writes maintain both entries in the same redb transaction; startup rebuilds both directions from authoritative records. Existing role-closure resolution remains on its validated catalog scan path pending indexed traversal parity.
+- Regression evidence: startup unit tests rebuild missing and stale directions; commit tests verify member-to-role and role-to-member results in both the original and a retained snapshot after another grant is published.
+- Verification: membership reconstruction and snapshot regressions passed; `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable); workspace Clippy with warnings denied passed.
+- Remaining: complete DD-2 lookup/index coverage for objects, grants, policies, and dependencies.
+
 ## DD-2: snapshot-aware relation-name index — verified
 
 - Added a schema-scoped `relation_names_v1` lookup key composed of schema ID and exact normalized relation-name bytes. The index points to family-5 table IDs and is checked against the family-5 schema reference and family-2 table object on reads.

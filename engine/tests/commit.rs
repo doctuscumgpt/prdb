@@ -3,7 +3,8 @@ use prdb_engine::catalog::{
     CatalogField, WireType, decode_registered_envelope, encode_envelope, family_schema,
 };
 use prdb_engine::catalog_index::{
-    lookup_principal_id_by_name, lookup_relation_id_by_name, lookup_schema_id_by_name,
+    lookup_members_for_role, lookup_principal_id_by_name, lookup_relation_id_by_name,
+    lookup_roles_for_member, lookup_schema_id_by_name,
 };
 use prdb_engine::commit::{
     CatalogWrite, CommitError, CommitRequest, ForeignKeyCheck, IndexWrite, RowWrite,
@@ -4933,6 +4934,75 @@ fn schema_name_index_tracks_renames_per_snapshot() -> Result<(), Box<dyn std::er
     assert_eq!(
         lookup_schema_id_by_name(&new_snapshot, "renamed_schema")?,
         Some(schema_id)
+    );
+    Ok(())
+}
+
+#[test]
+fn membership_indexes_track_both_directions_per_snapshot() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let member_id = id(0x85);
+    let role_id = builtin_owner_id();
+    let membership = membership_write(member_id, role_id);
+    let dependency = dependency_write(member_id, role_id, 5);
+    let mut event = audit_event(0x7a);
+    event.actor_id = Some(role_id);
+    commit_catalog_and_audit(
+        &database,
+        id(0x7a),
+        role_id,
+        9_999,
+        &[
+            principal_write_with_name(member_id, 1, 1, "membership_index_member"),
+            object_write_with_name(member_id, 8, "membership_index_member"),
+            membership.clone(),
+            dependency.clone(),
+        ],
+        &[event],
+    )
+    .map_err(|error| format!("initial membership-index commit: {error:?}"))?;
+    let old_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_roles_for_member(&old_snapshot, member_id)?,
+        vec![role_id]
+    );
+    assert_eq!(
+        lookup_members_for_role(&old_snapshot, role_id)?,
+        vec![member_id]
+    );
+
+    let second_member_id = id(0x86);
+    let second_membership = membership_write(second_member_id, role_id);
+    let second_dependency = dependency_write(second_member_id, role_id, 5);
+    let mut event = audit_event(0x7b);
+    event.actor_id = Some(role_id);
+    commit_catalog_and_audit(
+        &database,
+        id(0x7b),
+        role_id,
+        9_999,
+        &[
+            principal_write_with_name(second_member_id, 1, 1, "membership_index_member_2"),
+            object_write_with_name(second_member_id, 8, "membership_index_member_2"),
+            second_membership,
+            second_dependency,
+        ],
+        &[event],
+    )?;
+    assert_eq!(
+        lookup_roles_for_member(&old_snapshot, member_id)?,
+        vec![role_id]
+    );
+    let new_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_roles_for_member(&new_snapshot, member_id)?,
+        vec![role_id]
+    );
+    assert_eq!(
+        lookup_members_for_role(&new_snapshot, role_id)?,
+        vec![member_id, second_member_id]
     );
     Ok(())
 }

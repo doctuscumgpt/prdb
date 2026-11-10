@@ -1,7 +1,7 @@
 //! Snapshot-aware lookups through engine-maintained catalog secondary indexes.
 
 use crate::catalog::decode_registered_envelope;
-use crate::schema::{CATALOG, PRINCIPAL_NAMES, RELATION_NAMES, SCHEMA_NAMES};
+use crate::schema::{CATALOG, MEMBERSHIPS, PRINCIPAL_NAMES, RELATION_NAMES, SCHEMA_NAMES};
 use redb::ReadTransaction;
 
 /// Failure while reading a derived catalog index.
@@ -243,4 +243,91 @@ fn field_bytes(
         .find(|field| field.tag == tag)
         .map(|field| field.payload.as_slice())
         .ok_or(CatalogIndexError::InvalidEntry)
+}
+
+/// Return the direct roles granted to a member in this pinned snapshot.
+pub fn lookup_roles_for_member(
+    transaction: &ReadTransaction,
+    member_id: [u8; 16],
+) -> Result<Vec<[u8; 16]>, CatalogIndexError> {
+    lookup_memberships(transaction, 1, member_id)
+}
+
+/// Return the direct members granted a role in this pinned snapshot.
+pub fn lookup_members_for_role(
+    transaction: &ReadTransaction,
+    role_id: [u8; 16],
+) -> Result<Vec<[u8; 16]>, CatalogIndexError> {
+    lookup_memberships(transaction, 2, role_id)
+}
+
+fn lookup_memberships(
+    transaction: &ReadTransaction,
+    direction: u8,
+    principal_id: [u8; 16],
+) -> Result<Vec<[u8; 16]>, CatalogIndexError> {
+    if principal_id == [0; 16] {
+        return Err(CatalogIndexError::InvalidName);
+    }
+    let mut prefix = Vec::with_capacity(17);
+    prefix.push(direction);
+    prefix.extend_from_slice(&principal_id);
+    let index = transaction
+        .open_table(MEMBERSHIPS)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let catalog = transaction
+        .open_table(CATALOG)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let mut ids = Vec::new();
+    for entry in index
+        .range::<&[u8]>(prefix.as_slice()..)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+    {
+        let (key, _) = entry.map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+        let key = key.value();
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        if key.len() != 33 {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        let adjacent: [u8; 16] = key[17..]
+            .try_into()
+            .map_err(|_| CatalogIndexError::InvalidEntry)?;
+        if adjacent == [0; 16] {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        let (member_id, role_id) = if direction == 1 {
+            (principal_id, adjacent)
+        } else {
+            (adjacent, principal_id)
+        };
+        let mut catalog_key = 11u16.to_be_bytes().to_vec();
+        catalog_key.push(1);
+        catalog_key.extend_from_slice(&member_id);
+        catalog_key.push(1);
+        catalog_key.extend_from_slice(&role_id);
+        let bytes = catalog
+            .get(catalog_key.as_slice())
+            .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+            .ok_or(CatalogIndexError::InvalidEntry)?;
+        let record = decode_registered_envelope(bytes.value())
+            .map_err(|_| CatalogIndexError::InvalidEntry)?;
+        if record.family_code != 11
+            || record.logical_key != catalog_key
+            || field_id(&record, 1)? == [0; 16]
+            || field_u64(&record, 2)? == 0
+        {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        ids.push(adjacent);
+    }
+    Ok(ids)
+}
+
+fn field_u64(record: &crate::catalog::CatalogRecord, tag: u16) -> Result<u64, CatalogIndexError> {
+    let bytes: [u8; 8] = field_bytes(record, tag)?
+        .try_into()
+        .map_err(|_| CatalogIndexError::InvalidEntry)?;
+    Ok(u64::from_le_bytes(bytes))
 }
