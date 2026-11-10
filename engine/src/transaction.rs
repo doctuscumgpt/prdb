@@ -991,6 +991,38 @@ impl<'db> InvocationTransaction<'db> {
         result
     }
 
+    fn scan_relation_ids_for_schema(
+        &mut self,
+        schema_id: [u8; 16],
+    ) -> Result<Vec<[u8; 16]>, TransactionError> {
+        let result = (|| {
+            let remaining = self.max_scan_work.saturating_sub(self.scanned_work);
+            if remaining == 0 {
+                return Err(TransactionError::ScanBudgetExceeded);
+            }
+            let limit = remaining.min(MAX_CATALOG_FAMILY_SCAN);
+            let ids = self
+                .pinned_snapshot()?
+                .scan_relation_ids_for_schema(schema_id, limit)
+                .map_err(|error| match error {
+                    SnapshotError::RecordLimitExceeded if remaining <= MAX_CATALOG_FAMILY_SCAN => {
+                        TransactionError::ScanBudgetExceeded
+                    }
+                    SnapshotError::RecordLimitExceeded | SnapshotError::InvalidCatalogRecord => {
+                        TransactionError::CorruptCatalog
+                    }
+                    SnapshotError::Storage(error) => TransactionError::Storage(error),
+                    _ => TransactionError::CorruptCatalog,
+                })?;
+            self.charge_scan_work(ids.len())?;
+            Ok(ids)
+        })();
+        if matches!(&result, Err(TransactionError::ScanBudgetExceeded)) && !self.aborted {
+            self.abort()?;
+        }
+        result
+    }
+
     fn lookup_catalog_dependents_for_referenced(
         &mut self,
         referenced_id: [u8; 16],
@@ -2070,29 +2102,28 @@ impl<'db> InvocationTransaction<'db> {
             if schema.family_code != 3 {
                 return Err(TransactionError::CorruptCatalog);
             }
-            // Schema rows store the schema definition, while table membership
-            // is represented by each relation's schema_id field. Discover
-            // relations by scanning the table family so schemas created by
-            // normal DDL expose their tables consistently.
-            let table_records = self.scan_catalog_family(5)?;
-            let mut table_ids = Vec::new();
-            for table_record in table_records {
-                if table_record.family_code != 5 {
-                    return Err(TransactionError::CorruptCatalog);
+            let mut table_ids = self.scan_relation_ids_for_schema(schema_id)?;
+            if table_ids.is_empty() {
+                // Retain bounded support for snapshots written before the
+                // schema-scoped relation-name index was maintained.
+                for table_record in self.scan_catalog_family(5)? {
+                    if table_record.family_code != 5 {
+                        return Err(TransactionError::CorruptCatalog);
+                    }
+                    if catalog_id(&table_record, 1)? != schema_id {
+                        continue;
+                    }
+                    let table_id = table_record
+                        .logical_key
+                        .get(3..19)
+                        .ok_or(TransactionError::CorruptCatalog)?
+                        .try_into()
+                        .map_err(|_| TransactionError::CorruptCatalog)?;
+                    if table_id == [0; 16] {
+                        return Err(TransactionError::CorruptCatalog);
+                    }
+                    table_ids.push(table_id);
                 }
-                if catalog_id(&table_record, 1)? != schema_id {
-                    continue;
-                }
-                let table_id = table_record
-                    .logical_key
-                    .get(3..19)
-                    .ok_or(TransactionError::CorruptCatalog)?
-                    .try_into()
-                    .map_err(|_| TransactionError::CorruptCatalog)?;
-                if table_id == [0; 16] {
-                    return Err(TransactionError::CorruptCatalog);
-                }
-                table_ids.push(table_id);
             }
             table_ids.sort_unstable();
             if table_ids.windows(2).any(|pair| pair[0] == pair[1]) {
@@ -2651,22 +2682,30 @@ impl<'db> InvocationTransaction<'db> {
         if !self.has_schema_metadata_authority(schema_id, &roles)? {
             return Ok(None);
         }
-        let records = self.scan_catalog_family(5)?;
+        let mut relation_ids = self.scan_relation_ids_for_schema(schema_id)?;
+        if relation_ids.is_empty() {
+            for record in self.scan_catalog_family(5)? {
+                if record.family_code != 5 {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                if catalog_id(&record, 1)? == schema_id {
+                    let relation_id = record
+                        .logical_key
+                        .get(3..19)
+                        .ok_or(TransactionError::CorruptCatalog)?
+                        .try_into()
+                        .map_err(|_| TransactionError::CorruptCatalog)?;
+                    relation_ids.push(relation_id);
+                }
+            }
+        }
+        relation_ids.sort_unstable();
+        if relation_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(TransactionError::CorruptCatalog);
+        }
         let mut relations = Vec::new();
         let mut encoded_bytes = 0usize;
-        for record in records {
-            if record.family_code != 5 || catalog_id(&record, 1)? != schema_id {
-                continue;
-            }
-            if record.logical_key.len() != 19
-                || record.logical_key[2] != 1
-                || record.logical_key[..2] != 5u16.to_be_bytes()
-            {
-                return Err(TransactionError::CorruptCatalog);
-            }
-            let relation_id: [u8; 16] = record.logical_key[3..19]
-                .try_into()
-                .map_err(|_| TransactionError::CorruptCatalog)?;
+        for relation_id in relation_ids {
             let relation = self.read_discovery_relation(schema_id, relation_id)?;
             encoded_bytes = encoded_bytes
                 .saturating_add(16)
@@ -5012,23 +5051,24 @@ impl<'db> InvocationTransaction<'db> {
             }
 
             self.read_discovery_schema(schema_id)?;
-            let table_records = self.scan_catalog_family(5)?;
-            let mut table_ids = Vec::new();
-            for table_record in table_records {
-                if table_record.family_code != 5 {
-                    return Err(TransactionError::CorruptCatalog);
-                }
-                if catalog_id(&table_record, 1)? == schema_id {
-                    let table_id = table_record
-                        .logical_key
-                        .get(3..19)
-                        .ok_or(TransactionError::CorruptCatalog)?
-                        .try_into()
-                        .map_err(|_| TransactionError::CorruptCatalog)?;
-                    if table_id == [0; 16] {
+            let mut table_ids = self.scan_relation_ids_for_schema(schema_id)?;
+            if table_ids.is_empty() {
+                for table_record in self.scan_catalog_family(5)? {
+                    if table_record.family_code != 5 {
                         return Err(TransactionError::CorruptCatalog);
                     }
-                    table_ids.push(table_id);
+                    if catalog_id(&table_record, 1)? == schema_id {
+                        let table_id = table_record
+                            .logical_key
+                            .get(3..19)
+                            .ok_or(TransactionError::CorruptCatalog)?
+                            .try_into()
+                            .map_err(|_| TransactionError::CorruptCatalog)?;
+                        if table_id == [0; 16] {
+                            return Err(TransactionError::CorruptCatalog);
+                        }
+                        table_ids.push(table_id);
+                    }
                 }
             }
             table_ids.sort_unstable();

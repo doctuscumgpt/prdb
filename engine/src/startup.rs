@@ -2822,7 +2822,7 @@ mod catalog_index_tests {
         lookup_dependents_for_referenced, lookup_grants_for_grantee, lookup_grants_for_object,
         lookup_index_id_by_name, lookup_members_for_role, lookup_policies_for_table_operation,
         lookup_relation_id_by_name, lookup_roles_for_member, scan_column_ids_for_table,
-        scan_constraint_ids_for_table, scan_index_ids_for_table,
+        scan_constraint_ids_for_table, scan_index_ids_for_table, scan_relation_ids_for_schema,
     };
     use crate::schema::{
         CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, GRANTS, INDEX_NAMES, MEMBERSHIPS, POLICIES,
@@ -3150,6 +3150,10 @@ mod catalog_index_tests {
         assert_eq!(
             lookup_relation_id_by_name(&read, [0x31; 16], "orders").unwrap(),
             Some([0x32; 16])
+        );
+        assert_eq!(
+            scan_relation_ids_for_schema(&read, [0x31; 16], 1).unwrap(),
+            vec![[0x32; 16]]
         );
         assert!(
             read.open_table(RELATION_NAMES)

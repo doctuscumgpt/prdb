@@ -94,6 +94,30 @@ impl RowSnapshot {
         )
     }
 
+    pub(crate) fn scan_relation_ids_for_schema(
+        &self,
+        schema_id: [u8; 16],
+        max_records: usize,
+    ) -> Result<Vec<[u8; 16]>, SnapshotError> {
+        crate::catalog_index::scan_relation_ids_for_schema(
+            &self.transaction,
+            schema_id,
+            max_records,
+        )
+        .map_err(|error| match error {
+            crate::catalog_index::CatalogIndexError::InvalidName
+            | crate::catalog_index::CatalogIndexError::InvalidEntry => {
+                SnapshotError::InvalidCatalogRecord
+            }
+            crate::catalog_index::CatalogIndexError::RecordLimitExceeded => {
+                SnapshotError::RecordLimitExceeded
+            }
+            crate::catalog_index::CatalogIndexError::Storage(error) => {
+                SnapshotError::Storage(error)
+            }
+        })
+    }
+
     /// List one table's columns in ordinal order from this pinned snapshot.
     pub(crate) fn scan_column_ids_for_table(
         &self,

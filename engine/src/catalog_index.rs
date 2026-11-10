@@ -213,6 +213,84 @@ pub fn lookup_relation_id_by_name(
     Ok(Some(relation_id))
 }
 
+/// List relation IDs in one schema through the schema-scoped name index.
+pub fn scan_relation_ids_for_schema(
+    transaction: &ReadTransaction,
+    schema_id: [u8; 16],
+    max_records: usize,
+) -> Result<Vec<[u8; 16]>, CatalogIndexError> {
+    if schema_id == [0; 16]
+        || max_records == 0
+        || max_records > crate::snapshot::MAX_CATALOG_FAMILY_SCAN
+    {
+        return Err(CatalogIndexError::InvalidName);
+    }
+    let index = transaction
+        .open_table(RELATION_NAMES)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let catalog = transaction
+        .open_table(CATALOG)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let mut ids = Vec::new();
+    for entry in index
+        .range(schema_id.as_slice()..)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+    {
+        let (key, value) = entry.map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+        let key = key.value();
+        if !key.starts_with(&schema_id) {
+            break;
+        }
+        if key.len() <= 16 || key.len() > 16 + 4096 {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        if ids.len() == max_records {
+            return Err(CatalogIndexError::RecordLimitExceeded);
+        }
+        let relation_id: [u8; 16] = value
+            .value()
+            .try_into()
+            .map_err(|_| CatalogIndexError::InvalidEntry)?;
+        if relation_id == [0; 16] {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        let table_key = catalog_id_key(5, relation_id);
+        let table_bytes = catalog
+            .get(table_key.as_slice())
+            .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+            .ok_or(CatalogIndexError::InvalidEntry)?;
+        let table_record = decode_registered_envelope(table_bytes.value())
+            .map_err(|_| CatalogIndexError::InvalidEntry)?;
+        if table_record.family_code != 5
+            || table_record.logical_key != table_key
+            || field_id(&table_record, 1)? != schema_id
+        {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        let object_key = catalog_id_key(2, relation_id);
+        let object_bytes = catalog
+            .get(object_key.as_slice())
+            .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+            .ok_or(CatalogIndexError::InvalidEntry)?;
+        let object = decode_registered_envelope(object_bytes.value())
+            .map_err(|_| CatalogIndexError::InvalidEntry)?;
+        if object.family_code != 2
+            || object.logical_key != object_key
+            || field_u16(&object, 1)? != 3
+            || object
+                .fields
+                .iter()
+                .find(|field| field.tag == 2)
+                .is_none_or(|parent| parent.payload.as_slice() != schema_id)
+            || field_bytes(&object, 3)? != &key[16..]
+        {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        ids.push(relation_id);
+    }
+    Ok(ids)
+}
+
 /// Resolve a column by exact normalized name within a table in this snapshot.
 pub fn lookup_column_id_by_name(
     transaction: &ReadTransaction,

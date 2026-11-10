@@ -305,3 +305,10 @@
 - Regression evidence: startup reconstructs a missing index and checks table-prefix isolation; real CHECK creation/drop verifies index maintenance; CHECK and foreign-key DDL plus all 73 transaction integration tests pass.
 - Spec: [data dictionary](../../specs/data-dictionary.md) describes the table-scoped constraint and incoming-FK lookup paths.
 - Verification: the startup prefix/rebuild test, CHECK create/drop integration, FK DDL integration, and all 73 transaction tests passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed. The suite reports 4 sandbox fixtures ignored because they require delegated cgroups and built TinyCC fixtures.
+
+## DD-2: schema-scoped relation enumeration — verified
+
+- Reused the maintained `relation_names_v1` schema prefix to enumerate relation IDs, validating each result against both its family-5 table row and parented family-2 relation object.
+- Replaced global family-5 scans in authorized relation listing, administrative relation listing, and schema-usage grant loading. Matching candidates are charged to the shared invocation scan-work budget; empty-prefix low-level snapshots retain the bounded compatibility scan.
+- Regression evidence: the startup stale-index rebuild fixture now enumerates the expected relation ID; authorized relation listing and administrative metadata authorization tests pass.
+- Verification: focused startup, transaction, and commit tests passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed. The workspace test run reports 4 sandbox fixtures ignored because they require delegated cgroups and built TinyCC fixtures.
