@@ -196,6 +196,12 @@
 - Verification: focused bound and race regressions passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
 - Remaining: DD-5 snapshot retention and lifecycle acceptance continue in later increments.
 
+## DD-5: pinned schema and row layout survive ADD COLUMN — verified slice
+
+- Regression: `storage_manager_adds_column_and_backfills_existing_rows` now pins a real redb read snapshot before ADD COLUMN, commits the DDL, and verifies the old snapshot still has no lookup for the new column and decodes the old row payload with its prior schema. The current view still verifies the backfilled new shape.
+- Verification: the focused regression passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
+- Remaining: cover retained definitions across rename/drop and row/default decoding under reclamation pressure; this regression does not claim the complete DD-5 lifecycle gate.
+
 ## DD-2: bidirectional dependency-edge index — verified
 
 - Added `dependencies_v1`, keyed by direction, the dependent/referenced UUID pair, and edge kind. Snapshot lookups validate each index entry against its authoritative family-15 record.

@@ -4352,6 +4352,7 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
         &[Some(ScalarValue::Integer(99))],
     )?;
     stale_writer.stage_put(stale_row_id, &stale_tuple)?;
+    let retained_snapshot = database.begin_read()?;
 
     let add_invocation = id(0x68);
     let mut add_audit = identity_audit_event(0x69, actor, id(0x6a));
@@ -4378,6 +4379,22 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
     );
     let added = added_result?;
     assert_eq!(added.schema_version, 2);
+    assert_eq!(
+        lookup_column_id_by_name(&retained_snapshot, table.table_id, "label")?,
+        None
+    );
+    let retained_rows = prdb_engine::snapshot::RowSnapshot::new(retained_snapshot);
+    let retained_row = RowRecord::decode(
+        &retained_rows
+            .get(&table_row_key(table.table_id, row_id.row))?
+            .ok_or("retained reader lost its pre-DDL row")?,
+    )?;
+    let retained_tuple = decode_tuple(
+        &old_schema.columns,
+        old_schema.schema_version,
+        &retained_row.payload,
+    )?;
+    assert_eq!(retained_tuple.values, vec![Some(ScalarValue::Integer(7))]);
     let stale_result = stale_writer.commit();
     assert!(
         matches!(
