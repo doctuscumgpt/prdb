@@ -69,3 +69,9 @@
 - Regression: `index_record_matches_independent_catalog_v1_fixture` checks a family-9 index with a one-column IDS key, unique flag, omitted owner constraint, storage object, state, key version, and table schema version against exact bytes.
 - Verification: the focused catalog fixture command passed all independent family-1 through family-9 tests.
 - Remaining: independent byte fixtures for families 10–17 and broader catalog semantics remain open.
+
+## DD-1: independent principal-record bytes — verified
+
+- Regression: `principal_record_matches_independent_catalog_v1_fixture` checks the family-10 role kind, normalized UTF-8 name, false login flag, nonzero authority epoch, typed key, and exact envelope bytes.
+- Verification: the focused catalog fixture command passed all independent family-1 through family-10 tests.
+- Remaining: independent byte fixtures for families 11–17 and broader catalog semantics remain open.
