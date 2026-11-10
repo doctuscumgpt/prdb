@@ -117,7 +117,8 @@
 - Behavior: the authenticated real gateway path reports a sealed upload as prepared, cancels it without creating an invocation outcome, then hides it as unknown on STATUS.
 - Regression and verification: included in the real supervisor/gateway TinyCC upload test; workspace build, format, Clippy, Rust tests and SDK tests pass.
 - Verification update: the confined SQL acceptance verifies the query itself receives a positive SDK cancellation poll response and relays `CANCEL_OBSERVED` before ABORTED. The supervisor now preserves executor channels for a 500 ms cooperative exit window, then forcefully reaps a remaining worker; hard deadlines remain active during that window. The delegated-cgroup TCP process test starts an invocation for a separately created query user, observes it as active through an authenticated bootstrap-administrator control session, accepts administrative CANCEL, kills the gateway before terminal delivery, and reconfirms ABORTED after restarting the supervisor/storage process. Its non-cooperative query reaches durable ABORTED within the two-second acceptance bound.
-- Remaining: reject control-mode cancellation after COMMITTING over TCP and broaden process-level worker failure and resource cleanup coverage.
+- Verification correction: `control_cancel_over_tcp_reports_too_late_during_durable_commit` now explicitly covers the control-mode TCP response after the writer enters its durable commit boundary. The focused test passes; the full locked workspace suite also passed (129 passed, 4 cgroup-dependent ignored).
+- Remaining: broaden process-level worker failure and resource cleanup coverage.
 
 ## SU-3 / SB-1: process-boundary START preflight failure — verified
 
