@@ -3,7 +3,9 @@ use prdb_engine::authorization::Expr;
 use prdb_engine::catalog::{
     CatalogField, WireType, decode_registered_envelope, encode_envelope, family_schema,
 };
-use prdb_engine::catalog_index::{CatalogIndexError, lookup_principal_id_by_name};
+use prdb_engine::catalog_index::{
+    CatalogIndexError, lookup_principal_id_by_name, lookup_schema_id_by_name,
+};
 use prdb_engine::expression::encode_expression;
 use prdb_engine::index_key::derive_index_key;
 use prdb_engine::index_locator::IndexLocator;
@@ -12,6 +14,7 @@ use prdb_engine::outcome::{InvocationOutcome, OutcomeStatus};
 use prdb_engine::row_record::RowRecord;
 use prdb_engine::schema::{
     self, AUDIT, CATALOG, ENGINE_META, INDEXES, OUTCOMES, PRINCIPAL_NAMES, ROW_INDEXES, ROWS,
+    SCHEMA_NAMES,
 };
 use prdb_engine::startup::{StartupError, validate_persisted_records};
 use prdb_engine::tuple::{ColumnSchema, ScalarType, ScalarValue, encode_tuple};
@@ -84,10 +87,10 @@ impl Fixture {
             .unwrap()
             .insert(&owner_object_key[..], &owner_object_value[..])
             .unwrap();
-        for code in [1u16, 2] {
+        for (code, name) in [(1u16, "pg_catalog"), (2, "information_schema")] {
             let schema_id = builtin_id(code);
             let (schema_key, schema_value) = schema_record(schema_id);
-            let (object_key, object_value) = object_record(schema_id, 1);
+            let (object_key, object_value) = object_record_named(schema_id, 1, owner_id, name);
             write
                 .open_table(CATALOG)
                 .unwrap()
@@ -1213,6 +1216,51 @@ fn missing_principal_name_index_is_rebuilt_from_catalog() {
     assert_eq!(
         lookup_principal_id_by_name(&read, "database_admin").unwrap(),
         Some(builtin_owner_id())
+    );
+}
+
+#[test]
+fn stale_schema_name_index_is_rebuilt_from_catalog() {
+    let fixture = Fixture::new();
+    let database = fixture.database(0);
+    let write = database.begin_write().unwrap();
+    write
+        .open_table(SCHEMA_NAMES)
+        .unwrap()
+        .insert(&b"pg_catalog"[..], &[0x22; 16][..])
+        .unwrap();
+    write
+        .open_table(SCHEMA_NAMES)
+        .unwrap()
+        .insert(&b"stale_entry"[..], &[0x33; 3][..])
+        .unwrap();
+    write.commit().unwrap();
+    validate_persisted_records(&database).unwrap();
+    let read = database.begin_read().unwrap();
+    assert!(
+        lookup_schema_id_by_name(&read, "pg_catalog")
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        lookup_schema_id_by_name(&read, "stale_entry").unwrap(),
+        None
+    );
+}
+
+#[test]
+fn missing_schema_name_index_is_rebuilt_from_catalog() {
+    let fixture = Fixture::new();
+    let database = fixture.database(0);
+    let write = database.begin_write().unwrap();
+    assert!(write.delete_table(SCHEMA_NAMES).unwrap());
+    write.commit().unwrap();
+    validate_persisted_records(&database).unwrap();
+    let read = database.begin_read().unwrap();
+    assert!(
+        lookup_schema_id_by_name(&read, "pg_catalog")
+            .unwrap()
+            .is_some()
     );
 }
 

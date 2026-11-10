@@ -14,7 +14,7 @@ use crate::ipc::{
     write_frame,
 };
 use crate::metadata::{EngineMetadata, Lifecycle};
-use crate::schema::{AUDIT, CATALOG, ENGINE_META, PRINCIPAL_NAMES, create_tables};
+use crate::schema::{AUDIT, CATALOG, ENGINE_META, PRINCIPAL_NAMES, SCHEMA_NAMES, create_tables};
 use crate::startup::{StartupError, validate_initializing_records, validate_persisted_records};
 use crate::storage_manager::{StorageManager, StorageManagerConfig, StorageManagerInitError};
 use redb::{Database, Durability, ReadableDatabase, ReadableTable};
@@ -781,6 +781,39 @@ fn seed_database(
                 .ok_or(BootstrapError::InvalidCatalog)?;
             if principal_names
                 .insert(name.payload.as_slice(), principal_id)
+                .map_err(|_| BootstrapError::Storage)?
+                .is_some()
+            {
+                return Err(BootstrapError::InvalidCatalog);
+            }
+        }
+    }
+    {
+        let mut schema_names = write
+            .open_table(SCHEMA_NAMES)
+            .map_err(|_| BootstrapError::Storage)?;
+        for (key, payload) in &catalog_records {
+            if !key.starts_with(&2u16.to_be_bytes()) {
+                continue;
+            }
+            let record =
+                decode_registered_envelope(payload).map_err(|_| BootstrapError::InvalidCatalog)?;
+            let kind = record
+                .fields
+                .iter()
+                .find(|field| field.tag == 1)
+                .ok_or(BootstrapError::InvalidCatalog)?;
+            if kind.payload.as_slice() != 1u16.to_le_bytes() {
+                continue;
+            }
+            let name = record
+                .fields
+                .iter()
+                .find(|field| field.tag == 3)
+                .ok_or(BootstrapError::InvalidCatalog)?;
+            let schema_id = key.get(3..19).ok_or(BootstrapError::InvalidCatalog)?;
+            if schema_names
+                .insert(name.payload.as_slice(), schema_id)
                 .map_err(|_| BootstrapError::Storage)?
                 .is_some()
             {

@@ -2,7 +2,7 @@ use prdb_engine::audit::{AuditAction, AuditEvent, AuditResult};
 use prdb_engine::catalog::{
     CatalogField, WireType, decode_registered_envelope, encode_envelope, family_schema,
 };
-use prdb_engine::catalog_index::lookup_principal_id_by_name;
+use prdb_engine::catalog_index::{lookup_principal_id_by_name, lookup_schema_id_by_name};
 use prdb_engine::commit::{
     CatalogWrite, CommitError, CommitRequest, ForeignKeyCheck, IndexWrite, RowWrite,
     commit_catalog_and_audit, commit_catalog_and_audit_with_fences, commit_rows,
@@ -4854,6 +4854,58 @@ fn principal_name_index_tracks_renames_per_snapshot() -> Result<(), Box<dyn std:
     assert_eq!(
         lookup_principal_id_by_name(&new_snapshot, "renamed_principal")?,
         Some(principal_id)
+    );
+    Ok(())
+}
+
+#[test]
+fn schema_name_index_tracks_renames_per_snapshot() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let schema_id = id(0x84);
+    let initial_object = object_write_with_name(schema_id, 1, "indexed_schema");
+    let initial_object_bytes = initial_object.payload.clone().unwrap();
+    let mut event = audit_event(0x78);
+    event.actor_id = Some(builtin_owner_id());
+    commit_catalog_and_audit(
+        &database,
+        id(0x78),
+        builtin_owner_id(),
+        9_999,
+        &[initial_object, schema_write(schema_id)],
+        &[event],
+    )?;
+    let old_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_schema_id_by_name(&old_snapshot, "indexed_schema")?,
+        Some(schema_id)
+    );
+
+    let mut renamed_object = object_write_with_name(schema_id, 1, "renamed_schema");
+    renamed_object.expected_value = Some(initial_object_bytes);
+    let mut event = audit_event(0x79);
+    event.actor_id = Some(builtin_owner_id());
+    commit_catalog_and_audit(
+        &database,
+        id(0x79),
+        builtin_owner_id(),
+        9_999,
+        &[renamed_object],
+        &[event],
+    )?;
+
+    assert_eq!(
+        lookup_schema_id_by_name(&old_snapshot, "indexed_schema")?,
+        Some(schema_id)
+    );
+    let new_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_schema_id_by_name(&new_snapshot, "indexed_schema")?,
+        None
+    );
+    assert_eq!(
+        lookup_schema_id_by_name(&new_snapshot, "renamed_schema")?,
+        Some(schema_id)
     );
     Ok(())
 }

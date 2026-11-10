@@ -2,7 +2,7 @@
 use crate::catalog::{CatalogRecord, InvalidCatalogRecord, decode_registered_envelope};
 use crate::expression::decode_catalog_expression_record;
 use crate::index_locator::{IndexLocator, LocatorError};
-use crate::schema::{CATALOG, ENGINE_META, INDEXES, ROWS};
+use crate::schema::{CATALOG, ENGINE_META, INDEXES, ROWS, SCHEMA_NAMES};
 use redb::ReadTransaction;
 
 pub const MAX_CATALOG_FAMILY_SCAN: usize = 65_536;
@@ -240,6 +240,15 @@ impl RowSnapshot {
     ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
         let table = self.transaction.open_table(CATALOG)?;
         Ok(table.get(key)?.map(|value| value.value().to_vec()))
+    }
+
+    /// Copy an exact schema-name index entry from this pinned snapshot.
+    pub fn get_schema_name_index_value(
+        &self,
+        name: &[u8],
+    ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+        let table = self.transaction.open_table(SCHEMA_NAMES)?;
+        Ok(table.get(name)?.map(|value| value.value().to_vec()))
     }
 
     /// Copy a bounded family prefix from the pinned catalog snapshot. Callers

@@ -3438,7 +3438,8 @@ impl<'db> InvocationTransaction<'db> {
         }
     }
 
-    /// Resolve an exact schema name from the invocation's visible schema pages.
+    /// Resolve an exact schema name through the pinned schema-name index after
+    /// applying the same schema-usage visibility checks as schema listing.
     pub fn resolve_authorized_schema(
         &mut self,
         schema_name: &str,
@@ -3450,27 +3451,93 @@ impl<'db> InvocationTransaction<'db> {
             if schema_name.is_empty() || schema_name.len() > MAX_METADATA_PAGE_BYTES {
                 return Err(TransactionError::InvalidMetadataRequest);
             }
-            let mut continuation = None;
-            loop {
-                let page = self.list_authorized_schemas(
-                    MAX_SCHEMAS_PER_PAGE,
-                    continuation,
-                    context,
-                    grants,
-                    dependencies,
-                )?;
-                let schema = page
-                    .schemas
-                    .into_iter()
-                    .find(|schema| schema.name == schema_name);
-                if schema.is_some() {
-                    return Ok(schema);
-                }
-                continuation = page.continuation;
-                if continuation.is_none() {
-                    return Ok(None);
-                }
+            self.check_deadline()?;
+            self.capture_authority_dependencies(context, dependencies)?;
+            if self.load_catalog_role_closure(context.principal_id)? != context.role_ids {
+                return Err(TransactionError::InvalidContext);
             }
+            for grant in grants {
+                self.validate_metadata_grant(context, *grant)?;
+            }
+            let visible = grants.iter().any(|grant| {
+                let AccessTarget::Schema(schema_id) = grant.target else {
+                    return false;
+                };
+                let subject_matches = match grant.subject {
+                    Subject::Principal(id) => id == context.principal_id,
+                    Subject::Role(id) => context.role_ids.contains(&id),
+                };
+                grant.operation == Operation::Usage
+                    && subject_matches
+                    && context
+                        .scope
+                        .contains(&(Operation::Usage, AccessTarget::Schema(schema_id)))
+            });
+            if schema_name == "information_schema" {
+                return Ok(Some(VisibleSchema {
+                    schema_id: INFORMATION_SCHEMA_ID,
+                    name: schema_name.to_owned(),
+                }));
+            }
+            if !visible {
+                return Ok(None);
+            }
+            let indexed = self
+                .pinned_snapshot()?
+                .get_schema_name_index_value(schema_name.as_bytes())
+                .map_err(|error| TransactionError::Storage(error.to_string()))?;
+            let Some(indexed) = indexed else {
+                // Startup normally guarantees a complete derived index. Some
+                // in-process callers can hold a catalog snapshot created
+                // before startup validation, so preserve listing semantics on
+                // an index miss while those snapshots remain supported.
+                let mut continuation = None;
+                loop {
+                    let page = self.list_authorized_schemas(
+                        MAX_SCHEMAS_PER_PAGE,
+                        continuation,
+                        context,
+                        grants,
+                        dependencies,
+                    )?;
+                    if let Some(schema) = page
+                        .schemas
+                        .into_iter()
+                        .find(|schema| schema.name == schema_name)
+                    {
+                        return Ok(Some(schema));
+                    }
+                    continuation = page.continuation;
+                    if continuation.is_none() {
+                        return Ok(None);
+                    }
+                }
+            };
+            let schema_id: [u8; 16] = indexed
+                .try_into()
+                .map_err(|_| TransactionError::CorruptCatalog)?;
+            if schema_id == [0; 16] {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            let authorized = grants.iter().any(|grant| {
+                grant.target == AccessTarget::Schema(schema_id)
+                    && grant.operation == Operation::Usage
+                    && match grant.subject {
+                        Subject::Principal(id) => id == context.principal_id,
+                        Subject::Role(id) => context.role_ids.contains(&id),
+                    }
+                    && context
+                        .scope
+                        .contains(&(Operation::Usage, AccessTarget::Schema(schema_id)))
+            });
+            if !authorized {
+                return Ok(None);
+            }
+            let schema = self.read_discovery_schema(schema_id)?;
+            if schema.name != schema_name {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            Ok(Some(schema))
         })();
         match result {
             Ok(schema) => Ok(schema),

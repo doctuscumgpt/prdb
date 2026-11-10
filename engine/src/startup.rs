@@ -14,7 +14,8 @@ use crate::metadata::{EngineMetadata, Lifecycle};
 use crate::outcome::{InvocationOutcome, OutcomeStatus};
 use crate::row_record::RowRecord;
 use crate::schema::{
-    AUDIT, CATALOG, ENGINE_META, INDEXES, OUTCOMES, PRINCIPAL_NAMES, ROW_INDEXES, ROWS, STATS,
+    AUDIT, CATALOG, ENGINE_META, INDEXES, OUTCOMES, PRINCIPAL_NAMES, ROW_INDEXES, ROWS,
+    SCHEMA_NAMES, STATS,
 };
 use crate::tuple::{ColumnSchema, decode_tuple};
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableHandle};
@@ -122,6 +123,7 @@ fn validate_persisted_records_for_lifecycle(
     required_lifecycle: Lifecycle,
 ) -> Result<StorageHealthReport, StartupError> {
     ensure_principal_name_index(database)?;
+    ensure_schema_name_index(database)?;
     let read = database.begin_read().map_err(storage_error)?;
     validate_tables(&read)?;
     let metadata = read_metadata(&read)?;
@@ -252,6 +254,106 @@ fn ensure_principal_name_index(database: &Database) -> Result<(), StartupError> 
     Ok(())
 }
 
+fn collect_schema_name_entries<T>(catalog: &T) -> Result<HashMap<Vec<u8>, [u8; 16]>, StartupError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let prefix = 2u16.to_be_bytes();
+    let mut entries = HashMap::new();
+    let mut count = 0usize;
+    for entry in catalog.range(prefix.as_slice()..).map_err(storage_error)? {
+        let (key, value) = entry.map_err(storage_error)?;
+        let key = key.value();
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        if key.len() != 19 || key[2] != 1 {
+            continue;
+        }
+        let record =
+            decode_registered_envelope(value.value()).map_err(|_| StartupError::InvalidCatalog)?;
+        if record.family_code != 2 || record.logical_key != key {
+            return Err(StartupError::InvalidCatalog);
+        }
+        if field_u16(&record, 1)? != 1 {
+            continue;
+        }
+        count += 1;
+        if count > MAX_CATALOG_RECORDS_PER_FAMILY {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let name = record
+            .fields
+            .iter()
+            .find(|field| field.tag == 3)
+            .ok_or(StartupError::InvalidCatalog)?
+            .payload
+            .clone();
+        let schema_id: [u8; 16] = key[3..19]
+            .try_into()
+            .map_err(|_| StartupError::InvalidCatalog)?;
+        if name.is_empty() || name.len() > 4096 || entries.insert(name, schema_id).is_some() {
+            return Err(StartupError::InvalidCatalog);
+        }
+    }
+    Ok(entries)
+}
+
+/// Rebuild the derived schema-name lookup from authoritative family-2 rows.
+fn ensure_schema_name_index(database: &Database) -> Result<(), StartupError> {
+    let read = database.begin_read().map_err(storage_error)?;
+    let has_index = read
+        .list_tables()
+        .map_err(storage_error)?
+        .any(|table| table.name() == SCHEMA_NAMES.name());
+    if has_index {
+        let catalog = read.open_table(CATALOG).map_err(storage_error)?;
+        let expected = collect_schema_name_entries(&catalog)?;
+        let index = read.open_table(SCHEMA_NAMES).map_err(storage_error)?;
+        let mut actual = HashMap::new();
+        let mut well_formed = true;
+        for entry in index.iter().map_err(storage_error)? {
+            let (name, id) = entry.map_err(storage_error)?;
+            match <[u8; 16]>::try_from(id.value()) {
+                Ok(id) => {
+                    actual.insert(name.value().to_vec(), id);
+                }
+                Err(_) => well_formed = false,
+            }
+        }
+        if well_formed && actual == expected {
+            return Ok(());
+        }
+    }
+    drop(read);
+
+    let write = database.begin_write().map_err(storage_error)?;
+    let catalog = write.open_table(CATALOG).map_err(storage_error)?;
+    let entries = collect_schema_name_entries(&catalog)?;
+    let mut name_index = write.open_table(SCHEMA_NAMES).map_err(storage_error)?;
+    let stale_keys = name_index
+        .iter()
+        .map_err(storage_error)?
+        .map(|entry| {
+            entry
+                .map(|(name, _)| name.value().to_vec())
+                .map_err(storage_error)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for name in stale_keys {
+        name_index.remove(name.as_slice()).map_err(storage_error)?;
+    }
+    for (name, id) in entries {
+        name_index
+            .insert(name.as_slice(), &id[..])
+            .map_err(storage_error)?;
+    }
+    drop(name_index);
+    drop(catalog);
+    write.commit().map_err(storage_error)?;
+    Ok(())
+}
+
 fn storage_error(_error: impl std::fmt::Display) -> StartupError {
     StartupError::Storage
 }
@@ -287,6 +389,7 @@ fn validate_tables(read: &ReadTransaction) -> Result<(), StartupError> {
     drop(read.open_table(ROW_INDEXES).map_err(storage_error)?);
     drop(read.open_table(CATALOG).map_err(storage_error)?);
     drop(read.open_table(PRINCIPAL_NAMES).map_err(storage_error)?);
+    drop(read.open_table(SCHEMA_NAMES).map_err(storage_error)?);
     drop(read.open_table(OUTCOMES).map_err(storage_error)?);
     drop(read.open_table(AUDIT).map_err(storage_error)?);
     drop(read.open_table(STATS).map_err(storage_error)?);

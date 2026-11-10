@@ -22,6 +22,7 @@ One redb database file is owned by one storage-manager instance. The supervisor,
 | row_indexes_v1 | table ID + row UUID + index ID + encoded SQL tuple | empty presence marker for bounded row-local index maintenance |
 | catalog_v1 | canonical logical catalog key (including its family code) | versioned catalog payload from [catalog payloads](catalog-payloads.md) |
 | principal_names_v1 | exact normalized user/role name bytes | 16-byte principal ID; family-10 writes maintain it atomically, startup verifies and rebuilds this derived index from family 10 when missing or stale |
+| schema_names_v1 | exact normalized schema name bytes | 16-byte schema object ID; family-2 schema writes maintain it atomically, startup verifies and rebuilds this derived index from family 2 when missing or stale |
 | outcomes_v1 | invocation ID | principal, terminal status, commit/version, retention state |
 | audit_v1 | 16-byte event ID | bounded AUD1 required administrative audit/outbox payload |
 | stats_v1 | statistics scope/key | disposable or rebuildable derived values, never authority |

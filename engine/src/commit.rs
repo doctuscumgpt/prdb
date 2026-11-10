@@ -6095,6 +6095,9 @@ fn commit_storage_changes_inner_unchecked(
         let mut principal_names = transaction
             .open_table(crate::schema::PRINCIPAL_NAMES)
             .map_err(storage_error)?;
+        let mut schema_names = transaction
+            .open_table(crate::schema::SCHEMA_NAMES)
+            .map_err(storage_error)?;
         let principal_prefix = 10u16.to_be_bytes();
         for write in catalog_writes
             .iter()
@@ -6116,6 +6119,38 @@ fn commit_storage_changes_inner_unchecked(
                 let principal_id = write.key.get(3..19).ok_or(CommitError::InvalidCatalog)?;
                 if principal_names
                     .insert(name.as_slice(), principal_id)
+                    .map_err(storage_error)?
+                    .is_some()
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
+            }
+        }
+        let schema_prefix = 2u16.to_be_bytes();
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&schema_prefix))
+        {
+            if let Some(current) = table.get(write.key.as_slice()).map_err(storage_error)?
+                && catalog_field_u16(&write.key, current.value(), 2, 1)? == 1
+            {
+                let current_name = catalog_field_bytes(&write.key, current.value(), 2, 3)?;
+                schema_names
+                    .remove(current_name.as_slice())
+                    .map_err(storage_error)?;
+            }
+        }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&schema_prefix))
+        {
+            if let Some(payload) = &write.payload
+                && catalog_field_u16(&write.key, payload, 2, 1)? == 1
+            {
+                let name = catalog_field_bytes(&write.key, payload, 2, 3)?;
+                let schema_id = write.key.get(3..19).ok_or(CommitError::InvalidCatalog)?;
+                if schema_names
+                    .insert(name.as_slice(), schema_id)
                     .map_err(storage_error)?
                     .is_some()
                 {

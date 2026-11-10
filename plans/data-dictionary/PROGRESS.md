@@ -132,4 +132,11 @@
 - Regression evidence: a snapshot test first showed that committed principals could not be resolved through the new lookup. It now covers creation, rename, retained old-snapshot lookup, current-snapshot lookup, and rejection of an index hit that disagrees with its family-10 row. Startup rebuilds a missing, stale, or malformed derived index from authoritative family-10 rows.
 - Verification: `nix develop --offline --command cargo test --workspace --locked` passed all workspace tests; 4 sandbox executor fixtures were ignored because their delegated cgroup and TinyCC fixtures are unavailable. Workspace Clippy with warnings denied and `cargo fmt --all -- --check` passed.
 - Remaining: complete DD-2 lookup/index coverage for schemas, objects, memberships, grants, policies, and dependencies.
-- Remaining: complete DD-2 lookup/index coverage for schemas, objects, memberships, grants, policies, and dependencies.
+
+## DD-2: snapshot-aware schema-name index — verified
+
+- Added `schema_names_v1`, keyed by exact normalized schema-name bytes and pointing to the family-2 schema object ID. Schema object create, rename, and deletion update the derived entry in the same redb commit; bootstrap seeds the built-in schema names.
+- `resolve_authorized_schema` now uses the pinned index after validating role closure, authority dependencies, grants, and schema USAGE visibility. A matching indexed ID is still validated against the authoritative family-2 and family-3 records.
+- Startup reconstructs missing, stale, or malformed name indexes from family-2 schema objects. Snapshot tests cover schema creation/rename while retaining an older read snapshot; startup tests cover missing and stale entries.
+- Verification: focused commit/startup regressions passed; all workspace tests passed (4 sandbox executor fixtures ignored because their delegated cgroup and TinyCC fixtures are unavailable); workspace Clippy with warnings denied and `cargo fmt --all -- --check` passed.
+- Remaining: complete DD-2 lookup/index coverage for objects, memberships, grants, policies, and dependencies.
