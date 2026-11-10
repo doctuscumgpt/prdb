@@ -177,6 +177,13 @@
 - Verification: focused snapshot tests passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
 - Remaining: complete DD-2 lookup/index coverage for objects.
 
+## DD-2: bounded policy-index candidate scan — verified
+
+- The pinned table-policy index scan now accepts a record limit and fails when it would exceed that limit. Runtime policy loading caps candidates at the authorization-input limit and charges them to the same cumulative invocation scan-work budget as matching targets.
+- Regression evidence: the snapshot test verifies exact-limit candidate retrieval and rejects a table-policy prefix with more entries than its supplied cap; policy loading continues to verify each indexed ID against its authoritative family-13 record.
+- Verification: focused snapshot and catalog-loader tests passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
+- Remaining: complete DD-2 lookup/index coverage for objects.
+
 ## DD-2: table-scoped column name and ordinal lookups — verified
 
 - Added `column_lookups_v1` with table/name and table/zero-based-ordinal key orders. Snapshot lookup verifies each result against its authoritative family-6 column row.

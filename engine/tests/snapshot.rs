@@ -1,7 +1,7 @@
 use prdb_engine::catalog::{PolicyTarget, encode_policy_target};
 use prdb_engine::overlay::{Overlay, ResolvedRow, RowId};
 use prdb_engine::row_record::RowRecord;
-use prdb_engine::schema::{CATALOG, ROWS};
+use prdb_engine::schema::{CATALOG, POLICIES, ROWS};
 use prdb_engine::snapshot::RowSnapshot;
 use redb::{Database, ReadableDatabase};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -157,6 +157,15 @@ fn policy_target_prefix_scan_ignores_other_policies_for_its_limit()
         catalog.insert(&payload[32..71], &payload[..])?;
     }
     drop(catalog);
+    let table_id = [0x11; 16];
+    let mut policies = write.open_table(POLICIES)?;
+    for policy_id in [[8; 16], [9; 16], [10; 16]] {
+        let mut key = table_id.to_vec();
+        key.extend_from_slice(&1u16.to_be_bytes());
+        key.extend_from_slice(&policy_id);
+        policies.insert(key.as_slice(), &[][..])?;
+    }
+    drop(policies);
     write.commit()?;
 
     let snapshot = RowSnapshot::new(database.begin_read()?);
@@ -165,5 +174,8 @@ fn policy_target_prefix_scan_ignores_other_policies_for_its_limit()
     assert_eq!(&targets[0].logical_key[3..19], &[1; 16]);
     assert!(snapshot.scan_catalog_family(14, 1).is_err());
     assert!(snapshot.scan_policy_targets_for_policy([1; 16], 0).is_err());
+    let policy_ids = snapshot.scan_policy_ids_for_table(table_id, 3)?;
+    assert_eq!(policy_ids, vec![[8; 16], [9; 16], [10; 16]]);
+    assert!(snapshot.scan_policy_ids_for_table(table_id, 2).is_err());
     Ok(())
 }

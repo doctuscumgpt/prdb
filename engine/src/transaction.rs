@@ -863,6 +863,38 @@ impl<'db> InvocationTransaction<'db> {
         result
     }
 
+    fn scan_policy_ids_for_table(
+        &mut self,
+        table_id: [u8; 16],
+    ) -> Result<Vec<[u8; 16]>, TransactionError> {
+        let result = (|| {
+            let remaining = self.max_scan_work.saturating_sub(self.scanned_work);
+            if remaining == 0 {
+                return Err(TransactionError::ScanBudgetExceeded);
+            }
+            let policy_limit = crate::authorization::MAX_AUTHORIZATION_INPUTS;
+            let limit = remaining.min(policy_limit);
+            let ids =
+                self.pinned_snapshot()?
+                    .scan_policy_ids_for_table_limited(table_id, limit)
+                    .map_err(|error| match error {
+                        SnapshotError::RecordLimitExceeded if remaining <= policy_limit => {
+                            TransactionError::ScanBudgetExceeded
+                        }
+                        SnapshotError::RecordLimitExceeded
+                        | SnapshotError::InvalidCatalogRecord => TransactionError::CorruptCatalog,
+                        SnapshotError::Storage(error) => TransactionError::Storage(error),
+                        _ => TransactionError::CorruptCatalog,
+                    })?;
+            self.charge_scan_work(ids.len())?;
+            Ok(ids)
+        })();
+        if matches!(&result, Err(TransactionError::ScanBudgetExceeded)) && !self.aborted {
+            self.abort()?;
+        }
+        result
+    }
+
     fn scan_policy_targets_for_policy(
         &mut self,
         policy_id: [u8; 16],
@@ -4970,10 +5002,7 @@ impl<'db> InvocationTransaction<'db> {
                 return Err(TransactionError::InvalidContext);
             }
             let roles = self.load_catalog_role_closure(principal_id)?;
-            let policy_ids = self
-                .pinned_snapshot()?
-                .scan_policy_ids_for_table(schema.table_id)
-                .map_err(|error| TransactionError::Storage(error.to_string()))?;
+            let policy_ids = self.scan_policy_ids_for_table(schema.table_id)?;
             let policies = if policy_ids.is_empty() {
                 // Preserve semantics for in-process snapshots created before
                 // startup has reconstructed derived catalog indexes.

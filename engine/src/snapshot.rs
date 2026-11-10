@@ -308,14 +308,30 @@ impl RowSnapshot {
     pub fn scan_policy_ids_for_table(
         &self,
         table_id: [u8; 16],
+        max_records: usize,
     ) -> Result<Vec<[u8; 16]>, Box<dyn std::error::Error>> {
-        if table_id == [0; 16] {
-            return Err(Box::new(SnapshotError::InvalidTableId));
+        self.scan_policy_ids_for_table_limited(table_id, max_records)
+            .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+    }
+
+    pub(crate) fn scan_policy_ids_for_table_limited(
+        &self,
+        table_id: [u8; 16],
+        max_records: usize,
+    ) -> Result<Vec<[u8; 16]>, SnapshotError> {
+        if table_id == [0; 16] || max_records == 0 || max_records > MAX_CATALOG_FAMILY_SCAN {
+            return Err(SnapshotError::InvalidCatalogRecord);
         }
-        let table = self.transaction.open_table(POLICIES)?;
+        let table = self
+            .transaction
+            .open_table(POLICIES)
+            .map_err(|error| SnapshotError::Storage(error.to_string()))?;
         let mut ids = Vec::new();
-        for entry in table.range::<&[u8]>(table_id.as_slice()..)? {
-            let (key, value) = entry?;
+        for entry in table
+            .range::<&[u8]>(table_id.as_slice()..)
+            .map_err(|error| SnapshotError::Storage(error.to_string()))?
+        {
+            let (key, value) = entry.map_err(|error| SnapshotError::Storage(error.to_string()))?;
             let key = key.value();
             if !key.starts_with(&table_id) {
                 break;
@@ -324,13 +340,16 @@ impl RowSnapshot {
                 || key.len() != 34
                 || !matches!(u16::from_be_bytes([key[16], key[17]]), 1..=4)
             {
-                return Err(Box::new(SnapshotError::InvalidCatalogRecord));
+                return Err(SnapshotError::InvalidCatalogRecord);
             }
             let policy_id: [u8; 16] = key[18..]
                 .try_into()
                 .map_err(|_| SnapshotError::InvalidCatalogRecord)?;
             if policy_id == [0; 16] {
-                return Err(Box::new(SnapshotError::InvalidCatalogRecord));
+                return Err(SnapshotError::InvalidCatalogRecord);
+            }
+            if ids.len() == max_records {
+                return Err(SnapshotError::RecordLimitExceeded);
             }
             ids.push(policy_id);
         }
