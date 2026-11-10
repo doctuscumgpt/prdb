@@ -45,3 +45,9 @@
 - Regression: `table_record_matches_independent_catalog_v1_fixture` checks family-5 schema/storage IDs, schema/write epochs, row identity mode, and exact CAT1 lengths against a hand-assembled record and the registered decoder.
 - Verification: the focused fixture command passed all independent family-1 through family-5 CAT1 tests.
 - Remaining: independent byte fixtures for families 6–17 and broader catalog semantics remain open.
+
+## DD-1: independent column-record bytes — verified
+
+- Regression: `column_record_matches_independent_catalog_v1_fixture` verifies a family-6 record with type parameters in BYTES, nullable=false, omitted optional expression IDs, and nonzero schema version against its exact CAT1 bytes and decoded fields.
+- Verification: the focused catalog fixture command passed all independent family-1 through family-6 fixtures.
+- Remaining: independent byte fixtures for families 7–17 and broader catalog semantics remain open.
