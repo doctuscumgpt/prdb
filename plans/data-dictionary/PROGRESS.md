@@ -200,7 +200,13 @@
 
 - Regression: `storage_manager_adds_column_and_backfills_existing_rows` now pins a real redb read snapshot before ADD COLUMN, commits the DDL, and verifies the old snapshot still has no lookup for the new column and decodes the old row payload with its prior schema. The current view still verifies the backfilled new shape.
 - Verification: the focused regression passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
-- Remaining: cover retained definitions across rename/drop and row/default decoding under reclamation pressure; this regression does not claim the complete DD-5 lifecycle gate.
+- Remaining: cover row/default decoding under reclamation pressure; the existing rename regressions plus the ADD/DROP retention slices above do not claim the complete DD-5 lifecycle gate.
+
+## DD-5: pinned table and row survive DROP TABLE — verified slice
+
+- Regression: `storage_manager_drop_table_removes_owned_catalog_and_rows` holds a real redb snapshot across an atomic table drop, then checks the pre-drop table definition and row remain readable and decodable while the current view confirms their removal. This includes the existing 65,536-row drop path.
+- Verification: the focused regression passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
+- Remaining: long-reader reclamation pressure and add-column-default decoding under retained versions remain open.
 
 ## DD-2: bidirectional dependency-edge index — verified
 

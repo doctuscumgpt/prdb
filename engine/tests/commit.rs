@@ -1742,6 +1742,7 @@ fn storage_manager_drop_table_removes_owned_catalog_and_rows()
         },
         &stale_payload,
     )?;
+    let retained_snapshot = database.begin_read()?;
 
     let drop_invocation = id(0x50);
     let mut drop_audit = identity_audit_event(0x49, actor, id(0x4a));
@@ -1762,6 +1763,30 @@ fn storage_manager_drop_table_removes_owned_catalog_and_rows()
             .ok_or("missing stale table-drop writer outcome")?
             .status,
         OutcomeStatus::Aborted
+    );
+    let retained_catalog = retained_snapshot.open_table(CATALOG)?;
+    assert!(
+        retained_catalog
+            .get(id_catalog_key(5, created.table_id).as_slice())?
+            .is_some()
+    );
+    let retained_rows = prdb_engine::snapshot::RowSnapshot::new(retained_snapshot);
+    let retained_row = RowRecord::decode(
+        &retained_rows
+            .get(&row_key)?
+            .ok_or("retained reader lost its pre-drop row")?,
+    )?;
+    let retained_tuple = decode_tuple(
+        &[ColumnSchema {
+            scalar_type: ScalarType::Text,
+            nullable: true,
+        }],
+        1,
+        &retained_row.payload,
+    )?;
+    assert_eq!(
+        retained_tuple.values,
+        vec![Some(ScalarValue::Text("stored".to_owned()))]
     );
     let read = database.begin_read()?;
     let catalog = read.open_table(CATALOG)?;

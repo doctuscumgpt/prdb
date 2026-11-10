@@ -97,3 +97,5 @@ Commit notifications may evict entries proactively, but correctness cannot depen
 Test rename without rebinding, drop/recreate with distinct IDs, old readers after DDL, atomic catalog/data publication, dependency races, missed invalidation notifications, role closure changes, cross-principal cache reuse, secret-free discovery, and corrupt catalog recovery. Compare indexed catalog lookups with a simple MVCC reference scan.
 
 `storage_manager_adds_column_and_backfills_existing_rows` also verifies that a read snapshot opened before ADD COLUMN retains the old column lookup and decodes the prior row bytes with its pinned schema after the DDL commits. The current snapshot sees the new column and backfilled row shape.
+
+`storage_manager_drop_table_removes_owned_catalog_and_rows` verifies the inverse lifecycle boundary: after DROP TABLE removes the current catalog and row entries, a pre-drop snapshot still resolves the table definition and decodes an existing row.
