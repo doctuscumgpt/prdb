@@ -4,8 +4,8 @@ use prdb_engine::catalog::{
 };
 use prdb_engine::catalog_index::{
     lookup_grants_for_grantee, lookup_grants_for_object, lookup_members_for_role,
-    lookup_principal_id_by_name, lookup_relation_id_by_name, lookup_roles_for_member,
-    lookup_schema_id_by_name,
+    lookup_policies_for_table_operation, lookup_principal_id_by_name, lookup_relation_id_by_name,
+    lookup_roles_for_member, lookup_schema_id_by_name,
 };
 use prdb_engine::commit::{
     CatalogWrite, CommitError, CommitRequest, ForeignKeyCheck, IndexWrite, RowWrite,
@@ -16811,6 +16811,10 @@ fn storage_manager_authorizes_policy_ddl_for_owners_and_inherited_manage_policie
             .map_err(|error| format!("base catalog setup: {error:?}"))?,
         1
     );
+    let policy_snapshot = database.begin_read()?;
+    let indexed_policies = lookup_policies_for_table_operation(&policy_snapshot, table_id, 1)?;
+    assert_eq!(indexed_policies.len(), 1);
+    assert_eq!(indexed_policies[0].logical_key, policy_key);
 
     let change_policy = |policy_epoch: u64, table_epoch: u64| {
         vec![

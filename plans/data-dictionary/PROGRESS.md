@@ -157,6 +157,14 @@
 - Verification: focused grant rebuild/lookup tests passed; `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable); workspace Clippy with warnings denied passed.
 - Remaining: complete DD-2 lookup/index coverage for objects, policies, and dependencies.
 
+## DD-2: table/operation policy index — verified
+
+- Added `policies_v1`, keyed by table ID, operation code, and policy ID. Snapshot lookup checks each key against the family-13 policy record.
+- Policy records are maintained atomically at commit and reconstructed at startup. Policy loading for a table now reads candidate IDs from the pinned index, then guards and validates each authoritative policy row; pre-startup snapshots retain the scan fallback.
+- Regression evidence: startup unit tests rebuild missing/stale indexes; policy DDL integration verifies a committed policy through the indexed lookup, and normal transaction policy loading uses that pinned index.
+- Verification: targeted policy reconstruction and DDL tests passed; `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable); workspace Clippy with warnings denied passed.
+- Remaining: complete DD-2 lookup/index coverage for objects and dependencies.
+
 ## DD-2: snapshot-aware relation-name index — verified
 
 - Added a schema-scoped `relation_names_v1` lookup key composed of schema ID and exact normalized relation-name bytes. The index points to family-5 table IDs and is checked against the family-5 schema reference and family-2 table object on reads.

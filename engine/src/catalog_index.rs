@@ -1,7 +1,9 @@
 //! Snapshot-aware lookups through engine-maintained catalog secondary indexes.
 
 use crate::catalog::decode_registered_envelope;
-use crate::schema::{CATALOG, GRANTS, MEMBERSHIPS, PRINCIPAL_NAMES, RELATION_NAMES, SCHEMA_NAMES};
+use crate::schema::{
+    CATALOG, GRANTS, MEMBERSHIPS, POLICIES, PRINCIPAL_NAMES, RELATION_NAMES, SCHEMA_NAMES,
+};
 use redb::ReadTransaction;
 
 /// Failure while reading a derived catalog index.
@@ -405,6 +407,62 @@ fn lookup_grants(
         let record = decode_registered_envelope(bytes.value())
             .map_err(|_| CatalogIndexError::InvalidEntry)?;
         if record.family_code != 12 || record.logical_key.as_slice() != catalog_key {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        records.push(record);
+    }
+    Ok(records)
+}
+
+/// Return policies for one table and operation from the supplied snapshot.
+pub fn lookup_policies_for_table_operation(
+    transaction: &ReadTransaction,
+    table_id: [u8; 16],
+    operation: u16,
+) -> Result<Vec<crate::catalog::CatalogRecord>, CatalogIndexError> {
+    if table_id == [0; 16] || !matches!(operation, 1..=4) {
+        return Err(CatalogIndexError::InvalidName);
+    }
+    let mut prefix = Vec::with_capacity(18);
+    prefix.extend_from_slice(&table_id);
+    prefix.extend_from_slice(&operation.to_be_bytes());
+    let index = transaction
+        .open_table(POLICIES)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let catalog = transaction
+        .open_table(CATALOG)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let mut records = Vec::new();
+    for entry in index
+        .range::<&[u8]>(prefix.as_slice()..)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+    {
+        let (key, _) = entry.map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+        let key = key.value();
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        if key.len() != 34 {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        let policy_id: [u8; 16] = key[18..]
+            .try_into()
+            .map_err(|_| CatalogIndexError::InvalidEntry)?;
+        if policy_id == [0; 16] {
+            return Err(CatalogIndexError::InvalidEntry);
+        }
+        let catalog_key = catalog_id_key(13, policy_id);
+        let bytes = catalog
+            .get(catalog_key.as_slice())
+            .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+            .ok_or(CatalogIndexError::InvalidEntry)?;
+        let record = decode_registered_envelope(bytes.value())
+            .map_err(|_| CatalogIndexError::InvalidEntry)?;
+        if record.family_code != 13
+            || record.logical_key != catalog_key
+            || field_id(&record, 1)? != table_id
+            || field_u16(&record, 3)? != operation
+        {
             return Err(CatalogIndexError::InvalidEntry);
         }
         records.push(record);

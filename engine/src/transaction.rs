@@ -4905,7 +4905,23 @@ impl<'db> InvocationTransaction<'db> {
                 return Err(TransactionError::InvalidContext);
             }
             let roles = self.load_catalog_role_closure(principal_id)?;
-            let policies = self.scan_catalog_family(13)?;
+            let policy_ids = self
+                .pinned_snapshot()?
+                .scan_policy_ids_for_table(schema.table_id)
+                .map_err(|error| TransactionError::Storage(error.to_string()))?;
+            let policies = if policy_ids.is_empty() {
+                // Preserve semantics for in-process snapshots created before
+                // startup has reconstructed derived catalog indexes.
+                self.scan_catalog_family(13)?
+            } else {
+                policy_ids
+                    .into_iter()
+                    .map(|policy_id| {
+                        self.read_catalog_record(&catalog_id_key(13, policy_id))?
+                            .ok_or(TransactionError::CorruptCatalog)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            };
             let targets = self.scan_catalog_family(14)?;
             if policies.len() > crate::authorization::MAX_AUTHORIZATION_INPUTS {
                 return Err(TransactionError::CorruptCatalog);

@@ -6107,6 +6107,9 @@ fn commit_storage_changes_inner_unchecked(
         let mut grants = transaction
             .open_table(crate::schema::GRANTS)
             .map_err(storage_error)?;
+        let mut policies = transaction
+            .open_table(crate::schema::POLICIES)
+            .map_err(storage_error)?;
         let principal_prefix = 10u16.to_be_bytes();
         for write in catalog_writes
             .iter()
@@ -6248,6 +6251,27 @@ fn commit_storage_changes_inner_unchecked(
                 grants.remove(index_key.as_slice()).map_err(storage_error)?;
             }
         }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&13u16.to_be_bytes()))
+        {
+            if write.key.len() != 19 || write.key[2] != 1 {
+                return Err(CommitError::InvalidCatalog);
+            }
+            if let Some(current) = table.get(write.key.as_slice()).map_err(storage_error)? {
+                let table_id = catalog_field_bytes(&write.key, current.value(), 13, 1)?;
+                let operation = catalog_field_u16(&write.key, current.value(), 13, 3)?;
+                if !matches!(operation, 1..=4) {
+                    return Err(CommitError::InvalidCatalog);
+                }
+                let mut index_key = table_id;
+                index_key.extend_from_slice(&operation.to_be_bytes());
+                index_key.extend_from_slice(&write.key[3..19]);
+                policies
+                    .remove(index_key.as_slice())
+                    .map_err(storage_error)?;
+            }
+        }
         for write in catalog_writes {
             match &write.payload {
                 Some(payload) => {
@@ -6328,6 +6352,29 @@ fn commit_storage_changes_inner_unchecked(
                 {
                     return Err(CommitError::InvalidCatalog);
                 }
+            }
+        }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&13u16.to_be_bytes()))
+        {
+            let Some(payload) = &write.payload else {
+                continue;
+            };
+            let table_id = catalog_field_bytes(&write.key, payload, 13, 1)?;
+            let operation = catalog_field_u16(&write.key, payload, 13, 3)?;
+            if !matches!(operation, 1..=4) {
+                return Err(CommitError::InvalidCatalog);
+            }
+            let mut index_key = table_id;
+            index_key.extend_from_slice(&operation.to_be_bytes());
+            index_key.extend_from_slice(&write.key[3..19]);
+            if policies
+                .insert(index_key.as_slice(), &b""[..])
+                .map_err(storage_error)?
+                .is_some()
+            {
+                return Err(CommitError::InvalidCatalog);
             }
         }
     }

@@ -2,7 +2,7 @@
 use crate::catalog::{CatalogRecord, InvalidCatalogRecord, decode_registered_envelope};
 use crate::expression::decode_catalog_expression_record;
 use crate::index_locator::{IndexLocator, LocatorError};
-use crate::schema::{CATALOG, ENGINE_META, INDEXES, RELATION_NAMES, ROWS, SCHEMA_NAMES};
+use crate::schema::{CATALOG, ENGINE_META, INDEXES, POLICIES, RELATION_NAMES, ROWS, SCHEMA_NAMES};
 use redb::ReadTransaction;
 
 pub const MAX_CATALOG_FAMILY_SCAN: usize = 65_536;
@@ -264,6 +264,39 @@ impl RowSnapshot {
         Ok(table
             .get(key.as_slice())?
             .map(|value| value.value().to_vec()))
+    }
+
+    /// List policy IDs for one table in operation/policy order from this snapshot.
+    pub fn scan_policy_ids_for_table(
+        &self,
+        table_id: [u8; 16],
+    ) -> Result<Vec<[u8; 16]>, Box<dyn std::error::Error>> {
+        if table_id == [0; 16] {
+            return Err(Box::new(SnapshotError::InvalidTableId));
+        }
+        let table = self.transaction.open_table(POLICIES)?;
+        let mut ids = Vec::new();
+        for entry in table.range::<&[u8]>(table_id.as_slice()..)? {
+            let (key, value) = entry?;
+            let key = key.value();
+            if !key.starts_with(&table_id) {
+                break;
+            }
+            if !value.value().is_empty()
+                || key.len() != 34
+                || !matches!(u16::from_be_bytes([key[16], key[17]]), 1..=4)
+            {
+                return Err(Box::new(SnapshotError::InvalidCatalogRecord));
+            }
+            let policy_id: [u8; 16] = key[18..]
+                .try_into()
+                .map_err(|_| SnapshotError::InvalidCatalogRecord)?;
+            if policy_id == [0; 16] {
+                return Err(Box::new(SnapshotError::InvalidCatalogRecord));
+            }
+            ids.push(policy_id);
+        }
+        Ok(ids)
     }
 
     /// Copy a bounded family prefix from the pinned catalog snapshot. Callers
