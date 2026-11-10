@@ -1,5 +1,13 @@
 # Toolchain Progress
 
+## TC-2: generated planner column-ID collection codec — implemented
+
+- Contract: planner estimate requests carry a versioned prefix and exactly `column_count` 16-byte column IDs.
+- Implementation: the ABI generator now emits bounded Rust and C `bytes16_array` codecs; C decoding requires caller output capacity. The planner request encoder and decoder use the generated Rust tail codec while retaining duplicate, zero-ID, and maximum-column validation.
+- Regression: the Rust and TinyCC fixtures check round-trip, exact bytes, truncation, and insufficient C output capacity; generator tests require both language helpers.
+- Verification: generator drift/schema tests passed, the focused Rust wire-vector test passed, warning-denied workspace Clippy passed, and the full maintained TinyCC SDK suite passed in the pinned Nix shell.
+- Remaining: other hand-coded executor/planner/supervisor collection serializers and release-profile, signature, runtime-support, timing, and sandbox acceptance gates remain open.
+
 ## TC-2: generated planner population tail codecs — implemented
 
 - Contract: planner estimate responses carry a versioned fixed prefix followed by exactly `column_count` network-byte-order triples of readable, null, and redacted populations.

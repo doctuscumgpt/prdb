@@ -430,7 +430,78 @@ def render(schema):
             c_codec_lines.extend(["    return 1;", "}", ""])
 
         for trailing_field in trailing_fields:
-            if trailing_field["encoding"] != "u64_triplet_array":
+            encoding = trailing_field["encoding"]
+            if encoding == "bytes16_array":
+                field_name = trailing_field["name"]
+                if generate_rust_codec:
+                    rust_lines.extend(
+                        [
+                            f"pub fn encode_{name.lower()}_{field_name}(values: &[[u8; 16]]) -> Option<Vec<u8>> {{",
+                            "    if values.len() > u16::MAX as usize {",
+                            "        return None;",
+                            "    }",
+                            "    let encoded_len = values.len().checked_mul(16)?;",
+                            "    let mut encoded = Vec::with_capacity(encoded_len);",
+                            "    for value in values {",
+                            "        encoded.extend_from_slice(value);",
+                            "    }",
+                            "    Some(encoded)",
+                            "}",
+                            "",
+                            f"pub fn decode_{name.lower()}_{field_name}(payload: &[u8], count: u16) -> Option<Vec<[u8; 16]>> {{",
+                            "    let count = usize::from(count);",
+                            "    let expected_len = count.checked_mul(16)?;",
+                            "    if payload.len() != expected_len {",
+                            "        return None;",
+                            "    }",
+                            "    payload.chunks_exact(16)",
+                            "        .map(|value| value.try_into().ok())",
+                            "        .collect()",
+                            "}",
+                            "",
+                        ]
+                    )
+                if generate_c_codec:
+                    c_codec_lines.extend(
+                        [
+                            f"static inline int prdb_encode_{name.lower()}_{field_name}(uint8_t *payload, size_t payload_capacity, const uint8_t (*values)[16], uint16_t count) {{",
+                            "    if ((size_t)count > SIZE_MAX / 16u) {",
+                            "        return 0;",
+                            "    }",
+                            "    size_t encoded_len = (size_t)count * 16u;",
+                            "    if (encoded_len > payload_capacity ||",
+                            "        (encoded_len != 0 && (payload == NULL || values == NULL))) {",
+                            "        return 0;",
+                            "    }",
+                            "    for (size_t i = 0; i < (size_t)count; ++i) {",
+                            "        for (size_t byte = 0; byte < 16; ++byte) {",
+                            "            payload[i * 16u + byte] = values[i][byte];",
+                            "        }",
+                            "    }",
+                            "    return 1;",
+                            "}",
+                            "",
+                            f"static inline int prdb_decode_{name.lower()}_{field_name}(const uint8_t *payload, size_t payload_len, uint16_t count, uint8_t (*values)[16], size_t values_capacity) {{",
+                            "    if ((size_t)count > SIZE_MAX / 16u) {",
+                            "        return 0;",
+                            "    }",
+                            "    size_t expected_len = (size_t)count * 16u;",
+                            "    if ((size_t)count > values_capacity || payload_len != expected_len ||",
+                            "        (expected_len != 0 && (payload == NULL || values == NULL))) {",
+                            "        return 0;",
+                            "    }",
+                            "    for (size_t i = 0; i < (size_t)count; ++i) {",
+                            "        for (size_t byte = 0; byte < 16; ++byte) {",
+                            "            values[i][byte] = payload[i * 16u + byte];",
+                            "        }",
+                            "    }",
+                            "    return 1;",
+                            "}",
+                            "",
+                        ]
+                    )
+                continue
+            if encoding != "u64_triplet_array":
                 continue
             field_name = trailing_field["name"]
             if generate_rust_codec:

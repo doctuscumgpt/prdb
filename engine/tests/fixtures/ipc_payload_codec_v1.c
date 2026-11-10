@@ -553,6 +553,28 @@ int main(void) {
             return 56;
         }
     }
+    const uint8_t estimate_ids[2][16] = {{0}, {0xff}};
+    uint8_t estimate_ids_payload[32] = {0};
+    uint8_t decoded_estimate_ids[2][16] = {{0}};
+    if (!prdb_encode_planner_estimate_scan_request_column_ids(
+            estimate_ids_payload, sizeof(estimate_ids_payload), estimate_ids, 2) ||
+        memcmp(estimate_ids_payload, estimate_ids, sizeof(estimate_ids)) != 0 ||
+        !prdb_decode_planner_estimate_scan_request_column_ids(
+            estimate_ids_payload, sizeof(estimate_ids_payload), 2,
+            decoded_estimate_ids, 2) ||
+        memcmp(decoded_estimate_ids, estimate_ids, sizeof(estimate_ids)) != 0) {
+        return 69;
+    }
+    decoded_estimate_ids[0][0] = 0xa5;
+    if (prdb_decode_planner_estimate_scan_request_column_ids(
+            estimate_ids_payload, sizeof(estimate_ids_payload), 2,
+            decoded_estimate_ids, 1) ||
+        decoded_estimate_ids[0][0] != 0xa5 ||
+        prdb_decode_planner_estimate_scan_request_column_ids(
+            estimate_ids_payload, sizeof(estimate_ids_payload) - 1, 2,
+            decoded_estimate_ids, 2)) {
+        return 70;
+    }
     uint8_t open_scan_relation[16];
     uint8_t open_scan_column_id[16];
     uint8_t decoded_open_scan_relation[16] = {0};

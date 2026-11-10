@@ -222,6 +222,26 @@ mod generated_payload_tests {
     }
 
     #[test]
+    fn generated_planner_column_id_codec_matches_wire_example() {
+        let values = [[0x00; 16], [0xff; 16]];
+        let encoded = super::encode_planner_estimate_scan_request_column_ids(&values)
+            .expect("two column IDs fit");
+        assert_eq!(encoded, [vec![0x00; 16], vec![0xff; 16]].concat());
+        assert_eq!(
+            super::decode_planner_estimate_scan_request_column_ids(&encoded, 2),
+            Some(values.to_vec())
+        );
+        assert_eq!(
+            super::decode_planner_estimate_scan_request_column_ids(&encoded[..31], 2),
+            None
+        );
+        assert_eq!(
+            super::decode_planner_estimate_scan_request_column_ids(&encoded, 1),
+            None
+        );
+    }
+
+    #[test]
     fn generated_supervisor_control_codec_matches_wire_example() {
         let encoded = encode_supervisor_invocation_control_request([0x5a; 16]);
         assert_eq!(

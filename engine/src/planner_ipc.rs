@@ -308,9 +308,10 @@ impl EstimateScanRequest {
             column_count,
         )
         .to_vec();
-        for column_id in &self.column_ids {
-            payload.extend_from_slice(column_id);
-        }
+        let encoded_column_ids =
+            crate::query_abi::encode_planner_estimate_scan_request_column_ids(&self.column_ids)
+                .ok_or(PlannerRequestError::InvalidPayload)?;
+        payload.extend_from_slice(&encoded_column_ids);
         ensure_response_size(&payload)?;
         Ok(payload)
     }
@@ -322,24 +323,14 @@ impl EstimateScanRequest {
         let handle = PlanningTableHandle::from_bytes(&handle_bytes)
             .ok_or(PlannerRequestError::InvalidPayload)?;
         let count = usize::from(encoded_column_count);
-        let expected = ESTIMATE_HEADER_BYTES
-            .checked_add(
-                count
-                    .checked_mul(16)
-                    .ok_or(PlannerRequestError::InvalidPayload)?,
-            )
-            .ok_or(PlannerRequestError::InvalidPayload)?;
-        if count > crate::tuple::MAX_COLUMNS || expected != payload.len() {
+        if count > crate::tuple::MAX_COLUMNS || payload.len() < ESTIMATE_HEADER_BYTES {
             return Err(PlannerRequestError::InvalidPayload);
         }
-        let column_ids = payload[ESTIMATE_HEADER_BYTES..]
-            .chunks_exact(16)
-            .map(|bytes| {
-                bytes
-                    .try_into()
-                    .map_err(|_| PlannerRequestError::InvalidPayload)
-            })
-            .collect::<Result<Vec<[u8; 16]>, _>>()?;
+        let column_ids = crate::query_abi::decode_planner_estimate_scan_request_column_ids(
+            &payload[ESTIMATE_HEADER_BYTES..],
+            encoded_column_count,
+        )
+        .ok_or(PlannerRequestError::InvalidPayload)?;
         if column_ids.contains(&[0; 16])
             || column_ids
                 .iter()

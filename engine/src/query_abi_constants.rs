@@ -164,6 +164,29 @@ pub fn decode_executor_open_scan_request(payload: &[u8]) -> Option<([u8; 16], u1
     Some((payload[2..18].try_into().ok()?, u16::from_be_bytes(payload[18..20].try_into().ok()?)))
 }
 
+pub fn encode_executor_open_scan_request_column_ids(values: &[[u8; 16]]) -> Option<Vec<u8>> {
+    if values.len() > u16::MAX as usize {
+        return None;
+    }
+    let encoded_len = values.len().checked_mul(16)?;
+    let mut encoded = Vec::with_capacity(encoded_len);
+    for value in values {
+        encoded.extend_from_slice(value);
+    }
+    Some(encoded)
+}
+
+pub fn decode_executor_open_scan_request_column_ids(payload: &[u8], count: u16) -> Option<Vec<[u8; 16]>> {
+    let count = usize::from(count);
+    let expected_len = count.checked_mul(16)?;
+    if payload.len() != expected_len {
+        return None;
+    }
+    payload.chunks_exact(16)
+        .map(|value| value.try_into().ok())
+        .collect()
+}
+
 pub const EXECUTOR_OPEN_SCAN_RESPONSE_VERSION_OFFSET: u32 = 0;
 pub const EXECUTOR_OPEN_SCAN_RESPONSE_CURSOR_HANDLE_OFFSET: u32 = 2;
 pub const EXECUTOR_OPEN_SCAN_RESPONSE_HEADER_BYTES: u32 = 18;
@@ -382,6 +405,29 @@ pub fn decode_planner_estimate_scan_request(payload: &[u8]) -> Option<([u8; 16],
         return None;
     }
     Some((payload[2..18].try_into().ok()?, u16::from_be_bytes(payload[18..20].try_into().ok()?)))
+}
+
+pub fn encode_planner_estimate_scan_request_column_ids(values: &[[u8; 16]]) -> Option<Vec<u8>> {
+    if values.len() > u16::MAX as usize {
+        return None;
+    }
+    let encoded_len = values.len().checked_mul(16)?;
+    let mut encoded = Vec::with_capacity(encoded_len);
+    for value in values {
+        encoded.extend_from_slice(value);
+    }
+    Some(encoded)
+}
+
+pub fn decode_planner_estimate_scan_request_column_ids(payload: &[u8], count: u16) -> Option<Vec<[u8; 16]>> {
+    let count = usize::from(count);
+    let expected_len = count.checked_mul(16)?;
+    if payload.len() != expected_len {
+        return None;
+    }
+    payload.chunks_exact(16)
+        .map(|value| value.try_into().ok())
+        .collect()
 }
 
 pub const PLANNER_ESTIMATE_SCAN_UNKNOWN_RESPONSE_VERSION_OFFSET: u32 = 0;
