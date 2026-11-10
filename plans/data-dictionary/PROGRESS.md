@@ -81,3 +81,9 @@
 - Regression: `membership_record_matches_independent_catalog_v1_fixture` checks the two typed UUID components in the family-11 logical key and the grantor ID/membership epoch TLVs against independently assembled bytes.
 - Verification: the focused catalog fixture command passed all independent family-1 through family-11 tests.
 - Remaining: independent byte fixtures for families 12–17 and broader catalog semantics remain open.
+
+## DD-1: independent grant-record bytes — verified
+
+- Regression: `grant_record_matches_independent_catalog_v1_fixture` checks the compound family-12 key's grantee, object, versioned privilege, object-scope marker, and repeated target ID, plus grantor/authority epoch fields.
+- Verification: the focused catalog fixture command passed all independent family-1 through family-12 tests.
+- Remaining: independent byte fixtures for families 13–17 and broader catalog semantics remain open.
