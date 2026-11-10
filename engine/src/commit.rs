@@ -1607,52 +1607,66 @@ fn validate_final_principal_names(
         return Ok(());
     }
 
-    let table = transaction.open_table(CATALOG).map_err(storage_error)?;
-    let changed_keys = catalog_writes
+    let catalog = transaction.open_table(CATALOG).map_err(storage_error)?;
+    let name_index = transaction
+        .open_table(crate::schema::PRINCIPAL_NAMES)
+        .map_err(storage_error)?;
+    let principal_writes = catalog_writes
         .iter()
         .filter(|write| write.key.starts_with(&prefix))
-        .map(|write| write.key.as_slice())
-        .collect::<HashSet<_>>();
-    let mut names = HashSet::<Vec<u8>>::new();
-    let mut final_count = 0usize;
-    for entry in table.range(prefix.as_slice()..).map_err(storage_error)? {
-        let (key, value) = entry.map_err(storage_error)?;
-        let key = key.value();
-        if !key.starts_with(&prefix) {
-            break;
-        }
-        if changed_keys.contains(key) {
-            continue;
-        }
-        final_count += 1;
-        if final_count > crate::snapshot::MAX_CATALOG_FAMILY_SCAN {
-            return Err(CommitError::InvalidCatalog);
-        }
-        let bytes = value.value();
-        let name = catalog_field_bytes(key, bytes, 10, 2)?;
-        if !names.insert(name) {
-            return Err(CommitError::InvalidCatalog);
+        .collect::<Vec<_>>();
+    let changed_ids = principal_writes
+        .iter()
+        .map(|write| {
+            write
+                .key
+                .get(3..19)
+                .and_then(|id| id.try_into().ok())
+                .ok_or(CommitError::InvalidCatalog)
+        })
+        .collect::<Result<HashSet<[u8; 16]>, _>>()?;
+
+    for write in &principal_writes {
+        if let Some(current) = catalog.get(write.key.as_slice()).map_err(storage_error)? {
+            let principal_id: [u8; 16] = write
+                .key
+                .get(3..19)
+                .and_then(|id| id.try_into().ok())
+                .ok_or(CommitError::InvalidCatalog)?;
+            let name = catalog_field_bytes(&write.key, current.value(), 10, 2)?;
+            if name_index
+                .get(name.as_slice())
+                .map_err(storage_error)?
+                .is_none_or(|indexed_id| indexed_id.value() != principal_id)
+            {
+                return Err(CommitError::InvalidCatalog);
+            }
         }
     }
 
-    for write in catalog_writes
-        .iter()
-        .filter(|write| write.key.starts_with(&prefix))
-    {
+    let mut names = HashSet::<Vec<u8>>::new();
+    for write in principal_writes {
         if write.key.len() != 19 {
             return Err(CommitError::InvalidCatalog);
         }
         let Some(bytes) = &write.payload else {
             continue;
         };
-        final_count += 1;
-        if final_count > crate::snapshot::MAX_CATALOG_FAMILY_SCAN {
-            return Err(CommitError::InvalidCatalog);
-        }
         decode_catalog_record(&write.key, bytes)?;
         let name = catalog_field_bytes(&write.key, bytes, 10, 2)?;
         if !names.insert(name) {
             return Err(CommitError::InvalidCatalog);
+        }
+    }
+    for name in &names {
+        if let Some(indexed_id) = name_index.get(name.as_slice()).map_err(storage_error)? {
+            let indexed_id: [u8; 16] = indexed_id
+                .value()
+                .try_into()
+                .map_err(|_| CommitError::InvalidCatalog)?;
+            if !changed_ids.contains(&indexed_id) {
+                return Err(CommitError::InvalidCatalog);
+            }
         }
     }
     Ok(())
@@ -6078,6 +6092,37 @@ fn commit_storage_changes_inner_unchecked(
     }
     {
         let mut table = transaction.open_table(CATALOG).map_err(storage_error)?;
+        let mut principal_names = transaction
+            .open_table(crate::schema::PRINCIPAL_NAMES)
+            .map_err(storage_error)?;
+        let principal_prefix = 10u16.to_be_bytes();
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&principal_prefix))
+        {
+            if let Some(current) = table.get(write.key.as_slice()).map_err(storage_error)? {
+                let current_name = catalog_field_bytes(&write.key, current.value(), 10, 2)?;
+                principal_names
+                    .remove(current_name.as_slice())
+                    .map_err(storage_error)?;
+            }
+        }
+        for write in catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&principal_prefix))
+        {
+            if let Some(payload) = &write.payload {
+                let name = catalog_field_bytes(&write.key, payload, 10, 2)?;
+                let principal_id = write.key.get(3..19).ok_or(CommitError::InvalidCatalog)?;
+                if principal_names
+                    .insert(name.as_slice(), principal_id)
+                    .map_err(storage_error)?
+                    .is_some()
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
+            }
+        }
         for write in catalog_writes {
             match &write.payload {
                 Some(payload) => {

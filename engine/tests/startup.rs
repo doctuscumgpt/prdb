@@ -1,6 +1,9 @@
 use prdb_engine::audit::{AuditAction, AuditEvent, AuditResult};
 use prdb_engine::authorization::Expr;
-use prdb_engine::catalog::{CatalogField, WireType, encode_envelope, family_schema};
+use prdb_engine::catalog::{
+    CatalogField, WireType, decode_registered_envelope, encode_envelope, family_schema,
+};
+use prdb_engine::catalog_index::{CatalogIndexError, lookup_principal_id_by_name};
 use prdb_engine::expression::encode_expression;
 use prdb_engine::index_key::derive_index_key;
 use prdb_engine::index_locator::IndexLocator;
@@ -8,11 +11,11 @@ use prdb_engine::metadata::{EngineMetadata, Lifecycle};
 use prdb_engine::outcome::{InvocationOutcome, OutcomeStatus};
 use prdb_engine::row_record::RowRecord;
 use prdb_engine::schema::{
-    self, AUDIT, CATALOG, ENGINE_META, INDEXES, OUTCOMES, ROW_INDEXES, ROWS,
+    self, AUDIT, CATALOG, ENGINE_META, INDEXES, OUTCOMES, PRINCIPAL_NAMES, ROW_INDEXES, ROWS,
 };
 use prdb_engine::startup::{StartupError, validate_persisted_records};
 use prdb_engine::tuple::{ColumnSchema, ScalarType, ScalarValue, encode_tuple};
-use redb::Database;
+use redb::{Database, ReadableDatabase, ReadableTable};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -70,6 +73,11 @@ impl Fixture {
             .open_table(CATALOG)
             .unwrap()
             .insert(&principal_key[..], &principal_value[..])
+            .unwrap();
+        write
+            .open_table(PRINCIPAL_NAMES)
+            .unwrap()
+            .insert(&b"database_admin"[..], &owner_id[..])
             .unwrap();
         write
             .open_table(CATALOG)
@@ -674,6 +682,17 @@ fn owned_index_record(
 
 fn put_catalog(database: &Database, key: &[u8], value: &[u8]) {
     let write = database.begin_write().unwrap();
+    if key.starts_with(&10u16.to_be_bytes()) && key.len() == 19 {
+        let mut names = write.open_table(PRINCIPAL_NAMES).unwrap();
+        if let Some(current) = write.open_table(CATALOG).unwrap().get(key).unwrap() {
+            let record = decode_registered_envelope(current.value()).unwrap();
+            let old_name = record.fields.iter().find(|field| field.tag == 2).unwrap();
+            names.remove(old_name.payload.as_slice()).unwrap();
+        }
+        let record = decode_registered_envelope(value).unwrap();
+        let name = record.fields.iter().find(|field| field.tag == 2).unwrap();
+        names.insert(name.payload.as_slice(), &key[3..19]).unwrap();
+    }
     write
         .open_table(CATALOG)
         .unwrap()
@@ -1137,6 +1156,63 @@ fn rejects_schema_search_path_entries_without_schema_records() {
     assert_eq!(
         validate_persisted_records(&database),
         Err(StartupError::InvalidCatalog)
+    );
+}
+
+#[test]
+fn stale_principal_name_index_is_rebuilt_from_catalog() {
+    let fixture = Fixture::new();
+    let database = fixture.database(0);
+    let read = database.begin_read().unwrap();
+    assert_eq!(
+        lookup_principal_id_by_name(&read, "database_admin").unwrap(),
+        Some(builtin_owner_id())
+    );
+    drop(read);
+
+    let write = database.begin_write().unwrap();
+    write
+        .open_table(PRINCIPAL_NAMES)
+        .unwrap()
+        .insert(&b"database_admin"[..], &[0x22; 16][..])
+        .unwrap();
+    write
+        .open_table(PRINCIPAL_NAMES)
+        .unwrap()
+        .insert(&b"stale_entry"[..], &[0x33; 3][..])
+        .unwrap();
+    write.commit().unwrap();
+    let read = database.begin_read().unwrap();
+    assert_eq!(
+        lookup_principal_id_by_name(&read, "database_admin"),
+        Err(CatalogIndexError::InvalidEntry)
+    );
+    drop(read);
+    validate_persisted_records(&database).unwrap();
+    let read = database.begin_read().unwrap();
+    assert_eq!(
+        lookup_principal_id_by_name(&read, "database_admin").unwrap(),
+        Some(builtin_owner_id())
+    );
+    assert_eq!(
+        lookup_principal_id_by_name(&read, "stale_entry").unwrap(),
+        None
+    );
+}
+
+#[test]
+fn missing_principal_name_index_is_rebuilt_from_catalog() {
+    let fixture = Fixture::new();
+    let database = fixture.database(0);
+    let write = database.begin_write().unwrap();
+    assert!(write.delete_table(PRINCIPAL_NAMES).unwrap());
+    write.commit().unwrap();
+
+    validate_persisted_records(&database).unwrap();
+    let read = database.begin_read().unwrap();
+    assert_eq!(
+        lookup_principal_id_by_name(&read, "database_admin").unwrap(),
+        Some(builtin_owner_id())
     );
 }
 

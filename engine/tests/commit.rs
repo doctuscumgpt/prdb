@@ -2,6 +2,7 @@ use prdb_engine::audit::{AuditAction, AuditEvent, AuditResult};
 use prdb_engine::catalog::{
     CatalogField, WireType, decode_registered_envelope, encode_envelope, family_schema,
 };
+use prdb_engine::catalog_index::lookup_principal_id_by_name;
 use prdb_engine::commit::{
     CatalogWrite, CommitError, CommitRequest, ForeignKeyCheck, IndexWrite, RowWrite,
     commit_catalog_and_audit, commit_catalog_and_audit_with_fences, commit_rows,
@@ -13,7 +14,7 @@ use prdb_engine::index_locator::IndexLocator;
 use prdb_engine::metadata::{EngineMetadata, Lifecycle};
 use prdb_engine::outcome::{InvocationOutcome, OutcomeStatus, lookup_outcome};
 use prdb_engine::row_record::RowRecord;
-use prdb_engine::schema::{self, AUDIT, CATALOG, ENGINE_META, ROWS};
+use prdb_engine::schema::{self, AUDIT, CATALOG, ENGINE_META, PRINCIPAL_NAMES, ROWS};
 use prdb_engine::storage_manager::{
     AdministrativeCancellationError, StorageManager, StorageManagerConfig, StorageManagerInitError,
     TokenIssueRequest,
@@ -548,6 +549,9 @@ fn initialize_database(database: &Database) -> Result<(), Box<dyn std::error::Er
         &owner_principal.key[..],
         owner_principal.payload.as_ref().unwrap().as_slice(),
     )?;
+    transaction
+        .open_table(PRINCIPAL_NAMES)?
+        .insert(&b"database_admin"[..], &owner_id[..])?;
     transaction.open_table(CATALOG)?.insert(
         &owner_object.key[..],
         owner_object.payload.as_ref().unwrap().as_slice(),
@@ -4797,6 +4801,60 @@ fn catalog_commit_rejects_unresolved_schema_search_path_entry()
         Err(CommitError::InvalidCatalog),
     );
     assert_eq!(commit_sequence(&database)?, 0);
+    Ok(())
+}
+
+#[test]
+fn principal_name_index_tracks_renames_per_snapshot() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let principal_id = id(0x83);
+    let name = "indexed_principal";
+    let mut principal = principal_write_with_name(principal_id, 1, 1, name);
+    let mut object = object_write_with_name(principal_id, 8, name);
+    let initial_principal = principal.payload.clone().unwrap();
+    let initial_object = object.payload.clone().unwrap();
+    let mut event = audit_event(0x76);
+    event.actor_id = Some(builtin_owner_id());
+    commit_catalog_and_audit(
+        &database,
+        id(0x76),
+        builtin_owner_id(),
+        9_999,
+        &[principal.clone(), object.clone()],
+        &[event],
+    )?;
+    let old_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_principal_id_by_name(&old_snapshot, name)?,
+        Some(principal_id)
+    );
+
+    principal = principal_write_with_name(principal_id, 1, 2, "renamed_principal");
+    principal.expected_value = Some(initial_principal);
+    object = object_write_with_name(principal_id, 8, "renamed_principal");
+    object.expected_value = Some(initial_object);
+    let mut event = audit_event(0x77);
+    event.actor_id = Some(builtin_owner_id());
+    commit_catalog_and_audit(
+        &database,
+        id(0x77),
+        builtin_owner_id(),
+        9_999,
+        &[principal, object],
+        &[event],
+    )?;
+
+    assert_eq!(
+        lookup_principal_id_by_name(&old_snapshot, name)?,
+        Some(principal_id)
+    );
+    let new_snapshot = database.begin_read()?;
+    assert_eq!(lookup_principal_id_by_name(&new_snapshot, name)?, None);
+    assert_eq!(
+        lookup_principal_id_by_name(&new_snapshot, "renamed_principal")?,
+        Some(principal_id)
+    );
     Ok(())
 }
 
@@ -13476,6 +13534,17 @@ fn storage_manager_rebuilds_populated_indexes_atomically() -> Result<(), Box<dyn
             membership_write(index_admin, builtin_owner_id()),
             dependency_write(index_admin, builtin_owner_id(), 5),
         ] {
+            if record.key.starts_with(&10u16.to_be_bytes()) {
+                let decoded = decode_registered_envelope(record.payload.as_ref().unwrap())?;
+                let name = decoded
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 2)
+                    .ok_or("principal name missing")?;
+                setup
+                    .open_table(PRINCIPAL_NAMES)?
+                    .insert(name.payload.as_slice(), &record.key[3..19])?;
+            }
             setup
                 .open_table(CATALOG)?
                 .insert(&record.key[..], record.payload.as_ref().unwrap().as_slice())?;
@@ -13797,6 +13866,17 @@ fn storage_manager_checks_index_ddl_authority_for_current_actor()
     {
         let setup = database.begin_write()?;
         for record in records.drain(..) {
+            if record.key.starts_with(&10u16.to_be_bytes()) {
+                let decoded = decode_registered_envelope(record.payload.as_ref().unwrap())?;
+                let name = decoded
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 2)
+                    .ok_or("principal name missing")?;
+                setup
+                    .open_table(PRINCIPAL_NAMES)?
+                    .insert(name.payload.as_slice(), &record.key[3..19])?;
+            }
             setup
                 .open_table(CATALOG)?
                 .insert(&record.key[..], record.payload.as_ref().unwrap().as_slice())?;
@@ -24402,9 +24482,11 @@ fn membership_limit_applies_to_final_graph_independent_of_write_order()
         let transaction = database.begin_write()?;
         {
             let mut catalog = transaction.open_table(prdb_engine::schema::CATALOG)?;
+            let mut principal_names = transaction.open_table(PRINCIPAL_NAMES)?;
             for n in (1..=64).chain(100..=164) {
                 let principal = principal_write(node(n), 2);
                 let object = principal_object_write(node(n), 2);
+                principal_names.insert(principal_test_name(node(n)).as_bytes(), &node(n)[..])?;
                 catalog.insert(
                     principal.key.as_slice(),
                     principal.payload.as_ref().unwrap().as_slice(),

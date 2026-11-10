@@ -14,7 +14,7 @@ use crate::ipc::{
     write_frame,
 };
 use crate::metadata::{EngineMetadata, Lifecycle};
-use crate::schema::{AUDIT, CATALOG, ENGINE_META, create_tables};
+use crate::schema::{AUDIT, CATALOG, ENGINE_META, PRINCIPAL_NAMES, create_tables};
 use crate::startup::{StartupError, validate_initializing_records, validate_persisted_records};
 use crate::storage_manager::{StorageManager, StorageManagerConfig, StorageManagerInitError};
 use redb::{Database, Durability, ReadableDatabase, ReadableTable};
@@ -763,6 +763,31 @@ fn seed_database(
         .map_err(|_| BootstrapError::Storage)?;
     write.set_two_phase_commit(true);
     create_tables(&write).map_err(|_| BootstrapError::Storage)?;
+    {
+        let mut principal_names = write
+            .open_table(PRINCIPAL_NAMES)
+            .map_err(|_| BootstrapError::Storage)?;
+        for (key, payload) in &catalog_records {
+            if !key.starts_with(&10u16.to_be_bytes()) {
+                continue;
+            }
+            let principal_id = key.get(3..19).ok_or(BootstrapError::InvalidCatalog)?;
+            let record =
+                decode_registered_envelope(payload).map_err(|_| BootstrapError::InvalidCatalog)?;
+            let name = record
+                .fields
+                .iter()
+                .find(|field| field.tag == 2)
+                .ok_or(BootstrapError::InvalidCatalog)?;
+            if principal_names
+                .insert(name.payload.as_slice(), principal_id)
+                .map_err(|_| BootstrapError::Storage)?
+                .is_some()
+            {
+                return Err(BootstrapError::InvalidCatalog);
+            }
+        }
+    }
     {
         let mut catalog = write
             .open_table(CATALOG)

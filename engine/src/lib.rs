@@ -4,6 +4,7 @@ pub mod audit;
 pub mod authorization;
 pub mod bootstrap;
 pub mod catalog;
+pub mod catalog_index;
 pub mod client_credentials;
 pub mod client_package;
 pub mod client_protocol;

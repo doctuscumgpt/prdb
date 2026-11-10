@@ -13,9 +13,11 @@ use crate::index_locator::IndexLocator;
 use crate::metadata::{EngineMetadata, Lifecycle};
 use crate::outcome::{InvocationOutcome, OutcomeStatus};
 use crate::row_record::RowRecord;
-use crate::schema::{AUDIT, CATALOG, ENGINE_META, INDEXES, OUTCOMES, ROW_INDEXES, ROWS, STATS};
+use crate::schema::{
+    AUDIT, CATALOG, ENGINE_META, INDEXES, OUTCOMES, PRINCIPAL_NAMES, ROW_INDEXES, ROWS, STATS,
+};
 use crate::tuple::{ColumnSchema, decode_tuple};
-use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable};
+use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableHandle};
 use std::collections::{HashMap, HashSet};
 
 const METADATA_KEY: &[u8] = b"format";
@@ -101,7 +103,8 @@ impl std::error::Error for StartupError {}
 
 /// Validate the recovered image's table set, version state, bootstrap mapping,
 /// record envelopes, and implemented references against one pinned redb
-/// snapshot. This check does not certify authenticated service admission.
+/// snapshot. This may rebuild stale derived indexes from authoritative catalog
+/// rows. It does not certify authenticated service admission.
 pub fn validate_persisted_records(
     database: &Database,
 ) -> Result<StorageHealthReport, StartupError> {
@@ -118,6 +121,7 @@ fn validate_persisted_records_for_lifecycle(
     database: &Database,
     required_lifecycle: Lifecycle,
 ) -> Result<StorageHealthReport, StartupError> {
+    ensure_principal_name_index(database)?;
     let read = database.begin_read().map_err(storage_error)?;
     validate_tables(&read)?;
     let metadata = read_metadata(&read)?;
@@ -150,6 +154,102 @@ fn validate_persisted_records_for_lifecycle(
         outcomes,
         audit_events,
     })
+}
+
+fn collect_principal_name_entries<T>(
+    catalog: &T,
+) -> Result<HashMap<Vec<u8>, [u8; 16]>, StartupError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let prefix = 10u16.to_be_bytes();
+    let mut entries = HashMap::new();
+    for entry in catalog.range(prefix.as_slice()..).map_err(storage_error)? {
+        let (key, value) = entry.map_err(storage_error)?;
+        let key = key.value();
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        if key.len() != 19 || key[2] != 1 {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let record =
+            decode_registered_envelope(value.value()).map_err(|_| StartupError::InvalidCatalog)?;
+        if record.family_code != 10 || record.logical_key != key {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let name = record
+            .fields
+            .iter()
+            .find(|field| field.tag == 2)
+            .ok_or(StartupError::InvalidCatalog)?;
+        let principal_id: [u8; 16] = key[3..19]
+            .try_into()
+            .map_err(|_| StartupError::InvalidCatalog)?;
+        if name.payload.is_empty()
+            || name.payload.len() > 4096
+            || entries.insert(name.payload.clone(), principal_id).is_some()
+        {
+            return Err(StartupError::InvalidCatalog);
+        }
+    }
+    Ok(entries)
+}
+
+/// Rebuild the derived principal-name lookup if it is missing or stale. The
+/// family-10 records remain authoritative; this never changes catalog data.
+fn ensure_principal_name_index(database: &Database) -> Result<(), StartupError> {
+    let read = database.begin_read().map_err(storage_error)?;
+    let has_index = read
+        .list_tables()
+        .map_err(storage_error)?
+        .any(|table| table.name() == PRINCIPAL_NAMES.name());
+    if has_index {
+        let catalog = read.open_table(CATALOG).map_err(storage_error)?;
+        let expected = collect_principal_name_entries(&catalog)?;
+        let index = read.open_table(PRINCIPAL_NAMES).map_err(storage_error)?;
+        let mut actual = HashMap::new();
+        let mut well_formed = true;
+        for entry in index.iter().map_err(storage_error)? {
+            let (name, id) = entry.map_err(storage_error)?;
+            match id.value().try_into() {
+                Ok(id) => {
+                    actual.insert(name.value().to_vec(), id);
+                }
+                Err(_) => well_formed = false,
+            }
+        }
+        if well_formed && actual == expected {
+            return Ok(());
+        }
+    }
+    drop(read);
+
+    let write = database.begin_write().map_err(storage_error)?;
+    let catalog = write.open_table(CATALOG).map_err(storage_error)?;
+    let entries = collect_principal_name_entries(&catalog)?;
+    let mut name_index = write.open_table(PRINCIPAL_NAMES).map_err(storage_error)?;
+    let stale_keys = name_index
+        .iter()
+        .map_err(storage_error)?
+        .map(|entry| {
+            entry
+                .map(|(name, _)| name.value().to_vec())
+                .map_err(storage_error)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for name in stale_keys {
+        name_index.remove(name.as_slice()).map_err(storage_error)?;
+    }
+    for (name, id) in entries {
+        name_index
+            .insert(name.as_slice(), &id[..])
+            .map_err(storage_error)?;
+    }
+    drop(name_index);
+    drop(catalog);
+    write.commit().map_err(storage_error)?;
+    Ok(())
 }
 
 fn storage_error(_error: impl std::fmt::Display) -> StartupError {
@@ -186,6 +286,7 @@ fn validate_tables(read: &ReadTransaction) -> Result<(), StartupError> {
     drop(read.open_table(INDEXES).map_err(storage_error)?);
     drop(read.open_table(ROW_INDEXES).map_err(storage_error)?);
     drop(read.open_table(CATALOG).map_err(storage_error)?);
+    drop(read.open_table(PRINCIPAL_NAMES).map_err(storage_error)?);
     drop(read.open_table(OUTCOMES).map_err(storage_error)?);
     drop(read.open_table(AUDIT).map_err(storage_error)?);
     drop(read.open_table(STATS).map_err(storage_error)?);
@@ -759,6 +860,27 @@ fn validate_catalog(
     {
         return Err(StartupError::InvalidCatalog);
     }
+    let principal_name_index = read.open_table(PRINCIPAL_NAMES).map_err(storage_error)?;
+    let mut indexed_principals = 0usize;
+    for entry in principal_name_index.iter().map_err(storage_error)? {
+        let (name, id) = entry.map_err(storage_error)?;
+        let name = name.value();
+        let id: [u8; 16] = id
+            .value()
+            .try_into()
+            .map_err(|_| StartupError::InvalidCatalog)?;
+        if name.is_empty()
+            || name.len() > 4096
+            || principal_names.get(&id).map(Vec::as_slice) != Some(name)
+        {
+            return Err(StartupError::InvalidCatalog);
+        }
+        indexed_principals += 1;
+    }
+    if indexed_principals != principal_names.len() {
+        return Err(StartupError::InvalidCatalog);
+    }
+
     let builtin_mappings = builtin_mappings.ok_or(StartupError::InvalidCatalog)?;
     for schema_code in [1u16, 2] {
         let schema_id = builtin_mappings

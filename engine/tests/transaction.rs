@@ -14,7 +14,7 @@ use prdb_engine::index_locator::IndexLocator;
 use prdb_engine::metadata::{EngineMetadata, Lifecycle};
 use prdb_engine::outcome::{InvocationOutcome, OutcomeStatus};
 use prdb_engine::row_record::RowRecord;
-use prdb_engine::schema::{self, CATALOG, ENGINE_META, ROWS};
+use prdb_engine::schema::{self, CATALOG, ENGINE_META, PRINCIPAL_NAMES, ROWS};
 use prdb_engine::transaction::{InsertInput, InvocationTransaction, TransactionError};
 use prdb_engine::tuple::{
     ColumnSchema, FieldPatch, ScalarType, ScalarValue, decode_tuple, encode_tuple,
@@ -4231,6 +4231,9 @@ fn latest_catalog_authority_change_blocks_a_stale_invocation_commit()
     write
         .open_table(CATALOG)?
         .insert(&object_key[..], &object_value[..])?;
+    write
+        .open_table(PRINCIPAL_NAMES)?
+        .insert(principal_test_name([7; 16]).as_bytes(), &[7; 16][..])?;
     write.commit()?;
 
     let mut invocation = InvocationTransaction::begin(&database, [18; 16], [9; 16], 9_999, 2, 64)?;
@@ -4295,6 +4298,10 @@ fn racing_catalog_authority_change_linearizes_before_or_after_pending_write()
         .insert(principal_key.as_slice(), principal_v1.as_slice())?;
     seed.open_table(CATALOG)?
         .insert(object_key.as_slice(), object_value.as_slice())?;
+    seed.open_table(PRINCIPAL_NAMES)?.insert(
+        principal_test_name(principal_id).as_bytes(),
+        &principal_id[..],
+    )?;
     seed.commit()?;
 
     let (principal_key, principal_v2) =
@@ -9302,6 +9309,15 @@ fn catalog_authority_rejects_disabled_or_role_invocation_principals()
                 catalog.insert(key.as_slice(), value.as_slice())?;
             }
         }
+        {
+            let mut principal_names = write.open_table(PRINCIPAL_NAMES)?;
+            for principal_id in [[219; 16], [220; 16], [221; 16]] {
+                principal_names.insert(
+                    principal_test_name(principal_id).as_bytes(),
+                    &principal_id[..],
+                )?;
+            }
+        }
         write.commit()?;
     }
     for (invocation_id, principal_id) in [([222; 16], [219; 16]), ([223; 16], [220; 16])] {
@@ -9523,6 +9539,15 @@ fn new_membership_cannot_be_hidden_by_restoring_principal_epoch()
             for (principal_id, kind) in [(user, 1), (role, 2)] {
                 let (key, value) = principal_object_record_for(principal_id, kind);
                 catalog.insert(key.as_slice(), value.as_slice())?;
+            }
+        }
+        {
+            let mut principal_names = write.open_table(PRINCIPAL_NAMES)?;
+            for principal_id in [user, role] {
+                principal_names.insert(
+                    principal_test_name(principal_id).as_bytes(),
+                    &principal_id[..],
+                )?;
             }
         }
         write.commit()?;
@@ -9903,6 +9928,9 @@ fn authorized_write_revalidates_projection_catalog_dependencies()
     write
         .open_table(CATALOG)?
         .insert(&object_key[..], &object_value[..])?;
+    write
+        .open_table(PRINCIPAL_NAMES)?
+        .insert(principal_test_name([7; 16]).as_bytes(), &[7; 16][..])?;
     write.commit()?;
 
     let table = AccessTarget::Table(row_id.table);

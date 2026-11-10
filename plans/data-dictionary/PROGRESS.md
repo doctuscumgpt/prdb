@@ -125,3 +125,11 @@
 - Regression evidence: an independent startup corruption case first showed that a search-path entry for a missing schema was accepted. Matching startup and commit regressions now reject that image/write, with the commit sequence unchanged.
 - Verification: full startup integration target passed (49 tests); full commit integration target passed (131 tests, 4 sandbox fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable). Formatting check passed.
 - Remaining: broader semantic cross-record integrity, DDL/bootstrap authority validation, catalog secondary indexes, and comprehensive snapshot-aware catalog operations remain open.
+
+## DD-2: principal-name secondary lookup — verified (partial DD-2)
+
+- Contract: exact normalized user/role names map to one principal ID in the `principal_names_v1` redb table. Family-10 writes and this index publish in one transaction; readers use their existing redb snapshot. Startup verifies index/catalog agreement and rebuilds the derived index when opening a database that predates the table.
+- Regression evidence: a snapshot test first showed that committed principals could not be resolved through the new lookup. It now covers creation, rename, retained old-snapshot lookup, current-snapshot lookup, and rejection of an index hit that disagrees with its family-10 row. Startup rebuilds a missing, stale, or malformed derived index from authoritative family-10 rows.
+- Verification: `nix develop --offline --command cargo test --workspace --locked` passed all workspace tests; 4 sandbox executor fixtures were ignored because their delegated cgroup and TinyCC fixtures are unavailable. Workspace Clippy with warnings denied and `cargo fmt --all -- --check` passed.
+- Remaining: complete DD-2 lookup/index coverage for schemas, objects, memberships, grants, policies, and dependencies.
+- Remaining: complete DD-2 lookup/index coverage for schemas, objects, memberships, grants, policies, and dependencies.
