@@ -5362,10 +5362,10 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
         InvocationTransaction::begin(&database, [0x37; 16], [9; 16], 9_999, 32, 2_048)?;
     hidden_value_a.stage_put(id(3), &row(Some("not-visible"), "private-a"))?;
     hidden_value_b.stage_put(id(3), &row(Some("not-visible"), "private-b"))?;
-    let hidden_estimate_a = hidden_value_a
-        .estimate_authorized_scan(table_id, &filtered_projection)?;
-    let hidden_estimate_b = hidden_value_b
-        .estimate_authorized_scan(table_id, &filtered_projection)?;
+    let hidden_estimate_a =
+        hidden_value_a.estimate_authorized_scan(table_id, &filtered_projection)?;
+    let hidden_estimate_b =
+        hidden_value_b.estimate_authorized_scan(table_id, &filtered_projection)?;
     assert_eq!(
         hidden_estimate_a,
         prdb_engine::statistics::AuthorizedScanEstimate::Unknown
