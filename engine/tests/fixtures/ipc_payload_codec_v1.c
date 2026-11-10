@@ -599,6 +599,17 @@ int main(void) {
             return 59;
         }
     }
+    uint8_t open_scan_ids_payload[16] = {0};
+    uint8_t decoded_open_scan_ids[1][16] = {{0}};
+    if (!prdb_encode_executor_open_scan_request_column_ids(
+            open_scan_ids_payload, sizeof(open_scan_ids_payload),
+            (const uint8_t (*)[16])&open_scan_column_id, 1) ||
+        !prdb_decode_executor_open_scan_request_column_ids(
+            open_scan_ids_payload, sizeof(open_scan_ids_payload), 1,
+            decoded_open_scan_ids, 1) ||
+        memcmp(decoded_open_scan_ids[0], open_scan_column_id, 16) != 0) {
+        return 71;
+    }
     const uint8_t resolve_relation_expected[14] = {
         0x00, 0x01, 0x00, 0x03, 0x00, 0x05,
         'a', 'p', 'p', 'i', 't', 'e', 'm', 's',

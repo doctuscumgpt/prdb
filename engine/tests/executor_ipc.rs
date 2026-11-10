@@ -1,6 +1,6 @@
 use prdb_engine::executor_ipc::{
-    MutationAcknowledgement, OpenScanResponse, ResolveRelationResponse, StageDeleteRequest,
-    StageInsertRequest, StageInsertResponse, StageUpdateRequest,
+    MutationAcknowledgement, OpenScanRequest, OpenScanResponse, ResolveRelationResponse,
+    StageDeleteRequest, StageInsertRequest, StageInsertResponse, StageUpdateRequest,
 };
 use prdb_engine::metadata_discovery::{
     AuthorizedRelationDescription, EXECUTOR_SCAN_CURSOR_TOKEN_KIND, ExecutorRowHandle,
@@ -88,6 +88,26 @@ fn executor_open_scan_response_round_trips_generated_cursor_handle() {
     assert_eq!(&payload[2..], &cursor_bytes);
     assert_eq!(OpenScanResponse::decode(&payload).unwrap(), response);
     assert!(OpenScanResponse::decode(&payload[..payload.len() - 1]).is_err());
+}
+
+#[test]
+fn executor_open_scan_request_round_trips_generated_column_ids() {
+    let request = OpenScanRequest {
+        relation: ResolvedRelationHandle::from_bytes(&handle(6)).unwrap(),
+        column_ids: vec![[0x31; 16], [0x42; 16]],
+    };
+    let payload = request.encode().unwrap();
+    assert_eq!(
+        &payload[..20],
+        &[&[0, 1][..], &handle(6), &[0, 2][..]].concat()
+    );
+    assert_eq!(&payload[20..36], &[0x31; 16]);
+    assert_eq!(&payload[36..], &[0x42; 16]);
+    assert_eq!(OpenScanRequest::decode(&payload).unwrap(), request);
+    assert!(OpenScanRequest::decode(&payload[..payload.len() - 1]).is_err());
+    let mut trailing = payload;
+    trailing.push(0);
+    assert!(OpenScanRequest::decode(&trailing).is_err());
 }
 
 #[test]

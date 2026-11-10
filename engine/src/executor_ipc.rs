@@ -200,9 +200,10 @@ impl OpenScanRequest {
             .map_err(|_| ExecutorRequestError::InvalidPayload)?;
         let mut payload =
             generated::encode_executor_open_scan_request(self.relation.to_bytes(), count).to_vec();
-        for column_id in &self.column_ids {
-            payload.extend_from_slice(column_id);
-        }
+        let encoded_column_ids =
+            generated::encode_executor_open_scan_request_column_ids(&self.column_ids)
+                .ok_or(ExecutorRequestError::InvalidPayload)?;
+        payload.extend_from_slice(&encoded_column_ids);
         if payload.len() > crate::ipc::MAX_PAYLOAD_BYTES {
             return Err(ExecutorRequestError::InvalidPayload);
         }
@@ -217,19 +218,14 @@ impl OpenScanRequest {
         let relation = ResolvedRelationHandle::from_bytes(&relation_bytes)
             .ok_or(ExecutorRequestError::InvalidPayload)?;
         let column_count = usize::from(encoded_column_count);
-        if column_count > crate::tuple::MAX_COLUMNS
-            || payload.len() != header_bytes + column_count * 16
-        {
+        if column_count > crate::tuple::MAX_COLUMNS || payload.len() < header_bytes {
             return Err(ExecutorRequestError::InvalidPayload);
         }
-        let mut column_ids = Vec::with_capacity(column_count);
-        for chunk in payload[header_bytes..].chunks_exact(16) {
-            column_ids.push(
-                chunk
-                    .try_into()
-                    .map_err(|_| ExecutorRequestError::InvalidPayload)?,
-            );
-        }
+        let column_ids = generated::decode_executor_open_scan_request_column_ids(
+            &payload[header_bytes..],
+            encoded_column_count,
+        )
+        .ok_or(ExecutorRequestError::InvalidPayload)?;
         if column_ids.contains(&[0; 16])
             || column_ids
                 .iter()

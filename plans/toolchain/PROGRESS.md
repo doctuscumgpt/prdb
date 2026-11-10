@@ -1,5 +1,13 @@
 # Toolchain Progress
 
+## TC-2: generated executor open-scan column-ID codec — implemented
+
+- Contract: executor open-scan requests carry a versioned prefix followed by exactly `column_count` 16-byte column IDs.
+- Implementation: the executor Rust request encoder and decoder now consume the schema-generated bounded `bytes16_array` codec. Existing relation-handle, zero-ID, duplicate-ID, maximum-column, and exact-tail checks remain in place.
+- Regression: a request-level Rust test checks the prefix, IDs, round-trip, truncated input, and trailing bytes. The TinyCC fixture exercises both generated C collection helpers, and generator tests assert their presence.
+- Verification: generated-file drift/schema tests, focused Rust request regression, warning-denied workspace Clippy, and the full maintained TinyCC SDK suite passed in the pinned Nix shell.
+- Remaining: other hand-coded executor/planner/supervisor collection serializers and release-profile, signature, runtime-support, timing, and sandbox acceptance gates remain open.
+
 ## TC-2: generated planner column-ID collection codec — implemented
 
 - Contract: planner estimate requests carry a versioned prefix and exactly `column_count` 16-byte column IDs.
