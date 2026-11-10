@@ -189,6 +189,13 @@
 - Verification: targeted startup and DDL regressions passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
 - Remaining: implement and validate remaining DD-3 referential-integrity, drop/recreate ID non-reuse, and complete catalog publication checks.
 
+## DD-4: dependency graph scan exhaustion fails atomically — verified
+
+- The serialized dependency-edge validator rejects a final family scan beyond the 65,536-record bound before catalog publication.
+- Regression evidence: the new boundary case seeds exactly 65,536 family-15 records, attempts one additional dependency, and checks the new edge stays absent, the commit sequence is unchanged, and the invocation outcome is ABORTED.
+- Verification: focused regression passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
+- Remaining: bounded deterministic reverse traversal and concurrent dependency-introduction versus RESTRICT-drop coverage.
+
 ## DD-2: bidirectional dependency-edge index — verified
 
 - Added `dependencies_v1`, keyed by direction, the dependent/referenced UUID pair, and edge kind. Snapshot lookups validate each index entry against its authoritative family-15 record.

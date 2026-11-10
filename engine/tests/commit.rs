@@ -26156,6 +26156,70 @@ fn foreign_key_comparison_key_budget_aborts_large_keys_atomically()
 }
 
 #[test]
+fn dependency_graph_scan_limit_aborts_catalog_publication_atomically()
+-> Result<(), Box<dyn std::error::Error>> {
+    const MAX_FAMILY_RECORDS: usize = 65_536;
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let prefix = 15u16.to_be_bytes();
+    let write = database.begin_write()?;
+    let mut catalog = write.open_table(CATALOG)?;
+    let mut existing_count = 0;
+    for entry in catalog.range::<&[u8]>(prefix.as_slice()..)? {
+        let (key, _) = entry?;
+        if !key.value().starts_with(&prefix) {
+            break;
+        }
+        existing_count += 1;
+    }
+    for sequence in 1..=(MAX_FAMILY_RECORDS - existing_count) as u64 {
+        let mut dependent_id = [0xa5; 16];
+        dependent_id[..8].copy_from_slice(&sequence.to_be_bytes());
+        let write = dependency_write(dependent_id, [0xa6; 16], 5);
+        catalog.insert(
+            write.key.as_slice(),
+            write.payload.as_ref().unwrap().as_slice(),
+        )?;
+    }
+    drop(catalog);
+    write.commit()?;
+
+    let overflow = dependency_write([0xf5; 16], [0xf6; 16], 5);
+    let invocation_id = id(0xf7);
+    let actor = builtin_owner_id();
+    let mut event = audit_event(0xf8);
+    event.actor_id = Some(actor);
+    event.correlation_id = invocation_id;
+    event.action = AuditAction::Ddl;
+    assert!(matches!(
+        commit_catalog_and_audit(
+            &database,
+            invocation_id,
+            actor,
+            9_999,
+            std::slice::from_ref(&overflow),
+            &[event],
+        ),
+        Err(CommitError::InvalidCatalog)
+    ));
+    assert_eq!(commit_sequence(&database)?, 0);
+    assert!(
+        database
+            .begin_read()?
+            .open_table(CATALOG)?
+            .get(overflow.key.as_slice())?
+            .is_none()
+    );
+    assert_eq!(
+        lookup_outcome(&database, invocation_id, actor, 1)?
+            .ok_or("missing bounded dependency validation outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    Ok(())
+}
+
+#[test]
 fn concurrent_foreign_key_insert_and_parent_delete_cannot_both_commit()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
