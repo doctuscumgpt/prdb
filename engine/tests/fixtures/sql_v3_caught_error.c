@@ -14,6 +14,7 @@ const prdb_query_descriptor_v3_record prdb_query_descriptor_v3 = {
     sizeof(prdb_host_api_v3), sizeof(prdb_invocation_v3)};
 
 static int constructor_write_allowed;
+static int constructor_outside_pid_namespace;
 #ifdef PRDB_PROBE_CONSTRUCTOR_NETWORK
 static int constructor_connection_allowed;
 #endif
@@ -28,6 +29,7 @@ __attribute__((constructor)) static void probe_constructor_filesystem_access(
 #endif
     static const char marker_byte = 'x';
     int fd = open(marker_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    constructor_outside_pid_namespace = getpid() != 1;
     if (fd >= 0) {
         constructor_write_allowed = write(fd, &marker_byte, 1) == 1;
         (void)close(fd);
@@ -59,6 +61,8 @@ static int32_t discard_row(void *context, const prdb_sdk_row_v1 *row,
 int32_t prdb_query_main_v3(const prdb_host_api_v3 *host,
                            const prdb_invocation_v3 *invocation) {
     static const uint8_t partial_output[] = "partial SQL output";
+    static const uint8_t process_escape[] =
+        "constructor did not run as namespace PID 1";
     static const uint8_t constructor_escape[] =
         "constructor filesystem access allowed";
 #ifdef PRDB_PROBE_CONSTRUCTOR_NETWORK
@@ -84,7 +88,10 @@ int32_t prdb_query_main_v3(const prdb_host_api_v3 *host,
         host->write_result == NULL) {
         return 1;
     }
-    if (constructor_write_allowed) {
+    if (constructor_outside_pid_namespace) {
+        first_output = process_escape;
+        first_output_len = sizeof(process_escape) - 1;
+    } else if (constructor_write_allowed) {
         first_output = constructor_escape;
         first_output_len = sizeof(constructor_escape) - 1;
 #ifdef PRDB_PROBE_CONSTRUCTOR_NETWORK
