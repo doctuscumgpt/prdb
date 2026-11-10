@@ -1110,16 +1110,34 @@ fn table_record(id: [u8; 16]) -> (Vec<u8>, Vec<u8>) {
 }
 
 fn schema_record(id: [u8; 16]) -> (Vec<u8>, Vec<u8>) {
+    schema_record_with_search_path(id, &[])
+}
+
+fn schema_record_with_search_path(id: [u8; 16], search_path: &[[u8; 16]]) -> (Vec<u8>, Vec<u8>) {
     let mut key = 3u16.to_be_bytes().to_vec();
     key.push(1);
     key.extend_from_slice(&id);
     let fields = [CatalogField {
         tag: 1,
         wire_type: WireType::Ids,
-        payload: id_list(&[]),
+        payload: id_list(search_path),
     }];
     let payload = encode_envelope(&family_schema(3).unwrap(), &key, &fields).unwrap();
     (key, payload)
+}
+
+#[test]
+fn rejects_schema_search_path_entries_without_schema_records() {
+    let fixture = Fixture::new();
+    let database = fixture.database(0);
+    let schema_id = builtin_id(1);
+    let (schema_key, schema_value) = schema_record_with_search_path(schema_id, &[[0x55; 16]]);
+    put_catalog(&database, &schema_key, &schema_value);
+
+    assert_eq!(
+        validate_persisted_records(&database),
+        Err(StartupError::InvalidCatalog)
+    );
 }
 
 fn builtin_type_record(id: [u8; 16], builtin_kind: u16) -> (Vec<u8>, Vec<u8>) {

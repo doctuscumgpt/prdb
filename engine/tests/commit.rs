@@ -4749,16 +4749,24 @@ fn principal_object_write(principal_id: [u8; 16], principal_kind: u16) -> Catalo
 }
 
 fn schema_write(schema_id: [u8; 16]) -> CatalogWrite {
+    schema_write_with_search_path(schema_id, &[])
+}
+
+fn schema_write_with_search_path(schema_id: [u8; 16], search_path: &[[u8; 16]]) -> CatalogWrite {
     let mut key = 3u16.to_be_bytes().to_vec();
     key.push(1);
     key.extend_from_slice(&schema_id);
+    let mut search_path_payload = (search_path.len() as u32).to_le_bytes().to_vec();
+    for target_id in search_path {
+        search_path_payload.extend_from_slice(target_id);
+    }
     let payload = encode_envelope(
         &family_schema(3).unwrap(),
         &key,
         &[CatalogField {
             tag: 1,
             wire_type: WireType::Ids,
-            payload: 0u32.to_le_bytes().to_vec(),
+            payload: search_path_payload,
         }],
     )
     .unwrap();
@@ -4767,6 +4775,29 @@ fn schema_write(schema_id: [u8; 16]) -> CatalogWrite {
         expected_value: None,
         payload: Some(payload),
     }
+}
+
+#[test]
+fn catalog_commit_rejects_unresolved_schema_search_path_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    assert_eq!(
+        commit_catalog_and_audit(
+            &database,
+            id(0x75),
+            id(9),
+            9_999,
+            &[
+                schema_write_with_search_path(id(0x81), &[[0x82; 16]]),
+                object_write(id(0x81), 1),
+            ],
+            &[audit_event(0x75)],
+        ),
+        Err(CommitError::InvalidCatalog),
+    );
+    assert_eq!(commit_sequence(&database)?, 0);
+    Ok(())
 }
 
 fn builtin_type_write(type_id: [u8; 16], builtin_kind: u16) -> CatalogWrite {
@@ -16387,7 +16418,7 @@ fn storage_manager_authorizes_policy_ddl_for_owners_and_inherited_manage_policie
     let table_owner = id(0x30);
     let policy_manager = id(0x31);
     let denied_user = id(0x32);
-    let manager_role = id(0x33);
+    let manager_role = id(0x3b);
     let schema_id = id(0x34);
     let table_id = id(0x35);
     let policy_id = id(0x36);

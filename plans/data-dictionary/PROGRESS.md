@@ -118,3 +118,10 @@
 - Regression evidence: the commit test first demonstrated that the invalid schema/object pair was published (commit sequence advanced); the startup corruption test first demonstrated that the malformed image was accepted. Both now assert rejection, and the commit test verifies no sequence advancement.
 - Verification: focused startup and commit regressions passed under the pinned Nix development shell.
 - Remaining: broader semantic cross-record integrity, DDL/bootstrap authority validation, catalog secondary indexes, and comprehensive snapshot-aware catalog operations remain open.
+
+## DD-1: schema search paths resolve to schemas — verified
+
+- Contract: family-3 `search_path` IDs must resolve in the final catalog view to family-3 schema records whose family-2 object has schema kind. Startup fails closed for unresolved entries; serialized catalog commits reject unresolved or removed targets before publication.
+- Regression evidence: an independent startup corruption case first showed that a search-path entry for a missing schema was accepted. Matching startup and commit regressions now reject that image/write, with the commit sequence unchanged.
+- Verification: full startup integration target passed (49 tests); full commit integration target passed (131 tests, 4 sandbox fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable). Formatting check passed.
+- Remaining: broader semantic cross-record integrity, DDL/bootstrap authority validation, catalog secondary indexes, and comprehensive snapshot-aware catalog operations remain open.

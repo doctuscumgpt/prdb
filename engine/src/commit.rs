@@ -1720,6 +1720,65 @@ fn validate_final_schema_names(
     Ok(())
 }
 
+fn validate_final_schema_search_paths(
+    transaction: &WriteTransaction,
+    catalog_writes: &[CatalogWrite],
+) -> Result<(), CommitError> {
+    if !catalog_writes.iter().any(|write| {
+        write.key.len() >= 2 && matches!(u16::from_be_bytes([write.key[0], write.key[1]]), 2 | 3)
+    }) {
+        return Ok(());
+    }
+
+    let catalog = transaction.open_table(CATALOG).map_err(storage_error)?;
+    let prefix = 3u16.to_be_bytes();
+    let mut schema_keys = Vec::<Vec<u8>>::new();
+    for entry in catalog.range(prefix.as_slice()..).map_err(storage_error)? {
+        let (key, _) = entry.map_err(storage_error)?;
+        let key = key.value();
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        if catalog_writes.iter().any(|write| write.key == key) {
+            continue;
+        }
+        schema_keys.push(key.to_vec());
+        if schema_keys.len() > crate::snapshot::MAX_CATALOG_FAMILY_SCAN {
+            return Err(CommitError::InvalidCatalog);
+        }
+    }
+    for write in catalog_writes
+        .iter()
+        .filter(|write| write.key.starts_with(&prefix) && write.payload.is_some())
+    {
+        schema_keys.push(write.key.clone());
+        if schema_keys.len() > crate::snapshot::MAX_CATALOG_FAMILY_SCAN {
+            return Err(CommitError::InvalidCatalog);
+        }
+    }
+
+    for schema_key in schema_keys {
+        let schema_bytes = final_catalog_value(&catalog, catalog_writes, &schema_key)?
+            .ok_or(CommitError::InvalidCatalog)?;
+        let search_path = catalog_id_list_field(&schema_key, &schema_bytes, 3, 1)?;
+        for schema_id in search_path {
+            let target_schema_key = id_catalog_key(3, schema_id);
+            if final_catalog_value(&catalog, catalog_writes, &target_schema_key)?.is_none() {
+                return Err(CommitError::InvalidCatalog);
+            }
+            let object_key = id_catalog_key(2, schema_id);
+            let Some(object_bytes) = final_catalog_value(&catalog, catalog_writes, &object_key)?
+            else {
+                return Err(CommitError::InvalidCatalog);
+            };
+            if catalog_field_u16(&object_key, &object_bytes, 2, 1)? != 1 {
+                return Err(CommitError::InvalidCatalog);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Keep table names unique within each schema across concurrent DDL commits.
 fn validate_final_table_names(
     transaction: &WriteTransaction,
@@ -5760,6 +5819,15 @@ fn commit_storage_changes_inner_unchecked(
         Err(error) => return Err(error),
     }
     match validate_final_schema_names(&transaction, catalog_writes) {
+        Ok(()) => {}
+        Err(CommitError::InvalidCatalog) => {
+            transaction.abort().map_err(storage_error)?;
+            record_aborted_outcome(database, invocation_id, principal_id, retention_deadline_us)?;
+            return Err(CommitError::InvalidCatalog);
+        }
+        Err(error) => return Err(error),
+    }
+    match validate_final_schema_search_paths(&transaction, catalog_writes) {
         Ok(()) => {}
         Err(CommitError::InvalidCatalog) => {
             transaction.abort().map_err(storage_error)?;

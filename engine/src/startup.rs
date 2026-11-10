@@ -225,6 +225,7 @@ fn validate_catalog(
     let mut object_kinds = HashMap::<[u8; 16], u16>::new();
     let mut identity_tombstones = HashSet::<[u8; 16]>::new();
     let mut object_owners = Vec::<[u8; 16]>::new();
+    let mut schema_search_paths = Vec::<Vec<[u8; 16]>>::new();
     let mut typed_object_kinds = HashMap::<[u8; 16], u16>::new();
     let mut builtin_type_kinds = HashMap::<[u8; 16], u16>::new();
     let mut builtin_type_ids = HashMap::<u16, [u8; 16]>::new();
@@ -330,6 +331,9 @@ fn validate_catalog(
                 return Err(StartupError::InvalidCatalog);
             }
             object_owners.push(field_id(&record, 4)?);
+        }
+        if record.family_code == 3 {
+            schema_search_paths.push(field_ids(&record, 1)?);
         }
         if let Some(object_kind) = typed_family_object_kind(&record)? {
             let object_id: [u8; 16] = key
@@ -960,6 +964,11 @@ fn validate_catalog(
             typed_object_kinds.get(object_id) != Some(expected_kind)
         })
     {
+        return Err(StartupError::InvalidCatalog);
+    }
+    if schema_search_paths.iter().flatten().any(|schema_id| {
+        object_kinds.get(schema_id) != Some(&1) || typed_object_kinds.get(schema_id) != Some(&1)
+    }) {
         return Err(StartupError::InvalidCatalog);
     }
     for (family, object_id) in typed_name_records {
