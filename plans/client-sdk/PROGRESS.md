@@ -353,3 +353,43 @@
 - Regression: the maintained TinyCC executor fixture verifies active and cancelled values, malformed boolean rejection, and unchanged output on error. A Rust storage/IPC regression checks the state before and after administrator cancellation.
 - Verification: focused fixture passed; full Rust and SDK checks recorded with the feature commit.
 - Remaining: verify cancellation latency in the sandbox harness, and complete generated bindings and other SDK/package release gates.
+- Additional detail migrated from the storage integration record: default inputs use an explicit scalar type and cover SQL NULL, current-principal UUID, DECIMAL, VARCHAR, BYTEA hex, UUID, DATE epoch days, and TIMESTAMPTZ epoch microseconds. Its full-suite rerun reported 124 commit tests passed and 3 cgroup-dependent tests ignored after an intermittent CHECK-lifecycle `InvalidAudit` passed in isolation.
+
+## SM-5 / SDK-5: cross-process authenticated ADMIN identity and token lifecycle — verified
+
+- Contract: client control operations must traverse the gateway and supervisor boundary, then reach storage's authorized DDL/token lifecycle instead of a test-only storage call.
+- Regression: the real-process metadata integration now issues role create/rename/drop, user creation, one-time token issue, credential-file save/load, fresh token-authenticated metadata discovery, and token revoke through `AdminClient`. A post-revocation authentication attempt is rejected. The test confirms one-time client secret buffers are zeroized.
+- Verification: the focused integration test passed and `cargo test --workspace --locked` passed with 124 commit tests and 3 cgroup-dependent ignored. Full build, format, and warning-denied Clippy passed.
+- Remaining: multi-process coverage for the other ADMIN DDL families and the confined artifact submission path remains open.
+
+## SDK-5: schema/table DDL CLI and multi-process coverage — implemented
+
+- Contract: [client SDK](../../specs/client-sdk.md) requires schema/table administrative work to use the authenticated control channel and typed `AdminClient` operations; query artifacts receive no administrative credentials.
+- Implementation: `prdb-client` now exposes schema create/rename/drop and table create/rename/drop. Table creation parses semicolon-separated typed column declarations, bounds column count, validates scalar parameters, duplicate names, nullability, and the non-null UUID identity modifier, then delegates to the existing typed client request. Literal/default expressions remain available through `AdminClient` but are not yet part of this CLI syntax.
+- Regression: parser tests cover parameterized DECIMAL and VARCHAR types, UUID identity columns, and reject invalid precision/scale, zero VARCHAR length, duplicates, missing defaults for non-null non-identity columns, and invalid identity combinations. The real-process metadata integration now creates a schema and table, renames/drops the table, and drops the schema through the gateway and supervisor.
+- Verification: focused CLI parser tests passed (6); the focused authenticated metadata/admin process test passed. Final `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, and `cargo test --workspace --locked` passed in the Nix shell. The commit integration target reported 124 passed and 3 cgroup-dependent ignored. Updated `prdb-client --help` was inspected.
+- Remaining: column add/rename/drop, defaults/nullability, indexes, constraints, privileges, policies, and broader multi-process ADMIN DDL coverage remain for later slices; confined artifact submission still requires the sandbox integration environment.
+
+## SDK-5: column add/rename/drop CLI and process coverage — implemented
+
+- Contract: column DDL uses authenticated typed ADMIN operations, and storage applies schema evolution and its write-epoch fences atomically.
+- Implementation: `prdb-client` now exposes `column-add`, `column-rename`, and `column-drop`. Column addition accepts one nullable typed column and returns the generated column ID; rename/drop require the table and column IDs. Storage's existing AdminClient API still supports broader add-column defaults.
+- Regression: the parser rejects non-null or identity columns for the CLI add form and rejects multiple declarations. The authenticated gateway/supervisor process test exercises add, rename, and drop on the created table.
+- Verification: focused CLI parser and real-process tests passed. Workspace build, format, warning-denied Clippy, and full tests passed under the prescribed Nix shell; the commit integration target reported 124 passed and 3 cgroup-dependent ignored.
+- Remaining: nullability/default changes, indexes, constraints, privileges, policies, additional multi-process DDL coverage, and confined artifact submission remain open.
+
+## SDK-5: ordinary index CLI and process coverage — partial
+
+- Contract: authenticated index create/rebuild/drop requests use the existing typed AdminClient and server-side authorization/fencing path.
+- Implementation: the CLI exposes create, rebuild, and drop with canonical ordered column IDs; uniqueness defaults to false and is an optional boolean flag.
+- Regression: parser coverage checks canonical nonzero ID lists and duplicate rejection. The real-process ADMIN lifecycle now covers index create, rebuild with a changed uniqueness profile, and drop; existing typed-client and ADMIN dispatcher tests cover rebuild request construction.
+- Verification: focused CLI parsing and real multi-process index lifecycle passed. Full workspace build, format check, warning-denied Clippy, and tests passed; the commit integration target reported 124 passed and 3 cgroup-dependent ignored.
+- Remaining: constraint, privilege, and policy CLI commands remain open; confined artifact execution still needs a delegated-cgroup integration environment.
+
+## SM-5 / SDK-5: authenticated policy ADMIN and CLI — implemented
+
+- Contract: strict PREPARE/START accepts canonical row/cell policy shape, recipient IDs, cell-column targets, and nullable EIR1 USING/WITH CHECK expressions. START delegates to typed StorageManager policy create/drop and revalidates authority at serialized commit.
+- Implementation: `policies.create` and `policies.drop` are connection-owned ADMIN operations. `AdminClient` encodes typed policy enums, recipients, target columns and expressions; `prdb-client policy-create/policy-drop` exposes the same path.
+- Regression: protocol decoder tests accept canonical row-policy create/drop and reject malformed shapes; the real gateway/supervisor process lifecycle creates and drops row SELECT/INSERT/UPDATE/DELETE and cell SELECT/INSERT/UPDATE ALLOW policies, using required USING/WITH CHECK clauses and a live cell target. CLI recipient parser accepts only user/role plus canonical nonzero lowercase IDs.
+- Verification: focused protocol, multi-process, and CLI parser tests passed; updated `prdb-client --help` was inspected. Rust 1.95.0 workspace build, formatting, warning-denied Clippy, and full tests passed; the commit integration target reported 124 passed and 3 cgroup-dependent ignored.
+- Remaining: broader authenticated ADMIN families, repeated race stress, and confined artifact execution remain open.

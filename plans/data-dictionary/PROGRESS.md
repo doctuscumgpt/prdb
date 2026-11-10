@@ -173,6 +173,13 @@
 - Verification: focused reconstruction and rename/snapshot tests passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable).
 - Remaining: complete DD-2 lookup/index coverage for named index objects.
 
+## DD-2: schema-scoped named index lookup — in progress
+
+- Added `index_names_v1` for family-2 index objects, keyed by parent schema ID and exact normalized name. Snapshot lookup validates the authoritative object kind, parent, and name.
+- Family-2 index-object writes maintain the name entry atomically; startup verifies and reconstructs the index from authoritative objects.
+- Pending: run startup reconstruction and index create/drop retained-snapshot regressions, then complete workspace verification.
+- Remaining: complete DD-2 lookup/index coverage for named index objects.
+
 ## DD-2: bidirectional dependency-edge index — verified
 
 - Added `dependencies_v1`, keyed by direction, the dependent/referenced UUID pair, and edge kind. Snapshot lookups validate each index entry against its authoritative family-15 record.
@@ -188,3 +195,43 @@
 - Regression evidence: real DDL integration checks table creation, old-snapshot lookup after rename, and the new name in a current snapshot. Startup unit fixtures rebuild both stale and missing indexes and verify exact family-5/family-2 references.
 - Verification: relation-index reconstruction unit tests and real table create/rename snapshot regression passed. `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable); workspace Clippy with warnings denied passed.
 - Remaining: complete DD-2 lookup/index coverage for objects, memberships, grants, policies, and dependencies.
+
+## SM-4 / SM-5 / DD-1 dependency: catalog expression IR and pinned loading — in progress
+
+- Red evidence: the expression-codec integration target initially failed because no `expression` module existed. Added EIR1 with a hand-checked prefix fixture, complete operator/scalar round trips, strict framing, canonical scalar validation, and limits of 256 KiB, 256 nodes, 32 levels, and field ordinals 0–4095.
+- Family-7 decoding now validates the expression purpose, IR version, result metadata widths, dependency ID set, and EIR body. Catalog writes reject malformed/unsupported expression records; snapshot and invocation reads validate them. Invocation reads capture exact catalog bytes as commit guards.
+- Authorized INSERT can load DEFAULT and CHECK expressions by ID from the pinned catalog, enforce purpose, materialize defaults, and evaluate CHECK and row policies against the resulting tuple. A real-redb race changes the stored default expression after it is read; the invocation durably aborts and publishes no row. The insert integration fixture also loads its CHECK expression from the catalog.
+- Verification: all 85 tests across 16 integration targets passed with direct Rust 1.95 compilation against cached redb 4.4.0. Direct Clippy with warnings denied, rustfmt `--check`, and `git diff --check` passed. Cargo workspace commands remain unable to resolve the crates.io index in this environment.
+- Limits: EIR decoding checks structure, not schema-aware operand/result types or whether declared dependencies match field references. Callers still provide column schemas, grants, policies, and expression IDs; generated UUID allocation, DDL authorization/fences, complete catalog loaders, and service integration remain outstanding.
+
+## SM-5 / DD-1 / AU-1 dependency: catalog membership graph integrity — in progress
+
+- Membership catalog commits now read the latest family-11 records and overlay the proposed catalog changes inside the serialized redb write transaction. The final graph is checked for live member/role endpoints, role target kinds, zero IDs, cycles in any component, and the 4096-edge bound before publication. Malformed or cyclic final graphs publish no catalog/audit changes and record ABORTED.
+- Red evidence: role-closure coverage showed an unreachable cycle was accepted; full-graph validation now rejects it. Real-redb tests also reject a user as a role target and a missing member, with no sequence/catalog/audit publication and durable ABORTED outcomes.
+- A barrier-coordinated race submits opposite edges from the same starting catalog; exactly one commits, while the second validates against the newly committed edge and durably aborts.
+- Verification: all 77 tests across 15 integration targets passed with direct Rust 1.95 compilation against the cached redb 4.4.0 artifact. Direct Clippy with warnings denied, rustfmt `--check`, and `git diff --check` passed.
+- Broader DDL authority, dependency-graph, bootstrap, and catalog-index validation remain open; principal-object correspondence outside the principal records is not yet checked.
+
+## SM-4 / DD-1 dependency: pinned catalog table schema loading — in progress
+
+- Contract: [data dictionary](../../specs/data-dictionary.md), snapshot lookups and write-time dependency guards. Added a bounded catalog-family scan (65,536 records) and `load_catalog_table_schema`, which reads the table definition, discovers its column records, sorts/checks contiguous ordinals, resolves built-in type records, validates type profiles and parameters, and returns stable column/type IDs, nullability, default masks, default expression IDs, generation modes, schema version, and write epoch.
+- Every table, matching column, and referenced type record read by the loader is added to the invocation's exact-byte commit guards. The real-redb fixtures validate unsorted record insertion, typed UUID/VARCHAR decoding, type parameters and defaults metadata; one then changes a referenced type and confirms the stale schema reader commits ABORTED with a conflict. Catalog-loaded INSERT now takes the bound schema value, uses its default-expression IDs/type IDs/default masks, and derives generated columns from generation modes. Its end-to-end fixture loads both schema and CHECK/default expressions from the pinned catalog before writing.
+- Red evidence: the first real-redb schema fixture failed with `CorruptCatalog` because a non-null VARCHAR column was probed using NULL while validating type shape. The type-shape check now uses a nullable probe schema while retaining the catalog nullability in the returned schema; the focused regression passes.
+- Spec decision: column discovery is a bounded family scan until catalog secondary indexes are implemented. DDL must increment table schema version atomically for column changes; DDL enforcement itself is still outstanding.
+- Catalog commit now rejects any existing table column add/change/drop unless the table schema version advances atomically; it also rejects moving a column between tables. The regression fixture proves a new column cannot publish without a version update.
+- Remaining: bounded family scan may fail closed for larger catalogs. Catalog loader does not yet derive grants/policies/role closure or bind policy expressions (later increments below address those parts). Full DDL, control-channel, gateway/sandbox IPC, long-reader lifecycle, and recovery acceptance remain open.
+- Verification after this increment: all 88 tests across 16 integration targets pass via direct Rust 1.95 compilation against cached redb 4.4.0. Direct Clippy with warnings denied, rustfmt `--check`, and `git diff --check` pass. `cargo test --workspace --locked` still fails before project compilation because crates.io `config.json` is unreachable through the configured proxy.
+
+## DD-1 / SM-5 dependency: constraint-definition commit validation — in progress
+
+- Contract: [catalog payloads](../../specs/catalog-payloads.md) constraint kind invariants and [data dictionary](../../specs/data-dictionary.md) atomic catalog validation. A malformed FOREIGN KEY record with a nonempty source list and empty referenced list was accepted before the change (regression assertion returned `Ok(1)`).
+- Catalog commit now validates kind-specific shape for changed constraints: NOT NULL, PRIMARY KEY, UNIQUE, CHECK, and FOREIGN KEY each require/forbid the corresponding expression, reference, backing index, column lists, action/match values, and VALID state. The catalog table write epoch fence remains required for existing tables.
+- Regression: `engine/tests/commit.rs::catalog_commit_rejects_malformed_constraint_semantics` now proves malformed FK publication is rejected without advancing the commit sequence. Existing real-redb CHECK loader fixture covers a valid CHECK record.
+- Limits: this increment does not yet resolve column ownership, referenced key/index definitions, CHECK dependency validity, or implement PK/UNIQUE/FK enforcement and delete/update cascades. Those remain required for DDL acceptance.
+- Follow-up reference validation now resolves changed constraints against the transaction's final catalog view. It requires the owning table and local columns, checks NOT NULL against column nullability, validates CHECK expression purpose, verifies PK/UNIQUE backing-index table/columns/uniqueness/ownership/state, and confirms FK target constraint kind and ordered referenced columns. A structurally valid CHECK against a missing table also failed before implementation (`Ok(1)`) and is now rejected atomically.
+- Invocation constraint loading now admits valid NOT NULL records when they name exactly one existing non-nullable table column; the real-redb fixture contains this case alongside CHECK and proves the combined catalog loads.
+- Verification after both regression cases: 91 tests across 16 real-redb integration targets passed with direct Rust 1.95 compilation against cached redb 4.4.0. Direct Clippy with `-D warnings`, rustfmt `--check`, and `git diff --check` pass.
+- Limits: CHECK dependency binding still occurs on invocation load, not all DDL publication paths. Constraint updates/deletions must preserve dependent constraints and indexes; PK/UNIQUE/FK runtime maintenance and FK delete/update behavior are not yet complete. DDL authorization remains unimplemented.
+- Environment: direct Rust 1.95 compilation against cached redb 4.4.0 is available. `cargo test --workspace --locked` fails before compilation because crates.io `config.json` cannot be fetched through the configured proxy. TinyCC is not installed/on PATH, so C SDK and sandbox artifact acceptance cannot yet be run. These are validation/toolchain blockers, not design questions.
+- Verification after constraint references and NOT NULL loading: 91 tests across 16 real-redb integration targets passed via direct Rust 1.95 compilation against cached redb 4.4.0. Direct Clippy with `-D warnings`, rustfmt `--check`, and `git diff --check` pass.
+- Next: startup/bootstrap integrity validation, then an authenticated DDL control path.

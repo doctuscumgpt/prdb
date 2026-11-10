@@ -33,3 +33,17 @@
 - Regression: the authorized-estimate fixture now creates two concurrent invocation overlays with identical policy-visible data and row IDs, but different contents in a column redacted from the caller. A row-value-dependent visibility policy forces both results to `Unknown`; the test asserts the normalized outputs are identical.
 - Verification: `nix develop --offline --command cargo test --test transaction authorized_scan_estimate_counts_sanitized_cells_and_private_writes --locked` passed. This checks returned estimate contents only; timing/cache noninterference is not established.
 - Remaining: test hidden values and invisible rows through paired authorized reference views, then address planner task draining, cache validity, and bounded maintenance collection.
+
+## ST-1 / ST-2 dependency: planner metadata and estimate dispatch
+
+- Behavior: planner-only connection handles resolve and revalidate authorized relation descriptions, and estimate requests return bounded visible/readable/null/redacted summaries or UNKNOWN. Planner projections derive read grants and policies without loading write constraints or indexes; executor handles cannot be decoded as planner handles.
+- Changed code and contracts: [planner IPC](../../engine/src/planner_ipc.rs), [planner connection state](../../engine/src/transaction.rs), [planner handle](../../engine/src/metadata_discovery.rs), [IPC protocol](../../specs/ipc-protocol.md), and [statistics service](../../specs/storage-manager.md).
+- Verification: workspace build, format check, warning-denied Clippy, and `git diff --check` pass. Tests were not run in this increment.
+- Remaining: planner stream provisioning, planner task lifecycle/budget integration, and predicate/access-path estimates remain open.
+
+## ST-1 / ST-2 dependency: planner stream lifecycle
+
+- Behavior: `serve_planner` loops over one provisioned planner stream, enforces unique request IDs and a 256-request cap, and preserves kind-9 handle state across requests. Clean EOF closes only the planner session so execution can continue; malformed frames and protocol violations durably abort the invocation.
+- Changed code and contract: [planner stream and dispatcher](../../engine/src/planner_ipc.rs) and [planner IPC contract](../../specs/ipc-protocol.md).
+- Verification: format, workspace build, and warning-denied Clippy pass. Tests were not run in this increment.
+- Remaining: supervisor provisioning, shared planner/executor invocation scheduling, and cancellation-aware planner task draining remain open.

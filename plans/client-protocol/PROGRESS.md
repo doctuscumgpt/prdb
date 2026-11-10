@@ -115,3 +115,96 @@
 - Regression: decoder coverage checks canonical requests for all three operations. The real-redb authenticated gateway lifecycle test prepares, starts, and commits create/rebuild/drop through the gateway dispatch path, then validates persisted catalog state.
 - Verification: full workspace build, formatting, warning-denied Clippy, and tests passed in the configured Nix shell; the commit integration target reported 124 passed and 3 cgroup-dependent ignored.
 - Remaining: expose a user-facing client API for these ADMIN commands and verify them through the separately managed process boundary; that client work remains in the SDK and gateway plans.
+
+## NP-2 / SM-6 dependency: handshake request dispatch
+
+- Behavior: the request dispatcher handles HELLO/AUTH/PING frame state, rejects pre-HELLO requests and duplicate HELLO, and returns correlated sequence-zero responses. AUTH and operation revalidation use the storage session API.
+- Changed code and fixture: [client handshake state](../../engine/src/client_protocol.rs) and [Unix-stream/storage integration regressions](../../engine/tests/commit.rs).
+- Verification: full `cargo test --workspace --locked` passes; `cargo fmt --all -- --check`, workspace build, warning-denied Clippy, and `git diff --check` pass in the repository Nix shell.
+- Remaining: implement TCP/gateway service and trusted gateway-to-supervisor IPC; launch confined worker processes and reconcile their outcomes.
+
+## NP-3 dependency: frame upload into authenticated staging
+
+- Behavior: after storage AUTH, binary artifact and parameter chunk frames are bound to the session's staging owner; chunk IDs, offsets, data lengths, and acknowledgements follow the v1 wire contract.
+- Changed code and tests: [frame dispatcher](../../engine/src/client_protocol.rs), [protocol bounds](../../engine/tests/client_protocol.rs), and [real-redb auth/upload integration](../../engine/tests/commit.rs).
+- Verification: focused protocol and handshake/upload tests pass.
+- Remaining: wire PREPARE/SEAL schemas to staging and expose the flow through a live gateway connection.
+
+## NP-3 dependency: prepare and seal through the authenticated session
+
+- Behavior: strict PREPARE decoding validates exact fields, u32 version fields, byte declarations, canonical lowercase SHA-256/base64, workload class, and metadata bounds before staging reservation. SEAL validates a canonical invocation ID and drives staging digest, count, and admission-metadata checks before returning `prepared`.
+- Changed code and tests: [client request handlers](../../engine/src/client_protocol.rs), [protocol regressions](../../engine/tests/client_protocol.rs), and [real-redb handshake/upload integration](../../engine/tests/commit.rs).
+- Verification: focused protocol suite and real-redb HELLO/AUTH/PREPARE/chunk/SEAL regression pass in the repository Nix shell.
+- Remaining: START frame dispatch, actual supervisor/gateway IPC, TCP transport, worker process lifecycle, and sandboxed execution evidence.
+
+## NP-4 dependency: START admission response
+
+- Behavior: one strict START frame claims a sealed reservation, revalidates storage credentials/current authority before creating a snapshot, and returns sequence-zero `accepted` alongside the supervisor-owned invocation.
+- Changed code and test: [START frame path](../../engine/src/client_protocol.rs) and [current-credential/deadline real-redb regression](../../engine/tests/commit.rs).
+- Verification: focused START regression passes in the repository Nix shell.
+- Remaining: process launch/exit observation, streamed result and trusted terminal delivery, and gateway integration.
+
+## NP-5 dependency: session-bound status and prepared cancellation
+
+- Behavior: PREPARE, chunk, SEAL, STATUS, and CANCEL requests revalidate the storage session. Owner STATUS consults staging then live/durable storage status; CANCEL releases pre-start staging or marks an active owned invocation cancelled under the storage commit barrier. Foreign and unknown IDs share unavailable/unknown behavior.
+- Changed code and regressions: [client request revalidation and dispatch](../../engine/src/client_protocol.rs), [owner cancellation transition](../../engine/src/storage_manager.rs), and [real-redb authenticated flow](../../engine/tests/commit.rs).
+- Verification: focused status/cancel and active cancellation regressions plus warning-denied Clippy pass in the repository Nix shell.
+- Remaining: admin control mode, TCP gateway and supervisor IPC, worker process/result/finalization lifecycle.
+
+## SM-5 / NP-5 dependency: administrator point status
+
+- Behavior: a storage administrator can look up any invocation's live or retained terminal status after current database-administrator authority is checked from a fresh catalog snapshot. Ordinary owner lookup remains owner-scoped. Control-mode client STATUS uses this path; query-mode STATUS continues to consult only the caller's staging and storage state.
+- Contract and implementation: [storage status authority](../../specs/storage-manager.md), [control protocol status](../../specs/client-protocol.md), [StorageManager lookup](../../engine/src/storage_manager.rs), and [control-mode session handler](../../engine/src/client_protocol.rs).
+- Regression evidence: the real-redb administrative runtime test verifies a current administrator can see another owner's active invocation and retained ABORTED outcome, a non-administrator is denied, and a missing ID remains unavailable. The same test exercises both point statuses through an authenticated control-mode session.
+- Verification: focused real-redb test passed in the configured Nix shell.
+- Remaining at that increment: control-mode CANCEL was still unwired; the following increment records its audited implementation. ADMIN operations, explicit sanitized ERROR responses, and process-separated service integration remain open.
+
+## SM-5 / NP-5 dependency: administrator control-mode cancellation
+
+- Behavior: control-mode CANCEL revalidates the authenticated session, creates a fresh audit event, and delegates to `StorageManager::cancel_invocation`, which checks current administrator authority, applies the per-actor request limit, serializes against COMMITTING, and persists the cancellation decision. Query-mode prepared/owner cancellation keeps its existing owner-scoped path.
+- Contract and implementation: [client cancellation semantics](../../specs/client-protocol.md), [audited storage cancellation](../../specs/storage-manager.md), and [control session handler](../../engine/src/client_protocol.rs).
+- Regression evidence: the real-redb control-mode test cancels a live invocation and confirms its administrative status exposes `cancellation_requested = true`.
+- Verification: focused test and full configured Nix-shell validation passed: format check, workspace build, warning-denied Clippy, all workspace tests, and `git diff --check`.
+- Remaining: `ADMIN` operation envelopes/dispatch, sanitized protocol ERROR responses, and the separate supervisor process remain open.
+
+## SM-5 / NP-5 dependency: read-only token inventory ADMIN operation
+
+- Behavior: control-mode ADMIN accepts the strict version-1 `tokens.list` read envelope, revalidates the connection before execution, checks owner/MANAGE_USERS/database-administrator authority in storage, and returns at most 64 token metadata records with an ID cursor. Verifier and bearer-secret material are omitted.
+- Contract and implementation: [client protocol](../../specs/client-protocol.md), [bounded token page](../../engine/src/storage_manager.rs), [ADMIN decoder and session handler](../../engine/src/client_protocol.rs), and gateway IPC kind mapping.
+- Regression evidence: decoder coverage rejects prepare-phase mutation envelopes and unknown arguments; a real-redb authenticated control-mode session exercises the gateway IPC ADMIN dispatch for another user's inventory and verifies secret material is absent.
+- Remaining at that increment: runtime invocation listing and other ADMIN operations, and the separate supervisor process remained open. Runtime invocation listing is recorded below.
+
+## SM-5 / NP-5 dependency: prepared token revocation ADMIN operation
+
+- Behavior: ADMIN PREPARE reserves one random operation ID and token ID on the control connection; START must present that ID on the same connection. START consumes the reservation before calling the audited `StorageManager::revoke_token` path. The storage layer performs the current `MANAGE_USERS` check and commits the revocation with its audit and durable operation outcome. Unknown, already revoked, and unauthorized tokens retain the storage API's shared failure.
+- Contract and implementation: [tokens.revoke ADMIN contract](../../specs/client-protocol.md), [strict ADMIN command decoder and per-session operation reservation](../../engine/src/client_protocol.rs), and gateway operation dispatch.
+- Regression evidence: decoder tests cover both phase schemas; a real-redb gateway-dispatch regression uses a separate `MANAGE_USERS` principal to prepare/start revocation and confirms the target metadata becomes revoked.
+- Remaining: reservation behavior after failures before a durable outcome, other ADMIN operations, and the separate supervisor/worker process remain open.
+
+## SM-5 / NP-5 dependency: one-time token issuance ADMIN operation
+
+- Behavior: `tokens.issue` uses the connection-owned PREPARE/START reservation. START revalidates the session and invokes audited `StorageManager::issue_token`. The committed response returns token ID and padded base64 secret once; the encoding, JSON construction buffer, TCP frame buffer, and gateway-service response buffer are zeroized after handoff.
+- Contract and implementation: [one-time issuance contract](../../specs/client-protocol.md), [strict command schema and issuance handler](../../engine/src/client_protocol.rs), [service response cleanup](../../engine/src/supervisor_ipc.rs), and [TCP frame cleanup](../../engine/src/gateway.rs).
+- Regression evidence: the real-redb ADMIN dispatch issues a credential, decodes it through the regular AUTH schema, authenticates a new session with it, and confirms stored inventory contains metadata only.
+- Remaining at that increment: lost-response reconciliation for token mutations is recorded below; other ADMIN operations and separate supervisor/worker integration remain open.
+
+## SM-5 / NP-5 dependency: administrator live invocation pages
+
+- Behavior: control-mode ADMIN accepts `runtime.invocations.list` with a bounded page limit and an opaque cursor bound to the current administrator and process-local registry generation. Every page revalidates the control session and database-administrator authority. Results expose bounded invocation metadata and best-effort consistency; cursors become invalid after registry changes or restart.
+- Contract and implementation: [runtime listing protocol](../../specs/client-protocol.md), [cursor encoding and bounded storage page](../../engine/src/storage_manager.rs), and [ADMIN decoder and response handler](../../engine/src/client_protocol.rs).
+- Regression evidence: decoder coverage round-trips a canonical cursor. The real-redb test exercises first and second ADMIN pages through gateway dispatch, checks the next invocation and cancellation state, and separately covers unauthorized callers, stale cursors, page limits, and terminal status.
+- Remaining: remaining ADMIN operations and separate supervisor/worker process integration.
+
+## SM-5 / NP-5 dependency: reconcile a lost ADMIN mutation reply
+
+- Behavior: after a prepared token revocation commits, an authorized database administrator can query STATUS with the operation ID and retrieve its durable committed outcome. The client does not repeat START when the original response is unavailable.
+- Regression evidence: the real-redb ADMIN lifecycle test discards the revocation response payload, then queries the operation ID from both a separate token-manager session and a database-administrator control session; each receives `committed`.
+- Remaining: other ADMIN operations and separate supervisor/worker process integration.
+
+## SM-5 / CP-1: authenticated ADMIN dispatch for ordinary indexes — implemented
+
+- Contract: [client protocol](../../specs/client-protocol.md) exposes connection-owned PREPARE/START for index create, rebuild, and drop. START must revalidate the authenticated principal and delegate to action-specific storage authorization; a native query receives no administrative credentials.
+- Implementation: the strict ADMIN decoder accepts `indexes.create`, `indexes.rebuild`, and `indexes.drop`. PREPARE binds each request to the connection's pending operation ID; START revalidates session state and routes through the typed `StorageManager` request with an audit event correlated to that ID.
+- Regression: `admin_revoke_decoder_requires_prepare_then_start_schemas` checks all three canonical decoder shapes. `storage_manager_runtime_and_metadata_reads_enforce_authorization` exercises authenticated gateway PREPARE/START for create, rebuild, and drop and verifies committed responses; startup catalog validation succeeds after the broader DDL lifecycle.
+- Verification: focused decoder and authenticated gateway ADMIN lifecycle tests passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` all passed in the prescribed Nix shell; the commit integration target reported 124 passed and 3 cgroup-dependent ignored.
+- Remaining: SDK-facing SQL DDL compilation and a separately packaged TinyCC sandbox integration harness are still outside this increment.

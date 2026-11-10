@@ -159,3 +159,222 @@
 - Behavior: supervisor startup rejects a storage analytical snapshot cap below the configured analytical START cap or a total storage cap below the combined operational and analytical START caps. This prevents a configured staging slot from being consumed by a guaranteed storage-level admission rejection.
 - Regression: `storage_caps_must_cover_configured_supervisor_active_admissions` accepts defaults and rejects undersized analytical and total storage caps.
 - Contract: [supervisor](../../specs/supervisor.md), [storage manager](../../specs/storage-manager.md), and [workload profile](../../specs/workload-profile.md).
+
+## SM-4 / SU-5 dependency: supervisor terminal storage channel
+
+- Behavior: role-checked Supervisor handlers finalize or abort one out-of-band-bound invocation, look up owner-scoped status, and request audited administrative cancellation with the administrator bound outside the payload. Terminal operations consume the invocation, finalize returns the durable commit sequence, and losing the terminal channel before a decision durably aborts. Executor EOF only closes its session.
+- Changed code and contract: [supervisor IPC handlers](../../engine/src/supervisor_ipc.rs), [executor stream lifecycle](../../engine/src/executor_ipc.rs), and [IPC protocol](../../specs/ipc-protocol.md).
+- Verification: format, workspace build, warning-denied Clippy, and `git diff --check` pass. Tests were not run in this increment.
+- Remaining: implement worker exit observation, planner/executor multiplexing, and gateway cancellation wiring to the audited admin operation.
+
+## SU-1 / SU-5 dependency: token-bound supervisor invocation owner
+
+- Behavior: `StorageManager::admit_supervisor_invocation` verifies a database token, pins identity and role authority, and returns an owner that binds planner/executor channels to one invocation and exposes terminal and control channels. Dropping the owner without finalization attempts a durable abort.
+- Changed code and contract: [storage manager admission wrapper](../../engine/src/storage_manager.rs) and [storage manager lifecycle contract](../../specs/storage-manager.md).
+- Verification: format, workspace build, warning-denied Clippy, and `git diff --check` pass. Tests were not run in this increment.
+- Remaining: launch/reap a confined worker, observe worker completion, and wire gateway cancellation; those remain supervisor scheduler responsibilities.
+
+## SU-5 dependency: shared planner/executor invocation scheduling
+
+- Behavior: planner and executor IPC streams may run concurrently against one supervisor-owned invocation. Each request takes the shared transaction lock only for dispatch, and per-stream opaque handle/cursor state survives between requests. Executor clean EOF releases its scans without deciding the invocation outcome; protocol failures abort.
+- Changed code and contract: [shared IPC handlers](../../engine/src/planner_ipc.rs), [executor session state](../../engine/src/executor_ipc.rs), [transaction connection state](../../engine/src/transaction.rs), [supervisor invocation owner](../../engine/src/storage_manager.rs), and [storage-manager contract](../../specs/storage-manager.md).
+- Verification: `cargo fmt --all`, workspace build, warning-denied Clippy, and `git diff --check` pass in the repository Nix shell. Tests were not run.
+- Remaining: the supervisor must stop and drain worker channels before terminal finalization; process scheduling, worker exit observation, and gateway cancellation remain open.
+
+## SU-5 dependency: fail-closed shared invocation lock poisoning
+
+- Behavior: if a planner or executor request panics while holding the shared invocation lock, planner/executor handlers and the terminal owner consume the poisoned invocation and attempt durable abort; terminal handling cannot recover the lock and commit interrupted state.
+- Changed code: [shared planner/executor handlers](../../engine/src/planner_ipc.rs), [executor request loop](../../engine/src/executor_ipc.rs), and [terminal owner](../../engine/src/storage_manager.rs).
+- Verification: `cargo fmt --all`, workspace build, warning-denied Clippy, and `git diff --check` pass in the repository Nix shell. Tests were not run.
+- Remaining: runtime tests should cover panic poisoning and abort outcome when test execution is authorized.
+
+## SU-5 dependency: drain worker channels before terminal decisions
+
+- Behavior: the supervisor-owned storage context tracks active planner and executor streams. A terminal request while either stream remains open returns `WorkerChannelsActive`; once terminal handling begins, no new worker stream is admitted.
+- Changed code and contract: [supervisor invocation lifecycle](../../engine/src/storage_manager.rs) and [storage-manager process boundary](../../specs/storage-manager.md).
+- Verification: `cargo fmt --all`, workspace build, warning-denied Clippy, and `git diff --check` pass in the repository Nix shell. Tests were not run.
+- Remaining: supervisor worker-exit observation must close these streams before requesting commit or abort; runtime race coverage awaits an authorized test run.
+
+## SU-5 dependency: poll idle invocation deadlines
+
+- Behavior: `SupervisorInvocation::check_deadline` lets the trusted scheduler enforce transaction age and accepted cancellation while planner/executor streams are idle; expiration or cancellation aborts through the managed transaction and releases its snapshot/admission permit.
+- Changed code and contract: [supervisor invocation API](../../engine/src/storage_manager.rs) and [storage-manager lifecycle contract](../../specs/storage-manager.md).
+- Verification: `cargo fmt --all`, workspace build, warning-denied Clippy, and `git diff --check` pass in the repository Nix shell. Tests were not run.
+- Remaining: an implemented supervisor scheduler must call this method while worker channels are idle; the storage API cannot make that scheduling call itself.
+
+## SU-5 dependency: paired worker-channel service loop
+
+- Behavior: `SupervisorInvocation::serve_worker_channels` serves provisioned planner and executor Unix streams on scoped threads, polls deadline/cancellation every 100 ms while waiting for messages, closes the sibling endpoint after handler failure or panic, aborts on a handler panic, and joins both handlers before returning.
+- Changed code and contract: [storage-side worker channel runner](../../engine/src/storage_manager.rs) and [storage-manager process boundary](../../specs/storage-manager.md).
+- Verification: workspace formatting, build, warning-denied Clippy, and `git diff --check` pass in the repository Nix shell. Tests were not run.
+- Remaining: the supervisor must create/provision these streams to the correct worker processes, observe worker exits, and request the terminal decision only after a successful worker result.
+
+## SU-1 dependency: read-only token session authentication
+
+- Behavior: `StorageManager::authenticate_query_session` verifies bearer-token validity and the current LOGIN/role closure on one read snapshot, returning a non-secret identity context without allocating an invocation or outcome. Execution START still revalidates through token-bound supervisor admission.
+- Changed code and contract: [storage-manager authentication path](../../engine/src/storage_manager.rs) and [access contract](../../specs/storage-manager.md).
+- Verification: workspace formatting, build, warning-denied Clippy, and `git diff --check` pass in the repository Nix shell. Tests were not run.
+- Remaining: connect the method to a live gateway TCP service.
+
+## SU-1 / SU-2 dependency: bind staging owner to authenticated session
+
+- Behavior: successful storage AUTH now generates the opaque connection/session ID, and its identity context creates a staging owner bound to that ID and the storage-resolved principal. Callers cannot construct staging owners from arbitrary principal IDs outside the engine crate.
+- Changed code and contracts: [storage authentication and session identity](../../engine/src/storage_manager.rs), [staging owner](../../engine/src/supervisor.rs), [storage access contract](../../specs/storage-manager.md), and [client AUTH contract](../../specs/client-protocol.md).
+- Verification: Nix-shell formatting, workspace build, warning-denied Clippy, and `git diff --check` pass. Tests were not run.
+- Remaining: implement strict HELLO/AUTH request decoding and connect the authenticated session to a gateway TCP connection.
+
+## SU-1 dependency: real-redb AUTH session and revocation regression
+
+- Behavior: a query connection authenticates against a real redb catalog, receives a stable nonzero session identity and staging owner, and revalidates before a protected operation. Revoking the token causes the next operation to fail authentication without changing the connection ID.
+- Changed fixture: [client session AUTH regression](../../engine/tests/commit.rs).
+- Verification: focused `cargo test -p prdb-engine --test commit client_session_authenticates_and_revalidates_before_operations --locked` passed in the repository Nix shell; formatting, workspace build, and warning-denied Clippy passed after the session implementation.
+- Remaining: live gateway TCP service, supervisor process provisioning, and sandboxed end-to-end persistence/reconciliation evidence.
+
+## SU-1 dependency: strict AUTH wire credentials
+
+- Behavior: strict HELLO/AUTH JSON decoding validates the only token credential representation accepted by storage session authentication and prevents duplicate/unknown fields or alternate token encodings.
+- Changed code and fixtures: [gateway protocol decoder](../../engine/src/client_protocol.rs) and [decoder tests](../../engine/tests/client_protocol.rs).
+- Verification: focused `client_protocol` integration suite passed all 4 tests in the repository Nix shell.
+- Remaining: live gateway service, supervisor process provisioning, and sandboxed end-to-end persistence/reconciliation evidence.
+
+## SU-5 verification: paired worker drain before terminal commit
+
+- Behavior: one token-admitted supervisor invocation serves planner and executor Unix streams concurrently; a planner `describe_relation` request for `information_schema.tables` receives a correlated successful description through the provisioned channel, and clean EOF on both drains the channels before the supervisor terminal request commits and storage records a durable COMMITTED outcome.
+- Changed fixture: [real-redb paired worker stream regression](../../engine/tests/commit.rs).
+- Verification: the focused regression passes in the repository Nix shell.
+- Remaining: provision the streams to launched workers, observe their exit status, and require the worker process result before terminal commit.
+
+## SU-2 validation: staging lifecycle and cancellation race
+
+- Evidence: four unit tests cover chunk/owner rejection, immutable sealing, one-shot START, release, cancellation during metadata validation, disconnect and expiry cleanup.
+- Test: [staging state-machine tests](../../engine/src/supervisor.rs).
+- Verification: `cargo test -p prdb-engine --lib supervisor::tests --locked` passed.
+- Remaining: live gateway upload flow and concurrency/quota stress under multiple sessions.
+
+## SU-1 integration: protocol AUTH dispatch into storage
+
+- Behavior: the HELLO/AUTH/PING frame handler routes AUTH through `StorageManager`, correlates a sequence-zero response, returns a nonsecret server session reference, and honors the strict JSON/base64 decoder.
+- Changed code and test: [client protocol session dispatcher](../../engine/src/client_protocol.rs) and [real-redb AUTH handshake regression](../../engine/tests/commit.rs).
+- Verification: focused handshake regression, workspace format/build, warning-denied Clippy, and `git diff --check` pass.
+- Remaining: use the dispatcher in a real loopback TCP gateway and provision authenticated gateway-service IPC.
+
+## SU-2 storage dependency: retain admission budget fields
+
+- Behavior: staged submissions preserve client-requested workload class and deadline through sealing and one-shot START, with a positive configured ceiling.
+- Changed code and contract: [staging request state](../../engine/src/supervisor.rs) and [supervisor resource policy](../../specs/supervisor.md).
+- Verification: focused staging test rejects an over-ceiling deadline and observes the accepted analytical class and deadline at START.
+- Remaining: apply admission budgets to live worker and planner scheduling.
+
+## SM-6 / SU-3 dependency: failed pre-execution admission has no outcome
+
+- Behavior: failed token authentication during invocation admission now releases its snapshot and admission slot without persisting ABORTED. Revocation after successful admission remains guarded through commit and conflicts durably.
+- Changed code and contracts: [transaction admission cleanup](../../engine/src/transaction.rs), [storage admission](../../engine/src/storage_manager.rs), [client START contract](../../specs/client-protocol.md), and [token admission contract](../../specs/ddl-identity.md).
+- Verification: focused `token_admission_checks_expiry_secret_revocation_and_commit_guards` passes in the repository Nix shell, confirming no outcome for rejected admissions and durable abort after post-admission revocation.
+- Remaining: exercise the no-outcome rule through the sealed submission START flow and gateway status path.
+- Verification: `cargo fmt --all -- --check`, workspace build, warning-denied Clippy, full `cargo test --workspace --locked`, and `git diff --check` pass in the repository Nix shell.
+
+## SU-3 dependency: bind sealed START to token admission and deadline
+
+- Behavior: query `start_submission` moves a sealed staging reservation through its one-shot START callback, revalidates the token, then opens a storage invocation with the sealed deadline. Scheduler polling aborts an expired invocation. Revoked credentials reject START, delete staged bytes, and create no invocation status or durable outcome.
+- Changed code and fixture: [client start integration](../../engine/src/client_protocol.rs), [deadline-bound storage admission](../../engine/src/storage_manager.rs), and [real-redb staging/start regression](../../engine/tests/commit.rs).
+- Verification: focused `sealed_start_admits_only_current_credentials_and_enforces_request_deadline` passes in the repository Nix shell.
+- Remaining: launch/reap a confined worker, require its successful exit before finalization, and connect real gateway result/status flow.
+- Full verification: `cargo fmt --all -- --check`, workspace build, warning-denied Clippy, full `cargo test --workspace --locked`, and `git diff --check` pass in the repository Nix shell.
+
+## SU-3 dependency: immutable submission handoff after START
+
+- Behavior: the staging store returns artifact and parameter bytes only as an owner-checked sealed handle after START succeeds. The handle shares immutable buffers and does not load or execute native code.
+- Changed code and regression: [started submission handoff](../../engine/src/supervisor.rs) and [real-redb START lifecycle](../../engine/tests/commit.rs).
+- Verification: focused START/handoff regression passes in the repository Nix shell.
+- Remaining: pass the handle to a supervisor process launcher that establishes the required sandbox before loading the artifact.
+
+## SU-1 / IPC-6 dependency: HELLO over gateway session IPC
+
+- Behavior: the first request on a provisioned per-client gateway stream is `OpenClientSession` (`0x140a`), which runs the strict HELLO handler and binds the selected mode to the stream's session before AUTH or submission operations. Identity and staging ownership continue to come from authenticated server-side state.
+- Contract and implementation: [gateway IPC protocol](../../specs/ipc-protocol.md), [operation authorization and dispatch](../../engine/src/ipc.rs), and [gateway service dispatcher](../../engine/src/supervisor_ipc.rs).
+- Changed regression: [UnixStream handshake and upload lifecycle](../../engine/tests/commit.rs) exercises HELLO, AUTH, PREPARE, upload, SEAL, STATUS, START, and CANCEL through the real service loop.
+- Commands actually run in the configured Nix shell: `cargo fmt --all`; focused `cargo test -p prdb-engine --test commit --locked client_handshake_requires_hello_first_and_sequences_responses`; and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
+- Remaining: provision authenticated socket identity/generation, monitor network disconnects during worker execution, and implement the TCP listener, launcher, sandbox, and result relay.
+
+## SU-5 dependency: worker exit observation and reaping
+
+- Behavior: after planner and executor streams have drained, `SupervisorInvocation::observe_worker_exit` polls the associated process while checking cancellation and age. The sandbox path uses `observe_worker_exit_in_cgroup`, which kills descendants and waits for an empty cgroup before authorizing terminal storage. `serve_terminal` enforces that the worker exited successfully before commit, and no new worker channel can open after exit observation starts or succeeds. A nonzero exit or process-inspection error durably aborts; deadline failure kills and reaps the worker.
+- Contract and implementation: [supervisor lifecycle contract](../../specs/storage-manager.md) and [worker process observation](../../engine/src/storage_manager.rs).
+- Changed real-redb regression: [failed worker exit records ABORTED and is reaped](../../engine/tests/commit.rs).
+- Observed red: the terminal-authority regression first failed to compile because no `WorkerExitNotObserved` state existed. The existing worker-observation regression also established nonzero exit as a durable ABORTED result.
+- Verification: focused worker-failure and worker-channel/terminal tests passed. Full configured Nix-shell validation passed after cgroup cleanup integration: `cargo fmt --all -- --check`, `cargo build --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and `git diff --check`.
+- Remaining: launch a worker with a verified sandbox profile, bind worker channels to that process, relay its result bytes, and test cancellation/expiry during the process wait.
+
+## SU-5 validation: cancellation and expiry during worker wait
+
+- Behavior: accepted owner cancellation and the admitted execution deadline are both observed while a worker process is idle; the supervisor kills/reaps the worker, and storage records ABORTED before terminal handling can commit.
+- Changed real-redb regression: [cancellation during process observation](../../engine/tests/commit.rs).
+- Verification: focused `supervisor_cancellation_and_deadline_during_worker_wait_abort` passed for both paths. Full configured Nix-shell validation passed: format check, workspace build, warning-denied Clippy, workspace tests, and `git diff --check`.
+- Remaining: exercise these paths with cgroup descendant cleanup and live cgroup availability.
+
+## SU-6 validation: reconcile after terminal delivery loss
+
+- Behavior: storage commits before the supervisor writes TERMINAL; if the gateway side disconnects and terminal delivery fails, the durable COMMITTED outcome remains available to the authenticated owner through `get_invocation_status`.
+- Changed regression: [gateway disconnect after storage commit](../../engine/tests/commit.rs).
+- Verification: focused real-redb `gateway_disconnect_after_storage_commit_is_reconcilable` passed. Full configured Nix-shell validation passed: `cargo fmt --all -- --check`, `cargo build --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and `git diff --check`.
+- Remaining: exercise the same reconciliation across separate gateway/supervisor processes and restart, and prove no automatic replay occurs.
+
+## SU-1 / IPC-6 dependency: gateway submission IPC dispatcher
+
+- Behavior: a role-checked gateway dispatcher maps AUTH, PREPARE, chunk, SEAL, START, STATUS, and CANCEL operation tags to the strict per-client session handlers. Chunk IPC prepends an explicit artifact/parameter kind byte. START returns the network acknowledgement plus a typed storage invocation and immutable submission handle to trusted supervisor code; those authority-bearing objects are never serialized.
+- Contract: [gateway submission IPC payloads](../../specs/ipc-protocol.md).
+- Changed code and integration regression: [gateway request dispatcher](../../engine/src/supervisor_ipc.rs) and [real-redb full submission path](../../engine/tests/commit.rs).
+- Verification: focused real-redb HELLO/AUTH and IPC submission lifecycle test passes in the repository Nix shell.
+- Remaining: run this dispatcher from a provisioned, bounded Unix service loop and keep launch/results in a separate supervisor process.
+
+## SU-1 dependency: gateway failed-authentication throttling
+
+- Behavior: the gateway allows a configurable number of failed AUTH attempts per source IP in a rolling 60-second window (default 10). It reserves in-flight attempts before forwarding AUTH, releases reservations only on successful authentication, caps retained source histories at 4,096, and fails closed when the cap is full. The source address is only a throttle key; credential bytes are not retained.
+- Contract and implementation: [gateway authentication and connection limits](../../specs/client-gateway.md), [storage authentication boundary](../../specs/storage-manager.md), [gateway limiter and runtime](../../engine/src/gateway.rs), and [gateway configuration](../../engine/src/bin/prdb-gateway.rs).
+- Regression evidence: deterministic limiter tests verify threshold, source-map cap, and expiry; a real TCP/Unix-socket gateway regression confirms the second failed AUTH is closed before reaching the supervisor service. The CLI exposes the configured limit.
+- Verification: focused limiter, live gateway, and CLI tests passed. Full configured Nix-shell validation passed: format check, workspace build, warning-denied Clippy, all workspace tests, and `git diff --check`.
+- Remaining: gateway restart loses in-memory throttle history; invalid-authentication throttling is per source address, while network-level denial-of-service protection remains a deployment concern. The gateway/supervisor process startup and sandboxed worker launch are still incomplete.
+
+## SU-1 / GW-2 dependency: sanitized client ERROR responses
+
+- Behavior: failed gateway request dispatches produce fixed-category, fixed-message ERROR payloads over a dedicated supervisor-to-gateway IPC response event. The gateway maps them to client frame kind 101 and closes the connection. Locally rejected client kinds and authentication throttles return similarly fixed responses. Raw internal errors are not serialized.
+- Contract and implementation: [client ERROR frame](../../specs/client-protocol.md), [gateway service event](../../specs/ipc-protocol.md), [gateway bridge](../../engine/src/gateway.rs), and [supervisor error classifier](../../engine/src/supervisor_ipc.rs).
+- Regression evidence: gateway bridge regression verifies the error kind, request ID, fixed payload, and close behavior.
+- Remaining: deliver errors for malformed frame headers where a trustworthy request ID is unavailable, map every transport failure category, and exercise real service errors across separate gateway/supervisor processes.
+
+## SU-6: release staging reservation after START callback — implemented
+
+- Behavior and normative contract: [supervisor lifecycle](../../specs/supervisor.md). Once the trusted START callback returns, the completed invocation's immutable artifact and parameters must stop consuming per-connection and per-principal staging quota before the same connection is serviced again.
+- Implementation: the gateway service captures the authenticated staging owner and invocation ID before handing control to the START callback, then calls `StagingStore::finish_started` on callback return. A staging cleanup error closes that service stream.
+- Red/green evidence: `started_callback_releases_reservation_before_same_session_resumes` first failed because a second PREPARE on the same connection returned `InvalidState`; after the callback cleanup path was added, the next PREPARE succeeds with a new invocation ID.
+- Verification: focused lifecycle regression passed. Workspace build, format check, warning-denied Clippy, all workspace tests, and `git diff --check` passed. The engine library had 35 passing unit tests; the commit target had 109 passing and 2 pre-existing cgroup/TinyCC fixture tests ignored.
+- Remaining: the production callback that runs the sandboxed executor and resolves its durable terminal outcome is still not provided by a supervisor executable.
+
+## SU-5 / GW-2: provide the live storage manager to START callbacks — implemented
+
+- Behavior and normative contracts: [supervisor lifecycle](../../specs/supervisor.md), steps 4–6; [gateway service IPC](../../specs/ipc-protocol.md), START and terminal events. Trusted START handling must confirm outcomes through the same validated storage instance owned by the recovery loop.
+- Implementation: `serve_gateway_service_listener` and `run_gateway_service_with_recovery` pass the current `StorageManager` reference into their START callback. When storage reports an ambiguous commit and the recovery loop reopens the database, later callbacks receive the new validated manager rather than reopening a second database handle.
+- Regression/build evidence: all in-repository listener and recovery callback call sites compile against the new signature; focused supervisor IPC unit tests passed. Workspace build, format check, warning-denied Clippy, all workspace tests, and `git diff --check` passed. The engine library had 35 passing unit tests; the commit target had 109 passing and 2 existing cgroup/TinyCC sandbox tests ignored.
+- Remaining: provide a supervisor executable that wires the callback to executor result relay, durable finalization, and its configured compatibility profile; exercise the gateway/supervisor boundary across processes.
+
+## SM-6 / SU-5: authenticated metadata discovery across gateway and supervisor processes — verified
+
+- Behavior and contracts: [metadata discovery](../../specs/metadata-discovery.md), [client protocol](../../specs/client-protocol.md), and [supervisor service](../../specs/supervisor.md). A real authenticated control client can read schema, relation, and column descriptions through the external TCP gateway and private supervisor service, backed by the READY storage instance.
+- Regression: [`metadata_process.rs`](../../engine/tests/metadata_process.rs) launches the actual `prdb-supervisor` and `prdb-gateway` executables, authenticates the bootstrap token through `MetadataClient`, checks the public schema, enumerates its relations, and describes `information_schema.schemata` columns. No query artifact is loaded and no worker is launched.
+- Verification: the focused `cargo test --locked --test metadata_process` process-boundary test passed in the prescribed Nix shell.
+- Limit: this closes the metadata control-read process path only. Successful worker launch and query execution still require a writable delegated cgroup host and the remaining executor callback ABI integration.
+
+## SM-6 / SU-5: recover a disconnected invocation outcome after supervisor restart — verified
+
+- Contract: [redb storage](../../specs/redb-storage.md), outcome recovery; [client protocol](../../specs/client-protocol.md), gateway disconnect and STATUS. An accepted invocation whose gateway disappears before terminal delivery is cancelled, receives a durable ABORTED outcome, and remains owner-queryable after the supervisor closes and reopens the same READY instance.
+- Regression: [`metadata_process.rs`](../../engine/tests/metadata_process.rs) compiles a TinyCC ABI-v3 package, submits it through `SubmissionClient` to separate gateway and supervisor processes, kills the gateway after START acceptance, queries ABORTED through a replacement gateway, restarts the supervisor on the same database, then confirms STATUS still returns ABORTED through a new gateway.
+- Observed behavior: the supervisor reports a broken pipe while relaying the lost terminal frame; storage nevertheless persists ABORTED. An initial expectation of COMMITTED was rejected by the observed result and corrected to match the specified disconnect cancellation contract.
+- Verification: `cargo fmt --all -- --check`, `cargo clippy -p prdb-engine --test metadata_process --locked -- -D warnings`, and `cargo test -p prdb-engine --test metadata_process --locked` passed. The ignored sandbox test passed when run directly under `sudo -n` with the configured delegated cgroup and runtime paths. This is Linux x86_64 process-restart evidence, not power-loss evidence.
+- Follow-up: a real sandboxed SQL regression now reaches the irreversible commit boundary and checks durable COMMITTED after gateway terminal delivery fails; rerunning it requires a delegated cgroup with enabled `cpu`, `memory`, and `pids`. Storage-file fault points and other supported durability profiles remain open. The broader SQL, DDL, pressure and analytical stages remain open.
+
+## SM-6 / SU-5: recover COMMITTED status after terminal loss through gateway and supervisor processes — verified
+
+- Contract: [redb storage](../../specs/redb-storage.md), outcome recovery; [client protocol](../../specs/client-protocol.md), terminal delivery and STATUS.
+- Regression: `authenticated_metadata_reads_cross_gateway_and_supervisor_processes` creates a token-owned invocation in a real READY redb instance, observes a successful worker exit, commits through the production terminal helper with the receiving socket closed, closes the storage instance, then launches the actual supervisor and gateway binaries. An authenticated `SubmissionClient` STATUS returns COMMITTED after the database is reopened by the service process.
+- Verification: `cargo fmt --all -- --check` and `cargo test -p prdb-engine --test metadata_process --locked` passed (1 passed, 1 delegated-cgroup test ignored).
+- Scope: proves durable COMMITTED outcome recovery through process startup and the authenticated network status path after terminal delivery fails. The sandboxed query boundary regression is now implemented in `sandboxed_v3_sql_dml_sequence_is_visible_and_commits`; its execution is pending a delegated cgroup with the required controllers.

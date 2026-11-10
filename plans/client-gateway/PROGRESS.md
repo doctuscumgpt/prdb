@@ -1,0 +1,103 @@
+# Client Gateway Progress
+
+Migrated component-owned progress entries from [storage-manager progress](../storage-manager/PROGRESS.md); evidence is preserved below.
+
+## GW-1 dependency: loopback-default TCP listener
+
+- Behavior: `TcpGatewayListener` binds loopback by default and refuses a non-loopback plaintext address unless `allow_non_loopback_plaintext` is explicitly enabled. Its API exposes the bound address and TCP accept operation without storage access.
+- Contract and implementation: [gateway deployment boundary](../../specs/client-gateway.md), [client gateway plan](../client-gateway/README.md), and [listener](../../engine/src/gateway.rs).
+- Changed tests: [gateway listener policy](../../engine/tests/gateway.rs).
+- Observed red: focused compile failed because `prdb_engine::gateway` did not exist before the implementation.
+- Commands actually run in the configured Nix shell: `cargo fmt --all`; focused `cargo test -p prdb-engine --test gateway --locked` (3 passed); and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
+- Remaining at that increment: bounded accepted-connection handling and frame read/write deadlines. Those controls are recorded in the later gateway resource entry; session processing and a separately runnable gateway process remain open.
+
+## GW-2 / GW-3 dependency: TCP client to gateway-service frame bridge
+
+- Behavior: the TCP adapter decodes bounded client frames, translates the supported HELLO/AUTH/PREPARE/chunk/SEAL/START/STATUS/CANCEL/PING kinds to the dedicated gateway IPC operation allowlist, adds an explicit chunk-kind byte, and returns only correlated sequence-zero RESPONSE frames. Unsupported kinds, malformed/pipelined frames, service EOF, and mismatched IPC responses return errors for the caller to handle by closing the connection.
+- Contract and implementation: [client protocol](../../specs/client-protocol.md), [gateway service IPC](../../specs/ipc-protocol.md), and [TCP adapter](../../engine/src/gateway.rs).
+- Changed regression: [loopback TCP to Unix IPC bridge](../../engine/tests/gateway.rs) checks HELLO and PING correlation across real sockets.
+- End-to-end regression: [real-redb gateway submission lifecycle](../../engine/tests/commit.rs) now drives HELLO, AUTH, PREPARE, upload, SEAL, STATUS, START, and CANCEL from a loopback TCP client through the frame bridge and per-client Unix service loop, then verifies disconnect cleanup and durable ABORTED.
+- Observed red: the initial focused test failed to compile because the TCP bridge and `PingClientSession` IPC operation were absent.
+- Commands actually run in the configured Nix shell: `cargo fmt --all`; focused `cargo test -p prdb-engine --test gateway --locked tcp_client_hello_and_ping_bridge_over_the_gateway_service_channel` passed; and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
+- Remaining: run bounded concurrent accepted connections with read/write deadlines; implement ADMIN and explicit sanitized ERROR responses; connect a separately runnable gateway process to authenticated service-channel provisioning and result relay.
+
+## GW-1 dependency: bounded gateway connection admission
+
+- Behavior: a shared atomic limiter issues RAII permits up to a positive configured connection maximum; bounded accept drops peers above that cap. The TCP/Unix stream serving helper sets positive idle read/write timeouts before frame processing.
+- Changed implementation and regression: [listener limits and timeout bridge](../../engine/src/gateway.rs) and [shared connection-cap test](../../engine/tests/gateway.rs).
+- Observed red: the focused test initially failed to compile because the shared limiter and bounded accept API were absent; a subsequent compile exposed and corrected the test's tuple destructuring.
+- Commands actually run in the configured Nix shell: `cargo fmt --all`; focused `cargo test -p prdb-engine --test gateway --locked` (5 passed); and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
+- Remaining at that increment: add an absolute deadline across the complete pre-authentication phase. Per-frame deadlines, per-IP connection rate limiting, and the fixed bounded listener worker pool are implemented in later entries; the phase deadline is recorded below.
+
+## GW-1 / GW-2 dependency: bounded TCP gateway worker pool
+
+- Behavior: one listener process accepts TCP peers into a bounded queue served by a fixed number of workers. Each worker opens one private Unix service stream, applies idle read/write timeouts to both ends, and forwards the client session. Shutdown stops accepting, drains queued clients, and joins all workers.
+- Changed implementation and integration regression: [gateway runtime](../../engine/src/gateway.rs) and [TCP/Unix worker-pool test](../../engine/tests/gateway.rs).
+- Observed red: initial runtime test compilation failed because `GatewayRuntimeConfig` and `run_gateway` were absent.
+- Commands actually run in the configured Nix shell: `cargo fmt --all`; focused `cargo test -p prdb-engine --test gateway --locked gateway_worker_pool_opens_one_service_stream_per_client` passed; and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
+- Remaining at that increment: verify the Unix service peer and bind service connections to gateway generation; add pre-auth absolute deadlines, rate limits, ADMIN forwarding, result relay, and process startup configuration. Peer UID verification is recorded in the following entry.
+
+## GW-2 dependency: Linux Unix-service peer UID verification
+
+- Behavior: `UnixGatewayServiceConnector` connects only when Linux `SO_PEERCRED` reports the configured expected UID; mismatched peers fail with `PermissionDenied` before the connection is handed to the frame bridge.
+- Changed implementation and regression: [peer-checked Unix connector](../../engine/src/gateway.rs) and [local Unix socket identity test](../../engine/tests/gateway.rs).
+- Observed red: the focused test did not compile before the connector API existed. A later compile caught a test assertion using equality on `std::os::unix::net::SocketAddr`; the assertion was removed because successful connector verification is the behavior under test.
+- Commands actually run in the configured Nix shell: `cargo fmt --all`; focused `cargo test -p prdb-engine --test gateway --locked unix_gateway_connector_checks_peer_uid` passed; and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
+- Remaining: bind service connections to gateway generation and per-client connection ID; verify socket filesystem ownership/mode; add authenticated handoff on non-Linux platforms if they enter the supported profile.
+
+## GW-3 / SU-1 / SU-2 validation: real-redb TCP admission and upload path
+
+- Behavior: a loopback TCP client now drives the real-redb session and staging state through the gateway adapter and its Unix IPC service channel. The regression covers HELLO, AUTH, PREPARE, artifact upload, SEAL, STATUS, START, active CANCEL, EOF cleanup, and durable ABORTED status.
+- Changed regression: [gateway lifecycle integration](../../engine/tests/commit.rs).
+- Focused command: `cargo test -p prdb-engine --test commit --locked client_handshake_requires_hello_first_and_sequences_responses` passed.
+- Full configured Nix-shell checks: `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check` all passed.
+- Remaining: worker process launch/reap, result data and terminal relay, sandbox enforcement, and status reconciliation after gateway/process failure.
+
+## GW-1 dependency: runnable gateway process wrapper
+
+- Behavior: `prdb-gateway` parses a loopback-default bind address, requires a private service socket and expected peer UID, configures bounded worker/queue/idle values, installs graceful SIGINT/SIGTERM shutdown, and refuses plaintext wildcard binding without an explicit flag.
+- Changed binary and CLI regressions: [gateway process](../../engine/src/bin/prdb-gateway.rs) and [gateway CLI tests](../../engine/tests/gateway.rs).
+- Observed red: the CLI test initially failed to compile because Cargo had no `prdb-gateway` target.
+- Commands actually run in the configured Nix shell: `cargo fmt --all`; focused `cargo test -p prdb-engine --test gateway --locked` (9 passed); and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
+- Remaining at that increment: provide the supervisor-side Unix listener and bind gateway generation/session context; connect result relay and control ADMIN operations. The listener is recorded in the following entry.
+
+## GW-2 dependency: bounded supervisor-side gateway service listener
+
+- Behavior: the supervisor binds a private mode-0600 Unix socket, accepts only the configured Linux peer UID, caps active sessions, applies idle read/write timeouts, creates a fresh `ClientConnectionSession` per stream, and returns to request handling after the START callback hands admission to trusted scheduling code.
+- Changed implementation and integration test: [supervisor gateway listener](../../engine/src/supervisor_ipc.rs) and [real-redb HELLO over the private listener](../../engine/tests/commit.rs).
+- Observed red: the focused listener test failed to compile because the listener configuration, binder, and accept loop did not exist.
+- Commands actually run in the configured Nix shell: `cargo fmt --all`; focused `cargo test -p prdb-engine --test commit --locked gateway_service_listener_binds_peer_and_serves_hello` passed; and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
+- Remaining: bind both sides to a gateway generation and connection ID, exercise listener through `prdb-gateway` in a separate process, and implement worker scheduling/result relay/control ADMIN.
+
+## GW-1 dependency: absolute client-frame deadline
+
+- Behavior: when serving a network connection with configured timeouts, the TCP adapter bounds each complete request frame by an absolute deadline, resetting the deadline only after a complete request has been processed. Partial-frame clients cannot extend the deadline by sending occasional bytes.
+- Changed implementation and regression: [gateway frame reader](../../engine/src/gateway.rs) and [slow partial-frame test](../../engine/tests/gateway.rs).
+- Observed red: focused slow-client coverage was added before the deadline path; it previously had only idle socket timeouts and no whole-frame deadline.
+- Commands actually run in the configured Nix shell: focused `cargo test -p prdb-engine --test gateway --locked incomplete_tcp_client_frame_hits_absolute_read_deadline` passed; and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
+- Remaining at that increment: enforce one absolute unauthenticated phase deadline across HELLO/AUTH, and rate-limit by source address. The per-IP connection cap is implemented in the following entry.
+
+## GW-1 dependency: bounded per-IP connection rate
+
+- Behavior: the gateway applies a rolling-window connection-attempt limit per source IP before queueing a socket. Its remembered source map is capped at 4096 entries and prunes expired histories; when full, new sources fail closed. The process wrapper exposes the per-IP count.
+- Changed implementation and regression: [gateway peer limiter and runtime integration](../../engine/src/gateway.rs), [CLI option](../../engine/src/bin/prdb-gateway.rs), and [deterministic window/source-cap test](../../engine/tests/gateway.rs).
+- Observed red: focused test compilation failed because `GatewayPeerRateLimiter` did not exist. The first run then exposed a test expectation inconsistent with the one-source cap; the corrected test passes.
+- Commands actually run in the configured Nix shell: `cargo fmt --all`; focused `cargo test -p prdb-engine --test gateway --locked per_ip_gateway_rate_limit_is_bounded_and_expires` passed; and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
+- Remaining at that increment: add an absolute deadline across the complete unauthenticated HELLO/AUTH phase and track auth failures without retaining credentials. The phase deadline is recorded in the following entry.
+
+## GW-1 dependency: absolute unauthenticated phase deadline
+
+- Behavior: the TCP bridge starts one deadline when client serving begins and applies it across HELLO, any pre-auth PING requests, and AUTH. Successful server-side AUTH ends this deadline; per-frame and idle limits continue afterward.
+- Changed implementation and regression: [gateway bridge pre-auth state](../../engine/src/gateway.rs) and [HELLO plus phase-expiry socket test](../../engine/tests/gateway.rs).
+- Observed red: the new regression failed to compile because the bridge had no combined idle/frame and pre-auth timeout API.
+- Commands actually run in the configured Nix shell: `cargo fmt --all`; focused `cargo test -p prdb-engine --test gateway --locked unauthenticated_gateway_phase_has_one_absolute_deadline` passed; and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
+- Remaining: rate-limit failed AUTH attempts separately and test gateway/service restarts with live sessions.
+
+## GW-4 / SU-4 dependency: START result and terminal event relay
+
+- Behavior: after START acknowledgement, the TCP bridge accepts only request-correlated result-data or terminal IPC events, maps them to RESULT_DATA/TERMINAL, and assigns increasing network sequence numbers. Supervisor helpers bound provisional data and emit TERMINAL only after storage's correlated commit/abort response succeeds; ambiguous failures emit no terminal claim.
+- Contract and implementation: [gateway event IPC](../../specs/ipc-protocol.md), [TCP event relay](../../engine/src/gateway.rs), and [storage-confirmed terminal sender](../../engine/src/supervisor_ipc.rs).
+- Changed tests: [network event ordering/correlation](../../engine/tests/gateway.rs) and [real-redb terminal evidence](../../engine/tests/commit.rs).
+- Focused verification: `cargo test -p prdb-engine --test gateway --locked start_gateway_bridge_relays_provisional_data_then_terminal`, `cargo test -p prdb-engine --test commit --locked gateway_terminal_event_requires_a_storage_confirmed_decision`, and the real TCP/IPC lifecycle test `cargo test -p prdb-engine --test commit --locked client_handshake_requires_hello_first_and_sequences_responses` passed.
+- Full validation in the configured Nix shell passed: `cargo fmt --all -- --check`, `cargo build --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and `git diff --check`.
+- Remaining: connect real confined worker output/completion to these events, bound result queues/backpressure across processes, and test cancellation/restart around streaming terminal transitions.

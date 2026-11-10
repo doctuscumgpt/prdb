@@ -40,3 +40,33 @@
 - Verification update: `gateway_rejects_error_frames_with_mismatched_request_ids` sends a canonical supervisor error with a different request ID and verifies that the gateway closes the TCP connection without forwarding the payload, reporting `MismatchedServiceResponse`.
 - Verification update: `gateway_bridge_returns_sanitized_supervisor_error_frames` now relays and checks all five canonical v1 error categories over TCP, including request correlation and connection close after the error.
 - Remaining: provision per-client Unix sockets/generation references, add queue/deadline and malformed-frame error coverage across separate processes, and complete worker lifecycle hardening.
+
+## IPC-1 dependency: bounded Unix-stream frame v1
+
+- Red evidence: the hand-checked frame fixture failed against the compiling `NotImplemented` scaffold.
+- Added a 20-byte big-endian v1 header with magic, operation, nonzero request ID and payload length. Encoding/reading caps payloads at 1 MiB; reading rejects malformed/unsupported headers and oversized lengths before body allocation, distinguishes clean boundary EOF from truncation, and preserves following frames in a stream.
+- Tests cover the byte fixture, split/coalesced Unix-stream writes, malformed/oversized headers, zero IDs, truncation and writer limits.
+- Contracts: [IPC protocol](../../specs/ipc-protocol.md) and [IPC plan](../ipc-protocol/README.md).
+- Verification: prescribed Nix-shell workspace build, formatting check, Clippy with warnings denied, and all 233 workspace integration tests passed.
+- Remaining: operation payload schemas and allowlists, server-bound role dispatch, local service authentication, C parity, and gateway/supervisor/storage integration remain open.
+
+## IPC-6 dependency: gateway-role status/cancel dispatch
+
+- Behavior: the storage-side dispatcher accepts only gateway-authorized client status/cancel operation tags, binds identity from trusted channel setup, and preserves non-enumerating unknown/foreign responses. Executor role use is rejected.
+- Changed code and regression: [gateway control dispatcher](../../engine/src/supervisor_ipc.rs) and [real-redb IPC role test](../../engine/tests/commit.rs).
+- Verification: focused role/status/cancel regression and warning-denied Clippy pass in the repository Nix shell.
+- Remaining: provision channels and sessions over Unix sockets; route PREPARE/chunks/SEAL/START through IPC; build the TCP gateway and worker lifecycle.
+
+## IPC-6 dependency: bounded gateway control socket loop
+
+- Behavior: the trusted gateway control stream accepts at most 16 distinct request IDs, dispatches only the gateway's status/cancel operations, returns correlated frames, and closes cleanly at EOF.
+- Changed code and regression: [control socket loop](../../engine/src/supervisor_ipc.rs) and [UnixStream service test](../../engine/tests/commit.rs).
+- Verification: focused real-socket test and warning-denied Clippy pass in the repository Nix shell.
+- Remaining: credential-bound session setup/generation, staging operations over IPC, and the independent TCP listener process.
+
+## IPC-6 dependency: per-client gateway Unix service loop
+
+- Behavior: one trusted gateway stream owns a client session through the entire upload/start sequence. It preserves request ordering, writes correlated responses, hands START's admission/immutable bytes back to supervisor code, and discards unstarted reservations or cancels started work on EOF and protocol/write failure.
+- Changed code and test: [gateway Unix service loop and disconnect cleanup](../../engine/src/supervisor_ipc.rs), [authenticated owner helper](../../engine/src/supervisor.rs), and [real-redb UnixStream lifecycle](../../engine/tests/commit.rs).
+- Verification: focused UnixStream test covers AUTH, PREPARE, artifact chunk, SEAL, STATUS, START, active CANCEL, EOF cleanup, and durable ABORTED outcome.
+- Remaining: bind sockets to authenticated gateway process identity/generation and monitor network disconnects while workers execute; the TCP listener, launcher, sandbox, and result relay remain absent.
