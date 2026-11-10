@@ -458,7 +458,7 @@
 
 ## SQL-7 dependency: grouped scan request-budget regression — verified
 
-- Red/green evidence: the v18 grouped runner fixture streams one row per page. Before the fix, the runner completed 128 data pages plus the terminal page, requiring more than the 256-request stream cap once cancellation polls were counted. It now requires a request-limit failure before callback publication and checks the early cursor close keeps the count to 255.
+- Red/green evidence: the v18 grouped runner fixture streams one row per page. Before the fix, the runner completed 128 data pages plus the terminal page, requiring more than the 256-request stream cap once cancellation polls were counted. It now requires a request-limit failure before callback publication and checks the early cursor close keeps the count to 255. The independent v4 COUNT runner has the same 126-page boundary fixture and asserts the same no-callback, 255-request result.
 - Implementation: the shared v5-v18 grouped runner and the separate v4 COUNT runner cap scans at 126 pages. Each page consumes a cancellation check and batch request; resolve/open and a possible early close fit in the remaining stream budget.
 - Specification: [`sql-library.md`](../../specs/sql-library.md) records the page/request relationship for grouped scans.
 - Remaining: further grouped-runner cancellation and pressure stress cases remain open.
