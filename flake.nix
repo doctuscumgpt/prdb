@@ -22,6 +22,7 @@
           gnumake
           gnutar
           gzip
+          minisign
           python3
         ];
       };

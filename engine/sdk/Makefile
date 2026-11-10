@@ -111,6 +111,10 @@ SDK_OPTIMIZER_PLAN_TEST := $(BUILD_DIR)/sdk-optimizer-plan-v1
 QUERY_ABI_GENERATED_HEADERS += $(INCLUDE_DIR)/prdb_query_abi_records_v4.h
 RELEASE_PROFILE_DIR ?= target/release-profile
 RELEASE_PROFILE_ARCHIVE ?= target/prdb-release-profile.tar.gz
+RELEASE_PROFILE_SIGNATURE ?= $(RELEASE_PROFILE_ARCHIVE).minisig
+MINISIGN ?= minisign
+SIGNING_SECRET_KEY ?=
+SIGNING_PUBLIC_KEY ?=
 RELEASE_BINARIES := prdb-client prdb-executor prdb-gateway prdb-optimizer prdb-packager prdb-sandbox-probe prdb-supervisor
 
 .PHONY: all test
@@ -385,6 +389,22 @@ release-profile-package: release-profile
 	$(GZIP) -n -c "$(RELEASE_PROFILE_ARCHIVE).tmp" > "$(RELEASE_PROFILE_ARCHIVE)"
 	rm "$(RELEASE_PROFILE_ARCHIVE).tmp"
 	sha256sum "$(RELEASE_PROFILE_ARCHIVE)" > "$(RELEASE_PROFILE_ARCHIVE).sha256"
+
+.PHONY: release-profile-sign
+release-profile-sign: release-profile-package
+	test -n "$(SIGNING_SECRET_KEY)"
+	rm -f "$(RELEASE_PROFILE_SIGNATURE).tmp"
+	$(MINISIGN) -S -s "$(SIGNING_SECRET_KEY)" -m "$(RELEASE_PROFILE_ARCHIVE)" -x "$(RELEASE_PROFILE_SIGNATURE).tmp" -t "prdb release profile"
+	mv -f "$(RELEASE_PROFILE_SIGNATURE).tmp" "$(RELEASE_PROFILE_SIGNATURE)"
+
+.PHONY: release-profile-verify
+release-profile-verify:
+	test -n "$(SIGNING_PUBLIC_KEY)"
+	test -f "$(RELEASE_PROFILE_ARCHIVE)"
+	test -f "$(RELEASE_PROFILE_ARCHIVE).sha256"
+	test -f "$(RELEASE_PROFILE_SIGNATURE)"
+	sha256sum -c "$(RELEASE_PROFILE_ARCHIVE).sha256"
+	$(MINISIGN) -Vm "$(RELEASE_PROFILE_ARCHIVE)" -x "$(RELEASE_PROFILE_SIGNATURE)" -p "$(SIGNING_PUBLIC_KEY)"
 
 abi-constants:
 	$(PYTHON) engine/tools/generate_query_abi.py
