@@ -1,7 +1,7 @@
 //! Snapshot-aware lookups through engine-maintained catalog secondary indexes.
 
 use crate::catalog::decode_registered_envelope;
-use crate::schema::{CATALOG, PRINCIPAL_NAMES, SCHEMA_NAMES};
+use crate::schema::{CATALOG, PRINCIPAL_NAMES, RELATION_NAMES, SCHEMA_NAMES};
 use redb::ReadTransaction;
 
 /// Failure while reading a derived catalog index.
@@ -136,4 +136,111 @@ pub fn lookup_schema_id_by_name(
         return Err(CatalogIndexError::InvalidEntry);
     }
     Ok(Some(schema_id))
+}
+
+/// Resolve a relation name within one schema in a snapshot, checking both the
+/// family-5 table record and its family-2 named object.
+pub fn lookup_relation_id_by_name(
+    transaction: &ReadTransaction,
+    schema_id: [u8; 16],
+    normalized_name: &str,
+) -> Result<Option<[u8; 16]>, CatalogIndexError> {
+    if schema_id == [0; 16] || normalized_name.is_empty() || normalized_name.len() > 4096 {
+        return Err(CatalogIndexError::InvalidName);
+    }
+    let mut index_key = Vec::with_capacity(16 + normalized_name.len());
+    index_key.extend_from_slice(&schema_id);
+    index_key.extend_from_slice(normalized_name.as_bytes());
+    let table = transaction
+        .open_table(RELATION_NAMES)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let Some(value) = table
+        .get(index_key.as_slice())
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let relation_id: [u8; 16] = value
+        .value()
+        .try_into()
+        .map_err(|_| CatalogIndexError::InvalidEntry)?;
+    if relation_id == [0; 16] {
+        return Err(CatalogIndexError::InvalidEntry);
+    }
+    drop(value);
+    drop(table);
+
+    let catalog = transaction
+        .open_table(CATALOG)
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?;
+    let table_key = catalog_id_key(5, relation_id);
+    let table_bytes = catalog
+        .get(table_key.as_slice())
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+        .ok_or(CatalogIndexError::InvalidEntry)?;
+    let table_record = decode_registered_envelope(table_bytes.value())
+        .map_err(|_| CatalogIndexError::InvalidEntry)?;
+    if table_record.family_code != 5
+        || table_record.logical_key != table_key
+        || field_id(&table_record, 1)? != schema_id
+    {
+        return Err(CatalogIndexError::InvalidEntry);
+    }
+    drop(table_bytes);
+    let object_key = catalog_id_key(2, relation_id);
+    let object_bytes = catalog
+        .get(object_key.as_slice())
+        .map_err(|error| CatalogIndexError::Storage(error.to_string()))?
+        .ok_or(CatalogIndexError::InvalidEntry)?;
+    let object = decode_registered_envelope(object_bytes.value())
+        .map_err(|_| CatalogIndexError::InvalidEntry)?;
+    if object.family_code != 2
+        || object.logical_key != object_key
+        || field_u16(&object, 1)? != 3
+        || object
+            .fields
+            .iter()
+            .find(|field| field.tag == 2)
+            .is_some_and(|parent| parent.payload.as_slice() != schema_id)
+        || field_bytes(&object, 3)? != normalized_name.as_bytes()
+    {
+        return Err(CatalogIndexError::InvalidEntry);
+    }
+    Ok(Some(relation_id))
+}
+
+fn catalog_id_key(family: u16, id: [u8; 16]) -> Vec<u8> {
+    let mut key = family.to_be_bytes().to_vec();
+    key.push(1);
+    key.extend_from_slice(&id);
+    key
+}
+
+fn field_id(
+    record: &crate::catalog::CatalogRecord,
+    tag: u16,
+) -> Result<[u8; 16], CatalogIndexError> {
+    field_bytes(record, tag)?
+        .try_into()
+        .map_err(|_| CatalogIndexError::InvalidEntry)
+}
+
+fn field_u16(record: &crate::catalog::CatalogRecord, tag: u16) -> Result<u16, CatalogIndexError> {
+    let bytes = field_bytes(record, tag)?;
+    let bytes: [u8; 2] = bytes
+        .try_into()
+        .map_err(|_| CatalogIndexError::InvalidEntry)?;
+    Ok(u16::from_le_bytes(bytes))
+}
+
+fn field_bytes(
+    record: &crate::catalog::CatalogRecord,
+    tag: u16,
+) -> Result<&[u8], CatalogIndexError> {
+    record
+        .fields
+        .iter()
+        .find(|field| field.tag == tag)
+        .map(|field| field.payload.as_slice())
+        .ok_or(CatalogIndexError::InvalidEntry)
 }

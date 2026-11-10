@@ -2041,6 +2041,49 @@ impl<'db> InvocationTransaction<'db> {
                     columns: schema.columns,
                 }));
             }
+            let indexed = self
+                .pinned_snapshot()?
+                .get_relation_name_index_value(schema_id, relation_name.as_bytes())
+                .map_err(|error| TransactionError::Storage(error.to_string()))?;
+            if let Some(indexed) = indexed {
+                let relation_id: [u8; 16] = indexed
+                    .try_into()
+                    .map_err(|_| TransactionError::CorruptCatalog)?;
+                if relation_id == [0; 16] {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                let Some(description) =
+                    self.describe_authorized_columns(relation_id, context, grants, dependencies)?
+                else {
+                    return Ok(None);
+                };
+                let relation = self.read_discovery_relation(schema_id, relation_id)?;
+                if relation.name != relation_name {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                let initial_response_bytes = relation
+                    .name
+                    .len()
+                    .checked_add(24)
+                    .ok_or(TransactionError::MetadataResultTooLarge)?;
+                let response_bytes = description
+                    .columns
+                    .iter()
+                    .try_fold(initial_response_bytes, |bytes, column| {
+                        bytes
+                            .checked_add(column.name.len())
+                            .and_then(|total| total.checked_add(32))
+                    })
+                    .ok_or(TransactionError::MetadataResultTooLarge)?;
+                if response_bytes > MAX_METADATA_PAGE_BYTES {
+                    return Err(TransactionError::MetadataResultTooLarge);
+                }
+                return Ok(Some(AuthorizedRelationDescription {
+                    relation_id,
+                    name: relation.name,
+                    columns: description.columns,
+                }));
+            }
             let mut continuation = None;
             loop {
                 let Some(page) = self.list_authorized_relations(

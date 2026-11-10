@@ -6098,6 +6098,9 @@ fn commit_storage_changes_inner_unchecked(
         let mut schema_names = transaction
             .open_table(crate::schema::SCHEMA_NAMES)
             .map_err(storage_error)?;
+        let mut relation_names = transaction
+            .open_table(crate::schema::RELATION_NAMES)
+            .map_err(storage_error)?;
         let principal_prefix = 10u16.to_be_bytes();
         for write in catalog_writes
             .iter()
@@ -6158,6 +6161,46 @@ fn commit_storage_changes_inner_unchecked(
                 }
             }
         }
+        let mut relation_ids = HashSet::<[u8; 16]>::new();
+        for write in catalog_writes {
+            if write.key.starts_with(&5u16.to_be_bytes()) && write.key.len() == 19 {
+                relation_ids.insert(write.key[3..19].try_into().unwrap());
+            } else if write.key.starts_with(&schema_prefix) && write.key.len() == 19 {
+                let existing_is_relation = table
+                    .get(write.key.as_slice())
+                    .map_err(storage_error)?
+                    .is_some_and(|value| {
+                        catalog_field_u16(&write.key, value.value(), 2, 1).ok() == Some(3)
+                    });
+                let replacement_is_relation = write.payload.as_deref().is_some_and(|payload| {
+                    catalog_field_u16(&write.key, payload, 2, 1).ok() == Some(3)
+                });
+                if existing_is_relation || replacement_is_relation {
+                    relation_ids.insert(write.key[3..19].try_into().unwrap());
+                }
+            }
+        }
+        for relation_id in &relation_ids {
+            let table_key = catalog_id_key(5, *relation_id);
+            let object_key = catalog_id_key(2, *relation_id);
+            let Some(table_record) = table.get(table_key.as_slice()).map_err(storage_error)? else {
+                continue;
+            };
+            let Some(object_record) = table.get(object_key.as_slice()).map_err(storage_error)?
+            else {
+                continue;
+            };
+            if catalog_field_u16(&object_key, object_record.value(), 2, 1)? != 3 {
+                continue;
+            }
+            let schema_id = catalog_field_bytes(&table_key, table_record.value(), 5, 1)?;
+            let name = catalog_field_bytes(&object_key, object_record.value(), 2, 3)?;
+            let mut index_key = schema_id;
+            index_key.extend_from_slice(&name);
+            relation_names
+                .remove(index_key.as_slice())
+                .map_err(storage_error)?;
+        }
         for write in catalog_writes {
             match &write.payload {
                 Some(payload) => {
@@ -6168,6 +6211,31 @@ fn commit_storage_changes_inner_unchecked(
                 None => {
                     table.remove(&write.key[..]).map_err(storage_error)?;
                 }
+            }
+        }
+        for relation_id in relation_ids {
+            let table_key = catalog_id_key(5, relation_id);
+            let object_key = catalog_id_key(2, relation_id);
+            let Some(table_record) = table.get(table_key.as_slice()).map_err(storage_error)? else {
+                continue;
+            };
+            let Some(object_record) = table.get(object_key.as_slice()).map_err(storage_error)?
+            else {
+                continue;
+            };
+            if catalog_field_u16(&object_key, object_record.value(), 2, 1)? != 3 {
+                continue;
+            }
+            let schema_id = catalog_field_bytes(&table_key, table_record.value(), 5, 1)?;
+            let name = catalog_field_bytes(&object_key, object_record.value(), 2, 3)?;
+            let mut index_key = schema_id;
+            index_key.extend_from_slice(&name);
+            if relation_names
+                .insert(index_key.as_slice(), &relation_id[..])
+                .map_err(storage_error)?
+                .is_some()
+            {
+                return Err(CommitError::InvalidCatalog);
             }
         }
     }

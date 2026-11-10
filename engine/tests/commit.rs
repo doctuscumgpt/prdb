@@ -2,7 +2,9 @@ use prdb_engine::audit::{AuditAction, AuditEvent, AuditResult};
 use prdb_engine::catalog::{
     CatalogField, WireType, decode_registered_envelope, encode_envelope, family_schema,
 };
-use prdb_engine::catalog_index::{lookup_principal_id_by_name, lookup_schema_id_by_name};
+use prdb_engine::catalog_index::{
+    lookup_principal_id_by_name, lookup_relation_id_by_name, lookup_schema_id_by_name,
+};
 use prdb_engine::commit::{
     CatalogWrite, CommitError, CommitRequest, ForeignKeyCheck, IndexWrite, RowWrite,
     commit_catalog_and_audit, commit_catalog_and_audit_with_fences, commit_rows,
@@ -1865,7 +1867,6 @@ fn storage_manager_drop_table_removes_owned_primary_and_unique_indexes()
         retention_deadline_us: 9_999,
         audit_event: create_audit,
     })?;
-
     let not_null_invocation = id(0x80);
     let mut not_null_audit = identity_audit_event(0x81, actor, table.column_ids[0]);
     not_null_audit.correlation_id = not_null_invocation;
@@ -3091,6 +3092,11 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
         retention_deadline_us: 9_999,
         audit_event: create_audit,
     })?;
+    let old_relation_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_relation_id_by_name(&old_relation_snapshot, schema.schema_id, "column_drop_me")?,
+        Some(table.table_id)
+    );
     let rejected_column_rename = id(0x80);
     let mut rejected_column_rename_audit = identity_audit_event(0x81, actor, id(0x82));
     rejected_column_rename_audit.correlation_id = rejected_column_rename;
@@ -3251,6 +3257,27 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
         rename_audit,
     )?;
     assert!(rename_sequence > table.commit_sequence);
+    assert_eq!(
+        lookup_relation_id_by_name(&old_relation_snapshot, schema.schema_id, "column_drop_me")?,
+        Some(table.table_id)
+    );
+    let renamed_relation_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_relation_id_by_name(
+            &renamed_relation_snapshot,
+            schema.schema_id,
+            "column_drop_me"
+        )?,
+        None
+    );
+    assert_eq!(
+        lookup_relation_id_by_name(
+            &renamed_relation_snapshot,
+            schema.schema_id,
+            "renamed_column_drop_me",
+        )?,
+        Some(table.table_id)
+    );
     let stale_result = stale_writer.commit();
     assert!(
         matches!(

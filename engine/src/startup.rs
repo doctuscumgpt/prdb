@@ -14,8 +14,8 @@ use crate::metadata::{EngineMetadata, Lifecycle};
 use crate::outcome::{InvocationOutcome, OutcomeStatus};
 use crate::row_record::RowRecord;
 use crate::schema::{
-    AUDIT, CATALOG, ENGINE_META, INDEXES, OUTCOMES, PRINCIPAL_NAMES, ROW_INDEXES, ROWS,
-    SCHEMA_NAMES, STATS,
+    AUDIT, CATALOG, ENGINE_META, INDEXES, OUTCOMES, PRINCIPAL_NAMES, RELATION_NAMES, ROW_INDEXES,
+    ROWS, SCHEMA_NAMES, STATS,
 };
 use crate::tuple::{ColumnSchema, decode_tuple};
 use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableHandle};
@@ -124,6 +124,7 @@ fn validate_persisted_records_for_lifecycle(
 ) -> Result<StorageHealthReport, StartupError> {
     ensure_principal_name_index(database)?;
     ensure_schema_name_index(database)?;
+    ensure_relation_name_index(database)?;
     let read = database.begin_read().map_err(storage_error)?;
     validate_tables(&read)?;
     let metadata = read_metadata(&read)?;
@@ -354,6 +355,129 @@ fn ensure_schema_name_index(database: &Database) -> Result<(), StartupError> {
     Ok(())
 }
 
+fn collect_relation_name_entries<T>(catalog: &T) -> Result<HashMap<Vec<u8>, [u8; 16]>, StartupError>
+where
+    T: ReadableTable<&'static [u8], &'static [u8]>,
+{
+    let prefix = 5u16.to_be_bytes();
+    let mut entries = HashMap::new();
+    let mut count = 0usize;
+    for entry in catalog.range(prefix.as_slice()..).map_err(storage_error)? {
+        let (key, value) = entry.map_err(storage_error)?;
+        let key = key.value();
+        if !key.starts_with(&prefix) {
+            break;
+        }
+        let table_record =
+            decode_registered_envelope(value.value()).map_err(|_| StartupError::InvalidCatalog)?;
+        if table_record.family_code != 5 || table_record.logical_key != key || key.len() != 19 {
+            return Err(StartupError::InvalidCatalog);
+        }
+        count += 1;
+        if count > MAX_CATALOG_RECORDS_PER_FAMILY {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let relation_id: [u8; 16] = key[3..19]
+            .try_into()
+            .map_err(|_| StartupError::InvalidCatalog)?;
+        let schema_id = field_id(&table_record, 1)?;
+        let object_key = {
+            let mut object_key = 2u16.to_be_bytes().to_vec();
+            object_key.push(1);
+            object_key.extend_from_slice(&relation_id);
+            object_key
+        };
+        let object_bytes = catalog
+            .get(object_key.as_slice())
+            .map_err(storage_error)?
+            .ok_or(StartupError::InvalidCatalog)?;
+        let object = decode_registered_envelope(object_bytes.value())
+            .map_err(|_| StartupError::InvalidCatalog)?;
+        if object.family_code != 2
+            || object.logical_key != object_key
+            || field_u16(&object, 1)? != 3
+            || object
+                .fields
+                .iter()
+                .find(|field| field.tag == 2)
+                .is_some_and(|parent| parent.payload.as_slice() != schema_id)
+        {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let name = object
+            .fields
+            .iter()
+            .find(|field| field.tag == 3)
+            .ok_or(StartupError::InvalidCatalog)?
+            .payload
+            .clone();
+        if name.is_empty() || name.len() > 4096 {
+            return Err(StartupError::InvalidCatalog);
+        }
+        let mut index_key = Vec::with_capacity(16 + name.len());
+        index_key.extend_from_slice(&schema_id);
+        index_key.extend_from_slice(&name);
+        if entries.insert(index_key, relation_id).is_some() {
+            return Err(StartupError::InvalidCatalog);
+        }
+    }
+    Ok(entries)
+}
+
+/// Rebuild schema-scoped relation-name entries from authoritative table and object rows.
+fn ensure_relation_name_index(database: &Database) -> Result<(), StartupError> {
+    let read = database.begin_read().map_err(storage_error)?;
+    let has_index = read
+        .list_tables()
+        .map_err(storage_error)?
+        .any(|table| table.name() == RELATION_NAMES.name());
+    if has_index {
+        let catalog = read.open_table(CATALOG).map_err(storage_error)?;
+        let expected = collect_relation_name_entries(&catalog)?;
+        let index = read.open_table(RELATION_NAMES).map_err(storage_error)?;
+        let mut actual = HashMap::new();
+        let mut well_formed = true;
+        for entry in index.iter().map_err(storage_error)? {
+            let (key, id) = entry.map_err(storage_error)?;
+            match <[u8; 16]>::try_from(id.value()) {
+                Ok(id) => {
+                    actual.insert(key.value().to_vec(), id);
+                }
+                Err(_) => well_formed = false,
+            }
+        }
+        if well_formed && actual == expected {
+            return Ok(());
+        }
+    }
+    drop(read);
+    let write = database.begin_write().map_err(storage_error)?;
+    let catalog = write.open_table(CATALOG).map_err(storage_error)?;
+    let entries = collect_relation_name_entries(&catalog)?;
+    let mut index = write.open_table(RELATION_NAMES).map_err(storage_error)?;
+    let stale_keys = index
+        .iter()
+        .map_err(storage_error)?
+        .map(|entry| {
+            entry
+                .map(|(key, _)| key.value().to_vec())
+                .map_err(storage_error)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for key in stale_keys {
+        index.remove(key.as_slice()).map_err(storage_error)?;
+    }
+    for (key, id) in entries {
+        index
+            .insert(key.as_slice(), &id[..])
+            .map_err(storage_error)?;
+    }
+    drop(index);
+    drop(catalog);
+    write.commit().map_err(storage_error)?;
+    Ok(())
+}
+
 fn storage_error(_error: impl std::fmt::Display) -> StartupError {
     StartupError::Storage
 }
@@ -390,6 +514,7 @@ fn validate_tables(read: &ReadTransaction) -> Result<(), StartupError> {
     drop(read.open_table(CATALOG).map_err(storage_error)?);
     drop(read.open_table(PRINCIPAL_NAMES).map_err(storage_error)?);
     drop(read.open_table(SCHEMA_NAMES).map_err(storage_error)?);
+    drop(read.open_table(RELATION_NAMES).map_err(storage_error)?);
     drop(read.open_table(OUTCOMES).map_err(storage_error)?);
     drop(read.open_table(AUDIT).map_err(storage_error)?);
     drop(read.open_table(STATS).map_err(storage_error)?);
@@ -1898,4 +2023,149 @@ fn validate_audit(read: &ReadTransaction) -> Result<usize, StartupError> {
         count = count.checked_add(1).ok_or(StartupError::CountOverflow)?;
     }
     Ok(count)
+}
+
+#[cfg(test)]
+mod relation_name_index_tests {
+    use super::ensure_relation_name_index;
+    use crate::catalog::{CatalogField, WireType, encode_envelope, family_schema};
+    use crate::catalog_index::lookup_relation_id_by_name;
+    use crate::schema::{CATALOG, RELATION_NAMES, create_tables};
+    use redb::{Database, ReadableDatabase};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn database() -> Database {
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "prdb-relation-index-{}-{id}.redb",
+            std::process::id()
+        ));
+        let database = Database::create(path).unwrap();
+        let write = database.begin_write().unwrap();
+        create_tables(&write).unwrap();
+
+        let schema_id = [0x31; 16];
+        let relation_id = [0x32; 16];
+        let mut table_key = 5u16.to_be_bytes().to_vec();
+        table_key.push(1);
+        table_key.extend_from_slice(&relation_id);
+        let table_fields = [
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::Id,
+                payload: schema_id.to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::U64,
+                payload: 1u64.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::U64,
+                payload: 1u64.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::Id,
+                payload: [0x33; 16].to_vec(),
+            },
+            CatalogField {
+                tag: 5,
+                wire_type: WireType::U16,
+                payload: 1u16.to_le_bytes().to_vec(),
+            },
+        ];
+        let table_value =
+            encode_envelope(&family_schema(5).unwrap(), &table_key, &table_fields).unwrap();
+        let mut object_key = 2u16.to_be_bytes().to_vec();
+        object_key.push(1);
+        object_key.extend_from_slice(&relation_id);
+        let object_fields = [
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::U16,
+                payload: 3u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::Id,
+                payload: schema_id.to_vec(),
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::Text,
+                payload: b"orders".to_vec(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::Id,
+                payload: [0x34; 16].to_vec(),
+            },
+            CatalogField {
+                tag: 5,
+                wire_type: WireType::U64,
+                payload: 1u64.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 6,
+                wire_type: WireType::U16,
+                payload: 1u16.to_le_bytes().to_vec(),
+            },
+        ];
+        let object_value =
+            encode_envelope(&family_schema(2).unwrap(), &object_key, &object_fields).unwrap();
+        let mut catalog = write.open_table(CATALOG).unwrap();
+        catalog
+            .insert(table_key.as_slice(), table_value.as_slice())
+            .unwrap();
+        catalog
+            .insert(object_key.as_slice(), object_value.as_slice())
+            .unwrap();
+        drop(catalog);
+        write.commit().unwrap();
+        database
+    }
+
+    #[test]
+    fn stale_relation_name_index_is_rebuilt_from_catalog_records() {
+        let database = database();
+        let mut key = vec![0x31; 16];
+        key.extend_from_slice(b"orders");
+        let write = database.begin_write().unwrap();
+        let mut index = write.open_table(RELATION_NAMES).unwrap();
+        index.insert(key.as_slice(), &[0x55; 16][..]).unwrap();
+        index.insert(&b"stale"[..], &[0x44; 3][..]).unwrap();
+        drop(index);
+        write.commit().unwrap();
+        ensure_relation_name_index(&database).unwrap();
+        let read = database.begin_read().unwrap();
+        assert_eq!(
+            lookup_relation_id_by_name(&read, [0x31; 16], "orders").unwrap(),
+            Some([0x32; 16])
+        );
+        assert!(
+            read.open_table(RELATION_NAMES)
+                .unwrap()
+                .get(&b"stale"[..])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn missing_relation_name_index_is_rebuilt_from_catalog_records() {
+        let database = database();
+        let write = database.begin_write().unwrap();
+        assert!(write.delete_table(RELATION_NAMES).unwrap());
+        write.commit().unwrap();
+        ensure_relation_name_index(&database).unwrap();
+        let read = database.begin_read().unwrap();
+        assert_eq!(
+            lookup_relation_id_by_name(&read, [0x31; 16], "orders").unwrap(),
+            Some([0x32; 16])
+        );
+    }
 }

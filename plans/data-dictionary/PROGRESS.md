@@ -140,3 +140,11 @@
 - Startup reconstructs missing, stale, or malformed name indexes from family-2 schema objects. Snapshot tests cover schema creation/rename while retaining an older read snapshot; startup tests cover missing and stale entries.
 - Verification: focused commit/startup regressions passed; all workspace tests passed (4 sandbox executor fixtures ignored because their delegated cgroup and TinyCC fixtures are unavailable); workspace Clippy with warnings denied and `cargo fmt --all -- --check` passed.
 - Remaining: complete DD-2 lookup/index coverage for objects, memberships, grants, policies, and dependencies.
+
+## DD-2: snapshot-aware relation-name index — verified
+
+- Added a schema-scoped `relation_names_v1` lookup key composed of schema ID and exact normalized relation-name bytes. The index points to family-5 table IDs and is checked against the family-5 schema reference and family-2 table object on reads.
+- Authorized qualified relation resolution uses the pinned index for hits and independently revalidates relation visibility and column shape; index misses retain the existing authorized scan path for snapshots created before startup repair.
+- Regression evidence: real DDL integration checks table creation, old-snapshot lookup after rename, and the new name in a current snapshot. Startup unit fixtures rebuild both stale and missing indexes and verify exact family-5/family-2 references.
+- Verification: relation-index reconstruction unit tests and real table create/rename snapshot regression passed. `cargo test --workspace --locked` passed (4 sandbox executor fixtures ignored because delegated cgroups and TinyCC fixtures are unavailable); workspace Clippy with warnings denied passed.
+- Remaining: complete DD-2 lookup/index coverage for objects, memberships, grants, policies, and dependencies.
