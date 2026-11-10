@@ -99,3 +99,9 @@
 - Regression: `dependency_record_matches_independent_catalog_v1_fixture` verifies the family-15 dependent/referenced UUID pair, edge-kind component, zero field count, and exact 71-byte no-TLV envelope.
 - Verification: the focused catalog fixture command passed the independent family-15 dependency fixture together with families 1–13. The existing family-14 policy-target fixture independently checks its no-TLV key format.
 - Remaining: independent fixtures for family 16 and family 17, then broader catalog semantics, remain open.
+
+## DD-1: independent credential-verifier bytes — verified
+
+- Regression: `verifier_record_matches_independent_catalog_v1_fixture` checks family-16 algorithm/version, 32-byte verifier, signed issue/expiry times, non-revoked state with omitted revocation time, UTF-8 label, and authority epoch against exact bytes.
+- Verification: the focused family-16 catalog fixture passed under the pinned Nix Rust toolchain.
+- Remaining: independent family-17 tombstone bytes and broader catalog semantics remain open.
