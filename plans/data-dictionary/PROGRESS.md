@@ -105,3 +105,9 @@
 - Regression: `verifier_record_matches_independent_catalog_v1_fixture` checks family-16 algorithm/version, 32-byte verifier, signed issue/expiry times, non-revoked state with omitted revocation time, UTF-8 label, and authority epoch against exact bytes.
 - Verification: the focused family-16 catalog fixture passed under the pinned Nix Rust toolchain.
 - Remaining: independent family-17 tombstone bytes and broader catalog semantics remain open.
+
+## DD-1: independent tombstone bytes and all-family CAT1 fixtures — verified
+
+- Regression: `tombstone_record_matches_independent_catalog_v1_fixture` verifies family 17's permanent-reservation key and zero-TLV envelope. Together, the family 1–17 tests now compare every registered family against hand-assembled wire bytes; family 14 is covered by the original independently specified policy-target fixture.
+- Verification: `nix develop --offline --command cargo test --test catalog --locked` passed all 22 catalog integration tests, including all 17 family fixtures, malformed/noncanonical envelope checks, and the complete field-registry check.
+- Remaining: broader semantic cross-record integrity, DDL/bootstrap authority validation, catalog secondary indexes, and comprehensive snapshot-aware catalog operations remain open.
