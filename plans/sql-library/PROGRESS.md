@@ -442,3 +442,10 @@
 
 - The delegated-cgroup SQL DML acceptance now exercises its multi-row `INSERT ... VALUES ($1), ($2)` with both bound values populated. Previously it passed a null/empty parameter array, so the fixture emitted its error marker instead of testing the intended successful DML sequence.
 - Verification: the confined SQL commit acceptance and durable-abort acceptance both pass. The latter confirms a caught SQL error after partial output still produces a durable abort. The complete maintained TinyCC suite and locked Rust workspace format/build/Clippy/serial test gates pass.
+
+## SQL-7 dependency: v18 grouped runner mixed truth regression — verified
+
+- Regression: strengthened the maintained v18 runner fixture to state and assert the four independent group outcomes for `(SUM(score) >= 9 OR SUM(score) = $1) AND NOT SUM(score) < 3`: sums 9 and 3 are TRUE, sum 5 is FALSE, and the NULL-only sum is UNKNOWN. Only the two TRUE groups reach the callback, in sorted order; the FALSE and UNKNOWN groups are filtered before LIMIT output.
+- Correction: the earlier progress note incorrectly concluded that the runner could not exercise mixed truth outcomes because each comparison uses the selected aggregate. Different groups supply different aggregate values, so the existing bounded grammar is sufficient.
+- Verification: the focused `sdk-sql-execute-v10` fixture and the complete `make -f engine/sdk/Makefile test` suite passed under the TinyCC Nix shell.
+- Remaining: broader analytical stress/measurement work remains open.

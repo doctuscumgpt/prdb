@@ -951,11 +951,16 @@ int main(void) {
             mock.batch_len = make_rows(mock.batch, 1, nullable_keys,
                                        nullable_scores, nullable_states, 4);
             reset_scan(&mock, &capture, 1);
+            /* The grouped inputs produce TRUE (9, 3), FALSE (5), and
+             * UNKNOWN (the NULL-only group) for the compound HAVING tree. */
             assert(run_query_v18(&mock, v18_compound_having_sql,
                                  sizeof(v18_compound_having_sql) - 1,
                                  &v18_having_parameter, &capture) ==
                    PRDB_SDK_SQL_EXEC_OK);
-            assert(capture.calls == 2 && capture.aggregates[0] == 9 &&
+            assert(capture.calls == 2 && capture.keys[0] == 1 &&
+                   capture.second_keys[0] == 9 &&
+                   capture.aggregates[0] == 9 && capture.keys[1] == 1 &&
+                   capture.second_keys[1] == 3 &&
                    capture.aggregates[1] == 3 && mock.statement_failed == 0);
         }
         mock.batch_len = make_rows(mock.batch, 1, keys, scores,
