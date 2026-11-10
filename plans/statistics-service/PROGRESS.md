@@ -7,6 +7,13 @@
 - Verification: `cargo run --release -p prdb-engine --example statistics_estimate --locked --offline` completed and verified the row/cell counts. Locked workspace build, format check, warning-denied Clippy, serial workspace tests (129 passed, 3 cgroup-dependent ignored), and maintained TinyCC SDK suite passed.
 - Remaining: broader estimate-cost variation, plan-quality evidence, mixed-workload benchmarks, cache validity, and maintenance collection remain open.
 
+## ST-2 / WI-7: estimate-cost scaling sample — measured
+
+- Harness: [`statistics_estimate.rs`](../../engine/examples/statistics_estimate.rs) now seeds three authorized INTEGER relations with 1,024, 8,192, and 16,383 rows, then runs 11 exact authorized estimates per relation. Setup and seeding remain outside each timed call; all returned counts are checked.
+- Measurement: locked Rust 1.95.0 / redb 4.4.0 on x86_64 Linux. Medians were 0.891 ms, 7.152 ms, and 14.653 ms respectively; p95 values were 1.401 ms, 8.126 ms, and 16.754 ms. The largest relation is one row below the 16,384 candidate budget.
+- Verification: `cargo run --release -p prdb-engine --example statistics_estimate --locked --offline`, workspace formatting check, and warning-denied Clippy across all targets passed in the locked Nix shell.
+- Scope: one host-local sample per size; OS cache state is uncontrolled. This is scaling evidence for the storage estimate call, not planner, query, service-level, or target-hardware performance.
+
 ## ST-4: candidate-budget boundary publishes no partial estimate — verified
 
 - Contract: authorized scan estimates may return an exact summary below the 16,384-candidate budget, but must return `Unknown` once the budget is reached, without exposing partial counts.

@@ -14,16 +14,19 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use zeroize::Zeroize;
 
-const ROW_COUNT: usize = 8_192;
+const DATASET_ROWS: [usize; 3] = [1_024, 8_192, MAX_ESTIMATE_CANDIDATES - 1];
 const ESTIMATE_RUNS: usize = 11;
-const TABLE_ID: [u8; 16] = [0x71; 16];
 const SCHEMA_ID: [u8; 16] = [0x72; 16];
 const COLUMN_ID: [u8; 16] = [0x73; 16];
 const PRINCIPAL_ID: [u8; 16] = [0x74; 16];
 
-fn row_id(number: usize) -> RowId {
+fn table_id(dataset: usize) -> [u8; 16] {
+    [0x71 + dataset as u8; 16]
+}
+
+fn row_id(table: [u8; 16], number: usize) -> RowId {
     RowId {
-        table: TABLE_ID,
+        table,
         row: (number as u128).to_be_bytes(),
     }
 }
@@ -65,30 +68,74 @@ fn run_in_directory(data_directory: &std::path::Path) -> Result<(), Box<dyn Erro
         nullable: false,
     }];
     let column_ids = [COLUMN_ID];
+    let total_rows: usize = DATASET_ROWS.iter().sum();
     let mut seed = InvocationTransaction::begin(
         database,
         invocation_id(1),
         PRINCIPAL_ID,
         i64::MAX,
-        ROW_COUNT,
-        ROW_COUNT * 64,
+        total_rows,
+        total_rows * 64,
     )?;
-    for number in 1..=ROW_COUNT {
-        let payload = encode_tuple(&columns, 1, &[Some(ScalarValue::Integer(number as i32))])?;
-        seed.stage_put(row_id(number), &payload)?;
+    for (dataset, row_count) in DATASET_ROWS.iter().copied().enumerate() {
+        let table = table_id(dataset);
+        for number in 1..=row_count {
+            let payload = encode_tuple(&columns, 1, &[Some(ScalarValue::Integer(number as i32))])?;
+            seed.stage_put(row_id(table, number), &payload)?;
+        }
     }
     seed.commit()?;
 
+    let mut results = Vec::with_capacity(DATASET_ROWS.len());
+    for (dataset, row_count) in DATASET_ROWS.iter().copied().enumerate() {
+        results.push(benchmark_dataset(
+            database,
+            dataset,
+            row_count,
+            &columns,
+            &column_ids,
+        )?);
+    }
+    println!(
+        "profile: redb 4.4.0 / {} / {}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    println!(
+        "estimate runs per dataset: {ESTIMATE_RUNS}; candidate budget {MAX_ESTIMATE_CANDIDATES}"
+    );
+    for (row_count, median, p95) in results {
+        println!(
+            "dataset: {row_count} authorized INTEGER rows; median {:.3} ms; p95 {:.3} ms",
+            as_millis(median),
+            as_millis(p95)
+        );
+    }
+    println!(
+        "scope: estimate call only; database bootstrap, seeding, compilation, and planner IPC excluded"
+    );
+    drop(instance);
+    Ok(())
+}
+
+fn benchmark_dataset(
+    database: &redb::Database,
+    dataset: usize,
+    row_count: usize,
+    columns: &[ColumnSchema],
+    column_ids: &[[u8; 16]],
+) -> Result<(usize, Duration, Duration), Box<dyn Error>> {
+    let table = table_id(dataset);
     let context = AuthorizationContext {
         principal_id: PRINCIPAL_ID,
         role_ids: HashSet::new(),
         scope: HashSet::from([
             (Operation::Usage, AccessTarget::Schema(SCHEMA_ID)),
-            (Operation::Select, AccessTarget::Table(TABLE_ID)),
+            (Operation::Select, AccessTarget::Table(table)),
             (
                 Operation::Select,
                 AccessTarget::Column {
-                    table_id: TABLE_ID,
+                    table_id: table,
                     column_id: COLUMN_ID,
                 },
             ),
@@ -104,7 +151,7 @@ fn run_in_directory(data_directory: &std::path::Path) -> Result<(), Box<dyn Erro
             subject: Subject::Principal(PRINCIPAL_ID),
             operation: Operation::Select,
             target: AccessTarget::Column {
-                table_id: TABLE_ID,
+                table_id: table,
                 column_id: COLUMN_ID,
             },
         },
@@ -112,22 +159,22 @@ fn run_in_directory(data_directory: &std::path::Path) -> Result<(), Box<dyn Erro
     let table_allow = Policy {
         subjects: vec![Subject::Principal(PRINCIPAL_ID)],
         operation: Operation::Select,
-        target: AccessTarget::Table(TABLE_ID),
+        target: AccessTarget::Table(table),
         effect: Effect::Allow,
         using: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
         with_check: None,
     };
     let cell_allow = Policy {
         target: AccessTarget::Column {
-            table_id: TABLE_ID,
+            table_id: table,
             column_id: COLUMN_ID,
         },
         ..table_allow.clone()
     };
     let policies = [table_allow, cell_allow];
     let projection = AuthorizedProjection {
-        columns: &columns,
-        column_ids: &column_ids,
+        columns,
+        column_ids,
         schema_version: 1,
         schema_id: SCHEMA_ID,
         context: &context,
@@ -142,20 +189,20 @@ fn run_in_directory(data_directory: &std::path::Path) -> Result<(), Box<dyn Erro
     for run_number in 0..ESTIMATE_RUNS {
         let mut invocation = InvocationTransaction::begin(
             database,
-            invocation_id(run_number + 2),
+            invocation_id(dataset * ESTIMATE_RUNS + run_number + 2),
             PRINCIPAL_ID,
             i64::MAX,
             1,
             64,
         )?;
         let started = Instant::now();
-        let estimate = invocation.estimate_authorized_scan(TABLE_ID, &projection)?;
+        let estimate = invocation.estimate_authorized_scan(table, &projection)?;
         elapsed.push(started.elapsed());
         match estimate {
             AuthorizedScanEstimate::Exact(summary)
-                if summary.visible_rows == ROW_COUNT as u64
+                if summary.visible_rows == row_count as u64
                     && summary.columns.len() == 1
-                    && summary.columns[0].readable_values == ROW_COUNT as u64
+                    && summary.columns[0].readable_values == row_count as u64
                     && summary.columns[0].nulls == 0
                     && summary.columns[0].redacted == 0 => {}
             _ => return Err("estimate did not match the seeded authorized population".into()),
@@ -164,24 +211,7 @@ fn run_in_directory(data_directory: &std::path::Path) -> Result<(), Box<dyn Erro
     elapsed.sort_unstable();
     let median = elapsed[elapsed.len() / 2];
     let p95 = elapsed[((elapsed.len() - 1) * 95).div_ceil(100)];
-    println!(
-        "profile: redb 4.4.0 / {} / {}",
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    );
-    println!(
-        "dataset: {ROW_COUNT} authorized INTEGER rows; candidate budget {MAX_ESTIMATE_CANDIDATES}"
-    );
-    println!(
-        "estimate runs: {ESTIMATE_RUNS}; median {:.3} ms; p95 {:.3} ms",
-        as_millis(median),
-        as_millis(p95)
-    );
-    println!(
-        "scope: estimate call only; database bootstrap, seeding, compilation, and planner IPC excluded"
-    );
-    drop(instance);
-    Ok(())
+    Ok((row_count, median, p95))
 }
 
 fn as_millis(duration: Duration) -> f64 {
