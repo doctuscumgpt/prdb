@@ -113,6 +113,9 @@ RELEASE_PROFILE_DIR ?= target/release-profile
 RELEASE_PROFILE_ARCHIVE ?= target/prdb-release-profile.tar.gz
 RELEASE_PROFILE_SIGNATURE ?= $(RELEASE_PROFILE_ARCHIVE).minisig
 MINISIGN ?= minisign
+NIX ?= nix
+NIX_STORE_QUERY ?= nix-store
+TCC_STORE_PATH ?= $(shell readlink -f "$$(command -v "$(firstword $(TCC))")" | sed -E 's#(/nix/store/[a-z0-9]{32}-[^/]+).*#\1#')
 SIGNING_SECRET_KEY ?=
 SIGNING_PUBLIC_KEY ?=
 RELEASE_BINARIES := prdb-client prdb-executor prdb-gateway prdb-optimizer prdb-packager prdb-sandbox-probe prdb-supervisor
@@ -375,12 +378,19 @@ sandbox-query-fixture: $(SQL_V3_CAUGHT_ERROR_QUERY) $(SQL_V3_NETWORK_CONSTRUCTOR
 .PHONY: release-profile
 release-profile: sandbox-query-fixture
 	test "$$(getconf GNU_LIBC_VERSION)" = "glibc 2.42"
+	test -n "$(TCC_STORE_PATH)" -a -e "$(TCC_STORE_PATH)"
 	NIX_DONT_SET_RPATH=1 cargo build --workspace --release --locked
-	mkdir -p "$(RELEASE_PROFILE_DIR)/bin" "$(RELEASE_PROFILE_DIR)/sdk/include" "$(RELEASE_PROFILE_DIR)/queries"
+	rm -rf "$(RELEASE_PROFILE_DIR)/toolchain"
+	mkdir -p "$(RELEASE_PROFILE_DIR)/bin" "$(RELEASE_PROFILE_DIR)/sdk/include" "$(RELEASE_PROFILE_DIR)/queries" "$(RELEASE_PROFILE_DIR)/toolchain/tcc-cache"
 	for binary in $(RELEASE_BINARIES); do cp "target/release/$$binary" "$(RELEASE_PROFILE_DIR)/bin/$$binary"; patchelf --remove-rpath "$(RELEASE_PROFILE_DIR)/bin/$$binary"; done
 	cp "$(SDK_ARCHIVE)" "$(RELEASE_PROFILE_DIR)/sdk/libprdb_sdk.a"
 	cp -R "$(INCLUDE_DIR)/." "$(RELEASE_PROFILE_DIR)/sdk/include/"
 	cp "$(SQL_V3_CAUGHT_ERROR_QUERY)" "$(SQL_V3_WRITE_READ_QUERY)" "$(SQL_V3_RESTRICTED_METADATA_QUERY)" "$(RELEASE_PROFILE_DIR)/queries/"
+	$(NIX) copy --to "file://$(abspath $(RELEASE_PROFILE_DIR)/toolchain/tcc-cache)" "$(TCC_STORE_PATH)"
+	$(NIX_STORE_QUERY) -qR "$(TCC_STORE_PATH)" > "$(RELEASE_PROFILE_DIR)/toolchain/TCC_CLOSURE.txt"
+	printf '%s\n' "$(TCC_STORE_PATH)" > "$(RELEASE_PROFILE_DIR)/toolchain/TCC_ROOT.txt"
+	cp engine/tools/restore_tcc_closure.sh "$(RELEASE_PROFILE_DIR)/toolchain/restore-tcc-closure.sh"
+	chmod 755 "$(RELEASE_PROFILE_DIR)/toolchain/restore-tcc-closure.sh"
 	$(PYTHON) engine/tools/validate_release_profile.py "$(RELEASE_PROFILE_DIR)"
 
 .PHONY: release-profile-package

@@ -93,9 +93,37 @@ def main() -> None:
     query_paths = [root / "queries" / name for name in QUERY_FIXTURES]
     archive = root / "sdk" / "libprdb_sdk.a"
     include_dir = root / "sdk" / "include"
-    for path in [*binary_paths, *query_paths, archive, include_dir / "prdb_sdk_executor_v1.h"]:
+    toolchain_dir = root / "toolchain"
+    cache_dir = toolchain_dir / "tcc-cache"
+    required_toolchain_files = (
+        toolchain_dir / "TCC_CLOSURE.txt",
+        toolchain_dir / "TCC_ROOT.txt",
+        toolchain_dir / "restore-tcc-closure.sh",
+    )
+    for path in [
+        *binary_paths,
+        *query_paths,
+        archive,
+        include_dir / "prdb_sdk_executor_v1.h",
+        *required_toolchain_files,
+    ]:
         if not path.exists():
             fail(f"release-profile input is missing: {path}")
+
+    tcc_root = (toolchain_dir / "TCC_ROOT.txt").read_text(encoding="ascii").strip()
+    closure_paths = (toolchain_dir / "TCC_CLOSURE.txt").read_text(encoding="ascii").splitlines()
+    if not re.fullmatch(r"/nix/store/[a-z0-9]{32}-tcc-[^/]+", tcc_root):
+        fail("TinyCC root does not identify a pinned Nix store compiler")
+    if not closure_paths or tcc_root not in closure_paths or len(set(closure_paths)) != len(closure_paths):
+        fail("TinyCC Nix closure manifest is empty, duplicated, or missing its compiler root")
+    if any(not re.fullmatch(r"/nix/store/[a-z0-9]{32}-[^/]+", path) for path in closure_paths):
+        fail("TinyCC Nix closure manifest contains an invalid store path")
+    narinfos = {path.name.removesuffix(".narinfo") for path in cache_dir.glob("*.narinfo")}
+    expected_narinfos = {Path(path).name.split("-", 1)[0] for path in closure_paths}
+    if narinfos != expected_narinfos:
+        fail("TinyCC binary cache does not contain exactly the manifest closure")
+    if not (toolchain_dir / "restore-tcc-closure.sh").stat().st_mode & 0o111:
+        fail("TinyCC closure restore script is not executable")
 
     records = []
     for path in binary_paths:
