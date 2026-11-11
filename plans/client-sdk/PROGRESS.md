@@ -405,3 +405,9 @@
 - Regression: the gateway/supervisor metadata lifecycle now creates and drops a foreign key through `prdb-client foreign-key-create` and `foreign-key-drop`, using a source table, the existing REFERENCES grant, and a unique target constraint. The test verifies the CLI command path traverses authenticated ADMIN handling and reaches storage.
 - Verification: the focused `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` test passed. The full locked workspace build, formatting check, warning-denied Clippy, serial workspace tests, and `git diff --check` passed; the commit suite reported 138 passed and 4 cgroup-dependent ignored, and the metadata-process test reported 1 passed and 1 cgroup-dependent ignored.
 - Remaining: process-level coverage for additional authenticated ADMIN families, repeated race stress, and confined artifact execution remain open.
+
+## SDK-5: column nullability and default CLI process coverage — verified
+
+- Regression: the authenticated gateway/supervisor lifecycle now exercises `column-nullability` in both directions and `column-default-set`/`column-default-drop` through `prdb-client`, using its private credential file and the existing typed text column.
+- Verification: the focused `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` test passed. The full locked workspace build, formatting check, warning-denied Clippy, serial workspace tests, and `git diff --check` passed; the commit suite reported 138 passed and 4 cgroup-dependent ignored, and the metadata-process test reported 1 passed and 1 cgroup-dependent ignored.
+- Remaining: process-level coverage for additional authenticated ADMIN families, repeated race stress, and confined artifact execution remain open.

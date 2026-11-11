@@ -7,10 +7,10 @@ use prdb_engine::client_credentials::{
 };
 use prdb_engine::client_protocol::ClientCredentials;
 use prdb_engine::client_submit::{
-    AdminClient, AdminColumnDefault, AdminColumnDefinition, AdminCreatePolicyRequest,
-    AdminObjectGrantTarget, AdminObjectPrivilege, AdminPolicyEffect, AdminPolicyKind,
-    AdminPolicyOperation, AdminPolicyRecipient, AdminSystemPrivilege, CancellationResult,
-    InvocationStatus, MetadataClient, SubmissionClient, TerminalOutcome,
+    AdminClient, AdminColumnDefinition, AdminCreatePolicyRequest, AdminObjectGrantTarget,
+    AdminObjectPrivilege, AdminPolicyEffect, AdminPolicyKind, AdminPolicyOperation,
+    AdminPolicyRecipient, AdminSystemPrivilege, CancellationResult, InvocationStatus,
+    MetadataClient, SubmissionClient, TerminalOutcome,
 };
 use prdb_engine::storage_manager::{
     CreateTableRequest, ObjectGrantPrivilege, ObjectGrantTarget, SetObjectGrantRequest,
@@ -1377,15 +1377,79 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         admin.rename_column(created_table.table_id, added_column.column_id, "extra_v2")?;
     let dropped_column = admin.drop_column(created_table.table_id, added_column.column_id)?;
     assert!(dropped_column.commit_sequence > renamed_column.commit_sequence);
-    admin.alter_column_nullability(created_table.table_id, created_table.column_ids[0], false)?;
-    admin.alter_column_nullability(created_table.table_id, created_table.column_ids[0], true)?;
-    admin.set_column_default(
-        created_table.table_id,
-        created_table.column_ids[0],
-        ScalarType::Text,
-        AdminColumnDefault::Literal(prdb_engine::tuple::ScalarValue::Text("seed".to_owned())),
-    )?;
-    admin.drop_column_default(created_table.table_id, created_table.column_ids[0])?;
+    let column_cli_address = address.to_string();
+    let column_cli_credentials = admin_cancel_credentials_path
+        .to_str()
+        .ok_or("credential path is not UTF-8")?;
+    let column_cli_table_id = encode_id_hex(&created_table.table_id);
+    let column_cli_column_id = encode_id_hex(&created_table.column_ids[0]);
+    for nullable in ["false", "true"] {
+        let nullability_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "column-nullability",
+                "--address",
+                &column_cli_address,
+                "--credentials",
+                column_cli_credentials,
+                "--table-id",
+                &column_cli_table_id,
+                "--column-id",
+                &column_cli_column_id,
+                "--nullable",
+                nullable,
+            ])
+            .output()?;
+        assert!(
+            nullability_cli.status.success(),
+            "column-nullability CLI ({nullable}) failed: {}",
+            String::from_utf8_lossy(&nullability_cli.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&nullability_cli.stdout).contains("changed column nullability")
+        );
+    }
+    let set_default_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "column-default-set",
+            "--address",
+            &column_cli_address,
+            "--credentials",
+            column_cli_credentials,
+            "--table-id",
+            &column_cli_table_id,
+            "--column-id",
+            &column_cli_column_id,
+            "--type",
+            "text",
+            "--value",
+            "seed",
+        ])
+        .output()?;
+    assert!(
+        set_default_cli.status.success(),
+        "column-default-set CLI failed: {}",
+        String::from_utf8_lossy(&set_default_cli.stderr)
+    );
+    assert!(String::from_utf8_lossy(&set_default_cli.stdout).contains("set column default"));
+    let drop_default_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "column-default-drop",
+            "--address",
+            &column_cli_address,
+            "--credentials",
+            column_cli_credentials,
+            "--table-id",
+            &column_cli_table_id,
+            "--column-id",
+            &column_cli_column_id,
+        ])
+        .output()?;
+    assert!(
+        drop_default_cli.status.success(),
+        "column-default-drop CLI failed: {}",
+        String::from_utf8_lossy(&drop_default_cli.stderr)
+    );
+    assert!(String::from_utf8_lossy(&drop_default_cli.stdout).contains("dropped column default"));
     let created_index = admin
         .create_index(
             created_table.table_id,
