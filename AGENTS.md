@@ -81,6 +81,8 @@ systemd-run --user --wait --pipe --collect \
 
 The probe must report a writable cgroup v2 parent and `cpu memory pids` in both the available controllers and enabled child controllers. Probe success is a preflight, not end-to-end acceptance; run the specific ignored sandbox test inside the same `systemd --user` wrapper with its documented fixture/runtime environment variables. The opt-in tests in `engine/tests/commit.rs` and `engine/tests/metadata_process.rs` state their additional artifact and runtime path variables. Do not count default-ignored tests as passed or use a fake cgroup directory as confinement evidence.
 
+The separate supervisor and gateway systemd units for user and system managers are maintained in [`contrib/systemd`](contrib/systemd/README.md). These require a READY database instance and a runtime profile validated for the host; they do not initialize storage or infer runtime allowlists.
+
 ## Style and Validation
 
 Use rustfmt conventions for Rust and consistent C naming through the public headers. Keep unsafe Rust isolated and documented. Follow the versioned C ABI ownership rules; native structs are not IPC encodings.

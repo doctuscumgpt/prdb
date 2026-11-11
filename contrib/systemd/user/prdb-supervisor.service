@@ -1,0 +1,24 @@
+[Unit]
+Description=PRDB database supervisor
+After=default.target
+
+[Service]
+Type=simple
+Delegate=cpu memory pids
+StateDirectory=prdb/scratch
+StateDirectoryMode=0700
+RuntimeDirectory=prdb
+RuntimeDirectoryMode=0700
+EnvironmentFile=%h/.config/prdb/supervisor.env
+ExecStart=%h/.local/libexec/prdb/with_delegated_cgroup.sh %h/.local/libexec/prdb/prdb-supervisor $PRDB_SUPERVISOR_ARGS
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%S/prdb %t/prdb
+
+[Install]
+WantedBy=default.target

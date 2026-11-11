@@ -489,11 +489,24 @@ impl std::error::Error for GatewayServiceListenerError {}
 
 #[cfg(unix)]
 pub fn bind_gateway_service_socket(socket_path: impl AsRef<Path>) -> io::Result<UnixListener> {
+    bind_gateway_service_socket_with_mode(socket_path, 0o600)
+}
+
+#[cfg(unix)]
+pub fn bind_gateway_service_socket_with_mode(
+    socket_path: impl AsRef<Path>,
+    mode: u32,
+) -> io::Result<UnixListener> {
     use std::os::unix::fs::PermissionsExt;
     let socket_path = socket_path.as_ref();
+    if !matches!(mode, 0o600 | 0o660) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "gateway service socket mode must be 0600 or 0660",
+        ));
+    }
     let listener = UnixListener::bind(socket_path)?;
-    if let Err(error) =
-        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))
+    if let Err(error) = std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(mode))
     {
         drop(listener);
         let _ = std::fs::remove_file(socket_path);
@@ -1424,6 +1437,52 @@ mod status_wire_tests {
     use crate::storage_manager::{
         InvocationStatus, InvocationStatusConsistency, InvocationStatusSnapshot,
     };
+
+    #[cfg(unix)]
+    #[test]
+    fn gateway_service_socket_modes_are_limited_to_private_or_group_access() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!(
+            "prdb-socket-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).expect("create temp directory");
+        let private_path = directory.join("private.sock");
+        let group_path = directory.join("group.sock");
+        let invalid_path = directory.join("invalid.sock");
+        let _private = super::bind_gateway_service_socket(&private_path).expect("private socket");
+        let _group =
+            super::bind_gateway_service_socket_with_mode(&group_path, 0o660).expect("group socket");
+        assert_eq!(
+            std::fs::symlink_metadata(&private_path)
+                .expect("private socket metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::symlink_metadata(&group_path)
+                .expect("group socket metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o660
+        );
+        let error = super::bind_gateway_service_socket_with_mode(&invalid_path, 0o666)
+            .expect_err("world-accessible mode must be rejected");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!invalid_path.exists());
+        drop((_private, _group));
+        std::fs::remove_file(private_path).expect("remove private socket");
+        std::fs::remove_file(group_path).expect("remove group socket");
+        std::fs::remove_dir(directory).expect("remove temp directory");
+    }
 
     fn snapshot(observed_at_us: i64, status: InvocationStatus) -> InvocationStatusSnapshot {
         InvocationStatusSnapshot {

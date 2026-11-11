@@ -1,0 +1,118 @@
+# systemd units
+
+The unit files in `user/` and `system/` run the supervisor and TCP gateway as
+separate services. Both supervisors request delegation of `cpu`, `memory`, and
+`pids`; the launcher moves itself into a child cgroup, enables those
+controllers, and exports the service cgroup path. Use `--cgroup-parent
+systemd` in `PRDB_SUPERVISOR_ARGS` to consume that path. The supervisor rejects
+startup if delegation is unavailable.
+
+These units expect a READY instance and a host-specific, validated runtime
+profile. They do not initialize a database or manufacture a compatibility
+profile. See the supervisor and sandbox plans for the current operational
+limitations.
+
+## Per-login user service
+
+Install the supervisor, gateway, executor, optimizer, and
+`with_delegated_cgroup.sh` executables under `~/.local/libexec/prdb/`, and copy
+both unit files to `~/.config/systemd/user/`. For a release build from this
+checkout:
+
+```sh
+install -Dm755 target/release/prdb-supervisor ~/.local/libexec/prdb/prdb-supervisor
+install -Dm755 target/release/prdb-gateway ~/.local/libexec/prdb/prdb-gateway
+install -Dm755 target/release/prdb-executor ~/.local/libexec/prdb/prdb-executor
+install -Dm755 target/release/prdb-optimizer ~/.local/libexec/prdb/prdb-optimizer
+install -Dm755 engine/tools/with_delegated_cgroup.sh ~/.local/libexec/prdb/with_delegated_cgroup.sh
+install -Dm644 contrib/systemd/user/prdb-supervisor.service ~/.config/systemd/user/prdb-supervisor.service
+install -Dm644 contrib/systemd/user/prdb-gateway.service ~/.config/systemd/user/prdb-gateway.service
+```
+
+Create `~/.config/prdb/` and put `supervisor.env` and `gateway.env` there,
+readable only by the login user. Example values (replace the binary profile
+paths and IDs for the host):
+
+```ini
+# ~/.config/prdb/supervisor.env
+PRDB_SUPERVISOR_ARGS=--instance-dir\ /home/USER/.local/state/prdb/instance\ --service-socket\ /run/user/1000/prdb/supervisor.sock\ --gateway-uid\ 1000\ --cgroup-parent\ systemd\ --executor\ /home/USER/.local/libexec/prdb/prdb-executor\ --optimizer\ /home/USER/.local/libexec/prdb/prdb-optimizer\ --scratch-parent\ /home/USER/.local/state/prdb/scratch\ --runtime-read-execute\ /usr/lib64/ld-linux-x86-64.so.2\ --runtime-read-execute\ /usr/lib64/libc.so.6\ --runtime-profile\ nixos-x86_64-glibc-2.42\ --cpu-baseline\ x86_64-v1\ --sdk-release\ 1\ --retention-seconds\ 86400\ --max-rows\ 100000\ --max-bytes\ 67108864\ --cpu-quota-us\ 100000\ --cpu-period-us\ 100000\ --memory-max-bytes\ 536870912\ --max-processes\ 32
+```
+
+`EnvironmentFile` does not process shell quoting; systemd expands the unquoted
+`$PRDB_SUPERVISOR_ARGS` as whitespace-separated arguments. Keep configured
+paths free of whitespace. Add any runtime libraries required by the selected
+profile using repeated `--runtime-read-execute` values. Set the gateway UID to
+the login UID (use `id -u`). The user service uses the default 0600 local
+socket.
+
+```ini
+# ~/.config/prdb/gateway.env
+PRDB_GATEWAY_ARGS=--bind\ 127.0.0.1:8765\ --service-socket\ /run/user/1000/prdb/supervisor.sock\ --service-uid\ 1000
+```
+
+Enable and start the pair:
+
+```sh
+chmod 600 ~/.config/prdb/supervisor.env ~/.config/prdb/gateway.env
+systemctl --user daemon-reload
+systemctl --user enable --now prdb-gateway.service
+systemctl --user status prdb-supervisor.service prdb-gateway.service
+```
+
+For services that must start before the user logs in, enable lingering with
+`loginctl enable-linger USER` as an administrator. This keeps the database
+owned by that account and its state under the user's systemd state directory.
+
+## System manager installation
+
+Install all five executables root-owned under `/usr/libexec/prdb/`, then create
+a dedicated `prdb-gateway` system group plus `prdb` and `prdb-gateway` system
+accounts. On systems with `groupadd` and `useradd`, the account setup is:
+
+```sh
+groupadd --system prdb-gateway
+useradd --system --no-create-home --home-dir /var/lib/prdb --shell /usr/sbin/nologin --gid prdb-gateway prdb
+useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --gid prdb-gateway prdb-gateway
+```
+
+Install executables and units, then create `/etc/prdb/supervisor.env` and
+`gateway.env` as root with mode 0600:
+
+```sh
+install -d -o root -g root -m 0755 /usr/libexec/prdb /etc/prdb
+install -m 0755 target/release/prdb-supervisor target/release/prdb-gateway target/release/prdb-executor target/release/prdb-optimizer /usr/libexec/prdb/
+install -m 0755 engine/tools/with_delegated_cgroup.sh /usr/libexec/prdb/
+install -m 0644 contrib/systemd/system/prdb-supervisor.service contrib/systemd/system/prdb-gateway.service /etc/systemd/system/
+```
+
+Keep `/etc/prdb` root-owned and the two environment files mode 0600.
+The supervisor runs as `prdb`; its database directory is mode 0700. The
+gateway runs as `prdb-gateway`, and can reach only the 0660 supervisor socket
+through the 0750 runtime directory. The socket inherits the supervisor's
+primary group (`prdb-gateway`).
+
+Configure `PRDB_SUPERVISOR_ARGS` in `/etc/prdb/supervisor.env` with the same
+required supervisor options as above, using these paths and values:
+
+- `--instance-dir /var/lib/prdb/instance`
+- `--service-socket /run/prdb/supervisor.sock`
+- `--gateway-uid` set to `id -u prdb-gateway`
+- `--service-socket-mode 0660`
+- `--cgroup-parent systemd`
+- `--scratch-parent /var/lib/prdb/scratch`
+
+Configure `PRDB_GATEWAY_ARGS` in `/etc/prdb/gateway.env` with
+`--service-socket /run/prdb/supervisor.sock` and `--service-uid` set to
+`id -u prdb`. Bind loopback unless a trusted plaintext network is explicitly
+intended. Then load and enable the gateway (which pulls in the supervisor):
+
+```sh
+systemctl daemon-reload
+systemctl enable --now prdb-gateway.service
+systemctl status prdb-supervisor.service prdb-gateway.service
+```
+
+The service cgroup is delegated by systemd; do not manually mount a second
+cgroup hierarchy or run these services as root. If a host truly lacks a
+cgroup2 mount, follow the host setup instructions in the repository
+`AGENTS.md`, then verify controller delegation with `prdb-sandbox-probe`.

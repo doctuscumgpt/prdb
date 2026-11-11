@@ -23,3 +23,10 @@ Specify gateway-service version and sessions scoped by gateway generation/connec
 ## Acceptance and Handoff
 
 Use real local service channels plus gateway TCP end-to-end tests. Cover unstarted staging deletion, pending versus too-late cancellation, drain/reclamation, admin routing and restart/status. Successful output delivery is not commit evidence; durable commit survives lost delivery. First behavior: reject launch until READY and required confinement are established, using a minimal launcher without native-code inspection.
+
+For separate `systemd --user` and system-manager supervisor/gateway unit
+templates, delegated cgroup setup, installation commands, and host-specific
+runtime configuration requirements, see
+[`contrib/systemd`](../../contrib/systemd/README.md). The system-manager pair
+uses a dedicated DB account and a group-restricted supervisor socket; the user
+pair retains same-login-UID ownership and a private socket.

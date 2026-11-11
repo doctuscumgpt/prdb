@@ -6,7 +6,14 @@
 - Implementation: [`with_delegated_cgroup.sh`](../../engine/tools/with_delegated_cgroup.sh) derives the unit cgroup from `/proc/self/cgroup`, moves its shell into a child, enables `cpu memory pids` on the unit parent, verifies the controllers, and exports the test and supervisor cgroup-parent paths. `Delegate=cpu memory pids` is supplied by a transient `systemd --user` unit.
 - Red/green evidence: direct probing from the desktop scope failed because the visible mount was read-only and lacked `cpu`; the systemd user-service probe then reported a writable parent with all three controllers available and enabled.
 - Verification: the built-in sandbox probe passed in the delegated user service. All four ignored `commit` sandbox tests passed there: caught SQL failure/durable abort, denied network constructor, authenticated metadata submission, and SQL read/write/analytics/durable commit. `metadata_process::disconnected_submission_is_reconciled_after_gateway_restart` also passed in a delegated service. The extended SQL sequence exposed the executor's connection frame cap; increasing it to 512 while preserving each SQL operator's 256-request budget made the test pass.
-- Scope: this verifies a rootless user-service test host on the current NixOS profile. A packaged production systemd unit for user and system managers remains to be added; additional host/runtime profiles remain open.
+- Scope: this verifies a rootless user-service test host on the current NixOS profile; additional host/runtime profiles remain open.
+
+## systemd deployment units — verified
+
+- Added separate supervisor and gateway units for both `systemd --user` and the system manager. Both supervisors request `Delegate=cpu memory pids` and use the delegated-cgroup launcher; system units run under distinct `prdb` and `prdb-gateway` accounts.
+- Added `--cgroup-parent systemd` and a restricted 0660 socket option for the system-manager deployment. User services retain the private 0600 socket default. Only 0600 and 0660 are accepted; world-accessible modes fail closed.
+- Verification: `systemd-analyze verify` accepted both unit pairs with temporary executable placeholders; locked workspace build, formatting, warning-denied Clippy, and workspace tests passed (138 library unit tests, 4 cgroup-dependent tests ignored by default, all active integration/doc tests passed). Focused tests cover delegated cgroup path validation and socket permission modes.
+- Scope: deployment instructions require a READY instance plus host-specific runtime and compatibility settings. Live activation of the installed pair awaits a prepared deployment instance; confined runtime behavior was already verified in the delegated user service above.
 
 ## SB-1: fail-closed host capability preflight
 

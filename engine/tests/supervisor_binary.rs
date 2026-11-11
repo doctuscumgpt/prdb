@@ -11,6 +11,7 @@ fn supervisor_help_documents_explicit_runtime_and_compatibility_configuration() 
     for option in [
         "--instance-dir",
         "--service-socket",
+        "--service-socket-mode",
         "--cgroup-parent",
         "--executor",
         "--runtime-read-execute",

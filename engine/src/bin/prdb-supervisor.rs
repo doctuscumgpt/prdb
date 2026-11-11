@@ -15,7 +15,7 @@ mod service {
     use prdb_engine::supervisor::{StagingLimits, StagingStore};
     use prdb_engine::supervisor_ipc::{
         GatewayAdmissionConfig, GatewayExecutorConfig, GatewayServiceListenerConfig,
-        GatewayServiceRuntimeConfig, bind_gateway_service_socket,
+        GatewayServiceRuntimeConfig, bind_gateway_service_socket_with_mode,
         observe_executor_relay_and_finalize_gateway, run_gateway_service_with_recovery,
     };
     use std::collections::HashSet;
@@ -37,6 +37,7 @@ mod service {
         instance_dir: Option<PathBuf>,
         service_socket: Option<PathBuf>,
         gateway_uid: Option<u32>,
+        service_socket_mode: Option<u32>,
         cgroup_parent: Option<PathBuf>,
         executor: Option<PathBuf>,
         optimizer: Option<PathBuf>,
@@ -84,6 +85,7 @@ mod service {
         println!(
             "prdb-supervisor [options]\n\
              Required: --instance-dir PATH --service-socket PATH --gateway-uid UID\n\
+             [--service-socket-mode 0600|0660]\n\
              --cgroup-parent PATH --executor PATH --optimizer PATH --scratch-parent PATH\n\
              --runtime-read-execute PATH (repeatable) --runtime-profile NAME\n\
              --cpu-baseline NAME --sdk-release NUMBER --allowed-dependency NAME (repeatable)\n\
@@ -108,7 +110,9 @@ mod service {
         let instance_dir = required(options.instance_dir, "--instance-dir")?;
         let socket_path = required(options.service_socket, "--service-socket")?;
         let gateway_uid = required(options.gateway_uid, "--gateway-uid")?;
-        let cgroup_parent = required(options.cgroup_parent, "--cgroup-parent")?;
+        let service_socket_mode = options.service_socket_mode.unwrap_or(0o600);
+        let cgroup_parent =
+            resolve_cgroup_parent(required(options.cgroup_parent, "--cgroup-parent")?)?;
         let executor_path = required(options.executor, "--executor")?;
         let optimizer_path = required(options.optimizer, "--optimizer")?;
         let scratch_parent = required(options.scratch_parent, "--scratch-parent")?;
@@ -288,7 +292,8 @@ mod service {
                     .lock()
                     .map_err(|_| std::io::Error::other("service socket identity lock poisoned"))?
                     .take();
-                let listener = bind_private_socket(&bind_socket_path, previous_identity)?;
+                let listener =
+                    bind_private_socket(&bind_socket_path, previous_identity, service_socket_mode)?;
                 let metadata = std::fs::symlink_metadata(&bind_socket_path)?;
                 let mut identity = bind_socket_state
                     .lock()
@@ -322,9 +327,31 @@ mod service {
         Ok(())
     }
 
+    fn resolve_cgroup_parent(path: PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        resolve_cgroup_parent_with_delegated(path, std::env::var_os("PRDB_SYSTEMD_CGROUP_PARENT"))
+    }
+
+    fn resolve_cgroup_parent_with_delegated(
+        path: PathBuf,
+        delegated: Option<std::ffi::OsString>,
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        if path == std::path::Path::new("systemd") {
+            let delegated =
+                delegated.ok_or("--cgroup-parent systemd requires PRDB_SYSTEMD_CGROUP_PARENT")?;
+            let delegated = PathBuf::from(delegated);
+            if !delegated.is_absolute() {
+                return Err("PRDB_SYSTEMD_CGROUP_PARENT must be an absolute path".into());
+            }
+            Ok(delegated)
+        } else {
+            Ok(path)
+        }
+    }
+
     fn bind_private_socket(
         path: &std::path::Path,
         previously_owned: Option<(u64, u64)>,
+        mode: u32,
     ) -> std::io::Result<UnixListener> {
         match std::fs::symlink_metadata(path) {
             Ok(metadata)
@@ -342,7 +369,7 @@ mod service {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        bind_gateway_service_socket(path)
+        bind_gateway_service_socket_with_mode(path, mode)
     }
 
     fn remove_owned_service_socket(
@@ -384,6 +411,12 @@ mod service {
                 "--instance-dir" => set!(instance_dir, PathBuf::from(value)),
                 "--service-socket" => set!(service_socket, PathBuf::from(value)),
                 "--gateway-uid" => set!(gateway_uid, value.parse::<u32>()?),
+                "--service-socket-mode" => {
+                    set!(
+                        service_socket_mode,
+                        u32::from_str_radix(value.trim_start_matches("0o"), 8)?
+                    )
+                }
                 "--cgroup-parent" => set!(cgroup_parent, PathBuf::from(value)),
                 "--executor" => set!(executor, PathBuf::from(value)),
                 "--optimizer" => set!(optimizer, PathBuf::from(value)),
@@ -530,9 +563,42 @@ mod service {
 
     #[cfg(test)]
     mod tests {
-        use super::{Options, storage_manager_config, validate_storage_admission_capacity};
+        use super::{
+            Options, resolve_cgroup_parent_with_delegated, storage_manager_config,
+            validate_storage_admission_capacity,
+        };
         use prdb_engine::storage_manager::StorageManagerConfig;
         use prdb_engine::supervisor::StagingLimits;
+
+        #[test]
+        fn systemd_cgroup_parent_requires_an_absolute_exported_path() {
+            let systemd = std::path::PathBuf::from("systemd");
+            assert!(resolve_cgroup_parent_with_delegated(systemd.clone(), None).is_err());
+            assert!(
+                resolve_cgroup_parent_with_delegated(
+                    systemd.clone(),
+                    Some("relative/cgroup".into())
+                )
+                .is_err()
+            );
+            let delegated = std::path::PathBuf::from("/sys/fs/cgroup/user.slice/prdb.service");
+            assert_eq!(
+                resolve_cgroup_parent_with_delegated(
+                    systemd,
+                    Some(delegated.as_os_str().to_os_string())
+                )
+                .expect("absolute delegated path"),
+                delegated
+            );
+            assert_eq!(
+                resolve_cgroup_parent_with_delegated(
+                    std::path::PathBuf::from("/custom/cgroup"),
+                    None
+                )
+                .expect("explicit path remains supported"),
+                std::path::PathBuf::from("/custom/cgroup")
+            );
+        }
 
         #[test]
         fn storage_caps_must_cover_configured_supervisor_active_admissions() {
