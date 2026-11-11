@@ -4,9 +4,10 @@ use crate::metadata_discovery::{
     AuthorizedPlanRelation, AuthorizedRelationDescription, VisibleColumn,
 };
 use crate::optimizer_request::{
-    Comparison, GroupCountRequest, JoinRelationSide, Predicate, RequestError, UpdateValue,
-    decode_delete_request, decode_group_count_request, decode_join_select_request,
-    decode_select_request, decode_update_request,
+    Comparison, CompositeGroupCountRequest, GroupCountRequest, JoinRelationSide, Predicate,
+    RequestError, UpdateValue, decode_composite_group_count_request, decode_delete_request,
+    decode_group_count_request, decode_join_select_request, decode_select_request,
+    decode_update_request,
 };
 use crate::transaction::{PlannerMetadataConnection, TransactionError};
 use crate::tuple::ScalarType;
@@ -45,6 +46,18 @@ pub struct BoundGroupCount {
     pub relation_id: [u8; 16],
     pub relation_name: String,
     pub group_key: BoundColumn,
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundCompositeGroupCount {
+    pub schema_name: String,
+    pub schema_id: [u8; 16],
+    pub schema_version: u64,
+    pub table_epoch: u64,
+    pub relation_id: [u8; 16],
+    pub relation_name: String,
+    pub group_keys: Vec<BoundColumn>,
     pub limit: Option<u32>,
 }
 
@@ -242,6 +255,26 @@ pub fn bind_group_count_request_via_metadata(
     bind_decoded_group_count(request, relation).map_err(MetadataBindError::Bind)
 }
 
+pub fn bind_composite_group_count_request(
+    request_bytes: &[u8],
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundCompositeGroupCount, BindError> {
+    let request = decode_composite_group_count_request(request_bytes)?;
+    bind_decoded_composite_group_count(request, relation)
+}
+
+pub fn bind_composite_group_count_request_via_metadata(
+    request_bytes: &[u8],
+    connection: &mut PlannerMetadataConnection<'_, '_>,
+) -> Result<BoundCompositeGroupCount, MetadataBindError> {
+    let request = decode_composite_group_count_request(request_bytes).map_err(BindError::from)?;
+    let relation = connection
+        .resolve_relation_for_plan(&request.schema_name, &request.relation_name)
+        .map_err(MetadataBindError::Transaction)?
+        .map(|(_, relation)| relation);
+    bind_decoded_composite_group_count(request, relation).map_err(MetadataBindError::Bind)
+}
+
 pub fn bind_delete_request(
     request_bytes: &[u8],
     relation: Option<AuthorizedPlanRelation>,
@@ -392,6 +425,32 @@ fn bind_decoded_group_count(
         relation_id: relation.relation.relation_id,
         relation_name: relation.relation.name,
         group_key: group_key.into(),
+        limit: request.limit,
+    })
+}
+
+fn bind_decoded_composite_group_count(
+    request: CompositeGroupCountRequest,
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundCompositeGroupCount, BindError> {
+    let relation = authorized_relation(&request.relation_name, relation)?;
+    let mut group_keys = Vec::with_capacity(request.group_key_names.len());
+    let mut seen = HashSet::with_capacity(request.group_key_names.len());
+    for name in &request.group_key_names {
+        let column = resolve_column(&relation.relation.columns, name)?;
+        if !seen.insert(column.ordinal) {
+            return Err(BindError::InvalidQuery);
+        }
+        group_keys.push(column.into());
+    }
+    Ok(BoundCompositeGroupCount {
+        schema_name: request.schema_name,
+        schema_id: relation.schema_id,
+        schema_version: relation.schema_version,
+        table_epoch: relation.table_epoch,
+        relation_id: relation.relation.relation_id,
+        relation_name: relation.relation.name,
+        group_keys,
         limit: request.limit,
     })
 }
@@ -672,6 +731,20 @@ mod tests {
         bytes
     }
 
+    fn composite_group_count_request(keys: &[&str]) -> Vec<u8> {
+        let mut bytes = vec![0, crate::query_abi::OPTIMIZER_REQUEST_VERSION as u8];
+        bytes.push(crate::query_abi::OPTIMIZER_COMPOSITE_GROUP_COUNT_STATEMENT);
+        bytes.push(0);
+        put_name(&mut bytes, "public");
+        put_name(&mut bytes, "items");
+        bytes.push(keys.len() as u8);
+        for key in keys {
+            put_name(&mut bytes, key);
+        }
+        bytes.extend_from_slice(&[1, 0, 0, 0, 4]);
+        bytes
+    }
+
     fn relation() -> AuthorizedPlanRelation {
         AuthorizedPlanRelation {
             schema_id: [0x10; 16],
@@ -798,6 +871,33 @@ mod tests {
             }
         );
         assert_eq!(bound.limit, Some(4));
+    }
+
+    #[test]
+    fn binds_composite_group_count_keys_to_authorized_shape_in_sql_order() {
+        let bound = bind_composite_group_count_request(
+            &composite_group_count_request(&["active", "id"]),
+            Some(relation()),
+        )
+        .unwrap();
+        assert_eq!(bound.schema_id, [0x10; 16]);
+        assert_eq!(bound.relation_id, [0x11; 16]);
+        assert_eq!(
+            bound
+                .group_keys
+                .iter()
+                .map(|key| key.ordinal)
+                .collect::<Vec<_>>(),
+            [1, 0]
+        );
+        assert_eq!(bound.limit, Some(4));
+        assert_eq!(
+            bind_composite_group_count_request(
+                &composite_group_count_request(&["active", "ACTIVE"]),
+                Some(relation()),
+            ),
+            Err(BindError::InvalidQuery)
+        );
     }
 
     #[test]

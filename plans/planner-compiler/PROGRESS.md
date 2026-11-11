@@ -29,6 +29,12 @@
 - Confined acceptance: the maintained ABI v5 SQL artifact executes `SELECT id, COUNT(*) FROM records GROUP BY id` through optimizer operation `0x1208`, validates current executor identity, relays the exact SQLR result, and verifies it through durable commit in the existing cgroup-backed SQL sequence.
 - Verification: TinyCC regressions cover valid kind-5 decode, scan/key mismatch, AST/LIMIT matching, canonical request bytes, operation selection, response decoding, and filtered-query rejection. `make -f engine/sdk/Makefile test sandbox-query-fixture` and the focused confined acceptance passed. Locked workspace build, format check, warning-denied Clippy, and the full serial workspace suite also passed in the delegated user service with cgroup tests enabled and zero ignored tests. Composite grouping, aggregates beyond COUNT(*), WHERE/HAVING, and ordering remain unsupported by this optimizer request subset.
 
+## OP-7 dependency: bounded composite COUNT(*) request and plan — Rust verified
+
+- Contract: statement 6 extends the existing grouped COUNT optimizer operation to two through eight keys in source order, plus optional post-group LIMIT. It carries no filters, HAVING, or ordering.
+- Implementation: the bounded Rust decoder, invocation-authorized binder, kind-6 plan codec, canonical ordinal-sorted scan shape, optimizer service, process dispatch, and response validation are implemented. Duplicate key ordinals are rejected; plan key order preserves SQL projection order.
+- Verification: focused request bounds/trailing-byte, binding duplicate/order, plan codec/canonical scan, and optimizer process-channel tests passed (4 tests). Full C SDK encoding/execution and confined acceptance remain open.
+
 ## OP-2 dependency: generated unknown estimate response — implemented
 
 - Contract: when an authorized estimate is unavailable or exceeds its allowance, planner IPC returns the exact versioned unknown response and keeps the invocation usable.

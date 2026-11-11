@@ -6,10 +6,10 @@
 //! planner service and executor/storage path.
 
 use crate::query_abi::{
-    OPTIMIZER_DELETE_STATEMENT, OPTIMIZER_GROUP_COUNT_STATEMENT, OPTIMIZER_JOIN_SELECT_STATEMENT,
-    OPTIMIZER_REQUEST_VERSION, OPTIMIZER_SELECT_REQUEST_HEADER_BYTES,
-    OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET, OPTIMIZER_SELECT_STATEMENT,
-    OPTIMIZER_UPDATE_STATEMENT, decode_optimizer_select_request,
+    OPTIMIZER_COMPOSITE_GROUP_COUNT_STATEMENT, OPTIMIZER_DELETE_STATEMENT,
+    OPTIMIZER_GROUP_COUNT_STATEMENT, OPTIMIZER_JOIN_SELECT_STATEMENT, OPTIMIZER_REQUEST_VERSION,
+    OPTIMIZER_SELECT_REQUEST_HEADER_BYTES, OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET,
+    OPTIMIZER_SELECT_STATEMENT, OPTIMIZER_UPDATE_STATEMENT, decode_optimizer_select_request,
 };
 
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
@@ -22,6 +22,8 @@ pub const MAX_TEXT_LITERAL_BYTES: usize = 4096;
 pub const MAX_UPDATE_ASSIGNMENTS: usize = 64;
 pub const MIN_JOIN_KEYS: usize = 2;
 pub const MAX_JOIN_KEYS: usize = 8;
+pub const MIN_GROUP_KEYS: usize = 2;
+pub const MAX_GROUP_KEYS: usize = 8;
 pub const MAX_PARAMETER_INDEX: u32 = 256;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -68,6 +70,16 @@ pub struct GroupCountRequest {
     pub schema_name: String,
     pub relation_name: String,
     pub group_key_name: String,
+    pub limit: Option<u32>,
+}
+
+/// Bounded two-to-eight-key COUNT(*) grouping request. Keys retain projection
+/// order; filters, HAVING, and ORDER BY are outside this request shape.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompositeGroupCountRequest {
+    pub schema_name: String,
+    pub relation_name: String,
+    pub group_key_names: Vec<String>,
     pub limit: Option<u32>,
 }
 
@@ -340,6 +352,61 @@ pub fn decode_group_count_request(bytes: &[u8]) -> Result<GroupCountRequest, Req
         schema_name,
         relation_name,
         group_key_name,
+        limit,
+    })
+}
+
+/// Decode a canonical composite COUNT(*) request with an optional post-group
+/// LIMIT. Column names remain untrusted until bound against authorized metadata.
+pub fn decode_composite_group_count_request(
+    bytes: &[u8],
+) -> Result<CompositeGroupCountRequest, RequestError> {
+    if bytes.len() > MAX_REQUEST_BYTES {
+        return Err(RequestError::TooLarge);
+    }
+    let header_bytes = OPTIMIZER_SELECT_REQUEST_HEADER_BYTES as usize;
+    if bytes.len() < header_bytes {
+        return Err(RequestError::Truncated);
+    }
+    let version_offset = OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET as usize;
+    let version = u16::from_be_bytes([bytes[version_offset], bytes[version_offset + 1]]);
+    if version != OPTIMIZER_REQUEST_VERSION {
+        return Err(RequestError::UnsupportedVersion(version));
+    }
+    let (statement, flags) =
+        decode_optimizer_select_request(bytes).ok_or(RequestError::Truncated)?;
+    if statement != OPTIMIZER_COMPOSITE_GROUP_COUNT_STATEMENT {
+        return Err(RequestError::UnsupportedStatement(statement));
+    }
+    if flags != 0 {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut cursor = Cursor {
+        bytes,
+        offset: header_bytes,
+    };
+    let schema_name = cursor.identifier()?;
+    let relation_name = cursor.identifier()?;
+    let key_count = usize::from(cursor.u8()?);
+    if !(MIN_GROUP_KEYS..=MAX_GROUP_KEYS).contains(&key_count) {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut group_key_names = Vec::with_capacity(key_count);
+    for _ in 0..key_count {
+        group_key_names.push(cursor.identifier()?);
+    }
+    let limit = match cursor.u8()? {
+        0 => None,
+        1 => Some(cursor.u32()?),
+        _ => return Err(RequestError::InvalidValue),
+    };
+    if !cursor.is_empty() {
+        return Err(RequestError::TrailingBytes);
+    }
+    Ok(CompositeGroupCountRequest {
+        schema_name,
+        relation_name,
+        group_key_names,
         limit,
     })
 }
@@ -701,6 +768,20 @@ mod tests {
         bytes
     }
 
+    fn composite_group_count_request(keys: &[&str]) -> Vec<u8> {
+        let mut bytes = vec![0, OPTIMIZER_REQUEST_VERSION as u8];
+        bytes.push(OPTIMIZER_COMPOSITE_GROUP_COUNT_STATEMENT);
+        bytes.push(0);
+        name("public", &mut bytes);
+        name("items", &mut bytes);
+        bytes.push(keys.len() as u8);
+        for key in keys {
+            name(key, &mut bytes);
+        }
+        bytes.extend_from_slice(&[1, 0, 0, 0, 5]);
+        bytes
+    }
+
     #[test]
     fn decodes_bounded_single_key_group_count_request() {
         let request = decode_group_count_request(&group_count_request()).unwrap();
@@ -713,6 +794,32 @@ mod tests {
         trailing.push(0);
         assert_eq!(
             decode_group_count_request(&trailing),
+            Err(RequestError::TrailingBytes)
+        );
+    }
+
+    #[test]
+    fn decodes_bounded_composite_group_count_request() {
+        let request = decode_composite_group_count_request(&composite_group_count_request(&[
+            "category", "active",
+        ]))
+        .unwrap();
+        assert_eq!(request.schema_name, "public");
+        assert_eq!(request.relation_name, "items");
+        assert_eq!(request.group_key_names, ["category", "active"]);
+        assert_eq!(request.limit, Some(5));
+
+        for count in [0, 1, 9] {
+            let invalid = composite_group_count_request(&vec!["id"; count]);
+            assert_eq!(
+                decode_composite_group_count_request(&invalid),
+                Err(RequestError::InvalidValue)
+            );
+        }
+        let mut trailing = composite_group_count_request(&["id", "active"]);
+        trailing.push(0);
+        assert_eq!(
+            decode_composite_group_count_request(&trailing),
             Err(RequestError::TrailingBytes)
         );
     }
