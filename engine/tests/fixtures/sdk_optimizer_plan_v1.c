@@ -535,6 +535,7 @@ int main(void) {
     uint8_t sql[] = "SELECT c3 FROM items LIMIT 1";
     static prdb_sdk_select_v2 statement;
     static prdb_sdk_delete_v1 delete_statement;
+    static prdb_sdk_update_v1 update_statement;
     uint64_t response_len = 0;
     uint64_t scan_response_len = 0;
 
@@ -1040,6 +1041,42 @@ int main(void) {
                (prdb_sdk_optimizer_update_plan_v1 *)update_plan,
                sizeof(update_decoded)) ==
            PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT);
+
+    uint8_t update_sql[] = "UPDATE items SET c0 = $2 WHERE c0 = $1";
+    uint8_t update_parameter_bytes[2][4] = {{0, 0, 0, 1}, {0, 0, 0, 2}};
+    prdb_sdk_value_v1 update_parameters[2] = {
+        {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+         PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+         update_parameter_bytes[0], sizeof(update_parameter_bytes[0])},
+        {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+         PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+         update_parameter_bytes[1], sizeof(update_parameter_bytes[1])}};
+    assert(prdb_sdk_sql_parse_update_v1(
+               update_sql, sizeof(update_sql) - 1, &update_statement,
+               sizeof(update_statement), NULL) == PRDB_SDK_SQL_OK);
+    resolve.calls = 0;
+    assert(prdb_sdk_optimizer_validate_update_plan_with_parameters_v1(
+               &host, &update_statement, update_parameters, 2,
+               (const uint8_t *)"public", 6, update_plan, update_plan_len,
+               response, sizeof(response), &response_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(resolve.calls == 1);
+    update_statement.assignments[0].parameter_index = 1;
+    assert(prdb_sdk_optimizer_validate_update_plan_with_parameters_v1(
+               &host, &update_statement, update_parameters, 2,
+               (const uint8_t *)"public", 6, update_plan, update_plan_len,
+               response, sizeof(response), &response_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
+    update_statement.assignments[0].parameter_index = 2;
+    update_parameter_bytes[1][0] = 0;
+    update_parameters[1].type_code = PRDB_SDK_VALUE_TYPE_BOOLEAN;
+    assert(prdb_sdk_optimizer_validate_update_plan_with_parameters_v1(
+               &host, &update_statement, update_parameters, 2,
+               (const uint8_t *)"public", 6, update_plan, update_plan_len,
+               response, sizeof(response), &response_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
+    update_parameters[1].type_code = PRDB_SDK_VALUE_TYPE_INTEGER;
+    update_parameter_bytes[1][0] = 0;
 
     uint8_t delete_plan[512];
     uint32_t delete_plan_len = build_delete_filter_plan(

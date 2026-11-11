@@ -144,6 +144,16 @@ int32_t prdb_sdk_optimizer_validate_delete_plan_with_parameters_v1(
     uint8_t *response, uint64_t response_capacity,
     uint64_t *response_len);
 
+/* Validate a returned UPDATE plan against its parsed AST and parameters,
+ * then re-resolve the relation through executor storage. */
+int32_t prdb_sdk_optimizer_validate_update_plan_with_parameters_v1(
+    const prdb_host_api_v2 *host, const prdb_sdk_update_v1 *statement,
+    const prdb_sdk_value_v1 *parameters, uint32_t parameter_count,
+    const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *plan_payload, uint64_t plan_payload_len,
+    uint8_t *response, uint64_t response_capacity,
+    uint64_t *response_len);
+
 /* Submit, verify, scan, and execute a parsed DELETE through ABI v5. Matched
  * opaque row handles are staged only through ordinary executor mutation IPC. */
 int32_t prdb_sdk_optimizer_execute_delete_ast_v1(

@@ -324,3 +324,12 @@
 - Verification: pinned Nix shell reported Rust/Cargo/Clippy 1.95.0, rustfmt 1.9.0 and TinyCC 0.9.27-unstable-2025-01-06. `make -f engine/sdk/Makefile test`, locked workspace build, format check, warning-denied Clippy, serial locked workspace tests, and `git diff --check` passed. Rust tests: 138 passed, 4 ignored; the ignored tests include cgroup-dependent acceptance paths.
 - Boundary: this is request encoding/submission evidence only; it does not yet validate the returned UPDATE plan against the AST or stage writes.
 - Remaining: match decoded assignments against the parsed AST and parameter types, then execute via authorized scan/stage-update IPC and confined-process acceptance.
+
+## OP-3 dependency: validate UPDATE plans against the SQL AST — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). Before obtaining an executor capability, independently verify that the optimizer's predicate and source-order assignments match the parsed SQL and its typed parameters, then re-resolve the relation through executor storage.
+- Implementation: `prdb_sdk_optimizer_validate_update_plan_with_parameters_v1` checks UPDATE AST shape, plan schema/relation and assignment count, predicate structure/operator/columns/parameter values, assignment names/order/kinds/indices, exact parameter scalar types and nullability. It calls `resolve_plan_relation` and validates stable identities and scanned column definitions before returning success.
+- Regression: the maintained TinyCC optimizer-plan fixture accepts a matching plan and rejects assignment-index and assignment-type mismatches; the matching path verifies executor-side relation resolution.
+- Verification: targeted optimizer-plan fixture and full maintained TinyCC SDK suite passed in the pinned Nix shell; ABI generator's eight tests and generated-file check passed.
+- Limitation: this validates plans but does not scan or stage UPDATE writes. Parameter assignment compatibility currently requires an exact scalar type code; coercions are unspecified and remain unsupported by this path.
+- Remaining: execute matched UPDATE plans over an authorized full scan, stage typed patches through executor mutation IPC, and verify the path through confined optimizer/executor processes.

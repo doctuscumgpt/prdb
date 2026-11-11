@@ -2164,6 +2164,143 @@ int32_t prdb_sdk_optimizer_validate_delete_plan_with_parameters_v1(
     return PRDB_SDK_OPTIMIZER_PLAN_OK;
 }
 
+int32_t prdb_sdk_optimizer_validate_update_plan_with_parameters_v1(
+    const prdb_host_api_v2 *host, const prdb_sdk_update_v1 *statement,
+    const prdb_sdk_value_v1 *parameters, uint32_t parameter_count,
+    const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *plan_payload, uint64_t plan_payload_len,
+    uint8_t *response, uint64_t response_capacity,
+    uint64_t *response_len) {
+    const prdb_sdk_select_v2 *predicate;
+    prdb_sdk_optimizer_update_plan_v1 update = {0};
+    plan_reader filter_reader;
+    uint8_t seen[PRDB_SDK_SQL_MAX_PREDICATE_NODES] = {0};
+    int32_t status;
+
+    if (statement == NULL || statement->struct_size != sizeof(*statement) ||
+        statement->abi_version != PRDB_SDK_SQL_DML_ABI_V1_VERSION ||
+        statement->sql == NULL || statement->sql_len == 0 ||
+        statement->sql_len > PRDB_SDK_SQL_MAX_QUERY_BYTES || schema == NULL ||
+        !valid_identifier(schema, schema_len) ||
+        statement->relation.offset > statement->sql_len ||
+        statement->relation.length == 0 ||
+        statement->relation.length > statement->sql_len -
+                                         statement->relation.offset ||
+        !valid_identifier(statement->sql + statement->relation.offset,
+                          statement->relation.length) ||
+        statement->assignment_count == 0 ||
+        statement->assignment_count > PRDB_SDK_SQL_MAX_UPDATE_ASSIGNMENTS ||
+        parameter_count > PRDB_SDK_SQL_MAX_PARAMETER_INDEX ||
+        (parameter_count != 0 && parameters == NULL)) {
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
+    }
+    predicate = &statement->predicate_statement;
+    if (predicate->struct_size != sizeof(*predicate) ||
+        predicate->abi_version != PRDB_SDK_SQL_ABI_V2_VERSION ||
+        predicate->sql != statement->sql ||
+        predicate->sql_len != statement->sql_len ||
+        predicate->relation.offset != statement->relation.offset ||
+        predicate->relation.length != statement->relation.length ||
+        predicate->projection_star != 0 ||
+        predicate->projection_count != statement->assignment_count ||
+        predicate->has_limit != 0 || predicate->limit != 0 ||
+        predicate->predicate_count == 0 ||
+        predicate->predicate_count > PRDB_SDK_SQL_MAX_PREDICATE_NODES ||
+        predicate->predicate_root >= predicate->predicate_count) {
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
+    }
+    for (uint32_t index = 0; index < statement->assignment_count; ++index) {
+        const prdb_sdk_sql_update_assignment_v1 *assignment =
+            &statement->assignments[index];
+        if (assignment->column.offset > statement->sql_len ||
+            assignment->column.length == 0 ||
+            assignment->column.length >
+                statement->sql_len - assignment->column.offset ||
+            !valid_identifier(statement->sql + assignment->column.offset,
+                              assignment->column.length) ||
+            predicate->projection[index].offset != assignment->column.offset ||
+            predicate->projection[index].length != assignment->column.length) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
+        }
+    }
+    status = prdb_sdk_optimizer_decode_update_plan_v1(
+        plan_payload, plan_payload_len, &update, sizeof(update));
+    if (status != PRDB_SDK_OPTIMIZER_PLAN_OK) return status;
+    if (update.filter.present == 0 ||
+        update.assignment_count != statement->assignment_count ||
+        update.plan.schema_name_len != schema_len ||
+        memcmp(update.plan.schema_name, schema, schema_len) != 0 ||
+        update.plan.relation_name_len != statement->relation.length ||
+        !identifier_equal_ascii_casefold(
+            update.plan.relation_name,
+            statement->sql + statement->relation.offset,
+            statement->relation.length)) {
+        return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+    }
+
+    status = prdb_sdk_optimizer_validate_executor_relation_v1(
+        host, plan_payload, plan_payload_len, response, response_capacity,
+        response_len);
+    if (status != PRDB_SDK_OPTIMIZER_PLAN_OK) return status;
+
+    filter_reader = (plan_reader){update.filter.prefix,
+                                  update.filter.prefix_len, 0};
+    if (!match_optimizer_filter_node(
+            &filter_reader, &update.plan, response, *response_len, predicate,
+            parameters, parameter_count, predicate->predicate_root, seen, 1) ||
+        filter_reader.offset != filter_reader.length) {
+        return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+    }
+    for (uint32_t index = 0; index < predicate->predicate_count; ++index) {
+        if (seen[index] == 0)
+            return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+    }
+
+    for (uint32_t index = 0; index < statement->assignment_count; ++index) {
+        const prdb_sdk_sql_update_assignment_v1 *requested =
+            &statement->assignments[index];
+        const prdb_sdk_optimizer_assignment_v1 *planned =
+            &update.assignments[index];
+        const uint8_t *column_name = NULL;
+        uint32_t column_name_len = 0;
+        if (!response_column_name(response, *response_len,
+                                  planned->column.ordinal, &column_name,
+                                  &column_name_len) ||
+            column_name_len != requested->column.length ||
+            !identifier_equal_ascii_casefold(
+                column_name, statement->sql + requested->column.offset,
+                requested->column.length)) {
+            return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+        }
+        if (requested->kind == PRDB_SDK_SQL_UPDATE_PARAMETER) {
+            const prdb_sdk_value_v1 *value;
+            if (requested->parameter_index == 0 ||
+                requested->parameter_index > parameter_count ||
+                planned->value_kind !=
+                    PRDB_OPTIMIZER_UPDATE_PARAMETER_VALUE ||
+                planned->parameter_index != requested->parameter_index) {
+                return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+            }
+            value = &parameters[requested->parameter_index - 1];
+            if (prdb_sdk_value_validate_v1(value) != PRDB_SDK_VALUE_VALID ||
+                value->state != PRDB_SDK_VALUE_STATE_VALUE ||
+                value->type_code != planned->column.type_code) {
+                return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+            }
+        } else if (requested->kind == PRDB_SDK_SQL_UPDATE_NULL) {
+            if (requested->parameter_index != 0 ||
+                planned->value_kind != PRDB_OPTIMIZER_UPDATE_NULL_VALUE ||
+                planned->parameter_index != 0 ||
+                planned->column.nullable == 0) {
+                return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+            }
+        } else {
+            return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+        }
+    }
+    return PRDB_SDK_OPTIMIZER_PLAN_OK;
+}
+
 int32_t prdb_sdk_optimizer_execute_delete_ast_v1(
     const prdb_host_api_v5 *host, const prdb_sdk_delete_v1 *statement,
     const prdb_sdk_value_v1 *parameters, uint32_t parameter_count,
