@@ -1892,7 +1892,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
 }
 
 #[test]
-#[ignore = "requires a delegated cgroup and configured sandbox runtime paths"]
 fn disconnected_submission_is_reconciled_after_gateway_restart()
 -> Result<(), Box<dyn std::error::Error>> {
     fn required_paths(name: &str) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {

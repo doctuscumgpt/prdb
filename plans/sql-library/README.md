@@ -18,7 +18,7 @@ Specify grammar/parameter syntax, AST and physical-plan formats, SQL API and res
 | SQL-4 | Sequential read/write/read sees own writes; UPDATE does not revisit changed targets | INSERT/UPDATE/DELETE with fixed bounded target/value materialization, close input scans before staging and forbid previous live result streams |
 | SQL-5 | A late error invalidates partial results and earlier writes even if C code catches it | Terminal statement failure propagated to trusted transaction state, explicit result lifetimes, no per-statement commit or recovery |
 | SQL-6 | The three fixed information_schema relations match filtered discovery and reject mutations | Use storage virtual scans; SDK predicates never inspect unfiltered catalog rows |
-| SQL-7 | Small authorized-view join/group/sort fixtures match independently calculated results | Add required inner equijoins, GROUP BY, COUNT/SUM/MIN/MAX/AVG, ORDER BY and HAVING one operator at a time with optimizer support and precise null/overflow/redaction rules |
+| SQL-7 | Small authorized-view join/group/sort fixtures match independently calculated results | Add required inner equijoins (including aliases and qualified filters), GROUP BY, COUNT/SUM/MIN/MAX/AVG, ORDER BY and HAVING one operator at a time with optimizer support and precise null/overflow/redaction rules |
 | SQL-8 | Hash/sort/aggregate budget exhaustion and cancellation fail without uncontrolled spill or partial commit | Bounded operator memory/output; COUNT(*) counts visible rows; required redacted operands fail rather than silently disappearing |
 
 ## Acceptance and Handoff

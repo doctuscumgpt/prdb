@@ -1,6 +1,7 @@
 #include "prdb_sdk_sql_exec_v8.h"
 #include "prdb_sdk_sql_exec_v16.h"
 #include "prdb_sdk_sql_exec_v19.h"
+#include "prdb_sdk_sql_exec_v20.h"
 
 #include <assert.h>
 #include <string.h>
@@ -109,9 +110,9 @@ static void append_integer_cell(uint8_t *bytes, uint32_t *offset,
     put_u32(bytes, offset, (uint32_t)value);
 }
 
-static uint32_t make_batch(uint8_t *bytes, const int32_t *keys,
-                           const uint8_t *key_states,
-                           const int32_t *values, uint16_t row_count) {
+static uint32_t make_batch_with_value_state(
+    uint8_t *bytes, const int32_t *keys, const uint8_t *key_states,
+    const int32_t *values, uint8_t value_state, uint16_t row_count) {
     uint32_t offset = 0;
     put_u16(bytes, &offset, 1);
     bytes[offset++] = 1;
@@ -125,9 +126,21 @@ static uint32_t make_batch(uint8_t *bytes, const int32_t *keys,
         } else {
             bytes[offset++] = key_states[row];
         }
-        append_integer_cell(bytes, &offset, values[row]);
+        if (value_state == PRDB_SDK_VALUE_STATE_VALUE) {
+            append_integer_cell(bytes, &offset, values[row]);
+        } else {
+            bytes[offset++] = value_state;
+        }
     }
     return offset;
+}
+
+static uint32_t make_batch(uint8_t *bytes, const int32_t *keys,
+                           const uint8_t *key_states,
+                           const int32_t *values, uint16_t row_count) {
+    return make_batch_with_value_state(
+        bytes, keys, key_states, values, PRDB_SDK_VALUE_STATE_VALUE,
+        row_count);
 }
 
 static int32_t statement_failure(void *context, uint32_t failure_code) {
@@ -364,6 +377,67 @@ static int32_t run_query_v19(mock_state *mock, row_capture *capture,
         materialized_capacity, on_row_v19, capture);
 }
 
+static int32_t on_row_v20(void *context,
+                          const prdb_sdk_value_v1 *projected_values,
+                          uint32_t projection_count,
+                          const prdb_sdk_select_binding_v20 *binding) {
+    prdb_sdk_select_binding_v19 old_binding = binding->base;
+    return on_row_v19(context, projected_values, projection_count,
+                      &old_binding);
+}
+
+static int32_t run_query_v20(mock_state *mock, row_capture *capture,
+                             const uint8_t *sql, uint64_t sql_len,
+                             uint64_t materialized_capacity,
+                             const prdb_sdk_value_v1 *parameters,
+                             uint32_t parameter_count) {
+    static const uint8_t schema[] = "app";
+    uint8_t left_planner_response[256] = {0};
+    uint8_t right_planner_response[256] = {0};
+    uint8_t left_executor_response[256] = {0};
+    uint8_t right_executor_response[256] = {0};
+    uint8_t batch_response[8192] = {0};
+    uint8_t materialized_bytes[4096] = {0};
+    uint8_t integer_names[2][11] = {{0}};
+    prdb_sdk_sql_column_shape_v2 left_planner_columns[2] = {{0}};
+    prdb_sdk_sql_column_shape_v2 right_planner_columns[2] = {{0}};
+    prdb_sdk_sql_column_shape_v2 left_executor_columns[2] = {{0}};
+    prdb_sdk_sql_column_shape_v2 right_executor_columns[2] = {{0}};
+    prdb_sdk_value_v1 cell_scratch[2] = {{0}};
+    prdb_sdk_sql_join_materialized_row_v16 left_rows[
+        PRDB_SDK_SQL_EXEC_V8_MAX_ROWS] = {{{0}}};
+    prdb_sdk_sql_join_materialized_row_v16 right_rows[
+        PRDB_SDK_SQL_EXEC_V8_MAX_ROWS] = {{{0}}};
+    prdb_host_api_v3 host = {sizeof(host), PRDB_QUERY_ABI_V3_VERSION,
+                             mock, executor_request, planner_request, NULL,
+                             statement_failure};
+    memcpy(integer_names[0], "account_id", sizeof("account_id") - 1);
+    memcpy(integer_names[1], "value", sizeof("value") - 1);
+    for (uint32_t index = 0; index < 2; ++index) {
+        const char *name = index == 0 ? "account_id" : "value";
+        uint32_t len = (uint32_t)strlen(name);
+        left_planner_columns[index] = (prdb_sdk_sql_column_shape_v2){
+            integer_names[index], len, index, PRDB_SDK_VALUE_TYPE_INTEGER,
+            0, 0};
+        right_planner_columns[index] = left_planner_columns[index];
+        left_executor_columns[index] = left_planner_columns[index];
+        right_executor_columns[index] = left_planner_columns[index];
+    }
+    return prdb_sdk_sql_execute_inner_join_v20(
+        &host, schema, sizeof(schema) - 1, sql, sql_len, parameters,
+        parameter_count, JOIN_V16_ROW_LIMIT, 8192,
+        left_planner_response, sizeof(left_planner_response),
+        right_planner_response, sizeof(right_planner_response),
+        left_executor_response, sizeof(left_executor_response),
+        right_executor_response, sizeof(right_executor_response),
+        batch_response, sizeof(batch_response), left_planner_columns, 2,
+        right_planner_columns, 2, left_executor_columns, 2,
+        right_executor_columns, 2, cell_scratch, 2, left_rows,
+        PRDB_SDK_SQL_EXEC_V8_MAX_ROWS, right_rows,
+        PRDB_SDK_SQL_EXEC_V8_MAX_ROWS, materialized_bytes,
+        materialized_capacity, on_row_v20, capture);
+}
+
 static void reset(mock_state *mock, row_capture *capture) {
     mock->planner_calls = 0;
     mock->resolve_calls = 0;
@@ -405,6 +479,14 @@ int main(void) {
         "SELECT accounts.value, orders.value FROM accounts INNER JOIN "
         "orders ON accounts.account_id = orders.account_id AND "
         "accounts.value = orders.value";
+    static const uint8_t filtered_sql[] =
+        "SELECT a.value, o.value FROM accounts AS a INNER JOIN "
+        "orders AS o ON a.account_id = o.account_id AND "
+        "a.account_id = o.account_id WHERE o.value >= $1 LIMIT 1";
+    static const uint8_t redacted_filter_sql[] =
+        "SELECT a.value, o.value FROM accounts AS a INNER JOIN "
+        "orders AS o ON a.account_id = o.account_id AND "
+        "a.account_id = o.account_id WHERE o.value >= $1";
     static const uint8_t composite_limit_sql[] =
         "SELECT accounts.value, orders.value FROM accounts INNER JOIN "
         "orders ON accounts.account_id = orders.account_id AND "
@@ -429,6 +511,15 @@ int main(void) {
         PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_STATE_VALUE,
         PRDB_SDK_VALUE_STATE_NULL};
     const int32_t right_values[] = {202, 201, 204};
+    const int32_t matching_key[] = {2};
+    const uint8_t matching_state[] = {PRDB_SDK_VALUE_STATE_VALUE};
+    const int32_t matching_left_value[] = {102};
+    const int32_t matching_right_value[] = {202};
+    static const uint8_t threshold_bytes[] = {0, 0, 0, 202};
+    const prdb_sdk_value_v1 threshold = {
+        sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+        PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+        threshold_bytes, sizeof(threshold_bytes)};
     mock_state mock = {0};
     row_capture capture = {0};
 
@@ -460,6 +551,28 @@ int main(void) {
     assert(capture.calls == 2 && capture.left_values[0] == 101 &&
            capture.right_values[0] == 201 && capture.left_values[1] == 102 &&
            capture.right_values[1] == 202 && mock.statement_failed == 0);
+
+    reset(&mock, &capture);
+    assert(run_query_v20(&mock, &capture, filtered_sql,
+                         sizeof(filtered_sql) - 1, 1024, &threshold, 1) ==
+           PRDB_SDK_SQL_EXEC_OK);
+    assert(capture.calls == 1 && capture.left_values[0] == 102 &&
+           capture.right_values[0] == 202 && mock.statement_failed == 0);
+
+    mock.batch_len[0] = make_batch(mock.batch[0], matching_key,
+                                   matching_state, matching_left_value, 1);
+    mock.batch_len[1] = make_batch_with_value_state(
+        mock.batch[1], matching_key, matching_state, matching_right_value,
+        PRDB_SDK_VALUE_STATE_REDACTED, 1);
+    reset(&mock, &capture);
+    assert(run_query_v20(&mock, &capture, redacted_filter_sql,
+                         sizeof(redacted_filter_sql) - 1, 1024, &threshold,
+                         1) == PRDB_SDK_SQL_EXEC_EVALUATION_ERROR);
+    assert(capture.calls == 0 && mock.statement_failed == 1);
+    mock.batch_len[0] = make_batch(mock.batch[0], left_keys, left_states,
+                                   left_values, 3);
+    mock.batch_len[1] = make_batch(mock.batch[1], right_keys, right_states,
+                                   right_values, 3);
 
     {
         const int32_t self_keys[] = {1, 2, 3};

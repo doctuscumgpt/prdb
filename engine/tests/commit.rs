@@ -21308,7 +21308,6 @@ fn run_sandboxed_v3_sql_error_fixture(
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
-#[ignore = "requires a delegated cgroup and the built TinyCC v3 query fixture"]
 fn sandboxed_v3_sql_error_latches_failure_and_durably_aborts_after_partial_output()
 -> Result<(), Box<dyn std::error::Error>> {
     run_sandboxed_v3_sql_error_fixture("PRDB_TEST_QUERY_ARTIFACT", false)
@@ -21316,7 +21315,6 @@ fn sandboxed_v3_sql_error_latches_failure_and_durably_aborts_after_partial_outpu
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
-#[ignore = "requires a delegated cgroup and the built TinyCC network-constructor fixture"]
 fn sandboxed_v3_constructor_cannot_connect_to_host_loopback()
 -> Result<(), Box<dyn std::error::Error>> {
     run_sandboxed_v3_sql_error_fixture("PRDB_TEST_NETWORK_CONSTRUCTOR_ARTIFACT", true)
@@ -21324,7 +21322,6 @@ fn sandboxed_v3_constructor_cannot_connect_to_host_loopback()
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
-#[ignore = "requires a delegated cgroup and the built TinyCC restricted metadata fixture"]
 fn sandboxed_v3_metadata_submission_commits_over_tcp() -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::client_submit::{ClientResultEvent, SubmissionClient, TerminalOutcome};
     use prdb_engine::gateway::serve_tcp_client_connection;
@@ -21742,7 +21739,6 @@ fn sandboxed_v3_metadata_submission_commits_over_tcp() -> Result<(), Box<dyn std
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
-#[ignore = "requires a delegated cgroup and the built TinyCC SQL write/read metadata fixture"]
 fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn std::error::Error>>
 {
     use prdb_engine::client_protocol::{ClientConnectionSession, ClientFrame, ClientMode};

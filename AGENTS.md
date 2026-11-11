@@ -31,10 +31,9 @@ Once `Cargo.toml` and `Cargo.lock` exist, run from the repository root:
 cargo build --workspace --locked
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
 ```
 
-These build the engine, check formatting/lints, and run unit, integration, and library documentation tests. Use `cargo build --workspace --release --locked` for release validation. Add targeted feature/platform checks when introduced; do not assume all features are compatible. Document actual server startup commands when binaries exist.
+These build the engine and check formatting/lints. Run `cargo test --workspace --locked -- --test-threads=1` inside the delegated `systemd --user` service described below, with the fixture and runtime environment in [`plans/sql-library/SANDBOX_TEST.md`](plans/sql-library/SANDBOX_TEST.md); all sandbox integration tests are enabled. Use `cargo build --workspace --release --locked` for release validation. Add targeted feature/platform checks when introduced; do not assume all features are compatible. Document actual server startup commands when binaries exist.
 
 ## TinyCC Build and Tests
 
@@ -60,7 +59,7 @@ Use only maintained SDK unit-test sources for the executable test. Add target/ru
 
 ### Confined integration test host setup
 
-The sandboxed query integration tests are ignored by default. Building `sandbox-query-fixture` only builds their TinyCC artifacts; it does not create or delegate a cgroup. These tests need `PRDB_TEST_CGROUP_PARENT` to name an **absolute path to a writable delegated cgroup v2 parent**. That parent must expose and have enabled the `cpu`, `memory`, and `pids` controllers. The test creates per-invocation child cgroups beneath it.
+The sandboxed query integration tests are part of the normal workspace test suite and are not ignored. Building `sandbox-query-fixture` only builds their TinyCC artifacts; it does not create or delegate a cgroup. Run the full Cargo test suite inside the delegated `systemd --user` service below, with artifact and runtime variables from `plans/sql-library/SANDBOX_TEST.md`. These tests need `PRDB_TEST_CGROUP_PARENT` to name an **absolute path to a writable delegated cgroup v2 parent**. That parent must expose and have enabled the `cpu`, `memory`, and `pids` controllers. The test creates per-invocation child cgroups beneath it.
 
 This is normally rootless **after** systemd delegates a subtree to the test service. Run tests inside a dedicated `systemd --user` unit with `Delegate=cpu memory pids`; do not run them from a desktop application scope, which may expose only `memory` and `pids`. `engine/tools/with_delegated_cgroup.sh` moves the launcher into a child cgroup before enabling controllers, sets `PRDB_TEST_CGROUP_PARENT` and `PRDB_SYSTEMD_CGROUP_PARENT` to the writable unit cgroup, and executes the requested command. The setup is shared by user and system services.
 
@@ -79,7 +78,7 @@ systemd-run --user --wait --pipe --collect \
     --bin prdb-sandbox-probe -- "$PRDB_TEST_CGROUP_PARENT"'
 ```
 
-The probe must report a writable cgroup v2 parent and `cpu memory pids` in both the available controllers and enabled child controllers. Probe success is a preflight, not end-to-end acceptance; run the specific ignored sandbox test inside the same `systemd --user` wrapper with its documented fixture/runtime environment variables. The opt-in tests in `engine/tests/commit.rs` and `engine/tests/metadata_process.rs` state their additional artifact and runtime path variables. Do not count default-ignored tests as passed or use a fake cgroup directory as confinement evidence.
+The probe must report a writable cgroup v2 parent and `cpu memory pids` in both the available controllers and enabled child controllers. Probe success is a preflight, not end-to-end acceptance; run `cargo test --workspace --locked -- --test-threads=1` inside the same `systemd --user` wrapper with its documented fixture/runtime environment variables. The commit and metadata process integration tests run as part of this suite. Do not run them outside delegated cgroup setup or use a fake cgroup directory as confinement evidence.
 
 The separate supervisor and gateway systemd units for user and system managers are maintained in [`contrib/systemd`](contrib/systemd/README.md). User units apply Landlock policies with `prdb-landlock-run` and require the paths for the selected runtime profile. These require a READY database instance and a runtime profile validated for the host; they do not initialize storage or infer runtime allowlists.
 

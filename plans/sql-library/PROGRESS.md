@@ -1,5 +1,14 @@
 # SQL Library Progress
 
+## SQL-7: filtered aliased INNER JOIN runner and mandatory cgroup acceptance — implemented
+
+- Contract: [SQL library](../../specs/sql-library.md). V20 adds one alias-qualified comparison against a positional parameter or `IS [NOT] NULL` to the v19 INNER JOIN grammar. Only TRUE candidates survive; NULL comparisons are UNKNOWN, required REDACTED values fail, and LIMIT applies after filtering.
+- Implementation: [`prdb_sdk_sql_v20.h`](../../engine/include/prdb_sdk_sql_v20.h) and [`prdb_sdk_sql_exec_v20.h`](../../engine/include/prdb_sdk_sql_exec_v20.h) define the versioned AST, binding, callback, and runner. The runner validates typed parameters before scans, checks independent planner/executor shapes, adds a hidden filter projection when needed, and exposes only selected columns to callbacks. The v20 scan ceiling is 119 pages to reserve its four preflight requests within the 256-request connection budget. Earlier versions remain unchanged.
+- Regression and fuzzing: maintained TinyCC fixtures cover aliased filter binding, filter-before-LIMIT output, unchanged v19 WHERE rejection, invalid parameter indexes, and REDACTED filter failure with zero output and a latched statement error. The new ASan/UBSan/libFuzzer v20 target completed 10,000 runs from five grammar seeds (1,299 coverage edges; 2,852 features).
+- Cgroup coverage: removed `#[ignore]` from the four sandboxed commit tests and the disconnected-submission metadata process test. The complete workspace suite now runs these acceptance paths when invoked under the documented delegated `systemd --user` service with fixture and runtime variables; it no longer reports them as ignored. [`SANDBOX_TEST.md`](SANDBOX_TEST.md) and [`AGENTS.md`](../../AGENTS.md) document the required invocation.
+- Verification: TinyCC `make -f engine/sdk/Makefile test`, `make -f engine/sdk/Makefile sandbox-query-fixture`, and the v20 10,000-run fuzzer passed. Locked workspace build, format check, warning-denied Clippy, `git diff --check`, and the full serial locked workspace test suite passed inside the delegated service. All four sandboxed commit tests passed; both metadata process tests passed; the test targets reported zero ignored cases.
+- Remaining: SQLR encoding and confined query-artifact coverage for v20, optimizer join plans, broader analytical type/workload coverage, spill support, and end-to-end pressure testing remain open.
+
 ## SQL-4 / IPC: sequential SQL request budget — implemented
 
 - Red evidence: the expanded maintained SQL invocation exceeded the executor stream's 256-frame lifetime cap near its final optimizer-backed SELECT, so the confined write/read/analytics acceptance aborted with `RequestLimitExceeded` after earlier v19 join outputs.
