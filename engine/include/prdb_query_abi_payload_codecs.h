@@ -2195,6 +2195,32 @@ static inline int prdb_decode_optimizer_plan_integer_predicate_record(const uint
     return 1;
 }
 
+static inline void prdb_encode_optimizer_plan_column_predicate_record(uint8_t payload[17],
+    uint8_t node_tag, const uint8_t column_id[16]) {
+    payload[0] = node_tag;
+    for (size_t i = 0; i < 16; ++i) {
+        payload[1 + i] = column_id[i];
+    }
+}
+
+static inline int prdb_decode_optimizer_plan_column_predicate_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *node_tag, uint8_t column_id[16]) {
+    if (payload == NULL || payload_len != 17) {
+        return 0;
+    }
+    if (node_tag == NULL) {
+        return 0;
+    }
+    *node_tag = payload[0];
+    if (column_id == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < 16; ++i) {
+        column_id[i] = payload[1 + i];
+    }
+    return 1;
+}
+
 static inline void prdb_encode_client_frame_header_record(uint8_t payload[32],
     const uint8_t magic[4], uint16_t major_version, uint16_t minor_version, uint16_t kind, uint16_t flags, uint32_t payload_length, uint64_t request_id, uint64_t response_sequence) {
     for (size_t i = 0; i < 4; ++i) {

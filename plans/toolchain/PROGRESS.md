@@ -870,3 +870,12 @@
 - Compatibility: integer literal bytes and range checks remain unchanged; a Rust regression checks the exact encoding of `-2`, and the maintained TinyCC optimizer-plan fixture exercises the C paths.
 - Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
 - Remaining: other predicate records, string/name headers, and full shared-schema parity remain open.
+
+## TC-2 follow-up: generated optimizer column-predicate record — implemented
+
+- Contract: a column predicate retains its one-byte `0x10` tag followed by the referenced 16-byte column ID.
+- Red evidence: generator regression failed because `OPTIMIZER_PLAN_COLUMN_PREDICATE_RECORD` and its Rust/C codecs were absent.
+- Implementation: the shared schema defines the fixed tag/ID record. Rust plan encoding/decoding and TinyCC predicate validation, traversal, evaluation, and skipping now use the generated codec; the obsolete Rust fixed-array reader was removed.
+- Compatibility: column identity and validation behavior remain unchanged; a Rust regression checks the exact 17-byte encoding and round trip, and the maintained TinyCC optimizer-plan fixture passes.
+- Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
+- Remaining: comparison/boolean predicate headers, string/name headers, and full shared-schema parity remain open.

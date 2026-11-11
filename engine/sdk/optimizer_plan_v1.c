@@ -88,6 +88,23 @@ static int read_integer_predicate_record(plan_reader *reader,
     return node_tag == 0x02;
 }
 
+static int read_column_predicate_record(plan_reader *reader,
+                                        uint64_t header_offset,
+                                        uint8_t column_id[16]) {
+    const uint8_t *ignored;
+    uint8_t node_tag;
+    if (!take(reader,
+              PRDB_OPTIMIZER_PLAN_COLUMN_PREDICATE_RECORD_HEADER_BYTES - 1,
+              &ignored) ||
+        !prdb_decode_optimizer_plan_column_predicate_record(
+            reader->bytes + header_offset,
+            PRDB_OPTIMIZER_PLAN_COLUMN_PREDICATE_RECORD_HEADER_BYTES,
+            &node_tag, column_id)) {
+        return 0;
+    }
+    return node_tag == 0x10;
+}
+
 static int read_column_list_header(plan_reader *reader, uint8_t expected_tag,
                                    uint16_t *column_count) {
     const uint8_t *ignored;
@@ -286,9 +303,11 @@ static int decode_predicate(plan_reader *reader,
         case 0x10: {
             uint32_t index;
             int found = 0;
-            if (!take(reader, 16, &bytes)) return 0;
+            uint8_t column_id[16];
+            if (!read_column_predicate_record(reader, tag_offset, column_id))
+                return 0;
             for (index = 0; index < column_count; ++index) {
-                if (memcmp(bytes, columns[index].column_id, 16) == 0) {
+                if (memcmp(column_id, columns[index].column_id, 16) == 0) {
                     type.type_code = columns[index].type_code;
                     memcpy(type.parameters,
                            columns[index].type_parameters, 4);
@@ -383,7 +402,10 @@ static int skip_predicate_node(plan_reader *reader, uint32_t depth) {
                take(reader, length, &bytes);
     }
     case 0x10:
-        return take(reader, 16, &bytes);
+        {
+            uint8_t column_id[16];
+            return read_column_predicate_record(reader, tag_offset, column_id);
+        }
     case 0x20: {
         uint8_t comparison;
         return read_u8(reader, &comparison) && comparison <= 5 &&
@@ -456,11 +478,13 @@ static int32_t evaluate_predicate_node(
         return PRDB_SDK_SQL_EVAL_OK;
     }
     case 0x10: {
-        if (!take(reader, 16, &bytes)) return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
+        uint8_t column_id[16];
+        if (!read_column_predicate_record(reader, tag_offset, column_id))
+            return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
         for (uint32_t index = 0; index < plan->scan_column_count; ++index) {
             const prdb_sdk_optimizer_plan_column_v1 *column =
                 &plan->scan_columns[index];
-            if (memcmp(bytes, column->column_id, 16) == 0) {
+            if (memcmp(column_id, column->column_id, 16) == 0) {
                 out->value = source_cells[column->ordinal];
                 out->decimal_scale = column->type_parameters[1];
                 return PRDB_SDK_SQL_EVAL_OK;
