@@ -20,6 +20,7 @@ C_RECORD_OUTPUTS = {
     "2": ROOT / "include" / "prdb_query_abi_records_v2.h",
     "3": ROOT / "include" / "prdb_query_abi_records_v3.h",
     "4": ROOT / "include" / "prdb_query_abi_records_v4.h",
+    "5": ROOT / "include" / "prdb_query_abi_records_v5.h",
 }
 
 

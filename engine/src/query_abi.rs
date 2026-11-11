@@ -40,11 +40,25 @@ pub type QueryOptimizerRequestV4 = unsafe extern "C" fn(
     response_len: *mut u64,
 ) -> i32;
 
+/// Bounded optimizer callback for a caller-selected operation. ABI v5 callers
+/// can submit SELECT or DELETE; the host still enforces the optimizer role's
+/// operation allowlist and validates each request independently.
+pub type QueryOptimizerRequestV5 = unsafe extern "C" fn(
+    context: *mut std::ffi::c_void,
+    operation: u16,
+    request: *const u8,
+    request_len: u64,
+    response: *mut u8,
+    response_capacity: u64,
+    response_len: *mut u64,
+) -> i32;
+
 include!("query_abi_records.rs");
 
 pub type QueryMainV2 = unsafe extern "C" fn(*const HostApiV2, *const InvocationV2) -> c_int;
 pub type QueryMainV3 = unsafe extern "C" fn(*const HostApiV3, *const InvocationV3) -> c_int;
 pub type QueryMainV4 = unsafe extern "C" fn(*const HostApiV4, *const InvocationV4) -> c_int;
+pub type QueryMainV5 = unsafe extern "C" fn(*const HostApiV5, *const InvocationV5) -> c_int;
 
 pub type QueryMainV1 = unsafe extern "C" fn(*const HostApiV1, *const InvocationV1) -> c_int;
 
@@ -114,6 +128,7 @@ pub enum DescriptorV2Error {
 
 pub type DescriptorV3Error = DescriptorV2Error;
 pub type DescriptorV4Error = DescriptorV2Error;
+pub type DescriptorV5Error = DescriptorV2Error;
 
 /// Check the descriptor exported by a query library against this host's v1
 /// layouts before looking up or calling the entry point.
@@ -179,6 +194,23 @@ pub fn validate_descriptor_v4(descriptor: &QueryDescriptorV4) -> Result<(), Desc
         return Err(DescriptorV2Error::HostApiSize);
     }
     if descriptor.invocation_size != std::mem::size_of::<InvocationV4>() as u32 {
+        return Err(DescriptorV2Error::InvocationSize);
+    }
+    Ok(())
+}
+
+/// Check the exported v5 descriptor before resolving its entry point.
+pub fn validate_descriptor_v5(descriptor: &QueryDescriptorV5) -> Result<(), DescriptorV5Error> {
+    if descriptor.struct_size != std::mem::size_of::<QueryDescriptorV5>() as u32 {
+        return Err(DescriptorV2Error::StructSize);
+    }
+    if descriptor.abi_version != QUERY_ABI_V5_VERSION {
+        return Err(DescriptorV2Error::AbiVersion);
+    }
+    if descriptor.host_api_size != std::mem::size_of::<HostApiV5>() as u32 {
+        return Err(DescriptorV2Error::HostApiSize);
+    }
+    if descriptor.invocation_size != std::mem::size_of::<InvocationV5>() as u32 {
         return Err(DescriptorV2Error::InvocationSize);
     }
     Ok(())

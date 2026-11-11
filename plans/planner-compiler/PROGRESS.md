@@ -237,3 +237,11 @@
 - Evidence: the TinyCC fixture accepts a constant-Boolean DELETE plan and checks output kind/shape and borrowed predicate bytes; it rejects kind mismatches, incorrect terminal nodes, and malformed Boolean literals.
 - Verification: `nix develop -c make -f engine/sdk/Makefile test` passed, including ABI generator checks, TinyCC SDK builds, and all maintained SDK executables. Workspace Rust checks passed in the immediately preceding process-IPC increment; this increment changes only C SDK and plan documentation.
 - Remaining: integrate DELETE execution with independently resolved executor handles and ordinary authorized scan/mutation IPC; then continue UPDATE request and plan support.
+
+## OP-3 dependency: add operation-aware optimizer callback ABI v5 — implemented
+
+- Contract: [query worker ABI](../../specs/query-worker.md), [client SDK ABI](../../specs/client-sdk.md), and [planner specification](../../specs/planner-compiler.md). ABI v4 remains fixed to SELECT; DELETE submission requires a new ABI record so callers cannot reinterpret the old callback.
+- Implementation: ABI v5 preserves the complete v4 host table prefix and adds an operation parameter. The confined executor validates the v5 descriptor before dispatch, supplies both callbacks, and applies the existing `OptimizerSubmission` role allowlist. PMF1 encoders/validators accept v5 with its exact symbol pair.
+- Evidence: Rust ABI layout and descriptor validation, operation forwarding/denial, ELF manifest validation, and TinyCC C layout/callback fixtures pass. The v4 fixed-operation fixture still passes.
+- Verification: workspace build, formatting, warning-denied Clippy, full locked tests, ABI generator check, and TinyCC SDK tests passed.
+- Remaining: encode SQL DELETE into request v1 through the v5 callback, validate its returned plan against the AST, and execute matching row handles through authorized scan/stage-delete IPC.

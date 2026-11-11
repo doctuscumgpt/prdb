@@ -10,17 +10,19 @@ mod worker {
         IpcFrame, Operation, ServiceRole, authorize_operation, read_frame, write_frame,
     };
     use prdb_engine::query_abi::{
-        BorrowedInvocationV1, HostApiV1, HostApiV2, HostApiV3, HostApiV4, InvocationV2,
-        InvocationV3, InvocationV4, MAX_IPC_REQUEST_BYTES, MAX_RESULT_CHUNK_BYTES,
+        BorrowedInvocationV1, HostApiV1, HostApiV2, HostApiV3, HostApiV4, HostApiV5, InvocationV2,
+        InvocationV3, InvocationV4, InvocationV5, MAX_IPC_REQUEST_BYTES, MAX_RESULT_CHUNK_BYTES,
         MAX_TOTAL_RESULT_BYTES, QUERY_ABI_V2_VERSION, QUERY_ABI_V3_VERSION, QUERY_ABI_V4_VERSION,
-        QUERY_ABI_VERSION, QUERY_DESCRIPTOR_SYMBOL, QUERY_DESCRIPTOR_V2_SYMBOL,
-        QUERY_DESCRIPTOR_V3_SYMBOL, QUERY_DESCRIPTOR_V4_SYMBOL, QUERY_ENTRY_SYMBOL,
-        QUERY_ENTRY_V2_SYMBOL, QUERY_ENTRY_V3_SYMBOL, QUERY_ENTRY_V4_SYMBOL,
+        QUERY_ABI_V5_VERSION, QUERY_ABI_VERSION, QUERY_DESCRIPTOR_SYMBOL,
+        QUERY_DESCRIPTOR_V2_SYMBOL, QUERY_DESCRIPTOR_V3_SYMBOL, QUERY_DESCRIPTOR_V4_SYMBOL,
+        QUERY_DESCRIPTOR_V5_SYMBOL, QUERY_ENTRY_SYMBOL, QUERY_ENTRY_V2_SYMBOL,
+        QUERY_ENTRY_V3_SYMBOL, QUERY_ENTRY_V4_SYMBOL, QUERY_ENTRY_V5_SYMBOL,
         QUERY_STATEMENT_FAILURE_SQL, QueryDescriptorV1, QueryDescriptorV2, QueryDescriptorV3,
-        QueryDescriptorV4, QueryIpcRequestV2, QueryMainV1, QueryMainV2, QueryMainV3, QueryMainV4,
-        QueryOptimizerRequestV4, QueryStatementFailureV3, QueryWriteResultV2,
-        validate_descriptor_v1, validate_descriptor_v2, validate_descriptor_v3,
-        validate_descriptor_v4,
+        QueryDescriptorV4, QueryDescriptorV5, QueryIpcRequestV2, QueryMainV1, QueryMainV2,
+        QueryMainV3, QueryMainV4, QueryMainV5, QueryOptimizerRequestV4, QueryOptimizerRequestV5,
+        QueryStatementFailureV3, QueryWriteResultV2, validate_descriptor_v1,
+        validate_descriptor_v2, validate_descriptor_v3, validate_descriptor_v4,
+        validate_descriptor_v5,
     };
     use std::ffi::{CStr, CString, OsStr, c_void};
     use std::io::{self, Read, Write};
@@ -232,8 +234,12 @@ mod worker {
             return Err(dynamic_loader_error("dlopen"));
         }
 
-        // Prefer v4, then v3 and v2. An invalid descriptor is rejected rather than
+        // Prefer v5, then v4, v3 and v2. An invalid descriptor is rejected rather than
         // falling back to a second ABI exported by the same library.
+        let v5_descriptor_symbol = CString::new(QUERY_DESCRIPTOR_V5_SYMBOL).expect("static symbol");
+        if let Some(descriptor_address) = lookup_optional_symbol(handle, &v5_descriptor_symbol)? {
+            return unsafe { execute_v5_library(handle, descriptor_address, args) };
+        }
         let v4_descriptor_symbol = CString::new(QUERY_DESCRIPTOR_V4_SYMBOL).expect("static symbol");
         if let Some(descriptor_address) = lookup_optional_symbol(handle, &v4_descriptor_symbol)? {
             return unsafe { execute_v4_library(handle, descriptor_address, args) };
@@ -297,6 +303,78 @@ mod worker {
         // library finalizers must not run during host cleanup.
         let _ = handle;
         Ok(status)
+    }
+
+    unsafe fn execute_v5_library(
+        handle: *mut libc::c_void,
+        descriptor_address: *mut libc::c_void,
+        args: WorkerArgs,
+    ) -> io::Result<i32> {
+        if !(descriptor_address as usize).is_multiple_of(std::mem::align_of::<QueryDescriptorV5>())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "query v5 descriptor has invalid alignment",
+            ));
+        }
+        // SAFETY: malformed native records can fault only this disposable,
+        // confined worker. Copy before validation to avoid retaining a library pointer.
+        let descriptor = unsafe { descriptor_address.cast::<QueryDescriptorV5>().read() };
+        validate_descriptor_v5(&descriptor).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("query ABI v5 descriptor rejected: {error:?}"),
+            )
+        })?;
+        let entry_symbol = CString::new(QUERY_ENTRY_V5_SYMBOL).expect("static symbol");
+        let entry_address = lookup_symbol(handle, &entry_symbol)?;
+        // SAFETY: the validated descriptor declares this ABI and entry point.
+        let entry: QueryMainV5 = unsafe { std::mem::transmute(entry_address) };
+        let parameters = read_parameters(args.parameters_fd)?;
+        let parameters_len = u64::try_from(parameters.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "parameters length overflow")
+        })?;
+        let parameters_ptr = if parameters.is_empty() {
+            std::ptr::null()
+        } else {
+            parameters.as_ptr()
+        };
+        let invocation = InvocationV5 {
+            struct_size: std::mem::size_of::<InvocationV5>() as u32,
+            abi_version: QUERY_ABI_V5_VERSION,
+            parameters: parameters_ptr,
+            parameters_len,
+        };
+        let context = unsafe {
+            CallbackContext::from_raw_fds(
+                args.planner_fd,
+                args.executor_fd,
+                args.optimizer_fd,
+                args.result_fd,
+            )
+        };
+        let context = Box::leak(Box::new(context));
+        let v3 = HostApiV3 {
+            struct_size: std::mem::size_of::<HostApiV3>() as u32,
+            abi_version: QUERY_ABI_V3_VERSION,
+            context: (context as *mut CallbackContext).cast(),
+            executor_request: Some(executor_request_v2 as QueryIpcRequestV2),
+            planner_request: Some(planner_request_v2 as QueryIpcRequestV2),
+            write_result: Some(write_result_v2 as QueryWriteResultV2),
+            statement_failure: Some(statement_failure_v3 as QueryStatementFailureV3),
+        };
+        let host = HostApiV5 {
+            v4: HostApiV4 {
+                v3,
+                optimizer_request: Some(optimizer_request_v4 as QueryOptimizerRequestV4),
+            },
+            optimizer_request: Some(optimizer_request_v5 as QueryOptimizerRequestV5),
+        };
+        // SAFETY: all host and invocation storage remains alive through the call.
+        let status = unsafe { entry(&host, &invocation) };
+        let latched_statement_failure = context.statement_failed.load(Ordering::SeqCst);
+        let _ = handle;
+        Ok(query_exit_status(status, latched_statement_failure))
     }
 
     unsafe fn execute_v4_library(
@@ -707,6 +785,29 @@ mod worker {
         )
     }
 
+    unsafe extern "C" fn optimizer_request_v5(
+        context: *mut c_void,
+        operation: u16,
+        request: *const u8,
+        request_len: u64,
+        response: *mut u8,
+        response_capacity: u64,
+        response_len: *mut u64,
+    ) -> i32 {
+        callback_ipc_v2(
+            context,
+            ServiceRole::OptimizerSubmission,
+            operation,
+            IpcCallbackBuffers {
+                request,
+                request_len,
+                response,
+                response_capacity,
+                response_len,
+            },
+        )
+    }
+
     struct IpcCallbackBuffers {
         request: *const u8,
         request_len: u64,
@@ -1005,6 +1106,61 @@ mod worker {
             assert_eq!(status, CALLBACK_RESPONSE_TOO_SMALL);
             assert_eq!(response_len, 3);
             assert_eq!(small_response, [0x7f; 2]);
+            server.join().unwrap();
+        }
+
+        #[test]
+        fn optimizer_v5_callback_selects_an_allowlisted_operation() {
+            let (planner, _planner_peer) = UnixStream::pair().unwrap();
+            let (executor, _executor_peer) = UnixStream::pair().unwrap();
+            let (optimizer, mut optimizer_peer) = UnixStream::pair().unwrap();
+            let (result, _result_peer) = UnixStream::pair().unwrap();
+            let context = callback_context_with_optimizer(planner, executor, optimizer, result);
+            let context_ptr = (&context as *const CallbackContext).cast_mut().cast();
+            let server = std::thread::spawn(move || {
+                let request = read_frame(&mut optimizer_peer).unwrap().unwrap();
+                assert_eq!(request.operation, Operation::OptimizeDelete as u16);
+                assert_eq!(request.payload, b"delete request");
+                write_frame(
+                    &mut optimizer_peer,
+                    &IpcFrame {
+                        operation: request.operation,
+                        request_id: request.request_id,
+                        payload: b"response".to_vec(),
+                    },
+                )
+                .unwrap();
+            });
+            let request = b"delete request";
+            let mut response = [0; 8];
+            let mut response_len = 0;
+            let status = unsafe {
+                optimizer_request_v5(
+                    context_ptr,
+                    Operation::OptimizeDelete as u16,
+                    request.as_ptr(),
+                    request.len() as u64,
+                    response.as_mut_ptr(),
+                    response.len() as u64,
+                    &mut response_len,
+                )
+            };
+            assert_eq!(status, CALLBACK_OK);
+            assert_eq!(response_len, 8);
+            assert_eq!(&response, b"response");
+
+            let status = unsafe {
+                optimizer_request_v5(
+                    context_ptr,
+                    Operation::DescribePlanRelation as u16,
+                    request.as_ptr(),
+                    request.len() as u64,
+                    response.as_mut_ptr(),
+                    response.len() as u64,
+                    &mut response_len,
+                )
+            };
+            assert_eq!(status, CALLBACK_INVALID_ARGUMENT);
             server.join().unwrap();
         }
 

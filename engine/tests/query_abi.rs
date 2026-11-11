@@ -1,11 +1,12 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use prdb_engine::query_abi::{
-    BorrowedInvocationV1, HostApiV1, HostApiV2, HostApiV3, HostApiV4, InvocationV1, InvocationV2,
-    InvocationV3, InvocationV4, ParameterError, QUERY_ABI_V2_VERSION, QUERY_ABI_V3_VERSION,
-    QUERY_ABI_V4_VERSION, QUERY_ABI_VERSION, QueryDescriptorV1, QueryDescriptorV2,
-    QueryDescriptorV3, QueryDescriptorV4, validate_descriptor_v1, validate_descriptor_v2,
-    validate_descriptor_v3, validate_descriptor_v4,
+    BorrowedInvocationV1, HostApiV1, HostApiV2, HostApiV3, HostApiV4, HostApiV5, InvocationV1,
+    InvocationV2, InvocationV3, InvocationV4, InvocationV5, ParameterError, QUERY_ABI_V2_VERSION,
+    QUERY_ABI_V3_VERSION, QUERY_ABI_V4_VERSION, QUERY_ABI_V5_VERSION, QUERY_ABI_VERSION,
+    QueryDescriptorV1, QueryDescriptorV2, QueryDescriptorV3, QueryDescriptorV4, QueryDescriptorV5,
+    validate_descriptor_v1, validate_descriptor_v2, validate_descriptor_v3, validate_descriptor_v4,
+    validate_descriptor_v5,
 };
 
 #[test]
@@ -223,6 +224,33 @@ fn query_abi_v4_preserves_v3_host_prefix_and_adds_optimizer_callback() {
     invalid = valid;
     invalid.invocation_size -= 1;
     assert!(validate_descriptor_v4(&invalid).is_err());
+}
+
+#[test]
+fn query_abi_v5_preserves_v4_prefix_and_adds_operation_selected_callback() {
+    assert_eq!(std::mem::size_of::<HostApiV5>(), 64);
+    assert_eq!(std::mem::align_of::<HostApiV5>(), 8);
+    assert_eq!(std::mem::offset_of!(HostApiV5, v4), 0);
+    assert_eq!(std::mem::offset_of!(HostApiV5, optimizer_request), 56);
+    assert_eq!(std::mem::size_of::<InvocationV5>(), 24);
+    assert_eq!(std::mem::size_of::<QueryDescriptorV5>(), 16);
+
+    let valid = QueryDescriptorV5 {
+        struct_size: std::mem::size_of::<QueryDescriptorV5>() as u32,
+        abi_version: QUERY_ABI_V5_VERSION,
+        host_api_size: std::mem::size_of::<HostApiV5>() as u32,
+        invocation_size: std::mem::size_of::<InvocationV5>() as u32,
+    };
+    assert!(validate_descriptor_v5(&valid).is_ok());
+    let mut invalid = valid;
+    invalid.abi_version = QUERY_ABI_V4_VERSION;
+    assert!(validate_descriptor_v5(&invalid).is_err());
+    invalid = valid;
+    invalid.host_api_size -= 1;
+    assert!(validate_descriptor_v5(&invalid).is_err());
+    invalid = valid;
+    invalid.invocation_size -= 1;
+    assert!(validate_descriptor_v5(&invalid).is_err());
 }
 
 #[test]

@@ -43,3 +43,11 @@
 - Regression: Rust verifies v4 record layout/descriptor rejection and callback request framing, fixed operation, correlation, bounded response copy, and untouched undersized buffers. The TinyCC fixture verifies generated C layout and calling the v4 optimizer callback while preserving the nested v3 API.
 - Verification: the complete TinyCC SDK suite passed under TinyCC 0.9.27-unstable-2025-01-06. Generated ABI consistency, locked workspace build, formatting, warning-denied Clippy, serial workspace tests, and `git diff --check` passed (82 library unit tests; 129 commit integration tests; three cgroup-dependent commit tests and one cgroup-dependent process test ignored). The dedicated ABI v4 callback fixture and focused executor/ABI tests passed. Confined v4 library loading remains unverified because this host has no delegated cgroup test fixture.
 - Remaining: build the C helper that serializes structured SELECT requests and decodes validated plan/status responses, then integrate plan resolution and interpretation into SQL execution.
+
+## EX-1 dependency: operation-selected optimizer callback ABI v5 — implemented
+
+- Contract: [query worker ABI](../../specs/query-worker.md) and [client SDK ABI](../../specs/client-sdk.md). Keep ABI v4's callback fixed to SELECT; expose mutation operations only through the new sized v5 host record and trusted role allowlist.
+- Implementation: ABI v5 nests the entire v4 host record, adds the operation argument, has independent descriptor/entry symbols, and is preferred by the confined executor only when its descriptor validates. PMF1 Rust and C tooling now recognizes v5.
+- Regression: Rust tests assert v5 layout and descriptor rejection, exercise executor callback operation forwarding and allowlist denial, and validate v5 ELF manifests. TinyCC fixture independently validates layout and the operation argument. Existing v4 fixture still passes unchanged in behavior.
+- Verification: workspace build, format, Clippy, full locked tests, ABI generator check, and TinyCC SDK suite passed. Default ignored cgroup acceptance remains required on a delegated host.
+- Remaining: add the C DELETE request serializer and connect v5 submission to a DELETE plan execution path.

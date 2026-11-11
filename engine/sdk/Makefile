@@ -111,9 +111,11 @@ SQL_V3_WRITE_READ_OBJECT := $(BUILD_DIR)/sql-v3-write-read.o
 SQL_V3_RESTRICTED_METADATA_OBJECT := $(BUILD_DIR)/sql-v3-restricted-metadata.o
 QUERY_ABI_GENERATED_HEADERS := $(INCLUDE_DIR)/prdb_query_abi_layout_assertions.h $(INCLUDE_DIR)/prdb_query_abi_records_v1.h $(INCLUDE_DIR)/prdb_query_abi_records_v2.h $(INCLUDE_DIR)/prdb_query_abi_records_v3.h
 QUERY_ABI_V4_TEST := $(BUILD_DIR)/query-abi-v4-callbacks
+QUERY_ABI_V5_TEST := $(BUILD_DIR)/query-abi-v5-callbacks
 SDK_OPTIMIZER_TEST := $(BUILD_DIR)/sdk-optimizer-v1
 SDK_OPTIMIZER_PLAN_TEST := $(BUILD_DIR)/sdk-optimizer-plan-v1
 QUERY_ABI_GENERATED_HEADERS += $(INCLUDE_DIR)/prdb_query_abi_records_v4.h
+QUERY_ABI_GENERATED_HEADERS += $(INCLUDE_DIR)/prdb_query_abi_records_v5.h
 RELEASE_PROFILE_DIR ?= target/release-profile
 RELEASE_PROFILE_ARCHIVE ?= target/prdb-release-profile.tar.gz
 RELEASE_PROFILE_SIGNATURE ?= $(RELEASE_PROFILE_ARCHIVE).minisig
@@ -361,6 +363,9 @@ $(SDK_IPC_PAYLOAD_CODEC_TEST): engine/tests/fixtures/ipc_payload_codec_v1.c $(IN
 $(QUERY_ABI_V4_TEST): engine/tests/fixtures/query_abi_v4_callbacks.c $(INCLUDE_DIR)/prdb_query_abi_v4.h $(INCLUDE_DIR)/prdb_query_abi_constants.h $(QUERY_ABI_GENERATED_HEADERS) | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" -o "$@"
 
+$(QUERY_ABI_V5_TEST): engine/tests/fixtures/query_abi_v5_callbacks.c $(INCLUDE_DIR)/prdb_query_abi_v5.h $(INCLUDE_DIR)/prdb_query_abi_constants.h $(QUERY_ABI_GENERATED_HEADERS) | $(BUILD_DIR)
+	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" -o "$@"
+
 $(SDK_OPTIMIZER_TEST): engine/tests/fixtures/sdk_optimizer_v1.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_optimizer_v1.h $(INCLUDE_DIR)/prdb_sdk_sql_v2.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
 
@@ -453,6 +458,11 @@ abi-constants-test:
 .PHONY: abi-constants abi-constants-check abi-constants-test
 
 test: $(SDK_OPTIMIZER_TEST) $(SDK_OPTIMIZER_PLAN_TEST)
+test: run-query-abi-v5
+
+.PHONY: run-query-abi-v5
+run-query-abi-v5: $(QUERY_ABI_V5_TEST)
+	"$(QUERY_ABI_V5_TEST)"
 
 test: abi-constants-check abi-constants-test $(QUERY_ABI_V4_TEST) $(SDK_VALUE_TEST) $(SDK_BATCH_TEST) $(SDK_SQL_TEST) $(SDK_SQL_EXPRESSION_TEST) $(SDK_SQL_V2_TEST) $(SDK_SQL_ORDER_TEST) $(SDK_SQL_GROUP_TEST) $(SDK_SQL_JOIN_TEST) $(SDK_SQL_JOIN_V2_TEST) $(SDK_SQL_V3_TEST) $(SDK_SQL_V4_TEST) $(SDK_SQL_V5_TEST) $(SDK_SQL_V6_TEST) $(SDK_SQL_V7_TEST) $(SDK_SQL_V8_TEST) $(SDK_SQL_V9_TEST) $(SDK_SQL_V10_TEST) $(SDK_SQL_V11_TEST) $(SDK_SQL_V12_TEST) $(SDK_SQL_V13_TEST) $(SDK_SQL_V14_TEST) $(SDK_SQL_V15_TEST) $(SDK_SQL_V16_TEST) $(SDK_SQL_V17_TEST) $(SDK_SQL_V18_TEST) $(SDK_SQL_V19_TEST) $(SDK_PLANNER_TEST) $(SDK_EXECUTOR_TEST) $(SDK_SQL_EXEC_TEST) $(SDK_SQL_EXEC_V5_TEST) $(SDK_SQL_EXEC_V6_TEST) $(SDK_SQL_EXEC_V7_TEST) $(SDK_SQL_EXEC_V8_TEST) $(SDK_SQL_EXEC_V9_TEST) $(SDK_SQL_EXEC_V10_TEST) $(SDK_SQL_EXEC_V19_TEST) $(SDK_SQL_INFORMATION_SCHEMA_TEST) $(SDK_SQL_RESULT_TEST) $(SDK_SQL_RESULT_V13_TEST) $(SDK_SQL_DML_TEST) $(SDK_MANIFEST_TEST) $(SDK_SCOPE_TEST) $(SDK_IPC_FRAME_TEST) $(SDK_IPC_PAYLOAD_CODEC_TEST)
 	"$(SDK_OPTIMIZER_TEST)"

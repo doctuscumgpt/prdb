@@ -9,11 +9,19 @@
 
 ## SDK-3 dependency: ABI v4 PMF1 and query packaging — implemented
 
-- Behavior: PMF1 encode/decode, ELF export inspection, TinyCC packaging, and the C PMF1 encoder accept ABI versions 1–4. ABI v4 requires its exact descriptor OBJECT and entry FUNC exports; ABI 5 remains rejected. The packager still inspects ELF as data and never loads the query.
-- Regression: Rust tests cover v4 manifest roundtrip, correct ELF symbols, mismatched entry rejection, and a real TinyCC package build using v4 exports. A second packaging test compiles the maintained optimizer SQL fixture and checks its v4 manifest without loading it. The package fixture's aborting constructor remains unexecuted. The maintained C manifest fixture checks v4 symbol derivation and unsupported-version rejection.
+- Behavior: PMF1 encode/decode, ELF export inspection, TinyCC packaging, and the C PMF1 encoder accept ABI versions 1–5. Each ABI requires its exact descriptor OBJECT and entry FUNC exports. The packager still inspects ELF as data and never loads the query.
+- Regression: Rust tests cover v4 and v5 manifest roundtrips, correct ELF symbols, mismatched entry rejection, and package builds using their respective exports. The maintained optimizer SQL fixture still checks v4 without loading it. The package fixture's aborting constructor remains unexecuted. The maintained C manifest fixture checks v4/v5 symbol derivation and version 6 rejection.
 - Verification: the focused Rust manifest and packaging tests, full workspace build/format/Clippy/tests, and `make -f engine/sdk/Makefile test` passed. Three sandbox START tests remain ignored because this host's cgroup2 mount remains read-only even after the authorized remount attempt.
 - Filesystem compatibility: publication uses `renameat2(RENAME_NOREPLACE)`. The repository's NFSv4.2 workspace mount returns `EINVAL`; the packager removes its staging directory and now reports `AtomicPublishUnsupported`. The same maintained fixture packages successfully to `/tmp` on ext4.
 - Remaining: execute the ABI v4 optimizer callback in the confined acceptance harness on a conforming cgroup host.
+
+## SDK-3 dependency: ABI v5 operation-selected optimizer callback — implemented
+
+- Contract: [Client SDK ABI](../../specs/client-sdk.md) and [query worker ABI](../../specs/query-worker.md). ABI v5 retains the complete v4 host prefix and adds operation-selected optimizer submission; the trusted executor enforces the `OptimizerSubmission` allowlist.
+- Implementation: generated C/Rust layouts and descriptor symbols, executor v5 preference/validation, ABI v5 PMF1 symbol derivation, and the C SDK callback record.
+- Regression: Rust layout/descriptor tests cover v5 offsets and invalid size/version records; Rust/C manifest tests accept exact v5 symbols and reject version 6; executor tests prove `OptimizeDelete` succeeds and unrelated operations are denied. TinyCC independently compiles and calls the v5 callback with `OptimizeDelete`.
+- Verification: full workspace build, formatting, warning-denied Clippy, and locked tests passed; TinyCC SDK test suite and ABI generator consistency passed. Cgroup-dependent sandbox acceptance remains host-gated.
+- Remaining: submit a real DELETE request and execute its returned plan through the standard authorized executor channel.
 
 ## SDK-1 dependency: canonical Rust PMF1 encoder — implemented
 
