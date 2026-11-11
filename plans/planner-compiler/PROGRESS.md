@@ -333,3 +333,12 @@
 - Verification: targeted optimizer-plan fixture and full maintained TinyCC SDK suite passed in the pinned Nix shell; ABI generator's eight tests and generated-file check passed.
 - Limitation: this validates plans but does not scan or stage UPDATE writes. Parameter assignment compatibility currently requires an exact scalar type code; coercions are unspecified and remain unsupported by this path.
 - Remaining: execute matched UPDATE plans over an authorized full scan, stage typed patches through executor mutation IPC, and verify the path through confined optimizer/executor processes.
+
+## OP-3 dependency: execute matched UPDATE plans through executor IPC — implemented; confined acceptance open
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). Run the SQL predicate only over the independently resolved relation's authorized full-shape batches, collect matching opaque row handles, close the scan, then stage the exact verified patch set through ordinary executor UPDATE IPC.
+- Implementation: `prdb_sdk_optimizer_execute_update_ast_v1` submits and validates the plan, acquires a normal relation handle, binds/evaluates the SQL AST predicate over sanitized rows, polls cancellation, bounds pages and target handles, closes the cursor before mutation, and stages each patch through `stage_update`. Any execution/staging failure latches statement failure; the output count is published only after all stages succeed.
+- Regression: maintained TinyCC optimizer-plan fixture executes a matching parameterized UPDATE through mocked optimizer/executor callbacks, checks the operation and typed patch bytes, and confirms one row was staged with no failure latch.
+- Verification: targeted optimizer-plan fixture and full maintained TinyCC SDK suite passed in the pinned Nix shell; ABI generation check and all eight generator tests passed.
+- Limitation: this is a maintained SDK callback fixture, not confined-process acceptance. Commit visibility, sandbox behavior, cancellation and failure abort still require integration evidence through the real process harness.
+- Remaining: run the UPDATE optimizer path through confined optimizer/executor processes and add cancellation, response-loss, target-limit, and staging-failure acceptance cases.

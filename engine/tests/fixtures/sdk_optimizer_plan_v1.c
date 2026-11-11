@@ -236,6 +236,7 @@ typedef struct resolve_context {
     uint32_t calls;
     uint32_t optimizer_calls;
     uint32_t stage_delete_calls;
+    uint32_t stage_update_calls;
     uint32_t statement_failures;
     uint16_t events[32];
     uint32_t event_count;
@@ -265,9 +266,12 @@ static int32_t optimizer_request_v5(
     void *context, uint16_t operation, const uint8_t *request,
     uint64_t request_len, uint8_t *response, uint64_t response_capacity,
     uint64_t *response_len) {
-    assert(operation == PRDB_IPC_OP_OPTIMIZE_DELETE);
+    assert(operation == PRDB_IPC_OP_OPTIMIZE_DELETE ||
+           operation == PRDB_IPC_OP_OPTIMIZE_UPDATE);
     assert(request_len >= PRDB_OPTIMIZER_SELECT_REQUEST_HEADER_BYTES);
-    assert(request[2] == PRDB_OPTIMIZER_DELETE_STATEMENT);
+    assert(request[2] == (operation == PRDB_IPC_OP_OPTIMIZE_DELETE
+                              ? PRDB_OPTIMIZER_DELETE_STATEMENT
+                              : PRDB_OPTIMIZER_UPDATE_STATEMENT));
     return optimizer_request(context, request, request_len, response,
                              response_capacity, response_len);
 }
@@ -338,6 +342,17 @@ static int32_t resolve_plan_relation(void *context, uint16_t operation,
         assert(request_len == 18 && request[0] == 0 && request[1] == 1);
         assert(request[2] == 8);
         ++resolved->stage_delete_calls;
+        source = acknowledgement;
+        source_len = sizeof(acknowledgement);
+    } else if (operation == PRDB_SDK_EXECUTOR_OP_STAGE_UPDATE) {
+        static const uint8_t acknowledgement[] = {0, 1, 0};
+        assert(request_len == 34 && request[0] == 0 && request[1] == 1);
+        assert(request[2] == 8 && request[18] == 0 && request[19] == 1);
+        assert(request[20] == 0 && request[21] == 0 &&
+               request[22] == 0 && request[23] == 0);
+        assert(request[24] == 0 &&
+               request[25] == PRDB_SDK_VALUE_TYPE_INTEGER);
+        ++resolved->stage_update_calls;
         source = acknowledgement;
         source_len = sizeof(acknowledgement);
     } else {
@@ -1242,6 +1257,40 @@ int main(void) {
                &deleted_count) == PRDB_SDK_OPTIMIZER_PLAN_OK);
     assert(deleted_count == 1 && resolve.optimizer_calls == 1 &&
            resolve.stage_delete_calls == 1 && resolve.statement_failures == 0);
+    assert(resolve.calls == 7);
+
+    uint8_t execute_update_sql[] =
+        "UPDATE items SET c0 = $2 WHERE c0 = $1";
+    static prdb_sdk_update_v1 execute_update_statement;
+    assert(prdb_sdk_sql_parse_update_v1(
+               execute_update_sql, sizeof(execute_update_sql) - 1,
+               &execute_update_statement, sizeof(execute_update_statement),
+               NULL) == PRDB_SDK_SQL_OK);
+    uint8_t execute_update_plan[512];
+    uint32_t execute_update_plan_len = build_update_plan(execute_update_plan);
+    resolve.optimizer_response_len = build_optimizer_response(
+        resolve.optimizer_response, execute_update_plan,
+        execute_update_plan_len);
+    resolve.calls = 0;
+    resolve.optimizer_calls = 0;
+    resolve.stage_update_calls = 0;
+    resolve.statement_failures = 0;
+    resolve.event_count = 0;
+    uint32_t updated_count = 0;
+    assert(prdb_sdk_optimizer_execute_update_ast_v1(
+               &host_v5, &execute_update_statement, update_parameters, 2,
+               (const uint8_t *)"public", 6, 2, sizeof(batch_response),
+               request, sizeof(request), optimizer_response,
+               sizeof(optimizer_response), response, sizeof(response),
+               scan_response, sizeof(scan_response), batch_response,
+               sizeof(batch_response), &acquired_relation,
+               sizeof(acquired_relation), acquired_columns, 4, &delete_binding,
+               sizeof(delete_binding), delete_cell_scratch, 4,
+               delete_target_handles,
+               PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS,
+               &updated_count) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(updated_count == 1 && resolve.optimizer_calls == 1 &&
+           resolve.stage_update_calls == 1 && resolve.statement_failures == 0);
     assert(resolve.calls == 7);
     return 0;
 }

@@ -174,6 +174,26 @@ int32_t prdb_sdk_optimizer_execute_delete_ast_v1(
     uint8_t *target_handles, uint32_t target_capacity,
     uint32_t *deleted_count_out);
 
+/* Submit, verify, scan and execute a parsed UPDATE through ABI v5. Row handles
+ * are collected before staging so scan iteration completes before writes. */
+int32_t prdb_sdk_optimizer_execute_update_ast_v1(
+    const prdb_host_api_v5 *host, const prdb_sdk_update_v1 *statement,
+    const prdb_sdk_value_v1 *parameters, uint32_t parameter_count,
+    const uint8_t *schema, uint32_t schema_len, uint16_t max_candidates,
+    uint32_t max_batch_bytes, uint8_t *request, uint64_t request_capacity,
+    uint8_t *optimizer_response, uint64_t optimizer_response_capacity,
+    uint8_t *relation_response, uint64_t relation_response_capacity,
+    uint8_t *scan_response, uint64_t scan_response_capacity,
+    uint8_t *batch_response, uint64_t batch_response_capacity,
+    prdb_sdk_executor_relation_v1 *relation_out,
+    uint32_t relation_out_capacity,
+    prdb_sdk_sql_column_shape_v2 *relation_columns,
+    uint32_t relation_column_capacity,
+    prdb_sdk_select_binding_v2 *binding, uint32_t binding_capacity,
+    prdb_sdk_value_v1 *cell_scratch, uint32_t cell_scratch_capacity,
+    uint8_t *target_handles, uint32_t target_capacity,
+    uint32_t *updated_count_out);
+
 /* Re-resolve a validated plan's qualified relation through executor storage
  * and require its stable identity and scanned column definitions to match.
  * The response buffer remains caller-owned. No executor handle is returned. */
