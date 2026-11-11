@@ -57,7 +57,7 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             .map_err(OptimizerProcessError::Dispatch)?;
         if !matches!(
             operation,
-            Operation::OptimizeSelect | Operation::OptimizeDelete
+            Operation::OptimizeSelect | Operation::OptimizeDelete | Operation::OptimizeUpdate
         ) {
             return Err(OptimizerProcessError::Dispatch(
                 DispatchError::OperationNotAllowed {
@@ -74,6 +74,10 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             }
             Operation::OptimizeDelete => {
                 crate::optimizer_request::decode_delete_request(&request.payload)
+                    .map(|decoded| (decoded.schema_name, decoded.relation_name))
+            }
+            Operation::OptimizeUpdate => {
+                crate::optimizer_request::decode_update_request(&request.payload)
                     .map(|decoded| (decoded.schema_name, decoded.relation_name))
             }
             _ => unreachable!("optimizer operation was checked above"),
@@ -124,6 +128,12 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             }
             Operation::OptimizeDelete => {
                 crate::optimizer_service::optimize_delete_v1_with_relation(
+                    &request.payload,
+                    relation,
+                )
+            }
+            Operation::OptimizeUpdate => {
+                crate::optimizer_service::optimize_update_v1_with_relation(
                     &request.payload,
                     relation,
                 )
@@ -189,6 +199,23 @@ mod tests {
         }
         bytes.extend_from_slice(&2u32.to_be_bytes());
         bytes.extend_from_slice(&[0x01, 1]);
+        bytes
+    }
+
+    fn update_request() -> Vec<u8> {
+        let mut bytes = vec![0, 1, crate::query_abi::OPTIMIZER_UPDATE_STATEMENT, 0];
+        for name in ["public", "items"] {
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.push(6);
+        bytes.extend_from_slice(b"active");
+        bytes.push(0);
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        let predicate = [0x20, 0, 0x10, 2, b'i', b'd', 0x02, 0, 0, 0, 0, 0, 0, 0, 7];
+        bytes.extend_from_slice(&(predicate.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&predicate);
         bytes
     }
 
@@ -330,6 +357,92 @@ mod tests {
             assert_eq!(plan.relation.schema_id, [1; 16]);
             assert_eq!(plan.relation.table_epoch, 7);
             assert!(plan.scan_columns.is_empty());
+            submission_client.shutdown(Shutdown::Write).unwrap();
+            planner_thread.join().unwrap();
+            optimizer_thread.join().unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn process_protocol_dispatches_update_and_returns_a_validated_update_plan() {
+        let (mut submission_client, mut submission_server) = UnixStream::pair().unwrap();
+        let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
+        std::thread::scope(|scope| {
+            let planner_thread = scope.spawn(|| {
+                let request = crate::ipc::read_frame(&mut planner_server)
+                    .unwrap()
+                    .expect("optimizer must resolve UPDATE relation metadata");
+                assert_eq!(request.operation, Operation::DescribePlanRelation as u16);
+                assert_eq!(request.request_id, 11);
+                let relation = AuthorizedPlanRelation {
+                    schema_id: [1; 16],
+                    schema_version: 3,
+                    table_epoch: 7,
+                    relation: AuthorizedRelationDescription {
+                        relation_id: [2; 16],
+                        name: "items".to_owned(),
+                        columns: vec![
+                            VisibleColumn {
+                                column_id: [3; 16],
+                                name: "id".to_owned(),
+                                ordinal: 0,
+                                scalar_type: ScalarType::Integer,
+                                nullable: false,
+                            },
+                            VisibleColumn {
+                                column_id: [4; 16],
+                                name: "active".to_owned(),
+                                ordinal: 1,
+                                scalar_type: ScalarType::Boolean,
+                                nullable: true,
+                            },
+                        ],
+                    },
+                };
+                crate::ipc::write_frame(
+                    &mut planner_server,
+                    &IpcFrame {
+                        operation: request.operation,
+                        request_id: request.request_id,
+                        payload: DescribePlanRelationResponse {
+                            relation: Some(relation),
+                        }
+                        .encode()
+                        .unwrap(),
+                    },
+                )
+                .unwrap();
+            });
+            let optimizer_thread = scope
+                .spawn(|| serve_optimizer_process(&mut submission_server, &mut planner_client));
+
+            crate::ipc::write_frame(
+                &mut submission_client,
+                &IpcFrame {
+                    operation: Operation::OptimizeUpdate as u16,
+                    request_id: 11,
+                    payload: update_request(),
+                },
+            )
+            .unwrap();
+            let response = crate::ipc::read_frame(&mut submission_client)
+                .unwrap()
+                .expect("optimizer must return an UPDATE plan");
+            assert_eq!(response.operation, Operation::OptimizeUpdate as u16);
+            assert_eq!(response.request_id, 11);
+            let response = OptimizerResponse::decode(&response.payload).unwrap();
+            assert_eq!(response.status, OptimizerStatus::Success);
+            let plan =
+                crate::optimizer_plan::decode_update_plan_v1(response.plan.as_deref().unwrap())
+                    .unwrap();
+            assert_eq!(plan.relation.schema_id, [1; 16]);
+            assert_eq!(plan.relation.table_epoch, 7);
+            assert_eq!(plan.scan_columns.len(), 2);
+            assert_eq!(plan.assignments[0].column.column_id, [4; 16]);
+            assert_eq!(
+                plan.assignments[0].value,
+                crate::optimizer_binding::BoundUpdateValue::Parameter(1)
+            );
             submission_client.shutdown(Shutdown::Write).unwrap();
             planner_thread.join().unwrap();
             optimizer_thread.join().unwrap().unwrap();

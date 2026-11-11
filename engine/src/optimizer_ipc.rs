@@ -1,7 +1,9 @@
 //! Versioned request/response payloads for executor-to-optimizer submission.
 
 use crate::optimizer_binding::{BindError, MetadataBindError};
-use crate::optimizer_plan::{MAX_PLAN_BYTES, decode_delete_plan_v1, decode_plan_v1};
+use crate::optimizer_plan::{
+    MAX_PLAN_BYTES, decode_delete_plan_v1, decode_plan_v1, decode_update_plan_v1,
+};
 use crate::optimizer_request::{RequestError, SelectRequest, decode_select_request};
 use crate::optimizer_service::OptimizerError;
 pub use crate::query_abi::{
@@ -52,7 +54,10 @@ pub fn decode_optimizer_request(bytes: &[u8]) -> Result<SelectRequest, Optimizer
 }
 
 fn validate_optimizer_plan(bytes: &[u8]) -> Result<(), OptimizerPayloadError> {
-    if decode_plan_v1(bytes).is_ok() || decode_delete_plan_v1(bytes).is_ok() {
+    if decode_plan_v1(bytes).is_ok()
+        || decode_delete_plan_v1(bytes).is_ok()
+        || decode_update_plan_v1(bytes).is_ok()
+    {
         Ok(())
     } else {
         Err(OptimizerPayloadError::InvalidPlan)
@@ -217,6 +222,31 @@ mod tests {
         crate::optimizer_plan::encode_delete_plan_v1(&plan).unwrap()
     }
 
+    fn update_plan_bytes() -> Vec<u8> {
+        let plan = crate::optimizer_plan::plan_update_v1(
+            crate::optimizer_plan::RelationReference {
+                schema_name: "public".to_owned(),
+                schema_id: [1; 16],
+                schema_version: 1,
+                relation_name: "items".to_owned(),
+                relation_id: [2; 16],
+                table_epoch: 1,
+            },
+            crate::optimizer_binding::BoundPredicate::Boolean(true),
+            vec![crate::optimizer_binding::BoundUpdateAssignment {
+                column: BoundColumn {
+                    column_id: [3; 16],
+                    ordinal: 0,
+                    scalar_type: ScalarType::Integer,
+                    nullable: false,
+                },
+                value: crate::optimizer_binding::BoundUpdateValue::Parameter(1),
+            }],
+        )
+        .unwrap();
+        crate::optimizer_plan::encode_update_plan_v1(&plan).unwrap()
+    }
+
     #[test]
     fn optimizer_responses_roundtrip_only_validated_plans() {
         let plan = plan_bytes();
@@ -235,6 +265,12 @@ mod tests {
         assert_eq!(
             OptimizerResponse::decode(&delete.encode().unwrap()),
             Ok(delete)
+        );
+
+        let update = OptimizerResponse::success(update_plan_bytes()).unwrap();
+        assert_eq!(
+            OptimizerResponse::decode(&update.encode().unwrap()),
+            Ok(update)
         );
     }
 

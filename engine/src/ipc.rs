@@ -42,6 +42,7 @@ pub enum Operation {
     OptimizeSelect = crate::query_abi::IPC_OP_OPTIMIZE_SELECT,
     DescribePlanRelation = crate::query_abi::IPC_OP_DESCRIBE_PLAN_RELATION,
     OptimizeDelete = crate::query_abi::IPC_OP_OPTIMIZE_DELETE,
+    OptimizeUpdate = crate::query_abi::IPC_OP_OPTIMIZE_UPDATE,
     FinalizeTransaction = crate::query_abi::IPC_OP_FINALIZE_TRANSACTION,
     AbortTransaction = crate::query_abi::IPC_OP_ABORT_TRANSACTION,
     SupervisorCancelInvocation = crate::query_abi::IPC_OP_SUPERVISOR_CANCEL_INVOCATION,
@@ -92,6 +93,7 @@ impl Operation {
             crate::query_abi::IPC_OP_OPTIMIZE_SELECT => Ok(Self::OptimizeSelect),
             crate::query_abi::IPC_OP_DESCRIBE_PLAN_RELATION => Ok(Self::DescribePlanRelation),
             crate::query_abi::IPC_OP_OPTIMIZE_DELETE => Ok(Self::OptimizeDelete),
+            crate::query_abi::IPC_OP_OPTIMIZE_UPDATE => Ok(Self::OptimizeUpdate),
             crate::query_abi::IPC_OP_FINALIZE_TRANSACTION => Ok(Self::FinalizeTransaction),
             crate::query_abi::IPC_OP_ABORT_TRANSACTION => Ok(Self::AbortTransaction),
             crate::query_abi::IPC_OP_SUPERVISOR_CANCEL_INVOCATION => {
@@ -171,7 +173,7 @@ pub fn authorize_operation(role: ServiceRole, operation: Operation) -> Result<()
         ),
         ServiceRole::OptimizerSubmission => matches!(
             operation,
-            Operation::OptimizeSelect | Operation::OptimizeDelete
+            Operation::OptimizeSelect | Operation::OptimizeDelete | Operation::OptimizeUpdate
         ),
         ServiceRole::Supervisor => matches!(
             operation,
