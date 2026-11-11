@@ -18,3 +18,10 @@
 - Method: ran the already-built release harness five times sequentially. Each run created and removed a fresh temporary READY database and measured 256 commits in each phase. These are independent database runs on one host, not independent host or filesystem samples.
 - Summary: the median of the five run-level p50/p95/p99 values was 5.910/12.708/18.127 ms operational-only and 8.921/13.383/19.172 ms under retained-snapshot scans. Across runs, the operational-only ranges were 5.644–5.960/11.646–15.286/15.699–21.524 ms; mixed-load ranges were 8.697–9.162/11.213–16.845/16.406–34.279 ms. Mixed throughput ranged from 415.3 to 450.7 commits/s, while the snapshot completed 8,297–9,124 scans per run.
 - Interpretation: the repeated sample supports a higher median commit latency under this synthetic scan loop on this host, with a wide mixed p99 range. Keep it as local comparative evidence only; workload diversity, longer runs, host variation, SQL joins/sorts, maintenance, and target-hardware profiles remain open.
+
+## WI-7 dependency: estimate latency across authorized row counts — measured
+
+- Harness: [`statistics_estimate.rs`](../../engine/examples/statistics_estimate.rs) measures 11 exact authorized scan estimates at 1,024, 8,192, and 16,383 INTEGER rows, timing the estimate call separately from database setup, seeding, compilation, and planner IPC.
+- Profile and result: Rust/Cargo 1.95.0, redb 4.4.0, Linux x86_64. Median/p95 was 0.901/0.975 ms, 7.847/11.258 ms, and 14.202/16.845 ms for the three sizes respectively. The largest dataset is one candidate below the estimate ceiling.
+- Scope: a single local run on one host. This provides a population-size baseline for the storage API and does not measure concurrent SQL analytics, planner work, maintenance, target hardware, or service latency.
+- Verification: the release harness completed successfully with the locked dependency set.

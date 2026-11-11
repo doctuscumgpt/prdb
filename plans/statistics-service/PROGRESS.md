@@ -47,3 +47,10 @@
 - Changed code and contract: [planner stream and dispatcher](../../engine/src/planner_ipc.rs) and [planner IPC contract](../../specs/ipc-protocol.md).
 - Verification: format, workspace build, and warning-denied Clippy pass. Tests were not run in this increment.
 - Remaining: supervisor provisioning, shared planner/executor invocation scheduling, and cancellation-aware planner task draining remain open.
+
+## ST-1 / WI-7 dependency: estimate cost across candidate populations — measured
+
+- Harness: [`statistics_estimate.rs`](../../engine/examples/statistics_estimate.rs) seeds 1,024, 8,192, and 16,383 deterministic authorized INTEGER rows and times 11 exact estimate calls per dataset, excluding bootstrap, seeding, compilation, and planner IPC.
+- Profile and result: Rust/Cargo 1.95.0, redb 4.4.0, TinyCC 0.9.27-unstable-2025-01-06, Linux x86_64. Median/p95 call latency was 0.901/0.975 ms at 1,024 rows, 7.847/11.258 ms at 8,192 rows, and 14.202/16.845 ms at 16,383 rows, just below the 16,384 candidate ceiling.
+- Scope: one local run on one host. These figures show scaling of the storage estimate call for this simple authorized shape; they are not planner, service-level, mixed-workload, or target-hardware performance claims. Repeated host/filesystem samples and broader policy/workload shapes remain open.
+- Verification: `nix-shell -p rustc cargo clippy rustfmt tinycc --run 'cargo run -p prdb-engine --release --example statistics_estimate --locked'` completed successfully.
