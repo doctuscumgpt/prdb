@@ -18,7 +18,8 @@
 
 #include <string.h>
 
-#define SQL_EXEC_V7_MAX_SCAN_PAGES UINT32_C(126)
+#define SQL_EXEC_V7_MAX_SCAN_PAGES UINT32_C(124)
+#define SQL_EXEC_V7_GROUPS_PER_CANCEL_CHECK UINT32_C(32)
 
 static int32_t fail_statement(const prdb_host_api_v3 *host, int32_t status) {
     if (status != PRDB_SDK_SQL_EXEC_OK) {
@@ -1034,6 +1035,15 @@ static int32_t execute_group_internal(
             if (statement.base.has_limit &&
                 output_index >= statement.base.limit) {
                 break;
+            }
+            if (output_index % SQL_EXEC_V7_GROUPS_PER_CANCEL_CHECK == 0) {
+                int32_t cancelled = 0;
+                status = prdb_sdk_executor_check_cancelled_v1(host,
+                                                              &cancelled);
+                if (status != PRDB_SDK_EXECUTOR_OK || cancelled) {
+                    return fail_statement(host_v3,
+                                          PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+                }
             }
             if (enable_boolean_having && on_group_v18 != NULL) {
                 status = on_group_v18(

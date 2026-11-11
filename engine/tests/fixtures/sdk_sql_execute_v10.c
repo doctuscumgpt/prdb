@@ -15,7 +15,7 @@ typedef struct mock_state {
     uint32_t planner_len;
     uint8_t executor[256];
     uint32_t executor_len;
-    uint8_t batch[512];
+    uint8_t batch[4096];
     uint32_t batch_len;
     uint32_t batch_finished;
     uint32_t planner_calls;
@@ -25,6 +25,8 @@ typedef struct mock_state {
     uint32_t statement_failed;
     uint32_t cancelled;
     uint32_t cancel_after_first_batch;
+    uint32_t cancel_when_batch_finishes;
+    uint32_t cancel_after_group_callbacks;
     uint32_t streamed_pages;
     uint32_t max_candidates;
 } mock_state;
@@ -34,11 +36,11 @@ typedef struct group_capture {
     uint32_t calls;
     uint32_t expect_having_literal;
     uint64_t expected_row_count;
-    int32_t keys[4];
-    int32_t second_keys[4];
-    int32_t aggregates[4];
-    uint32_t aggregate_states[4];
-    uint64_t row_counts[4];
+    int32_t keys[128];
+    int32_t second_keys[128];
+    int32_t aggregates[128];
+    uint32_t aggregate_states[128];
+    uint64_t row_counts[128];
 } group_capture;
 
 static void put_u16(uint8_t *p, uint32_t *offset, uint16_t value) {
@@ -201,6 +203,9 @@ static int32_t executor_request(void *context, uint16_t operation,
         }
         ++mock->next_calls;
         if (mock->next_calls == 1 && mock->cancel_after_first_batch) {
+            mock->cancelled = 1;
+        }
+        if (mock->cancel_when_batch_finishes && mock->batch_finished) {
             mock->cancelled = 1;
         }
     } else if (operation == PRDB_SDK_EXECUTOR_OP_CLOSE_CURSOR) {
@@ -421,7 +426,7 @@ static int32_t on_group_v13(void *context,
     assert(group_key_count == 2 && binding->group_key_count == 2);
     assert(capture->mock->batch_finished != 0);
     assert(capture->mock->executor_calls == 3);
-    assert(capture->calls < 4);
+    assert(capture->calls < 128);
     assert(prdb_sdk_value_get_integer_v1(&group_keys[0], &first) ==
            PRDB_SDK_VALUE_ACCESS_OK);
     assert(prdb_sdk_value_get_integer_v1(&group_keys[1], &second) ==
@@ -446,6 +451,9 @@ static int32_t on_group_v13(void *context,
     capture->second_keys[capture->calls] = second;
     capture->row_counts[capture->calls] = matching_row_count;
     ++capture->calls;
+    if (capture->mock->cancel_after_group_callbacks == capture->calls) {
+        capture->mock->cancelled = 1;
+    }
     return 0;
 }
 
@@ -455,8 +463,8 @@ static int32_t run_query_v13(mock_state *mock, const uint8_t *sql,
     static const uint8_t schema[] = "app";
     uint8_t planner_response[256] = {0};
     uint8_t executor_response[256] = {0};
-    uint8_t batch_response[512] = {0};
-    uint8_t materialized_bytes[64] = {0};
+    uint8_t batch_response[4096] = {0};
+    uint8_t materialized_bytes[4096] = {0};
     static const uint8_t id_name[] = "id";
     static const uint8_t score_name[] = "score";
     prdb_sdk_sql_column_shape_v2 planner_columns[2] = {
@@ -785,6 +793,8 @@ int main(void) {
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
         "HAVING (SUM(score) >= 9 OR SUM(score) = $1) AND "
         "NOT SUM(score) < 3 ORDER BY score DESC LIMIT 2";
+    static const uint8_t v13_many_groups_sql[] =
+        "SELECT id, score, COUNT(*) FROM widgets GROUP BY id, score";
     static const uint8_t parameter_bytes[] = {0, 0, 0, 5};
     static const uint8_t having_parameter_bytes[] = {
         0, 0, 0, 0, 0, 0, 0, 1};
@@ -995,13 +1005,46 @@ int main(void) {
                 sizeof(v18_compound_having_sql) - 1, &v18_having_parameter,
                 &capture);
             assert(capture.calls == 0);
-            assert(mock.next_calls == 126);
-            assert(mock.executor_requests == 255);
+            assert(mock.next_calls == 124);
+            assert(mock.executor_requests == 251);
             assert(mock.statement_failed == 1);
             assert(status == PRDB_SDK_SQL_EXEC_REQUEST_LIMIT);
             mock.streamed_pages = 0;
             mock.max_candidates = 0;
             capture.expected_row_count = 0;
+        }
+        {
+            int32_t many_keys[40];
+            int32_t many_scores[40];
+            uint8_t many_value_states[40];
+            for (uint32_t index = 0; index < 40; ++index) {
+                many_keys[index] = 1;
+                many_scores[index] = (int32_t)index + 9;
+                many_value_states[index] = PRDB_SDK_VALUE_STATE_VALUE;
+            }
+            mock.batch_len = make_rows(mock.batch, 1, many_keys, many_scores,
+                                       many_value_states, 40);
+            mock.max_candidates = 40;
+            reset_scan(&mock, &capture, 1);
+            mock.cancel_when_batch_finishes = 1;
+            int32_t before_callback_status = run_query_v13(
+                &mock, v13_many_groups_sql, sizeof(v13_many_groups_sql) - 1,
+                4096, &capture);
+            assert(before_callback_status == PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+            assert(capture.calls == 0 && mock.cancelled == 1);
+            assert(mock.executor_requests == 5 && mock.statement_failed == 1);
+
+            reset_scan(&mock, &capture, 1);
+            mock.cancel_when_batch_finishes = 0;
+            mock.cancel_after_group_callbacks = 32;
+            int32_t status = run_query_v13(
+                &mock, v13_many_groups_sql, sizeof(v13_many_groups_sql) - 1,
+                4096, &capture);
+            assert(status == PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+            assert(capture.calls == 32 && mock.cancelled == 1);
+            assert(mock.executor_requests == 6 && mock.statement_failed == 1);
+            mock.cancel_after_group_callbacks = 0;
+            mock.max_candidates = 0;
         }
         mock.batch_len = make_rows(mock.batch, 1, keys, scores,
                                    value_states, 3);
