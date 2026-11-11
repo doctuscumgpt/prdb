@@ -16,6 +16,7 @@
 #include "prdb_sdk_sql_result_v1.h"
 #include "prdb_sdk_executor_v1.h"
 #include "prdb_sdk_optimizer_plan_v1.h"
+#include "prdb_sdk_optimizer_v1.h"
 #include "prdb_sdk_optimizer_v2.h"
 
 #include <string.h>
@@ -549,6 +550,10 @@ static int32_t run_write_read_fixture(
     uint8_t composite_join_right_planner_response[1024] = {0};
     uint8_t composite_join_left_executor_response[1024] = {0};
     uint8_t composite_join_right_executor_response[1024] = {0};
+    static uint8_t composite_join_optimizer_request[
+        PRDB_SDK_OPTIMIZER_MAX_REQUEST_BYTES];
+    static uint8_t composite_join_optimizer_response[
+        PRDB_SDK_OPTIMIZER_MAX_PLAN_BYTES + 64];
     prdb_sdk_sql_column_shape_v2 composite_join_left_planner_columns[9] = {{0}};
     prdb_sdk_sql_column_shape_v2 composite_join_right_planner_columns[9] = {{0}};
     prdb_sdk_sql_column_shape_v2 composite_join_left_executor_columns[9] = {{0}};
@@ -1309,25 +1314,51 @@ static int32_t run_write_read_fixture(
     joined_results.output_len = 0;
     joined_results.left_columns = composite_join_left_executor_columns;
     joined_results.right_columns = composite_join_right_executor_columns;
-    status = prdb_sdk_sql_execute_inner_join_v19(
-        host, schema, sizeof(schema) - 1, select_composite_join_sql,
-        sizeof(select_composite_join_sql) - 1, 16, sizeof(batch_response),
-        composite_join_left_planner_response,
-        sizeof(composite_join_left_planner_response),
-        composite_join_right_planner_response,
-        sizeof(composite_join_right_planner_response),
-        composite_join_left_executor_response,
-        sizeof(composite_join_left_executor_response),
-        composite_join_right_executor_response,
-        sizeof(composite_join_right_executor_response), batch_response,
-        sizeof(batch_response), composite_join_left_planner_columns, 9,
-        composite_join_right_planner_columns, 9,
-        composite_join_left_executor_columns, 9,
-        composite_join_right_executor_columns, 9, cell_scratch, 9,
-        composite_join_left_rows, 128, composite_join_right_rows, 128,
-        composite_join_materialized_bytes,
-        sizeof(composite_join_materialized_bytes),
-        write_composite_joined_row_v19, &joined_results);
+    if (optimizer_host_v5 != NULL) {
+        status = prdb_sdk_sql_execute_inner_join_optimizer_v1(
+            optimizer_host_v5, schema, sizeof(schema) - 1,
+            select_composite_join_sql, sizeof(select_composite_join_sql) - 1,
+            16, sizeof(batch_response), composite_join_optimizer_request,
+            sizeof(composite_join_optimizer_request),
+            composite_join_optimizer_response,
+            sizeof(composite_join_optimizer_response),
+            composite_join_left_planner_response,
+            sizeof(composite_join_left_planner_response),
+            composite_join_right_planner_response,
+            sizeof(composite_join_right_planner_response),
+            composite_join_left_executor_response,
+            sizeof(composite_join_left_executor_response),
+            composite_join_right_executor_response,
+            sizeof(composite_join_right_executor_response), batch_response,
+            sizeof(batch_response), composite_join_left_planner_columns, 9,
+            composite_join_right_planner_columns, 9,
+            composite_join_left_executor_columns, 9,
+            composite_join_right_executor_columns, 9, cell_scratch, 9,
+            composite_join_left_rows, 128, composite_join_right_rows, 128,
+            composite_join_materialized_bytes,
+            sizeof(composite_join_materialized_bytes),
+            write_composite_joined_row_v19, &joined_results);
+    } else {
+        status = prdb_sdk_sql_execute_inner_join_v19(
+            host, schema, sizeof(schema) - 1, select_composite_join_sql,
+            sizeof(select_composite_join_sql) - 1, 16, sizeof(batch_response),
+            composite_join_left_planner_response,
+            sizeof(composite_join_left_planner_response),
+            composite_join_right_planner_response,
+            sizeof(composite_join_right_planner_response),
+            composite_join_left_executor_response,
+            sizeof(composite_join_left_executor_response),
+            composite_join_right_executor_response,
+            sizeof(composite_join_right_executor_response), batch_response,
+            sizeof(batch_response), composite_join_left_planner_columns, 9,
+            composite_join_right_planner_columns, 9,
+            composite_join_left_executor_columns, 9,
+            composite_join_right_executor_columns, 9, cell_scratch, 9,
+            composite_join_left_rows, 128, composite_join_right_rows, 128,
+            composite_join_materialized_bytes,
+            sizeof(composite_join_materialized_bytes),
+            write_composite_joined_row_v19, &joined_results);
+    }
     if (status != PRDB_SDK_SQL_EXEC_OK || joined_results.row_count != 2) {
         static const uint8_t message[] = "fixture-error-composite-inner-join";
         return report_failure(host, message, sizeof(message) - 1);

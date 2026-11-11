@@ -7,7 +7,9 @@ use crate::optimizer_ipc::{
     OptimizerStatus, status_for_error,
 };
 use crate::optimizer_plan::MAX_PLAN_BYTES;
-use crate::planner_ipc::{DescribePlanRelationResponse, PlannerRequestError};
+use crate::planner_ipc::{
+    DescribePlanRelationResponse, MAX_PLANNER_REQUESTS_PER_CONNECTION, PlannerRequestError,
+};
 use std::collections::HashSet;
 use std::io::{Read, Write};
 
@@ -39,6 +41,9 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
     planner: &mut P,
 ) -> Result<(), OptimizerProcessError> {
     let mut request_ids = HashSet::new();
+    // Planner IPC is shared with direct SDK planner requests. Keep optimizer
+    // metadata lookups in a disjoint range and give every relation its own ID.
+    let mut next_planner_request_id = MAX_PLANNER_REQUESTS_PER_CONNECTION as u64 + 1;
     loop {
         let request = match crate::ipc::read_frame(submission) {
             Ok(Some(request)) => request,
@@ -109,9 +114,13 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
         };
         let mut relations = Vec::with_capacity(relation_names.len());
         for (schema_name, relation_name) in relation_names {
+            let planner_request_id = next_planner_request_id;
+            next_planner_request_id = next_planner_request_id
+                .checked_add(1)
+                .ok_or(OptimizerProcessError::RequestLimitExceeded)?;
             let planner_request = IpcFrame {
                 operation: Operation::DescribePlanRelation as u16,
-                request_id: request.request_id,
+                request_id: planner_request_id,
                 payload: ResolveRelationRequest {
                     schema_name,
                     relation_name,
@@ -275,7 +284,7 @@ mod tests {
                     .unwrap()
                     .expect("optimizer must resolve plan relation metadata");
                 assert_eq!(request.operation, Operation::DescribePlanRelation as u16);
-                assert_eq!(request.request_id, 9);
+                assert_eq!(request.request_id, 257);
                 let relation = AuthorizedPlanRelation {
                     schema_id: [1; 16],
                     schema_version: 3,
@@ -347,7 +356,7 @@ mod tests {
                     .unwrap()
                     .expect("optimizer must resolve DELETE relation metadata");
                 assert_eq!(request.operation, Operation::DescribePlanRelation as u16);
-                assert_eq!(request.request_id, 10);
+                assert_eq!(request.request_id, 257);
                 let relation = AuthorizedPlanRelation {
                     schema_id: [1; 16],
                     schema_version: 3,
@@ -419,7 +428,7 @@ mod tests {
                     .unwrap()
                     .expect("optimizer must resolve UPDATE relation metadata");
                 assert_eq!(request.operation, Operation::DescribePlanRelation as u16);
-                assert_eq!(request.request_id, 11);
+                assert_eq!(request.request_id, 257);
                 let relation = AuthorizedPlanRelation {
                     schema_id: [1; 16],
                     schema_version: 3,
@@ -508,6 +517,7 @@ mod tests {
                         .unwrap()
                         .expect("optimizer must resolve each join relation");
                     let decoded = ResolveRelationRequest::decode(&request.payload).unwrap();
+                    assert_eq!(request.request_id, if name == "lefts" { 257 } else { 258 });
                     assert_eq!(decoded.schema_name, "public");
                     assert_eq!(decoded.relation_name, name);
                     let relation = AuthorizedPlanRelation {
