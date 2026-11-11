@@ -402,7 +402,7 @@
 
 ## SDK-5 follow-up: role membership CLI through separate services — verified
 
-- Regression: the real metadata/admin process lifecycle now issues `role-grant` and `role-revoke` through `prdb-client` over the TCP gateway and private supervisor service. It confirms a granted membership blocks dropping the referenced role; after revoke and reconnect, both roles drop successfully.
+- Regression: the real metadata/admin process lifecycle issues `role-grant` and `role-revoke` through `prdb-client` over the TCP gateway and private supervisor service. A user inherits `MANAGE_ROLES` from the granted role and successfully creates a role. After membership revoke, the same token still authenticates but no longer authorizes `role-create`; the referenced role can then be dropped.
 - Verification: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` passed with separate supervisor and gateway binaries.
 - Remaining: broader authenticated ADMIN families, repeated race stress, and confined query execution remain open.
 

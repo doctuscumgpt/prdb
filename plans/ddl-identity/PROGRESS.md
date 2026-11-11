@@ -37,7 +37,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## SM-5 / SDK-5: role membership CLI across gateway and supervisor processes — verified
 
 - Contract: `roles.grant` and `roles.revoke` are authenticated, audited ADMIN mutations, and a role referenced by membership cannot be dropped until the membership is revoked.
-- Regression: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` creates two roles, grants one membership through `prdb-client role-grant`, verifies the referenced role drop is rejected, revokes through `prdb-client role-revoke`, reconnects after the rejected START, and then successfully drops both roles.
+- Regression: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` grants `MANAGE_ROLES` to a role, assigns that role to a token-bearing user through `prdb-client role-grant`, and confirms the user can create a role through the same gateway/supervisor path. The role cannot be dropped while membership references it. After `prdb-client role-revoke`, the user's token still authenticates but `role-create` is rejected; the role's system privilege is then revoked, and the identities are cleaned up.
 - Verification: the focused real-process test passed through the separate `prdb-supervisor` and `prdb-gateway` binaries.
 - Remaining: other identity/control ADMIN families, wider concurrent membership race coverage, and confined query execution remain open.
 
