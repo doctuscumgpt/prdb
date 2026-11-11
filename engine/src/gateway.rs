@@ -426,6 +426,7 @@ pub enum GatewayConnectionError {
     MismatchedServiceResponse,
     UnexpectedServiceEvent,
     AuthenticationRateLimited,
+    ResultLimitExceeded,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -667,7 +668,22 @@ fn relay_gateway_result_events<C: GatewayClientStream, S: Read + Write>(
     service: &mut S,
     start_request_id: u64,
 ) -> Result<(), GatewayConnectionError> {
+    relay_gateway_result_events_with_limit(
+        client,
+        service,
+        start_request_id,
+        crate::query_abi::MAX_TOTAL_RESULT_BYTES,
+    )
+}
+
+fn relay_gateway_result_events_with_limit<C: GatewayClientStream, S: Read + Write>(
+    client: &mut C,
+    service: &mut S,
+    start_request_id: u64,
+    max_total_result_bytes: u64,
+) -> Result<(), GatewayConnectionError> {
     let mut response_sequence = 0u64;
+    let mut total_result_bytes = 0u64;
     loop {
         let event = crate::ipc::read_frame(service)
             .map_err(GatewayConnectionError::ServiceFrame)?
@@ -682,6 +698,14 @@ fn relay_gateway_result_events<C: GatewayClientStream, S: Read + Write>(
             crate::ipc::Operation::GatewayTerminal => 103,
             _ => return Err(GatewayConnectionError::UnexpectedServiceEvent),
         };
+        if kind == 102 {
+            let event_bytes = u64::try_from(event.payload.len())
+                .map_err(|_| GatewayConnectionError::ResultLimitExceeded)?;
+            total_result_bytes = total_result_bytes
+                .checked_add(event_bytes)
+                .filter(|total| *total <= max_total_result_bytes)
+                .ok_or(GatewayConnectionError::ResultLimitExceeded)?;
+        }
         response_sequence = response_sequence
             .checked_add(1)
             .ok_or(GatewayConnectionError::UnexpectedServiceEvent)?;
@@ -1049,5 +1073,79 @@ mod gateway_error_payload_tests {
             ErrorCode::from_payload(br#"{"code":"invalid_request","message":"secret detail"}"#),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod result_relay_tests {
+    use super::{
+        GatewayClientStream, GatewayConnectionError, relay_gateway_result_events_with_limit,
+    };
+    use crate::client_protocol::ClientFrameDecoder;
+    use crate::ipc::{IpcFrame, Operation, write_frame};
+    use std::io::{self, Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct CapturedClient(Vec<u8>);
+
+    impl Read for CapturedClient {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for CapturedClient {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl GatewayClientStream for CapturedClient {
+        fn set_gateway_read_timeout(&mut self, _timeout: Option<Duration>) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn result_relay_rejects_cumulative_output_over_budget() {
+        let (mut relay_service, mut supervisor_service) = UnixStream::pair().unwrap();
+        for payload in [b"abc".as_slice(), b"d".as_slice()] {
+            write_frame(
+                &mut supervisor_service,
+                &IpcFrame {
+                    operation: Operation::GatewayResultData as u16,
+                    request_id: 7,
+                    payload: payload.to_vec(),
+                },
+            )
+            .unwrap();
+        }
+        write_frame(
+            &mut supervisor_service,
+            &IpcFrame {
+                operation: Operation::GatewayTerminal as u16,
+                request_id: 7,
+                payload: b"committed".to_vec(),
+            },
+        )
+        .unwrap();
+
+        let mut client = CapturedClient::default();
+        let error = relay_gateway_result_events_with_limit(&mut client, &mut relay_service, 7, 3)
+            .unwrap_err();
+        assert!(matches!(error, GatewayConnectionError::ResultLimitExceeded));
+
+        let mut decoder = ClientFrameDecoder::default();
+        let frames = decoder.push(&client.0).unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].kind, 102);
+        assert_eq!(frames[0].payload, b"abc");
     }
 }

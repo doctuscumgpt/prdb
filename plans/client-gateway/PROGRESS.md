@@ -101,3 +101,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Focused verification: `cargo test -p prdb-engine --test gateway --locked start_gateway_bridge_relays_provisional_data_then_terminal`, `cargo test -p prdb-engine --test commit --locked gateway_terminal_event_requires_a_storage_confirmed_decision`, and the real TCP/IPC lifecycle test `cargo test -p prdb-engine --test commit --locked client_handshake_requires_hello_first_and_sequences_responses` passed.
 - Full validation in the configured Nix shell passed: `cargo fmt --all -- --check`, `cargo build --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and `git diff --check`.
 - Remaining: connect real confined worker output/completion to these events, bound result queues/backpressure across processes, and test cancellation/restart around streaming terminal transitions.
+
+## GW-4 dependency: cumulative gateway result budget — implemented
+
+- Contract: [client gateway result routing](../../specs/client-gateway.md). The gateway must independently bound provisional output for each invocation at every hop and stop forwarding before exceeding the output quota.
+- Red/green evidence: added a small-budget relay regression that sends two RESULT_DATA events totaling one byte over the limit, followed by a terminal event. The relay forwards only the first in-budget event, rejects the second, and never forwards the terminal claim after the stream exceeds its output budget.
+- Implementation: the TCP relay tracks cumulative RESULT_DATA payload bytes with checked arithmetic and enforces the shared 64 MiB invocation result limit. Terminal control payloads remain outside that data budget.
+- Verification: focused unit regression passed; the locked workspace build, format check, warning-denied Clippy, full workspace tests, and `git diff --check` passed under the prescribed Nix tool shell. The run reported 138 library tests passed and 4 cgroup-dependent tests ignored; the remaining integration targets passed.

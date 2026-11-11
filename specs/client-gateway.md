@@ -52,7 +52,7 @@ executor -> bounded local output -> supervisor result relay
 
 There is no executor-to-client socket and no storage-page-to-network shortcut. Executor bytes are arbitrary untrusted application output, not protocol messages. The supervisor wraps them in data events associated with its own invocation context. Only storage-confirmed outcomes forwarded by the supervisor can generate terminal transaction events. A worker emitting bytes resembling COMMITTED must remain ordinary provisional data.
 
-Bound output per invocation at every hop. The supervisor may relay owned buffers without repeatedly decoding/copying payloads, but buffers remain bounded and separate from raw database pages. Client slowness cannot retain storage locks or pin the entire buffer pool. Socket write completion means delivery progress, not database commit.
+Bound output per invocation at every hop. The executor host, supervisor result relay, and gateway each enforce the 64 MiB cumulative provisional-result budget; the gateway counts RESULT_DATA payloads independently and rejects the event that would exceed the budget before forwarding it. The terminal control frame is outside this application-output budget. The supervisor may relay owned buffers without repeatedly decoding/copying payloads, but buffers remain bounded and separate from raw database pages. Client slowness cannot retain storage locks or pin the entire buffer pool. Socket write completion means delivery progress, not database commit.
 
 ## Disconnects, Backpressure, and Restart
 
