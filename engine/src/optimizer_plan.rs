@@ -77,7 +77,9 @@ pub fn encode_plan_v1(plan: &SingleTablePlanV1) -> Result<Vec<u8>, PlanError> {
             plan.relation.table_epoch,
         ),
     );
-    output.push(u8::try_from(plan.nodes.len()).map_err(|_| PlanError::InvalidPipeline)?);
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_node_count_record(
+        u8::try_from(plan.nodes.len()).map_err(|_| PlanError::InvalidPipeline)?,
+    ));
     for node in &plan.nodes {
         match node {
             PlanNode::Scan { columns } => {
@@ -87,7 +89,9 @@ pub fn encode_plan_v1(plan: &SingleTablePlanV1) -> Result<Vec<u8>, PlanError> {
                 }
             }
             PlanNode::Filter(predicate) => {
-                output.push(2);
+                output.extend_from_slice(
+                    &crate::query_abi::encode_optimizer_plan_filter_node_record(2),
+                );
                 put_predicate(&mut output, predicate)?;
             }
             PlanNode::Project(columns) => {
@@ -150,7 +154,7 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
         relation_id,
         table_epoch,
     };
-    let node_count = usize::from(reader.u8()?);
+    let node_count = usize::from(reader.node_count()?);
     if !(2..=4).contains(&node_count) {
         return Err(PlanError::InvalidPipeline);
     }
@@ -172,7 +176,10 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
                 scan_columns = columns.clone();
                 PlanNode::Scan { columns }
             }
-            2 => PlanNode::Filter(reader.predicate(&scan_columns)?),
+            2 => {
+                reader.filter_node_tag(tag_offset)?;
+                PlanNode::Filter(reader.predicate(&scan_columns)?)
+            }
             3 => {
                 let count = reader.column_list_count(
                     tag_offset,
@@ -365,6 +372,31 @@ impl PlanReader<'_> {
             return Err(PlanError::InvalidRelationReference);
         }
         Ok(name.to_owned())
+    }
+
+    fn node_count(&mut self) -> Result<u8, PlanError> {
+        let header =
+            self.take(crate::query_abi::OPTIMIZER_PLAN_NODE_COUNT_RECORD_HEADER_BYTES as usize)?;
+        crate::query_abi::decode_optimizer_plan_node_count_record(header)
+            .ok_or(PlanError::Truncated)
+    }
+
+    fn filter_node_tag(&mut self, header_offset: usize) -> Result<(), PlanError> {
+        let header_len = crate::query_abi::OPTIMIZER_PLAN_FILTER_NODE_RECORD_HEADER_BYTES as usize;
+        let end = header_offset
+            .checked_add(header_len)
+            .ok_or(PlanError::TooLarge)?;
+        let header = self
+            .bytes
+            .get(header_offset..end)
+            .ok_or(PlanError::Truncated)?;
+        let node_tag = crate::query_abi::decode_optimizer_plan_filter_node_record(header)
+            .ok_or(PlanError::Truncated)?;
+        if node_tag != 2 {
+            return Err(PlanError::InvalidPipeline);
+        }
+        self.offset = end;
+        Ok(())
     }
 
     fn column_list_count(

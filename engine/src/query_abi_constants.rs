@@ -1163,6 +1163,36 @@ pub fn decode_optimizer_plan_header_record(payload: &[u8]) -> Option<(u16, u8, u
     Some((u16::from_be_bytes(payload[0..2].try_into().ok()?), payload[2], payload[3]))
 }
 
+pub const OPTIMIZER_PLAN_NODE_COUNT_RECORD_NODE_COUNT_OFFSET: u32 = 0;
+pub const OPTIMIZER_PLAN_NODE_COUNT_RECORD_HEADER_BYTES: u32 = 1;
+pub fn encode_optimizer_plan_node_count_record(node_count: u8) -> [u8; 1] {
+    let mut payload = [0u8; 1];
+    payload[0] = node_count;
+    payload
+}
+
+pub fn decode_optimizer_plan_node_count_record(payload: &[u8]) -> Option<u8> {
+    if payload.len() != 1 {
+        return None;
+    }
+    Some(payload[0])
+}
+
+pub const OPTIMIZER_PLAN_FILTER_NODE_RECORD_NODE_TAG_OFFSET: u32 = 0;
+pub const OPTIMIZER_PLAN_FILTER_NODE_RECORD_HEADER_BYTES: u32 = 1;
+pub fn encode_optimizer_plan_filter_node_record(node_tag: u8) -> [u8; 1] {
+    let mut payload = [0u8; 1];
+    payload[0] = node_tag;
+    payload
+}
+
+pub fn decode_optimizer_plan_filter_node_record(payload: &[u8]) -> Option<u8> {
+    if payload.len() != 1 {
+        return None;
+    }
+    Some(payload[0])
+}
+
 pub const OPTIMIZER_PLAN_COLUMN_RECORD_COLUMN_ID_OFFSET: u32 = 0;
 pub const OPTIMIZER_PLAN_COLUMN_RECORD_ORDINAL_OFFSET: u32 = 16;
 pub const OPTIMIZER_PLAN_COLUMN_RECORD_TYPE_CODE_OFFSET: u32 = 20;

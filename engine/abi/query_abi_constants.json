@@ -1797,6 +1797,24 @@
       "trailing_fields": []
     },
     {
+      "name": "OPTIMIZER_PLAN_NODE_COUNT_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "node_count", "encoding": "u8" }
+      ],
+      "trailing_fields": []
+    },
+    {
+      "name": "OPTIMIZER_PLAN_FILTER_NODE_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "node_tag", "encoding": "u8" }
+      ],
+      "trailing_fields": []
+    },
+    {
       "name": "OPTIMIZER_PLAN_COLUMN_RECORD",
       "generate_rust_codec": true,
       "generate_c_codec": true,

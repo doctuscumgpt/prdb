@@ -221,6 +221,29 @@ static int read_limit_node(plan_reader *reader, uint32_t *row_limit) {
     return node_tag == 4;
 }
 
+static int read_plan_node_count(plan_reader *reader, uint8_t *node_count) {
+    const uint8_t *bytes;
+    return take(reader,
+                PRDB_OPTIMIZER_PLAN_NODE_COUNT_RECORD_HEADER_BYTES, &bytes) &&
+           prdb_decode_optimizer_plan_node_count_record(
+               bytes, PRDB_OPTIMIZER_PLAN_NODE_COUNT_RECORD_HEADER_BYTES,
+               node_count);
+}
+
+static int read_filter_node_tag(const plan_reader *reader,
+                                uint64_t header_offset) {
+    uint8_t node_tag;
+    if (header_offset > reader->length ||
+        PRDB_OPTIMIZER_PLAN_FILTER_NODE_RECORD_HEADER_BYTES >
+            reader->length - header_offset ||
+        !prdb_decode_optimizer_plan_filter_node_record(
+            reader->bytes + header_offset,
+            PRDB_OPTIMIZER_PLAN_FILTER_NODE_RECORD_HEADER_BYTES, &node_tag)) {
+        return 0;
+    }
+    return node_tag == 2;
+}
+
 static int valid_identifier(const uint8_t *bytes, uint32_t length) {
     uint32_t index;
     if (bytes == NULL || length == 0 || length > 63 ||
@@ -707,6 +730,7 @@ static int32_t decode_plan_internal(
     uint8_t reserved;
     uint8_t node_count;
     uint8_t node_tag;
+    uint64_t node_tag_offset;
     uint16_t count;
     uint32_t index;
     uint32_t other;
@@ -777,7 +801,8 @@ static int32_t decode_plan_internal(
             return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
         }
     }
-    if (!read_u8(&reader, &node_count) || node_count < 2 || node_count > 4) {
+    if (!read_plan_node_count(&reader, &node_count) || node_count < 2 ||
+        node_count > 4) {
         return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
     }
     if (decoded.schema_name_len == 0 || decoded.relation_name_len == 0) {
@@ -808,10 +833,14 @@ static int32_t decode_plan_internal(
         }
     }
 
+    node_tag_offset = reader.offset;
     if (!read_u8(&reader, &node_tag)) {
         return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
     }
     if (node_tag == 2) {
+        if (!read_filter_node_tag(&reader, node_tag_offset)) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        }
         uint64_t predicate_start = reader.offset;
         uint32_t predicate_nodes = 0;
         predicate_type predicate_type_out;

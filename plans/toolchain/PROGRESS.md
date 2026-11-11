@@ -932,3 +932,12 @@
 - Compatibility: operator numbering, parameter matching, node ordering, and plan bytes remain unchanged; shape and scalar checks stay in the plan/AST validation layer.
 - Verification: full TinyCC SDK suite and generator tests (8 passed), locked workspace build, formatting check, warning-denied Clippy, full workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the pinned Nix flake environment using its supported `--no-update-lock-file` option.
 - Remaining: broader IPC, SDK, and release-profile schema parity remains open.
+
+## TC-2 follow-up: generated optimizer plan node-count and Filter records — implemented
+
+- Contract: the SELECT plan keeps its one-byte node count and Filter node tag `0x02` before the prefix predicate.
+- Red evidence: generator regression failed because the node-count and Filter-node records and their Rust/C codecs were absent.
+- Implementation: the shared schema now defines both fixed records. Rust plan encoding/decoding and the TinyCC plan decoder use their generated codecs; node-count limits and pipeline ordering remain validated by the plan layers.
+- Compatibility: the canonical plan payload remains byte-for-byte unchanged; the existing Rust canonical round-trip and TinyCC optimizer-plan fixture pass.
+- Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the pinned Nix flake environment using its supported `--no-update-lock-file` option.
+- Remaining: broader IPC, SDK, and release-profile schema parity remains open.

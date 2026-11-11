@@ -1957,6 +1957,40 @@ static inline int prdb_decode_optimizer_plan_header_record(const uint8_t *payloa
     return 1;
 }
 
+static inline void prdb_encode_optimizer_plan_node_count_record(uint8_t payload[1],
+    uint8_t node_count) {
+    payload[0] = node_count;
+}
+
+static inline int prdb_decode_optimizer_plan_node_count_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *node_count) {
+    if (payload == NULL || payload_len != 1) {
+        return 0;
+    }
+    if (node_count == NULL) {
+        return 0;
+    }
+    *node_count = payload[0];
+    return 1;
+}
+
+static inline void prdb_encode_optimizer_plan_filter_node_record(uint8_t payload[1],
+    uint8_t node_tag) {
+    payload[0] = node_tag;
+}
+
+static inline int prdb_decode_optimizer_plan_filter_node_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *node_tag) {
+    if (payload == NULL || payload_len != 1) {
+        return 0;
+    }
+    if (node_tag == NULL) {
+        return 0;
+    }
+    *node_tag = payload[0];
+    return 1;
+}
+
 static inline void prdb_encode_optimizer_plan_column_record(uint8_t payload[26],
     const uint8_t column_id[16], uint32_t ordinal, uint8_t type_code, const uint8_t type_parameters[4], uint8_t nullable) {
     for (size_t i = 0; i < 16; ++i) {
