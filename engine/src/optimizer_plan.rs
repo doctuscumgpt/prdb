@@ -1,8 +1,8 @@
 //! Deterministic single-table SELECT plan construction for optimizer v1.
 
 use crate::optimizer_binding::{
-    BoundColumn, BoundCompositeGroupCount, BoundGroupCount, BoundJoinSelect, BoundPredicate,
-    BoundSelect, BoundUpdateAssignment, BoundUpdateValue,
+    BoundColumn, BoundCompositeGroupCount, BoundGroupCount, BoundJoinSelect, BoundOrderedSelect,
+    BoundPredicate, BoundSelect, BoundUpdateAssignment, BoundUpdateValue,
 };
 use crate::optimizer_request::JoinRelationSide;
 use crate::tuple::ScalarType;
@@ -90,6 +90,16 @@ pub struct CompositeGroupCountPlanV1 {
     pub limit: Option<u32>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderedSelectPlanV1 {
+    pub relation: RelationReference,
+    pub scan_columns: Vec<BoundColumn>,
+    pub projections: Vec<BoundColumn>,
+    pub order_key: BoundColumn,
+    pub descending: bool,
+    pub limit: Option<u32>,
+}
+
 pub const MAX_PLAN_BYTES: usize = 64 * 1024;
 pub const MAX_PLAN_SCAN_COLUMNS: usize = crate::optimizer_request::MAX_PROJECTIONS * 2;
 const PLAN_KIND_SELECT: u8 = 1;
@@ -99,8 +109,10 @@ const PLAN_KIND_JOIN_SELECT: u8 = 4;
 const DELETE_SINK_NODE: u8 = 5;
 const PLAN_KIND_GROUP_COUNT: u8 = 5;
 const PLAN_KIND_COMPOSITE_GROUP_COUNT: u8 = 6;
+const PLAN_KIND_ORDERED_SELECT: u8 = 7;
 const GROUP_COUNT_NODE: u8 = 7;
 const COMPOSITE_GROUP_COUNT_NODE: u8 = 8;
+const ORDER_BY_NODE: u8 = 9;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlanError {
@@ -839,6 +851,208 @@ pub fn plan_composite_group_count_v1(
         limit: bound.limit,
     };
     validate_composite_group_count_plan_v1(&plan)?;
+    Ok(plan)
+}
+
+pub fn plan_ordered_select_v1(bound: BoundOrderedSelect) -> Result<OrderedSelectPlanV1, PlanError> {
+    let relation = RelationReference {
+        schema_name: bound.schema_name,
+        schema_id: bound.schema_id,
+        schema_version: bound.schema_version,
+        relation_name: bound.relation_name,
+        relation_id: bound.relation_id,
+        table_epoch: bound.table_epoch,
+    };
+    let mut scan_columns = bound.projections.clone();
+    if !scan_columns.contains(&bound.order_key) {
+        scan_columns.push(bound.order_key.clone());
+    }
+    scan_columns.sort_by_key(|column| column.ordinal);
+    let plan = OrderedSelectPlanV1 {
+        relation,
+        scan_columns,
+        projections: bound.projections,
+        order_key: bound.order_key,
+        descending: bound.descending,
+        limit: bound.limit,
+    };
+    validate_ordered_select_plan_v1(&plan)?;
+    Ok(plan)
+}
+
+pub fn validate_ordered_select_plan_v1(plan: &OrderedSelectPlanV1) -> Result<(), PlanError> {
+    validate_relation(&plan.relation)?;
+    validate_columns(&plan.scan_columns)?;
+    if plan.projections.is_empty()
+        || plan.projections.len() > crate::optimizer_request::MAX_PROJECTIONS
+        || plan.projections.iter().any(|projection| {
+            projection.column_id == [0; 16]
+                || !valid_scalar_type(projection.scalar_type)
+                || !plan.scan_columns.contains(projection)
+        })
+        || plan.order_key.column_id == [0; 16]
+        || !valid_scalar_type(plan.order_key.scalar_type)
+        || !plan.scan_columns.contains(&plan.order_key)
+        || plan.scan_columns.len()
+            != plan
+                .projections
+                .iter()
+                .chain(std::iter::once(&plan.order_key))
+                .map(|column| column.ordinal)
+                .collect::<HashSet<_>>()
+                .len()
+    {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    let mut projected = HashSet::with_capacity(plan.projections.len());
+    if plan
+        .projections
+        .iter()
+        .any(|column| !projected.insert(column.ordinal))
+    {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    Ok(())
+}
+
+pub fn encode_ordered_select_plan_v1(plan: &OrderedSelectPlanV1) -> Result<Vec<u8>, PlanError> {
+    validate_ordered_select_plan_v1(plan)?;
+    let mut output = Vec::with_capacity(256);
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_header_record(
+        1,
+        PLAN_KIND_ORDERED_SELECT,
+        0,
+    ));
+    put_name(&mut output, &plan.relation.schema_name)?;
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_schema_reference_record(
+            plan.relation.schema_id,
+            plan.relation.schema_version,
+        ),
+    );
+    put_name(&mut output, &plan.relation.relation_name)?;
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_relation_reference_record(
+            plan.relation.relation_id,
+            plan.relation.table_epoch,
+        ),
+    );
+    output.extend_from_slice(&(plan.scan_columns.len() as u16).to_be_bytes());
+    for column in &plan.scan_columns {
+        put_column(&mut output, column);
+    }
+    output.extend_from_slice(&(plan.projections.len() as u16).to_be_bytes());
+    for projection in &plan.projections {
+        put_column(&mut output, projection);
+    }
+    output.push(ORDER_BY_NODE);
+    put_column(&mut output, &plan.order_key);
+    output.push(u8::from(plan.descending));
+    match plan.limit {
+        None => output.push(0),
+        Some(limit) => {
+            output.push(1);
+            output.extend_from_slice(&limit.to_be_bytes());
+        }
+    }
+    if output.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    Ok(output)
+}
+
+pub fn decode_ordered_select_plan_v1(bytes: &[u8]) -> Result<OrderedSelectPlanV1, PlanError> {
+    if bytes.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    let (version, kind, reserved) =
+        crate::query_abi::decode_optimizer_plan_header_record(bytes).ok_or(PlanError::Truncated)?;
+    if version != 1 {
+        return Err(PlanError::UnsupportedVersion(version));
+    }
+    if kind != PLAN_KIND_ORDERED_SELECT || reserved != 0 {
+        return Err(PlanError::InvalidEncoding);
+    }
+    let mut reader = PlanReader {
+        bytes,
+        offset: crate::query_abi::OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES as usize,
+    };
+    let schema_name = reader.name()?;
+    let (schema_id, schema_version) =
+        crate::query_abi::decode_optimizer_plan_schema_reference_record(reader.take(
+            crate::query_abi::OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES as usize,
+        )?)
+        .ok_or(PlanError::Truncated)?;
+    let relation_name = reader.name()?;
+    let (relation_id, table_epoch) =
+        crate::query_abi::decode_optimizer_plan_relation_reference_record(reader.take(
+            crate::query_abi::OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES as usize,
+        )?)
+        .ok_or(PlanError::Truncated)?;
+    let scan_count = usize::from(u16::from_be_bytes(
+        reader
+            .take(2)?
+            .try_into()
+            .map_err(|_| PlanError::Truncated)?,
+    ));
+    if scan_count == 0 || scan_count > MAX_PLAN_SCAN_COLUMNS {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    let mut scan_columns = Vec::with_capacity(scan_count);
+    for _ in 0..scan_count {
+        scan_columns.push(reader.column()?);
+    }
+    let projection_count = usize::from(u16::from_be_bytes(
+        reader
+            .take(2)?
+            .try_into()
+            .map_err(|_| PlanError::Truncated)?,
+    ));
+    if projection_count == 0 || projection_count > crate::optimizer_request::MAX_PROJECTIONS {
+        return Err(PlanError::EmptyProjection);
+    }
+    let mut projections = Vec::with_capacity(projection_count);
+    for _ in 0..projection_count {
+        projections.push(reader.column()?);
+    }
+    if reader.u8()? != ORDER_BY_NODE {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let order_key = reader.column()?;
+    let descending = match reader.u8()? {
+        0 => false,
+        1 => true,
+        _ => return Err(PlanError::InvalidEncoding),
+    };
+    let limit = match reader.u8()? {
+        0 => None,
+        1 => Some(u32::from_be_bytes(
+            reader
+                .take(4)?
+                .try_into()
+                .map_err(|_| PlanError::Truncated)?,
+        )),
+        _ => return Err(PlanError::InvalidEncoding),
+    };
+    if reader.offset != bytes.len() {
+        return Err(PlanError::TrailingBytes);
+    }
+    let plan = OrderedSelectPlanV1 {
+        relation: RelationReference {
+            schema_name,
+            schema_id,
+            schema_version,
+            relation_name,
+            relation_id,
+            table_epoch,
+        },
+        scan_columns,
+        projections,
+        order_key,
+        descending,
+        limit,
+    };
+    validate_ordered_select_plan_v1(&plan)?;
     Ok(plan)
 }
 
@@ -2195,6 +2409,38 @@ mod tests {
             }),
             limit: Some(5),
         }
+    }
+
+    #[test]
+    fn ordered_select_roundtrips_hidden_sort_key_and_limit() {
+        let output = column(1, 0, ScalarType::Integer);
+        let sort_key = column(2, 1, ScalarType::Boolean);
+        let bound = BoundOrderedSelect {
+            schema_name: "sales".to_owned(),
+            schema_id: [0x10; 16],
+            schema_version: 4,
+            table_epoch: 6,
+            relation_id: [0x20; 16],
+            relation_name: "orders".to_owned(),
+            projections: vec![output.clone()],
+            order_key: sort_key.clone(),
+            descending: true,
+            limit: Some(5),
+        };
+        let plan = plan_ordered_select_v1(bound).unwrap();
+        assert_eq!(plan.scan_columns, [output, sort_key.clone()]);
+        assert_eq!(plan.order_key, sort_key);
+        assert!(plan.descending);
+        assert_eq!(plan.limit, Some(5));
+
+        let bytes = encode_ordered_select_plan_v1(&plan).unwrap();
+        assert_eq!(decode_ordered_select_plan_v1(&bytes).unwrap(), plan);
+        let mut malformed = plan;
+        malformed.scan_columns.pop();
+        assert_eq!(
+            encode_ordered_select_plan_v1(&malformed),
+            Err(PlanError::InvalidColumnReference)
+        );
     }
 
     #[test]

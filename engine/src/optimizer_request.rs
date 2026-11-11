@@ -7,7 +7,8 @@
 
 use crate::query_abi::{
     OPTIMIZER_COMPOSITE_GROUP_COUNT_STATEMENT, OPTIMIZER_DELETE_STATEMENT,
-    OPTIMIZER_GROUP_COUNT_STATEMENT, OPTIMIZER_JOIN_SELECT_STATEMENT, OPTIMIZER_REQUEST_VERSION,
+    OPTIMIZER_GROUP_COUNT_STATEMENT, OPTIMIZER_JOIN_SELECT_STATEMENT,
+    OPTIMIZER_ORDERED_SELECT_STATEMENT, OPTIMIZER_REQUEST_VERSION,
     OPTIMIZER_SELECT_REQUEST_HEADER_BYTES, OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET,
     OPTIMIZER_SELECT_STATEMENT, OPTIMIZER_UPDATE_STATEMENT, decode_optimizer_select_request,
 };
@@ -32,6 +33,16 @@ pub struct SelectRequest {
     pub relation_name: String,
     pub projections: Vec<String>,
     pub predicate: Option<Predicate>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderedSelectRequest {
+    pub schema_name: String,
+    pub relation_name: String,
+    pub projections: Vec<String>,
+    pub order_key_name: String,
+    pub descending: bool,
     pub limit: Option<u32>,
 }
 
@@ -231,6 +242,67 @@ pub fn decode_select_request(bytes: &[u8]) -> Result<SelectRequest, RequestError
         relation_name,
         projections,
         predicate,
+        limit,
+    })
+}
+
+/// Decode a bounded unfiltered SELECT with explicit projections and one
+/// source-column ORDER BY key. LIMIT applies after stable sorting.
+pub fn decode_ordered_select_request(bytes: &[u8]) -> Result<OrderedSelectRequest, RequestError> {
+    if bytes.len() > MAX_REQUEST_BYTES {
+        return Err(RequestError::TooLarge);
+    }
+    let header_bytes = OPTIMIZER_SELECT_REQUEST_HEADER_BYTES as usize;
+    if bytes.len() < header_bytes {
+        return Err(RequestError::Truncated);
+    }
+    let version_offset = OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET as usize;
+    let version = u16::from_be_bytes([bytes[version_offset], bytes[version_offset + 1]]);
+    if version != OPTIMIZER_REQUEST_VERSION {
+        return Err(RequestError::UnsupportedVersion(version));
+    }
+    let (statement, flags) =
+        decode_optimizer_select_request(bytes).ok_or(RequestError::Truncated)?;
+    if statement != OPTIMIZER_ORDERED_SELECT_STATEMENT {
+        return Err(RequestError::UnsupportedStatement(statement));
+    }
+    if flags != 0 {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut cursor = Cursor {
+        bytes,
+        offset: header_bytes,
+    };
+    let schema_name = cursor.identifier()?;
+    let relation_name = cursor.identifier()?;
+    let projection_count = usize::from(cursor.u16()?);
+    if !(1..=MAX_PROJECTIONS).contains(&projection_count) {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut projections = Vec::with_capacity(projection_count);
+    for _ in 0..projection_count {
+        projections.push(cursor.identifier()?);
+    }
+    let order_key_name = cursor.identifier()?;
+    let descending = match cursor.u8()? {
+        0 => false,
+        1 => true,
+        _ => return Err(RequestError::InvalidValue),
+    };
+    let limit = match cursor.u8()? {
+        0 => None,
+        1 => Some(cursor.u32()?),
+        _ => return Err(RequestError::InvalidValue),
+    };
+    if !cursor.is_empty() {
+        return Err(RequestError::TrailingBytes);
+    }
+    Ok(OrderedSelectRequest {
+        schema_name,
+        relation_name,
+        projections,
+        order_key_name,
+        descending,
         limit,
     })
 }
@@ -712,6 +784,46 @@ mod tests {
         bytes.extend_from_slice(predicate);
         bytes.extend_from_slice(&[1, 0, 0, 0, 10]);
         bytes
+    }
+
+    fn ordered_select_request() -> Vec<u8> {
+        let mut bytes = vec![0, OPTIMIZER_REQUEST_VERSION as u8];
+        bytes.push(OPTIMIZER_ORDERED_SELECT_STATEMENT);
+        bytes.push(0);
+        name("public", &mut bytes);
+        name("items", &mut bytes);
+        u16_bytes(2, &mut bytes);
+        name("id", &mut bytes);
+        name("label", &mut bytes);
+        name("label", &mut bytes);
+        bytes.extend_from_slice(&[1, 1]);
+        bytes.extend_from_slice(&12u32.to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn decodes_bounded_ordered_select_request() {
+        let request = decode_ordered_select_request(&ordered_select_request()).unwrap();
+        assert_eq!(request.schema_name, "public");
+        assert_eq!(request.relation_name, "items");
+        assert_eq!(request.projections, ["id", "label"]);
+        assert_eq!(request.order_key_name, "label");
+        assert!(request.descending);
+        assert_eq!(request.limit, Some(12));
+
+        let mut trailing = ordered_select_request();
+        trailing.push(0);
+        assert_eq!(
+            decode_ordered_select_request(&trailing),
+            Err(RequestError::TrailingBytes)
+        );
+        let mut invalid_direction = ordered_select_request();
+        let direction_offset = invalid_direction.len() - 5;
+        invalid_direction[direction_offset] = 2;
+        assert_eq!(
+            decode_ordered_select_request(&invalid_direction),
+            Err(RequestError::InvalidValue)
+        );
     }
 
     fn delete_request(predicate: &[u8]) -> Vec<u8> {

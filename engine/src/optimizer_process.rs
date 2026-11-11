@@ -78,8 +78,15 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
 
         let decoded_names = match operation {
             Operation::OptimizeSelect => {
-                crate::optimizer_request::decode_select_request(&request.payload)
-                    .map(|decoded| vec![(decoded.schema_name, decoded.relation_name)])
+                if request.payload.get(2)
+                    == Some(&crate::query_abi::OPTIMIZER_ORDERED_SELECT_STATEMENT)
+                {
+                    crate::optimizer_request::decode_ordered_select_request(&request.payload)
+                        .map(|decoded| vec![(decoded.schema_name, decoded.relation_name)])
+                } else {
+                    crate::optimizer_request::decode_select_request(&request.payload)
+                        .map(|decoded| vec![(decoded.schema_name, decoded.relation_name)])
+                }
             }
             Operation::OptimizeDelete => {
                 crate::optimizer_request::decode_delete_request(&request.payload)
@@ -160,10 +167,19 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
         }
         let optimized = match operation {
             Operation::OptimizeSelect => {
-                crate::optimizer_service::optimize_select_v1_with_relation(
-                    &request.payload,
-                    relations.remove(0),
-                )
+                if request.payload.get(2)
+                    == Some(&crate::query_abi::OPTIMIZER_ORDERED_SELECT_STATEMENT)
+                {
+                    crate::optimizer_service::optimize_ordered_select_v1_with_relation(
+                        &request.payload,
+                        relations.remove(0),
+                    )
+                } else {
+                    crate::optimizer_service::optimize_select_v1_with_relation(
+                        &request.payload,
+                        relations.remove(0),
+                    )
+                }
             }
             Operation::OptimizeDelete => {
                 crate::optimizer_service::optimize_delete_v1_with_relation(
@@ -249,6 +265,27 @@ mod tests {
         bytes.extend_from_slice(b"name");
         bytes.extend_from_slice(&0u32.to_be_bytes());
         bytes.push(0);
+        bytes
+    }
+
+    fn ordered_select_request() -> Vec<u8> {
+        let mut bytes = vec![
+            0,
+            crate::query_abi::OPTIMIZER_REQUEST_VERSION as u8,
+            crate::query_abi::OPTIMIZER_ORDERED_SELECT_STATEMENT,
+            0,
+        ];
+        for name in ["public", "items"] {
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.push(2);
+        bytes.extend_from_slice(b"id");
+        bytes.push(2);
+        bytes.extend_from_slice(b"id");
+        bytes.extend_from_slice(&[1, 1]);
+        bytes.extend_from_slice(&3u32.to_be_bytes());
         bytes
     }
 
@@ -397,6 +434,77 @@ mod tests {
             assert!(
                 matches!(plan.nodes.first(), Some(PlanNode::Scan { columns }) if columns[0].column_id == [3; 16])
             );
+            submission_client.shutdown(Shutdown::Write).unwrap();
+            planner_thread.join().unwrap();
+            optimizer_thread.join().unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn process_protocol_dispatches_ordered_select_through_one_authorized_relation() {
+        let (mut submission_client, mut submission_server) = UnixStream::pair().unwrap();
+        let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
+        std::thread::scope(|scope| {
+            let planner_thread = scope.spawn(|| {
+                let request = crate::ipc::read_frame(&mut planner_server)
+                    .expect("optimizer must read planner request")
+                    .expect("optimizer must resolve ordered SELECT relation");
+                assert_eq!(request.request_id, 257);
+                crate::ipc::write_frame(
+                    &mut planner_server,
+                    &IpcFrame {
+                        operation: request.operation,
+                        request_id: request.request_id,
+                        payload: DescribePlanRelationResponse {
+                            relation: Some(AuthorizedPlanRelation {
+                                schema_id: [1; 16],
+                                schema_version: 3,
+                                table_epoch: 7,
+                                relation: AuthorizedRelationDescription {
+                                    relation_id: [2; 16],
+                                    name: "items".to_owned(),
+                                    columns: vec![VisibleColumn {
+                                        column_id: [4; 16],
+                                        name: "id".to_owned(),
+                                        ordinal: 0,
+                                        scalar_type: ScalarType::Integer,
+                                        nullable: false,
+                                    }],
+                                },
+                            }),
+                        }
+                        .encode()
+                        .unwrap(),
+                    },
+                )
+                .unwrap();
+            });
+            let optimizer_thread = scope
+                .spawn(|| serve_optimizer_process(&mut submission_server, &mut planner_client));
+            crate::ipc::write_frame(
+                &mut submission_client,
+                &IpcFrame {
+                    operation: Operation::OptimizeSelect as u16,
+                    request_id: 25,
+                    payload: ordered_select_request(),
+                },
+            )
+            .unwrap();
+            let response = crate::ipc::read_frame(&mut submission_client)
+                .unwrap()
+                .expect("optimizer must return an ordered SELECT plan");
+            assert_eq!(response.request_id, 25);
+            let response = OptimizerResponse::decode(&response.payload).unwrap();
+            assert_eq!(response.status, OptimizerStatus::Success);
+            let plan = crate::optimizer_plan::decode_ordered_select_plan_v1(
+                response.plan.as_deref().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(plan.scan_columns[0].column_id, [4; 16]);
+            assert_eq!(plan.projections[0].ordinal, 0);
+            assert_eq!(plan.order_key.ordinal, 0);
+            assert!(plan.descending);
+            assert_eq!(plan.limit, Some(3));
             submission_client.shutdown(Shutdown::Write).unwrap();
             planner_thread.join().unwrap();
             optimizer_thread.join().unwrap().unwrap();

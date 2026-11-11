@@ -4,9 +4,10 @@ use crate::metadata_discovery::{
     AuthorizedPlanRelation, AuthorizedRelationDescription, VisibleColumn,
 };
 use crate::optimizer_request::{
-    Comparison, CompositeGroupCountRequest, GroupCountRequest, JoinRelationSide, Predicate,
-    RequestError, UpdateValue, decode_composite_group_count_request, decode_delete_request,
-    decode_group_count_request, decode_join_select_request, decode_select_request,
+    Comparison, CompositeGroupCountRequest, GroupCountRequest, JoinRelationSide,
+    OrderedSelectRequest, Predicate, RequestError, UpdateValue,
+    decode_composite_group_count_request, decode_delete_request, decode_group_count_request,
+    decode_join_select_request, decode_ordered_select_request, decode_select_request,
     decode_update_request,
 };
 use crate::transaction::{PlannerMetadataConnection, TransactionError};
@@ -23,6 +24,20 @@ pub struct BoundSelect {
     pub relation_name: String,
     pub projections: Vec<BoundColumn>,
     pub predicate: Option<BoundPredicate>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundOrderedSelect {
+    pub schema_name: String,
+    pub schema_id: [u8; 16],
+    pub schema_version: u64,
+    pub table_epoch: u64,
+    pub relation_id: [u8; 16],
+    pub relation_name: String,
+    pub projections: Vec<BoundColumn>,
+    pub order_key: BoundColumn,
+    pub descending: bool,
     pub limit: Option<u32>,
 }
 
@@ -209,6 +224,26 @@ pub fn bind_select_request_via_metadata(
     bind_decoded_select(request, relation).map_err(MetadataBindError::Bind)
 }
 
+pub fn bind_ordered_select_request(
+    request_bytes: &[u8],
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundOrderedSelect, BindError> {
+    let request = decode_ordered_select_request(request_bytes)?;
+    bind_decoded_ordered_select(request, relation)
+}
+
+pub fn bind_ordered_select_request_via_metadata(
+    request_bytes: &[u8],
+    connection: &mut PlannerMetadataConnection<'_, '_>,
+) -> Result<BoundOrderedSelect, MetadataBindError> {
+    let request = decode_ordered_select_request(request_bytes).map_err(BindError::from)?;
+    let relation = connection
+        .resolve_relation_for_plan(&request.schema_name, &request.relation_name)
+        .map_err(MetadataBindError::Transaction)?
+        .map(|(_, relation)| relation);
+    bind_decoded_ordered_select(request, relation).map_err(MetadataBindError::Bind)
+}
+
 pub fn bind_join_select_request(
     request_bytes: &[u8],
     left_relation: Option<AuthorizedPlanRelation>,
@@ -344,6 +379,35 @@ fn bind_decoded_select(
         relation_name: relation.relation.name,
         projections,
         predicate,
+        limit: request.limit,
+    })
+}
+
+fn bind_decoded_ordered_select(
+    request: OrderedSelectRequest,
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundOrderedSelect, BindError> {
+    let relation = authorized_relation(&request.relation_name, relation)?;
+    let mut projections = Vec::with_capacity(request.projections.len());
+    let mut seen = HashSet::with_capacity(request.projections.len());
+    for name in &request.projections {
+        let column = resolve_column(&relation.relation.columns, name)?;
+        if !seen.insert(column.ordinal) {
+            return Err(BindError::InvalidQuery);
+        }
+        projections.push(column.into());
+    }
+    let order_key = resolve_column(&relation.relation.columns, &request.order_key_name)?;
+    Ok(BoundOrderedSelect {
+        schema_name: request.schema_name,
+        schema_id: relation.schema_id,
+        schema_version: relation.schema_version,
+        table_epoch: relation.table_epoch,
+        relation_id: relation.relation.relation_id,
+        relation_name: relation.relation.name,
+        projections,
+        order_key: order_key.into(),
+        descending: request.descending,
         limit: request.limit,
     })
 }
@@ -677,6 +741,25 @@ mod tests {
         bytes
     }
 
+    fn ordered_select_request(projections: &[&str], order_key: &str) -> Vec<u8> {
+        let mut bytes = vec![
+            0,
+            crate::query_abi::OPTIMIZER_REQUEST_VERSION as u8,
+            crate::query_abi::OPTIMIZER_ORDERED_SELECT_STATEMENT,
+            0,
+        ];
+        put_name(&mut bytes, "public");
+        put_name(&mut bytes, "items");
+        bytes.extend_from_slice(&(projections.len() as u16).to_be_bytes());
+        for projection in projections {
+            put_name(&mut bytes, projection);
+        }
+        put_name(&mut bytes, order_key);
+        bytes.extend_from_slice(&[1, 1]);
+        bytes.extend_from_slice(&9u32.to_be_bytes());
+        bytes
+    }
+
     fn delete_request(predicate: &[u8]) -> Vec<u8> {
         let mut bytes = vec![0, 1, 2, 0];
         put_name(&mut bytes, "public");
@@ -771,6 +854,28 @@ mod tests {
                 ],
             },
         }
+    }
+
+    #[test]
+    fn binds_ordered_select_outputs_and_hidden_order_key_from_authorized_shape() {
+        let bound = bind_ordered_select_request(
+            &ordered_select_request(&["id"], "active"),
+            Some(relation()),
+        )
+        .unwrap();
+        assert_eq!(bound.schema_id, [0x10; 16]);
+        assert_eq!(bound.relation_id, [0x11; 16]);
+        assert_eq!(bound.projections[0].column_id, [0x21; 16]);
+        assert_eq!(bound.order_key.column_id, [0x22; 16]);
+        assert!(bound.descending);
+        assert_eq!(bound.limit, Some(9));
+        assert_eq!(
+            bind_ordered_select_request(
+                &ordered_select_request(&["id", "id"], "active"),
+                Some(relation()),
+            ),
+            Err(BindError::InvalidQuery)
+        );
     }
 
     fn join_relation(name: &str, relation_id: u8) -> AuthorizedPlanRelation {

@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-8: bounded ordered SELECT optimizer plan — partial
+
+- Contract: an explicit single-column `ORDER BY` key is resolved through the authorized relation description. Its source column may remain hidden from the SELECT projection; LIMIT is applied after stable ordering by the existing bounded SQL v3 runner.
+- Implementation: ordered SELECT statement 7 is decoded, bound to stable column IDs, and dispatched through the optimizer submission process. The canonical kind-7 plan includes the sorted union of projected columns and the hidden order key, direction, and optional LIMIT. Optimizer responses revalidate this plan encoding.
+- Evidence: focused request, binding, plan round-trip/rejection, and optimizer-process dispatch tests passed. Locked workspace build, format check, warning-denied Clippy, and ABI generator drift check passed.
+- Remaining: implement the maintained C SDK ordered-request encoder, independent kind-7 plan decoding/AST matching, and confined sorted query acceptance. The Rust plan path alone does not verify SQL execution.
+
 ## SQL-7: filtered aliased INNER JOIN runner and mandatory cgroup acceptance — implemented
 
 - Contract: [SQL library](../../specs/sql-library.md). V20 adds one alias-qualified comparison against a positional parameter or `IS [NOT] NULL` to the v19 INNER JOIN grammar. Only TRUE candidates survive; NULL comparisons are UNKNOWN, required REDACTED values fail, and LIMIT applies after filtering.
@@ -7,7 +14,7 @@
 - Regression and fuzzing: maintained TinyCC fixtures cover aliased filter binding, filter-before-LIMIT output, unchanged v19 WHERE rejection, invalid parameter indexes, and REDACTED filter failure with zero output and a latched statement error. The new ASan/UBSan/libFuzzer v20 target completed 10,000 runs from five grammar seeds (1,299 coverage edges; 2,852 features).
 - Cgroup coverage: removed `#[ignore]` from the four sandboxed commit tests and the disconnected-submission metadata process test. The complete workspace suite now runs these acceptance paths when invoked under the documented delegated `systemd --user` service with fixture and runtime variables; it no longer reports them as ignored. [`SANDBOX_TEST.md`](SANDBOX_TEST.md) and [`AGENTS.md`](../../AGENTS.md) document the required invocation.
 - Verification: TinyCC `make -f engine/sdk/Makefile test`, `make -f engine/sdk/Makefile sandbox-query-fixture`, and the v20 10,000-run fuzzer passed. Locked workspace build, format check, warning-denied Clippy, `git diff --check`, and the full serial locked workspace test suite passed inside the delegated service. All four sandboxed commit tests passed; both metadata process tests passed; the test targets reported zero ignored cases.
-- Remaining: optimizer grouping/sorting plans, broader analytical type/workload coverage, spill support, and end-to-end pressure testing remain open.
+- Remaining: complete ordered SELECT SDK decoding and confined execution; broader analytical type/workload coverage, spill support, and end-to-end pressure testing remain open.
 
 ## SQL-7 follow-up: v20 filtered join through confined SQLR — verified
 
