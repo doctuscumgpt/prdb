@@ -7,13 +7,6 @@ static uint16_t read_u16(const uint8_t *payload, uint32_t offset) {
     return (uint16_t)(((uint16_t)payload[offset] << 8) | payload[offset + 1]);
 }
 
-static uint32_t read_u32(const uint8_t *payload, uint32_t offset) {
-    return ((uint32_t)payload[offset] << 24) |
-           ((uint32_t)payload[offset + 1] << 16) |
-           ((uint32_t)payload[offset + 2] << 8) |
-           (uint32_t)payload[offset + 3];
-}
-
 static int take(const uint8_t *payload, uint64_t payload_len, uint32_t *offset,
                 uint32_t length, const uint8_t **bytes) {
     if ((uint64_t)*offset > payload_len ||
@@ -45,21 +38,23 @@ static int32_t decode_cell(const uint8_t *payload, uint64_t payload_len,
     if (state == PRDB_SDK_VALUE_STATE_VALUE) {
         uint8_t type;
         uint32_t value_len;
-        if (!take(payload, payload_len, offset, 1, &bytes)) {
-            return PRDB_SDK_BATCH_INVALID_PAYLOAD;
-        }
-        type = bytes[0];
-        if (!take(payload, payload_len, offset, 4, &bytes)) {
-            return PRDB_SDK_BATCH_INVALID_PAYLOAD;
-        }
-        value_len = read_u32(payload, *offset - 4);
-        if (!take(payload, payload_len, offset, value_len, &bytes)) {
+        const uint8_t *value_bytes;
+        size_t value_bytes_len;
+        if (!take(payload, payload_len, offset,
+                  PRDB_SCALAR_VALUE_RECORD_HEADER_BYTES, &bytes) ||
+            !prdb_decode_scalar_value_record(
+                bytes, PRDB_SCALAR_VALUE_RECORD_HEADER_BYTES, &type,
+                &value_len) ||
+            !take(payload, payload_len, offset, value_len, &bytes) ||
+            !prdb_decode_scalar_value_record_value_bytes(
+                bytes, (size_t)value_len, value_len, &value_bytes,
+                &value_bytes_len)) {
             return PRDB_SDK_BATCH_INVALID_PAYLOAD;
         }
         value->state = PRDB_SDK_VALUE_STATE_VALUE;
         value->type_code = type;
-        value->data = bytes;
-        value->data_len = value_len;
+        value->data = value_bytes;
+        value->data_len = value_bytes_len;
     } else if (state == PRDB_SDK_VALUE_STATE_NULL ||
                state == PRDB_SDK_VALUE_STATE_REDACTED) {
         value->state = state;

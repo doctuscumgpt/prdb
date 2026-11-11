@@ -732,6 +732,14 @@
 - Verification: generator schema/drift tests (7 tests), generated Rust state-tag tests, all 6 executor IPC tests, forced TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, `git diff --check`, and full locked workspace tests passed. The commit suite reported 138 passed and 4 cgroup-dependent tests ignored; the metadata process suite reported 1 passed and 1 cgroup-dependent test ignored.
 - Remaining: additional nested IPC records and full shared-schema parity remain open.
 
+## TC-2 follow-up: generated C batch scalar-value decoder — implemented
+
+- Contract: a VALUE cell carries the generated type-code/u32-length prefix followed by exactly the declared scalar bytes; the C SDK exposes a borrowed view into the batch payload.
+- Implementation: the TinyCC batch parser now decodes the shared scalar-value prefix and length-checked byte tail instead of reading the type and length with local integer helpers. The borrowed view retains the original input-buffer lifetime.
+- Compatibility: scalar tags, widths, cell boundaries, and value bytes are unchanged; malformed/truncated values remain rejected by bounded parsing and scalar validation.
+- Verification: the forced TinyCC SDK suite passed, including the batch fixture, as did the locked workspace build, formatting check, warning-denied Clippy, `git diff --check`, and full locked workspace tests. The commit suite reported 138 passed and 4 cgroup-dependent tests ignored; the metadata process suite reported 1 passed and 1 cgroup-dependent test ignored.
+- Remaining: additional nested IPC records and full shared-schema parity remain open.
+
 ## TC-1 / TC-3: maintained TinyCC SDK and shared-artifact link profile — partial
 
 - Observed development tools: Rust/Cargo 1.95.0 with rustfmt and Clippy; TinyCC `0.9.27-unstable-2025-01-06` on x86_64 Linux. The SDK archive and C fixtures build with TinyCC `-Wall -Wextra -Werror`.
