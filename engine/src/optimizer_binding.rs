@@ -4,8 +4,9 @@ use crate::metadata_discovery::{
     AuthorizedPlanRelation, AuthorizedRelationDescription, VisibleColumn,
 };
 use crate::optimizer_request::{
-    Comparison, JoinRelationSide, Predicate, RequestError, UpdateValue, decode_delete_request,
-    decode_join_select_request, decode_select_request, decode_update_request,
+    Comparison, GroupCountRequest, JoinRelationSide, Predicate, RequestError, UpdateValue,
+    decode_delete_request, decode_group_count_request, decode_join_select_request,
+    decode_select_request, decode_update_request,
 };
 use crate::transaction::{PlannerMetadataConnection, TransactionError};
 use crate::tuple::ScalarType;
@@ -33,6 +34,18 @@ pub struct BoundDelete {
     pub relation_id: [u8; 16],
     pub relation_name: String,
     pub predicate: BoundPredicate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundGroupCount {
+    pub schema_name: String,
+    pub schema_id: [u8; 16],
+    pub schema_version: u64,
+    pub table_epoch: u64,
+    pub relation_id: [u8; 16],
+    pub relation_name: String,
+    pub group_key: BoundColumn,
+    pub limit: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -209,6 +222,26 @@ pub fn bind_join_select_request_via_metadata(
         .map_err(MetadataBindError::Bind)
 }
 
+pub fn bind_group_count_request(
+    request_bytes: &[u8],
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundGroupCount, BindError> {
+    let request = decode_group_count_request(request_bytes)?;
+    bind_decoded_group_count(request, relation)
+}
+
+pub fn bind_group_count_request_via_metadata(
+    request_bytes: &[u8],
+    connection: &mut PlannerMetadataConnection<'_, '_>,
+) -> Result<BoundGroupCount, MetadataBindError> {
+    let request = decode_group_count_request(request_bytes).map_err(BindError::from)?;
+    let relation = connection
+        .resolve_relation_for_plan(&request.schema_name, &request.relation_name)
+        .map_err(MetadataBindError::Transaction)?
+        .map(|(_, relation)| relation);
+    bind_decoded_group_count(request, relation).map_err(MetadataBindError::Bind)
+}
+
 pub fn bind_delete_request(
     request_bytes: &[u8],
     relation: Option<AuthorizedPlanRelation>,
@@ -341,6 +374,24 @@ fn bind_decoded_join_select(
         },
         projections,
         join_keys,
+        limit: request.limit,
+    })
+}
+
+fn bind_decoded_group_count(
+    request: GroupCountRequest,
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundGroupCount, BindError> {
+    let relation = authorized_relation(&request.relation_name, relation)?;
+    let group_key = resolve_column(&relation.relation.columns, &request.group_key_name)?;
+    Ok(BoundGroupCount {
+        schema_name: request.schema_name,
+        schema_id: relation.schema_id,
+        schema_version: relation.schema_version,
+        table_epoch: relation.table_epoch,
+        relation_id: relation.relation.relation_id,
+        relation_name: relation.relation.name,
+        group_key: group_key.into(),
         limit: request.limit,
     })
 }
@@ -612,6 +663,15 @@ mod tests {
         bytes
     }
 
+    fn group_count_request() -> Vec<u8> {
+        let mut bytes = vec![0, 1, crate::query_abi::OPTIMIZER_GROUP_COUNT_STATEMENT, 0];
+        put_name(&mut bytes, "public");
+        put_name(&mut bytes, "items");
+        put_name(&mut bytes, "active");
+        bytes.extend_from_slice(&[1, 0, 0, 0, 4]);
+        bytes
+    }
+
     fn relation() -> AuthorizedPlanRelation {
         AuthorizedPlanRelation {
             schema_id: [0x10; 16],
@@ -717,6 +777,27 @@ mod tests {
         assert_eq!(bound.join_keys[1].left_column.ordinal, 1);
         assert_eq!(bound.join_keys[1].right_column.ordinal, 1);
         assert_eq!(bound.limit, Some(5));
+    }
+
+    #[test]
+    fn binds_group_count_key_to_authorized_column_shape() {
+        let bound = bind_group_count_request(&group_count_request(), Some(relation())).unwrap();
+        assert_eq!(bound.schema_name, "public");
+        assert_eq!(bound.schema_id, [0x10; 16]);
+        assert_eq!(bound.schema_version, 3);
+        assert_eq!(bound.table_epoch, 4);
+        assert_eq!(bound.relation_id, [0x11; 16]);
+        assert_eq!(bound.relation_name, "items");
+        assert_eq!(
+            bound.group_key,
+            BoundColumn {
+                column_id: [0x22; 16],
+                ordinal: 1,
+                scalar_type: ScalarType::Boolean,
+                nullable: true,
+            }
+        );
+        assert_eq!(bound.limit, Some(4));
     }
 
     #[test]

@@ -1,14 +1,15 @@
 //! Bounded version-1 structured query requests for the isolated optimizer.
 //!
-//! This decoder accepts bounded single-relation SELECT/DELETE/UPDATE requests
-//! and two-relation composite equijoin SELECT requests. It does not resolve
+//! This decoder accepts bounded single-relation SELECT/DELETE/UPDATE/group
+//! requests and two-relation composite equijoin SELECT requests. It does not resolve
 //! names or grant authority; those checks belong to the invocation-bound
 //! planner service and executor/storage path.
 
 use crate::query_abi::{
-    OPTIMIZER_DELETE_STATEMENT, OPTIMIZER_JOIN_SELECT_STATEMENT, OPTIMIZER_REQUEST_VERSION,
-    OPTIMIZER_SELECT_REQUEST_HEADER_BYTES, OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET,
-    OPTIMIZER_SELECT_STATEMENT, OPTIMIZER_UPDATE_STATEMENT, decode_optimizer_select_request,
+    OPTIMIZER_DELETE_STATEMENT, OPTIMIZER_GROUP_COUNT_STATEMENT, OPTIMIZER_JOIN_SELECT_STATEMENT,
+    OPTIMIZER_REQUEST_VERSION, OPTIMIZER_SELECT_REQUEST_HEADER_BYTES,
+    OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET, OPTIMIZER_SELECT_STATEMENT,
+    OPTIMIZER_UPDATE_STATEMENT, decode_optimizer_select_request,
 };
 
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
@@ -57,6 +58,16 @@ pub struct JoinSelectRequest {
     pub right_relation_name: String,
     pub projections: Vec<JoinProjection>,
     pub join_keys: Vec<JoinKey>,
+    pub limit: Option<u32>,
+}
+
+/// Bounded first grouped-query shape: one key, COUNT(*), no predicate or
+/// ordering, and an optional post-group LIMIT.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroupCountRequest {
+    pub schema_name: String,
+    pub relation_name: String,
+    pub group_key_name: String,
     pub limit: Option<u32>,
 }
 
@@ -283,6 +294,52 @@ pub fn decode_join_select_request(bytes: &[u8]) -> Result<JoinSelectRequest, Req
         right_relation_name,
         projections,
         join_keys,
+        limit,
+    })
+}
+
+/// Decode the canonical single-key COUNT(*) request. Filters, HAVING, and
+/// ORDER BY are intentionally absent from this first grouped-plan version.
+pub fn decode_group_count_request(bytes: &[u8]) -> Result<GroupCountRequest, RequestError> {
+    if bytes.len() > MAX_REQUEST_BYTES {
+        return Err(RequestError::TooLarge);
+    }
+    let header_bytes = OPTIMIZER_SELECT_REQUEST_HEADER_BYTES as usize;
+    if bytes.len() < header_bytes {
+        return Err(RequestError::Truncated);
+    }
+    let version_offset = OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET as usize;
+    let version = u16::from_be_bytes([bytes[version_offset], bytes[version_offset + 1]]);
+    if version != OPTIMIZER_REQUEST_VERSION {
+        return Err(RequestError::UnsupportedVersion(version));
+    }
+    let (statement, flags) =
+        decode_optimizer_select_request(bytes).ok_or(RequestError::Truncated)?;
+    if statement != OPTIMIZER_GROUP_COUNT_STATEMENT {
+        return Err(RequestError::UnsupportedStatement(statement));
+    }
+    if flags != 0 {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut cursor = Cursor {
+        bytes,
+        offset: header_bytes,
+    };
+    let schema_name = cursor.identifier()?;
+    let relation_name = cursor.identifier()?;
+    let group_key_name = cursor.identifier()?;
+    let limit = match cursor.u8()? {
+        0 => None,
+        1 => Some(cursor.u32()?),
+        _ => return Err(RequestError::InvalidValue),
+    };
+    if !cursor.is_empty() {
+        return Err(RequestError::TrailingBytes);
+    }
+    Ok(GroupCountRequest {
+        schema_name,
+        relation_name,
+        group_key_name,
         limit,
     })
 }
@@ -631,6 +688,33 @@ mod tests {
         name("region", &mut bytes);
         bytes.extend_from_slice(&[1, 0, 0, 0, 5]);
         bytes
+    }
+
+    fn group_count_request() -> Vec<u8> {
+        let mut bytes = vec![0, OPTIMIZER_REQUEST_VERSION as u8];
+        bytes.push(OPTIMIZER_GROUP_COUNT_STATEMENT);
+        bytes.push(0);
+        name("public", &mut bytes);
+        name("items", &mut bytes);
+        name("category", &mut bytes);
+        bytes.extend_from_slice(&[1, 0, 0, 0, 5]);
+        bytes
+    }
+
+    #[test]
+    fn decodes_bounded_single_key_group_count_request() {
+        let request = decode_group_count_request(&group_count_request()).unwrap();
+        assert_eq!(request.schema_name, "public");
+        assert_eq!(request.relation_name, "items");
+        assert_eq!(request.group_key_name, "category");
+        assert_eq!(request.limit, Some(5));
+
+        let mut trailing = group_count_request();
+        trailing.push(0);
+        assert_eq!(
+            decode_group_count_request(&trailing),
+            Err(RequestError::TrailingBytes)
+        );
     }
 
     #[test]

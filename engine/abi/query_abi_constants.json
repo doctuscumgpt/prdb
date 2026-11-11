@@ -934,6 +934,13 @@
       "c_type": "UINT16_C"
     },
     {
+      "rust_name": "IPC_OP_OPTIMIZE_GROUP_COUNT",
+      "rust_type": "u16",
+      "value": 4616,
+      "c_name": "PRDB_IPC_OP_OPTIMIZE_GROUP_COUNT",
+      "c_type": "UINT16_C"
+    },
+    {
       "rust_name": "IPC_OP_FINALIZE_TRANSACTION",
       "rust_type": "u16",
       "value": 4865,
@@ -1386,6 +1393,13 @@
       "rust_type": "u8",
       "value": 4,
       "c_name": "PRDB_OPTIMIZER_JOIN_SELECT_STATEMENT",
+      "c_type": "UINT8_C"
+    },
+    {
+      "rust_name": "OPTIMIZER_GROUP_COUNT_STATEMENT",
+      "rust_type": "u8",
+      "value": 5,
+      "c_name": "PRDB_OPTIMIZER_GROUP_COUNT_STATEMENT",
       "c_type": "UINT8_C"
     },
     {

@@ -1,8 +1,8 @@
 //! Deterministic single-table SELECT plan construction for optimizer v1.
 
 use crate::optimizer_binding::{
-    BoundColumn, BoundJoinSelect, BoundPredicate, BoundSelect, BoundUpdateAssignment,
-    BoundUpdateValue,
+    BoundColumn, BoundGroupCount, BoundJoinSelect, BoundPredicate, BoundSelect,
+    BoundUpdateAssignment, BoundUpdateValue,
 };
 use crate::optimizer_request::JoinRelationSide;
 use crate::tuple::ScalarType;
@@ -70,6 +70,16 @@ pub struct JoinSelectPlanV1 {
     pub limit: Option<u32>,
 }
 
+/// Bounded single-key COUNT(*) grouping plan. The scan carries only the
+/// authorized key; COUNT(*) itself reads row cardinality, not another column.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroupCountPlanV1 {
+    pub relation: RelationReference,
+    pub scan_columns: Vec<BoundColumn>,
+    pub group_key: BoundColumn,
+    pub limit: Option<u32>,
+}
+
 pub const MAX_PLAN_BYTES: usize = 64 * 1024;
 pub const MAX_PLAN_SCAN_COLUMNS: usize = crate::optimizer_request::MAX_PROJECTIONS * 2;
 const PLAN_KIND_SELECT: u8 = 1;
@@ -77,6 +87,8 @@ const PLAN_KIND_DELETE: u8 = 2;
 const PLAN_KIND_UPDATE: u8 = 3;
 const PLAN_KIND_JOIN_SELECT: u8 = 4;
 const DELETE_SINK_NODE: u8 = 5;
+const PLAN_KIND_GROUP_COUNT: u8 = 5;
+const GROUP_COUNT_NODE: u8 = 7;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlanError {
@@ -486,6 +498,153 @@ pub fn validate_join_select_plan_v1(plan: &JoinSelectPlanV1) -> Result<(), PlanE
         }
     }
     Ok(())
+}
+
+pub fn encode_group_count_plan_v1(plan: &GroupCountPlanV1) -> Result<Vec<u8>, PlanError> {
+    validate_group_count_plan_v1(plan)?;
+    let mut output = Vec::with_capacity(160);
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_header_record(
+        1,
+        PLAN_KIND_GROUP_COUNT,
+        0,
+    ));
+    put_name(&mut output, &plan.relation.schema_name)?;
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_schema_reference_record(
+            plan.relation.schema_id,
+            plan.relation.schema_version,
+        ),
+    );
+    put_name(&mut output, &plan.relation.relation_name)?;
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_relation_reference_record(
+            plan.relation.relation_id,
+            plan.relation.table_epoch,
+        ),
+    );
+    output.extend_from_slice(&(plan.scan_columns.len() as u16).to_be_bytes());
+    for column in &plan.scan_columns {
+        put_column(&mut output, column);
+    }
+    output.push(GROUP_COUNT_NODE);
+    put_column(&mut output, &plan.group_key);
+    match plan.limit {
+        None => output.push(0),
+        Some(limit) => {
+            output.push(1);
+            output.extend_from_slice(&limit.to_be_bytes());
+        }
+    }
+    if output.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    Ok(output)
+}
+
+pub fn decode_group_count_plan_v1(bytes: &[u8]) -> Result<GroupCountPlanV1, PlanError> {
+    if bytes.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    let (version, kind, reserved) =
+        crate::query_abi::decode_optimizer_plan_header_record(bytes).ok_or(PlanError::Truncated)?;
+    if version != 1 {
+        return Err(PlanError::UnsupportedVersion(version));
+    }
+    if kind != PLAN_KIND_GROUP_COUNT || reserved != 0 {
+        return Err(PlanError::InvalidEncoding);
+    }
+    let mut reader = PlanReader {
+        bytes,
+        offset: crate::query_abi::OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES as usize,
+    };
+    let schema_name = reader.name()?;
+    let schema_reference = reader
+        .take(crate::query_abi::OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES as usize)?;
+    let (schema_id, schema_version) =
+        crate::query_abi::decode_optimizer_plan_schema_reference_record(schema_reference)
+            .ok_or(PlanError::Truncated)?;
+    let relation_name = reader.name()?;
+    let relation_reference = reader
+        .take(crate::query_abi::OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES as usize)?;
+    let (relation_id, table_epoch) =
+        crate::query_abi::decode_optimizer_plan_relation_reference_record(relation_reference)
+            .ok_or(PlanError::Truncated)?;
+    let scan_count = usize::from(u16::from_be_bytes(
+        reader
+            .take(2)?
+            .try_into()
+            .map_err(|_| PlanError::Truncated)?,
+    ));
+    if scan_count == 0 || scan_count > MAX_PLAN_SCAN_COLUMNS {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    let mut scan_columns = Vec::with_capacity(scan_count);
+    for _ in 0..scan_count {
+        scan_columns.push(reader.column()?);
+    }
+    if reader.u8()? != GROUP_COUNT_NODE {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let group_key = reader.column()?;
+    let limit = match reader.u8()? {
+        0 => None,
+        1 => Some(u32::from_be_bytes(
+            reader
+                .take(4)?
+                .try_into()
+                .map_err(|_| PlanError::Truncated)?,
+        )),
+        _ => return Err(PlanError::InvalidEncoding),
+    };
+    if reader.offset != bytes.len() {
+        return Err(PlanError::TrailingBytes);
+    }
+    let plan = GroupCountPlanV1 {
+        relation: RelationReference {
+            schema_name,
+            schema_id,
+            schema_version,
+            relation_name,
+            relation_id,
+            table_epoch,
+        },
+        scan_columns,
+        group_key,
+        limit,
+    };
+    validate_group_count_plan_v1(&plan)?;
+    Ok(plan)
+}
+
+pub fn validate_group_count_plan_v1(plan: &GroupCountPlanV1) -> Result<(), PlanError> {
+    validate_relation(&plan.relation)?;
+    validate_columns(&plan.scan_columns)?;
+    if plan.scan_columns != [plan.group_key.clone()]
+        || plan.group_key.column_id == [0; 16]
+        || !valid_scalar_type(plan.group_key.scalar_type)
+    {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    Ok(())
+}
+
+pub fn plan_group_count_v1(bound: BoundGroupCount) -> Result<GroupCountPlanV1, PlanError> {
+    let relation = RelationReference {
+        schema_name: bound.schema_name,
+        schema_id: bound.schema_id,
+        schema_version: bound.schema_version,
+        relation_name: bound.relation_name,
+        relation_id: bound.relation_id,
+        table_epoch: bound.table_epoch,
+    };
+    let plan = GroupCountPlanV1 {
+        relation,
+        scan_columns: vec![bound.group_key.clone()],
+        group_key: bound.group_key,
+        limit: bound.limit,
+    };
+    validate_group_count_plan_v1(&plan)?;
+    Ok(plan)
 }
 
 fn join_key_types_compatible(left: ScalarType, right: ScalarType) -> bool {
@@ -2351,6 +2510,31 @@ mod tests {
             scale: 0,
         };
         assert_eq!(encode_plan_v1(&plan), Err(PlanError::InvalidScalarType));
+    }
+
+    #[test]
+    fn group_count_plan_roundtrips_and_rejects_unscanned_group_key() {
+        let key = column(4, 1, ScalarType::Text);
+        let plan = plan_group_count_v1(BoundGroupCount {
+            schema_name: "sales".to_owned(),
+            schema_id: [0x10; 16],
+            schema_version: 4,
+            table_epoch: 6,
+            relation_id: [0x20; 16],
+            relation_name: "orders".to_owned(),
+            group_key: key.clone(),
+            limit: Some(7),
+        })
+        .unwrap();
+        let bytes = encode_group_count_plan_v1(&plan).unwrap();
+        assert_eq!(decode_group_count_plan_v1(&bytes).unwrap(), plan);
+
+        let mut invalid = plan;
+        invalid.scan_columns.clear();
+        assert_eq!(
+            validate_group_count_plan_v1(&invalid),
+            Err(PlanError::InvalidColumnReference)
+        );
     }
 
     #[test]

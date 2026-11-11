@@ -3,13 +3,14 @@
 use crate::metadata_discovery::AuthorizedPlanRelation;
 use crate::optimizer_binding::{
     MetadataBindError, bind_delete_request, bind_delete_request_via_metadata,
-    bind_join_select_request, bind_join_select_request_via_metadata, bind_select_request,
-    bind_select_request_via_metadata, bind_update_request, bind_update_request_via_metadata,
+    bind_group_count_request, bind_group_count_request_via_metadata, bind_join_select_request,
+    bind_join_select_request_via_metadata, bind_select_request, bind_select_request_via_metadata,
+    bind_update_request, bind_update_request_via_metadata,
 };
 use crate::optimizer_plan::{
-    PlanError, RelationReference, encode_delete_plan_v1, encode_join_select_plan_v1,
-    encode_plan_v1, encode_update_plan_v1, plan_delete_v1, plan_join_select_v1, plan_select_v1,
-    plan_update_v1,
+    PlanError, RelationReference, encode_delete_plan_v1, encode_group_count_plan_v1,
+    encode_join_select_plan_v1, encode_plan_v1, encode_update_plan_v1, plan_delete_v1,
+    plan_group_count_v1, plan_join_select_v1, plan_select_v1, plan_update_v1,
 };
 use crate::transaction::PlannerMetadataConnection;
 use std::fmt;
@@ -133,6 +134,23 @@ pub fn optimize_update_v1_with_relation(
     encode_bound_update(bound)
 }
 
+pub fn optimize_group_count_v1(
+    request: &[u8],
+    connection: &mut PlannerMetadataConnection<'_, '_>,
+) -> Result<Vec<u8>, OptimizerError> {
+    let bound = bind_group_count_request_via_metadata(request, connection)?;
+    encode_bound_group_count(bound)
+}
+
+pub fn optimize_group_count_v1_with_relation(
+    request: &[u8],
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<Vec<u8>, OptimizerError> {
+    let bound = bind_group_count_request(request, relation)
+        .map_err(|error| OptimizerError::Bind(MetadataBindError::Bind(error)))?;
+    encode_bound_group_count(bound)
+}
+
 fn encode_bound_select(
     bound: crate::optimizer_binding::BoundSelect,
 ) -> Result<Vec<u8>, OptimizerError> {
@@ -145,6 +163,13 @@ fn encode_bound_join_select(
 ) -> Result<Vec<u8>, OptimizerError> {
     let plan = plan_join_select_v1(bound)?;
     Ok(encode_join_select_plan_v1(&plan)?)
+}
+
+fn encode_bound_group_count(
+    bound: crate::optimizer_binding::BoundGroupCount,
+) -> Result<Vec<u8>, OptimizerError> {
+    let plan = plan_group_count_v1(bound)?;
+    Ok(encode_group_count_plan_v1(&plan)?)
 }
 
 fn encode_bound_delete(

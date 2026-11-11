@@ -44,6 +44,7 @@ pub enum Operation {
     OptimizeDelete = crate::query_abi::IPC_OP_OPTIMIZE_DELETE,
     OptimizeUpdate = crate::query_abi::IPC_OP_OPTIMIZE_UPDATE,
     OptimizeJoinSelect = crate::query_abi::IPC_OP_OPTIMIZE_JOIN_SELECT,
+    OptimizeGroupCount = crate::query_abi::IPC_OP_OPTIMIZE_GROUP_COUNT,
     FinalizeTransaction = crate::query_abi::IPC_OP_FINALIZE_TRANSACTION,
     AbortTransaction = crate::query_abi::IPC_OP_ABORT_TRANSACTION,
     SupervisorCancelInvocation = crate::query_abi::IPC_OP_SUPERVISOR_CANCEL_INVOCATION,
@@ -96,6 +97,7 @@ impl Operation {
             crate::query_abi::IPC_OP_OPTIMIZE_DELETE => Ok(Self::OptimizeDelete),
             crate::query_abi::IPC_OP_OPTIMIZE_UPDATE => Ok(Self::OptimizeUpdate),
             crate::query_abi::IPC_OP_OPTIMIZE_JOIN_SELECT => Ok(Self::OptimizeJoinSelect),
+            crate::query_abi::IPC_OP_OPTIMIZE_GROUP_COUNT => Ok(Self::OptimizeGroupCount),
             crate::query_abi::IPC_OP_FINALIZE_TRANSACTION => Ok(Self::FinalizeTransaction),
             crate::query_abi::IPC_OP_ABORT_TRANSACTION => Ok(Self::AbortTransaction),
             crate::query_abi::IPC_OP_SUPERVISOR_CANCEL_INVOCATION => {
@@ -179,6 +181,7 @@ pub fn authorize_operation(role: ServiceRole, operation: Operation) -> Result<()
                 | Operation::OptimizeDelete
                 | Operation::OptimizeUpdate
                 | Operation::OptimizeJoinSelect
+                | Operation::OptimizeGroupCount
         ),
         ServiceRole::Supervisor => matches!(
             operation,

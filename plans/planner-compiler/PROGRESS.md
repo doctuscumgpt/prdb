@@ -19,6 +19,13 @@
 - Verification: optimizer process tests passed (7/7); the maintained TinyCC SDK suite and sandbox query fixture build passed. The focused confined DML sequence passed with the optimizer-backed join. Locked workspace build, format check, warning-denied Clippy, and the full serial workspace test suite passed in the delegated `systemd --user` unit; commit integration reported 142 passed, zero ignored, including all cgroup tests, and metadata process integration reported 2 passed. `git diff --check` passed.
 - Remaining: add optimizer planning support for grouping and sorting, then gather analytical-load and mixed-workload measurements. Existing SDK grouping/sorting execution remains reference behavior.
 
+## OP-7 dependency: bounded single-key COUNT(*) plan — Rust service implemented
+
+- Contract: the first grouped optimizer plan accepts `SELECT key, COUNT(*) FROM relation GROUP BY key [LIMIT n]`; it carries only authorized stable relation identity and the one scanned key column. It has no WHERE, HAVING, or ORDER BY.
+- Implementation: statement 5 (`OptimizeGroupCount`, `0x1208`) is bounded and decoded, binds the key against invocation-authorized metadata, and lowers to validated plan kind 5. The scan shape must equal the group key exactly; the optional LIMIT applies after grouping.
+- Verification: request bounds/trailing bytes, authorized key binding, kind-5 round-trip/scan validation, and optimizer process dispatch are covered by four focused Rust regressions; they passed. ABI generation was refreshed and checked.
+- Remaining: independently decode the plan in TinyCC, serialize/match the supported SQL AST, gate SDK group execution on the validated plan, and add confined acceptance. Composite grouping, aggregates beyond COUNT(*), WHERE/HAVING, and ordering remain unsupported by this optimizer request subset.
+
 ## OP-2 dependency: generated unknown estimate response — implemented
 
 - Contract: when an authorized estimate is unavailable or exceeds its allowance, planner IPC returns the exact versioned unknown response and keeps the invocation usable.
