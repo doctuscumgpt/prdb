@@ -7,7 +7,15 @@
 - Regression and fuzzing: maintained TinyCC fixtures cover aliased filter binding, filter-before-LIMIT output, unchanged v19 WHERE rejection, invalid parameter indexes, and REDACTED filter failure with zero output and a latched statement error. The new ASan/UBSan/libFuzzer v20 target completed 10,000 runs from five grammar seeds (1,299 coverage edges; 2,852 features).
 - Cgroup coverage: removed `#[ignore]` from the four sandboxed commit tests and the disconnected-submission metadata process test. The complete workspace suite now runs these acceptance paths when invoked under the documented delegated `systemd --user` service with fixture and runtime variables; it no longer reports them as ignored. [`SANDBOX_TEST.md`](SANDBOX_TEST.md) and [`AGENTS.md`](../../AGENTS.md) document the required invocation.
 - Verification: TinyCC `make -f engine/sdk/Makefile test`, `make -f engine/sdk/Makefile sandbox-query-fixture`, and the v20 10,000-run fuzzer passed. Locked workspace build, format check, warning-denied Clippy, `git diff --check`, and the full serial locked workspace test suite passed inside the delegated service. All four sandboxed commit tests passed; both metadata process tests passed; the test targets reported zero ignored cases.
-- Remaining: SQLR encoding and confined query-artifact coverage for v20, optimizer join plans, broader analytical type/workload coverage, spill support, and end-to-end pressure testing remain open.
+- Remaining: optimizer join plans, broader analytical type/workload coverage, spill support, and end-to-end pressure testing remain open.
+
+## SQL-7 follow-up: v20 filtered join through confined SQLR — verified
+
+- Contract: the V20 SQL runner must preserve the filtered projection when producing SQLR output inside the normal sandboxed executor path, then carry the provisional record through result relay and durable transaction completion.
+- Regression: the maintained `sql_v3_write_read.c` artifact runs a two-key aliased join with `WHERE l.id >= $1 LIMIT 1`, forces multiple join candidates, and encodes only the selected `g.left_key` and `l.id` outputs. The confined commit test checks the exact SQLR frame `(1, 42)` after relay.
+- Implementation: V20 is now exercised by the maintained ABI v3 query artifact; `make -f engine/sdk/Makefile sandbox-query-fixture` rebuilds it when either V20 header changes. The regression uses existing authorized relation resolution and two-scan callbacks, with no new result or authority path.
+- Verification: `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` passed inside a delegated `systemd --user` service with the configured NixOS loader/libc/`libgcc_s` allowlist. The full workspace suite already passed with all five previously ignored cgroup tests enabled; the focused acceptance was rerun after adding the v20 SQLR frame.
+- Remaining: optimizer join plans remain the next SQL-7 implementation dependency; wider pressure and mixed-workload evidence remains open.
 
 ## SQL-4 / IPC: sequential SQL request budget — implemented
 
