@@ -861,3 +861,12 @@
 - Compatibility: text literal bytes and validation rules remain unchanged; the Rust regression asserts the exact `[03 00 02]` header for `hi`, and the maintained TinyCC optimizer-plan fixture passes.
 - Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
 - Remaining: other predicate records, string/name headers, and full shared-schema parity remain open.
+
+## TC-2 follow-up: generated optimizer integer-predicate record — implemented
+
+- Contract: an integer predicate retains its one-byte `0x02` tag followed by a signed big-endian i64 value.
+- Red evidence: generator regression failed because `OPTIMIZER_PLAN_INTEGER_PREDICATE_RECORD` and its Rust/C codecs were absent.
+- Implementation: the shared schema defines the fixed tag/value record. Rust plan encoding and decoding and TinyCC predicate decoding, traversal, evaluation, and parameter matching now use the generated codec. The C evaluator reconstructs the existing canonical big-endian SDK integer bytes after decoding.
+- Compatibility: integer literal bytes and range checks remain unchanged; a Rust regression checks the exact encoding of `-2`, and the maintained TinyCC optimizer-plan fixture exercises the C paths.
+- Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
+- Remaining: other predicate records, string/name headers, and full shared-schema parity remain open.

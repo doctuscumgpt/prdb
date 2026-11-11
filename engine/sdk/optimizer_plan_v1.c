@@ -71,6 +71,23 @@ static int read_text_predicate_header(plan_reader *reader,
     return node_tag == 0x03;
 }
 
+static int read_integer_predicate_record(plan_reader *reader,
+                                         uint64_t header_offset,
+                                         int64_t *integer_value) {
+    const uint8_t *ignored;
+    uint8_t node_tag;
+    if (!take(reader,
+              PRDB_OPTIMIZER_PLAN_INTEGER_PREDICATE_RECORD_HEADER_BYTES - 1,
+              &ignored) ||
+        !prdb_decode_optimizer_plan_integer_predicate_record(
+            reader->bytes + header_offset,
+            PRDB_OPTIMIZER_PLAN_INTEGER_PREDICATE_RECORD_HEADER_BYTES,
+            &node_tag, integer_value)) {
+        return 0;
+    }
+    return node_tag == 0x02;
+}
+
 static int read_column_list_header(plan_reader *reader, uint8_t expected_tag,
                                    uint16_t *column_count) {
     const uint8_t *ignored;
@@ -248,7 +265,11 @@ static int decode_predicate(plan_reader *reader,
             type.type_code = 1;
             break;
         case 0x02:
-            if (!take(reader, 8, &bytes)) return 0;
+            {
+                int64_t integer_value;
+                if (!read_integer_predicate_record(reader, tag_offset,
+                                                   &integer_value)) return 0;
+            }
             type.type_code = 3;
             break;
         case 0x03: {
@@ -350,7 +371,11 @@ static int skip_predicate_node(plan_reader *reader, uint32_t depth) {
     case 0x01:
         return take(reader, 1, &bytes);
     case 0x02:
-        return take(reader, 8, &bytes);
+        {
+            int64_t integer_value;
+            return read_integer_predicate_record(reader, tag_offset,
+                                                 &integer_value);
+        }
     case 0x03: {
         uint16_t length;
         return read_text_predicate_header(reader, tag_offset, &length) &&
@@ -402,17 +427,22 @@ static int32_t evaluate_predicate_node(
         out->value.data = out->bytes;
         return PRDB_SDK_SQL_EVAL_OK;
     case 0x02: {
-        uint64_t raw = 0;
+        int64_t integer_value;
+        uint64_t raw;
         uint32_t high;
-        if (!take(reader, 8, &bytes)) return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
-        for (uint32_t index = 0; index < 8; ++index)
-            raw = (raw << 8) | bytes[index];
+        if (!read_integer_predicate_record(reader, tag_offset,
+                                           &integer_value))
+            return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
+        raw = (uint64_t)integer_value;
         high = (uint32_t)(raw >> 32);
         if (!((high == 0 && (uint32_t)raw <= INT32_MAX) ||
               (high == UINT32_MAX && (uint32_t)raw >= UINT32_C(0x80000000))))
             return PRDB_SDK_SQL_EVAL_NUMERIC_OVERFLOW;
         predicate_value_init(out, PRDB_SDK_VALUE_TYPE_INTEGER, NULL, 4);
-        memcpy(out->bytes, bytes + 4, 4);
+        out->bytes[0] = (uint8_t)(raw >> 24);
+        out->bytes[1] = (uint8_t)(raw >> 16);
+        out->bytes[2] = (uint8_t)(raw >> 8);
+        out->bytes[3] = (uint8_t)raw;
         out->value.data = out->bytes;
         return PRDB_SDK_SQL_EVAL_OK;
     }
@@ -1383,11 +1413,14 @@ static int match_optimizer_parameter(plan_reader *reader,
         return tag == 0x01 && take(reader, 1, &bytes) &&
                bytes[0] == value->data[0];
     case PRDB_SDK_VALUE_TYPE_INTEGER: {
-        uint8_t expected[8];
-        if (tag != 0x02 || !take(reader, sizeof(expected), &bytes)) return 0;
-        memset(expected, (value->data[0] & 0x80) != 0 ? 0xff : 0, 4);
-        memcpy(expected + 4, value->data, 4);
-        return memcmp(bytes, expected, sizeof(expected)) == 0;
+        int64_t integer_value;
+        int32_t expected;
+        if (prdb_sdk_value_get_integer_v1(value, &expected) !=
+            PRDB_SDK_VALUE_ACCESS_OK) return 0;
+        if (tag != 0x02 ||
+            !read_integer_predicate_record(reader, tag_offset,
+                                           &integer_value)) return 0;
+        return integer_value == expected;
     }
     case PRDB_SDK_VALUE_TYPE_TEXT: {
         uint16_t length;

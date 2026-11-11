@@ -1272,6 +1272,23 @@ pub fn decode_optimizer_plan_text_predicate_header_record(payload: &[u8]) -> Opt
     Some((payload[0], u16::from_be_bytes(payload[1..3].try_into().ok()?)))
 }
 
+pub const OPTIMIZER_PLAN_INTEGER_PREDICATE_RECORD_NODE_TAG_OFFSET: u32 = 0;
+pub const OPTIMIZER_PLAN_INTEGER_PREDICATE_RECORD_INTEGER_VALUE_OFFSET: u32 = 1;
+pub const OPTIMIZER_PLAN_INTEGER_PREDICATE_RECORD_HEADER_BYTES: u32 = 9;
+pub fn encode_optimizer_plan_integer_predicate_record(node_tag: u8, integer_value: i64) -> [u8; 9] {
+    let mut payload = [0u8; 9];
+    payload[0] = node_tag;
+    payload[1..9].copy_from_slice(&integer_value.to_be_bytes());
+    payload
+}
+
+pub fn decode_optimizer_plan_integer_predicate_record(payload: &[u8]) -> Option<(u8, i64)> {
+    if payload.len() != 9 {
+        return None;
+    }
+    Some((payload[0], i64::from_be_bytes(payload[1..9].try_into().ok()?)))
+}
+
 pub const CLIENT_FRAME_HEADER_RECORD_MAGIC_OFFSET: u32 = 0;
 pub const CLIENT_FRAME_HEADER_RECORD_MAJOR_VERSION_OFFSET: u32 = 4;
 pub const CLIENT_FRAME_HEADER_RECORD_MINOR_VERSION_OFFSET: u32 = 6;

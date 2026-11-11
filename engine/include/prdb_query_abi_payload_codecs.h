@@ -2162,6 +2162,39 @@ static inline int prdb_decode_optimizer_plan_text_predicate_header_record(const 
     return 1;
 }
 
+static inline void prdb_encode_optimizer_plan_integer_predicate_record(uint8_t payload[9],
+    uint8_t node_tag, int64_t integer_value) {
+    payload[0] = node_tag;
+    uint64_t integer_value_wire = (uint64_t)integer_value;
+    for (size_t i = 0; i < 8; ++i) {
+        payload[1 + i] = (uint8_t)(integer_value_wire >> ((8 - 1 - i) * 8));
+    }
+}
+
+static inline int prdb_decode_optimizer_plan_integer_predicate_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *node_tag, int64_t *integer_value) {
+    if (payload == NULL || payload_len != 9) {
+        return 0;
+    }
+    if (node_tag == NULL) {
+        return 0;
+    }
+    *node_tag = payload[0];
+    if (integer_value == NULL) {
+        return 0;
+    }
+    uint64_t integer_value_wire_value = 0;
+    for (size_t i = 0; i < 8; ++i) {
+        integer_value_wire_value = (integer_value_wire_value << 8) | payload[1 + i];
+    }
+    if (integer_value_wire_value <= (uint64_t)INT64_MAX) {
+        *integer_value = (int64_t)integer_value_wire_value;
+    } else {
+        *integer_value = -1 - (int64_t)(UINT64_MAX - integer_value_wire_value);
+    }
+    return 1;
+}
+
 static inline void prdb_encode_client_frame_header_record(uint8_t payload[32],
     const uint8_t magic[4], uint16_t major_version, uint16_t minor_version, uint16_t kind, uint16_t flags, uint32_t payload_length, uint64_t request_id, uint64_t response_sequence) {
     for (size_t i = 0; i < 4; ++i) {

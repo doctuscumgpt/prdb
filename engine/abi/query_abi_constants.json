@@ -1860,6 +1860,16 @@
       "trailing_fields": []
     },
     {
+      "name": "OPTIMIZER_PLAN_INTEGER_PREDICATE_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "node_tag", "encoding": "u8" },
+        { "name": "integer_value", "encoding": "i64be" }
+      ],
+      "trailing_fields": []
+    },
+    {
       "name": "CLIENT_FRAME_HEADER_RECORD",
       "generate_rust_codec": true,
       "generate_c_codec": true,
