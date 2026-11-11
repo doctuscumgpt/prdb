@@ -1710,4 +1710,54 @@ static inline int prdb_decode_visible_column_record_column_name(const uint8_t *p
     return 1;
 }
 
+static inline void prdb_encode_scalar_value_record(uint8_t payload[5],
+    uint8_t type_code, uint32_t value_length) {
+    payload[0] = type_code;
+    uint64_t value_length_wire = (uint64_t)value_length;
+    for (size_t i = 0; i < 4; ++i) {
+        payload[1 + i] = (uint8_t)(value_length_wire >> ((4 - 1 - i) * 8));
+    }
+}
+
+static inline int prdb_decode_scalar_value_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *type_code, uint32_t *value_length) {
+    if (payload == NULL || payload_len < 5) {
+        return 0;
+    }
+    if (type_code == NULL) {
+        return 0;
+    }
+    *type_code = payload[0];
+    if (value_length == NULL) {
+        return 0;
+    }
+    uint64_t value_length_wire_value = 0;
+    for (size_t i = 0; i < 4; ++i) {
+        value_length_wire_value = (value_length_wire_value << 8) | payload[1 + i];
+    }
+    *value_length = (uint32_t)value_length_wire_value;
+    return 1;
+}
+
+static inline int prdb_encode_scalar_value_record_value_bytes(uint8_t *payload, size_t payload_capacity, const uint8_t *bytes, size_t bytes_len) {
+    if (bytes_len > UINT32_MAX || bytes_len > payload_capacity ||
+        (bytes_len != 0 && (payload == NULL || bytes == NULL))) {
+        return 0;
+    }
+    for (size_t i = 0; i < bytes_len; ++i) {
+        payload[i] = bytes[i];
+    }
+    return 1;
+}
+
+static inline int prdb_decode_scalar_value_record_value_bytes(const uint8_t *payload, size_t payload_len, uint32_t encoded_len, const uint8_t **bytes, size_t *bytes_len) {
+    if (payload_len != (size_t)encoded_len || bytes == NULL || bytes_len == NULL ||
+        (encoded_len != 0 && payload == NULL)) {
+        return 0;
+    }
+    *bytes = payload;
+    *bytes_len = (size_t)encoded_len;
+    return 1;
+}
+
 #endif /* PRDB_QUERY_ABI_PAYLOAD_CODECS_H */

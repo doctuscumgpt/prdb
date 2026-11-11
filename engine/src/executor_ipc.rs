@@ -556,11 +556,7 @@ fn encode_mutation_value(
         Some(value) => {
             payload.push(0);
             let (type_code, bytes) = encode_scalar_value(value)?;
-            payload.push(type_code);
-            let len =
-                u32::try_from(bytes.len()).map_err(|_| ExecutorRequestError::InvalidPayload)?;
-            payload.extend_from_slice(&len.to_be_bytes());
-            payload.extend_from_slice(&bytes);
+            append_scalar_value_record(payload, type_code, &bytes)?;
         }
     }
     ensure_response_size(payload)
@@ -576,21 +572,7 @@ fn decode_mutation_value(
     *offset += 1;
     match state {
         1 => Ok(None),
-        0 => {
-            let type_code = *payload
-                .get(*offset)
-                .ok_or(ExecutorRequestError::InvalidPayload)?;
-            *offset += 1;
-            let len = usize::try_from(read_u32(payload, offset)?)
-                .map_err(|_| ExecutorRequestError::InvalidPayload)?;
-            let end = offset
-                .checked_add(len)
-                .filter(|end| *end <= payload.len())
-                .ok_or(ExecutorRequestError::InvalidPayload)?;
-            let value = decode_scalar_value(type_code, &payload[*offset..end])?;
-            *offset = end;
-            Ok(Some(value))
-        }
+        0 => decode_scalar_value_record(payload, offset).map(Some),
         _ => Err(ExecutorRequestError::InvalidPayload),
     }
 }
@@ -706,21 +688,7 @@ impl NextBatchResponse {
                     .ok_or(ExecutorRequestError::InvalidPayload)?;
                 offset += 1;
                 cells.push(match state {
-                    0 => {
-                        let type_code = *payload
-                            .get(offset)
-                            .ok_or(ExecutorRequestError::InvalidPayload)?;
-                        offset += 1;
-                        let value_len = usize::try_from(read_u32(payload, &mut offset)?)
-                            .map_err(|_| ExecutorRequestError::InvalidPayload)?;
-                        let value_end = offset
-                            .checked_add(value_len)
-                            .filter(|end| *end <= payload.len())
-                            .ok_or(ExecutorRequestError::InvalidPayload)?;
-                        let value = decode_scalar_value(type_code, &payload[offset..value_end])?;
-                        offset = value_end;
-                        SanitizedCell::Value(value)
-                    }
+                    0 => SanitizedCell::Value(decode_scalar_value_record(payload, &mut offset)?),
                     1 => SanitizedCell::Null,
                     2 => SanitizedCell::Redacted,
                     _ => return Err(ExecutorRequestError::InvalidPayload),
@@ -773,11 +741,7 @@ fn encode_sanitized_cell(
         SanitizedCell::Value(value) => {
             payload.push(0);
             let (type_code, bytes) = encode_scalar_value(value)?;
-            payload.push(type_code);
-            let len =
-                u32::try_from(bytes.len()).map_err(|_| ExecutorRequestError::ResponseTooLarge)?;
-            payload.extend_from_slice(&len.to_be_bytes());
-            payload.extend_from_slice(&bytes);
+            append_scalar_value_record(payload, type_code, &bytes)?;
         }
     }
     ensure_batch_size(payload, max_bytes)
@@ -798,6 +762,50 @@ fn encode_scalar_value(value: &ScalarValue) -> Result<(u8, Vec<u8>), ExecutorReq
         ScalarValue::TimestampTz(value) => (11, value.to_be_bytes().to_vec()),
     };
     Ok(encoded)
+}
+
+fn append_scalar_value_record(
+    payload: &mut Vec<u8>,
+    type_code: u8,
+    bytes: &[u8],
+) -> Result<(), ExecutorRequestError> {
+    let value_length =
+        u32::try_from(bytes.len()).map_err(|_| ExecutorRequestError::InvalidPayload)?;
+    payload.extend_from_slice(&generated::encode_scalar_value_record(
+        type_code,
+        value_length,
+    ));
+    let encoded_bytes = generated::encode_scalar_value_record_value_bytes(bytes)
+        .ok_or(ExecutorRequestError::InvalidPayload)?;
+    payload.extend_from_slice(encoded_bytes);
+    Ok(())
+}
+
+fn decode_scalar_value_record(
+    payload: &[u8],
+    offset: &mut usize,
+) -> Result<ScalarValue, ExecutorRequestError> {
+    let (type_code, encoded_length) = generated::decode_scalar_value_record(
+        payload
+            .get(*offset..)
+            .ok_or(ExecutorRequestError::InvalidPayload)?,
+    )
+    .ok_or(ExecutorRequestError::InvalidPayload)?;
+    *offset = offset
+        .checked_add(generated::SCALAR_VALUE_RECORD_HEADER_BYTES as usize)
+        .ok_or(ExecutorRequestError::InvalidPayload)?;
+    let value_length =
+        usize::try_from(encoded_length).map_err(|_| ExecutorRequestError::InvalidPayload)?;
+    let end = offset
+        .checked_add(value_length)
+        .filter(|end| *end <= payload.len())
+        .ok_or(ExecutorRequestError::InvalidPayload)?;
+    let bytes =
+        generated::decode_scalar_value_record_value_bytes(&payload[*offset..end], encoded_length)
+            .ok_or(ExecutorRequestError::InvalidPayload)?;
+    let value = decode_scalar_value(type_code, bytes)?;
+    *offset = end;
+    Ok(value)
 }
 
 fn decode_scalar_value(type_code: u8, bytes: &[u8]) -> Result<ScalarValue, ExecutorRequestError> {

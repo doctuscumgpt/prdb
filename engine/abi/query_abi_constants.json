@@ -1718,6 +1718,19 @@
       "trailing_fields": [
         { "name": "column_name", "encoding": "length_prefixed_utf8" }
       ]
+    },
+    {
+      "name": "SCALAR_VALUE_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "codec_prefix": true,
+      "fields": [
+        { "name": "type_code", "encoding": "u8" },
+        { "name": "value_length", "encoding": "u32be" }
+      ],
+      "trailing_fields": [
+        { "name": "value_bytes", "encoding": "bytes", "length_field": "value_length" }
+      ]
     }
   ]
 }

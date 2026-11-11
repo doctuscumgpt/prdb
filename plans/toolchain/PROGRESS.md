@@ -696,6 +696,15 @@
 - Verification: generated schema/drift tests, Rust codec and executor IPC round-trip/malformed-input tests, and the forced TinyCC IPC payload codec fixture passed. The full forced TinyCC SDK suite, locked workspace build, format check, warning-denied Clippy, serial tests, and `git diff --check` passed; the commit integration reported 138 passed and 4 cgroup-dependent tests ignored.
 - Remaining: additional structured IPC tails and full shared-schema parity remain open.
 
+## TC-2 follow-up: generated scalar-value wire record — implemented
+
+- Contract: IPC scalar VALUE entries share the type-code, u32 length, and raw value framing across executor insert/update requests and batch responses, while NULL, DEFAULT, and REDACTED state tags retain their existing surrounding forms.
+- Red evidence: temporarily removing the scalar-value record declaration made the maintained generator test fail because `SCALAR_VALUE_RECORD` constants and codecs were absent.
+- Implementation: the schema now declares a versionless type/length prefix and bounded raw-byte tail. Rust executor encoders and decoders use the generated helpers for mutation values and sanitized batch values. The C SDK's INSERT and UPDATE encoders use the generated scalar-value prefix. Rust raw-byte encode/decode helpers borrow rather than allocate a second copy.
+- Compatibility: the on-wire bytes and state tags are unchanged. Existing scalar type, value-width, UTF-8, payload-size, and batch-budget validation remains in place.
+- Verification: generator schema/drift tests (7 tests), the forced TinyCC SDK fixture suite, locked workspace build, format check, warning-denied Clippy, `git diff --check`, and the full locked workspace test suite passed. The commit integration suite reported 138 passed and 4 cgroup-dependent tests ignored; the other workspace integration suites also passed.
+- Remaining: patch ordinal framing and other nested IPC records are still hand-coded; full shared-schema parity remains open.
+
 ## TC-1 / TC-3: maintained TinyCC SDK and shared-artifact link profile — partial
 
 - Observed development tools: Rust/Cargo 1.95.0 with rustfmt and Clippy; TinyCC `0.9.27-unstable-2025-01-06` on x86_64 Linux. The SDK archive and C fixtures build with TinyCC `-Wall -Wextra -Werror`.

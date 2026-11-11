@@ -216,9 +216,12 @@ int32_t prdb_sdk_executor_stage_insert_v1(
                     return PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL;
                 }
                 request[offset++] = 0;
-                request[offset++] = (uint8_t)input->value.type_code;
-                write_u32(request + offset, (uint32_t)value_len);
-                offset += 4;
+                uint8_t value_header[PRDB_SCALAR_VALUE_RECORD_HEADER_BYTES] = {0};
+                prdb_encode_scalar_value_record(
+                    value_header, (uint8_t)input->value.type_code,
+                    (uint32_t)value_len);
+                memcpy(request + offset, value_header, sizeof(value_header));
+                offset += sizeof(value_header);
                 if (value_len != 0) {
                     memcpy(request + offset, input->value.data, (size_t)value_len);
                 }
@@ -290,9 +293,12 @@ int32_t prdb_sdk_executor_stage_update_v1(
             request[offset++] = 1;
         } else {
             request[offset++] = 0;
-            request[offset++] = (uint8_t)patch->value.type_code;
-            write_u32(request + offset, (uint32_t)value_len);
-            offset += 4;
+            uint8_t value_header[PRDB_SCALAR_VALUE_RECORD_HEADER_BYTES] = {0};
+            prdb_encode_scalar_value_record(
+                value_header, (uint8_t)patch->value.type_code,
+                (uint32_t)value_len);
+            memcpy(request + offset, value_header, sizeof(value_header));
+            offset += sizeof(value_header);
             if (value_len != 0) {
                 memcpy(request + offset, patch->value.data, (size_t)value_len);
             }

@@ -83,6 +83,23 @@ fn generated_relation_description_tail_codecs_preserve_prefix_boundaries() {
         prdb_engine::query_abi::decode_visible_column_record(&column),
         Some(([0x42; 16], 0x0102_0304, 1, 3, [0; 4]))
     );
+
+    let value_header = prdb_engine::query_abi::encode_scalar_value_record(3, 4);
+    assert_eq!(value_header, [3, 0, 0, 0, 4]);
+    assert_eq!(
+        prdb_engine::query_abi::decode_scalar_value_record(&value_header),
+        Some((3, 4))
+    );
+    let value_bytes =
+        prdb_engine::query_abi::encode_scalar_value_record_value_bytes(&[0xff, 0, 1, 2]).unwrap();
+    assert_eq!(
+        prdb_engine::query_abi::decode_scalar_value_record_value_bytes(value_bytes, 4),
+        Some([0xff, 0, 1, 2].as_slice())
+    );
+    assert!(
+        prdb_engine::query_abi::decode_scalar_value_record_value_bytes(&value_bytes[..3], 4)
+            .is_none()
+    );
 }
 
 #[test]

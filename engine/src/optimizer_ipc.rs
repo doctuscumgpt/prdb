@@ -86,7 +86,7 @@ impl OptimizerResponse {
                 .to_vec();
                 let encoded_plan = crate::query_abi::encode_optimizer_response_success_plan(plan)
                     .ok_or(OptimizerPayloadError::PlanTooLarge)?;
-                output.extend_from_slice(&encoded_plan);
+                output.extend_from_slice(encoded_plan);
                 Ok(output)
             }
             (OptimizerStatus::Success, None) | (_, Some(_)) => {
@@ -140,7 +140,8 @@ impl OptimizerResponse {
             &bytes[header_bytes..],
             encoded_plan_length,
         )
-        .ok_or(OptimizerPayloadError::InvalidResponse)?;
+        .ok_or(OptimizerPayloadError::InvalidResponse)?
+        .to_vec();
         decode_plan_v1(&plan).map_err(|_| OptimizerPayloadError::InvalidPlan)?;
         Ok(Self {
             status,

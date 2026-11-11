@@ -536,6 +536,34 @@ int main(void) {
         memcmp(decoded_description_name, "id", 2) != 0) {
         return 50;
     }
+    const uint8_t scalar_value_header_expected[5] = {3, 0, 0, 0, 4};
+    uint8_t scalar_value_header[5] = {0};
+    uint8_t decoded_scalar_value_type = 0;
+    uint32_t decoded_scalar_value_length = 0;
+    uint8_t scalar_value_bytes[4] = {0xff, 0, 1, 2};
+    uint8_t decoded_scalar_value_bytes[4] = {0};
+    const uint8_t *decoded_scalar_value_bytes_view = NULL;
+    size_t decoded_scalar_value_bytes_len = 0;
+    prdb_encode_scalar_value_record(scalar_value_header, 3, 4);
+    if (memcmp(scalar_value_header, scalar_value_header_expected,
+               sizeof(scalar_value_header_expected)) != 0 ||
+        !prdb_decode_scalar_value_record(
+            scalar_value_header, sizeof(scalar_value_header),
+            &decoded_scalar_value_type, &decoded_scalar_value_length) ||
+        decoded_scalar_value_type != 3 || decoded_scalar_value_length != 4 ||
+        !prdb_encode_scalar_value_record_value_bytes(
+            decoded_scalar_value_bytes, sizeof(decoded_scalar_value_bytes),
+            scalar_value_bytes, sizeof(scalar_value_bytes)) ||
+        memcmp(decoded_scalar_value_bytes, scalar_value_bytes,
+               sizeof(scalar_value_bytes)) != 0 ||
+        !prdb_decode_scalar_value_record_value_bytes(
+            decoded_scalar_value_bytes, sizeof(decoded_scalar_value_bytes), 4,
+            &decoded_scalar_value_bytes_view, &decoded_scalar_value_bytes_len) ||
+        decoded_scalar_value_bytes_len != sizeof(scalar_value_bytes) ||
+        memcmp(decoded_scalar_value_bytes_view, scalar_value_bytes,
+               sizeof(scalar_value_bytes)) != 0) {
+        return 54;
+    }
     uint8_t planner_schema_id[16];
     uint8_t planner_plan_relation_id[16];
     uint8_t decoded_planner_schema_id[16] = {0};

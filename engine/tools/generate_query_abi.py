@@ -611,16 +611,16 @@ def render(schema):
                 if generate_rust_codec:
                     rust_lines.extend(
                         [
-                            f"pub fn encode_{name.lower()}_{field_name}(bytes: &[u8]) -> Option<Vec<u8>> {{",
+                            f"pub fn encode_{name.lower()}_{field_name}(bytes: &[u8]) -> Option<&[u8]> {{",
                             "    u32::try_from(bytes.len()).ok()?;",
-                            "    Some(bytes.to_vec())",
+                            "    Some(bytes)",
                             "}",
                             "",
-                            f"pub fn decode_{name.lower()}_{field_name}(payload: &[u8], encoded_len: u32) -> Option<Vec<u8>> {{",
+                            f"pub fn decode_{name.lower()}_{field_name}(payload: &[u8], encoded_len: u32) -> Option<&[u8]> {{",
                             "    if payload.len() != usize::try_from(encoded_len).ok()? {",
                             "        return None;",
                             "    }",
-                            "    Some(payload.to_vec())",
+                            "    Some(payload)",
                             "}",
                             "",
                         ]

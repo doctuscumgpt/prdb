@@ -718,16 +718,16 @@ pub fn decode_optimizer_response_success(payload: &[u8]) -> Option<(u8, u32)> {
     Some((payload[2], u32::from_be_bytes(payload[3..7].try_into().ok()?)))
 }
 
-pub fn encode_optimizer_response_success_plan(bytes: &[u8]) -> Option<Vec<u8>> {
+pub fn encode_optimizer_response_success_plan(bytes: &[u8]) -> Option<&[u8]> {
     u32::try_from(bytes.len()).ok()?;
-    Some(bytes.to_vec())
+    Some(bytes)
 }
 
-pub fn decode_optimizer_response_success_plan(payload: &[u8], encoded_len: u32) -> Option<Vec<u8>> {
+pub fn decode_optimizer_response_success_plan(payload: &[u8], encoded_len: u32) -> Option<&[u8]> {
     if payload.len() != usize::try_from(encoded_len).ok()? {
         return None;
     }
-    Some(payload.to_vec())
+    Some(payload)
 }
 
 pub const OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET: u32 = 0;
@@ -1027,4 +1027,33 @@ pub fn decode_visible_column_record_column_name(payload: &[u8]) -> Option<(&str,
     let end = 2usize.checked_add(length)?;
     let value = std::str::from_utf8(payload.get(2..end)?).ok()?;
     Some((value, end))
+}
+
+pub const SCALAR_VALUE_RECORD_TYPE_CODE_OFFSET: u32 = 0;
+pub const SCALAR_VALUE_RECORD_VALUE_LENGTH_OFFSET: u32 = 1;
+pub const SCALAR_VALUE_RECORD_HEADER_BYTES: u32 = 5;
+pub fn encode_scalar_value_record(type_code: u8, value_length: u32) -> [u8; 5] {
+    let mut payload = [0u8; 5];
+    payload[0] = type_code;
+    payload[1..5].copy_from_slice(&value_length.to_be_bytes());
+    payload
+}
+
+pub fn decode_scalar_value_record(payload: &[u8]) -> Option<(u8, u32)> {
+    if payload.len() < 5 {
+        return None;
+    }
+    Some((payload[0], u32::from_be_bytes(payload[1..5].try_into().ok()?)))
+}
+
+pub fn encode_scalar_value_record_value_bytes(bytes: &[u8]) -> Option<&[u8]> {
+    u32::try_from(bytes.len()).ok()?;
+    Some(bytes)
+}
+
+pub fn decode_scalar_value_record_value_bytes(payload: &[u8], encoded_len: u32) -> Option<&[u8]> {
+    if payload.len() != usize::try_from(encoded_len).ok()? {
+        return None;
+    }
+    Some(payload)
 }

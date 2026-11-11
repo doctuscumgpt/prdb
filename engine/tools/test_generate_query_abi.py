@@ -32,6 +32,34 @@ class PayloadSchemaValidationTests(unittest.TestCase):
         self.assertIn("prdb_decode_visible_column_record", c_codecs)
         self.assertIn("prdb_encode_visible_column_record_column_name", c_codecs)
         self.assertIn("prdb_decode_visible_column_record_column_name", c_codecs)
+        self.assertIn("SCALAR_VALUE_RECORD_HEADER_BYTES", rust)
+        self.assertIn("encode_scalar_value_record", rust)
+        self.assertIn("decode_scalar_value_record", rust)
+        self.assertIn("encode_scalar_value_record_value_bytes", rust)
+        self.assertIn("decode_scalar_value_record_value_bytes", rust)
+        self.assertIn(
+            "encode_scalar_value_record_value_bytes(bytes: &[u8]) -> Option<&[u8]>",
+            rust,
+        )
+        self.assertIn(
+            "decode_scalar_value_record_value_bytes(payload: &[u8], encoded_len: u32) -> Option<&[u8]>",
+            rust,
+        )
+        self.assertIn("PRDB_SCALAR_VALUE_RECORD_HEADER_BYTES", c)
+        self.assertIn("prdb_encode_scalar_value_record", c_codecs)
+        self.assertIn("prdb_decode_scalar_value_record", c_codecs)
+        self.assertIn("prdb_encode_scalar_value_record_value_bytes", c_codecs)
+        self.assertIn("prdb_decode_scalar_value_record_value_bytes", c_codecs)
+        self.assertIn("SCALAR_VALUE_RECORD_HEADER_BYTES", rust)
+        self.assertIn("encode_scalar_value_record", rust)
+        self.assertIn("decode_scalar_value_record", rust)
+        self.assertIn("encode_scalar_value_record_value_bytes", rust)
+        self.assertIn("decode_scalar_value_record_value_bytes", rust)
+        self.assertIn("PRDB_SCALAR_VALUE_RECORD_HEADER_BYTES", c)
+        self.assertIn("prdb_encode_scalar_value_record", c_codecs)
+        self.assertIn("prdb_decode_scalar_value_record", c_codecs)
+        self.assertIn("prdb_encode_scalar_value_record_value_bytes", c_codecs)
+        self.assertIn("prdb_decode_scalar_value_record_value_bytes", c_codecs)
         self.assertIn("EXECUTOR_NEXT_BATCH_RESPONSE_CONTINUATION_HEADER_BYTES", rust)
         self.assertIn("encode_supervisor_invocation_control_request", rust)
         self.assertIn("decode_supervisor_invocation_control_request", rust)
