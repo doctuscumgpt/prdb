@@ -181,6 +181,15 @@ int32_t prdb_sdk_optimizer_decode_join_plan_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_join_plan_v1 *out, uint32_t out_capacity);
 
+/* Require a decoded kind-4 plan to preserve the parsed v19 join's qualified
+ * projections, composite keys, relation names, and LIMIT. Relation IDs and
+ * scan column identities are checked separately against executor storage. */
+int32_t prdb_sdk_optimizer_match_join_plan_v19_v1(
+    const prdb_sdk_select_v19 *statement,
+    const prdb_sdk_select_binding_v19 *binding,
+    const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *plan_payload, uint64_t plan_payload_len);
+
 /* Validate a DELETE plan against the parsed DELETE statement and its bound
  * parameters, then re-resolve its relation through executor storage. */
 int32_t prdb_sdk_optimizer_validate_delete_plan_with_parameters_v1(

@@ -674,6 +674,10 @@ int main(void) {
     static prdb_sdk_optimizer_filter_v1 filter;
     static prdb_sdk_optimizer_update_plan_v1 update_decoded;
     static prdb_sdk_optimizer_join_plan_v1 join_decoded;
+    static prdb_sdk_select_v19 join_statement;
+    static prdb_sdk_select_binding_v19 join_binding;
+    static prdb_sdk_sql_column_shape_v2 join_left_columns[3];
+    static prdb_sdk_sql_column_shape_v2 join_right_columns[3];
     static resolve_context resolve = {0};
     static prdb_host_api_v2 host = {0};
     static prdb_host_api_v4 host_v4 = {0};
@@ -1201,6 +1205,44 @@ int main(void) {
            join_decoded.projections[1].relation_side == 1 &&
            join_decoded.join_key_count == 2 && join_decoded.has_limit == 1 &&
            join_decoded.limit == 5);
+    static const uint8_t join_sql[] =
+        "SELECT l.value, r.value FROM lefts AS l INNER JOIN rights AS r "
+        "ON l.id = r.id AND l.active = r.active LIMIT 5;";
+    static const uint8_t join_left_name[] = "lefts";
+    static const uint8_t join_right_name[] = "rights";
+    static const uint8_t join_id_name[] = "id";
+    static const uint8_t join_active_name[] = "active";
+    static const uint8_t join_value_name[] = "value";
+    const uint8_t *join_column_names[3] = {
+        join_id_name, join_active_name, join_value_name};
+    const uint32_t join_column_name_lengths[3] = {2, 6, 5};
+    const uint32_t join_column_types[3] = {
+        PRDB_SDK_VALUE_TYPE_INTEGER, PRDB_SDK_VALUE_TYPE_BOOLEAN,
+        PRDB_SDK_VALUE_TYPE_TEXT};
+    for (uint32_t index = 0; index < 3; ++index) {
+        join_left_columns[index] = (prdb_sdk_sql_column_shape_v2){
+            join_column_names[index], join_column_name_lengths[index], index,
+            join_column_types[index], 0, 0};
+        join_right_columns[index] = join_left_columns[index];
+    }
+    uint32_t join_error_offset = 0;
+    assert(prdb_sdk_sql_parse_select_v19(
+               join_sql, sizeof(join_sql) - 1, &join_statement,
+               sizeof(join_statement), &join_error_offset) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_sql_bind_select_v19(
+               &join_statement, join_left_name, sizeof(join_left_name) - 1,
+               join_left_columns, 3, join_right_name,
+               sizeof(join_right_name) - 1, join_right_columns, 3,
+               &join_binding, sizeof(join_binding)) == PRDB_SDK_SQL_BIND_OK);
+    assert(prdb_sdk_optimizer_match_join_plan_v19_v1(
+               &join_statement, &join_binding, (const uint8_t *)"public", 6,
+               join_payload, join_payload_len) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    join_statement.base.base.limit = 6;
+    assert(prdb_sdk_optimizer_match_join_plan_v19_v1(
+               &join_statement, &join_binding, (const uint8_t *)"public", 6,
+               join_payload, join_payload_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
+    join_statement.base.base.limit = 5;
     resolve.calls = 0;
     assert(prdb_sdk_optimizer_validate_executor_join_relations_v1(
                &host, join_payload, join_payload_len, response,
