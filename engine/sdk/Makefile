@@ -114,6 +114,7 @@ QUERY_ABI_V4_TEST := $(BUILD_DIR)/query-abi-v4-callbacks
 QUERY_ABI_V5_TEST := $(BUILD_DIR)/query-abi-v5-callbacks
 SDK_OPTIMIZER_TEST := $(BUILD_DIR)/sdk-optimizer-v1
 SDK_OPTIMIZER_DELETE_TEST := $(BUILD_DIR)/sdk-optimizer-delete-v1
+SDK_OPTIMIZER_UPDATE_TEST := $(BUILD_DIR)/sdk-optimizer-update-v1
 SDK_OPTIMIZER_PLAN_TEST := $(BUILD_DIR)/sdk-optimizer-plan-v1
 QUERY_ABI_GENERATED_HEADERS += $(INCLUDE_DIR)/prdb_query_abi_records_v4.h
 QUERY_ABI_GENERATED_HEADERS += $(INCLUDE_DIR)/prdb_query_abi_records_v5.h
@@ -373,6 +374,9 @@ $(SDK_OPTIMIZER_TEST): engine/tests/fixtures/sdk_optimizer_v1.c $(SDK_ARCHIVE) $
 $(SDK_OPTIMIZER_DELETE_TEST): engine/tests/fixtures/sdk_optimizer_delete_v1.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_optimizer_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_dml_v1.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
 
+$(SDK_OPTIMIZER_UPDATE_TEST): engine/tests/fixtures/sdk_optimizer_update_v1.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_optimizer_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_dml_v1.h | $(BUILD_DIR)
+	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
+
 $(SDK_OPTIMIZER_PLAN_TEST): engine/tests/fixtures/sdk_optimizer_plan_v1.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_optimizer_plan_v1.h $(INCLUDE_DIR)/prdb_sdk_optimizer_v2.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
 
@@ -461,9 +465,10 @@ abi-constants-test:
 
 .PHONY: abi-constants abi-constants-check abi-constants-test
 
-test: $(SDK_OPTIMIZER_TEST) $(SDK_OPTIMIZER_PLAN_TEST) $(SDK_OPTIMIZER_DELETE_TEST)
+test: $(SDK_OPTIMIZER_TEST) $(SDK_OPTIMIZER_PLAN_TEST) $(SDK_OPTIMIZER_DELETE_TEST) $(SDK_OPTIMIZER_UPDATE_TEST)
 test: run-query-abi-v5
 test: run-sdk-optimizer-delete
+test: run-sdk-optimizer-update
 
 .PHONY: run-query-abi-v5
 run-query-abi-v5: $(QUERY_ABI_V5_TEST)
@@ -472,6 +477,10 @@ run-query-abi-v5: $(QUERY_ABI_V5_TEST)
 .PHONY: run-sdk-optimizer-delete
 run-sdk-optimizer-delete: $(SDK_OPTIMIZER_DELETE_TEST)
 	"$(SDK_OPTIMIZER_DELETE_TEST)"
+
+.PHONY: run-sdk-optimizer-update
+run-sdk-optimizer-update: $(SDK_OPTIMIZER_UPDATE_TEST)
+	"$(SDK_OPTIMIZER_UPDATE_TEST)"
 
 test: abi-constants-check abi-constants-test $(QUERY_ABI_V4_TEST) $(SDK_VALUE_TEST) $(SDK_BATCH_TEST) $(SDK_SQL_TEST) $(SDK_SQL_EXPRESSION_TEST) $(SDK_SQL_V2_TEST) $(SDK_SQL_ORDER_TEST) $(SDK_SQL_GROUP_TEST) $(SDK_SQL_JOIN_TEST) $(SDK_SQL_JOIN_V2_TEST) $(SDK_SQL_V3_TEST) $(SDK_SQL_V4_TEST) $(SDK_SQL_V5_TEST) $(SDK_SQL_V6_TEST) $(SDK_SQL_V7_TEST) $(SDK_SQL_V8_TEST) $(SDK_SQL_V9_TEST) $(SDK_SQL_V10_TEST) $(SDK_SQL_V11_TEST) $(SDK_SQL_V12_TEST) $(SDK_SQL_V13_TEST) $(SDK_SQL_V14_TEST) $(SDK_SQL_V15_TEST) $(SDK_SQL_V16_TEST) $(SDK_SQL_V17_TEST) $(SDK_SQL_V18_TEST) $(SDK_SQL_V19_TEST) $(SDK_PLANNER_TEST) $(SDK_EXECUTOR_TEST) $(SDK_SQL_EXEC_TEST) $(SDK_SQL_EXEC_V5_TEST) $(SDK_SQL_EXEC_V6_TEST) $(SDK_SQL_EXEC_V7_TEST) $(SDK_SQL_EXEC_V8_TEST) $(SDK_SQL_EXEC_V9_TEST) $(SDK_SQL_EXEC_V10_TEST) $(SDK_SQL_EXEC_V19_TEST) $(SDK_SQL_INFORMATION_SCHEMA_TEST) $(SDK_SQL_RESULT_TEST) $(SDK_SQL_RESULT_V13_TEST) $(SDK_SQL_DML_TEST) $(SDK_MANIFEST_TEST) $(SDK_SCOPE_TEST) $(SDK_IPC_FRAME_TEST) $(SDK_IPC_PAYLOAD_CODEC_TEST)
 	"$(SDK_OPTIMIZER_TEST)"

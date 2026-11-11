@@ -2,6 +2,8 @@
 #define PRDB_SDK_OPTIMIZER_V1_H
 
 #include "prdb_query_abi_v4.h"
+#include "prdb_query_abi_v5.h"
+#include "prdb_sdk_sql_dml_v1.h"
 #include "prdb_sdk_sql_v2.h"
 
 #define PRDB_SDK_OPTIMIZER_ABI_V1_VERSION UINT32_C(1)
@@ -57,6 +59,14 @@ int32_t prdb_sdk_optimizer_encode_select_with_parameters_v1(
     const uint8_t *schema, uint32_t schema_len,
     uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
 
+/* Encode a parsed UPDATE AST as a bounded optimizer request. UPDATE requires
+ * WHERE and supports parameter or NULL assignments. */
+int32_t prdb_sdk_optimizer_encode_update_v1(
+    const prdb_sdk_update_v1 *statement,
+    const prdb_sdk_value_v1 *parameters, uint32_t parameter_count,
+    const uint8_t *schema, uint32_t schema_len,
+    uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
+
 int32_t prdb_sdk_optimizer_decode_response_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_response_v1 *out, uint32_t out_capacity);
@@ -66,6 +76,13 @@ int32_t prdb_sdk_optimizer_decode_response_v1(
  * `response`; caller storage must not overlap the output record. */
 int32_t prdb_sdk_optimizer_submit_select_v1(
     const prdb_host_api_v4 *host,
+    const uint8_t *request, uint64_t request_len,
+    uint8_t *response, uint64_t response_capacity, uint64_t *response_len,
+    prdb_sdk_optimizer_response_v1 *out, uint32_t out_capacity);
+
+/* Submit one encoded UPDATE request on the operation-selected ABI v5 callback. */
+int32_t prdb_sdk_optimizer_submit_update_v1(
+    const prdb_host_api_v5 *host,
     const uint8_t *request, uint64_t request_len,
     uint8_t *response, uint64_t response_capacity, uint64_t *response_len,
     prdb_sdk_optimizer_response_v1 *out, uint32_t out_capacity);

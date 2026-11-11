@@ -314,3 +314,13 @@
 - Coverage: TinyCC fixture tests a valid parameterized UPDATE plan, malformed/truncated assignment values, target nullability, output/payload overlap, and executor relation re-resolution.
 - Verification: maintained TinyCC SDK suite, all eight ABI generator tests, and ABI generated-file check passed in the pinned Nix shell.
 - Remaining: encode and submit SQL UPDATE ASTs, match decoded assignments against AST and parameter types, then execute via authorized scan/stage-update IPC.
+
+## OP-3 dependency: encode and submit UPDATE ASTs from the C SDK — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). Serialize a parsed UPDATE with required WHERE, ordered assignments, bounded parameters, schema and relation names; submit only on ABI v5's `OptimizeUpdate` callback.
+- Implementation: `prdb_sdk_optimizer_encode_update_v1` checks the UPDATE AST shape and assignment spans, rejects duplicate targets and invalid parameter references/values, then writes the canonical statement-3 request with assignment records and prefix predicate. `prdb_sdk_optimizer_submit_update_v1` uses the operation-selected callback and the shared bounded response decoder.
+- Regression: the maintained TinyCC fixture parses a mixed parameter/NULL UPDATE, compares the complete request against hand-checked bytes, verifies undersized-buffer and invalid-parameter behavior, and checks callback operation and successful response decoding.
+- Observed failure: the first TinyCC run found the in-progress validation change had accidentally put an UPDATE-only field check in the DELETE encoder and left the old projection shape in UPDATE. The checks were moved to the correct branches; the full maintained SDK suite then passed.
+- Verification: pinned Nix shell reported Rust/Cargo/Clippy 1.95.0, rustfmt 1.9.0 and TinyCC 0.9.27-unstable-2025-01-06. `make -f engine/sdk/Makefile test`, locked workspace build, format check, warning-denied Clippy, serial locked workspace tests, and `git diff --check` passed. Rust tests: 138 passed, 4 ignored; the ignored tests include cgroup-dependent acceptance paths.
+- Boundary: this is request encoding/submission evidence only; it does not yet validate the returned UPDATE plan against the AST or stage writes.
+- Remaining: match decoded assignments against the parsed AST and parameter types, then execute via authorized scan/stage-update IPC and confined-process acceptance.
