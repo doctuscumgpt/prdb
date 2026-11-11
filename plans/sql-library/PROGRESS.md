@@ -503,3 +503,9 @@
 - Regression: the real-redb transaction test pages `schemata`, `tables`, and `columns` one row at a time through `next_relation_scan_batch`, verifies ordered row content and nullable cells, rejects cursor replay, and rejects virtual-row UPDATE and virtual-relation INSERT.
 - Verification: Rust 1.95.0, Cargo 1.95.0, rustfmt 1.9.0, Clippy 0.1.95, and TinyCC 0.9.27-unstable-2025-01-06 were used in the prescribed Nix shell. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed. Commit integration had 109 passing tests and 2 delegated-cgroup tests ignored in the default run; both ignored sandbox acceptance tests were then run explicitly and passed. The maintained TinyCC SDK suite and sandbox fixture build passed, as did `git diff --check`.
 - Remaining: SQL API execution with a real query callback fixture and full API/SQL parity remain open. Sandboxed end-to-end execution still requires a delegated-cgroup host.
+
+## SQL-7 follow-up: document v18 in the public ABI inventory — verified
+
+- Contract: the SQL library ABI inventory must match the separately versioned parser and binder APIs already implemented and exercised by the v18 compound-HAVING runner and fuzz target above.
+- Correction: added `prdb_sdk_sql_v18.h` to the linked header inventory, extended the parser-version range to v1–v18, and summarized its bounded compound Boolean HAVING grammar. The previous inventory ended at v17 despite the v18 contract and implementation being present.
+- Verification: all local links in `specs/sql-library.md` resolve, the v18 header and grammar appear in the ABI inventory, and `git diff --check` passed. Documentation-only change; no runtime checks were run.
