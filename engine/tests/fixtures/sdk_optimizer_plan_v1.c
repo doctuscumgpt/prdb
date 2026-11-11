@@ -471,6 +471,14 @@ static uint32_t build_row_batch(uint8_t *bytes) {
     return offset;
 }
 
+static uint32_t build_two_row_batch(uint8_t *bytes) {
+    uint32_t length = build_row_batch(bytes);
+    memcpy(bytes + length, bytes + 5, length - 5);
+    bytes[4] = 2;
+    bytes[length + 1] = 9;
+    return length * 2 - 5;
+}
+
 static uint32_t build_continuing_row_batch(uint8_t *bytes) {
     uint32_t length = build_row_batch(bytes);
     memmove(bytes + 19, bytes + 3, length - 3);
@@ -1376,5 +1384,26 @@ int main(void) {
            resolve.statement_failures == 1);
     assert(resolve.event_count == 1 && resolve.events[0] == UINT16_C(0xffff));
     resolve.fail_optimizer_request = 0;
+
+    resolve.batch_response_len = build_two_row_batch(resolve.batch_response);
+    resolve.calls = 0;
+    resolve.optimizer_calls = 0;
+    resolve.stage_update_calls = 0;
+    resolve.statement_failures = 0;
+    resolve.event_count = 0;
+    updated_count = 99;
+    assert(prdb_sdk_optimizer_execute_update_ast_v1(
+               &host_v5, &execute_update_statement, update_parameters, 2,
+               (const uint8_t *)"public", 6, 2, sizeof(batch_response),
+               request, sizeof(request), optimizer_response,
+               sizeof(optimizer_response), response, sizeof(response),
+               scan_response, sizeof(scan_response), batch_response,
+               sizeof(batch_response), &acquired_relation,
+               sizeof(acquired_relation), acquired_columns, 4, &delete_binding,
+               sizeof(delete_binding), delete_cell_scratch, 4,
+               delete_target_handles, 1, &updated_count) ==
+           PRDB_SDK_OPTIMIZER_PLAN_REQUEST_LIMIT);
+    assert(updated_count == 0 && resolve.optimizer_calls == 1 &&
+           resolve.stage_update_calls == 0 && resolve.statement_failures == 1);
     return 0;
 }

@@ -346,7 +346,7 @@
 - Verification: `nix develop -c make -f engine/sdk/Makefile sandbox-query-fixture` rebuilt the fixture with pinned TinyCC; the confined `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed with the optimizer and executor processes, authenticated staging, durable commit, and result relay. The fixture setup grants only the grouped table/columns needed for this UPDATE and installs UPDATE table/cell policies.
 - NULL assignment acceptance: the confined fixture now runs `UPDATE records SET id = NULL WHERE id = $1` through optimizer submission, verifies both rows as SQL NULL through the regular SELECT path, then restores their values through the authorized SQL UPDATE path so optimizer DELETE acceptance still runs.
 - Verification: the rebuilt TinyCC sandbox fixture and delegated-cgroup `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed, including the NULL assignment, its readback, optimizer-backed DELETE, and durable commit.
-- Remaining: cover cancellation in the confined process harness, target exhaustion, stage-update failure in confined execution, and transaction conflict/policy behavior.
+- Remaining: cover cancellation and stage-update failure in the confined process harness, target exhaustion there, and transaction conflict/policy behavior.
 
 ## OP-3 dependency: cancel an in-progress optimizer UPDATE — verified
 
@@ -367,4 +367,11 @@
 - Behavior: an optimizer callback error before a plan response stops execution before executor relation resolution or mutation and latches statement failure.
 - Regression: the TinyCC `sdk_optimizer_plan_v1.c` mock injects an optimizer callback error and checks the returned callback status, one failure latch, zero executor requests, zero staged updates, and zero published row count.
 - Verification: `nix develop -c make -f engine/sdk/Makefile test` passed, including all ABI generator tests and maintained TinyCC SDK executables.
-- Remaining: test target exhaustion and confined mutation cancellation/staging failures, then expand transaction conflict/policy cases.
+- Remaining: exercise target exhaustion and mutation cancellation/staging failures through confined processes, then expand transaction conflict/policy cases.
+
+## OP-3 dependency: stop UPDATE when target capacity is exhausted — verified
+
+- Behavior: when a bounded scan finds more matching rows than the caller's handle capacity, execution fails before staging any mutation and publishes no updated-row count.
+- Regression: the TinyCC optimizer-plan fixture supplies a two-row matching batch with capacity for one target. It checks `REQUEST_LIMIT`, one sticky failure, zero StageUpdate calls, and zero updated count.
+- Verification: `nix develop -c make -f engine/sdk/Makefile test` passed, including all ABI generator tests and maintained TinyCC SDK executables.
+- Remaining: exercise cancellation, target exhaustion, and staging failure through confined processes, then expand transaction conflict/policy cases.
