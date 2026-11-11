@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 dependency: v19 alias parser and binder fuzzing — implemented
+
+- Contract: [SQL library](../../specs/sql-library.md). Exercise v19 aliased INNER JOIN parsing and binding with bounded arbitrary SQL input, checking AST ABI tags, nested v16 layout, projection/join bounds, alias spans, and successful binding output.
+- Implementation: [`sql_v19_fuzz.c`](../../engine/tests/fuzz/sql_v19_fuzz.c) binds against fixed `lefts` and `rights` shapes. Four maintained seeds cover aliased joins, self-joins, case-insensitive aliases, and malformed aliases; `fuzz-sql-v19` builds with libFuzzer, ASan, and UBSan.
+- Verification: `nix shell nixpkgs#clang -c make -f engine/sdk/Makefile fuzz-sql-v19` completed 10,000 runs (1,045 coverage edges; 2,009 features). The repository's locked development shell does not include Clang, so the temporary Nix shell supplied the existing fuzz target's compiler requirement.
+- Limitation: this target fuzzes the parser and binder only; runner behavior remains covered by the maintained TinyCC fixture and executor tests.
+
 ## SQL-7 dependency: v19 INNER JOIN alias parser and binder — implemented
 
 - Contract: [SQL library](../../specs/sql-library.md). V19 adds optional explicit `AS` aliases to the v16 two-to-eight-key INNER JOIN grammar while preserving v16 layouts and rejecting duplicate aliases case-insensitively.
