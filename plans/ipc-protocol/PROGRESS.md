@@ -70,3 +70,12 @@
 - Changed code and test: [gateway Unix service loop and disconnect cleanup](../../engine/src/supervisor_ipc.rs), [authenticated owner helper](../../engine/src/supervisor.rs), and [real-redb UnixStream lifecycle](../../engine/tests/commit.rs).
 - Verification: focused UnixStream test covers AUTH, PREPARE, artifact chunk, SEAL, STATUS, START, active CANCEL, EOF cleanup, and durable ABORTED outcome.
 - Remaining: bind sockets to authenticated gateway process identity/generation and monitor network disconnects while workers execute; the TCP listener, launcher, sandbox, and result relay remain absent.
+
+## SDK executor next-batch response bounds — implemented
+
+- Contract: an executor response to `next_batch` must fit both request limits: visible row count cannot exceed `max_candidates`, and encoded response length cannot exceed `max_bytes`.
+- Red evidence: the TinyCC executor fixture accepted a validly encoded two-row response to a one-row request and modified the caller's batch output. The new regression fails against the previous decoder.
+- Implementation: `prdb_sdk_executor_next_batch_v1` now validates the response length and decoded row count against the request before copying the decoded batch to caller output; continuation validation also occurs before publication.
+- Regression: C fixtures cover candidate overrun, byte overrun, unchanged output on each rejection, and the SQL v16 join runner failing closed on an executor page that exceeds its requested row count. Test mocks were corrected to request enough rows/bytes for their returned pages.
+- Verification: focused executor, join, and grouped SQL fixtures passed; full TinyCC SDK suite and ABI generator checks (8 passed), locked workspace build, formatting, warning-denied Clippy, full workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the pinned Nix shell.
+- Remaining: broader malformed IPC response matrices and cross-process queue/deadline coverage remain open.

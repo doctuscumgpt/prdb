@@ -129,6 +129,46 @@ int main(void) {
                &response_len, &batch, sizeof(batch)) == PRDB_SDK_EXECUTOR_OK);
     assert(batch.finished == 1 && batch.row_count == 0 && mock.calls == 3);
 
+    {
+        uint8_t over_capacity_reply[41] = {0, 1, 1, 0, 2};
+        uint32_t offset = 5;
+        prdb_sdk_batch_v1 unchanged_batch;
+        memcpy(&unchanged_batch, &batch, sizeof(batch));
+        for (uint32_t row = 0; row < 2; ++row) {
+            over_capacity_reply[offset++] = PRDB_SDK_BATCH_ROW_TOKEN_KIND;
+            memset(over_capacity_reply + offset, (int)(0x31 + row), 15);
+            offset += 15;
+            put_u16(over_capacity_reply, &offset, 0);
+        }
+        assert(offset == sizeof(over_capacity_reply));
+        mock.reply = over_capacity_reply;
+        mock.reply_len = sizeof(over_capacity_reply);
+        assert(prdb_sdk_executor_next_batch_v1(
+                   &host, cursor, 1, 1024, response, sizeof(response),
+                   &response_len, &batch, sizeof(batch)) ==
+               PRDB_SDK_EXECUTOR_INVALID_PAYLOAD);
+        assert(memcmp(&batch, &unchanged_batch, sizeof(batch)) == 0);
+
+        next_request[19] = 2;
+        next_request[20] = 0;
+        next_request[21] = 0;
+        next_request[22] = 0;
+        next_request[23] = 40;
+        assert(prdb_sdk_executor_next_batch_v1(
+                   &host, cursor, 2, 40, response, sizeof(response),
+                   &response_len, &batch, sizeof(batch)) ==
+               PRDB_SDK_EXECUTOR_INVALID_PAYLOAD);
+        assert(memcmp(&batch, &unchanged_batch, sizeof(batch)) == 0);
+
+        next_request[19] = 1;
+        next_request[20] = 0;
+        next_request[21] = 0;
+        next_request[22] = 4;
+        next_request[23] = 0;
+        mock.reply = batch_reply;
+        mock.reply_len = sizeof(batch_reply);
+    }
+
     uint8_t close_request[18] = {0, 1, 7};
     memcpy(close_request + 2, cursor, 16);
     uint8_t close_reply[3] = {0, 1, 0};
@@ -140,14 +180,14 @@ int main(void) {
     assert(prdb_sdk_executor_close_cursor_v1(
                &host, cursor, response, sizeof(response), &response_len) ==
            PRDB_SDK_EXECUTOR_OK);
-    assert(mock.calls == 4);
+    assert(mock.calls == 6);
     uint8_t legacy_close_reply[4] = {0, 1, 0, 0};
     mock.reply = legacy_close_reply;
     mock.reply_len = sizeof(legacy_close_reply);
     assert(prdb_sdk_executor_close_cursor_v1(
                &host, cursor, response, sizeof(response), &response_len) ==
            PRDB_SDK_EXECUTOR_INVALID_PAYLOAD);
-    assert(mock.calls == 5);
+    assert(mock.calls == 7);
 
     uint8_t row_handle[16] = {8};
     memset(row_handle + 1, 0x55, 15);
@@ -162,17 +202,17 @@ int main(void) {
     assert(prdb_sdk_executor_stage_delete_v1(
                &host, row_handle, response, sizeof(response), &response_len) ==
            PRDB_SDK_EXECUTOR_OK);
-    assert(response_len == sizeof(mutation_reply) && mock.calls == 6);
+    assert(response_len == sizeof(mutation_reply) && mock.calls == 8);
     mutation_reply[2] = 1;
     assert(prdb_sdk_executor_stage_delete_v1(
                &host, row_handle, response, sizeof(response), &response_len) ==
            PRDB_SDK_EXECUTOR_INVALID_PAYLOAD);
-    assert(mock.calls == 7);
+    assert(mock.calls == 9);
     row_handle[0] = 7;
     assert(prdb_sdk_executor_stage_delete_v1(
                &host, row_handle, response, sizeof(response), &response_len) ==
            PRDB_SDK_EXECUTOR_INVALID_ARGUMENT);
-    assert(mock.calls == 7);
+    assert(mock.calls == 9);
 
     uint8_t relation_handle[16] = {6};
     memset(relation_handle + 1, 0x22, 15);
@@ -222,13 +262,13 @@ int main(void) {
                sizeof(insert_request) - 1, response, sizeof(response),
                &response_len, inserted_handle) ==
            PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL);
-    assert(mock.calls == 7);
+    assert(mock.calls == 9);
     assert(prdb_sdk_executor_stage_insert_v1(
                &host, relation_handle, insert_values, 3, insert_request,
                sizeof(insert_request), response, sizeof(response),
                &response_len, inserted_handle) == PRDB_SDK_EXECUTOR_OK);
     assert(response_len == sizeof(insert_reply) && inserted_handle[0] == 8 &&
-           mock.calls == 8);
+           mock.calls == 10);
     uint8_t valid_inserted_handle[16];
     memcpy(valid_inserted_handle, inserted_handle, sizeof(valid_inserted_handle));
     memset(inserted_handle, 0xaa, sizeof(inserted_handle));
@@ -238,7 +278,7 @@ int main(void) {
                sizeof(insert_request), response, sizeof(response),
                &response_len, inserted_handle) ==
            PRDB_SDK_EXECUTOR_INVALID_PAYLOAD);
-    assert(inserted_handle[0] == 0xaa && mock.calls == 9);
+    assert(inserted_handle[0] == 0xaa && mock.calls == 11);
 
     uint8_t expected_update_request[39] = {0, 1};
     memcpy(expected_update_request + 2, valid_inserted_handle, 16);
@@ -285,26 +325,26 @@ int main(void) {
                &host, valid_inserted_handle, patches, 2, update_request,
                sizeof(update_request), response, sizeof(response),
                &response_len) == PRDB_SDK_EXECUTOR_OK);
-    assert(mock.calls == 10);
+    assert(mock.calls == 12);
     mutation_reply[2] = 1;
     assert(prdb_sdk_executor_stage_update_v1(
                &host, valid_inserted_handle, patches, 2, update_request,
                sizeof(update_request), response, sizeof(response),
                &response_len) == PRDB_SDK_EXECUTOR_INVALID_PAYLOAD);
-    assert(mock.calls == 11);
+    assert(mock.calls == 13);
     mutation_reply[2] = 0;
     patches[1].ordinal = 1;
     assert(prdb_sdk_executor_stage_update_v1(
                &host, valid_inserted_handle, patches, 2, update_request,
                sizeof(update_request), response, sizeof(response),
                &response_len) == PRDB_SDK_EXECUTOR_INVALID_ARGUMENT);
-    assert(mock.calls == 11);
+    assert(mock.calls == 13);
     patches[1].ordinal = PRDB_SDK_BATCH_MAX_CELLS_PER_ROW;
     assert(prdb_sdk_executor_stage_update_v1(
                &host, valid_inserted_handle, patches, 2, update_request,
                sizeof(update_request), response, sizeof(response),
                &response_len) == PRDB_SDK_EXECUTOR_INVALID_ARGUMENT);
-    assert(mock.calls == 11);
+    assert(mock.calls == 13);
 
     assert(prdb_sdk_executor_open_full_scan_v1(
                &host, cursor, response, sizeof(response), &response_len,
@@ -320,15 +360,15 @@ int main(void) {
     int32_t cancelled = 77;
     assert(prdb_sdk_executor_check_cancelled_v1(&host, &cancelled) ==
            PRDB_SDK_EXECUTOR_OK);
-    assert(cancelled == 0 && mock.calls == 12);
+    assert(cancelled == 0 && mock.calls == 14);
     cancellation_reply[PRDB_EXECUTOR_CANCELLATION_CHECK_RESPONSE_CANCELLED_OFFSET] = 1;
     assert(prdb_sdk_executor_check_cancelled_v1(&host, &cancelled) ==
            PRDB_SDK_EXECUTOR_OK);
-    assert(cancelled == 1 && mock.calls == 13);
+    assert(cancelled == 1 && mock.calls == 15);
     cancellation_reply[PRDB_EXECUTOR_CANCELLATION_CHECK_RESPONSE_CANCELLED_OFFSET] = 2;
     cancelled = 77;
     assert(prdb_sdk_executor_check_cancelled_v1(&host, &cancelled) ==
            PRDB_SDK_EXECUTOR_INVALID_PAYLOAD);
-    assert(cancelled == 77 && mock.calls == 14);
+    assert(cancelled == 77 && mock.calls == 16);
     return 0;
 }

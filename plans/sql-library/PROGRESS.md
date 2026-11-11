@@ -517,3 +517,11 @@
 - Implementation: no production change was needed; `sql_exec_v16.c` already polls before the first output and every 2,048 joined pairs. This acceptance test now protects that cancellation and request-budget behavior under output pressure.
 - Verification: targeted `sdk-sql-execute-v8` TinyCC fixture passed with TinyCC 0.9.27-unstable-2025-01-06 after the regression failed under the intentionally delayed polling interval.
 - Remaining: broader mixed-workload measurements, spill support, and cancellation pressure coverage during other long-running operators remain open.
+
+## SQL-8 follow-up: composite join page-limit boundary — verified
+
+- Contract: the v16 join runner must accept each requested page within the caller's row/materialization budget and fail before callbacks if the executor violates the requested candidate limit.
+- Regression: the TinyCC runner fixture now accepts exactly 128 rows on both sides and emits the 128 matching rows. A malformed 129-row response to a request for 128 is rejected before opening the right-side scan or publishing output.
+- Implementation: no SQL runner change was needed; the executor SDK now rejects response row counts above `max_candidates` and leaves the decoded batch output unchanged on failure.
+- Verification: focused executor and SQL runner fixtures plus the full TinyCC SDK suite passed; locked workspace build, formatting, warning-denied Clippy, workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed.
+- Remaining: broader analytical memory-pressure, spill, and mixed-workload evidence remains open.

@@ -127,6 +127,7 @@ int32_t prdb_sdk_executor_next_batch_v1(
     uint64_t response_capacity, uint64_t *response_len,
     prdb_sdk_batch_v1 *batch, uint32_t batch_out_capacity) {
     uint8_t request[PRDB_EXECUTOR_NEXT_BATCH_REQUEST_HEADER_BYTES];
+    prdb_sdk_batch_v1 decoded_batch = {0};
     int32_t status;
     if (cursor == NULL || cursor[0] != 7 || max_candidates == 0 ||
         max_candidates > PRDB_SDK_BATCH_MAX_ROWS || max_bytes < 8 ||
@@ -137,12 +138,17 @@ int32_t prdb_sdk_executor_next_batch_v1(
     status = invoke(host, PRDB_SDK_EXECUTOR_OP_NEXT_BATCH, request, sizeof(request),
                     response, response_capacity, response_len);
     if (status != PRDB_SDK_EXECUTOR_OK) return status;
-    status = prdb_sdk_batch_open_v1(batch, batch_out_capacity, response, *response_len);
+    if (*response_len > max_bytes) return PRDB_SDK_EXECUTOR_INVALID_PAYLOAD;
+    status = prdb_sdk_batch_open_v1(&decoded_batch, sizeof(decoded_batch),
+                                    response, *response_len);
     if (status != PRDB_SDK_BATCH_OK) return PRDB_SDK_EXECUTOR_INVALID_PAYLOAD;
-    if (!batch->finished &&
-        (batch->continuation == NULL || batch->continuation[0] != 7)) {
+    if (decoded_batch.row_count > max_candidates ||
+        (!decoded_batch.finished &&
+         (decoded_batch.continuation == NULL ||
+          decoded_batch.continuation[0] != 7))) {
         return PRDB_SDK_EXECUTOR_INVALID_PAYLOAD;
     }
+    *batch = decoded_batch;
     return PRDB_SDK_EXECUTOR_OK;
 }
 

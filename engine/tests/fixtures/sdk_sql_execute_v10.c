@@ -327,7 +327,7 @@ static int32_t run_query(mock_state *mock, const uint8_t *sql,
                              statement_failure};
     return prdb_sdk_sql_execute_group_v10(
         &host, schema, sizeof(schema) - 1, sql, sql_len, parameters,
-        parameter_count, 3, 512, planner_response, sizeof(planner_response),
+        parameter_count, 4, 512, planner_response, sizeof(planner_response),
         executor_response, sizeof(executor_response), batch_response,
         sizeof(batch_response), planner_columns, 2, executor_columns, 2,
         cell_scratch, 2, materialized_bytes, arena_capacity, on_group, capture);
@@ -364,7 +364,7 @@ static int32_t run_query_v11(mock_state *mock, const uint8_t *sql,
                              mock, executor_request, planner_request, NULL,
                              statement_failure};
     return prdb_sdk_sql_execute_group_v11(
-        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0, 3, 512,
+        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0, 4, 512,
         planner_response, sizeof(planner_response), executor_response,
         sizeof(executor_response), batch_response, sizeof(batch_response),
         planner_columns, 2, executor_columns, 2, cell_scratch, 2,
@@ -407,7 +407,7 @@ static int32_t run_query_v12(mock_state *mock, const uint8_t *sql,
                              mock, executor_request, planner_request, NULL,
                              statement_failure};
     return prdb_sdk_sql_execute_group_v12(
-        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0, 3, 512,
+        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0, 4, 512,
         planner_response, sizeof(planner_response), executor_response,
         sizeof(executor_response), batch_response, sizeof(batch_response),
         planner_columns, 2, executor_columns, 2, cell_scratch, 2,
@@ -478,7 +478,9 @@ static int32_t run_query_v13(mock_state *mock, const uint8_t *sql,
                              mock, executor_request, planner_request, NULL,
                              statement_failure};
     return prdb_sdk_sql_execute_group_v13(
-        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0, 3, 512,
+        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0,
+        mock->max_candidates == 0 ? 4 : (uint16_t)mock->max_candidates,
+        mock->max_candidates > 3 ? 4096 : 512,
         planner_response, sizeof(planner_response), executor_response,
         sizeof(executor_response), batch_response, sizeof(batch_response),
         planner_columns, 2, executor_columns, 2, cell_scratch, 2,
@@ -532,7 +534,7 @@ static int32_t run_query_v14(mock_state *mock, const uint8_t *sql,
                              mock, executor_request, planner_request, NULL,
                              statement_failure};
     return prdb_sdk_sql_execute_group_v14(
-        &host, schema, sizeof(schema) - 1, sql, sql_len, parameter, 1, 3, 512,
+        &host, schema, sizeof(schema) - 1, sql, sql_len, parameter, 1, 4, 512,
         planner_response, sizeof(planner_response), executor_response,
         sizeof(executor_response), batch_response, sizeof(batch_response),
         planner_columns, 2, executor_columns, 2, cell_scratch, 2,
@@ -588,7 +590,7 @@ static int32_t run_query_v15(mock_state *mock, const uint8_t *sql,
                              mock, executor_request, planner_request, NULL,
                              statement_failure};
     return prdb_sdk_sql_execute_group_v15(
-        &host, schema, sizeof(schema) - 1, sql, sql_len, parameter, 1, 3, 512,
+        &host, schema, sizeof(schema) - 1, sql, sql_len, parameter, 1, 4, 512,
         planner_response, sizeof(planner_response), executor_response,
         sizeof(executor_response), batch_response, sizeof(batch_response),
         planner_columns, 2, executor_columns, 2, cell_scratch, 2,
@@ -647,7 +649,7 @@ static int32_t run_query_v17(mock_state *mock, const uint8_t *sql,
                              statement_failure};
     return prdb_sdk_sql_execute_group_v17(
         &host, schema, sizeof(schema) - 1, sql, sql_len, parameter,
-        parameter == NULL ? 0 : 1, 3, 512,
+        parameter == NULL ? 0 : 1, 4, 512,
         planner_response, sizeof(planner_response), executor_response,
         sizeof(executor_response), batch_response, sizeof(batch_response),
         planner_columns, 2, executor_columns, 2, cell_scratch, 2,
@@ -712,7 +714,7 @@ static int32_t run_query_v18(mock_state *mock, const uint8_t *sql,
     return prdb_sdk_sql_execute_group_v18(
         &host, schema, sizeof(schema) - 1, sql, sql_len, parameter,
         parameter == NULL ? 0 : 1,
-        mock->max_candidates == 0 ? 3 : (uint16_t)mock->max_candidates, 512,
+        mock->max_candidates == 0 ? 4 : (uint16_t)mock->max_candidates, 512,
         planner_response, sizeof(planner_response), executor_response,
         sizeof(executor_response), batch_response, sizeof(batch_response),
         planner_columns, 2, executor_columns, 2, cell_scratch, 2,

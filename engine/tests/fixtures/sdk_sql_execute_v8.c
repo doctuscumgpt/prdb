@@ -5,13 +5,14 @@
 #include <string.h>
 
 #define JOIN_V16_STRESS_ROWS 47
+#define JOIN_V16_ROW_LIMIT PRDB_SDK_SQL_EXEC_V8_MAX_ROWS
 
 typedef struct mock_state {
     uint8_t planner[2][256];
     uint32_t planner_len[2];
     uint8_t executor[2][256];
     uint32_t executor_len[2];
-    uint8_t batch[2][4096];
+    uint8_t batch[2][8192];
     uint32_t batch_len[2];
     uint32_t planner_calls;
     uint32_t resolve_calls;
@@ -320,7 +321,7 @@ static int32_t run_query_v16(mock_state *mock, row_capture *capture,
     uint8_t right_planner_response[256] = {0};
     uint8_t left_executor_response[256] = {0};
     uint8_t right_executor_response[256] = {0};
-    uint8_t batch_response[4096] = {0};
+    uint8_t batch_response[8192] = {0};
     uint8_t materialized_bytes[4096] = {0};
     uint8_t integer_names[2][11] = {{0}};
     prdb_sdk_sql_column_shape_v2 left_planner_columns[2] = {{0}};
@@ -348,7 +349,8 @@ static int32_t run_query_v16(mock_state *mock, row_capture *capture,
         right_executor_columns[index] = left_planner_columns[index];
     }
     return prdb_sdk_sql_execute_inner_join_v16(
-        &host, schema, sizeof(schema) - 1, sql, sql_len, 4, 512,
+        &host, schema, sizeof(schema) - 1, sql, sql_len,
+        JOIN_V16_ROW_LIMIT, 8192,
         left_planner_response, sizeof(left_planner_response),
         right_planner_response, sizeof(right_planner_response),
         left_executor_response, sizeof(left_executor_response),
@@ -533,6 +535,54 @@ int main(void) {
                PRDB_SDK_SQL_EXEC_OK);
         assert(capture.calls == 1 && capture.left_values[0] == 10 &&
                capture.right_values[0] == 10);
+
+        {
+            int32_t boundary_keys[JOIN_V16_ROW_LIMIT];
+            int32_t boundary_values[JOIN_V16_ROW_LIMIT];
+            uint8_t boundary_states[JOIN_V16_ROW_LIMIT];
+            for (uint32_t row = 0; row < JOIN_V16_ROW_LIMIT; ++row) {
+                boundary_keys[row] = (int32_t)row;
+                boundary_values[row] = (int32_t)(row * 2);
+                boundary_states[row] = PRDB_SDK_VALUE_STATE_VALUE;
+            }
+            mock.batch_len[0] = make_batch(
+                mock.batch[0], boundary_keys, boundary_states,
+                boundary_values, JOIN_V16_ROW_LIMIT);
+            mock.batch_len[1] = make_batch(
+                mock.batch[1], boundary_keys, boundary_states,
+                boundary_values, JOIN_V16_ROW_LIMIT);
+            reset(&mock, &capture);
+            assert(run_query_v16(&mock, &capture, composite_sql,
+                                 sizeof(composite_sql) - 1, 4096) ==
+                   PRDB_SDK_SQL_EXEC_OK);
+            assert(capture.calls == JOIN_V16_ROW_LIMIT &&
+                   mock.executor_requests == 9 &&
+                   mock.statement_failed == 0);
+
+            {
+                int32_t overflow_keys[JOIN_V16_ROW_LIMIT + 1];
+                int32_t overflow_values[JOIN_V16_ROW_LIMIT + 1];
+                uint8_t overflow_states[JOIN_V16_ROW_LIMIT + 1];
+                for (uint32_t row = 0; row <= JOIN_V16_ROW_LIMIT; ++row) {
+                    overflow_keys[row] = (int32_t)row;
+                    overflow_values[row] = (int32_t)(row * 2);
+                    overflow_states[row] = PRDB_SDK_VALUE_STATE_VALUE;
+                }
+                mock.batch_len[0] = make_batch(
+                    mock.batch[0], overflow_keys, overflow_states,
+                    overflow_values, JOIN_V16_ROW_LIMIT + 1);
+                mock.batch_len[1] = make_batch(
+                    mock.batch[1], boundary_keys, boundary_states,
+                    boundary_values, JOIN_V16_ROW_LIMIT);
+                reset(&mock, &capture);
+                assert(run_query_v16(&mock, &capture, composite_sql,
+                                     sizeof(composite_sql) - 1, 4096) ==
+                       PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+                assert(capture.calls == 0 && mock.open_calls == 1 &&
+                       mock.next_calls[0] == 1 && mock.next_calls[1] == 0 &&
+                       mock.statement_failed == 1);
+            }
+        }
 
         {
             int32_t stress_keys[JOIN_V16_STRESS_ROWS];
