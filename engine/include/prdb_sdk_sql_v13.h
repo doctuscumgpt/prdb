@@ -4,6 +4,7 @@
 #include "prdb_sdk_sql_v7.h"
 
 #define PRDB_SDK_SQL_ABI_V13_VERSION UINT32_C(13)
+#define PRDB_SDK_SQL_V13_MIN_GROUP_KEYS UINT32_C(2)
 #define PRDB_SDK_SQL_V13_MAX_GROUP_KEYS UINT32_C(8)
 
 /* V13 adds multi-column GROUP BY with matching key projections. HAVING and

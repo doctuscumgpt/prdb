@@ -18,7 +18,7 @@ Define bounded query/logical/physical IR, type/operator validation, stable objec
 | OP-4 | Unknown estimate uses fixed heuristics while cancelled/expired planning terminates | Use dedicated role-bound storage estimates; cap each planner connection at 16 estimates independently of the 256-request stream cap, while preserving overall planning deadline/cancellation behavior |
 | OP-5 | Index/predicate rewrites preserve authorized-view results and redaction errors | Add point/range access after scan equivalence; storage validates every access path/pushdown, and estimates never establish permission |
 | OP-6 | Mutation generation, policy/schema differences or missed invalidation prevent stale/cross-user cache reuse | Initially avoid shared scoped caches; key any later reuse by complete validity context, private-write generation and dependencies |
-| OP-7 | Required join/group/sort plans match reference semantics within admitted memory/work | In progress: composite join and single-key COUNT(*) optimizer planning/execution pass confined acceptance. Rust now decodes, binds, and plans a two-to-eight-key COUNT subset; the TinyCC path and acceptance are next, followed by sorting plans and analytical/mixed-workload measurements |
+| OP-7 | Required join/group/sort plans match reference semantics within admitted memory/work | In progress: composite join and single-key COUNT(*) optimizer planning/execution pass confined acceptance. Two-to-eight-key COUNT now passes Rust, TinyCC, and confined durable acceptance. Next add sorting plans and gather analytical/mixed-workload measurements |
 
 ## Acceptance and Handoff
 

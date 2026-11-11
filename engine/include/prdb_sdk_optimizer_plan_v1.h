@@ -2,6 +2,7 @@
 #define PRDB_SDK_OPTIMIZER_PLAN_V1_H
 
 #include "prdb_sdk_optimizer_v1.h"
+#include "prdb_sdk_sql_v13.h"
 #include "prdb_sdk_executor_v1.h"
 #include "prdb_sdk_sql_dml_v1.h"
 #include "prdb_query_abi_v5.h"
@@ -135,6 +136,16 @@ typedef struct prdb_sdk_optimizer_group_count_plan_v1 {
     prdb_sdk_optimizer_plan_column_v1 group_key;
 } prdb_sdk_optimizer_group_count_plan_v1;
 
+/* Kind-6 composite COUNT(*) plan. Group keys retain SQL order while the
+ * embedded scan shape is unique and ordinal-sorted. */
+typedef struct prdb_sdk_optimizer_composite_group_count_plan_v1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    prdb_sdk_optimizer_plan_v1 plan;
+    uint32_t group_key_count;
+    prdb_sdk_optimizer_plan_column_v1 group_keys[8];
+} prdb_sdk_optimizer_composite_group_count_plan_v1;
+
 typedef struct prdb_sdk_optimizer_scan_state_v1 {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -196,11 +207,24 @@ int32_t prdb_sdk_optimizer_decode_group_count_plan_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_group_count_plan_v1 *out, uint32_t out_capacity);
 
+/* Independently decode canonical kind-6 composite COUNT(*) plans, requiring
+ * two-to-eight ordered keys and an exact ordinal-sorted scan-key set. */
+int32_t prdb_sdk_optimizer_decode_composite_group_count_plan_v1(
+    const uint8_t *payload, uint64_t payload_len,
+    prdb_sdk_optimizer_composite_group_count_plan_v1 *out,
+    uint32_t out_capacity);
+
 /* Require a decoded kind-5 plan to match the parsed single-key COUNT(*)
  * statement, authorized grouping-key binding, schema, and optional LIMIT. */
 int32_t prdb_sdk_optimizer_match_group_count_plan_v1(
     const prdb_sdk_select_v4 *statement,
     const prdb_sdk_select_binding_v4 *binding,
+    const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *plan_payload, uint64_t plan_payload_len);
+
+int32_t prdb_sdk_optimizer_match_composite_group_count_plan_v1(
+    const prdb_sdk_select_v13 *statement,
+    const prdb_sdk_select_binding_v13 *binding,
     const uint8_t *schema, uint32_t schema_len,
     const uint8_t *plan_payload, uint64_t plan_payload_len);
 
@@ -291,6 +315,11 @@ int32_t prdb_sdk_optimizer_validate_executor_join_relations_v1(
 /* Re-resolve the single relation in a validated kind-5 plan and compare the
  * stable identity plus the exact grouping-key column definition. */
 int32_t prdb_sdk_optimizer_validate_executor_group_count_relation_v1(
+    const prdb_host_api_v2 *host, const uint8_t *plan_payload,
+    uint64_t plan_payload_len, uint8_t *response,
+    uint64_t response_capacity, uint64_t *response_len);
+
+int32_t prdb_sdk_optimizer_validate_executor_composite_group_count_relation_v1(
     const prdb_host_api_v2 *host, const uint8_t *plan_payload,
     uint64_t plan_payload_len, uint8_t *response,
     uint64_t response_capacity, uint64_t *response_len);

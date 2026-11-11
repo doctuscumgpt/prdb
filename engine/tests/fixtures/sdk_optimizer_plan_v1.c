@@ -142,6 +142,44 @@ static uint32_t build_group_count_plan(uint8_t *bytes,
     return offset;
 }
 
+static uint32_t build_composite_group_count_plan(
+    uint8_t *bytes, uint32_t *second_key_offset) {
+    uint32_t offset = 0;
+    uint8_t identifier[16];
+    uint32_t column;
+    prdb_encode_optimizer_plan_header_record(bytes + offset, 1, 6, 0);
+    offset += PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "public");
+    memset(identifier, 1, sizeof(identifier));
+    prdb_encode_optimizer_plan_schema_reference_record(bytes + offset,
+                                                       identifier, 3);
+    offset += PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "items");
+    memset(identifier, 2, sizeof(identifier));
+    prdb_encode_optimizer_plan_relation_reference_record(bytes + offset,
+                                                         identifier, 4);
+    offset += PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES;
+    put_u16(bytes, &offset, 2);
+    column = put_column(bytes, &offset, 1, 0);
+    bytes[column] = 4;
+    set_column_ordinal(bytes, column, 0);
+    column = put_column(bytes, &offset, 1, 0);
+    bytes[column] = 5;
+    set_column_ordinal(bytes, column, 1);
+    bytes[offset++] = 8;
+    bytes[offset++] = 2;
+    column = put_column(bytes, &offset, 1, 0);
+    bytes[column] = 5;
+    set_column_ordinal(bytes, column, 1);
+    *second_key_offset = offset;
+    column = put_column(bytes, &offset, 1, 0);
+    bytes[column] = 4;
+    set_column_ordinal(bytes, column, 0);
+    bytes[offset++] = 1;
+    put_u32(bytes, &offset, 5);
+    return offset;
+}
+
 static uint32_t put_header(uint8_t *bytes, uint32_t *offset,
                            uint8_t node_count) {
     bytes[(*offset)++] = 0;
@@ -698,6 +736,9 @@ int main(void) {
     uint8_t join_malformed[sizeof(join_payload)];
     uint8_t group_count_payload[256] = {0};
     uint8_t group_count_malformed[sizeof(group_count_payload)];
+    uint8_t composite_group_count_payload[512] = {0};
+    uint8_t composite_group_count_malformed[
+        sizeof(composite_group_count_payload)];
     uint32_t projected_id_offset;
     uint32_t project_node_offset;
     uint32_t predicate_offset;
@@ -708,10 +749,14 @@ int main(void) {
     static prdb_sdk_optimizer_update_plan_v1 update_decoded;
     static prdb_sdk_optimizer_join_plan_v1 join_decoded;
     static prdb_sdk_optimizer_group_count_plan_v1 group_count_decoded;
+    static prdb_sdk_optimizer_composite_group_count_plan_v1
+        composite_group_count_decoded;
     static prdb_sdk_select_v19 join_statement;
     static prdb_sdk_select_binding_v19 join_binding;
     static prdb_sdk_select_v4 group_count_statement;
     static prdb_sdk_select_binding_v4 group_count_binding;
+    static prdb_sdk_select_v13 composite_group_count_statement;
+    static prdb_sdk_select_binding_v13 composite_group_count_binding;
     static prdb_sdk_sql_column_shape_v2 join_left_columns[3];
     static prdb_sdk_sql_column_shape_v2 join_right_columns[3];
     static resolve_context resolve = {0};
@@ -1287,6 +1332,73 @@ int main(void) {
     assert(prdb_sdk_optimizer_decode_group_count_plan_v1(
                group_count_malformed, group_count_payload_len,
                &group_count_decoded, sizeof(group_count_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+
+    uint32_t composite_group_key_offset;
+    uint32_t composite_group_count_payload_len =
+        build_composite_group_count_plan(composite_group_count_payload,
+                                         &composite_group_key_offset);
+    assert(prdb_sdk_optimizer_decode_composite_group_count_plan_v1(
+               composite_group_count_payload,
+               composite_group_count_payload_len,
+               &composite_group_count_decoded,
+               sizeof(composite_group_count_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(composite_group_count_decoded.plan.plan_kind == 6 &&
+           composite_group_count_decoded.plan.scan_column_count == 2 &&
+           composite_group_count_decoded.group_key_count == 2 &&
+           composite_group_count_decoded.group_keys[0].ordinal == 1 &&
+           composite_group_count_decoded.group_keys[1].ordinal == 0 &&
+           composite_group_count_decoded.plan.has_limit == 1 &&
+           composite_group_count_decoded.plan.limit == 5);
+    static const uint8_t composite_group_count_sql[] =
+        "SELECT active, id, COUNT(*) FROM items GROUP BY active, id LIMIT 5";
+    assert(prdb_sdk_sql_parse_select_v13(
+               composite_group_count_sql,
+               sizeof(composite_group_count_sql) - 1,
+               &composite_group_count_statement,
+               sizeof(composite_group_count_statement), NULL) ==
+           PRDB_SDK_SQL_OK);
+    composite_group_count_binding.struct_size =
+        sizeof(composite_group_count_binding);
+    composite_group_count_binding.abi_version = PRDB_SDK_SQL_ABI_V13_VERSION;
+    composite_group_count_binding.base.struct_size =
+        sizeof(composite_group_count_binding.base);
+    composite_group_count_binding.base.abi_version =
+        PRDB_SDK_SQL_ABI_V7_VERSION;
+    composite_group_count_binding.base.base.struct_size =
+        sizeof(composite_group_count_binding.base.base);
+    composite_group_count_binding.base.base.abi_version =
+        PRDB_SDK_SQL_ABI_V2_VERSION;
+    composite_group_count_binding.group_key_count = 2;
+    composite_group_count_binding.group_keys[0].ordinal = 1;
+    composite_group_count_binding.group_keys[0].type_code = 1;
+    composite_group_count_binding.group_keys[1].ordinal = 0;
+    composite_group_count_binding.group_keys[1].type_code = 1;
+    assert(prdb_sdk_optimizer_match_composite_group_count_plan_v1(
+               &composite_group_count_statement,
+               &composite_group_count_binding,
+               (const uint8_t *)"public", 6,
+               composite_group_count_payload,
+               composite_group_count_payload_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    composite_group_count_statement.base.base.limit = 4;
+    assert(prdb_sdk_optimizer_match_composite_group_count_plan_v1(
+               &composite_group_count_statement,
+               &composite_group_count_binding,
+               (const uint8_t *)"public", 6,
+               composite_group_count_payload,
+               composite_group_count_payload_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
+    composite_group_count_statement.base.base.limit = 5;
+    memcpy(composite_group_count_malformed, composite_group_count_payload,
+           composite_group_count_payload_len);
+    composite_group_count_malformed[composite_group_key_offset] = 6;
+    assert(prdb_sdk_optimizer_decode_composite_group_count_plan_v1(
+               composite_group_count_malformed,
+               composite_group_count_payload_len,
+               &composite_group_count_decoded,
+               sizeof(composite_group_count_decoded)) ==
            PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
     static const uint8_t join_sql[] =
         "SELECT l.value, r.value FROM lefts AS l INNER JOIN rights AS r "

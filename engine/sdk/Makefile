@@ -180,7 +180,7 @@ $(SDK_SQL_EXEC_V5_OBJECT): $(SDK_SQL_EXEC_V5_SOURCE) $(INCLUDE_DIR)/prdb_sdk_sql
 $(SDK_SQL_EXEC_V6_OBJECT): $(SDK_SQL_EXEC_V6_SOURCE) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v6.h $(INCLUDE_DIR)/prdb_sdk_sql_v6.h $(INCLUDE_DIR)/prdb_sdk_sql_group_v1.h $(INCLUDE_DIR)/prdb_sdk_executor_v1.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
-$(SDK_SQL_EXEC_V7_OBJECT): $(SDK_SQL_EXEC_V7_SOURCE) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v7.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v9.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v10.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v11.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v12.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v13.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v14.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v15.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v17.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v18.h $(INCLUDE_DIR)/prdb_sdk_sql_v7.h $(INCLUDE_DIR)/prdb_sdk_sql_v9.h $(INCLUDE_DIR)/prdb_sdk_sql_v10.h $(INCLUDE_DIR)/prdb_sdk_sql_v11.h $(INCLUDE_DIR)/prdb_sdk_sql_v12.h $(INCLUDE_DIR)/prdb_sdk_sql_v13.h $(INCLUDE_DIR)/prdb_sdk_sql_v14.h $(INCLUDE_DIR)/prdb_sdk_sql_v15.h $(INCLUDE_DIR)/prdb_sdk_sql_v17.h $(INCLUDE_DIR)/prdb_sdk_sql_v18.h $(INCLUDE_DIR)/prdb_sdk_sql_group_v1.h $(INCLUDE_DIR)/prdb_sdk_sql_order_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_order_v3.h $(INCLUDE_DIR)/prdb_sdk_executor_v1.h | $(BUILD_DIR)
+$(SDK_SQL_EXEC_V7_OBJECT): $(SDK_SQL_EXEC_V7_SOURCE) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v7.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v9.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v10.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v11.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v12.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v13.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v14.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v15.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v17.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v18.h $(INCLUDE_DIR)/prdb_sdk_sql_v7.h $(INCLUDE_DIR)/prdb_sdk_sql_v9.h $(INCLUDE_DIR)/prdb_sdk_sql_v10.h $(INCLUDE_DIR)/prdb_sdk_sql_v11.h $(INCLUDE_DIR)/prdb_sdk_sql_v12.h $(INCLUDE_DIR)/prdb_sdk_sql_v13.h $(INCLUDE_DIR)/prdb_sdk_sql_v14.h $(INCLUDE_DIR)/prdb_sdk_sql_v15.h $(INCLUDE_DIR)/prdb_sdk_sql_v17.h $(INCLUDE_DIR)/prdb_sdk_sql_v18.h $(INCLUDE_DIR)/prdb_sdk_sql_group_v1.h $(INCLUDE_DIR)/prdb_sdk_sql_order_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_order_v3.h $(INCLUDE_DIR)/prdb_sdk_executor_v1.h $(INCLUDE_DIR)/prdb_sdk_optimizer_v1.h $(INCLUDE_DIR)/prdb_sdk_optimizer_plan_v1.h $(INCLUDE_DIR)/prdb_sdk_planner_v1.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
 $(SDK_SQL_EXEC_V8_OBJECT): $(SDK_SQL_EXEC_V8_SOURCE) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v8.h $(INCLUDE_DIR)/prdb_sdk_sql_v8.h $(INCLUDE_DIR)/prdb_sdk_sql_join_v1.h $(INCLUDE_DIR)/prdb_sdk_executor_v1.h | $(BUILD_DIR)
@@ -201,10 +201,10 @@ $(SDK_MANIFEST_OBJECT): $(SDK_MANIFEST_SOURCE) $(INCLUDE_DIR)/prdb_sdk_manifest_
 $(SDK_SCOPE_OBJECT): $(SDK_SCOPE_SOURCE) $(INCLUDE_DIR)/prdb_sdk_scope_v1.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
-$(SDK_OPTIMIZER_OBJECT): $(SDK_OPTIMIZER_SOURCE) $(INCLUDE_DIR)/prdb_sdk_optimizer_v1.h $(INCLUDE_DIR)/prdb_sdk_optimizer_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_v4.h $(INCLUDE_DIR)/prdb_sdk_sql_v19.h $(INCLUDE_DIR)/prdb_sdk_sql_dml_v1.h $(INCLUDE_DIR)/prdb_query_abi_v5.h $(QUERY_ABI_GENERATED_HEADERS) | $(BUILD_DIR)
+$(SDK_OPTIMIZER_OBJECT): $(SDK_OPTIMIZER_SOURCE) $(INCLUDE_DIR)/prdb_sdk_optimizer_v1.h $(INCLUDE_DIR)/prdb_sdk_optimizer_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_v4.h $(INCLUDE_DIR)/prdb_sdk_sql_v13.h $(INCLUDE_DIR)/prdb_sdk_sql_v19.h $(INCLUDE_DIR)/prdb_sdk_sql_dml_v1.h $(INCLUDE_DIR)/prdb_query_abi_v5.h $(QUERY_ABI_GENERATED_HEADERS) | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
-$(SDK_OPTIMIZER_PLAN_OBJECT): $(SDK_OPTIMIZER_PLAN_SOURCE) $(INCLUDE_DIR)/prdb_sdk_optimizer_plan_v1.h $(INCLUDE_DIR)/prdb_sdk_optimizer_v1.h $(INCLUDE_DIR)/prdb_sdk_optimizer_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_dml_v1.h $(INCLUDE_DIR)/prdb_query_abi_v5.h $(INCLUDE_DIR)/prdb_query_abi_payload_codecs.h | $(BUILD_DIR)
+$(SDK_OPTIMIZER_PLAN_OBJECT): $(SDK_OPTIMIZER_PLAN_SOURCE) $(INCLUDE_DIR)/prdb_sdk_optimizer_plan_v1.h $(INCLUDE_DIR)/prdb_sdk_optimizer_v1.h $(INCLUDE_DIR)/prdb_sdk_optimizer_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_v13.h $(INCLUDE_DIR)/prdb_sdk_sql_dml_v1.h $(INCLUDE_DIR)/prdb_query_abi_v5.h $(INCLUDE_DIR)/prdb_query_abi_payload_codecs.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
 $(SDK_ARCHIVE): $(SDK_OBJECTS)
@@ -384,7 +384,7 @@ $(QUERY_ABI_V4_TEST): engine/tests/fixtures/query_abi_v4_callbacks.c $(INCLUDE_D
 $(QUERY_ABI_V5_TEST): engine/tests/fixtures/query_abi_v5_callbacks.c $(INCLUDE_DIR)/prdb_query_abi_v5.h $(INCLUDE_DIR)/prdb_query_abi_constants.h $(QUERY_ABI_GENERATED_HEADERS) | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" -o "$@"
 
-$(SDK_OPTIMIZER_TEST): engine/tests/fixtures/sdk_optimizer_v1.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_optimizer_v1.h $(INCLUDE_DIR)/prdb_sdk_sql_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_v19.h | $(BUILD_DIR)
+$(SDK_OPTIMIZER_TEST): engine/tests/fixtures/sdk_optimizer_v1.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_optimizer_v1.h $(INCLUDE_DIR)/prdb_sdk_sql_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_v13.h $(INCLUDE_DIR)/prdb_sdk_sql_v19.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
 
 $(SDK_OPTIMIZER_DELETE_TEST): engine/tests/fixtures/sdk_optimizer_delete_v1.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_optimizer_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_dml_v1.h | $(BUILD_DIR)
