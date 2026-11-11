@@ -515,3 +515,19 @@ fn landlock_blocks_unlisted_filesystem_reads_before_exec() {
     assert!(command.status().unwrap().success());
     assert_eq!(fs::read_to_string(marker).unwrap(), "1");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn landlock_accepts_writable_device_and_regular_file_rules() {
+    use prdb_engine::linux_sandbox::{LandlockPolicy, LandlockRuleset};
+
+    let fixture = Fixture::new();
+    let regular_file = fixture.0.join("credentials");
+    fs::write(&regular_file, "initial").unwrap();
+    let mut policy = LandlockPolicy::default();
+    policy.allow_path_traversal("/dev").unwrap();
+    policy.allow_read_write_file("/dev/null").unwrap();
+    policy.allow_read_write_file(&regular_file).unwrap();
+
+    LandlockRuleset::new(&policy).expect("device and regular file rules should be valid");
+}

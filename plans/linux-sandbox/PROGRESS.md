@@ -19,7 +19,7 @@
 
 - Added `prdb-landlock-run`, a fail-closed launcher using the engine Landlock ruleset. User supervisor and gateway units apply separate allowlists before `exec`.
 - The supervisor policy allows instance/scratch/runtime writes and its delegated cgroup subtree; the gateway policy allows its own executable/runtime files and the supervisor socket directory. Worker launch adds its existing narrower policy.
-- Verification: warning-denied Clippy and full locked workspace tests passed. Transient systemd user services successfully read an allowlisted file and received `Permission denied` for it when omitted; a separate run exercised the environment-backed path lists used by the units. `systemd-analyze verify` also accepted the current user and system unit pairs with temporary executable placeholders. Full installed-unit startup still needs a READY instance fixture.
+- Verification: warning-denied Clippy and full locked workspace tests passed. Transient systemd user services successfully read an allowlisted file and received `Permission denied` for it when omitted; a separate run exercised the environment-backed path lists used by the units. `systemd-analyze verify` also accepted the current user and system unit pairs with temporary executable placeholders. A later live user-manager run exposed that applying the regular-file truncate right to `/dev/null` makes Landlock reject the ruleset; `allow_read_write_file` now adds truncate only for regular files. The regression test covers both `/dev/null` and a regular file, and temporary supervisor/gateway user units successfully initialized a READY instance and completed authenticated discovery across TCP and the Unix service socket.
 
 ## SB-1: fail-closed host capability preflight
 

@@ -52,7 +52,12 @@ impl LandlockPolicy {
                 "read-write Landlock file rules do not accept directories",
             ));
         }
-        self.add_path(path, LANDLOCK_READ_ACCESS | LANDLOCK_WRITE_ACCESS)
+        let metadata = path.metadata()?;
+        let mut access = LANDLOCK_READ_ACCESS | LANDLOCK_WRITE_FILE;
+        if metadata.is_file() {
+            access |= LANDLOCK_TRUNCATE;
+        }
+        self.add_path(path, access)
     }
 
     /// Grant read and write access, including creation, removal, and truncate
@@ -123,7 +128,12 @@ impl LandlockRuleset {
         // SAFETY: successful create_ruleset returns a new owned file descriptor.
         let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
         for (path, access) in &policy.rules {
-            add_landlock_path_rule(fd.as_raw_fd(), path, *access)?;
+            add_landlock_path_rule(fd.as_raw_fd(), path, *access).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("add Landlock rule for {}: {error}", path.display()),
+                )
+            })?;
         }
         Ok(Self { fd })
     }
@@ -793,6 +803,10 @@ const LANDLOCK_EXECUTE: u64 = 1 << 0;
 const LANDLOCK_READ_DIR: u64 = 1 << 3;
 #[cfg(target_os = "linux")]
 const LANDLOCK_READ_ACCESS: u64 = 1 << 2;
+#[cfg(target_os = "linux")]
+const LANDLOCK_WRITE_FILE: u64 = 1 << 1;
+#[cfg(target_os = "linux")]
+const LANDLOCK_TRUNCATE: u64 = 1 << 14;
 #[cfg(target_os = "linux")]
 const LANDLOCK_WRITE_ACCESS: u64 = (1 << 1) | (0x1ff << 4) | (1 << 13) | (1 << 14);
 #[cfg(target_os = "linux")]
