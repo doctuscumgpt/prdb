@@ -3,6 +3,7 @@
 
 #include "prdb_sdk_optimizer_v1.h"
 #include "prdb_sdk_executor_v1.h"
+#include "prdb_sdk_sql_dml_v1.h"
 
 #define PRDB_SDK_OPTIMIZER_PLAN_ABI_V1_VERSION UINT32_C(1)
 #define PRDB_SDK_OPTIMIZER_PLAN_MAX_SCAN_COLUMNS UINT32_C(256)
@@ -104,6 +105,16 @@ int32_t prdb_sdk_optimizer_decode_delete_plan_v1(
     prdb_sdk_optimizer_plan_v1 *out, uint32_t out_capacity,
     prdb_sdk_optimizer_filter_v1 *filter_out,
     uint32_t filter_out_capacity);
+
+/* Validate a DELETE plan against the parsed DELETE statement and its bound
+ * parameters, then re-resolve its relation through executor storage. */
+int32_t prdb_sdk_optimizer_validate_delete_plan_with_parameters_v1(
+    const prdb_host_api_v2 *host, const prdb_sdk_delete_v1 *statement,
+    const prdb_sdk_value_v1 *parameters, uint32_t parameter_count,
+    const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *plan_payload, uint64_t plan_payload_len,
+    uint8_t *response, uint64_t response_capacity,
+    uint64_t *response_len);
 
 /* Re-resolve a validated plan's qualified relation through executor storage
  * and require its stable identity and scanned column definitions to match.

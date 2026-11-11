@@ -164,6 +164,27 @@ static uint32_t build_delete_plan(uint8_t *bytes,
     return offset;
 }
 
+static uint32_t build_delete_filter_plan(uint8_t *bytes,
+                                         uint32_t *predicate_offset) {
+    uint32_t offset = 0;
+    uint32_t column_id_offset;
+    (void)put_header(bytes, &offset, 3);
+    bytes[2] = 2; /* DELETE */
+    bytes[offset++] = 1;
+    put_u16(bytes, &offset, 1);
+    column_id_offset = put_column(bytes, &offset, 3, 0);
+    bytes[column_id_offset] = 10; /* c0 */
+    bytes[column_id_offset + 16] = 0;
+    bytes[column_id_offset + 17] = 0;
+    bytes[column_id_offset + 18] = 0;
+    bytes[column_id_offset + 19] = 0; /* ordinal 0 */
+    bytes[offset++] = 2;
+    *predicate_offset = offset;
+    put_integer_comparison(bytes, &offset, 1);
+    bytes[offset++] = 5; /* Delete */
+    return offset;
+}
+
 typedef struct resolve_context {
     uint8_t response[512];
     uint32_t response_len;
@@ -456,6 +477,7 @@ int main(void) {
     uint8_t optimizer_response[512];
     uint8_t sql[] = "SELECT c3 FROM items LIMIT 1";
     static prdb_sdk_select_v2 statement;
+    static prdb_sdk_delete_v1 delete_statement;
     uint64_t response_len = 0;
     uint64_t scan_response_len = 0;
 
@@ -920,6 +942,53 @@ int main(void) {
     assert(prdb_sdk_optimizer_decode_delete_plan_v1(
                payload, payload_len, &decoded, sizeof(decoded), &filter,
                sizeof(filter)) == PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+
+    uint8_t delete_plan[512];
+    uint32_t delete_plan_len = build_delete_filter_plan(
+        delete_plan, &predicate_offset);
+    uint8_t delete_sql[] = "DELETE FROM items WHERE c0 = $1";
+    uint8_t delete_parameter_bytes[4] = {0, 0, 0, 1};
+    prdb_sdk_value_v1 delete_parameters[1] = {{
+        sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+        PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+        delete_parameter_bytes, sizeof(delete_parameter_bytes)}};
+    assert(prdb_sdk_sql_parse_delete_v1(
+               delete_sql, sizeof(delete_sql) - 1, &delete_statement,
+               sizeof(delete_statement), NULL) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_optimizer_decode_delete_plan_v1(
+               delete_plan, delete_plan_len, &decoded, sizeof(decoded),
+               &filter, sizeof(filter)) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    resolve.calls = 0;
+    int32_t delete_validation_status =
+        prdb_sdk_optimizer_validate_delete_plan_with_parameters_v1(
+               &host, &delete_statement, delete_parameters, 1,
+               (const uint8_t *)"public", 6, delete_plan, delete_plan_len,
+               response, sizeof(response), &response_len);
+    assert(delete_validation_status == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(resolve.calls == 1);
+    assert(prdb_sdk_optimizer_acquire_plan_relation_v1(
+               &host, delete_plan, delete_plan_len, response, sizeof(response),
+               &response_len, &acquired_relation, sizeof(acquired_relation),
+               acquired_columns, 4) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(acquired_relation.name_len == 5 &&
+           memcmp(acquired_relation.name, "items", 5) == 0);
+    delete_parameter_bytes[3] = 2;
+    assert(prdb_sdk_optimizer_validate_delete_plan_with_parameters_v1(
+               &host, &delete_statement, delete_parameters, 1,
+               (const uint8_t *)"public", 6, delete_plan, delete_plan_len,
+               response, sizeof(response), &response_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
+    delete_parameter_bytes[3] = 1;
+    uint8_t wrong_delete_sql[] = "DELETE FROM items WHERE c1 = $1";
+    assert(prdb_sdk_sql_parse_delete_v1(
+               wrong_delete_sql, sizeof(wrong_delete_sql) - 1,
+               &delete_statement, sizeof(delete_statement), NULL) ==
+           PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_optimizer_validate_delete_plan_with_parameters_v1(
+               &host, &delete_statement, delete_parameters, 1,
+               (const uint8_t *)"public", 6, delete_plan, delete_plan_len,
+               response, sizeof(response), &response_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
 
     payload_len = build_filter_plan(payload, &predicate_offset);
     memcpy(malformed, payload, payload_len);
