@@ -195,9 +195,15 @@ static int valid_identifier(const uint8_t *bytes, uint32_t length) {
 
 static int read_name(plan_reader *reader, const uint8_t **name_out,
                      uint32_t *length_out) {
+    const uint8_t *header;
     uint8_t length;
     const uint8_t *name;
-    if (!read_u8(reader, &length) || !take(reader, length, &name) ||
+    if (!take(reader,
+              PRDB_OPTIMIZER_PLAN_NAME_HEADER_RECORD_HEADER_BYTES, &header) ||
+        !prdb_decode_optimizer_plan_name_header_record(
+            header, PRDB_OPTIMIZER_PLAN_NAME_HEADER_RECORD_HEADER_BYTES,
+            &length) ||
+        !take(reader, length, &name) ||
         !valid_identifier(name, length)) {
         return 0;
     }

@@ -2265,6 +2265,23 @@ static inline int prdb_decode_optimizer_plan_boolean_predicate_header_record(con
     return 1;
 }
 
+static inline void prdb_encode_optimizer_plan_name_header_record(uint8_t payload[1],
+    uint8_t byte_length) {
+    payload[0] = byte_length;
+}
+
+static inline int prdb_decode_optimizer_plan_name_header_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *byte_length) {
+    if (payload == NULL || payload_len != 1) {
+        return 0;
+    }
+    if (byte_length == NULL) {
+        return 0;
+    }
+    *byte_length = payload[0];
+    return 1;
+}
+
 static inline void prdb_encode_client_frame_header_record(uint8_t payload[32],
     const uint8_t magic[4], uint16_t major_version, uint16_t minor_version, uint16_t kind, uint16_t flags, uint32_t payload_length, uint64_t request_id, uint64_t response_sequence) {
     for (size_t i = 0; i < 4; ++i) {

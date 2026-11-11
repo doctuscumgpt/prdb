@@ -202,7 +202,10 @@ fn put_name(output: &mut Vec<u8>, name: &str) -> Result<(), PlanError> {
     if !valid_identifier(name) {
         return Err(PlanError::InvalidRelationReference);
     }
-    output.push(u8::try_from(name.len()).map_err(|_| PlanError::TooLarge)?);
+    let byte_length = u8::try_from(name.len()).map_err(|_| PlanError::TooLarge)?;
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_name_header_record(
+        byte_length,
+    ));
     output.extend_from_slice(name.as_bytes());
     Ok(())
 }
@@ -342,7 +345,11 @@ impl PlanReader<'_> {
     }
 
     fn name(&mut self) -> Result<String, PlanError> {
-        let length = usize::from(self.u8()?);
+        let header =
+            self.take(crate::query_abi::OPTIMIZER_PLAN_NAME_HEADER_RECORD_HEADER_BYTES as usize)?;
+        let byte_length = crate::query_abi::decode_optimizer_plan_name_header_record(header)
+            .ok_or(PlanError::Truncated)?;
+        let length = usize::from(byte_length);
         let bytes = self.take(length)?;
         let name = std::str::from_utf8(bytes).map_err(|_| PlanError::InvalidEncoding)?;
         if !valid_identifier(name) {
@@ -1190,6 +1197,20 @@ mod tests {
             offset: 0,
         };
         assert_eq!(reader.predicate(&[]).unwrap(), predicate);
+        assert_eq!(reader.offset, encoded.len());
+    }
+
+    #[test]
+    fn name_header_matches_the_generated_wire_record() {
+        let mut encoded = Vec::new();
+        put_name(&mut encoded, "sales").unwrap();
+        assert_eq!(encoded, [0x05, b's', b'a', b'l', b'e', b's']);
+
+        let mut reader = PlanReader {
+            bytes: &encoded,
+            offset: 0,
+        };
+        assert_eq!(reader.name().unwrap(), "sales");
         assert_eq!(reader.offset, encoded.len());
     }
 

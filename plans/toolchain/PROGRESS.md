@@ -897,3 +897,12 @@
 - Compatibility: boolean operator tags, child ordering, and plan bytes remain unchanged; a Rust regression asserts the exact AND encoding and round trip, and the maintained TinyCC optimizer-plan fixture passes.
 - Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the pinned Nix flake environment using its supported `--no-update-lock-file` option.
 - Remaining: NOT predicate tag coverage, string/name headers, and full shared-schema parity remain open.
+
+## TC-2 follow-up: generated optimizer plan name header — implemented
+
+- Contract: schema and relation names retain the one-byte UTF-8 byte-length prefix followed by the unchanged name bytes.
+- Red evidence: generator regression failed because `OPTIMIZER_PLAN_NAME_HEADER_RECORD` and its Rust/C codecs were absent.
+- Implementation: the shared schema defines the length prefix; Rust plan encoding/decoding and the TinyCC plan decoder now use the generated codec. Identifier and UTF-8 validation remain in the plan layer.
+- Compatibility: name bytes and identifier limits are unchanged; a Rust regression asserts the exact header and round trip, and the maintained TinyCC optimizer-plan fixture passes.
+- Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the pinned Nix flake environment using its supported `--no-update-lock-file` option.
+- Remaining: NOT predicate tag coverage and full shared-schema parity remain open.

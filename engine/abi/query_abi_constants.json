@@ -1900,6 +1900,15 @@
       "trailing_fields": []
     },
     {
+      "name": "OPTIMIZER_PLAN_NAME_HEADER_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "byte_length", "encoding": "u8" }
+      ],
+      "trailing_fields": []
+    },
+    {
       "name": "CLIENT_FRAME_HEADER_RECORD",
       "generate_rust_codec": true,
       "generate_c_codec": true,
