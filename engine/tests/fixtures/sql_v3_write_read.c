@@ -1377,6 +1377,97 @@ static int32_t run_write_read_fixture(
         return report_failure(host, message, sizeof(message) - 1);
     }
     if (optimizer_host_v5 != NULL) {
+        static const uint8_t optimizer_grouped_update_sql[] =
+            "UPDATE grouped_records SET left_key = $2, right_key = $3 "
+            "WHERE left_key = $1";
+        static const uint8_t grouped_match_bytes[4] = {0, 0, 0, 1};
+        static const uint8_t grouped_left_bytes[4] = {0, 0, 0, 4};
+        static const uint8_t grouped_right_bytes[4] = {0, 0, 0, 9};
+        prdb_sdk_value_v1 grouped_parameters[3] = {
+            {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+             grouped_match_bytes, sizeof(grouped_match_bytes)},
+            {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+             grouped_left_bytes, sizeof(grouped_left_bytes)},
+            {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+             grouped_right_bytes, sizeof(grouped_right_bytes)}};
+        prdb_sdk_update_v1 grouped_update = {0};
+        prdb_sdk_executor_relation_v1 grouped_relation = {0};
+        prdb_sdk_sql_column_shape_v2 grouped_columns[2] = {{0}};
+        prdb_sdk_select_binding_v2 grouped_binding = {0};
+        prdb_sdk_value_v1 grouped_scratch[2] = {{0}};
+        uint8_t grouped_request[4096] = {0};
+        uint8_t grouped_optimizer_response[4096] = {0};
+        uint8_t grouped_relation_response[4096] = {0};
+        uint8_t grouped_scan_response[4096] = {0};
+        uint8_t grouped_batch_response[4096] = {0};
+        uint8_t grouped_targets[
+            PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS * 16] = {0};
+        uint32_t grouped_update_count = 0;
+        uint32_t parse_error_offset = 0;
+        if (prdb_sdk_sql_parse_update_v1(
+                optimizer_grouped_update_sql,
+                sizeof(optimizer_grouped_update_sql) - 1, &grouped_update,
+                sizeof(grouped_update), &parse_error_offset) !=
+                PRDB_SDK_SQL_OK ||
+            prdb_sdk_optimizer_execute_update_ast_v1(
+                optimizer_host_v5, &grouped_update, grouped_parameters, 3,
+                schema, sizeof(schema) - 1, 16,
+                sizeof(grouped_batch_response), grouped_request,
+                sizeof(grouped_request), grouped_optimizer_response,
+                sizeof(grouped_optimizer_response), grouped_relation_response,
+                sizeof(grouped_relation_response), grouped_scan_response,
+                sizeof(grouped_scan_response), grouped_batch_response,
+                sizeof(grouped_batch_response), &grouped_relation,
+                sizeof(grouped_relation), grouped_columns, 2, &grouped_binding,
+                sizeof(grouped_binding), grouped_scratch, 2, grouped_targets,
+                PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS,
+                &grouped_update_count) != PRDB_SDK_OPTIMIZER_PLAN_OK ||
+            grouped_update_count != 2) {
+            static const uint8_t message[] =
+                "fixture-error-optimizer-update-multiple";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+        static const uint8_t optimizer_grouped_verify_sql[] =
+            "UPDATE grouped_records SET left_key = $2 "
+            "WHERE left_key = $1 AND right_key = $3";
+        prdb_sdk_value_v1 grouped_verify_parameters[3] = {
+            {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+             grouped_left_bytes, sizeof(grouped_left_bytes)},
+            {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+             grouped_left_bytes, sizeof(grouped_left_bytes)},
+            {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+             grouped_right_bytes, sizeof(grouped_right_bytes)}};
+        uint32_t grouped_verify_count = 0;
+        if (prdb_sdk_sql_parse_update_v1(
+                optimizer_grouped_verify_sql,
+                sizeof(optimizer_grouped_verify_sql) - 1, &grouped_update,
+                sizeof(grouped_update), &parse_error_offset) !=
+                PRDB_SDK_SQL_OK ||
+            prdb_sdk_optimizer_execute_update_ast_v1(
+                optimizer_host_v5, &grouped_update, grouped_verify_parameters,
+                3, schema, sizeof(schema) - 1, 16,
+                sizeof(grouped_batch_response), grouped_request,
+                sizeof(grouped_request), grouped_optimizer_response,
+                sizeof(grouped_optimizer_response), grouped_relation_response,
+                sizeof(grouped_relation_response), grouped_scan_response,
+                sizeof(grouped_scan_response), grouped_batch_response,
+                sizeof(grouped_batch_response), &grouped_relation,
+                sizeof(grouped_relation), grouped_columns, 2,
+                &grouped_binding, sizeof(grouped_binding), grouped_scratch, 2,
+                grouped_targets, PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS,
+                &grouped_verify_count) != PRDB_SDK_OPTIMIZER_PLAN_OK ||
+            grouped_verify_count != 2) {
+            static const uint8_t message[] =
+                "fixture-error-optimizer-update-multiple-visible";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+
         static const uint8_t optimizer_update_sql[] =
             "UPDATE records SET id = $2 WHERE id = $1";
         static const uint8_t updated_integer_bytes[] = {0, 0, 0, 43};

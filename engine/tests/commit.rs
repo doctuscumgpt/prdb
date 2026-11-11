@@ -22170,6 +22170,17 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     authority_writes.extend(composite_table.column_ids.iter().map(|column_id| {
         grant_write(user_id, composite_table.table_id, 2, 2, *column_id, user_id)
     }));
+    authority_writes.push(grant_write(
+        user_id,
+        composite_table.table_id,
+        4,
+        1,
+        composite_table.table_id,
+        user_id,
+    ));
+    authority_writes.extend(composite_table.column_ids.iter().map(|column_id| {
+        grant_write(user_id, composite_table.table_id, 4, 2, *column_id, user_id)
+    }));
     let (
         old_user_record,
         old_token_record,
@@ -22738,6 +22749,39 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         true,
         "sandbox_composite_right_select_policy",
     )?;
+    add_table_policy(
+        composite_table.table_id,
+        composite_table.column_ids[0],
+        id(0xda),
+        3,
+        Some(update_using_id),
+        Some(insert_policy_expression_id),
+        false,
+        "sandbox_composite_update_policy",
+    )?;
+    for (column_id, policy_id, name) in [
+        (
+            composite_table.column_ids[0],
+            id(0xdb),
+            "sandbox_composite_left_update_policy",
+        ),
+        (
+            composite_table.column_ids[1],
+            id(0xdc),
+            "sandbox_composite_right_update_policy",
+        ),
+    ] {
+        add_table_policy(
+            composite_table.table_id,
+            column_id,
+            policy_id,
+            3,
+            Some(update_using_id),
+            Some(insert_policy_expression_id),
+            true,
+            name,
+        )?;
+    }
     let policy_invocation = id(0x87);
     let mut policy_audit = identity_audit_event(0x88, user_id, insert_policy_id);
     policy_audit.correlation_id = policy_invocation;
@@ -22757,7 +22801,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         requested_scope_records.push(record);
     }
     for operation in 2u8..=5 {
-        let mut tables = if operation == 2 {
+        let mut tables = if operation == 2 || operation == 4 {
             vec![&records_table, &joined_table, &composite_table]
         } else {
             vec![&records_table]
