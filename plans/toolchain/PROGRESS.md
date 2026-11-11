@@ -825,3 +825,12 @@
 - Compatibility: the existing plan golden-byte round trip and maintained TinyCC optimizer-plan fixture pass with unchanged bytes and validation behavior.
 - Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
 - Remaining: additional nested optimizer plan records and full shared-schema parity remain open.
+
+## TC-2 follow-up: generated optimizer plan identity records — implemented
+
+- Contract: plan relation references retain separate 24-byte schema and relation identity records around their length-prefixed names.
+- Red evidence: generator regression failed because the schema/reference identity records and generated codecs were absent.
+- Implementation: the shared schema now defines the schema-ID/version and relation-ID/epoch records. Rust plan encoding/decoding and the TinyCC SDK decoder use their generated codecs; nonzero IDs and versions/epochs remain semantically checked by the plan layer.
+- Compatibility: the canonical plan round-trip and TinyCC optimizer-plan fixture pass with unchanged bytes and invalid identity rejection.
+- Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
+- Remaining: additional nested optimizer plan records and full shared-schema parity remain open.

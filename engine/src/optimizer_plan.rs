@@ -64,11 +64,19 @@ pub fn encode_plan_v1(plan: &SingleTablePlanV1) -> Result<Vec<u8>, PlanError> {
         1, 1, 0,
     ));
     put_name(&mut output, &plan.relation.schema_name)?;
-    output.extend_from_slice(&plan.relation.schema_id);
-    output.extend_from_slice(&plan.relation.schema_version.to_be_bytes());
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_schema_reference_record(
+            plan.relation.schema_id,
+            plan.relation.schema_version,
+        ),
+    );
     put_name(&mut output, &plan.relation.relation_name)?;
-    output.extend_from_slice(&plan.relation.relation_id);
-    output.extend_from_slice(&plan.relation.table_epoch.to_be_bytes());
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_relation_reference_record(
+            plan.relation.relation_id,
+            plan.relation.table_epoch,
+        ),
+    );
     output.push(u8::try_from(plan.nodes.len()).map_err(|_| PlanError::InvalidPipeline)?);
     for node in &plan.nodes {
         match node {
@@ -124,11 +132,17 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
         return Err(PlanError::InvalidEncoding);
     }
     let schema_name = reader.name()?;
-    let schema_id = reader.array16()?;
-    let schema_version = reader.u64()?;
+    let schema_reference = reader
+        .take(crate::query_abi::OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES as usize)?;
+    let (schema_id, schema_version) =
+        crate::query_abi::decode_optimizer_plan_schema_reference_record(schema_reference)
+            .ok_or(PlanError::Truncated)?;
     let relation_name = reader.name()?;
-    let relation_id = reader.array16()?;
-    let table_epoch = reader.u64()?;
+    let relation_reference = reader
+        .take(crate::query_abi::OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES as usize)?;
+    let (relation_id, table_epoch) =
+        crate::query_abi::decode_optimizer_plan_relation_reference_record(relation_reference)
+            .ok_or(PlanError::Truncated)?;
     let relation = RelationReference {
         schema_name,
         schema_id,
@@ -304,12 +318,6 @@ impl PlanReader<'_> {
     fn u32(&mut self) -> Result<u32, PlanError> {
         Ok(u32::from_be_bytes(
             self.take(4)?.try_into().map_err(|_| PlanError::Truncated)?,
-        ))
-    }
-
-    fn u64(&mut self) -> Result<u64, PlanError> {
-        Ok(u64::from_be_bytes(
-            self.take(8)?.try_into().map_err(|_| PlanError::Truncated)?,
         ))
     }
 

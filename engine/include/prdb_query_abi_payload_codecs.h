@@ -2009,6 +2009,72 @@ static inline int prdb_decode_optimizer_plan_column_record(const uint8_t *payloa
     return 1;
 }
 
+static inline void prdb_encode_optimizer_plan_schema_reference_record(uint8_t payload[24],
+    const uint8_t schema_id[16], uint64_t schema_version) {
+    for (size_t i = 0; i < 16; ++i) {
+        payload[0 + i] = schema_id[i];
+    }
+    uint64_t schema_version_wire = (uint64_t)schema_version;
+    for (size_t i = 0; i < 8; ++i) {
+        payload[16 + i] = (uint8_t)(schema_version_wire >> ((8 - 1 - i) * 8));
+    }
+}
+
+static inline int prdb_decode_optimizer_plan_schema_reference_record(const uint8_t *payload, size_t payload_len,
+    uint8_t schema_id[16], uint64_t *schema_version) {
+    if (payload == NULL || payload_len != 24) {
+        return 0;
+    }
+    if (schema_id == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < 16; ++i) {
+        schema_id[i] = payload[0 + i];
+    }
+    if (schema_version == NULL) {
+        return 0;
+    }
+    uint64_t schema_version_wire_value = 0;
+    for (size_t i = 0; i < 8; ++i) {
+        schema_version_wire_value = (schema_version_wire_value << 8) | payload[16 + i];
+    }
+    *schema_version = (uint64_t)schema_version_wire_value;
+    return 1;
+}
+
+static inline void prdb_encode_optimizer_plan_relation_reference_record(uint8_t payload[24],
+    const uint8_t relation_id[16], uint64_t table_epoch) {
+    for (size_t i = 0; i < 16; ++i) {
+        payload[0 + i] = relation_id[i];
+    }
+    uint64_t table_epoch_wire = (uint64_t)table_epoch;
+    for (size_t i = 0; i < 8; ++i) {
+        payload[16 + i] = (uint8_t)(table_epoch_wire >> ((8 - 1 - i) * 8));
+    }
+}
+
+static inline int prdb_decode_optimizer_plan_relation_reference_record(const uint8_t *payload, size_t payload_len,
+    uint8_t relation_id[16], uint64_t *table_epoch) {
+    if (payload == NULL || payload_len != 24) {
+        return 0;
+    }
+    if (relation_id == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < 16; ++i) {
+        relation_id[i] = payload[0 + i];
+    }
+    if (table_epoch == NULL) {
+        return 0;
+    }
+    uint64_t table_epoch_wire_value = 0;
+    for (size_t i = 0; i < 8; ++i) {
+        table_epoch_wire_value = (table_epoch_wire_value << 8) | payload[16 + i];
+    }
+    *table_epoch = (uint64_t)table_epoch_wire_value;
+    return 1;
+}
+
 static inline void prdb_encode_client_frame_header_record(uint8_t payload[32],
     const uint8_t magic[4], uint16_t major_version, uint16_t minor_version, uint16_t kind, uint16_t flags, uint32_t payload_length, uint64_t request_id, uint64_t response_sequence) {
     for (size_t i = 0; i < 4; ++i) {

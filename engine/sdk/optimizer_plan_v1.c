@@ -71,14 +71,6 @@ static int read_u32(plan_reader *reader, uint32_t *out) {
     return 1;
 }
 
-static int read_u64(plan_reader *reader, uint64_t *out) {
-    uint32_t high;
-    uint32_t low;
-    if (!read_u32(reader, &high) || !read_u32(reader, &low)) return 0;
-    *out = ((uint64_t)high << 32) | low;
-    return 1;
-}
-
 static int valid_identifier(const uint8_t *bytes, uint32_t length) {
     uint32_t index;
     if (bytes == NULL || length == 0 || length > 63 ||
@@ -546,26 +538,34 @@ static int32_t decode_plan_internal(
     }
     {
         const uint8_t *bytes;
-        if (!take(&reader, 16, &bytes) || all_zero(bytes, 16)) {
+        if (!take(&reader,
+                  PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES,
+                  &bytes) ||
+            !prdb_decode_optimizer_plan_schema_reference_record(
+                bytes, PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES,
+                decoded.schema_id, &decoded.schema_version) ||
+            all_zero(decoded.schema_id, 16) || decoded.schema_version == 0) {
             return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
         }
-        memcpy(decoded.schema_id, bytes, 16);
     }
-    if (!read_u64(&reader, &decoded.schema_version) ||
-        decoded.schema_version == 0 ||
-        !read_name(&reader, &decoded.relation_name,
+    if (!read_name(&reader, &decoded.relation_name,
                    &decoded.relation_name_len)) {
         return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
     }
     {
         const uint8_t *bytes;
-        if (!take(&reader, 16, &bytes) || all_zero(bytes, 16)) {
+        if (!take(&reader,
+                  PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES,
+                  &bytes) ||
+            !prdb_decode_optimizer_plan_relation_reference_record(
+                bytes,
+                PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES,
+                decoded.relation_id, &decoded.table_epoch) ||
+            all_zero(decoded.relation_id, 16) || decoded.table_epoch == 0) {
             return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
         }
-        memcpy(decoded.relation_id, bytes, 16);
     }
-    if (!read_u64(&reader, &decoded.table_epoch) || decoded.table_epoch == 0 ||
-        !read_u8(&reader, &node_count) || node_count < 2 || node_count > 4) {
+    if (!read_u8(&reader, &node_count) || node_count < 2 || node_count > 4) {
         return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
     }
     if (decoded.schema_name_len == 0 || decoded.relation_name_len == 0) {

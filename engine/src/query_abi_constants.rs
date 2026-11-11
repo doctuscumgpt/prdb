@@ -1187,6 +1187,40 @@ pub fn decode_optimizer_plan_column_record(payload: &[u8]) -> Option<([u8; 16], 
     Some((payload[0..16].try_into().ok()?, u32::from_be_bytes(payload[16..20].try_into().ok()?), payload[20], payload[21..25].try_into().ok()?, payload[25]))
 }
 
+pub const OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_SCHEMA_ID_OFFSET: u32 = 0;
+pub const OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_SCHEMA_VERSION_OFFSET: u32 = 16;
+pub const OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES: u32 = 24;
+pub fn encode_optimizer_plan_schema_reference_record(schema_id: [u8; 16], schema_version: u64) -> [u8; 24] {
+    let mut payload = [0u8; 24];
+    payload[0..16].copy_from_slice(&schema_id);
+    payload[16..24].copy_from_slice(&schema_version.to_be_bytes());
+    payload
+}
+
+pub fn decode_optimizer_plan_schema_reference_record(payload: &[u8]) -> Option<([u8; 16], u64)> {
+    if payload.len() != 24 {
+        return None;
+    }
+    Some((payload[0..16].try_into().ok()?, u64::from_be_bytes(payload[16..24].try_into().ok()?)))
+}
+
+pub const OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_RELATION_ID_OFFSET: u32 = 0;
+pub const OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_TABLE_EPOCH_OFFSET: u32 = 16;
+pub const OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES: u32 = 24;
+pub fn encode_optimizer_plan_relation_reference_record(relation_id: [u8; 16], table_epoch: u64) -> [u8; 24] {
+    let mut payload = [0u8; 24];
+    payload[0..16].copy_from_slice(&relation_id);
+    payload[16..24].copy_from_slice(&table_epoch.to_be_bytes());
+    payload
+}
+
+pub fn decode_optimizer_plan_relation_reference_record(payload: &[u8]) -> Option<([u8; 16], u64)> {
+    if payload.len() != 24 {
+        return None;
+    }
+    Some((payload[0..16].try_into().ok()?, u64::from_be_bytes(payload[16..24].try_into().ok()?)))
+}
+
 pub const CLIENT_FRAME_HEADER_RECORD_MAGIC_OFFSET: u32 = 0;
 pub const CLIENT_FRAME_HEADER_RECORD_MAJOR_VERSION_OFFSET: u32 = 4;
 pub const CLIENT_FRAME_HEADER_RECORD_MINOR_VERSION_OFFSET: u32 = 6;
