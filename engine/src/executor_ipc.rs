@@ -124,16 +124,28 @@ impl ResolveRelationResponse {
                 handle,
                 description,
             } => {
+                if description.name.is_empty() {
+                    return Err(ExecutorRequestError::InvalidPayload);
+                }
                 let mut payload = generated::encode_executor_resolve_relation_available_response(
                     0,
                     description.relation_id,
                     handle.to_bytes(),
                 )
                 .to_vec();
-                encode_name(&mut payload, &description.name)?;
                 let column_count = u16::try_from(description.columns.len())
                     .map_err(|_| ExecutorRequestError::ResponseTooLarge)?;
-                payload.extend_from_slice(&column_count.to_be_bytes());
+                let relation_name =
+                    generated::encode_executor_resolve_relation_available_response_relation_name(
+                        &description.name,
+                    )
+                    .ok_or(ExecutorRequestError::ResponseTooLarge)?;
+                payload.extend_from_slice(&relation_name);
+                payload.extend_from_slice(
+                    &generated::encode_executor_resolve_relation_available_response_column_count(
+                        column_count,
+                    ),
+                );
                 for column in &description.columns {
                     encode_visible_column(&mut payload, column)?;
                 }
@@ -163,8 +175,29 @@ impl ResolveRelationResponse {
         let handle = ResolvedRelationHandle::from_bytes(&handle_bytes)
             .ok_or(ExecutorRequestError::InvalidPayload)?;
         let mut offset = RESOLVE_AVAILABLE_RESPONSE_HEADER_BYTES;
-        let name = decode_name(payload, &mut offset)?;
-        let column_count = read_u16(payload, &mut offset)? as usize;
+        let (name, name_bytes) =
+            generated::decode_executor_resolve_relation_available_response_relation_name(
+                payload
+                    .get(offset..)
+                    .ok_or(ExecutorRequestError::InvalidPayload)?,
+            )
+            .ok_or(ExecutorRequestError::InvalidPayload)?;
+        let name = name.to_owned();
+        if name.is_empty() {
+            return Err(ExecutorRequestError::InvalidPayload);
+        }
+        offset = offset
+            .checked_add(name_bytes)
+            .ok_or(ExecutorRequestError::InvalidPayload)?;
+        let column_count = usize::from(
+            generated::decode_executor_resolve_relation_available_response_column_count(
+                payload
+                    .get(offset..)
+                    .ok_or(ExecutorRequestError::InvalidPayload)?,
+            )
+            .ok_or(ExecutorRequestError::InvalidPayload)?,
+        );
+        offset += 2;
         if column_count > crate::tuple::MAX_COLUMNS {
             return Err(ExecutorRequestError::InvalidPayload);
         }

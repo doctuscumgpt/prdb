@@ -475,6 +475,35 @@ int main(void) {
             return 46;
         }
     }
+    uint8_t relation_name_tail[9] = {0};
+    const uint8_t *decoded_description_name = NULL;
+    size_t decoded_description_name_len = 0;
+    size_t decoded_description_name_consumed = 0;
+    uint16_t decoded_relation_column_count = 0;
+    if (!prdb_encode_planner_describe_relation_available_response_relation_name(
+            relation_name_tail, sizeof(relation_name_tail),
+            (const uint8_t *)"items", 5) ||
+        memcmp(relation_name_tail, "\0\5items", 7) != 0) {
+        return 49;
+    }
+    prdb_encode_planner_describe_relation_available_response_column_count(
+        relation_name_tail + 7, 2);
+    if (memcmp(relation_name_tail, "\0\5items\0\2", sizeof(relation_name_tail)) != 0 ||
+        !prdb_decode_planner_describe_relation_available_response_relation_name(
+            relation_name_tail, sizeof(relation_name_tail), &decoded_description_name,
+            &decoded_description_name_len, &decoded_description_name_consumed) ||
+        decoded_description_name_len != 5 || decoded_description_name_consumed != 7 ||
+        memcmp(decoded_description_name, "items", 5) != 0 ||
+        !prdb_decode_planner_describe_relation_available_response_column_count(
+            relation_name_tail + decoded_description_name_consumed,
+            sizeof(relation_name_tail) - decoded_description_name_consumed,
+            &decoded_relation_column_count) ||
+        decoded_relation_column_count != 2 ||
+        prdb_decode_planner_describe_relation_available_response_relation_name(
+            relation_name_tail, 6, &decoded_description_name,
+            &decoded_description_name_len, &decoded_description_name_consumed)) {
+        return 49;
+    }
     uint8_t planner_schema_id[16];
     uint8_t planner_plan_relation_id[16];
     uint8_t decoded_planner_schema_id[16] = {0};

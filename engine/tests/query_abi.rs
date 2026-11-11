@@ -9,6 +9,70 @@ use prdb_engine::query_abi::{
 };
 
 #[test]
+fn generated_relation_description_tail_codecs_preserve_prefix_boundaries() {
+    let name =
+        prdb_engine::query_abi::encode_executor_resolve_relation_available_response_relation_name(
+            "items",
+        )
+        .unwrap();
+    assert_eq!(name, [0, 5, b'i', b't', b'e', b'm', b's']);
+
+    let mut tail = name.clone();
+    tail.extend_from_slice(
+        &prdb_engine::query_abi::encode_executor_resolve_relation_available_response_column_count(
+            2,
+        ),
+    );
+    let (decoded_name, consumed) =
+        prdb_engine::query_abi::decode_executor_resolve_relation_available_response_relation_name(
+            &tail,
+        )
+        .unwrap();
+    assert_eq!(decoded_name, "items");
+    assert_eq!(consumed, name.len());
+    assert_eq!(
+        prdb_engine::query_abi::decode_executor_resolve_relation_available_response_column_count(
+            &tail[consumed..]
+        ),
+        Some(2)
+    );
+    assert!(
+        prdb_engine::query_abi::decode_executor_resolve_relation_available_response_relation_name(
+            &tail[..6]
+        )
+        .is_none()
+    );
+
+    let planner_name =
+        prdb_engine::query_abi::encode_planner_describe_relation_available_response_relation_name(
+            "items",
+        )
+        .unwrap();
+    assert_eq!(
+        prdb_engine::query_abi::decode_planner_describe_relation_available_response_relation_name(
+            &planner_name
+        ),
+        Some(("items", planner_name.len()))
+    );
+    let plan_name = prdb_engine::query_abi::encode_planner_describe_plan_relation_available_response_relation_name(
+        "items",
+    )
+    .unwrap();
+    assert_eq!(
+        prdb_engine::query_abi::decode_planner_describe_plan_relation_available_response_relation_name(
+            &plan_name
+        ),
+        Some(("items", plan_name.len()))
+    );
+    assert_eq!(
+        prdb_engine::query_abi::decode_planner_describe_plan_relation_available_response_column_count(
+            &[0, 3],
+        ),
+        Some(3)
+    );
+}
+
+#[test]
 fn query_abi_v1_layout_matches_the_x86_64_c_contract() {
     assert_eq!(std::mem::size_of::<HostApiV1>(), 8);
     assert_eq!(std::mem::align_of::<HostApiV1>(), 4);

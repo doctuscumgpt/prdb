@@ -154,6 +154,48 @@ static inline int prdb_decode_executor_resolve_relation_available_response(const
     return 1;
 }
 
+static inline int prdb_encode_executor_resolve_relation_available_response_relation_name(uint8_t *payload, size_t payload_capacity, const uint8_t *bytes, size_t bytes_len) {
+    if (payload == NULL || bytes_len > UINT16_MAX ||
+        payload_capacity < 2 + bytes_len ||
+        (bytes_len != 0 && bytes == NULL)) {
+        return 0;
+    }
+    payload[0] = (uint8_t)(bytes_len >> 8);
+    payload[1] = (uint8_t)bytes_len;
+    for (size_t i = 0; i < bytes_len; ++i) {
+        payload[2 + i] = bytes[i];
+    }
+    return 1;
+}
+
+static inline int prdb_decode_executor_resolve_relation_available_response_relation_name(const uint8_t *payload, size_t payload_len, const uint8_t **bytes, size_t *bytes_len, size_t *consumed) {
+    if (payload == NULL || payload_len < 2 || bytes == NULL ||
+        bytes_len == NULL || consumed == NULL) {
+        return 0;
+    }
+    size_t length = ((size_t)payload[0] << 8) | payload[1];
+    if (length > payload_len - 2) {
+        return 0;
+    }
+    *bytes = payload + 2;
+    *bytes_len = length;
+    *consumed = 2 + length;
+    return 1;
+}
+
+static inline void prdb_encode_executor_resolve_relation_available_response_column_count(uint8_t payload[2], uint16_t value) {
+    payload[0] = (uint8_t)(value >> 8);
+    payload[1] = (uint8_t)value;
+}
+
+static inline int prdb_decode_executor_resolve_relation_available_response_column_count(const uint8_t *payload, size_t payload_len, uint16_t *value) {
+    if (payload == NULL || payload_len < 2 || value == NULL) {
+        return 0;
+    }
+    *value = (uint16_t)(((uint16_t)payload[0] << 8) | payload[1]);
+    return 1;
+}
+
 static inline void prdb_encode_executor_open_scan_request(uint8_t payload[20],
     const uint8_t relation_handle[16], uint16_t column_count) {
     payload[0] = (uint8_t)((PRDB_EXECUTOR_BATCH_PAYLOAD_VERSION >> 8) & 0xffu);
@@ -837,6 +879,48 @@ static inline int prdb_decode_planner_describe_relation_available_response(const
     return 1;
 }
 
+static inline int prdb_encode_planner_describe_relation_available_response_relation_name(uint8_t *payload, size_t payload_capacity, const uint8_t *bytes, size_t bytes_len) {
+    if (payload == NULL || bytes_len > UINT16_MAX ||
+        payload_capacity < 2 + bytes_len ||
+        (bytes_len != 0 && bytes == NULL)) {
+        return 0;
+    }
+    payload[0] = (uint8_t)(bytes_len >> 8);
+    payload[1] = (uint8_t)bytes_len;
+    for (size_t i = 0; i < bytes_len; ++i) {
+        payload[2 + i] = bytes[i];
+    }
+    return 1;
+}
+
+static inline int prdb_decode_planner_describe_relation_available_response_relation_name(const uint8_t *payload, size_t payload_len, const uint8_t **bytes, size_t *bytes_len, size_t *consumed) {
+    if (payload == NULL || payload_len < 2 || bytes == NULL ||
+        bytes_len == NULL || consumed == NULL) {
+        return 0;
+    }
+    size_t length = ((size_t)payload[0] << 8) | payload[1];
+    if (length > payload_len - 2) {
+        return 0;
+    }
+    *bytes = payload + 2;
+    *bytes_len = length;
+    *consumed = 2 + length;
+    return 1;
+}
+
+static inline void prdb_encode_planner_describe_relation_available_response_column_count(uint8_t payload[2], uint16_t value) {
+    payload[0] = (uint8_t)(value >> 8);
+    payload[1] = (uint8_t)value;
+}
+
+static inline int prdb_decode_planner_describe_relation_available_response_column_count(const uint8_t *payload, size_t payload_len, uint16_t *value) {
+    if (payload == NULL || payload_len < 2 || value == NULL) {
+        return 0;
+    }
+    *value = (uint16_t)(((uint16_t)payload[0] << 8) | payload[1]);
+    return 1;
+}
+
 static inline void prdb_encode_planner_describe_plan_relation_unavailable_response(uint8_t payload[3],
     uint8_t status) {
     payload[0] = (uint8_t)((PRDB_PLANNER_PAYLOAD_VERSION >> 8) & 0xffu);
@@ -922,6 +1006,48 @@ static inline int prdb_decode_planner_describe_plan_relation_available_response(
     for (size_t i = 0; i < 16; ++i) {
         relation_id[i] = payload[35 + i];
     }
+    return 1;
+}
+
+static inline int prdb_encode_planner_describe_plan_relation_available_response_relation_name(uint8_t *payload, size_t payload_capacity, const uint8_t *bytes, size_t bytes_len) {
+    if (payload == NULL || bytes_len > UINT16_MAX ||
+        payload_capacity < 2 + bytes_len ||
+        (bytes_len != 0 && bytes == NULL)) {
+        return 0;
+    }
+    payload[0] = (uint8_t)(bytes_len >> 8);
+    payload[1] = (uint8_t)bytes_len;
+    for (size_t i = 0; i < bytes_len; ++i) {
+        payload[2 + i] = bytes[i];
+    }
+    return 1;
+}
+
+static inline int prdb_decode_planner_describe_plan_relation_available_response_relation_name(const uint8_t *payload, size_t payload_len, const uint8_t **bytes, size_t *bytes_len, size_t *consumed) {
+    if (payload == NULL || payload_len < 2 || bytes == NULL ||
+        bytes_len == NULL || consumed == NULL) {
+        return 0;
+    }
+    size_t length = ((size_t)payload[0] << 8) | payload[1];
+    if (length > payload_len - 2) {
+        return 0;
+    }
+    *bytes = payload + 2;
+    *bytes_len = length;
+    *consumed = 2 + length;
+    return 1;
+}
+
+static inline void prdb_encode_planner_describe_plan_relation_available_response_column_count(uint8_t payload[2], uint16_t value) {
+    payload[0] = (uint8_t)(value >> 8);
+    payload[1] = (uint8_t)value;
+}
+
+static inline int prdb_decode_planner_describe_plan_relation_available_response_column_count(const uint8_t *payload, size_t payload_len, uint16_t *value) {
+    if (payload == NULL || payload_len < 2 || value == NULL) {
+        return 0;
+    }
+    *value = (uint16_t)(((uint16_t)payload[0] << 8) | payload[1]);
     return 1;
 }
 

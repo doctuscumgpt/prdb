@@ -166,6 +166,9 @@ fn executor_relation_response_uses_generated_prefix_codecs() {
     for malformed in [&[0, 1, 1, 0][..], &[0, 2, 1][..], &[0, 1, 2][..]] {
         assert!(ResolveRelationResponse::decode(malformed).is_err());
     }
+    let mut empty_relation_name = payload.clone();
+    empty_relation_name[35..37].copy_from_slice(&[0, 0]);
+    assert!(ResolveRelationResponse::decode(&empty_relation_name).is_err());
 }
 
 #[test]

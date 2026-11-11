@@ -169,12 +169,18 @@ def render(schema):
                 or field_name in trailing_names
                 or encoding not in (
                     "utf8",
+                    "length_prefixed_utf8",
                     "bytes",
                     "bytes16_array",
                     "u64_triplet_array",
+                    "u16be",
                 )
-                or length_field not in length_fields
             ):
+                raise ValueError(f"invalid trailing field in IPC payload {name}")
+            if encoding in ("utf8", "bytes", "bytes16_array", "u64_triplet_array"):
+                if length_field not in length_fields:
+                    raise ValueError(f"invalid trailing field in IPC payload {name}")
+            elif length_field is not None:
                 raise ValueError(f"invalid trailing field in IPC payload {name}")
             if (
                 encoding in ("bytes16_array", "u64_triplet_array")
@@ -472,6 +478,100 @@ def render(schema):
                             "    }",
                             "    *bytes = payload;",
                             f"    *bytes_len = (size_t){length_field};",
+                            "    return 1;",
+                            "}",
+                            "",
+                        ]
+                    )
+                continue
+            if encoding == "length_prefixed_utf8":
+                field_name = trailing_field["name"]
+                if generate_rust_codec:
+                    rust_lines.extend(
+                        [
+                            f"pub fn encode_{name.lower()}_{field_name}(value: &str) -> Option<Vec<u8>> {{",
+                            "    let length = u16::try_from(value.len()).ok()?;",
+                            "    let mut payload = Vec::with_capacity(2 + value.len());",
+                            "    payload.extend_from_slice(&length.to_be_bytes());",
+                            "    payload.extend_from_slice(value.as_bytes());",
+                            "    Some(payload)",
+                            "}",
+                            "",
+                            f"pub fn decode_{name.lower()}_{field_name}(payload: &[u8]) -> Option<(&str, usize)> {{",
+                            "    if payload.len() < 2 {",
+                            "        return None;",
+                            "    }",
+                            "    let length = usize::from(u16::from_be_bytes([payload[0], payload[1]]));",
+                            "    let end = 2usize.checked_add(length)?;",
+                            "    let value = std::str::from_utf8(payload.get(2..end)?).ok()?;",
+                            "    Some((value, end))",
+                            "}",
+                            "",
+                        ]
+                    )
+                if generate_c_codec:
+                    c_codec_lines.extend(
+                        [
+                            f"static inline int prdb_encode_{name.lower()}_{field_name}(uint8_t *payload, size_t payload_capacity, const uint8_t *bytes, size_t bytes_len) {{",
+                            "    if (payload == NULL || bytes_len > UINT16_MAX ||",
+                            "        payload_capacity < 2 + bytes_len ||",
+                            "        (bytes_len != 0 && bytes == NULL)) {",
+                            "        return 0;",
+                            "    }",
+                            "    payload[0] = (uint8_t)(bytes_len >> 8);",
+                            "    payload[1] = (uint8_t)bytes_len;",
+                            "    for (size_t i = 0; i < bytes_len; ++i) {",
+                            "        payload[2 + i] = bytes[i];",
+                            "    }",
+                            "    return 1;",
+                            "}",
+                            "",
+                            f"static inline int prdb_decode_{name.lower()}_{field_name}(const uint8_t *payload, size_t payload_len, const uint8_t **bytes, size_t *bytes_len, size_t *consumed) {{",
+                            "    if (payload == NULL || payload_len < 2 || bytes == NULL ||",
+                            "        bytes_len == NULL || consumed == NULL) {",
+                            "        return 0;",
+                            "    }",
+                            "    size_t length = ((size_t)payload[0] << 8) | payload[1];",
+                            "    if (length > payload_len - 2) {",
+                            "        return 0;",
+                            "    }",
+                            "    *bytes = payload + 2;",
+                            "    *bytes_len = length;",
+                            "    *consumed = 2 + length;",
+                            "    return 1;",
+                            "}",
+                            "",
+                        ]
+                    )
+                continue
+            if encoding == "u16be":
+                field_name = trailing_field["name"]
+                if generate_rust_codec:
+                    rust_lines.extend(
+                        [
+                            f"pub fn encode_{name.lower()}_{field_name}(value: u16) -> [u8; 2] {{",
+                            "    value.to_be_bytes()",
+                            "}",
+                            "",
+                            f"pub fn decode_{name.lower()}_{field_name}(payload: &[u8]) -> Option<u16> {{",
+                            "    Some(u16::from_be_bytes(payload.get(..2)?.try_into().ok()?))",
+                            "}",
+                            "",
+                        ]
+                    )
+                if generate_c_codec:
+                    c_codec_lines.extend(
+                        [
+                            f"static inline void prdb_encode_{name.lower()}_{field_name}(uint8_t payload[2], uint16_t value) {{",
+                            "    payload[0] = (uint8_t)(value >> 8);",
+                            "    payload[1] = (uint8_t)value;",
+                            "}",
+                            "",
+                            f"static inline int prdb_decode_{name.lower()}_{field_name}(const uint8_t *payload, size_t payload_len, uint16_t *value) {{",
+                            "    if (payload == NULL || payload_len < 2 || value == NULL) {",
+                            "        return 0;",
+                            "    }",
+                            "    *value = (uint16_t)(((uint16_t)payload[0] << 8) | payload[1]);",
                             "    return 1;",
                             "}",
                             "",

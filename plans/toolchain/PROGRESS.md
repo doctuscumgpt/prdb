@@ -678,6 +678,15 @@
 - Verification: generated-file drift check and the full maintained TinyCC SDK suite passed, including the TinyCC-built C frame codec fixture with exact-byte, coalesced-frame, cap, malformed-input, no-partial-output, generated frame error-status, and canonical gateway error-payload checks. Rust tests check the same generated payload strings and frame status values. Workspace build, formatting, warning-denied Clippy, and serial workspace tests passed; the serial suite reported 3 cgroup-gated commit tests and 1 cgroup-gated metadata process test as ignored. The four ignored-by-default acceptance tests were separately run and passed; see [Linux sandbox progress](../linux-sandbox/PROGRESS.md).
 - Remaining: move the remaining IPC payload schemas and serializers into the shared interface schema. TC-2 remains partial.
 
+## TC-2 follow-up: generated relation-description name and count tails — implemented
+
+- Contract: executor and planner relation-description payloads must use one shared source for their versioned fixed fields, length-prefixed relation name, and declared column count, while retaining the existing bounded column-record codecs.
+- Red evidence: the generator regression initially failed because the available relation-description schemas emitted no relation-name or column-count tail helpers.
+- Implementation: the schema now declares relation-name and column-count tails for executor resolution, planner description, and stable plan-relation description. The generator adds bounded length-prefixed UTF-8 and u16 tail codecs in C and Rust. Rust response encoders and decoders now use those generated helpers instead of hand-written name/count framing.
+- Compatibility: wire bytes are unchanged. Empty relation names remain invalid; malformed or truncated UTF-8/count tails fail before column records are read.
+- Verification: generator schema/drift tests, Rust generated-tail boundary and executor response round-trip tests, planner stream regression, and the forced TinyCC IPC payload codec fixture passed. The full forced TinyCC SDK suite, locked workspace build, format check, warning-denied Clippy, serial tests, and `git diff --check` passed; the commit integration reported 138 passed and 4 cgroup-dependent tests ignored.
+- Remaining: other structured IPC tails and full shared-schema parity remain open.
+
 ## TC-1 / TC-3: maintained TinyCC SDK and shared-artifact link profile — partial
 
 - Observed development tools: Rust/Cargo 1.95.0 with rustfmt and Clippy; TinyCC `0.9.27-unstable-2025-01-06` on x86_64 Linux. The SDK archive and C fixtures build with TinyCC `-Wall -Wextra -Werror`.

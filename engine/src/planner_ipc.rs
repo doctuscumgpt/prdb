@@ -1,8 +1,8 @@
 //! Scoped planner metadata and estimate operations over trusted storage APIs.
 
 use crate::executor_ipc::{
-    ExecutorRequestError, ResolveRelationRequest, decode_name, decode_visible_column, encode_name,
-    encode_visible_column, ensure_response_size,
+    ExecutorRequestError, ResolveRelationRequest, decode_visible_column, encode_visible_column,
+    ensure_response_size,
 };
 use crate::ipc::{DispatchError, IpcFrame, Operation, ServiceRole, authorize_operation};
 use crate::metadata_discovery::{
@@ -116,6 +116,7 @@ impl DescribePlanRelationResponse {
                     || relation.schema_version == 0
                     || relation.table_epoch == 0
                     || relation.relation.relation_id == [0; 16]
+                    || relation.relation.name.is_empty()
                     || relation.relation.columns.is_empty()
                     || relation.relation.columns.len() > crate::tuple::MAX_COLUMNS
                 {
@@ -130,10 +131,18 @@ impl DescribePlanRelationResponse {
                         relation.relation.relation_id,
                     )
                     .to_vec();
-                encode_name(&mut payload, &relation.relation.name)?;
                 let count = u16::try_from(relation.relation.columns.len())
                     .map_err(|_| PlannerRequestError::ResponseTooLarge)?;
-                payload.extend_from_slice(&count.to_be_bytes());
+                let relation_name = crate::query_abi::encode_planner_describe_plan_relation_available_response_relation_name(
+                    &relation.relation.name,
+                )
+                .ok_or(PlannerRequestError::ResponseTooLarge)?;
+                payload.extend_from_slice(&relation_name);
+                payload.extend_from_slice(
+                    &crate::query_abi::encode_planner_describe_plan_relation_available_response_column_count(
+                        count,
+                    ),
+                );
                 for column in &relation.relation.columns {
                     encode_visible_column(&mut payload, column)?;
                 }
@@ -171,8 +180,27 @@ impl DescribePlanRelationResponse {
             }
             let mut offset =
                 PLANNER_DESCRIBE_PLAN_RELATION_AVAILABLE_RESPONSE_HEADER_BYTES as usize;
-            let name = decode_name(payload, &mut offset)?;
-            let count = read_u16(payload, offset)? as usize;
+            let (name, name_bytes) = crate::query_abi::decode_planner_describe_plan_relation_available_response_relation_name(
+                payload
+                    .get(offset..)
+                    .ok_or(PlannerRequestError::InvalidPayload)?,
+            )
+            .ok_or(PlannerRequestError::InvalidPayload)?;
+            let name = name.to_owned();
+            if name.is_empty() {
+                return Err(PlannerRequestError::InvalidPayload);
+            }
+            offset = offset
+                .checked_add(name_bytes)
+                .ok_or(PlannerRequestError::InvalidPayload)?;
+            let count = usize::from(
+                crate::query_abi::decode_planner_describe_plan_relation_available_response_column_count(
+                    payload
+                        .get(offset..)
+                        .ok_or(PlannerRequestError::InvalidPayload)?,
+                )
+                .ok_or(PlannerRequestError::InvalidPayload)?,
+            );
             offset += 2;
             if count == 0 || count > crate::tuple::MAX_COLUMNS {
                 return Err(PlannerRequestError::InvalidPayload);
@@ -211,6 +239,9 @@ impl DescribeRelationResponse {
                 Ok(payload)
             }
             Some((handle, description)) => {
+                if description.name.is_empty() {
+                    return Err(PlannerRequestError::InvalidPayload);
+                }
                 let mut payload =
                     crate::query_abi::encode_planner_describe_relation_available_response(
                         0,
@@ -218,10 +249,18 @@ impl DescribeRelationResponse {
                         handle.to_bytes(),
                     )
                     .to_vec();
-                encode_name(&mut payload, &description.name)?;
                 let count = u16::try_from(description.columns.len())
                     .map_err(|_| PlannerRequestError::ResponseTooLarge)?;
-                payload.extend_from_slice(&count.to_be_bytes());
+                let relation_name = crate::query_abi::encode_planner_describe_relation_available_response_relation_name(
+                    &description.name,
+                )
+                .ok_or(PlannerRequestError::ResponseTooLarge)?;
+                payload.extend_from_slice(&relation_name);
+                payload.extend_from_slice(
+                    &crate::query_abi::encode_planner_describe_relation_available_response_column_count(
+                        count,
+                    ),
+                );
                 for column in &description.columns {
                     encode_visible_column(&mut payload, column)?;
                 }
@@ -253,8 +292,27 @@ impl DescribeRelationResponse {
             let handle = PlanningTableHandle::from_bytes(&handle_bytes)
                 .ok_or(PlannerRequestError::InvalidPayload)?;
             let mut offset = PLANNER_DESCRIBE_RELATION_AVAILABLE_RESPONSE_HEADER_BYTES as usize;
-            let name = decode_name(payload, &mut offset)?;
-            let count = read_u16(payload, offset)? as usize;
+            let (name, name_bytes) = crate::query_abi::decode_planner_describe_relation_available_response_relation_name(
+                payload
+                    .get(offset..)
+                    .ok_or(PlannerRequestError::InvalidPayload)?,
+            )
+            .ok_or(PlannerRequestError::InvalidPayload)?;
+            let name = name.to_owned();
+            if name.is_empty() {
+                return Err(PlannerRequestError::InvalidPayload);
+            }
+            offset = offset
+                .checked_add(name_bytes)
+                .ok_or(PlannerRequestError::InvalidPayload)?;
+            let count = usize::from(
+                crate::query_abi::decode_planner_describe_relation_available_response_column_count(
+                    payload
+                        .get(offset..)
+                        .ok_or(PlannerRequestError::InvalidPayload)?,
+                )
+                .ok_or(PlannerRequestError::InvalidPayload)?,
+            );
             offset += 2;
             if count > crate::tuple::MAX_COLUMNS {
                 return Err(PlannerRequestError::InvalidPayload);
@@ -611,13 +669,4 @@ fn abort_shared_planner_invocation(
         transaction.abort().map_err(PlannerConnectionError::Abort)?;
     }
     Ok(())
-}
-
-fn read_u16(payload: &[u8], offset: usize) -> Result<u16, PlannerRequestError> {
-    let bytes: [u8; 2] = payload
-        .get(offset..offset + 2)
-        .ok_or(PlannerRequestError::InvalidPayload)?
-        .try_into()
-        .map_err(|_| PlannerRequestError::InvalidPayload)?;
-    Ok(u16::from_be_bytes(bytes))
 }

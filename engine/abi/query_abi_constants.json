@@ -1251,7 +1251,10 @@
         { "name": "relation_id", "encoding": "bytes16" },
         { "name": "relation_handle", "encoding": "bytes16" }
       ],
-      "trailing_fields": []
+      "trailing_fields": [
+        { "name": "relation_name", "encoding": "length_prefixed_utf8" },
+        { "name": "column_count", "encoding": "u16be" }
+      ]
     },
     {
       "name": "EXECUTOR_OPEN_SCAN_REQUEST",
@@ -1473,7 +1476,10 @@
         { "name": "relation_id", "encoding": "bytes16" },
         { "name": "planning_handle", "encoding": "bytes16" }
       ],
-      "trailing_fields": []
+      "trailing_fields": [
+        { "name": "relation_name", "encoding": "length_prefixed_utf8" },
+        { "name": "column_count", "encoding": "u16be" }
+      ]
     },
     {
       "name": "PLANNER_DESCRIBE_PLAN_RELATION_UNAVAILABLE_RESPONSE",
@@ -1500,7 +1506,10 @@
         { "name": "table_epoch", "encoding": "u64be" },
         { "name": "relation_id", "encoding": "bytes16" }
       ],
-      "trailing_fields": []
+      "trailing_fields": [
+        { "name": "relation_name", "encoding": "length_prefixed_utf8" },
+        { "name": "column_count", "encoding": "u16be" }
+      ]
     },
     {
       "name": "OPTIMIZER_RESPONSE_FAILURE",

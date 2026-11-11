@@ -169,6 +169,32 @@ pub fn decode_executor_resolve_relation_available_response(payload: &[u8]) -> Op
     Some((payload[2], payload[3..19].try_into().ok()?, payload[19..35].try_into().ok()?))
 }
 
+pub fn encode_executor_resolve_relation_available_response_relation_name(value: &str) -> Option<Vec<u8>> {
+    let length = u16::try_from(value.len()).ok()?;
+    let mut payload = Vec::with_capacity(2 + value.len());
+    payload.extend_from_slice(&length.to_be_bytes());
+    payload.extend_from_slice(value.as_bytes());
+    Some(payload)
+}
+
+pub fn decode_executor_resolve_relation_available_response_relation_name(payload: &[u8]) -> Option<(&str, usize)> {
+    if payload.len() < 2 {
+        return None;
+    }
+    let length = usize::from(u16::from_be_bytes([payload[0], payload[1]]));
+    let end = 2usize.checked_add(length)?;
+    let value = std::str::from_utf8(payload.get(2..end)?).ok()?;
+    Some((value, end))
+}
+
+pub fn encode_executor_resolve_relation_available_response_column_count(value: u16) -> [u8; 2] {
+    value.to_be_bytes()
+}
+
+pub fn decode_executor_resolve_relation_available_response_column_count(payload: &[u8]) -> Option<u16> {
+    Some(u16::from_be_bytes(payload.get(..2)?.try_into().ok()?))
+}
+
 pub const EXECUTOR_OPEN_SCAN_REQUEST_VERSION_OFFSET: u32 = 0;
 pub const EXECUTOR_OPEN_SCAN_REQUEST_RELATION_HANDLE_OFFSET: u32 = 2;
 pub const EXECUTOR_OPEN_SCAN_REQUEST_COLUMN_COUNT_OFFSET: u32 = 18;
@@ -561,6 +587,32 @@ pub fn decode_planner_describe_relation_available_response(payload: &[u8]) -> Op
     Some((payload[2], payload[3..19].try_into().ok()?, payload[19..35].try_into().ok()?))
 }
 
+pub fn encode_planner_describe_relation_available_response_relation_name(value: &str) -> Option<Vec<u8>> {
+    let length = u16::try_from(value.len()).ok()?;
+    let mut payload = Vec::with_capacity(2 + value.len());
+    payload.extend_from_slice(&length.to_be_bytes());
+    payload.extend_from_slice(value.as_bytes());
+    Some(payload)
+}
+
+pub fn decode_planner_describe_relation_available_response_relation_name(payload: &[u8]) -> Option<(&str, usize)> {
+    if payload.len() < 2 {
+        return None;
+    }
+    let length = usize::from(u16::from_be_bytes([payload[0], payload[1]]));
+    let end = 2usize.checked_add(length)?;
+    let value = std::str::from_utf8(payload.get(2..end)?).ok()?;
+    Some((value, end))
+}
+
+pub fn encode_planner_describe_relation_available_response_column_count(value: u16) -> [u8; 2] {
+    value.to_be_bytes()
+}
+
+pub fn decode_planner_describe_relation_available_response_column_count(payload: &[u8]) -> Option<u16> {
+    Some(u16::from_be_bytes(payload.get(..2)?.try_into().ok()?))
+}
+
 pub const PLANNER_DESCRIBE_PLAN_RELATION_UNAVAILABLE_RESPONSE_VERSION_OFFSET: u32 = 0;
 pub const PLANNER_DESCRIBE_PLAN_RELATION_UNAVAILABLE_RESPONSE_STATUS_OFFSET: u32 = 2;
 pub const PLANNER_DESCRIBE_PLAN_RELATION_UNAVAILABLE_RESPONSE_HEADER_BYTES: u32 = 3;
@@ -602,6 +654,32 @@ pub fn decode_planner_describe_plan_relation_available_response(payload: &[u8]) 
         return None;
     }
     Some((payload[2], payload[3..19].try_into().ok()?, u64::from_be_bytes(payload[19..27].try_into().ok()?), u64::from_be_bytes(payload[27..35].try_into().ok()?), payload[35..51].try_into().ok()?))
+}
+
+pub fn encode_planner_describe_plan_relation_available_response_relation_name(value: &str) -> Option<Vec<u8>> {
+    let length = u16::try_from(value.len()).ok()?;
+    let mut payload = Vec::with_capacity(2 + value.len());
+    payload.extend_from_slice(&length.to_be_bytes());
+    payload.extend_from_slice(value.as_bytes());
+    Some(payload)
+}
+
+pub fn decode_planner_describe_plan_relation_available_response_relation_name(payload: &[u8]) -> Option<(&str, usize)> {
+    if payload.len() < 2 {
+        return None;
+    }
+    let length = usize::from(u16::from_be_bytes([payload[0], payload[1]]));
+    let end = 2usize.checked_add(length)?;
+    let value = std::str::from_utf8(payload.get(2..end)?).ok()?;
+    Some((value, end))
+}
+
+pub fn encode_planner_describe_plan_relation_available_response_column_count(value: u16) -> [u8; 2] {
+    value.to_be_bytes()
+}
+
+pub fn decode_planner_describe_plan_relation_available_response_column_count(payload: &[u8]) -> Option<u16> {
+    Some(u16::from_be_bytes(payload.get(..2)?.try_into().ok()?))
 }
 
 pub const OPTIMIZER_RESPONSE_FAILURE_VERSION_OFFSET: u32 = 0;
