@@ -1,5 +1,13 @@
 # Linux Sandbox Progress
 
+## SB-5 dependency: delegated user-systemd test runner — verified
+
+- Host diagnosis: outside the Codex desktop sandbox, `/sys/fs/cgroup` is a writable cgroup v2 mount. The desktop scope lacks `cpu` even though the host user manager has it delegated; no host remount or sudo-created directory was needed.
+- Implementation: [`with_delegated_cgroup.sh`](../../engine/tools/with_delegated_cgroup.sh) derives the unit cgroup from `/proc/self/cgroup`, moves its shell into a child, enables `cpu memory pids` on the unit parent, verifies the controllers, and exports the test and supervisor cgroup-parent paths. `Delegate=cpu memory pids` is supplied by a transient `systemd --user` unit.
+- Red/green evidence: direct probing from the desktop scope failed because the visible mount was read-only and lacked `cpu`; the systemd user-service probe then reported a writable parent with all three controllers available and enabled.
+- Verification: the built-in sandbox probe passed in the delegated user service. All four ignored `commit` sandbox tests passed there: caught SQL failure/durable abort, denied network constructor, authenticated metadata submission, and SQL read/write/analytics/durable commit. `metadata_process::disconnected_submission_is_reconciled_after_gateway_restart` also passed in a delegated service. The extended SQL sequence exposed the executor's connection frame cap; increasing it to 512 while preserving each SQL operator's 256-request budget made the test pass.
+- Scope: this verifies a rootless user-service test host on the current NixOS profile. A packaged production systemd unit for user and system managers remains to be added; additional host/runtime profiles remain open.
+
 ## SB-1: fail-closed host capability preflight
 
 - Behavior: `linux_sandbox::probe` reports user-namespace configuration, Landlock ABI, seccomp `KILL_PROCESS`, and cgroup v2 availability/delegation. `require_supported` lists missing profile requirements; capability reporting does not launch a worker or claim confinement.

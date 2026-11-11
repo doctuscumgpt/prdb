@@ -1,5 +1,11 @@
 # SQL Library Progress
 
+## SQL-4 / IPC: sequential SQL request budget — implemented
+
+- Red evidence: the expanded maintained SQL invocation exceeded the executor stream's 256-frame lifetime cap near its final optimizer-backed SELECT, so the confined write/read/analytics acceptance aborted with `RequestLimitExceeded` after earlier v19 join outputs.
+- Decision: the connection-level frame cap is now 512 to support multiple sequential bounded SQL operators in one invocation. Each operator keeps its independent 256-request ceiling; the request-ID set remains finite and bounded.
+- Verification: the full `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance passed through the confined executor and durable commit in a delegated `systemd --user` service. The four ignored commit sandbox tests and the disconnected-submission reconciliation test also passed under the same service setup.
+
 ## SQL-7 dependency: v19 alias parser and binder fuzzing — implemented
 
 - Contract: [SQL library](../../specs/sql-library.md). Exercise v19 aliased INNER JOIN parsing and binding with bounded arbitrary SQL input, checking AST ABI tags, nested v16 layout, projection/join bounds, alias spans, and successful binding output.
@@ -15,33 +21,33 @@
 - Limitation: this parser/binder increment did not include execution; aliased execution was added in the following increment.
 - Verification: focused TinyCC v19 fixture and complete `make -f engine/sdk/Makefile test` passed. Locked `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked` (138 unit tests passed, 4 cgroup-dependent tests ignored, plus all active integration/doc tests), and `git diff --check` passed. Confined SQL acceptance was not rerun because this increment changes only parser/binder ABI; existing cgroup-dependent tests remain unavailable in the default run.
 
-## SQL-7 dependency: v19 aliased INNER JOIN runner — implemented; confined acceptance pending
+## SQL-7 dependency: v19 aliased INNER JOIN runner — implemented; confined acceptance passed
 
 - Contract: [SQL library](../../specs/sql-library.md). Execute aliased v19 joins through independent planner and executor resolution while preserving the established two-scan, materialization, pair-count, request, cancellation, and result-callback bounds.
 - Red/green evidence: the v19 runner fixture first failed to link because `prdb_sdk_sql_execute_inner_join_v19` was absent. It now executes aliased single-key joins and the existing two-to-eight-key regression matrix, including LIMIT, NULL, REDACTED, materialization exhaustion, cancellation, callback failure, and request-bound cases.
 - Implementation: [`prdb_sdk_sql_exec_v19.h`](../../engine/include/prdb_sdk_sql_exec_v19.h) and `sql_exec_v19.c` expose the v19 callback binding and preserve v16's full bounded execution path. The maintained `sql_v3_write_read.c` sandbox artifact now executes its two-key join with aliases and passes the v19 binding's embedded v16 projection record to the established SQLR writer.
-- Verification: full TinyCC SDK suite, `make -f engine/sdk/Makefile sandbox-query-fixture`, locked workspace build, format check, warning-denied Clippy, workspace tests (138 unit tests passed; 4 cgroup-dependent tests ignored; all active integration and documentation tests passed), and `git diff --check` passed. Confined durable acceptance remains pending: the current user scope exposes `memory` and `pids` but not the required `cpu` controller.
+- Verification: full TinyCC SDK suite, `make -f engine/sdk/Makefile sandbox-query-fixture`, locked workspace build, format check, warning-denied Clippy, workspace tests (138 unit tests passed; 4 cgroup-dependent tests ignored in the default run; all active integration and documentation tests passed), and `git diff --check` passed. The opt-in confined durable acceptance passed inside a delegated `systemd --user` service using [`with_delegated_cgroup.sh`](../../engine/tools/with_delegated_cgroup.sh).
 
-## SQL-7 dependency: v19 self-joins — implemented; confined acceptance pending
+## SQL-7 dependency: v19 self-joins — implemented; confined acceptance passed
 
 - Contract: [SQL library](../../specs/sql-library.md). Permit two aliases of the same resolved relation to serve as distinct join sides while preserving left/right predicate binding and independent scans.
 - Red/green evidence: the parser/binder fixture initially failed because rebasing aliases to the shared relation name made both sides ambiguous. It now verifies distinct projection sides and ordinals against two identical relation shapes. The runner fixture initially failed on that binding path and the equal relation-ID guard; it now executes both aliased scans and returns stable self-match rows.
 - Implementation: v19 binding verifies each source relation name against its independently supplied name, then delegates to v16 binding using the distinct alias spans as side identities. The v19 runner allows equal relation IDs while still checking each planner/executor shape pair. The maintained sandbox artifact now exercises `linked_records AS a INNER JOIN linked_records AS b` and checks the two SQLR frames in the integration test.
-- Verification: focused v19 parser/binder and runner fixtures, full TinyCC SDK suite, and `make -f engine/sdk/Makefile sandbox-query-fixture` passed. Locked workspace build, format check, warning-denied Clippy, workspace tests (138 unit tests passed; 4 cgroup-dependent tests ignored; all active integration and documentation tests passed), and `git diff --check` passed. The extended confined durable acceptance remains unrun because this user scope exposes `memory` and `pids` but not `cpu`.
+- Verification: focused v19 parser/binder and runner fixtures, full TinyCC SDK suite, and `make -f engine/sdk/Makefile sandbox-query-fixture` passed. Locked workspace build, format check, warning-denied Clippy, workspace tests (138 unit tests passed; 4 cgroup-dependent tests ignored in the default run; all active integration and documentation tests passed), and `git diff --check` passed. The extended v19 aliased-join/self-join acceptance passed inside a delegated `systemd --user` service.
 
-## SQL-4: bounded multi-row INSERT — implemented; confined acceptance pending
+## SQL-4: bounded multi-row INSERT — implemented; confined acceptance passed
 
 - Contract: [SQL library](../../specs/sql-library.md) and [client SDK](../../specs/client-sdk.md). The versioned DML v2 parser accepts 1–127 positional VALUES tuples with equal positive arity and at most 4,096 total cells; v1 stays single-row-only. Each row is type-bound and staged in invocation order, with a cancellation check before each stage. The 127-row cap plus one relation resolve keeps the executor stream at 255 calls.
 - Red/green evidence: the maintained TinyCC fixture checks flat cell order, parameters/NULL/DEFAULT forms, one-row compatibility, mismatched arity, v1 rejection, the 127-row bound, successful two-row staging, later-row executor failure with unchanged count output, and cancellation after the first staged row.
 - Verification: focused parser and executor fixtures passed after forced TinyCC rebuild. The full Rust workspace build, format check, warning-denied Clippy, serial workspace tests, and complete maintained TinyCC SDK suite pass. The maintained confined SQL artifact now calls v2 for two rows and reads both through a following SELECT; `make -f engine/sdk/Makefile sandbox-query-fixture` builds it. The cgroup-dependent acceptance remains unexecuted because this host mounts `/sys/fs/cgroup` read-only and disables sudo with no-new-privileges; the three cgroup-dependent integration tests remain ignored in the default run.
-- Remaining: run the maintained artifact through the confined integration path to prove durable all-row commit, and add a confined later-row failure case proving durable abort; broader SQL DML and workload coverage remain open.
+- Verification extension: `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` passed inside a delegated `systemd --user` service, including the maintained two-row insert/read path and final durable commit. Broader SQL DML and workload coverage remain open.
 
-## SQL-3 ABI v4 optimizer callback in maintained SQL artifact — implemented; confined acceptance pending
+## SQL-3 ABI v4 optimizer callback in maintained SQL artifact — implemented; confined acceptance passed
 
 - Contract: [client SDK ABI v4](../../specs/client-sdk.md), [optimizer](../../specs/planner-compiler.md), and [sandbox acceptance](SANDBOX_TEST.md). The existing write/read query fixture exports v3 compatibility and v4 entry points; the executor's v4 preference now reaches the fixed-operation optimizer callback.
 - Behavior: after updating `records.id` to 42, the v4 entry parses `SELECT id FROM records WHERE id = $1 LIMIT 1`, submits it through the optimizer process, validates the returned filtered plan and storage-resolved relation, and confirms one projected integer value equals 42. Failure is reported through the established statement failure callback; the fixture emits no extra success result frames.
 - Verification: `make -f engine/sdk/Makefile test`, `make -f engine/sdk/Makefile sandbox-query-fixture`, workspace build, format check, warning-denied Clippy, and `cargo test --workspace --locked` passed after the edit (129 commit tests passed; 3 cgroup tests ignored). `prdb-packager` compiled the actual fixture with TinyCC and validated/published its ABI v4 PMF1 artifact in `/tmp` without loading it. The ignored sandboxed acceptance cannot run on this read-only cgroup host, so optimizer-to-storage execution remains unverified here.
-- Remaining: run `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` through the confined executor on a host with the documented delegated cgroup and runtime profile.
+- Verification extension: the optimizer-backed SELECT also passed through the confined executor as part of `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` in the delegated user service. Broader optimizer/SQL parity remains open.
 
 ## SQL-1 first bounded SELECT parser — implemented
 

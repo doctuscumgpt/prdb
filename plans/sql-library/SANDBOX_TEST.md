@@ -16,7 +16,9 @@ nix-shell -p rustc cargo clippy rustfmt tinycc --run 'make -f engine/sdk/Makefil
 
 This builds `sql-v3-caught-error.so`, `sql-v3-write-read.so`, and `sql-v3-restricted-metadata.so`. These are untrusted query artifacts and must only be loaded through the sandboxed executor tests.
 
-Configure these environment variables for the host running the test:
+Run the test inside a delegated `systemd --user` unit. A direct `cargo test` from a desktop application scope is not a useful preflight: that scope may omit the `cpu` controller even when the host mount is writable. The repository launcher moves its process into a child cgroup, enables the delegated controllers on the unit cgroup, and exports the absolute parent path for the test.
+
+Configure these environment variables in the shell command run by the unit:
 
 - `PRDB_TEST_CGROUP_PARENT`: an existing cgroup v2 parent delegated with enabled `cpu`, `memory`, and `pids` controllers.
 - `PRDB_TEST_QUERY_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-caught-error.so`.
@@ -25,13 +27,23 @@ Configure these environment variables for the host running the test:
 - `PRDB_TEST_RUNTIME_READ_EXECUTE`: platform-separated absolute paths for the pinned dynamic loader, libc, and other executor runtime dependencies.
 - `PRDB_TEST_RUNTIME_READ_ONLY`: platform-separated absolute paths for runtime configuration files the dynamic loader needs, such as its loader cache when applicable. Set it to an empty string when the selected runtime has no read-only files; do not use absent paths as placeholders.
 
-Run the opt-in integration test after configuring the exact runtime profile:
+For example, run the abort acceptance with the configured artifact/runtime paths:
 
 ```sh
-cargo test --locked --test commit sandboxed_v3_sql_error_latches_failure_and_durably_aborts_after_partial_output -- --ignored --exact --nocapture
-cargo test --locked --test commit sandboxed_v3_sql_dml_sequence_is_visible_and_commits -- --ignored --exact --nocapture
-cargo test --locked --test commit sandboxed_v3_metadata_submission_commits_over_tcp -- --ignored --exact --nocapture
+systemd-run --user --wait --pipe --collect \
+  --unit="prdb-sandbox-test-$$.service" --slice=prdb-tests.slice \
+  --property='Delegate=cpu memory pids' --property="WorkingDirectory=$PWD" \
+  "$PWD/engine/tools/with_delegated_cgroup.sh" sh -c '
+    export PRDB_TEST_QUERY_ARTIFACT="$PWD/target/sdk-v1/sql-v3-caught-error.so"
+    export PRDB_TEST_RUNTIME_READ_EXECUTE="/absolute/path/ld-linux-x86-64.so.2:/absolute/path/libc.so.6:/absolute/path/libgcc_s.so.1"
+    export PRDB_TEST_RUNTIME_READ_ONLY=
+    exec nix develop --no-update-lock-file -c cargo test --locked --test commit \
+      sandboxed_v3_sql_error_latches_failure_and_durably_aborts_after_partial_output \
+      -- --ignored --exact --nocapture
+  '
 ```
+
+Run the SQL sequence and metadata submission tests in the same way, setting the artifact variables listed above and replacing the test name. Each transient unit gets its own writable cgroup parent. Do not run query fixtures with `tcc -run`, from a trusted-process loader, or directly outside the confined executor.
 
 Run the optional authenticated TCP SQL branch with:
 

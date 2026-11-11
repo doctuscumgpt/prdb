@@ -62,18 +62,24 @@ Use only maintained SDK unit-test sources for the executable test. Add target/ru
 
 The sandboxed query integration tests are ignored by default. Building `sandbox-query-fixture` only builds their TinyCC artifacts; it does not create or delegate a cgroup. These tests need `PRDB_TEST_CGROUP_PARENT` to name an **absolute path to a writable delegated cgroup v2 parent**. That parent must expose and have enabled the `cpu`, `memory`, and `pids` controllers. The test creates per-invocation child cgroups beneath it.
 
-This is normally rootless **after** the host has delegated a subtree to the test account. A regular user cannot make `/sys/fs/cgroup` writable by creating a directory there or by changing permissions. On systemd hosts, an administrator may need to provide a service or scope with `Delegate=cpu memory pids` and a writable subtree for the test. A `sudo mkdir` at the cgroup root is not a substitute for delegation. If the cgroup2 mount visible to the test process is read-only (for example, inside a container or desktop sandbox), changing directory ownership or running the test with sudo inside that same mount will not fix it; arrange a writable delegated subtree from the host/runtime, or report the acceptance as unavailable.
+This is normally rootless **after** systemd delegates a subtree to the test service. Run tests inside a dedicated `systemd --user` unit with `Delegate=cpu memory pids`; do not run them from a desktop application scope, which may expose only `memory` and `pids`. `engine/tools/with_delegated_cgroup.sh` moves the launcher into a child cgroup before enabling controllers, sets `PRDB_TEST_CGROUP_PARENT` and `PRDB_SYSTEMD_CGROUP_PARENT` to the writable unit cgroup, and executes the requested command. The setup is shared by user and system services.
 
-Check the mount and the process cgroup, then point the built-in probe at the proposed parent:
+First inspect the host mount from a shell with host visibility. On this machine, `findmnt` inside the Codex sandbox reports a read-only view, while the host mount is `cgroup2 rw`; the sandbox view is not a reason to remount the host hierarchy. If the host has no cgroup2 mount and is not already managed by systemd, an administrator can mount it with `sudo mount -t cgroup2 -o nsdelegate cgroup2 /sys/fs/cgroup`. Do not mount a second cgroup2 hierarchy or remount from inside a container/desktop sandbox. A host/runtime that exposes the mount read-only must grant a writable delegated subtree; sudo inside that same read-only mount cannot change it. Creating a directory or changing permissions at the cgroup root does not enable delegation.
+
+Check the host mount and process cgroup, then run the built-in probe inside the delegated user service:
 
 ```sh
-findmnt -no FSTYPE,OPTIONS /sys/fs/cgroup
+sudo findmnt -no FSTYPE,OPTIONS /sys/fs/cgroup
 cat /proc/self/cgroup
-export PRDB_TEST_CGROUP_PARENT=/absolute/path/to/delegated/parent
-cargo run --locked --bin prdb-sandbox-probe -- "$PRDB_TEST_CGROUP_PARENT"
+systemd-run --user --wait --pipe --collect \
+  --unit="prdb-cgroup-probe-$$.service" --slice=prdb-tests.slice \
+  --property='Delegate=cpu memory pids' --property="WorkingDirectory=$PWD" \
+  "$PWD/engine/tools/with_delegated_cgroup.sh" \
+  sh -c 'exec nix develop --no-update-lock-file -c cargo run --locked \
+    --bin prdb-sandbox-probe -- "$PRDB_TEST_CGROUP_PARENT"'
 ```
 
-The probe must report a writable cgroup v2 parent and `cpu memory pids` in both the available controllers and enabled child controllers. Probe success is a preflight, not end-to-end acceptance; run the specific ignored sandbox test with its documented fixture/runtime environment variables. The opt-in tests in `engine/tests/commit.rs` and `engine/tests/metadata_process.rs` state their additional artifact and runtime path variables. Do not count default-ignored tests as passed or use a fake cgroup directory as confinement evidence.
+The probe must report a writable cgroup v2 parent and `cpu memory pids` in both the available controllers and enabled child controllers. Probe success is a preflight, not end-to-end acceptance; run the specific ignored sandbox test inside the same `systemd --user` wrapper with its documented fixture/runtime environment variables. The opt-in tests in `engine/tests/commit.rs` and `engine/tests/metadata_process.rs` state their additional artifact and runtime path variables. Do not count default-ignored tests as passed or use a fake cgroup directory as confinement evidence.
 
 ## Style and Validation
 
