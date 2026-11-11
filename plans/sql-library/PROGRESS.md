@@ -1,5 +1,13 @@
 # SQL Library Progress
 
+## SQL-7 dependency: v19 INNER JOIN alias parser and binder — implemented
+
+- Contract: [SQL library](../../specs/sql-library.md). V19 adds optional explicit `AS` aliases to the v16 two-to-eight-key INNER JOIN grammar while preserving v16 layouts and rejecting duplicate aliases case-insensitively.
+- Red/green evidence: the TinyCC fixture parses and binds aliased projections and two join keys, checks each resolved side/ordinal, rejects duplicate aliases during binding, rejects a missing alias, and verifies malformed spans and failures leave output records unchanged. The focused fixture first exposed an invalid embedded v8 ABI version; fixing the AST version assignment made it pass.
+- Implementation: [`prdb_sdk_sql_v19.h`](../../engine/include/prdb_sdk_sql_v19.h) defines sized v19 AST/binding records. The parser stores alias source spans and v19 binding validates spans, maps alias-qualified references to the original relation spans, and delegates relation/column/type validation to the frozen v16 binder. The maintained Makefile builds and runs the fixture as part of `test`.
+- Limitation: this increment supplies parsing and binding only. The join runner still accepts v16 records, so aliased execution and self-joins are not implemented.
+- Verification: focused TinyCC v19 fixture and complete `make -f engine/sdk/Makefile test` passed. Locked `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked` (138 unit tests passed, 4 cgroup-dependent tests ignored, plus all active integration/doc tests), and `git diff --check` passed. Confined SQL acceptance was not rerun because this increment changes only parser/binder ABI; existing cgroup-dependent tests remain unavailable in the default run.
+
 ## SQL-4: bounded multi-row INSERT — implemented; confined acceptance pending
 
 - Contract: [SQL library](../../specs/sql-library.md) and [client SDK](../../specs/client-sdk.md). The versioned DML v2 parser accepts 1–127 positional VALUES tuples with equal positive arity and at most 4,096 total cells; v1 stays single-row-only. Each row is type-bound and staged in invocation order, with a cancellation check before each stage. The 127-row cap plus one relation resolve keeps the executor stream at 255 calls.
