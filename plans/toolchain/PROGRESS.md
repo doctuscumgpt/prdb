@@ -941,3 +941,10 @@
 - Compatibility: the canonical plan payload remains byte-for-byte unchanged; the existing Rust canonical round-trip and TinyCC optimizer-plan fixture pass.
 - Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the pinned Nix flake environment using its supported `--no-update-lock-file` option.
 - Remaining: broader IPC, SDK, and release-profile schema parity remains open.
+
+## TC-2 follow-up: generated optimizer plan envelope decoder — implemented
+
+- Implementation: Rust plan decoding now obtains the version, kind, and reserved byte from the generated optimizer plan header codec in one operation; the duplicate handwritten `u16` reader was removed.
+- Compatibility: validation order and accepted plan bytes remain unchanged; unsupported versions are still reported before the kind/reserved fields are validated.
+- Verification: canonical plan round-trip test, full TinyCC SDK suite, generator tests (8 passed), generated-file drift check, locked workspace build, formatting check, warning-denied Clippy, and full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored) passed in the pinned Nix development shell using `--no-update-lock-file`; `git diff --check` passed.
+- Remaining: broader IPC, SDK, and release-profile schema parity remains open.

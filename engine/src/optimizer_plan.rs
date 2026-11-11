@@ -124,12 +124,11 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
         return Err(PlanError::TooLarge);
     }
     let mut reader = PlanReader { bytes, offset: 0 };
-    let version = reader.u16()?;
+    let (version, kind, reserved) =
+        crate::query_abi::decode_optimizer_plan_header_record(bytes).ok_or(PlanError::Truncated)?;
     if version != 1 {
         return Err(PlanError::UnsupportedVersion(version));
     }
-    let (_, kind, reserved) =
-        crate::query_abi::decode_optimizer_plan_header_record(bytes).ok_or(PlanError::Truncated)?;
     reader.offset = crate::query_abi::OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES as usize;
     if kind != 1 || reserved != 0 {
         return Err(PlanError::InvalidEncoding);
@@ -352,12 +351,6 @@ impl PlanReader<'_> {
 
     fn u8(&mut self) -> Result<u8, PlanError> {
         Ok(self.take(1)?[0])
-    }
-
-    fn u16(&mut self) -> Result<u16, PlanError> {
-        Ok(u16::from_be_bytes(
-            self.take(2)?.try_into().map_err(|_| PlanError::Truncated)?,
-        ))
     }
 
     fn name(&mut self) -> Result<String, PlanError> {
