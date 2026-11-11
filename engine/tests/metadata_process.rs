@@ -821,8 +821,77 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     assert!(
         String::from_utf8_lossy(&revoke_privilege_cli.stdout).contains("revoked system privilege")
     );
-    let dropped = admin.drop_role(created_role.identity_id)?;
+    let member_role = admin
+        .create_role("process_member_role")
+        .map_err(|error| format!("create membership member role: {error:?}"))?;
+    let role_membership_address = address.to_string();
+    let role_membership_credentials = admin_cancel_credentials_path
+        .to_str()
+        .ok_or("credential path is not UTF-8")?;
+    let role_membership_member = encode_id_hex(&member_role.identity_id);
+    let role_membership_role = encode_id_hex(&created_role.identity_id);
+    let grant_role_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "role-grant",
+            "--address",
+            &role_membership_address,
+            "--credentials",
+            role_membership_credentials,
+            "--member-id",
+            &role_membership_member,
+            "--role-id",
+            &role_membership_role,
+        ])
+        .output()?;
+    assert!(
+        grant_role_cli.status.success(),
+        "role-grant CLI failed: {}",
+        String::from_utf8_lossy(&grant_role_cli.stderr)
+    );
+    assert!(String::from_utf8_lossy(&grant_role_cli.stdout).contains("changed role membership"));
+    assert!(
+        matches!(
+            admin.drop_role(created_role.identity_id),
+            Err(
+                prdb_engine::client_submit::ClientSubmitError::AdministrativeOperationRejected { .. }
+            )
+        ),
+        "role drop did not return a rejected outcome while membership still referenced the role"
+    );
+    let revoke_role_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "role-revoke",
+            "--address",
+            &role_membership_address,
+            "--credentials",
+            role_membership_credentials,
+            "--member-id",
+            &role_membership_member,
+            "--role-id",
+            &role_membership_role,
+        ])
+        .output()?;
+    assert!(
+        revoke_role_cli.status.success(),
+        "role-revoke CLI failed: {}",
+        String::from_utf8_lossy(&revoke_role_cli.stderr)
+    );
+    assert!(String::from_utf8_lossy(&revoke_role_cli.stdout).contains("changed role membership"));
+    let admin_credentials = read_client_credentials(&admin_cancel_credentials_path)?;
+    let mut reauthenticated_secret = admin_credentials.token_secret;
+    admin = AdminClient::connect_authenticated(
+        address,
+        admin_credentials.token_id,
+        &mut reauthenticated_secret,
+    )?;
+    assert_eq!(reauthenticated_secret, [0; 32]);
+    let dropped = admin
+        .drop_role(created_role.identity_id)
+        .map_err(|error| format!("drop membership target role after revoke: {error:?}"))?;
     assert!(dropped.commit_sequence > revoked.commit_sequence);
+    admin
+        .drop_role(member_role.identity_id)
+        .map_err(|error| format!("drop membership member role after revoke: {error:?}"))?;
 
     let created_schema = admin.create_schema("process_admin_schema", admin_user_id)?;
     let created_table = admin.create_table(

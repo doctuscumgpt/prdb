@@ -34,6 +34,13 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Focused verification: formatting and the client-protocol decoder and real-redb ADMIN lifecycle tests passed in the configured Nix shell. Workspace checks remain to run.
 - Remaining: user rename/login-state/drop ADMIN operations, remaining ADMIN operations, and separate supervisor/worker process integration.
 
+## SM-5 / SDK-5: role membership CLI across gateway and supervisor processes — verified
+
+- Contract: `roles.grant` and `roles.revoke` are authenticated, audited ADMIN mutations, and a role referenced by membership cannot be dropped until the membership is revoked.
+- Regression: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` creates two roles, grants one membership through `prdb-client role-grant`, verifies the referenced role drop is rejected, revokes through `prdb-client role-revoke`, reconnects after the rejected START, and then successfully drops both roles.
+- Verification: the focused real-process test passed through the separate `prdb-supervisor` and `prdb-gateway` binaries.
+- Remaining: other identity/control ADMIN families, wider concurrent membership race coverage, and confined query execution remain open.
+
 ## SM-5 / DDL-identity dependency: user and role rename ADMIN operations
 
 - Behavior: `users.rename` and `roles.rename` use connection-owned PREPARE/START. Storage updates the principal name and authority epoch with the matching named object and object version in one authorized DDL commit.

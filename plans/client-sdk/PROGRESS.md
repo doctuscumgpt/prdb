@@ -400,6 +400,12 @@
 - Verification: the focused `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` test passed. The full locked workspace build, formatting check, warning-denied Clippy, serial workspace tests, and `git diff --check` passed; the suite reported 138 commit tests passed with 4 delegated-cgroup tests ignored and 1 authenticated metadata-process test passed.
 - Remaining: process-level coverage for additional authenticated ADMIN families, repeated race stress, and confined artifact execution remain open.
 
+## SDK-5 follow-up: role membership CLI through separate services — verified
+
+- Regression: the real metadata/admin process lifecycle now issues `role-grant` and `role-revoke` through `prdb-client` over the TCP gateway and private supervisor service. It confirms a granted membership blocks dropping the referenced role; after revoke and reconnect, both roles drop successfully.
+- Verification: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` passed with separate supervisor and gateway binaries.
+- Remaining: broader authenticated ADMIN families, repeated race stress, and confined query execution remain open.
+
 ## SDK-5: foreign-key CLI through authenticated processes — verified
 
 - Regression: the gateway/supervisor metadata lifecycle now creates and drops a foreign key through `prdb-client foreign-key-create` and `foreign-key-drop`, using a source table, the existing REFERENCES grant, and a unique target constraint. The test verifies the CLI command path traverses authenticated ADMIN handling and reaches storage.
