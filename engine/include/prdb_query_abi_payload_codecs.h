@@ -2133,6 +2133,35 @@ static inline int prdb_decode_optimizer_plan_limit_node_record(const uint8_t *pa
     return 1;
 }
 
+static inline void prdb_encode_optimizer_plan_text_predicate_header_record(uint8_t payload[3],
+    uint8_t node_tag, uint16_t text_length) {
+    payload[0] = node_tag;
+    uint64_t text_length_wire = (uint64_t)text_length;
+    for (size_t i = 0; i < 2; ++i) {
+        payload[1 + i] = (uint8_t)(text_length_wire >> ((2 - 1 - i) * 8));
+    }
+}
+
+static inline int prdb_decode_optimizer_plan_text_predicate_header_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *node_tag, uint16_t *text_length) {
+    if (payload == NULL || payload_len != 3) {
+        return 0;
+    }
+    if (node_tag == NULL) {
+        return 0;
+    }
+    *node_tag = payload[0];
+    if (text_length == NULL) {
+        return 0;
+    }
+    uint64_t text_length_wire_value = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        text_length_wire_value = (text_length_wire_value << 8) | payload[1 + i];
+    }
+    *text_length = (uint16_t)text_length_wire_value;
+    return 1;
+}
+
 static inline void prdb_encode_client_frame_header_record(uint8_t payload[32],
     const uint8_t magic[4], uint16_t major_version, uint16_t minor_version, uint16_t kind, uint16_t flags, uint32_t payload_length, uint64_t request_id, uint64_t response_sequence) {
     for (size_t i = 0; i < 4; ++i) {

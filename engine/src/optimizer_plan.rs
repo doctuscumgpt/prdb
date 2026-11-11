@@ -207,15 +207,6 @@ fn put_name(output: &mut Vec<u8>, name: &str) -> Result<(), PlanError> {
     Ok(())
 }
 
-fn put_u16(output: &mut Vec<u8>, value: usize) -> Result<(), PlanError> {
-    output.extend_from_slice(
-        &u16::try_from(value)
-            .map_err(|_| PlanError::TooLarge)?
-            .to_be_bytes(),
-    );
-    Ok(())
-}
-
 fn put_column_list_header(
     output: &mut Vec<u8>,
     node_tag: u8,
@@ -264,8 +255,13 @@ fn put_predicate(output: &mut Vec<u8>, predicate: &BoundPredicate) -> Result<(),
             output.extend_from_slice(&value.to_be_bytes());
         }
         BoundPredicate::Text(value) => {
-            output.push(0x03);
-            put_u16(output, value.len())?;
+            let text_length = u16::try_from(value.len()).map_err(|_| PlanError::TooLarge)?;
+            output.extend_from_slice(
+                &crate::query_abi::encode_optimizer_plan_text_predicate_header_record(
+                    0x03,
+                    text_length,
+                ),
+            );
             output.extend_from_slice(value.as_bytes());
         }
         BoundPredicate::Column(column) => {
@@ -393,6 +389,26 @@ impl PlanReader<'_> {
         Ok(row_limit)
     }
 
+    fn text_predicate_length(&mut self, header_offset: usize) -> Result<u16, PlanError> {
+        let header_len =
+            crate::query_abi::OPTIMIZER_PLAN_TEXT_PREDICATE_HEADER_RECORD_HEADER_BYTES as usize;
+        let end = header_offset
+            .checked_add(header_len)
+            .ok_or(PlanError::TooLarge)?;
+        let header = self
+            .bytes
+            .get(header_offset..end)
+            .ok_or(PlanError::Truncated)?;
+        let (node_tag, text_length) =
+            crate::query_abi::decode_optimizer_plan_text_predicate_header_record(header)
+                .ok_or(PlanError::Truncated)?;
+        if node_tag != 0x03 {
+            return Err(PlanError::InvalidEncoding);
+        }
+        self.offset = end;
+        Ok(text_length)
+    }
+
     fn column(&mut self) -> Result<BoundColumn, PlanError> {
         let bytes =
             self.take(crate::query_abi::OPTIMIZER_PLAN_COLUMN_RECORD_HEADER_BYTES as usize)?;
@@ -431,6 +447,7 @@ impl PlanReader<'_> {
         if *nodes > crate::optimizer_request::MAX_PREDICATE_NODES {
             return Err(PlanError::InvalidPredicate);
         }
+        let tag_offset = self.offset;
         match self.u8()? {
             0x00 => Ok(BoundPredicate::Null),
             0x01 => match self.u8()? {
@@ -442,7 +459,7 @@ impl PlanReader<'_> {
                 self.take(8)?.try_into().map_err(|_| PlanError::Truncated)?,
             ))),
             0x03 => {
-                let length = usize::from(self.u16()?);
+                let length = usize::from(self.text_predicate_length(tag_offset)?);
                 if length > crate::optimizer_request::MAX_TEXT_LITERAL_BYTES {
                     return Err(PlanError::TooLarge);
                 }
@@ -998,6 +1015,21 @@ mod tests {
             decode_plan_v1(&invalid_decimal),
             Err(PlanError::InvalidEncoding)
         );
+    }
+
+    #[test]
+    fn text_predicate_header_matches_the_generated_wire_record() {
+        let predicate = BoundPredicate::Text("hi".to_owned());
+        let mut encoded = Vec::new();
+        put_predicate(&mut encoded, &predicate).unwrap();
+        assert_eq!(encoded, [0x03, 0x00, 0x02, b'h', b'i']);
+
+        let mut reader = PlanReader {
+            bytes: &encoded,
+            offset: 0,
+        };
+        assert_eq!(reader.predicate(&[]).unwrap(), predicate);
+        assert_eq!(reader.offset, encoded.len());
     }
 
     #[test]

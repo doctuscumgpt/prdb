@@ -852,3 +852,12 @@
 - Compatibility: the canonical plan round-trip and TinyCC optimizer-plan fixture pass with unchanged bytes and malformed-plan handling.
 - Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
 - Remaining: predicate, string, and other nested optimizer plan records and full shared-schema parity remain open.
+
+## TC-2 follow-up: generated optimizer text-predicate header — implemented
+
+- Contract: a text predicate retains its one-byte `0x03` tag followed by its big-endian u16 byte length.
+- Red evidence: generator regression failed because `OPTIMIZER_PLAN_TEXT_PREDICATE_HEADER_RECORD` and its Rust/C codecs were absent.
+- Implementation: the shared schema defines the tag/length header. Rust plan encoding and decoding and TinyCC predicate decode, traversal, evaluation, and parameter matching now use the generated codec.
+- Compatibility: text literal bytes and validation rules remain unchanged; the Rust regression asserts the exact `[03 00 02]` header for `hi`, and the maintained TinyCC optimizer-plan fixture passes.
+- Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
+- Remaining: other predicate records, string/name headers, and full shared-schema parity remain open.

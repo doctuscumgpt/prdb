@@ -56,11 +56,19 @@ static int read_u8(plan_reader *reader, uint8_t *out) {
     return 1;
 }
 
-static int read_u16(plan_reader *reader, uint16_t *out) {
-    const uint8_t *bytes;
-    if (!take(reader, 2, &bytes)) return 0;
-    *out = (uint16_t)(((uint16_t)bytes[0] << 8) | bytes[1]);
-    return 1;
+static int read_text_predicate_header(plan_reader *reader,
+                                      uint64_t header_offset,
+                                      uint16_t *text_length) {
+    const uint8_t *ignored;
+    uint8_t node_tag;
+    if (!take(reader, 2, &ignored) ||
+        !prdb_decode_optimizer_plan_text_predicate_header_record(
+            reader->bytes + header_offset,
+            PRDB_OPTIMIZER_PLAN_TEXT_PREDICATE_HEADER_RECORD_HEADER_BYTES,
+            &node_tag, text_length)) {
+        return 0;
+    }
+    return node_tag == 0x03;
 }
 
 static int read_column_list_header(plan_reader *reader, uint8_t expected_tag,
@@ -227,6 +235,7 @@ static int decode_predicate(plan_reader *reader,
                             uint32_t column_count, uint32_t depth,
                             uint32_t *nodes, predicate_type *type_out) {
     uint8_t tag;
+    uint64_t tag_offset = reader->offset;
     const uint8_t *bytes;
     predicate_type type = {0};
     if (depth > 32 || ++*nodes > 256 || !read_u8(reader, &tag)) return 0;
@@ -244,7 +253,8 @@ static int decode_predicate(plan_reader *reader,
             break;
         case 0x03: {
             uint16_t text_len;
-            if (!read_u16(reader, &text_len) || text_len > 4096 ||
+            if (!read_text_predicate_header(reader, tag_offset, &text_len) ||
+                text_len > 4096 ||
                 !take(reader, text_len, &bytes) ||
                 !valid_utf8(bytes, text_len)) {
                 return 0;
@@ -331,6 +341,7 @@ static void predicate_value_init(predicate_value *out, uint32_t type,
 
 static int skip_predicate_node(plan_reader *reader, uint32_t depth) {
     uint8_t tag;
+    uint64_t tag_offset = reader->offset;
     const uint8_t *bytes;
     if (depth > 32 || !read_u8(reader, &tag)) return 0;
     switch (tag) {
@@ -342,7 +353,8 @@ static int skip_predicate_node(plan_reader *reader, uint32_t depth) {
         return take(reader, 8, &bytes);
     case 0x03: {
         uint16_t length;
-        return read_u16(reader, &length) && length <= 4096 &&
+        return read_text_predicate_header(reader, tag_offset, &length) &&
+               length <= 4096 &&
                take(reader, length, &bytes);
     }
     case 0x10:
@@ -373,6 +385,7 @@ static int32_t evaluate_predicate_node(
     const prdb_sdk_value_v1 *source_cells, predicate_value *out,
     uint32_t depth, uint32_t *nodes) {
     uint8_t tag;
+    uint64_t tag_offset = reader->offset;
     const uint8_t *bytes;
     if (depth > 32 || ++*nodes > 256 || !read_u8(reader, &tag))
         return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
@@ -405,7 +418,8 @@ static int32_t evaluate_predicate_node(
     }
     case 0x03: {
         uint16_t length;
-        if (!read_u16(reader, &length) || length > 4096 ||
+        if (!read_text_predicate_header(reader, tag_offset, &length) ||
+            length > 4096 ||
             !take(reader, length, &bytes))
             return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
         predicate_value_init(out, PRDB_SDK_VALUE_TYPE_TEXT, bytes, length);
@@ -1357,6 +1371,7 @@ static int response_column_name(const uint8_t *response,
 static int match_optimizer_parameter(plan_reader *reader,
                                      const prdb_sdk_value_v1 *value) {
     uint8_t tag;
+    uint64_t tag_offset = reader->offset;
     const uint8_t *bytes;
     if (value == NULL || prdb_sdk_value_validate_v1(value) !=
                              PRDB_SDK_VALUE_VALID ||
@@ -1376,7 +1391,8 @@ static int match_optimizer_parameter(plan_reader *reader,
     }
     case PRDB_SDK_VALUE_TYPE_TEXT: {
         uint16_t length;
-        if (tag != 0x03 || !read_u16(reader, &length) ||
+        if (tag != 0x03 ||
+            !read_text_predicate_header(reader, tag_offset, &length) ||
             length != value->data_len || length > 4096 ||
             !take(reader, length, &bytes)) return 0;
         return length == 0 || memcmp(bytes, value->data, length) == 0;
