@@ -228,4 +228,12 @@
 - Response validation: the existing bounded optimizer response envelope now independently accepts either a canonical SELECT plan or canonical DELETE plan, rejecting malformed payloads as before.
 - Evidence: the process regression covers metadata lookup, DELETE dispatch, response IDs, and kind-2 plan decoding; response round-trip covers both plan kinds; IPC tests assert the operation code and role authorization.
 - Verification: focused optimizer-process and IPC tests passed. Full workspace build, format check, warning-denied Clippy, and locked tests passed; four cgroup-dependent cases were ignored by default. ABI generator `--check` and `git diff --check` passed. As recorded above, host Nix 2.34.9 requires `nix develop -c` rather than the unsupported `nix develop --locked` form; the repository flake lock remains in use.
-- Remaining: C SDK DELETE plan decoding and execution, then UPDATE request/plan support.
+- Remaining: C SDK DELETE execution integration, then UPDATE request/plan support.
+
+## OP-3 dependency: independently decode DELETE plans in the C SDK — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). The SDK must independently validate plan kind 2 and the exact `Scan -> Filter -> Delete` pipeline before any execution integration.
+- Implementation: `prdb_sdk_optimizer_decode_delete_plan_v1` validates identities, zero-to-256 sorted scan columns, the required bounded Boolean filter tree, Delete sink, node count, and complete payload. Constant predicates correctly allow an empty scan shape. Existing SELECT decoder entry points remain SELECT-specific.
+- Evidence: the TinyCC fixture accepts a constant-Boolean DELETE plan and checks output kind/shape and borrowed predicate bytes; it rejects kind mismatches, incorrect terminal nodes, and malformed Boolean literals.
+- Verification: `nix develop -c make -f engine/sdk/Makefile test` passed, including ABI generator checks, TinyCC SDK builds, and all maintained SDK executables. Workspace Rust checks passed in the immediately preceding process-IPC increment; this increment changes only C SDK and plan documentation.
+- Remaining: integrate DELETE execution with independently resolved executor handles and ordinary authorized scan/mutation IPC; then continue UPDATE request and plan support.

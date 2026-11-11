@@ -149,6 +149,21 @@ static uint32_t build_boolean_filter_plan(uint8_t *bytes,
     return offset;
 }
 
+static uint32_t build_delete_plan(uint8_t *bytes,
+                                  uint32_t *predicate_offset) {
+    uint32_t offset = 0;
+    (void)put_header(bytes, &offset, 3);
+    bytes[2] = 2; /* DELETE */
+    bytes[offset++] = 1;
+    put_u16(bytes, &offset, 0); /* constant predicate needs no scan columns */
+    bytes[offset++] = 2;
+    *predicate_offset = offset;
+    bytes[offset++] = 0x01;
+    bytes[offset++] = 1;
+    bytes[offset++] = 5; /* Delete */
+    return offset;
+}
+
 typedef struct resolve_context {
     uint8_t response[512];
     uint32_t response_len;
@@ -885,6 +900,28 @@ int main(void) {
     assert(filter.prefix_len == 28);
     assert(decoded.has_limit == 1 && decoded.limit == 1);
 
+    payload_len = build_delete_plan(payload, &predicate_offset);
+    assert(prdb_sdk_optimizer_decode_delete_plan_v1(
+               payload, payload_len, &decoded, sizeof(decoded), &filter,
+               sizeof(filter)) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(decoded.plan_kind == 2 && decoded.scan_column_count == 0 &&
+           decoded.projection_count == 0 && decoded.has_limit == 0);
+    assert(filter.present == 1 && filter.prefix == payload + predicate_offset &&
+           filter.prefix_len == 2);
+    assert(prdb_sdk_optimizer_decode_plan_with_filter_v1(
+               payload, payload_len, &decoded, sizeof(decoded), &filter,
+               sizeof(filter)) == PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    payload[payload_len - 1] = 4; /* SELECT Project instead of Delete */
+    assert(prdb_sdk_optimizer_decode_delete_plan_v1(
+               payload, payload_len, &decoded, sizeof(decoded), &filter,
+               sizeof(filter)) == PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    payload[payload_len - 1] = 5;
+    payload[predicate_offset + 1] = 2; /* malformed Boolean */
+    assert(prdb_sdk_optimizer_decode_delete_plan_v1(
+               payload, payload_len, &decoded, sizeof(decoded), &filter,
+               sizeof(filter)) == PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+
+    payload_len = build_filter_plan(payload, &predicate_offset);
     memcpy(malformed, payload, payload_len);
     malformed[predicate_offset] = 0x10; /* INTEGER is not a Boolean root. */
     assert(prdb_sdk_optimizer_decode_plan_with_filter_v1(

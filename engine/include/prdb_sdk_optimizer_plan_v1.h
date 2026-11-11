@@ -51,6 +51,7 @@ typedef struct prdb_sdk_optimizer_plan_v1 {
         projections[PRDB_SDK_OPTIMIZER_PLAN_MAX_PROJECTIONS];
     uint32_t has_limit;
     uint32_t limit;
+    uint32_t plan_kind;
 } prdb_sdk_optimizer_plan_v1;
 
 /* A validated filter subtree borrows its canonical prefix bytes from the
@@ -94,6 +95,15 @@ int32_t prdb_sdk_optimizer_decode_plan_with_filter_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_plan_v1 *out, uint32_t out_capacity,
     prdb_sdk_optimizer_filter_v1 *filter_out, uint32_t filter_out_capacity);
+
+/* Independently decode a canonical DELETE `Scan -> Filter -> Delete` plan.
+ * Predicate bytes borrow the payload. DELETE plans expose no projections or
+ * limit and may have an empty scan-column list for constant predicates. */
+int32_t prdb_sdk_optimizer_decode_delete_plan_v1(
+    const uint8_t *payload, uint64_t payload_len,
+    prdb_sdk_optimizer_plan_v1 *out, uint32_t out_capacity,
+    prdb_sdk_optimizer_filter_v1 *filter_out,
+    uint32_t filter_out_capacity);
 
 /* Re-resolve a validated plan's qualified relation through executor storage
  * and require its stable identity and scanned column definitions to match.
