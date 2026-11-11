@@ -1,13 +1,14 @@
 //! Bounded version-1 structured query requests for the isolated optimizer.
 //!
-//! This decoder accepts bounded single-relation SELECT, DELETE, and UPDATE
-//! requests. It does not resolve names or grant authority; those checks belong
-//! to the invocation-bound planner service and executor/storage path.
+//! This decoder accepts bounded single-relation SELECT/DELETE/UPDATE requests
+//! and two-relation composite equijoin SELECT requests. It does not resolve
+//! names or grant authority; those checks belong to the invocation-bound
+//! planner service and executor/storage path.
 
 use crate::query_abi::{
-    OPTIMIZER_DELETE_STATEMENT, OPTIMIZER_REQUEST_VERSION, OPTIMIZER_SELECT_REQUEST_HEADER_BYTES,
-    OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET, OPTIMIZER_SELECT_STATEMENT,
-    OPTIMIZER_UPDATE_STATEMENT, decode_optimizer_select_request,
+    OPTIMIZER_DELETE_STATEMENT, OPTIMIZER_JOIN_SELECT_STATEMENT, OPTIMIZER_REQUEST_VERSION,
+    OPTIMIZER_SELECT_REQUEST_HEADER_BYTES, OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET,
+    OPTIMIZER_SELECT_STATEMENT, OPTIMIZER_UPDATE_STATEMENT, decode_optimizer_select_request,
 };
 
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
@@ -18,6 +19,8 @@ pub const MAX_PREDICATE_NODES: usize = 256;
 pub const MAX_PREDICATE_DEPTH: usize = 32;
 pub const MAX_TEXT_LITERAL_BYTES: usize = 4096;
 pub const MAX_UPDATE_ASSIGNMENTS: usize = 64;
+pub const MIN_JOIN_KEYS: usize = 2;
+pub const MAX_JOIN_KEYS: usize = 8;
 pub const MAX_PARAMETER_INDEX: u32 = 256;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,6 +29,34 @@ pub struct SelectRequest {
     pub relation_name: String,
     pub projections: Vec<String>,
     pub predicate: Option<Predicate>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JoinRelationSide {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JoinProjection {
+    pub relation_side: JoinRelationSide,
+    pub column_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JoinKey {
+    pub left_column_name: String,
+    pub right_column_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JoinSelectRequest {
+    pub schema_name: String,
+    pub left_relation_name: String,
+    pub right_relation_name: String,
+    pub projections: Vec<JoinProjection>,
+    pub join_keys: Vec<JoinKey>,
     pub limit: Option<u32>,
 }
 
@@ -95,6 +126,7 @@ pub enum RequestError {
     PredicateTooLarge,
     TooManyProjections,
     TooManyAssignments,
+    InvalidJoinKeyCount,
     InvalidAssignment,
     TooManyPredicateNodes,
     PredicateTooDeep,
@@ -176,6 +208,81 @@ pub fn decode_select_request(bytes: &[u8]) -> Result<SelectRequest, RequestError
         relation_name,
         projections,
         predicate,
+        limit,
+    })
+}
+
+/// Decode one bounded, composite INNER JOIN SELECT request. The request names
+/// logical relations and columns only; it contains no handle or authority.
+pub fn decode_join_select_request(bytes: &[u8]) -> Result<JoinSelectRequest, RequestError> {
+    if bytes.len() > MAX_REQUEST_BYTES {
+        return Err(RequestError::TooLarge);
+    }
+    let header_bytes = OPTIMIZER_SELECT_REQUEST_HEADER_BYTES as usize;
+    if bytes.len() < header_bytes {
+        return Err(RequestError::Truncated);
+    }
+    let version_offset = OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET as usize;
+    let version = u16::from_be_bytes([bytes[version_offset], bytes[version_offset + 1]]);
+    if version != OPTIMIZER_REQUEST_VERSION {
+        return Err(RequestError::UnsupportedVersion(version));
+    }
+    let (statement, flags) =
+        decode_optimizer_select_request(bytes).ok_or(RequestError::Truncated)?;
+    if statement != OPTIMIZER_JOIN_SELECT_STATEMENT {
+        return Err(RequestError::UnsupportedStatement(statement));
+    }
+    if flags != 0 {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut cursor = Cursor {
+        bytes,
+        offset: header_bytes,
+    };
+    let schema_name = cursor.identifier()?;
+    let left_relation_name = cursor.identifier()?;
+    let right_relation_name = cursor.identifier()?;
+    let projection_count = usize::from(cursor.u16()?);
+    if projection_count == 0 || projection_count > MAX_PROJECTIONS {
+        return Err(RequestError::TooManyProjections);
+    }
+    let mut projections = Vec::with_capacity(projection_count);
+    for _ in 0..projection_count {
+        let relation_side = match cursor.u8()? {
+            0 => JoinRelationSide::Left,
+            1 => JoinRelationSide::Right,
+            _ => return Err(RequestError::InvalidValue),
+        };
+        projections.push(JoinProjection {
+            relation_side,
+            column_name: cursor.identifier()?,
+        });
+    }
+    let join_key_count = usize::from(cursor.u8()?);
+    if !(MIN_JOIN_KEYS..=MAX_JOIN_KEYS).contains(&join_key_count) {
+        return Err(RequestError::InvalidJoinKeyCount);
+    }
+    let mut join_keys = Vec::with_capacity(join_key_count);
+    for _ in 0..join_key_count {
+        join_keys.push(JoinKey {
+            left_column_name: cursor.identifier()?,
+            right_column_name: cursor.identifier()?,
+        });
+    }
+    let limit = match cursor.u8()? {
+        0 => None,
+        1 => Some(cursor.u32()?),
+        _ => return Err(RequestError::InvalidValue),
+    };
+    if !cursor.is_empty() {
+        return Err(RequestError::TrailingBytes);
+    }
+    Ok(JoinSelectRequest {
+        schema_name,
+        left_relation_name,
+        right_relation_name,
+        projections,
+        join_keys,
         limit,
     })
 }
@@ -505,6 +612,96 @@ mod tests {
         u32_bytes(predicate.len(), &mut bytes);
         bytes.extend_from_slice(predicate);
         bytes
+    }
+
+    fn join_select_request() -> Vec<u8> {
+        let mut bytes = vec![0, OPTIMIZER_REQUEST_VERSION as u8, 4, 0];
+        name("public", &mut bytes);
+        name("lefts", &mut bytes);
+        name("rights", &mut bytes);
+        u16_bytes(2, &mut bytes);
+        bytes.extend_from_slice(&[0]);
+        name("label", &mut bytes);
+        bytes.extend_from_slice(&[1]);
+        name("value", &mut bytes);
+        bytes.push(2);
+        name("id", &mut bytes);
+        name("id", &mut bytes);
+        name("region", &mut bytes);
+        name("region", &mut bytes);
+        bytes.extend_from_slice(&[1, 0, 0, 0, 5]);
+        bytes
+    }
+
+    #[test]
+    fn decodes_bounded_composite_join_select_request() {
+        let request = decode_join_select_request(&join_select_request()).unwrap();
+        assert_eq!(request.schema_name, "public");
+        assert_eq!(request.left_relation_name, "lefts");
+        assert_eq!(request.right_relation_name, "rights");
+        assert_eq!(
+            request.projections,
+            vec![
+                JoinProjection {
+                    relation_side: JoinRelationSide::Left,
+                    column_name: "label".to_owned(),
+                },
+                JoinProjection {
+                    relation_side: JoinRelationSide::Right,
+                    column_name: "value".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(
+            request.join_keys,
+            vec![
+                JoinKey {
+                    left_column_name: "id".to_owned(),
+                    right_column_name: "id".to_owned(),
+                },
+                JoinKey {
+                    left_column_name: "region".to_owned(),
+                    right_column_name: "region".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(request.limit, Some(5));
+    }
+
+    #[test]
+    fn join_select_request_rejects_bad_sides_key_counts_and_trailing_bytes() {
+        let mut bad_side = join_select_request();
+        bad_side[4 + 1 + "public".len() + 1 + "lefts".len() + 1 + "rights".len() + 2] = 2;
+        assert_eq!(
+            decode_join_select_request(&bad_side),
+            Err(RequestError::InvalidValue)
+        );
+        let mut too_few_keys = join_select_request();
+        let key_count_offset = 4
+            + 1
+            + "public".len()
+            + 1
+            + "lefts".len()
+            + 1
+            + "rights".len()
+            + 2
+            + 1
+            + 1
+            + "label".len()
+            + 1
+            + 1
+            + "value".len();
+        too_few_keys[key_count_offset] = 1;
+        assert_eq!(
+            decode_join_select_request(&too_few_keys),
+            Err(RequestError::InvalidJoinKeyCount)
+        );
+        let mut trailing = join_select_request();
+        trailing.push(0);
+        assert_eq!(
+            decode_join_select_request(&trailing),
+            Err(RequestError::TrailingBytes)
+        );
     }
 
     #[test]

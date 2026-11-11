@@ -1,5 +1,13 @@
 # Optimizer Progress
 
+## OP-7: bounded composite join request and authorized binding — in progress
+
+- Contract: [optimizer](../../specs/planner-compiler.md). Decode a two-relation SELECT with stable left/right projections, two to eight equality keys, and an optional limit; bind both relations through the invocation's authorized planner metadata before planning.
+- Red/green evidence: the request test initially failed to compile because the statement decoder and typed request records were absent. The maintained tests now cover a composite request, invalid projection side, key-count bounds, trailing bytes, left/right column-ID binding, incompatible key types, cross-schema relation shapes, and unavailable relations.
+- Implementation: `decode_join_select_request` accepts statement 4 under the existing request version and size/identifier bounds. `bind_join_select_request_via_metadata` independently resolves each relation and maps projections/keys to stable metadata. It requires a common schema identity/version; equality keys require matching scalar types, with Decimal precision allowed to vary when scale matches. This binding conveys no executor capability.
+- Verification: both focused request decoder and binding tests passed under the locked workspace toolchain. ABI constants are generated from `engine/abi/query_abi_constants.json` and include the new statement tag.
+- Remaining: implement a canonical join plan codec/validator, optimizer IPC operation and process dispatch, independent C decoding and executor re-resolution, then exercise the plan through the sandbox. Grouping and sorting optimizer plans and analytical-load measurements remain open.
+
 ## OP-2 dependency: generated unknown estimate response — implemented
 
 - Contract: when an authorized estimate is unavailable or exceeds its allowance, planner IPC returns the exact versioned unknown response and keeps the invocation usable.

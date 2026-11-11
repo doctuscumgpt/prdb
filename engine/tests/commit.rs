@@ -23337,7 +23337,10 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         .concat()
     };
     let filtered_joined = read_frame(&mut gateway)?.ok_or("missing filtered join SQLR result")?;
-    assert_eq!(filtered_joined.operation, Operation::GatewayResultData as u16);
+    assert_eq!(
+        filtered_joined.operation,
+        Operation::GatewayResultData as u16
+    );
     assert_eq!(filtered_joined.request_id, accepted.request_id);
     assert_eq!(
         filtered_joined.payload,

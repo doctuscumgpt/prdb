@@ -4,8 +4,8 @@ use crate::metadata_discovery::{
     AuthorizedPlanRelation, AuthorizedRelationDescription, VisibleColumn,
 };
 use crate::optimizer_request::{
-    Comparison, Predicate, RequestError, UpdateValue, decode_delete_request, decode_select_request,
-    decode_update_request,
+    Comparison, JoinRelationSide, Predicate, RequestError, UpdateValue, decode_delete_request,
+    decode_join_select_request, decode_select_request, decode_update_request,
 };
 use crate::transaction::{PlannerMetadataConnection, TransactionError};
 use crate::tuple::ScalarType;
@@ -45,6 +45,37 @@ pub struct BoundUpdate {
     pub relation_name: String,
     pub assignments: Vec<BoundUpdateAssignment>,
     pub predicate: BoundPredicate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundJoinRelation {
+    pub relation_id: [u8; 16],
+    pub relation_name: String,
+    pub table_epoch: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundJoinProjection {
+    pub relation_side: JoinRelationSide,
+    pub column: BoundColumn,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundJoinKey {
+    pub left_column: BoundColumn,
+    pub right_column: BoundColumn,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundJoinSelect {
+    pub schema_name: String,
+    pub schema_id: [u8; 16],
+    pub schema_version: u64,
+    pub left_relation: BoundJoinRelation,
+    pub right_relation: BoundJoinRelation,
+    pub projections: Vec<BoundJoinProjection>,
+    pub join_keys: Vec<BoundJoinKey>,
+    pub limit: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -152,6 +183,32 @@ pub fn bind_select_request_via_metadata(
     bind_decoded_select(request, relation).map_err(MetadataBindError::Bind)
 }
 
+pub fn bind_join_select_request(
+    request_bytes: &[u8],
+    left_relation: Option<AuthorizedPlanRelation>,
+    right_relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundJoinSelect, BindError> {
+    let request = decode_join_select_request(request_bytes)?;
+    bind_decoded_join_select(request, left_relation, right_relation)
+}
+
+pub fn bind_join_select_request_via_metadata(
+    request_bytes: &[u8],
+    connection: &mut PlannerMetadataConnection<'_, '_>,
+) -> Result<BoundJoinSelect, MetadataBindError> {
+    let request = decode_join_select_request(request_bytes).map_err(BindError::from)?;
+    let left_relation = connection
+        .resolve_relation_for_plan(&request.schema_name, &request.left_relation_name)
+        .map_err(MetadataBindError::Transaction)?
+        .map(|(_, relation)| relation);
+    let right_relation = connection
+        .resolve_relation_for_plan(&request.schema_name, &request.right_relation_name)
+        .map_err(MetadataBindError::Transaction)?
+        .map(|(_, relation)| relation);
+    bind_decoded_join_select(request, left_relation, right_relation)
+        .map_err(MetadataBindError::Bind)
+}
+
 pub fn bind_delete_request(
     request_bytes: &[u8],
     relation: Option<AuthorizedPlanRelation>,
@@ -223,6 +280,79 @@ fn bind_decoded_select(
         predicate,
         limit: request.limit,
     })
+}
+
+fn bind_decoded_join_select(
+    request: crate::optimizer_request::JoinSelectRequest,
+    left_relation: Option<AuthorizedPlanRelation>,
+    right_relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundJoinSelect, BindError> {
+    let left_relation = authorized_relation(&request.left_relation_name, left_relation)?;
+    let right_relation = authorized_relation(&request.right_relation_name, right_relation)?;
+    if left_relation.schema_id != right_relation.schema_id
+        || left_relation.schema_version != right_relation.schema_version
+    {
+        return Err(BindError::InvalidQuery);
+    }
+    let projections = request
+        .projections
+        .iter()
+        .map(|projection| {
+            let columns = match projection.relation_side {
+                JoinRelationSide::Left => &left_relation.relation.columns,
+                JoinRelationSide::Right => &right_relation.relation.columns,
+            };
+            Ok(BoundJoinProjection {
+                relation_side: projection.relation_side,
+                column: resolve_column(columns, &projection.column_name)?.into(),
+            })
+        })
+        .collect::<Result<Vec<_>, BindError>>()?;
+    let join_keys = request
+        .join_keys
+        .iter()
+        .map(|key| {
+            let left_column =
+                resolve_column(&left_relation.relation.columns, &key.left_column_name)?;
+            let right_column =
+                resolve_column(&right_relation.relation.columns, &key.right_column_name)?;
+            if !join_types_compatible(left_column.scalar_type, right_column.scalar_type) {
+                return Err(BindError::InvalidQuery);
+            }
+            Ok(BoundJoinKey {
+                left_column: left_column.into(),
+                right_column: right_column.into(),
+            })
+        })
+        .collect::<Result<Vec<_>, BindError>>()?;
+    Ok(BoundJoinSelect {
+        schema_name: request.schema_name,
+        schema_id: left_relation.schema_id,
+        schema_version: left_relation.schema_version,
+        left_relation: BoundJoinRelation {
+            relation_id: left_relation.relation.relation_id,
+            relation_name: left_relation.relation.name,
+            table_epoch: left_relation.table_epoch,
+        },
+        right_relation: BoundJoinRelation {
+            relation_id: right_relation.relation.relation_id,
+            relation_name: right_relation.relation.name,
+            table_epoch: right_relation.table_epoch,
+        },
+        projections,
+        join_keys,
+        limit: request.limit,
+    })
+}
+
+fn join_types_compatible(left: ScalarType, right: ScalarType) -> bool {
+    match (left, right) {
+        (ScalarType::Decimal { scale: left, .. }, ScalarType::Decimal { scale: right, .. }) => {
+            left == right
+        }
+        (ScalarType::Varchar { .. }, ScalarType::Varchar { .. }) => true,
+        (left, right) => left == right,
+    }
 }
 
 fn bind_decoded_delete(
@@ -463,6 +593,25 @@ mod tests {
         bytes
     }
 
+    fn join_select_request() -> Vec<u8> {
+        let mut bytes = vec![0, 1, crate::query_abi::OPTIMIZER_JOIN_SELECT_STATEMENT, 0];
+        put_name(&mut bytes, "public");
+        put_name(&mut bytes, "lefts");
+        put_name(&mut bytes, "rights");
+        bytes.extend_from_slice(&2u16.to_be_bytes());
+        bytes.push(0);
+        put_name(&mut bytes, "id");
+        bytes.push(1);
+        put_name(&mut bytes, "value");
+        bytes.push(2);
+        put_name(&mut bytes, "id");
+        put_name(&mut bytes, "id");
+        put_name(&mut bytes, "active");
+        put_name(&mut bytes, "active");
+        bytes.extend_from_slice(&[1, 0, 0, 0, 5]);
+        bytes
+    }
+
     fn relation() -> AuthorizedPlanRelation {
         AuthorizedPlanRelation {
             schema_id: [0x10; 16],
@@ -489,6 +638,106 @@ mod tests {
                 ],
             },
         }
+    }
+
+    fn join_relation(name: &str, relation_id: u8) -> AuthorizedPlanRelation {
+        AuthorizedPlanRelation {
+            schema_id: [0x10; 16],
+            schema_version: 3,
+            table_epoch: u64::from(relation_id),
+            relation: AuthorizedRelationDescription {
+                relation_id: [relation_id; 16],
+                name: name.to_owned(),
+                columns: vec![
+                    VisibleColumn {
+                        column_id: [relation_id + 0x10; 16],
+                        name: "id".to_owned(),
+                        ordinal: 0,
+                        scalar_type: ScalarType::Integer,
+                        nullable: false,
+                    },
+                    VisibleColumn {
+                        column_id: [relation_id + 0x11; 16],
+                        name: "active".to_owned(),
+                        ordinal: 1,
+                        scalar_type: ScalarType::Boolean,
+                        nullable: false,
+                    },
+                    VisibleColumn {
+                        column_id: [relation_id + 0x12; 16],
+                        name: "value".to_owned(),
+                        ordinal: 2,
+                        scalar_type: ScalarType::Text,
+                        nullable: true,
+                    },
+                ],
+            },
+        }
+    }
+
+    #[test]
+    fn binds_composite_join_to_both_authorized_shapes() {
+        let bound = bind_join_select_request(
+            &join_select_request(),
+            Some(join_relation("lefts", 0x31)),
+            Some(join_relation("rights", 0x41)),
+        )
+        .unwrap();
+        assert_eq!(bound.schema_name, "public");
+        assert_eq!(bound.schema_id, [0x10; 16]);
+        assert_eq!(bound.schema_version, 3);
+        assert_eq!(bound.left_relation.relation_id, [0x31; 16]);
+        assert_eq!(bound.right_relation.relation_id, [0x41; 16]);
+        assert_eq!(
+            bound.projections,
+            [
+                BoundJoinProjection {
+                    relation_side: JoinRelationSide::Left,
+                    column: BoundColumn {
+                        column_id: [0x41; 16],
+                        ordinal: 0,
+                        scalar_type: ScalarType::Integer,
+                        nullable: false,
+                    },
+                },
+                BoundJoinProjection {
+                    relation_side: JoinRelationSide::Right,
+                    column: BoundColumn {
+                        column_id: [0x53; 16],
+                        ordinal: 2,
+                        scalar_type: ScalarType::Text,
+                        nullable: true,
+                    },
+                },
+            ]
+        );
+        assert_eq!(bound.join_keys.len(), 2);
+        assert_eq!(bound.join_keys[0].left_column.ordinal, 0);
+        assert_eq!(bound.join_keys[0].right_column.ordinal, 0);
+        assert_eq!(bound.join_keys[1].left_column.ordinal, 1);
+        assert_eq!(bound.join_keys[1].right_column.ordinal, 1);
+        assert_eq!(bound.limit, Some(5));
+    }
+
+    #[test]
+    fn join_binding_rejects_incompatible_keys_and_cross_schema_shapes() {
+        let request = join_select_request();
+        let mut right = join_relation("rights", 0x41);
+        right.relation.columns[1].scalar_type = ScalarType::Integer;
+        assert_eq!(
+            bind_join_select_request(&request, Some(join_relation("lefts", 0x31)), Some(right),),
+            Err(BindError::InvalidQuery)
+        );
+        let mut right = join_relation("rights", 0x41);
+        right.schema_id = [0x77; 16];
+        assert_eq!(
+            bind_join_select_request(&request, Some(join_relation("lefts", 0x31)), Some(right),),
+            Err(BindError::InvalidQuery)
+        );
+        assert_eq!(
+            bind_join_select_request(&request, None, Some(join_relation("rights", 0x41))),
+            Err(BindError::RelationUnavailable)
+        );
     }
 
     #[test]
