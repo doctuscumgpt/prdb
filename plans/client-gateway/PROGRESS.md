@@ -91,7 +91,15 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Changed implementation and regression: [gateway bridge pre-auth state](../../engine/src/gateway.rs) and [HELLO plus phase-expiry socket test](../../engine/tests/gateway.rs).
 - Observed red: the new regression failed to compile because the bridge had no combined idle/frame and pre-auth timeout API.
 - Commands actually run in the configured Nix shell: `cargo fmt --all`; focused `cargo test -p prdb-engine --test gateway --locked unauthenticated_gateway_phase_has_one_absolute_deadline` passed; and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
-- Remaining: rate-limit failed AUTH attempts separately and test gateway/service restarts with live sessions.
+- Remaining: failed-AUTH throttling and live session restart/reconciliation are implemented and verified in the following component records; only the broader GW-4 backpressure and complete service/process acceptance work remains open.
+
+## GW-1 / SU-1 dependency: failed-AUTH throttling — implemented
+
+- Contract: failed AUTH attempts are bounded per source IP in a rolling 60-second window, with an in-flight reservation, bounded source history, and no retained credential bytes. The IP is only a throttle key.
+- Implementation and contract: [`GatewayAuthFailureLimiter`](../../engine/src/gateway.rs), gateway configuration, and [authentication limits](../../specs/client-gateway.md). The original cross-component evidence is recorded in [supervisor progress](../supervisor/PROGRESS.md#su-1-dependency-gateway-failed-authentication-throttling).
+- Regression evidence: `failed_auth_budget_is_bounded_per_ip_and_expires` and `gateway_stops_forwarding_auth_after_failed_attempt_budget` cover deterministic window/source-cap behavior and confirm a denied retry does not reach the supervisor service.
+- Verification: the original implementation commit `c9cc716` records passing focused limiter, live gateway, CLI, full workspace, formatting, Clippy, and diff checks.
+- Remaining: throttle history is process-local and resets on gateway restart; the documented cross-process live-session reconciliation is covered by `disconnected_submission_is_reconciled_after_gateway_restart` in [client protocol progress](../client-protocol/PROGRESS.md). Wider backpressure and deployment-level network denial-of-service controls remain open.
 
 ## GW-4 / SU-4 dependency: START result and terminal event relay
 
