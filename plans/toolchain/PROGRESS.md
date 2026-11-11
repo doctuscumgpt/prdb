@@ -705,6 +705,15 @@
 - Verification: generator schema/drift tests (7 tests), the forced TinyCC SDK fixture suite, locked workspace build, format check, warning-denied Clippy, `git diff --check`, and the full locked workspace test suite passed. The commit integration suite reported 138 passed and 4 cgroup-dependent tests ignored; the other workspace integration suites also passed.
 - Remaining: patch ordinal framing and other nested IPC records are still hand-coded; full shared-schema parity remains open.
 
+## TC-2 follow-up: generated UPDATE patch ordinal record — implemented
+
+- Contract: each UPDATE patch starts with one zero-based big-endian u32 ordinal, as specified in [internal IPC](../../specs/ipc-protocol.md); the four bytes remain unchanged on the wire.
+- Red evidence: the generator regression failed because `PATCH_ORDINAL_RECORD` had no schema declaration or Rust/C codec helpers.
+- Implementation: the shared schema declares the versionless four-byte ordinal record. Rust mutation encoders and decoders and the TinyCC SDK UPDATE encoder now use generated helpers; the removed handwritten u32 readers/writers had no other call sites.
+- Compatibility: patch order, ordinal validation, duplicate detection, mutation state tags, and scalar value bytes are unchanged.
+- Verification: generator schema/drift tests (7 tests), generated Rust codec boundary test, all 6 executor IPC tests, forced TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, `git diff --check`, and full locked workspace tests passed. The commit suite reported 138 passed and 4 cgroup-dependent tests ignored; the metadata process suite reported 1 passed and 1 cgroup-dependent test ignored.
+- Remaining: other nested IPC records and full shared-schema parity remain open.
+
 ## TC-1 / TC-3: maintained TinyCC SDK and shared-artifact link profile — partial
 
 - Observed development tools: Rust/Cargo 1.95.0 with rustfmt and Clippy; TinyCC `0.9.27-unstable-2025-01-06` on x86_64 Linux. The SDK archive and C fixtures build with TinyCC `-Wall -Wextra -Werror`.

@@ -9,7 +9,7 @@ use prdb_engine::query_abi::{
 };
 
 #[test]
-fn generated_relation_description_tail_codecs_preserve_prefix_boundaries() {
+fn generated_nested_record_codecs_preserve_wire_bytes_and_boundaries() {
     let name =
         prdb_engine::query_abi::encode_executor_resolve_relation_available_response_relation_name(
             "items",
@@ -100,6 +100,14 @@ fn generated_relation_description_tail_codecs_preserve_prefix_boundaries() {
         prdb_engine::query_abi::decode_scalar_value_record_value_bytes(&value_bytes[..3], 4)
             .is_none()
     );
+
+    let patch_ordinal = prdb_engine::query_abi::encode_patch_ordinal_record(0x0102_0304);
+    assert_eq!(patch_ordinal, [1, 2, 3, 4]);
+    assert_eq!(
+        prdb_engine::query_abi::decode_patch_ordinal_record(&patch_ordinal),
+        Some(0x0102_0304)
+    );
+    assert!(prdb_engine::query_abi::decode_patch_ordinal_record(&patch_ordinal[..3]).is_none());
 }
 
 #[test]

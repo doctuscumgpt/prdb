@@ -564,6 +564,18 @@ int main(void) {
                sizeof(scalar_value_bytes)) != 0) {
         return 54;
     }
+    const uint8_t patch_ordinal_expected[4] = {1, 2, 3, 4};
+    uint8_t patch_ordinal[4] = {0};
+    uint32_t decoded_patch_ordinal = 0;
+    prdb_encode_patch_ordinal_record(patch_ordinal, UINT32_C(0x01020304));
+    if (memcmp(patch_ordinal, patch_ordinal_expected, sizeof(patch_ordinal)) != 0 ||
+        !prdb_decode_patch_ordinal_record(
+            patch_ordinal, sizeof(patch_ordinal), &decoded_patch_ordinal) ||
+        decoded_patch_ordinal != UINT32_C(0x01020304) ||
+        prdb_decode_patch_ordinal_record(
+            patch_ordinal, sizeof(patch_ordinal) - 1, &decoded_patch_ordinal)) {
+        return 68;
+    }
     uint8_t planner_schema_id[16];
     uint8_t planner_plan_relation_id[16];
     uint8_t decoded_planner_schema_id[16] = {0};

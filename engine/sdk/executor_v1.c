@@ -3,13 +3,6 @@
 
 #include <string.h>
 
-static void write_u32(uint8_t *out, uint32_t value) {
-    out[0] = (uint8_t)(value >> 24);
-    out[1] = (uint8_t)(value >> 16);
-    out[2] = (uint8_t)(value >> 8);
-    out[3] = (uint8_t)value;
-}
-
 static int valid_mutation_acknowledgement(const uint8_t *payload,
                                           uint64_t payload_len) {
     uint8_t status;
@@ -287,8 +280,8 @@ int32_t prdb_sdk_executor_stage_update_v1(
             value_end > PRDB_QUERY_MAX_IPC_REQUEST_BYTES) {
             return PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL;
         }
-        write_u32(request + offset, patch->ordinal);
-        offset += 4;
+        prdb_encode_patch_ordinal_record(request + offset, patch->ordinal);
+        offset += PRDB_PATCH_ORDINAL_RECORD_HEADER_BYTES;
         if (patch->value.state == PRDB_SDK_VALUE_STATE_NULL) {
             request[offset++] = 1;
         } else {

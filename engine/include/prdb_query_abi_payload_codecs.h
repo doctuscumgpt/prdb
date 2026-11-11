@@ -1760,4 +1760,28 @@ static inline int prdb_decode_scalar_value_record_value_bytes(const uint8_t *pay
     return 1;
 }
 
+static inline void prdb_encode_patch_ordinal_record(uint8_t payload[4],
+    uint32_t ordinal) {
+    uint64_t ordinal_wire = (uint64_t)ordinal;
+    for (size_t i = 0; i < 4; ++i) {
+        payload[0 + i] = (uint8_t)(ordinal_wire >> ((4 - 1 - i) * 8));
+    }
+}
+
+static inline int prdb_decode_patch_ordinal_record(const uint8_t *payload, size_t payload_len,
+    uint32_t *ordinal) {
+    if (payload == NULL || payload_len != 4) {
+        return 0;
+    }
+    if (ordinal == NULL) {
+        return 0;
+    }
+    uint64_t ordinal_wire_value = 0;
+    for (size_t i = 0; i < 4; ++i) {
+        ordinal_wire_value = (ordinal_wire_value << 8) | payload[0 + i];
+    }
+    *ordinal = (uint32_t)ordinal_wire_value;
+    return 1;
+}
+
 #endif /* PRDB_QUERY_ABI_PAYLOAD_CODECS_H */

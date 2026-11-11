@@ -1057,3 +1057,18 @@ pub fn decode_scalar_value_record_value_bytes(payload: &[u8], encoded_len: u32) 
     }
     Some(payload)
 }
+
+pub const PATCH_ORDINAL_RECORD_ORDINAL_OFFSET: u32 = 0;
+pub const PATCH_ORDINAL_RECORD_HEADER_BYTES: u32 = 4;
+pub fn encode_patch_ordinal_record(ordinal: u32) -> [u8; 4] {
+    let mut payload = [0u8; 4];
+    payload[0..4].copy_from_slice(&ordinal.to_be_bytes());
+    payload
+}
+
+pub fn decode_patch_ordinal_record(payload: &[u8]) -> Option<u32> {
+    if payload.len() != 4 {
+        return None;
+    }
+    Some(u32::from_be_bytes(payload[0..4].try_into().ok()?))
+}

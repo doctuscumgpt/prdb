@@ -482,11 +482,9 @@ impl StageUpdateRequest {
             generated::encode_executor_stage_update_request(self.handle.to_bytes(), patch_count)
                 .to_vec();
         for patch in &self.patches {
-            payload.extend_from_slice(
-                &u32::try_from(patch.ordinal)
-                    .map_err(|_| ExecutorRequestError::InvalidPayload)?
-                    .to_be_bytes(),
-            );
+            payload.extend_from_slice(&generated::encode_patch_ordinal_record(
+                u32::try_from(patch.ordinal).map_err(|_| ExecutorRequestError::InvalidPayload)?,
+            ));
             encode_mutation_value(&mut payload, patch.value.as_ref())?;
         }
         ensure_response_size(&payload)?;
@@ -510,8 +508,21 @@ impl StageUpdateRequest {
         let mut patches = Vec::with_capacity(count);
         let mut ordinals = std::collections::HashSet::with_capacity(count);
         for _ in 0..count {
-            let ordinal = usize::try_from(read_u32(payload, &mut offset)?)
-                .map_err(|_| ExecutorRequestError::InvalidPayload)?;
+            let ordinal_bytes = payload
+                .get(offset..)
+                .ok_or(ExecutorRequestError::InvalidPayload)?;
+            let ordinal = usize::try_from(
+                generated::decode_patch_ordinal_record(
+                    ordinal_bytes
+                        .get(..generated::PATCH_ORDINAL_RECORD_HEADER_BYTES as usize)
+                        .ok_or(ExecutorRequestError::InvalidPayload)?,
+                )
+                .ok_or(ExecutorRequestError::InvalidPayload)?,
+            )
+            .map_err(|_| ExecutorRequestError::InvalidPayload)?;
+            offset = offset
+                .checked_add(generated::PATCH_ORDINAL_RECORD_HEADER_BYTES as usize)
+                .ok_or(ExecutorRequestError::InvalidPayload)?;
             if ordinal >= crate::tuple::MAX_COLUMNS || !ordinals.insert(ordinal) {
                 return Err(ExecutorRequestError::InvalidPayload);
             }
@@ -957,20 +968,6 @@ fn read_u16(payload: &[u8], offset: &mut usize) -> Result<u16, ExecutorRequestEr
         .filter(|end| *end <= payload.len())
         .ok_or(ExecutorRequestError::InvalidPayload)?;
     let value = u16::from_be_bytes(
-        payload[*offset..end]
-            .try_into()
-            .map_err(|_| ExecutorRequestError::InvalidPayload)?,
-    );
-    *offset = end;
-    Ok(value)
-}
-
-fn read_u32(payload: &[u8], offset: &mut usize) -> Result<u32, ExecutorRequestError> {
-    let end = offset
-        .checked_add(4)
-        .filter(|end| *end <= payload.len())
-        .ok_or(ExecutorRequestError::InvalidPayload)?;
-    let value = u32::from_be_bytes(
         payload[*offset..end]
             .try_into()
             .map_err(|_| ExecutorRequestError::InvalidPayload)?,

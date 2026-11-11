@@ -1731,6 +1731,15 @@
       "trailing_fields": [
         { "name": "value_bytes", "encoding": "bytes", "length_field": "value_length" }
       ]
+    },
+    {
+      "name": "PATCH_ORDINAL_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "ordinal", "encoding": "u32be" }
+      ],
+      "trailing_fields": []
     }
   ]
 }
