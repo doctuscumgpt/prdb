@@ -1840,6 +1840,16 @@
       "trailing_fields": []
     },
     {
+      "name": "OPTIMIZER_PLAN_LIMIT_NODE_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "node_tag", "encoding": "u8" },
+        { "name": "row_limit", "encoding": "u32be" }
+      ],
+      "trailing_fields": []
+    },
+    {
       "name": "CLIENT_FRAME_HEADER_RECORD",
       "generate_rust_codec": true,
       "generate_c_codec": true,

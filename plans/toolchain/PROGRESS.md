@@ -843,3 +843,12 @@
 - Compatibility: the hand-checked plan header/payload round trip and maintained TinyCC optimizer-plan fixture pass with unchanged bytes and malformed-count handling.
 - Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
 - Remaining: other nested optimizer plan records and full shared-schema parity remain open.
+
+## TC-2 follow-up: generated optimizer plan Limit node — implemented
+
+- Contract: the Limit node retains its one-byte tag and big-endian u32 row count.
+- Red evidence: generator regression failed because `OPTIMIZER_PLAN_LIMIT_NODE_RECORD` and its Rust/C codecs were absent.
+- Implementation: the shared schema defines the Limit node record. Rust plan encoding/decoding and the TinyCC decoder now use generated codecs; node ordering and row-limit semantics remain in the plan layer.
+- Compatibility: the canonical plan round-trip and TinyCC optimizer-plan fixture pass with unchanged bytes and malformed-plan handling.
+- Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
+- Remaining: predicate, string, and other nested optimizer plan records and full shared-schema parity remain open.

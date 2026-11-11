@@ -1238,6 +1238,23 @@ pub fn decode_optimizer_plan_column_list_header_record(payload: &[u8]) -> Option
     Some((payload[0], u16::from_be_bytes(payload[1..3].try_into().ok()?)))
 }
 
+pub const OPTIMIZER_PLAN_LIMIT_NODE_RECORD_NODE_TAG_OFFSET: u32 = 0;
+pub const OPTIMIZER_PLAN_LIMIT_NODE_RECORD_ROW_LIMIT_OFFSET: u32 = 1;
+pub const OPTIMIZER_PLAN_LIMIT_NODE_RECORD_HEADER_BYTES: u32 = 5;
+pub fn encode_optimizer_plan_limit_node_record(node_tag: u8, row_limit: u32) -> [u8; 5] {
+    let mut payload = [0u8; 5];
+    payload[0] = node_tag;
+    payload[1..5].copy_from_slice(&row_limit.to_be_bytes());
+    payload
+}
+
+pub fn decode_optimizer_plan_limit_node_record(payload: &[u8]) -> Option<(u8, u32)> {
+    if payload.len() != 5 {
+        return None;
+    }
+    Some((payload[0], u32::from_be_bytes(payload[1..5].try_into().ok()?)))
+}
+
 pub const CLIENT_FRAME_HEADER_RECORD_MAGIC_OFFSET: u32 = 0;
 pub const CLIENT_FRAME_HEADER_RECORD_MAJOR_VERSION_OFFSET: u32 = 4;
 pub const CLIENT_FRAME_HEADER_RECORD_MINOR_VERSION_OFFSET: u32 = 6;

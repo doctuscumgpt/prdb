@@ -97,8 +97,9 @@ pub fn encode_plan_v1(plan: &SingleTablePlanV1) -> Result<Vec<u8>, PlanError> {
                 }
             }
             PlanNode::Limit(limit) => {
-                output.push(4);
-                output.extend_from_slice(&limit.to_be_bytes());
+                output.extend_from_slice(
+                    &crate::query_abi::encode_optimizer_plan_limit_node_record(4, *limit),
+                );
             }
         }
         if output.len() > MAX_PLAN_BYTES {
@@ -184,7 +185,7 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
                 }
                 PlanNode::Project(columns)
             }
-            4 => PlanNode::Limit(reader.u32()?),
+            4 => PlanNode::Limit(reader.limit_node_value(tag_offset)?),
             _ => return Err(PlanError::InvalidPipeline),
         };
         nodes.push(node);
@@ -330,12 +331,6 @@ impl PlanReader<'_> {
         ))
     }
 
-    fn u32(&mut self) -> Result<u32, PlanError> {
-        Ok(u32::from_be_bytes(
-            self.take(4)?.try_into().map_err(|_| PlanError::Truncated)?,
-        ))
-    }
-
     fn array16(&mut self) -> Result<[u8; 16], PlanError> {
         self.take(16)?.try_into().map_err(|_| PlanError::Truncated)
     }
@@ -377,6 +372,25 @@ impl PlanReader<'_> {
             return Err(PlanError::TooLarge);
         }
         Ok(count)
+    }
+
+    fn limit_node_value(&mut self, header_offset: usize) -> Result<u32, PlanError> {
+        let header_len = crate::query_abi::OPTIMIZER_PLAN_LIMIT_NODE_RECORD_HEADER_BYTES as usize;
+        let end = header_offset
+            .checked_add(header_len)
+            .ok_or(PlanError::TooLarge)?;
+        let header = self
+            .bytes
+            .get(header_offset..end)
+            .ok_or(PlanError::Truncated)?;
+        let (node_tag, row_limit) =
+            crate::query_abi::decode_optimizer_plan_limit_node_record(header)
+                .ok_or(PlanError::Truncated)?;
+        if node_tag != 4 {
+            return Err(PlanError::InvalidPipeline);
+        }
+        self.offset = end;
+        Ok(row_limit)
     }
 
     fn column(&mut self) -> Result<BoundColumn, PlanError> {

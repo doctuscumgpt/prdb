@@ -63,14 +63,6 @@ static int read_u16(plan_reader *reader, uint16_t *out) {
     return 1;
 }
 
-static int read_u32(plan_reader *reader, uint32_t *out) {
-    const uint8_t *bytes;
-    if (!take(reader, 4, &bytes)) return 0;
-    *out = ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) |
-           ((uint32_t)bytes[2] << 8) | (uint32_t)bytes[3];
-    return 1;
-}
-
 static int read_column_list_header(plan_reader *reader, uint8_t expected_tag,
                                    uint16_t *column_count) {
     const uint8_t *ignored;
@@ -86,6 +78,22 @@ static int read_column_list_header(plan_reader *reader, uint8_t expected_tag,
         return 0;
     }
     return node_tag == expected_tag;
+}
+
+static int read_limit_node(plan_reader *reader, uint32_t *row_limit) {
+    const uint8_t *ignored;
+    uint8_t node_tag;
+    uint64_t header_offset;
+    if (reader->offset == 0) return 0;
+    header_offset = reader->offset - 1;
+    if (!take(reader, 4, &ignored) ||
+        !prdb_decode_optimizer_plan_limit_node_record(
+            reader->bytes + header_offset,
+            PRDB_OPTIMIZER_PLAN_LIMIT_NODE_RECORD_HEADER_BYTES,
+            &node_tag, row_limit)) {
+        return 0;
+    }
+    return node_tag == 4;
 }
 
 static int valid_identifier(const uint8_t *bytes, uint32_t length) {
@@ -659,7 +667,7 @@ static int32_t decode_plan_internal(
 
     if (node_count == (uint8_t)(3 + has_filter)) {
         if (!read_u8(&reader, &node_tag) || node_tag != 4 ||
-            !read_u32(&reader, &limit)) {
+            !read_limit_node(&reader, &limit)) {
             return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
         }
         has_limit = 1;
