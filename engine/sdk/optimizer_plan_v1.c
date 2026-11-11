@@ -122,6 +122,26 @@ static int read_compare_predicate_header(plan_reader *reader,
     return node_tag == 0x20;
 }
 
+static int read_boolean_predicate_header(plan_reader *reader,
+                                         uint64_t header_offset,
+                                         uint8_t *node_tag_out,
+                                         uint8_t *child_count) {
+    const uint8_t *ignored;
+    uint8_t node_tag;
+    if (!take(reader,
+              PRDB_OPTIMIZER_PLAN_BOOLEAN_PREDICATE_HEADER_RECORD_HEADER_BYTES - 1,
+              &ignored) ||
+        !prdb_decode_optimizer_plan_boolean_predicate_header_record(
+            reader->bytes + header_offset,
+            PRDB_OPTIMIZER_PLAN_BOOLEAN_PREDICATE_HEADER_RECORD_HEADER_BYTES,
+            &node_tag, child_count) ||
+        (node_tag != 0x30 && node_tag != 0x31)) {
+        return 0;
+    }
+    if (node_tag_out != NULL) *node_tag_out = node_tag;
+    return 1;
+}
+
 static int read_column_list_header(plan_reader *reader, uint8_t expected_tag,
                                    uint16_t *column_count) {
     const uint8_t *ignored;
@@ -352,9 +372,12 @@ static int decode_predicate(plan_reader *reader,
             break;
         }
         case 0x30: case 0x31: {
+            uint8_t node_tag;
             uint8_t child_count;
             uint32_t index;
-            if (!read_u8(reader, &child_count) || child_count < 2 ||
+            if (!read_boolean_predicate_header(reader, tag_offset, &node_tag,
+                                               &child_count) || node_tag != tag ||
+                child_count < 2 ||
                 child_count > 16) {
                 return 0;
             }
@@ -432,8 +455,11 @@ static int skip_predicate_node(plan_reader *reader, uint32_t depth) {
                skip_predicate_node(reader, depth + 1);
     }
     case 0x30: case 0x31: {
+        uint8_t node_tag;
         uint8_t child_count;
-        if (!read_u8(reader, &child_count) || child_count < 2 ||
+        if (!read_boolean_predicate_header(reader, tag_offset, &node_tag,
+                                           &child_count) || node_tag != tag ||
+            child_count < 2 ||
             child_count > 16) return 0;
         for (uint32_t index = 0; index < child_count; ++index)
             if (!skip_predicate_node(reader, depth + 1)) return 0;
@@ -535,10 +561,13 @@ static int32_t evaluate_predicate_node(
         return PRDB_SDK_SQL_EVAL_OK;
     }
     case 0x30: case 0x31: {
+        uint8_t node_tag;
         uint8_t child_count;
         uint32_t truth = tag == 0x30 ? PRDB_SDK_SQL_TRUTH_TRUE
                                      : PRDB_SDK_SQL_TRUTH_FALSE;
-        if (!read_u8(reader, &child_count) || child_count < 2 ||
+        if (!read_boolean_predicate_header(reader, tag_offset, &node_tag,
+                                           &child_count) || node_tag != tag ||
+            child_count < 2 ||
             child_count > 16) return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
         for (uint32_t index = 0; index < child_count; ++index) {
             predicate_value child = {0};

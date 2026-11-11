@@ -297,8 +297,12 @@ fn put_predicate(output: &mut Vec<u8>, predicate: &BoundPredicate) -> Result<(),
         }
         BoundPredicate::And(children) | BoundPredicate::Or(children) => {
             let is_and = matches!(predicate, BoundPredicate::And(_));
-            output.push(if is_and { 0x30 } else { 0x31 });
-            output.push(u8::try_from(children.len()).map_err(|_| PlanError::InvalidPredicate)?);
+            output.extend_from_slice(
+                &crate::query_abi::encode_optimizer_plan_boolean_predicate_header_record(
+                    if is_and { 0x30 } else { 0x31 },
+                    u8::try_from(children.len()).map_err(|_| PlanError::InvalidPredicate)?,
+                ),
+            );
             for child in children {
                 put_predicate(output, child)?;
             }
@@ -475,6 +479,26 @@ impl PlanReader<'_> {
         Ok(comparison_operator)
     }
 
+    fn boolean_predicate_header(&mut self, header_offset: usize) -> Result<(u8, u8), PlanError> {
+        let header_len =
+            crate::query_abi::OPTIMIZER_PLAN_BOOLEAN_PREDICATE_HEADER_RECORD_HEADER_BYTES as usize;
+        let end = header_offset
+            .checked_add(header_len)
+            .ok_or(PlanError::TooLarge)?;
+        let header = self
+            .bytes
+            .get(header_offset..end)
+            .ok_or(PlanError::Truncated)?;
+        let (node_tag, child_count) =
+            crate::query_abi::decode_optimizer_plan_boolean_predicate_header_record(header)
+                .ok_or(PlanError::Truncated)?;
+        if !matches!(node_tag, 0x30 | 0x31) {
+            return Err(PlanError::InvalidEncoding);
+        }
+        self.offset = end;
+        Ok((node_tag, child_count))
+    }
+
     fn column(&mut self) -> Result<BoundColumn, PlanError> {
         let bytes =
             self.take(crate::query_abi::OPTIMIZER_PLAN_COLUMN_RECORD_HEADER_BYTES as usize)?;
@@ -561,8 +585,8 @@ impl PlanReader<'_> {
                 })
             }
             0x30 | 0x31 => {
-                let tag = self.bytes[self.offset - 1];
-                let count = usize::from(self.u8()?);
+                let (tag, child_count) = self.boolean_predicate_header(tag_offset)?;
+                let count = usize::from(child_count);
                 if !(2..=16).contains(&count) {
                     return Err(PlanError::InvalidPredicate);
                 }
@@ -1142,6 +1166,24 @@ mod tests {
         let mut encoded = Vec::new();
         put_predicate(&mut encoded, &predicate).unwrap();
         assert_eq!(encoded, [0x20, 0x05, 0x00, 0x00]);
+
+        let mut reader = PlanReader {
+            bytes: &encoded,
+            offset: 0,
+        };
+        assert_eq!(reader.predicate(&[]).unwrap(), predicate);
+        assert_eq!(reader.offset, encoded.len());
+    }
+
+    #[test]
+    fn boolean_predicate_header_matches_the_generated_wire_record() {
+        let predicate = BoundPredicate::And(vec![
+            BoundPredicate::Boolean(true),
+            BoundPredicate::Boolean(false),
+        ]);
+        let mut encoded = Vec::new();
+        put_predicate(&mut encoded, &predicate).unwrap();
+        assert_eq!(encoded, [0x30, 0x02, 0x01, 0x01, 0x01, 0x00]);
 
         let mut reader = PlanReader {
             bytes: &encoded,

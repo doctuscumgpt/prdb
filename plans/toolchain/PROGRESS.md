@@ -888,3 +888,12 @@
 - Compatibility: operator numbering and plan bytes remain unchanged; a Rust regression asserts the exact `GreaterOrEqual` encoding and round trip, and the maintained TinyCC optimizer-plan fixture passes.
 - Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
 - Remaining: boolean predicate headers/counts, string/name headers, and full shared-schema parity remain open.
+
+## TC-2 follow-up: generated optimizer boolean-predicate header — implemented
+
+- Contract: AND and OR nodes retain their distinct one-byte tags (`0x30` and `0x31`) followed by the one-byte child count.
+- Red evidence: generator regression failed because `OPTIMIZER_PLAN_BOOLEAN_PREDICATE_HEADER_RECORD` and its Rust/C codecs were absent.
+- Implementation: the shared schema defines the tag/count header. Rust plan encoding/decoding and TinyCC predicate validation, traversal, short-circuit skipping, and evaluation now use the generated codec; allowed tags and child-count bounds remain enforced by the predicate layer.
+- Compatibility: boolean operator tags, child ordering, and plan bytes remain unchanged; a Rust regression asserts the exact AND encoding and round trip, and the maintained TinyCC optimizer-plan fixture passes.
+- Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the pinned Nix flake environment using its supported `--no-update-lock-file` option.
+- Remaining: NOT predicate tag coverage, string/name headers, and full shared-schema parity remain open.

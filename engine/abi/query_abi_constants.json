@@ -1890,6 +1890,16 @@
       "trailing_fields": []
     },
     {
+      "name": "OPTIMIZER_PLAN_BOOLEAN_PREDICATE_HEADER_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "node_tag", "encoding": "u8" },
+        { "name": "child_count", "encoding": "u8" }
+      ],
+      "trailing_fields": []
+    },
+    {
       "name": "CLIENT_FRAME_HEADER_RECORD",
       "generate_rust_codec": true,
       "generate_c_codec": true,

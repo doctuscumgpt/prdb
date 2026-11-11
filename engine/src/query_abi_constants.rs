@@ -1323,6 +1323,23 @@ pub fn decode_optimizer_plan_compare_predicate_header_record(payload: &[u8]) -> 
     Some((payload[0], payload[1]))
 }
 
+pub const OPTIMIZER_PLAN_BOOLEAN_PREDICATE_HEADER_RECORD_NODE_TAG_OFFSET: u32 = 0;
+pub const OPTIMIZER_PLAN_BOOLEAN_PREDICATE_HEADER_RECORD_CHILD_COUNT_OFFSET: u32 = 1;
+pub const OPTIMIZER_PLAN_BOOLEAN_PREDICATE_HEADER_RECORD_HEADER_BYTES: u32 = 2;
+pub fn encode_optimizer_plan_boolean_predicate_header_record(node_tag: u8, child_count: u8) -> [u8; 2] {
+    let mut payload = [0u8; 2];
+    payload[0] = node_tag;
+    payload[1] = child_count;
+    payload
+}
+
+pub fn decode_optimizer_plan_boolean_predicate_header_record(payload: &[u8]) -> Option<(u8, u8)> {
+    if payload.len() != 2 {
+        return None;
+    }
+    Some((payload[0], payload[1]))
+}
+
 pub const CLIENT_FRAME_HEADER_RECORD_MAGIC_OFFSET: u32 = 0;
 pub const CLIENT_FRAME_HEADER_RECORD_MAJOR_VERSION_OFFSET: u32 = 4;
 pub const CLIENT_FRAME_HEADER_RECORD_MINOR_VERSION_OFFSET: u32 = 6;
