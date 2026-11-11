@@ -1545,6 +1545,69 @@ static int32_t run_write_read_fixture(
             return report_failure(host, message, sizeof(message) - 1);
         }
 
+        static const uint8_t optimizer_null_update_sql[] =
+            "UPDATE records SET id = NULL WHERE id = $1";
+        prdb_sdk_value_v1 optimizer_null_parameter = {
+            sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+            PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+            updated_integer_bytes, sizeof(updated_integer_bytes)};
+        uint32_t optimized_null_update_count = 0;
+        if (prdb_sdk_sql_parse_update_v1(
+                optimizer_null_update_sql,
+                sizeof(optimizer_null_update_sql) - 1, &optimizer_update,
+                sizeof(optimizer_update), NULL) != PRDB_SDK_SQL_OK ||
+            prdb_sdk_optimizer_execute_update_ast_v1(
+                optimizer_host_v5, &optimizer_update, &optimizer_null_parameter,
+                1, schema, sizeof(schema) - 1, 16,
+                sizeof(optimizer_batch_response), optimizer_update_request,
+                sizeof(optimizer_update_request), optimizer_update_response,
+                sizeof(optimizer_update_response), optimizer_relation_response,
+                sizeof(optimizer_relation_response), optimizer_scan_response,
+                sizeof(optimizer_scan_response), optimizer_batch_response,
+                sizeof(optimizer_batch_response), &optimizer_update_relation,
+                sizeof(optimizer_update_relation), optimizer_update_columns, 1,
+                &optimizer_update_binding, sizeof(optimizer_update_binding),
+                optimizer_update_cell_scratch, 1, optimizer_update_targets,
+                PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS,
+                &optimized_null_update_count) != PRDB_SDK_OPTIMIZER_PLAN_OK ||
+            optimized_null_update_count != 2) {
+            static const uint8_t message[] =
+                "fixture-error-optimizer-update-null";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+        results.expected_state = PRDB_SDK_VALUE_STATE_NULL;
+        results.expected_value = NULL;
+        results.expected_value_len = 0;
+        results.marker = NULL;
+        results.row_count = 0;
+        status = prdb_sdk_sql_execute_select_v2(
+            host, schema, sizeof(schema) - 1, select_null_sql,
+            sizeof(select_null_sql) - 1, NULL, 0, 16,
+            sizeof(batch_response), planner_response, sizeof(planner_response),
+            executor_response, sizeof(executor_response), batch_response,
+            sizeof(batch_response), planner_columns, 1, executor_columns, 1,
+            cell_scratch, 1, verify_selected_value, &results);
+        if (status != PRDB_SDK_SQL_EXEC_OK || results.row_count != 2) {
+            static const uint8_t message[] =
+                "fixture-error-optimizer-update-null-visible";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+        status = prdb_sdk_sql_execute_update_v1(
+            host, schema, sizeof(schema) - 1, update_sql,
+            sizeof(update_sql) - 1, &optimizer_null_parameter, 1, 16,
+            sizeof(batch_response), planner_response, sizeof(planner_response),
+            executor_response, sizeof(executor_response), batch_response,
+            sizeof(batch_response), update_request, sizeof(update_request),
+            planner_columns, 1, executor_columns, 1, &binding,
+            sizeof(binding), cell_scratch, 1, update_targets,
+            PRDB_SDK_SQL_EXEC_MAX_MUTATION_TARGETS, update_patches, 1,
+            &updated_count);
+        if (status != PRDB_SDK_SQL_EXEC_OK || updated_count != 2) {
+            static const uint8_t message[] =
+                "fixture-error-optimizer-update-null-restore";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+
         static const uint8_t optimizer_delete_sql[] =
             "DELETE FROM records WHERE id = $1";
         prdb_sdk_delete_v1 optimizer_delete = {0};
