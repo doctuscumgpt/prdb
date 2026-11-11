@@ -276,7 +276,14 @@
 - Wire format: generated statement tag `OPTIMIZER_UPDATE_STATEMENT=3`; after schema/relation identifiers come 1–64 assignments, each containing a column identifier and either a nonzero parameter index or NULL, followed by a nonempty bounded predicate.
 - Implementation: `decode_update_request` validates the request envelope, identifiers, assignment count/kinds, parameter indices, predicate size/tree, and trailing bytes. It does not resolve names, infer assignment types, or grant mutation authority.
 - Coverage: Rust tests decode mixed parameter/NULL assignments and reject missing WHERE, invalid assignment kinds, zero parameter indices, and trailing bytes. ABI generation and format checks passed.
-- Remaining: compose UPDATE binding and plan construction in the optimizer service, route a dedicated optimizer process operation, and add independent C plan decoding plus SDK submission/verification/execution.
+- Remaining: route the UPDATE plan through a dedicated optimizer process operation, then add independent C plan decoding plus SDK submission/verification/execution.
+
+## OP-3 dependency: compose authorized UPDATE planning service — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). The service composes request decoding, invocation-authorized relation binding, canonical lowering, and plan encoding; it does not create an executor capability.
+- Implementation: `optimize_update_v1` uses invocation-bound planner metadata, and `optimize_update_v1_with_relation` composes the authorized description path for a relation resolved over planner IPC.
+- Coverage: service tests decode the produced kind-3 plan, verify stable relation identity and scan shape, preserve the parameter assignment, and check non-disclosing missing-relation behavior.
+- Remaining: route the UPDATE plan through a dedicated optimizer process operation, then add independent C plan decoding plus SDK submission/verification/execution.
 
 ## OP-3 dependency: bind bounded UPDATE requests against invocation metadata — implemented
 
