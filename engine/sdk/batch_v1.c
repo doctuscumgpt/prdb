@@ -78,11 +78,10 @@ static int32_t skip_cell(const uint8_t *payload, uint64_t payload_len,
 
 int32_t prdb_sdk_batch_open_v1(prdb_sdk_batch_v1 *out, uint32_t out_capacity,
                                const uint8_t *payload, uint64_t payload_len) {
-    uint32_t offset = 0;
-    uint16_t version;
+    uint32_t offset;
     uint8_t finished;
     uint16_t row_count;
-    const uint8_t *bytes;
+    uint8_t continuation_handle[16];
     uint32_t rows_offset;
 
     if (out == NULL || out_capacity < sizeof(*out)) {
@@ -92,28 +91,30 @@ int32_t prdb_sdk_batch_open_v1(prdb_sdk_batch_v1 *out, uint32_t out_capacity,
         payload_len > PRDB_SDK_BATCH_MAX_BYTES) {
         return PRDB_SDK_BATCH_INVALID_PAYLOAD;
     }
-    version = read_u16(payload, offset);
-    offset += 2;
-    if (version != PRDB_SDK_BATCH_WIRE_V1_VERSION) {
-        return PRDB_SDK_BATCH_UNSUPPORTED_VERSION;
-    }
-    if (!take(payload, payload_len, &offset, 1, &bytes)) {
+    if (!prdb_decode_executor_next_batch_response_finished(
+            payload, (size_t)payload_len, &finished, &row_count)) {
+        if (payload_len >= 2 &&
+            read_u16(payload, 0) != PRDB_EXECUTOR_BATCH_PAYLOAD_VERSION) {
+            return PRDB_SDK_BATCH_UNSUPPORTED_VERSION;
+        }
         return PRDB_SDK_BATCH_INVALID_PAYLOAD;
     }
-    finished = bytes[0];
     if (finished > 1) {
         return PRDB_SDK_BATCH_INVALID_PAYLOAD;
     }
     if (finished == 0) {
-        if (!take(payload, payload_len, &offset, 16, &bytes) ||
-            bytes[0] != PRDB_SDK_BATCH_CURSOR_TOKEN_KIND) {
+        uint8_t continuation_finished;
+        if (!prdb_decode_executor_next_batch_response_continuation(
+                payload, (size_t)payload_len, &continuation_finished,
+                continuation_handle, &row_count) ||
+            continuation_finished != 0 ||
+            continuation_handle[0] != PRDB_SDK_BATCH_CURSOR_TOKEN_KIND) {
             return PRDB_SDK_BATCH_INVALID_PAYLOAD;
         }
+        offset = PRDB_EXECUTOR_NEXT_BATCH_RESPONSE_CONTINUATION_HEADER_BYTES;
+    } else {
+        offset = PRDB_EXECUTOR_NEXT_BATCH_RESPONSE_FINISHED_HEADER_BYTES;
     }
-    if (!take(payload, payload_len, &offset, 2, &bytes)) {
-        return PRDB_SDK_BATCH_INVALID_PAYLOAD;
-    }
-    row_count = read_u16(payload, offset - 2);
     if (row_count > PRDB_SDK_BATCH_MAX_ROWS) {
         return PRDB_SDK_BATCH_INVALID_PAYLOAD;
     }
@@ -151,7 +152,9 @@ int32_t prdb_sdk_batch_open_v1(prdb_sdk_batch_v1 *out, uint32_t out_capacity,
     out->rows_offset = rows_offset;
     out->row_count = row_count;
     out->finished = finished;
-    out->continuation = finished == 0 ? payload + 3 : NULL;
+    out->continuation = finished == 0
+                            ? payload + PRDB_EXECUTOR_NEXT_BATCH_RESPONSE_CONTINUATION_CURSOR_HANDLE_OFFSET
+                            : NULL;
     return PRDB_SDK_BATCH_OK;
 }
 

@@ -1,4 +1,5 @@
 #include "prdb_sdk_batch_v1.h"
+#include "prdb_query_abi_constants.h"
 #include "prdb_sdk_owned_batch_v1.h"
 
 #include <assert.h>
@@ -66,7 +67,9 @@ int main(void) {
            PRDB_SDK_BATCH_OK);
     assert(batch.finished == 0);
     assert(batch.row_count == 0);
-    assert(batch.continuation == continuing_payload + 3);
+    assert(batch.continuation ==
+           continuing_payload +
+               PRDB_EXECUTOR_NEXT_BATCH_RESPONSE_CONTINUATION_CURSOR_HANDLE_OFFSET);
 
     memcpy(malformed_payload, payload, sizeof(payload));
     malformed_payload[1] = 2;
