@@ -8,11 +8,11 @@
 - Verification: ABI drift/schema tests, focused fallback regression, locked workspace build, format check, warning-denied Clippy, serial workspace tests (129 passed, 3 cgroup-dependent ignored), and maintained TinyCC SDK suite passed in the configured Nix shell.
 - Remaining: optimizer binding/planning integration and execution remain open as described below.
 
-## OP-3 ABI v4 SQL callback fixture — implemented; confined acceptance pending
+## OP-3 ABI v4 SQL callback fixture — implemented; confined acceptance verified
 
 - Behavior: the maintained SQL write/read fixture now exports both v3 and v4. The v4 entry submits a parameterized `id = 42` SELECT through the executor's fixed optimizer callback, validates the optimizer Filter against the AST and parameter, independently resolves the relation through executor storage, and checks the projected row.
 - Verification: TinyCC SDK tests and sandbox-fixture compilation pass. The actual fixture packages successfully as ABI v4 without loading; the package test checks exact descriptor/entry symbols. Workspace build, format, warning-denied Clippy, and tests pass (129 commit tests; 3 cgroup tests ignored).
-- Remaining: execute this fixture through the confined optimizer and executor processes. Sudo remount returned success, but the container cgroup2 mount remained read-only (`EROFS` on controller writes), so the live callback, Filter evaluation, and result path remain unverified here. Bounded mutation plans also remain open.
+- Remaining: bounded mutation plans remain open.
 
 ## OP-1 dependency: bounded structured SELECT request decoder
 
@@ -196,3 +196,10 @@
 - Regression: `planner_stream_estimate_allowance_falls_back_without_aborting_invocation` sends an empty SELECT payload to the real optimizer child, verifies the status and request ID, then proceeds through valid unfiltered and filtered submissions plus the unavailable-relation case. `optimizer_process::tests` sends a malformed IPC frame, a duplicate request ID after an `InvalidRequest` response, and 256 invalid requests followed by request 257, checking frame rejection, duplicate-ID rejection, and the connection request ceiling.
 - Verification: the focused process-loop tests and real-process integration passed. Locked workspace build, formatting, warning-denied Clippy, and full tests passed; 3 cgroup-dependent commit tests and 1 cgroup-dependent process test were ignored.
 - Remaining: run the SDK callback, Filter evaluation, and result path in a confined invocation; add bounded mutation plans.
+
+## OP-3 dependency: execute the filtered SQL callback through confined optimizer and executor processes — verified
+
+- Contract: a parameterized `SELECT id FROM records WHERE id = $1 LIMIT 1` must pass through the real optimizer submission process, be independently checked against authorized executor metadata, scan through the executor channel, and return the matching SQL value from the confined artifact.
+- Regression: `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` runs the maintained ABI-v4 `sql_v3_write_read.c` fixture. Its v4 entry submits the equality predicate with parameter 42, confirms the returned row after prior insert/update operations in the same invocation, and reports the result through the normal callback path.
+- Verification: the ignored acceptance passed under a transient `systemd --user` unit with delegated `cpu memory pids`, using the built TinyCC fixture and configured glibc/libgcc runtime paths. The full acceptance also checked its SQLR result frames and durable COMMITTED outcome after terminal delivery failed. `sandbox-query-fixture` was already current; the test ran exactly as `cargo test --locked --test commit sandboxed_v3_sql_dml_sequence_is_visible_and_commits -- --ignored --exact --nocapture` inside the delegated unit.
+- Remaining: bounded mutation plans and broader optimizer planning remain open.
