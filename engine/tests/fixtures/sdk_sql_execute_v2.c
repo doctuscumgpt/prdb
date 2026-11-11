@@ -21,9 +21,11 @@ typedef struct mock_host {
     uint32_t fail_multi_insert_at;
     uint32_t cancellation_checks;
     uint32_t cancel_after_checks;
+    uint32_t cancel_after_group_callback;
     uint32_t stream_pages;
     uint32_t stream_next_calls;
     uint32_t executor_requests;
+    uint16_t expected_max_candidates;
 } mock_host;
 
 static int32_t statement_failure(void *context, uint32_t failure_code) {
@@ -95,6 +97,10 @@ static int32_t executor_request(void *context, uint16_t operation,
             0, 1, 7, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
             0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
             0, 2, 0, 0, 4, 0};
+        static const uint8_t expected_many_candidates[24] = {
+            0, 1, 7, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
+            0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
+            0, 40, 0, 0, 16, 0};
         static const uint8_t continuation_request[24] = {
             0, 1, 7, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
             0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
@@ -103,6 +109,10 @@ static int32_t executor_request(void *context, uint16_t operation,
             0, 1, 7, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
             0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
             0, 2, 0, 0, 4, 0};
+        static const uint8_t continuation_many_candidates[24] = {
+            0, 1, 7, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
+            0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
+            0, 40, 0, 0, 16, 0};
         static const uint8_t finished_reply[5] = {0, 1, 1, 0, 0};
         assert(request_len == sizeof(expected));
         if (mock->stream_pages != 0) {
@@ -122,8 +132,10 @@ static int32_t executor_request(void *context, uint16_t operation,
             ++mock->stream_next_calls;
         } else if (mock->executor_calls >= 3) {
             const uint8_t *expected_continuation =
-                mock->batch_len > 60 ? continuation_two_candidates
-                                     : continuation_request;
+                mock->expected_max_candidates == 40
+                    ? continuation_many_candidates
+                    : (mock->batch_len > 60 ? continuation_two_candidates
+                                            : continuation_request);
             assert(memcmp(request, expected_continuation,
                           sizeof(continuation_request)) == 0);
             assert(sizeof(finished_reply) <= capacity);
@@ -131,7 +143,10 @@ static int32_t executor_request(void *context, uint16_t operation,
             *response_len = sizeof(finished_reply);
         } else {
             const uint8_t *expected_request =
-                mock->batch_len > 60 ? expected_two_candidates : expected;
+                mock->expected_max_candidates == 40
+                    ? expected_many_candidates
+                    : (mock->batch_len > 60 ? expected_two_candidates
+                                            : expected);
             assert(memcmp(request, expected_request, sizeof(expected)) == 0);
             assert(mock->batch_len <= capacity);
             memcpy(response, mock->batch, mock->batch_len);
@@ -339,6 +354,28 @@ static uint32_t make_one_sort_row(uint8_t *p, uint32_t value) {
     return offset;
 }
 
+static uint32_t make_group_rows(uint8_t *p, const uint32_t *values,
+                                uint16_t count) {
+    uint32_t offset = 0;
+    put_u16(p, &offset, 1);
+    p[offset++] = 0;
+    p[offset++] = 7;
+    memset(p + offset, 0x55, 15);
+    offset += 15;
+    put_u16(p, &offset, count);
+    for (uint32_t index = 0; index < count; ++index) {
+        p[offset++] = 8;
+        memset(p + offset, (int)(index + 1), 15);
+        offset += 15;
+        put_u16(p, &offset, 1);
+        p[offset++] = 0;
+        p[offset++] = PRDB_SDK_VALUE_TYPE_INTEGER;
+        put_u32(p, &offset, 4);
+        put_u32(p, &offset, values[index]);
+    }
+    return offset;
+}
+
 typedef struct result_state {
     uint32_t calls;
     uint32_t fail;
@@ -351,8 +388,8 @@ typedef struct result_state {
 
 typedef struct group_result_state {
     uint32_t calls;
-    uint32_t keys[4];
-    uint64_t counts[4];
+    uint32_t keys[128];
+    uint64_t counts[128];
     mock_host *mock;
     const prdb_sdk_sql_column_shape_v2 *columns;
     uint8_t encoded[128];
@@ -365,7 +402,7 @@ static int32_t on_group(void *context, const prdb_sdk_value_v1 *key,
     group_result_state *result = (group_result_state *)context;
     int32_t value = 0;
     assert(result->mock != NULL && result->mock->executor_calls == 4);
-    assert(result->calls < 4);
+    assert(result->calls < 128);
     assert(column->ordinal == 0 &&
            column->type_code == PRDB_SDK_VALUE_TYPE_INTEGER);
     assert(prdb_sdk_value_get_integer_v1(key, &value) ==
@@ -377,6 +414,10 @@ static int32_t on_group(void *context, const prdb_sdk_value_v1 *key,
     result->keys[result->calls] = (uint32_t)value;
     result->counts[result->calls] = count;
     ++result->calls;
+    if (result->mock->cancel_after_group_callback == result->calls) {
+        result->mock->cancel_after_checks =
+            result->mock->cancellation_checks + 1;
+    }
     return 0;
 }
 
@@ -449,7 +490,7 @@ int main(void) {
     prdb_sdk_value_v1 multi_parameters[2] = {{0}};
     uint8_t planner_response[256] = {0};
     uint8_t executor_response[256] = {0};
-    uint8_t batch_response[1024] = {0};
+    uint8_t batch_response[4096] = {0};
     uint8_t materialized_rows[256] = {0};
     prdb_sdk_sql_column_shape_v2 planner_columns[3] = {{0}};
     prdb_sdk_sql_column_shape_v2 executor_columns[3] = {{0}};
@@ -774,7 +815,7 @@ int main(void) {
            mock.executor_calls == 4 && mock.statement_failed == 1);
 
     {
-        uint8_t group_batch[128] = {0};
+        uint8_t group_batch[4096] = {0};
         uint32_t group_batch_len = make_two_sort_rows(group_batch, 3, 5);
         uint8_t group_key_bytes[1024] = {0};
         group_result_state groups = {0};
@@ -890,9 +931,59 @@ int main(void) {
             cell_scratch, 1, group_key_bytes, sizeof(group_key_bytes),
             on_group, &groups);
         assert(budget_status == PRDB_SDK_SQL_EXEC_REQUEST_LIMIT);
-        assert(groups.calls == 0 && mock.stream_next_calls == 126 &&
-               mock.executor_requests == 255 && mock.statement_failed == 1);
+        assert(groups.calls == 0 && mock.stream_next_calls == 124 &&
+               mock.executor_requests == 251 && mock.statement_failed == 1);
         mock.stream_pages = 0;
+
+        uint32_t many_values[40];
+        for (uint32_t index = 0; index < 40; ++index) {
+            many_values[index] = index + 3;
+        }
+        mock.batch = group_batch;
+        mock.batch_len = make_group_rows(group_batch, many_values, 40);
+        mock.expected_max_candidates = 40;
+        mock.stream_next_calls = 0;
+        mock.executor_requests = 0;
+        mock.executor_calls = 0;
+        mock.cancellation_checks = 0;
+        mock.cancel_after_checks = 3;
+        mock.statement_failed = 0;
+        groups = (group_result_state){0};
+        groups.mock = &mock;
+        groups.columns = executor_columns;
+        int32_t before_callback_status = prdb_sdk_sql_execute_group_count_v4(
+            &host, schema, sizeof(schema) - 1, group_sql, sizeof(group_sql) - 1,
+            NULL, 0, 40, 4096, planner_response, sizeof(planner_response),
+            executor_response, sizeof(executor_response), batch_response,
+            sizeof(batch_response), planner_columns, 1, executor_columns, 1,
+            cell_scratch, 1, group_key_bytes, sizeof(group_key_bytes), on_group,
+            &groups);
+        assert(before_callback_status == PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+        assert(groups.calls == 0 && mock.cancellation_checks == 3 &&
+               mock.statement_failed == 1);
+
+        mock.stream_next_calls = 0;
+        mock.executor_requests = 0;
+        mock.executor_calls = 0;
+        mock.cancellation_checks = 0;
+        mock.cancel_after_checks = 0;
+        mock.cancel_after_group_callback = 32;
+        mock.statement_failed = 0;
+        groups = (group_result_state){0};
+        groups.mock = &mock;
+        groups.columns = executor_columns;
+        int32_t during_callbacks_status = prdb_sdk_sql_execute_group_count_v4(
+            &host, schema, sizeof(schema) - 1, group_sql, sizeof(group_sql) - 1,
+            NULL, 0, 40, 4096, planner_response, sizeof(planner_response),
+            executor_response, sizeof(executor_response), batch_response,
+            sizeof(batch_response), planner_columns, 1, executor_columns, 1,
+            cell_scratch, 1, group_key_bytes, sizeof(group_key_bytes), on_group,
+            &groups);
+        assert(during_callbacks_status == PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+        assert(groups.calls == 32 && mock.cancellation_checks == 4 &&
+               mock.statement_failed == 1);
+        mock.cancel_after_group_callback = 0;
+        mock.expected_max_candidates = 0;
     }
     return 0;
 }

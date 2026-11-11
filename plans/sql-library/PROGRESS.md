@@ -478,6 +478,15 @@
 - Verification: focused and forced-clean full `make -B -f engine/sdk/Makefile test` passed under TinyCC 0.9.27-unstable-2025-01-06. Locked workspace build, format check, warning-denied Clippy, serial tests, and `git diff --check` passed; commit tests reported 138 passed and 4 delegated-cgroup tests ignored.
 - Remaining: cancellation checks cannot interrupt a callback while it is executing; supervisor cancellation/deadline termination remains responsible for a callback that does not return. More grouped-runner stress and mixed-workload measurements remain open.
 
+## SQL-8 follow-up: v4 COUNT output cancellation checkpoints — implemented
+
+- Contract: the independent v4 COUNT runner follows the same cancellation checkpoints during grouped output as the shared v5-v18 runner and keeps scan plus callback polling inside the executor request budget.
+- Red/green evidence: the maintained TinyCC fixture creates 40 groups, requests cancellation after scan completion, and separately raises cancellation from the 32nd callback. Removing the callback poll made the forced rebuild fail because output continued; restoring it yields zero callbacks for pre-output cancellation and exactly 32 callbacks for cancellation during output.
+- Implementation: v4 now checks before its first group callback and before each 33rd output, and lowers its scan ceiling from 126 to 124 pages to reserve up to four callback checks. Its 124-page boundary fixture confirms 251 scan/setup/close executor requests and no callback publication.
+- Specification: [`sql-library.md`](../../specs/sql-library.md) records the v4-v18 output checkpoint interval and v4 page budget.
+- Verification: focused forced-clean v4 TinyCC rebuild and regression fixture passed. Full `make -B -f engine/sdk/Makefile test`, locked workspace build, format check, warning-denied Clippy, serial tests, and `git diff --check` passed in the Nix development shell.
+- Remaining: cancellation checks cannot interrupt a callback while it is executing; supervisor cancellation/deadline termination remains responsible for a callback that does not return. More grouped-runner stress and mixed-workload measurements remain open.
+
 ## SM-6 / SQL-6: expose filtered `information_schema.schemata` through executor scans — implemented
 
 - Behavior and contract: [storage manager](../../specs/storage-manager.md), [metadata discovery](../../specs/metadata-discovery.md), and [SQL library](../../specs/sql-library.md). The executor's normal `open_scan`/`next_batch` route can read the fixed virtual schema relation from the invocation's pinned, permission-filtered catalog view.
