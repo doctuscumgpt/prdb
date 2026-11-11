@@ -276,7 +276,7 @@
 - Wire format: generated statement tag `OPTIMIZER_UPDATE_STATEMENT=3`; after schema/relation identifiers come 1–64 assignments, each containing a column identifier and either a nonzero parameter index or NULL, followed by a nonempty bounded predicate.
 - Implementation: `decode_update_request` validates the request envelope, identifiers, assignment count/kinds, parameter indices, predicate size/tree, and trailing bytes. It does not resolve names, infer assignment types, or grant mutation authority.
 - Coverage: Rust tests decode mixed parameter/NULL assignments and reject missing WHERE, invalid assignment kinds, zero parameter indices, and trailing bytes. ABI generation and format checks passed.
-- Remaining: define and validate a canonical UPDATE plan, route a dedicated optimizer process operation, and add C SDK submission/verification/execution.
+- Remaining: compose UPDATE binding and plan construction in the optimizer service, route a dedicated optimizer process operation, and add independent C plan decoding plus SDK submission/verification/execution.
 
 ## OP-3 dependency: bind bounded UPDATE requests against invocation metadata — implemented
 
@@ -284,4 +284,12 @@
 - Implementation: `bind_update_request` and `bind_update_request_via_metadata` bind parameter/NULL assignments to stable column identities, preserve assignment order, reject unknown and duplicate targets, reject NULL for non-nullable columns, and require a Boolean predicate root.
 - Parameter values remain untyped in this optimizer request and must be checked against the parsed SQL AST and the storage mutation contract before staging.
 - Coverage: tests verify stable identity binding, source-order assignments, predicate binding, duplicate case-insensitive targets, hidden columns, nullability, missing relation, and non-Boolean WHERE.
-- Remaining: define and validate a canonical UPDATE plan, route a dedicated optimizer process operation, and add C SDK submission/verification/execution.
+- Remaining: compose UPDATE binding and plan construction in the optimizer service, route a dedicated optimizer process operation, and add independent C plan decoding plus SDK submission/verification/execution.
+
+## OP-3 dependency: lower bound UPDATEs to canonical plans — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). UPDATE plans carry stable relation/column identities and the bounded predicate/assignment data but no handles or write authority.
+- Wire format: generated kind-3 plan with `Scan -> Filter -> Update` nodes. The scan includes the ordinal-sorted union of assignment targets and predicate references. The generated Update node header carries 1–64 source-order assignments; every assignment contains a full bound column record and a fixed value record for either a nonzero parameter index or NULL with a zero index.
+- Implementation: `plan_update_v1`, `encode_update_plan_v1`, `decode_update_plan_v1`, and `validate_update_plan_v1` check relation identity, complete scan shape, Boolean predicate, target uniqueness, scanned target metadata, parameter bounds, NULLability, and trailing bytes.
+- Coverage: focused tests round-trip a parameterized plan and reject NULL to a non-nullable target, zero parameter index, duplicate targets, missing scan references, invalid assignment encoding, and trailing bytes. The ABI generator check passed.
+- Remaining: compose UPDATE binding and plan construction in the optimizer service, route a dedicated optimizer process operation, and add independent C plan decoding plus SDK submission/verification/execution.

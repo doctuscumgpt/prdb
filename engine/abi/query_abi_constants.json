@@ -1366,6 +1366,27 @@
       "value": 3,
       "c_name": "PRDB_OPTIMIZER_UPDATE_STATEMENT",
       "c_type": "UINT8_C"
+    },
+    {
+      "rust_name": "OPTIMIZER_PLAN_UPDATE_NODE",
+      "rust_type": "u8",
+      "value": 6,
+      "c_name": "PRDB_OPTIMIZER_PLAN_UPDATE_NODE",
+      "c_type": "UINT8_C"
+    },
+    {
+      "rust_name": "OPTIMIZER_UPDATE_PARAMETER_VALUE",
+      "rust_type": "u8",
+      "value": 0,
+      "c_name": "PRDB_OPTIMIZER_UPDATE_PARAMETER_VALUE",
+      "c_type": "UINT8_C"
+    },
+    {
+      "rust_name": "OPTIMIZER_UPDATE_NULL_VALUE",
+      "rust_type": "u8",
+      "value": 1,
+      "c_name": "PRDB_OPTIMIZER_UPDATE_NULL_VALUE",
+      "c_type": "UINT8_C"
     }
   ],
   "payload_schemas": [
@@ -2108,6 +2129,26 @@
       "fields": [
         { "name": "node_tag", "encoding": "u8" },
         { "name": "boolean_value", "encoding": "u8" }
+      ],
+      "trailing_fields": []
+    },
+    {
+      "name": "OPTIMIZER_PLAN_UPDATE_NODE_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "node_tag", "encoding": "u8" },
+        { "name": "assignment_count", "encoding": "u16be" }
+      ],
+      "trailing_fields": []
+    },
+    {
+      "name": "OPTIMIZER_PLAN_UPDATE_ASSIGNMENT_VALUE_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "kind", "encoding": "u8" },
+        { "name": "parameter_index", "encoding": "u32be" }
       ],
       "trailing_fields": []
     },

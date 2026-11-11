@@ -2372,6 +2372,64 @@ static inline int prdb_decode_optimizer_plan_boolean_literal_predicate_record(co
     return 1;
 }
 
+static inline void prdb_encode_optimizer_plan_update_node_record(uint8_t payload[3],
+    uint8_t node_tag, uint16_t assignment_count) {
+    payload[0] = node_tag;
+    uint64_t assignment_count_wire = (uint64_t)assignment_count;
+    for (size_t i = 0; i < 2; ++i) {
+        payload[1 + i] = (uint8_t)(assignment_count_wire >> ((2 - 1 - i) * 8));
+    }
+}
+
+static inline int prdb_decode_optimizer_plan_update_node_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *node_tag, uint16_t *assignment_count) {
+    if (payload == NULL || payload_len != 3) {
+        return 0;
+    }
+    if (node_tag == NULL) {
+        return 0;
+    }
+    *node_tag = payload[0];
+    if (assignment_count == NULL) {
+        return 0;
+    }
+    uint64_t assignment_count_wire_value = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        assignment_count_wire_value = (assignment_count_wire_value << 8) | payload[1 + i];
+    }
+    *assignment_count = (uint16_t)assignment_count_wire_value;
+    return 1;
+}
+
+static inline void prdb_encode_optimizer_plan_update_assignment_value_record(uint8_t payload[5],
+    uint8_t kind, uint32_t parameter_index) {
+    payload[0] = kind;
+    uint64_t parameter_index_wire = (uint64_t)parameter_index;
+    for (size_t i = 0; i < 4; ++i) {
+        payload[1 + i] = (uint8_t)(parameter_index_wire >> ((4 - 1 - i) * 8));
+    }
+}
+
+static inline int prdb_decode_optimizer_plan_update_assignment_value_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *kind, uint32_t *parameter_index) {
+    if (payload == NULL || payload_len != 5) {
+        return 0;
+    }
+    if (kind == NULL) {
+        return 0;
+    }
+    *kind = payload[0];
+    if (parameter_index == NULL) {
+        return 0;
+    }
+    uint64_t parameter_index_wire_value = 0;
+    for (size_t i = 0; i < 4; ++i) {
+        parameter_index_wire_value = (parameter_index_wire_value << 8) | payload[1 + i];
+    }
+    *parameter_index = (uint32_t)parameter_index_wire_value;
+    return 1;
+}
+
 static inline void prdb_encode_client_frame_header_record(uint8_t payload[32],
     const uint8_t magic[4], uint16_t major_version, uint16_t minor_version, uint16_t kind, uint16_t flags, uint32_t payload_length, uint64_t request_id, uint64_t response_sequence) {
     for (size_t i = 0; i < 4; ++i) {

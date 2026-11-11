@@ -94,6 +94,9 @@ pub const OPTIMIZER_REQUEST_VERSION: u16 = 1;
 pub const OPTIMIZER_SELECT_STATEMENT: u8 = 1;
 pub const OPTIMIZER_DELETE_STATEMENT: u8 = 2;
 pub const OPTIMIZER_UPDATE_STATEMENT: u8 = 3;
+pub const OPTIMIZER_PLAN_UPDATE_NODE: u8 = 6;
+pub const OPTIMIZER_UPDATE_PARAMETER_VALUE: u8 = 0;
+pub const OPTIMIZER_UPDATE_NULL_VALUE: u8 = 1;
 pub const EXECUTOR_RESOLVE_RELATION_REQUEST_VERSION_OFFSET: u32 = 0;
 pub const EXECUTOR_RESOLVE_RELATION_REQUEST_SCHEMA_NAME_LENGTH_OFFSET: u32 = 2;
 pub const EXECUTOR_RESOLVE_RELATION_REQUEST_RELATION_NAME_LENGTH_OFFSET: u32 = 4;
@@ -1436,6 +1439,40 @@ pub fn decode_optimizer_plan_boolean_literal_predicate_record(payload: &[u8]) ->
         return None;
     }
     Some((payload[0], payload[1]))
+}
+
+pub const OPTIMIZER_PLAN_UPDATE_NODE_RECORD_NODE_TAG_OFFSET: u32 = 0;
+pub const OPTIMIZER_PLAN_UPDATE_NODE_RECORD_ASSIGNMENT_COUNT_OFFSET: u32 = 1;
+pub const OPTIMIZER_PLAN_UPDATE_NODE_RECORD_HEADER_BYTES: u32 = 3;
+pub fn encode_optimizer_plan_update_node_record(node_tag: u8, assignment_count: u16) -> [u8; 3] {
+    let mut payload = [0u8; 3];
+    payload[0] = node_tag;
+    payload[1..3].copy_from_slice(&assignment_count.to_be_bytes());
+    payload
+}
+
+pub fn decode_optimizer_plan_update_node_record(payload: &[u8]) -> Option<(u8, u16)> {
+    if payload.len() != 3 {
+        return None;
+    }
+    Some((payload[0], u16::from_be_bytes(payload[1..3].try_into().ok()?)))
+}
+
+pub const OPTIMIZER_PLAN_UPDATE_ASSIGNMENT_VALUE_RECORD_KIND_OFFSET: u32 = 0;
+pub const OPTIMIZER_PLAN_UPDATE_ASSIGNMENT_VALUE_RECORD_PARAMETER_INDEX_OFFSET: u32 = 1;
+pub const OPTIMIZER_PLAN_UPDATE_ASSIGNMENT_VALUE_RECORD_HEADER_BYTES: u32 = 5;
+pub fn encode_optimizer_plan_update_assignment_value_record(kind: u8, parameter_index: u32) -> [u8; 5] {
+    let mut payload = [0u8; 5];
+    payload[0] = kind;
+    payload[1..5].copy_from_slice(&parameter_index.to_be_bytes());
+    payload
+}
+
+pub fn decode_optimizer_plan_update_assignment_value_record(payload: &[u8]) -> Option<(u8, u32)> {
+    if payload.len() != 5 {
+        return None;
+    }
+    Some((payload[0], u32::from_be_bytes(payload[1..5].try_into().ok()?)))
 }
 
 pub const CLIENT_FRAME_HEADER_RECORD_MAGIC_OFFSET: u32 = 0;

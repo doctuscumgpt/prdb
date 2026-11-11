@@ -1,6 +1,8 @@
 //! Deterministic single-table SELECT plan construction for optimizer v1.
 
-use crate::optimizer_binding::{BoundColumn, BoundPredicate, BoundSelect};
+use crate::optimizer_binding::{
+    BoundColumn, BoundPredicate, BoundSelect, BoundUpdateAssignment, BoundUpdateValue,
+};
 use crate::tuple::ScalarType;
 use std::collections::HashSet;
 
@@ -40,10 +42,21 @@ pub struct DeletePlanV1 {
     pub predicate: BoundPredicate,
 }
 
+/// Bounded UPDATE plan with stable assignment targets and a predicate. The
+/// plan carries no row handles, write grant, or executor capability.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpdatePlanV1 {
+    pub relation: RelationReference,
+    pub scan_columns: Vec<BoundColumn>,
+    pub predicate: BoundPredicate,
+    pub assignments: Vec<BoundUpdateAssignment>,
+}
+
 pub const MAX_PLAN_BYTES: usize = 64 * 1024;
 pub const MAX_PLAN_SCAN_COLUMNS: usize = crate::optimizer_request::MAX_PROJECTIONS * 2;
 const PLAN_KIND_SELECT: u8 = 1;
 const PLAN_KIND_DELETE: u8 = 2;
+const PLAN_KIND_UPDATE: u8 = 3;
 const DELETE_SINK_NODE: u8 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -366,6 +379,253 @@ pub fn validate_delete_plan_v1(plan: &DeletePlanV1) -> Result<(), PlanError> {
     collect_predicate_columns(&plan.predicate, &mut referenced_columns)?;
     referenced_columns.sort_by_key(|column| column.ordinal);
     if referenced_columns != plan.scan_columns {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    Ok(())
+}
+
+/// Construct a deterministic UPDATE plan. The scan carries the unique,
+/// ordinal-sorted union of assignment targets and predicate references.
+pub fn plan_update_v1(
+    relation: RelationReference,
+    predicate: BoundPredicate,
+    assignments: Vec<BoundUpdateAssignment>,
+) -> Result<UpdatePlanV1, PlanError> {
+    let mut scan_columns = Vec::new();
+    collect_predicate_columns(&predicate, &mut scan_columns)?;
+    for assignment in &assignments {
+        add_column(&mut scan_columns, &assignment.column)?;
+    }
+    scan_columns.sort_by_key(|column| column.ordinal);
+    let plan = UpdatePlanV1 {
+        relation,
+        scan_columns,
+        predicate,
+        assignments,
+    };
+    validate_update_plan_v1(&plan)?;
+    Ok(plan)
+}
+
+/// Encode the canonical `Scan -> Filter -> Update` pipeline.
+pub fn encode_update_plan_v1(plan: &UpdatePlanV1) -> Result<Vec<u8>, PlanError> {
+    validate_update_plan_v1(plan)?;
+    let mut output = Vec::with_capacity(256);
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_header_record(
+        1,
+        PLAN_KIND_UPDATE,
+        0,
+    ));
+    put_name(&mut output, &plan.relation.schema_name)?;
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_schema_reference_record(
+            plan.relation.schema_id,
+            plan.relation.schema_version,
+        ),
+    );
+    put_name(&mut output, &plan.relation.relation_name)?;
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_relation_reference_record(
+            plan.relation.relation_id,
+            plan.relation.table_epoch,
+        ),
+    );
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_node_count_record(
+        3,
+    ));
+    put_column_list_header(&mut output, 1, plan.scan_columns.len())?;
+    for column in &plan.scan_columns {
+        put_column(&mut output, column);
+    }
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_filter_node_record(
+        2,
+    ));
+    put_predicate(&mut output, &plan.predicate)?;
+    let assignment_count =
+        u16::try_from(plan.assignments.len()).map_err(|_| PlanError::InvalidPipeline)?;
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_update_node_record(
+        crate::query_abi::OPTIMIZER_PLAN_UPDATE_NODE,
+        assignment_count,
+    ));
+    for assignment in &plan.assignments {
+        put_column(&mut output, &assignment.column);
+        match assignment.value {
+            BoundUpdateValue::Parameter(index) => {
+                output.extend_from_slice(
+                    &crate::query_abi::encode_optimizer_plan_update_assignment_value_record(
+                        crate::query_abi::OPTIMIZER_UPDATE_PARAMETER_VALUE,
+                        index,
+                    ),
+                );
+            }
+            BoundUpdateValue::Null => output.extend_from_slice(
+                &crate::query_abi::encode_optimizer_plan_update_assignment_value_record(
+                    crate::query_abi::OPTIMIZER_UPDATE_NULL_VALUE,
+                    0,
+                ),
+            ),
+        }
+    }
+    if output.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    Ok(output)
+}
+
+/// Decode and validate a canonical UPDATE plan without granting storage
+/// access. The executor must re-resolve the relation before execution.
+pub fn decode_update_plan_v1(bytes: &[u8]) -> Result<UpdatePlanV1, PlanError> {
+    if bytes.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    let (version, kind, reserved) =
+        crate::query_abi::decode_optimizer_plan_header_record(bytes).ok_or(PlanError::Truncated)?;
+    if version != 1 {
+        return Err(PlanError::UnsupportedVersion(version));
+    }
+    if kind != PLAN_KIND_UPDATE || reserved != 0 {
+        return Err(PlanError::InvalidEncoding);
+    }
+    let mut reader = PlanReader {
+        bytes,
+        offset: crate::query_abi::OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES as usize,
+    };
+    let schema_name = reader.name()?;
+    let schema_reference = reader
+        .take(crate::query_abi::OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES as usize)?;
+    let (schema_id, schema_version) =
+        crate::query_abi::decode_optimizer_plan_schema_reference_record(schema_reference)
+            .ok_or(PlanError::Truncated)?;
+    let relation_name = reader.name()?;
+    let relation_reference = reader
+        .take(crate::query_abi::OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES as usize)?;
+    let (relation_id, table_epoch) =
+        crate::query_abi::decode_optimizer_plan_relation_reference_record(relation_reference)
+            .ok_or(PlanError::Truncated)?;
+    let relation = RelationReference {
+        schema_name,
+        schema_id,
+        schema_version,
+        relation_name,
+        relation_id,
+        table_epoch,
+    };
+    if reader.node_count()? != 3 {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let scan_tag_offset = reader.offset;
+    if reader.u8()? != 1 {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let column_count = reader.column_list_count(scan_tag_offset, 1, crate::tuple::MAX_COLUMNS)?;
+    let mut scan_columns = Vec::with_capacity(column_count);
+    for _ in 0..column_count {
+        scan_columns.push(reader.column()?);
+    }
+    if !scan_columns.is_empty() {
+        validate_columns(&scan_columns)?;
+    }
+    let filter_tag_offset = reader.offset;
+    reader.filter_node_tag(filter_tag_offset)?;
+    let predicate = reader.predicate(&scan_columns)?;
+    let update_node =
+        reader.take(crate::query_abi::OPTIMIZER_PLAN_UPDATE_NODE_RECORD_HEADER_BYTES as usize)?;
+    let (node_tag, assignment_count) =
+        crate::query_abi::decode_optimizer_plan_update_node_record(update_node)
+            .ok_or(PlanError::Truncated)?;
+    if node_tag != crate::query_abi::OPTIMIZER_PLAN_UPDATE_NODE {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let assignment_count = usize::from(assignment_count);
+    if assignment_count == 0 || assignment_count > crate::optimizer_request::MAX_UPDATE_ASSIGNMENTS
+    {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let mut assignments = Vec::with_capacity(assignment_count);
+    for _ in 0..assignment_count {
+        let column = reader.column()?;
+        let value_record = reader.take(
+            crate::query_abi::OPTIMIZER_PLAN_UPDATE_ASSIGNMENT_VALUE_RECORD_HEADER_BYTES as usize,
+        )?;
+        let (kind, parameter_index) =
+            crate::query_abi::decode_optimizer_plan_update_assignment_value_record(value_record)
+                .ok_or(PlanError::Truncated)?;
+        let value = match kind {
+            crate::query_abi::OPTIMIZER_UPDATE_PARAMETER_VALUE => {
+                let index = parameter_index;
+                if index == 0 || index > crate::optimizer_request::MAX_PARAMETER_INDEX {
+                    return Err(PlanError::InvalidEncoding);
+                }
+                BoundUpdateValue::Parameter(index)
+            }
+            crate::query_abi::OPTIMIZER_UPDATE_NULL_VALUE
+                if parameter_index == 0 && column.nullable =>
+            {
+                BoundUpdateValue::Null
+            }
+            crate::query_abi::OPTIMIZER_UPDATE_NULL_VALUE => {
+                return Err(PlanError::InvalidEncoding);
+            }
+            _ => return Err(PlanError::InvalidEncoding),
+        };
+        assignments.push(BoundUpdateAssignment { column, value });
+    }
+    if !reader.is_empty() {
+        return Err(PlanError::TrailingBytes);
+    }
+    let plan = UpdatePlanV1 {
+        relation,
+        scan_columns,
+        predicate,
+        assignments,
+    };
+    validate_update_plan_v1(&plan)?;
+    Ok(plan)
+}
+
+/// Validate relation references, scan shape, assignment uniqueness and
+/// nullability, and the Boolean predicate without granting write authority.
+pub fn validate_update_plan_v1(plan: &UpdatePlanV1) -> Result<(), PlanError> {
+    validate_relation(&plan.relation)?;
+    if plan.scan_columns.len() > crate::tuple::MAX_COLUMNS {
+        return Err(PlanError::TooLarge);
+    }
+    if !plan.scan_columns.is_empty() {
+        validate_columns(&plan.scan_columns)?;
+    }
+    if predicate_type(&plan.predicate, &plan.scan_columns)? != Some(ScalarType::Boolean) {
+        return Err(PlanError::InvalidPredicate);
+    }
+    if plan.assignments.is_empty()
+        || plan.assignments.len() > crate::optimizer_request::MAX_UPDATE_ASSIGNMENTS
+    {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let mut ordinals = HashSet::with_capacity(plan.assignments.len());
+    for assignment in &plan.assignments {
+        if !plan
+            .scan_columns
+            .iter()
+            .any(|column| column == &assignment.column)
+            || !ordinals.insert(assignment.column.ordinal)
+        {
+            return Err(PlanError::InvalidColumnReference);
+        }
+        match assignment.value {
+            BoundUpdateValue::Parameter(index)
+                if index != 0 && index <= crate::optimizer_request::MAX_PARAMETER_INDEX => {}
+            BoundUpdateValue::Parameter(_) => return Err(PlanError::InvalidEncoding),
+            BoundUpdateValue::Null if assignment.column.nullable => {}
+            BoundUpdateValue::Null => return Err(PlanError::InvalidEncoding),
+        }
+    }
+    let mut required_columns = Vec::new();
+    collect_predicate_columns(&plan.predicate, &mut required_columns)?;
+    for assignment in &plan.assignments {
+        add_column(&mut required_columns, &assignment.column)?;
+    }
+    required_columns.sort_by_key(|column| column.ordinal);
+    if required_columns != plan.scan_columns {
         return Err(PlanError::InvalidColumnReference);
     }
     Ok(())
@@ -1399,6 +1659,124 @@ mod tests {
         assert_eq!(
             plan_delete_v1(relation, predicate),
             Err(PlanError::InvalidPredicate)
+        );
+    }
+
+    #[test]
+    fn builds_and_roundtrips_a_bounded_update_plan() {
+        let bound = bound_select();
+        let relation = RelationReference {
+            schema_name: bound.schema_name,
+            schema_id: bound.schema_id,
+            schema_version: bound.schema_version,
+            relation_name: bound.relation_name,
+            relation_id: bound.relation_id,
+            table_epoch: bound.table_epoch,
+        };
+        let active = BoundColumn {
+            nullable: true,
+            ..column(2, 1, ScalarType::Boolean)
+        };
+        let predicate = BoundPredicate::Compare {
+            operator: Comparison::Greater,
+            left: Box::new(BoundPredicate::Column(column(1, 0, ScalarType::Integer))),
+            right: Box::new(BoundPredicate::Integer(7)),
+        };
+        let assignments = vec![
+            BoundUpdateAssignment {
+                column: active.clone(),
+                value: BoundUpdateValue::Parameter(2),
+            },
+            BoundUpdateAssignment {
+                column: column(1, 0, ScalarType::Integer),
+                value: BoundUpdateValue::Parameter(1),
+            },
+        ];
+        let plan = plan_update_v1(relation, predicate, assignments).unwrap();
+        assert_eq!(
+            plan.scan_columns,
+            vec![column(1, 0, ScalarType::Integer), active.clone()]
+        );
+        assert_eq!(validate_update_plan_v1(&plan), Ok(()));
+        let encoded = encode_update_plan_v1(&plan).unwrap();
+        assert_eq!(decode_update_plan_v1(&encoded).unwrap(), plan);
+
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        assert_eq!(
+            decode_update_plan_v1(&trailing),
+            Err(PlanError::TrailingBytes)
+        );
+        let mut invalid_assignment_kind = encoded;
+        let invalid_kind_offset = invalid_assignment_kind.len() - 5;
+        invalid_assignment_kind[invalid_kind_offset] = 9;
+        assert_eq!(
+            decode_update_plan_v1(&invalid_assignment_kind),
+            Err(PlanError::InvalidEncoding)
+        );
+    }
+
+    #[test]
+    fn update_plan_rejects_invalid_assignments_and_scan_shapes() {
+        let bound = bound_select();
+        let relation = RelationReference {
+            schema_name: bound.schema_name,
+            schema_id: bound.schema_id,
+            schema_version: bound.schema_version,
+            relation_name: bound.relation_name,
+            relation_id: bound.relation_id,
+            table_epoch: bound.table_epoch,
+        };
+        let predicate = BoundPredicate::Boolean(true);
+        let required = column(1, 0, ScalarType::Integer);
+        assert_eq!(
+            plan_update_v1(
+                relation.clone(),
+                predicate.clone(),
+                vec![BoundUpdateAssignment {
+                    column: required.clone(),
+                    value: BoundUpdateValue::Null,
+                }],
+            ),
+            Err(PlanError::InvalidEncoding)
+        );
+        assert_eq!(
+            plan_update_v1(
+                relation.clone(),
+                predicate.clone(),
+                vec![BoundUpdateAssignment {
+                    column: required.clone(),
+                    value: BoundUpdateValue::Parameter(0),
+                }],
+            ),
+            Err(PlanError::InvalidEncoding)
+        );
+        let valid_assignment = BoundUpdateAssignment {
+            column: required.clone(),
+            value: BoundUpdateValue::Parameter(1),
+        };
+        assert_eq!(
+            plan_update_v1(
+                relation.clone(),
+                predicate.clone(),
+                vec![valid_assignment.clone(), valid_assignment],
+            ),
+            Err(PlanError::InvalidColumnReference)
+        );
+
+        let mut invalid = plan_update_v1(
+            relation,
+            predicate,
+            vec![BoundUpdateAssignment {
+                column: required,
+                value: BoundUpdateValue::Parameter(1),
+            }],
+        )
+        .unwrap();
+        invalid.scan_columns.clear();
+        assert_eq!(
+            validate_update_plan_v1(&invalid),
+            Err(PlanError::InvalidColumnReference)
         );
     }
 
