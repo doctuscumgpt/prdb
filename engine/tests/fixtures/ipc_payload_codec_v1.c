@@ -576,6 +576,18 @@ int main(void) {
             patch_ordinal, sizeof(patch_ordinal) - 1, &decoded_patch_ordinal)) {
         return 68;
     }
+    uint8_t batch_row_header[19] = {0};
+    uint8_t decoded_batch_row_handle[16] = {0};
+    uint16_t decoded_batch_row_cell_count = 0;
+    prdb_encode_executor_batch_row_record(batch_row_header, visible_column_id, 2);
+    batch_row_header[18] = 0xaa;
+    if (!prdb_decode_executor_batch_row_record(
+            batch_row_header, sizeof(batch_row_header), decoded_batch_row_handle,
+            &decoded_batch_row_cell_count) ||
+        decoded_batch_row_cell_count != 2 ||
+        memcmp(decoded_batch_row_handle, visible_column_id, 16) != 0) {
+        return 69;
+    }
     uint8_t planner_schema_id[16];
     uint8_t planner_plan_relation_id[16];
     uint8_t decoded_planner_schema_id[16] = {0};

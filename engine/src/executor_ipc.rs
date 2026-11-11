@@ -634,10 +634,12 @@ impl NextBatchResponse {
         };
         ensure_batch_size(&payload, max_bytes)?;
         for row in &self.rows {
-            payload.extend_from_slice(&row.handle.to_bytes());
             let cell_count = u16::try_from(row.cells.len())
                 .map_err(|_| ExecutorRequestError::ResponseTooLarge)?;
-            payload.extend_from_slice(&cell_count.to_be_bytes());
+            payload.extend_from_slice(&generated::encode_executor_batch_row_record(
+                row.handle.to_bytes(),
+                cell_count,
+            ));
             ensure_batch_size(&payload, max_bytes)?;
             for cell in &row.cells {
                 encode_sanitized_cell(&mut payload, cell, max_bytes)?;
@@ -686,9 +688,18 @@ impl NextBatchResponse {
         }
         let mut rows = Vec::with_capacity(row_count);
         for _ in 0..row_count {
-            let handle = ExecutorRowHandle::from_bytes(&read_array_16(payload, &mut offset)?)
+            let row_header = payload
+                .get(offset..)
                 .ok_or(ExecutorRequestError::InvalidPayload)?;
-            let cell_count = usize::from(read_u16(payload, &mut offset)?);
+            let (handle_bytes, encoded_cell_count) =
+                generated::decode_executor_batch_row_record(row_header)
+                    .ok_or(ExecutorRequestError::InvalidPayload)?;
+            offset = offset
+                .checked_add(generated::EXECUTOR_BATCH_ROW_RECORD_HEADER_BYTES as usize)
+                .ok_or(ExecutorRequestError::InvalidPayload)?;
+            let handle = ExecutorRowHandle::from_bytes(&handle_bytes)
+                .ok_or(ExecutorRequestError::InvalidPayload)?;
+            let cell_count = usize::from(encoded_cell_count);
             if cell_count > crate::tuple::MAX_COLUMNS {
                 return Err(ExecutorRequestError::InvalidPayload);
             }
@@ -960,32 +971,6 @@ fn decode_scalar_type(
         _ => return Err(ExecutorRequestError::InvalidPayload),
     };
     Ok(scalar_type)
-}
-
-fn read_u16(payload: &[u8], offset: &mut usize) -> Result<u16, ExecutorRequestError> {
-    let end = offset
-        .checked_add(2)
-        .filter(|end| *end <= payload.len())
-        .ok_or(ExecutorRequestError::InvalidPayload)?;
-    let value = u16::from_be_bytes(
-        payload[*offset..end]
-            .try_into()
-            .map_err(|_| ExecutorRequestError::InvalidPayload)?,
-    );
-    *offset = end;
-    Ok(value)
-}
-
-fn read_array_16(payload: &[u8], offset: &mut usize) -> Result<[u8; 16], ExecutorRequestError> {
-    let end = offset
-        .checked_add(16)
-        .filter(|end| *end <= payload.len())
-        .ok_or(ExecutorRequestError::InvalidPayload)?;
-    let value = payload[*offset..end]
-        .try_into()
-        .map_err(|_| ExecutorRequestError::InvalidPayload)?;
-    *offset = end;
-    Ok(value)
 }
 
 #[derive(Debug)]

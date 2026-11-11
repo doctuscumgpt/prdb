@@ -1,4 +1,5 @@
 #include "prdb_sdk_batch_v1.h"
+#include "prdb_query_abi_payload_codecs.h"
 
 #include <stddef.h>
 
@@ -123,12 +124,15 @@ int32_t prdb_sdk_batch_open_v1(prdb_sdk_batch_v1 *out, uint32_t out_capacity,
 
     for (uint16_t row_index = 0; row_index < row_count; ++row_index) {
         uint16_t cell_count;
-        if (!take(payload, payload_len, &offset, 16, &bytes) ||
-            bytes[0] != PRDB_SDK_BATCH_ROW_TOKEN_KIND ||
-            !take(payload, payload_len, &offset, 2, &bytes)) {
+        uint8_t row_handle[16];
+        if ((uint64_t)offset > payload_len ||
+            !prdb_decode_executor_batch_row_record(
+                payload + offset, (size_t)(payload_len - offset), row_handle,
+                &cell_count) ||
+            row_handle[0] != PRDB_SDK_BATCH_ROW_TOKEN_KIND) {
             return PRDB_SDK_BATCH_INVALID_PAYLOAD;
         }
-        cell_count = read_u16(payload, offset - 2);
+        offset += PRDB_EXECUTOR_BATCH_ROW_RECORD_HEADER_BYTES;
         if (cell_count > PRDB_SDK_BATCH_MAX_CELLS_PER_ROW) {
             return PRDB_SDK_BATCH_INVALID_PAYLOAD;
         }
@@ -175,9 +179,9 @@ int32_t prdb_sdk_batch_row_next_v1(prdb_sdk_row_iterator_v1 *iterator,
                                    uint32_t out_capacity) {
     const prdb_sdk_batch_v1 *batch;
     const uint8_t *handle;
-    const uint8_t *bytes;
     uint32_t offset;
     uint16_t cell_count;
+    uint8_t decoded_handle[16];
 
     if (iterator == NULL || out == NULL || out_capacity < sizeof(*out) ||
         iterator->struct_size < sizeof(*iterator) ||
@@ -191,14 +195,16 @@ int32_t prdb_sdk_batch_row_next_v1(prdb_sdk_row_iterator_v1 *iterator,
     batch = iterator->batch;
     if (batch->struct_size < sizeof(*batch) ||
         batch->abi_version != PRDB_SDK_BATCH_ABI_V1_VERSION ||
-        !take(batch->payload, batch->payload_len, &iterator->offset, 16,
-              &handle) ||
-        handle[0] != PRDB_SDK_BATCH_ROW_TOKEN_KIND ||
-        !take(batch->payload, batch->payload_len, &iterator->offset, 2,
-              &bytes)) {
+        (uint64_t)iterator->offset > batch->payload_len ||
+        !prdb_decode_executor_batch_row_record(
+            batch->payload + iterator->offset,
+            (size_t)(batch->payload_len - iterator->offset), decoded_handle,
+            &cell_count) ||
+        decoded_handle[0] != PRDB_SDK_BATCH_ROW_TOKEN_KIND) {
         return PRDB_SDK_BATCH_INVALID_PAYLOAD;
     }
-    cell_count = read_u16(batch->payload, iterator->offset - 2);
+    handle = batch->payload + iterator->offset;
+    iterator->offset += PRDB_EXECUTOR_BATCH_ROW_RECORD_HEADER_BYTES;
     if (cell_count > PRDB_SDK_BATCH_MAX_CELLS_PER_ROW) {
         return PRDB_SDK_BATCH_INVALID_PAYLOAD;
     }

@@ -1072,3 +1072,20 @@ pub fn decode_patch_ordinal_record(payload: &[u8]) -> Option<u32> {
     }
     Some(u32::from_be_bytes(payload[0..4].try_into().ok()?))
 }
+
+pub const EXECUTOR_BATCH_ROW_RECORD_ROW_HANDLE_OFFSET: u32 = 0;
+pub const EXECUTOR_BATCH_ROW_RECORD_CELL_COUNT_OFFSET: u32 = 16;
+pub const EXECUTOR_BATCH_ROW_RECORD_HEADER_BYTES: u32 = 18;
+pub fn encode_executor_batch_row_record(row_handle: [u8; 16], cell_count: u16) -> [u8; 18] {
+    let mut payload = [0u8; 18];
+    payload[0..16].copy_from_slice(&row_handle);
+    payload[16..18].copy_from_slice(&cell_count.to_be_bytes());
+    payload
+}
+
+pub fn decode_executor_batch_row_record(payload: &[u8]) -> Option<([u8; 16], u16)> {
+    if payload.len() < 18 {
+        return None;
+    }
+    Some((payload[0..16].try_into().ok()?, u16::from_be_bytes(payload[16..18].try_into().ok()?)))
+}

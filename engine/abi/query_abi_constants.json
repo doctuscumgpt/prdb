@@ -1740,6 +1740,17 @@
         { "name": "ordinal", "encoding": "u32be" }
       ],
       "trailing_fields": []
+    },
+    {
+      "name": "EXECUTOR_BATCH_ROW_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "codec_prefix": true,
+      "fields": [
+        { "name": "row_handle", "encoding": "bytes16" },
+        { "name": "cell_count", "encoding": "u16be" }
+      ],
+      "trailing_fields": []
     }
   ]
 }

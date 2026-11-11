@@ -1784,4 +1784,37 @@ static inline int prdb_decode_patch_ordinal_record(const uint8_t *payload, size_
     return 1;
 }
 
+static inline void prdb_encode_executor_batch_row_record(uint8_t payload[18],
+    const uint8_t row_handle[16], uint16_t cell_count) {
+    for (size_t i = 0; i < 16; ++i) {
+        payload[0 + i] = row_handle[i];
+    }
+    uint64_t cell_count_wire = (uint64_t)cell_count;
+    for (size_t i = 0; i < 2; ++i) {
+        payload[16 + i] = (uint8_t)(cell_count_wire >> ((2 - 1 - i) * 8));
+    }
+}
+
+static inline int prdb_decode_executor_batch_row_record(const uint8_t *payload, size_t payload_len,
+    uint8_t row_handle[16], uint16_t *cell_count) {
+    if (payload == NULL || payload_len < 18) {
+        return 0;
+    }
+    if (row_handle == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < 16; ++i) {
+        row_handle[i] = payload[0 + i];
+    }
+    if (cell_count == NULL) {
+        return 0;
+    }
+    uint64_t cell_count_wire_value = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        cell_count_wire_value = (cell_count_wire_value << 8) | payload[16 + i];
+    }
+    *cell_count = (uint16_t)cell_count_wire_value;
+    return 1;
+}
+
 #endif /* PRDB_QUERY_ABI_PAYLOAD_CODECS_H */

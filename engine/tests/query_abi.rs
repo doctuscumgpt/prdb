@@ -108,6 +108,19 @@ fn generated_nested_record_codecs_preserve_wire_bytes_and_boundaries() {
         Some(0x0102_0304)
     );
     assert!(prdb_engine::query_abi::decode_patch_ordinal_record(&patch_ordinal[..3]).is_none());
+
+    let row_handle = [8; 16];
+    let batch_row = prdb_engine::query_abi::encode_executor_batch_row_record(row_handle, 2);
+    assert_eq!(batch_row.len(), 18);
+    assert_eq!(&batch_row[..16], &row_handle);
+    assert_eq!(&batch_row[16..], &[0, 2]);
+    assert_eq!(
+        prdb_engine::query_abi::decode_executor_batch_row_record(
+            &[batch_row.as_slice(), &[0, 1]].concat()
+        ),
+        Some((row_handle, 2))
+    );
+    assert!(prdb_engine::query_abi::decode_executor_batch_row_record(&batch_row[..17]).is_none());
 }
 
 #[test]
