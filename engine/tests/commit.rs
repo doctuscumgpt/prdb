@@ -23103,6 +23103,25 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         ]
         .concat()
     );
+    let optimizer_group_count =
+        read_frame(&mut gateway)?.ok_or("missing optimizer GROUP BY SQLR result")?;
+    assert_eq!(
+        optimizer_group_count.operation,
+        Operation::GatewayResultData as u16
+    );
+    assert_eq!(optimizer_group_count.request_id, accepted.request_id);
+    assert_eq!(
+        optimizer_group_count.payload,
+        [
+            b"SQLR".as_slice(),
+            &[
+                0, 1, 0, 2, 0, 2, b'i', b'd', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 42, 0, 5,
+                b'c', b'o', b'u', b'n', b't', 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0,
+                1,
+            ][..],
+        ]
+        .concat()
+    );
     let grouped_composite_first =
         read_frame(&mut gateway)?.ok_or("missing first composite GROUP BY SQLR result")?;
     assert_eq!(

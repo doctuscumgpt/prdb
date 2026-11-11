@@ -710,6 +710,8 @@ int main(void) {
     static prdb_sdk_optimizer_group_count_plan_v1 group_count_decoded;
     static prdb_sdk_select_v19 join_statement;
     static prdb_sdk_select_binding_v19 join_binding;
+    static prdb_sdk_select_v4 group_count_statement;
+    static prdb_sdk_select_binding_v4 group_count_binding;
     static prdb_sdk_sql_column_shape_v2 join_left_columns[3];
     static prdb_sdk_sql_column_shape_v2 join_right_columns[3];
     static resolve_context resolve = {0};
@@ -1252,6 +1254,33 @@ int main(void) {
            group_count_decoded.group_key.column_id[0] == 4 &&
            group_count_decoded.plan.has_limit == 1 &&
            group_count_decoded.plan.limit == 5);
+    static const uint8_t group_count_sql[] =
+        "SELECT id, COUNT(*) FROM items GROUP BY id LIMIT 5";
+    assert(prdb_sdk_sql_parse_select_v4(
+               group_count_sql, sizeof(group_count_sql) - 1,
+               &group_count_statement, sizeof(group_count_statement), NULL) ==
+           PRDB_SDK_SQL_OK);
+    group_count_binding.struct_size = sizeof(group_count_binding);
+    group_count_binding.abi_version = PRDB_SDK_SQL_ABI_V4_VERSION;
+    group_count_binding.base.struct_size = sizeof(group_count_binding.base);
+    group_count_binding.base.abi_version = PRDB_SDK_SQL_ABI_V2_VERSION;
+    group_count_binding.base.projection_count = 1;
+    group_count_binding.base.projection_ordinals[0] = 0;
+    group_count_binding.has_group_by = 1;
+    group_count_binding.aggregate_kind = PRDB_SDK_SQL_AGGREGATE_COUNT_STAR;
+    group_count_binding.group_by_column.ordinal = 0;
+    group_count_binding.group_by_column.type_code = 1;
+    assert(prdb_sdk_optimizer_match_group_count_plan_v1(
+               &group_count_statement, &group_count_binding,
+               (const uint8_t *)"public", 6, group_count_payload,
+               group_count_payload_len) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    group_count_statement.base.limit = 4;
+    assert(prdb_sdk_optimizer_match_group_count_plan_v1(
+               &group_count_statement, &group_count_binding,
+               (const uint8_t *)"public", 6, group_count_payload,
+               group_count_payload_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
+    group_count_statement.base.limit = 5;
     memcpy(group_count_malformed, group_count_payload,
            group_count_payload_len);
     group_count_malformed[group_key_id_offset] = 5;

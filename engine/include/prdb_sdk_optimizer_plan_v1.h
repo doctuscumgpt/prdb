@@ -196,6 +196,14 @@ int32_t prdb_sdk_optimizer_decode_group_count_plan_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_group_count_plan_v1 *out, uint32_t out_capacity);
 
+/* Require a decoded kind-5 plan to match the parsed single-key COUNT(*)
+ * statement, authorized grouping-key binding, schema, and optional LIMIT. */
+int32_t prdb_sdk_optimizer_match_group_count_plan_v1(
+    const prdb_sdk_select_v4 *statement,
+    const prdb_sdk_select_binding_v4 *binding,
+    const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *plan_payload, uint64_t plan_payload_len);
+
 /* Require a decoded kind-4 plan to preserve the parsed v19 join's qualified
  * projections, composite keys, relation names, and LIMIT. Relation IDs and
  * scan column identities are checked separately against executor storage. */
@@ -276,6 +284,13 @@ int32_t prdb_sdk_optimizer_validate_executor_relation_v1(
 /* Re-resolve both relations in a validated kind-4 join plan through executor
  * storage and require each stable identity and scan shape to match. */
 int32_t prdb_sdk_optimizer_validate_executor_join_relations_v1(
+    const prdb_host_api_v2 *host, const uint8_t *plan_payload,
+    uint64_t plan_payload_len, uint8_t *response,
+    uint64_t response_capacity, uint64_t *response_len);
+
+/* Re-resolve the single relation in a validated kind-5 plan and compare the
+ * stable identity plus the exact grouping-key column definition. */
+int32_t prdb_sdk_optimizer_validate_executor_group_count_relation_v1(
     const prdb_host_api_v2 *host, const uint8_t *plan_payload,
     uint64_t plan_payload_len, uint8_t *response,
     uint64_t response_capacity, uint64_t *response_len);

@@ -13,6 +13,7 @@
 #include "prdb_sdk_sql_exec_v16.h"
 #include "prdb_sdk_sql_exec_v19.h"
 #include "prdb_sdk_sql_exec_v20.h"
+#include "prdb_sdk_sql_exec_v4.h"
 #include "prdb_sdk_sql_result_v1.h"
 #include "prdb_sdk_executor_v1.h"
 #include "prdb_sdk_optimizer_plan_v1.h"
@@ -275,6 +276,24 @@ static int32_t write_grouped_min(void *opaque,
     return 0;
 }
 
+static int32_t write_optimizer_group_count(
+    void *opaque, const prdb_sdk_value_v1 *group_key, uint64_t count,
+    const prdb_sdk_sql_bound_column_v2 *group_by_column) {
+    grouped_result_context *context = (grouped_result_context *)opaque;
+    if (context == NULL || context->host == NULL || group_key == NULL ||
+        group_by_column == NULL || count != 1 ||
+        group_by_column->ordinal != 0 ||
+        group_by_column->type_code != PRDB_SDK_VALUE_TYPE_INTEGER)
+        return 1;
+    if (prdb_sdk_sql_write_group_count_result_v1(
+            context->host, context->group_column, group_key, count,
+            context->output, context->output_capacity,
+            &context->output_len) != PRDB_SDK_SQL_RESULT_OK)
+        return 1;
+    ++context->row_count;
+    return 0;
+}
+
 static int32_t write_grouped_sum(void *opaque,
                                  const prdb_sdk_value_v1 *group_key,
                                  const prdb_sdk_value_v1 *aggregate_value,
@@ -461,6 +480,8 @@ static int32_t run_write_read_fixture(
         "SELECT id, SUM(id) FROM records GROUP BY id";
     static const uint8_t select_grouped_avg_sql[] =
         "SELECT id, AVG(id) FROM records GROUP BY id";
+    static const uint8_t select_optimizer_group_count_sql[] =
+        "SELECT id, COUNT(*) FROM records GROUP BY id";
     static const uint8_t select_grouped_order_sql[] =
         "SELECT id, COUNT(*) FROM records GROUP BY id "
         "ORDER BY COUNT(*) DESC NULLS LAST, id ASC NULLS LAST LIMIT 1";
@@ -553,6 +574,10 @@ static int32_t run_write_read_fixture(
     static uint8_t composite_join_optimizer_request[
         PRDB_SDK_OPTIMIZER_MAX_REQUEST_BYTES];
     static uint8_t composite_join_optimizer_response[
+        PRDB_SDK_OPTIMIZER_MAX_PLAN_BYTES + 64];
+    static uint8_t group_count_optimizer_request[
+        PRDB_SDK_OPTIMIZER_MAX_REQUEST_BYTES];
+    static uint8_t group_count_optimizer_response[
         PRDB_SDK_OPTIMIZER_MAX_PLAN_BYTES + 64];
     prdb_sdk_sql_column_shape_v2 composite_join_left_planner_columns[9] = {{0}};
     prdb_sdk_sql_column_shape_v2 composite_join_right_planner_columns[9] = {{0}};
@@ -1182,6 +1207,29 @@ static int32_t run_write_read_fixture(
     if (status != PRDB_SDK_SQL_EXEC_OK || grouped_results.row_count != 1) {
         static const uint8_t message[] = "fixture-error-grouped-min";
         return report_failure(host, message, sizeof(message) - 1);
+    }
+
+    if (optimizer_host_v5 != NULL) {
+        grouped_results.row_count = 0;
+        grouped_results.output_len = 0;
+        status = prdb_sdk_sql_execute_group_count_optimizer_v1(
+            optimizer_host_v5, schema, sizeof(schema) - 1,
+            select_optimizer_group_count_sql,
+            sizeof(select_optimizer_group_count_sql) - 1, NULL, 0, 16,
+            sizeof(batch_response), group_count_optimizer_request,
+            sizeof(group_count_optimizer_request),
+            group_count_optimizer_response,
+            sizeof(group_count_optimizer_response), planner_response,
+            sizeof(planner_response), executor_response,
+            sizeof(executor_response), batch_response,
+            sizeof(batch_response), planner_columns, 9, executor_columns, 9,
+            cell_scratch, 9, grouped_materialized,
+            sizeof(grouped_materialized), write_optimizer_group_count,
+            &grouped_results);
+        if (status != PRDB_SDK_SQL_EXEC_OK || grouped_results.row_count != 1) {
+            static const uint8_t message[] = "fixture-error-optimizer-group-count";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
     }
 
     composite_grouped_results.row_count = 0;
