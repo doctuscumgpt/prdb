@@ -25,3 +25,10 @@
 - Profile and result: Rust/Cargo 1.95.0, redb 4.4.0, Linux x86_64. Median/p95 was 0.901/0.975 ms, 7.847/11.258 ms, and 14.202/16.845 ms for the three sizes respectively. The largest dataset is one candidate below the estimate ceiling.
 - Scope: a single local run on one host. This provides a population-size baseline for the storage API and does not measure concurrent SQL analytics, planner work, maintenance, target hardware, or service latency.
 - Verification: the release harness completed successfully with the locked dependency set.
+
+## WI-7 follow-up: repeated authorized-estimate latency sample — measured
+
+- Method: ran the release estimate harness three additional times sequentially, with fresh temporary databases and 11 measurements at each dataset size.
+- Run-level median latency across repetitions: 0.921 ms for 1,024 rows (range 0.899–0.930), 7.460 ms for 8,192 rows (7.124–7.587), and 15.943 ms for 16,383 rows (14.979–23.795). Median run p95 values were 1.406, 9.170, and 16.738 ms respectively.
+- Scope: one host with uncontrolled cache and competing load; the 16,383-row p95 ranged from 15.835 to 27.299 ms. This measures the storage estimate call, excluding setup and planner IPC, and is not service-level or target-hardware evidence.
+- Verification: each of the three release harness executions completed successfully.

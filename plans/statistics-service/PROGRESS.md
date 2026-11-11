@@ -54,3 +54,10 @@
 - Profile and result: Rust/Cargo 1.95.0, redb 4.4.0, TinyCC 0.9.27-unstable-2025-01-06, Linux x86_64. Median/p95 call latency was 0.901/0.975 ms at 1,024 rows, 7.847/11.258 ms at 8,192 rows, and 14.202/16.845 ms at 16,383 rows, just below the 16,384 candidate ceiling.
 - Scope: one local run on one host. These figures show scaling of the storage estimate call for this simple authorized shape; they are not planner, service-level, mixed-workload, or target-hardware performance claims. Repeated host/filesystem samples and broader policy/workload shapes remain open.
 - Verification: `nix-shell -p rustc cargo clippy rustfmt tinycc --run 'cargo run -p prdb-engine --release --example statistics_estimate --locked'` completed successfully.
+
+## ST-1 / WI-7 follow-up: estimate-cost run-to-run sample — measured
+
+- Method: ran the already-built release harness three times sequentially; each run built and removed a fresh temporary database and took 11 estimate samples at each configured population size.
+- Run-level median latency across the three repetitions: 0.921 ms at 1,024 rows (range 0.899–0.930), 7.460 ms at 8,192 rows (7.124–7.587), and 15.943 ms at 16,383 rows (14.979–23.795). Median of run-level p95 values: 1.406, 9.170, and 16.738 ms respectively; the 16,383-row p95 range was 15.835–27.299 ms.
+- Scope: repetitions share one host and filesystem; cache state and competing system load are uncontrolled. The wide largest-dataset range confirms this is local comparative evidence, not a stable service target or target-hardware profile.
+- Verification: all three executions of `target/release/examples/statistics_estimate` exited successfully.
