@@ -60,6 +60,56 @@ int main(void) {
                   sizeof(descending_nulls_last)) == 0);
 
     {
+        uint8_t row_bytes[PRDB_SDK_SQL_ORDER_MAX_ROWS][4];
+        prdb_sdk_value_v1 row_keys[PRDB_SDK_SQL_ORDER_MAX_ROWS];
+        uint32_t row_order[PRDB_SDK_SQL_ORDER_MAX_ROWS];
+        uint8_t seen[PRDB_SDK_SQL_ORDER_MAX_ROWS] = {0};
+        for (uint32_t row = 0; row < PRDB_SDK_SQL_ORDER_MAX_ROWS; ++row) {
+            row_keys[row] = integer_value(
+                row_bytes[row], (int32_t)((PRDB_SDK_SQL_ORDER_MAX_ROWS - row) % 19));
+        }
+        assert(prdb_sdk_sql_order_row_indices_v1(
+                   row_keys, PRDB_SDK_SQL_ORDER_MAX_ROWS,
+                   PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0, row_order,
+                   PRDB_SDK_SQL_ORDER_MAX_ROWS) == PRDB_SDK_SQL_ORDER_OK);
+        for (uint32_t position = 0;
+             position < PRDB_SDK_SQL_ORDER_MAX_ROWS; ++position) {
+            uint32_t row = row_order[position];
+            assert(row < PRDB_SDK_SQL_ORDER_MAX_ROWS && seen[row] == 0);
+            seen[row] = 1;
+            if (position != 0) {
+                uint32_t previous = row_order[position - 1];
+                int32_t previous_value = (int32_t)(
+                    (PRDB_SDK_SQL_ORDER_MAX_ROWS - previous) % 19);
+                int32_t current_value = (int32_t)(
+                    (PRDB_SDK_SQL_ORDER_MAX_ROWS - row) % 19);
+                assert(previous_value <= current_value);
+                if (previous_value == current_value) assert(previous < row);
+            }
+        }
+        memset(seen, 0, sizeof(seen));
+        assert(prdb_sdk_sql_order_row_indices_v1(
+                   row_keys, PRDB_SDK_SQL_ORDER_MAX_ROWS,
+                   PRDB_SDK_VALUE_TYPE_INTEGER, 0, 1, row_order,
+                   PRDB_SDK_SQL_ORDER_MAX_ROWS) == PRDB_SDK_SQL_ORDER_OK);
+        for (uint32_t position = 0;
+             position < PRDB_SDK_SQL_ORDER_MAX_ROWS; ++position) {
+            uint32_t row = row_order[position];
+            assert(row < PRDB_SDK_SQL_ORDER_MAX_ROWS && seen[row] == 0);
+            seen[row] = 1;
+            if (position != 0) {
+                uint32_t previous = row_order[position - 1];
+                int32_t previous_value = (int32_t)(
+                    (PRDB_SDK_SQL_ORDER_MAX_ROWS - previous) % 19);
+                int32_t current_value = (int32_t)(
+                    (PRDB_SDK_SQL_ORDER_MAX_ROWS - row) % 19);
+                assert(previous_value >= current_value);
+                if (previous_value == current_value) assert(previous < row);
+            }
+        }
+    }
+
+    {
         uint8_t primary_bytes[5][4], secondary_bytes[5][4];
         const int32_t primary_values[] = {1, 1, 1, 2, 2};
         const int32_t secondary_values[] = {5, 2, 0, 1, 3};
