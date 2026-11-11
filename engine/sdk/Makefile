@@ -327,7 +327,7 @@ $(SDK_MANIFEST_TEST): engine/tests/fixtures/sdk_manifest_v1.c $(SDK_ARCHIVE) $(I
 $(SDK_SCOPE_TEST): engine/tests/fixtures/sdk_scope_v1.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_scope_v1.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
 
-$(SDK_IPC_FRAME_TEST): engine/tests/fixtures/ipc_frame_v1.c engine/csrc/ipc_frame_v1.c $(INCLUDE_DIR)/prdb_ipc_frame_v1.h $(INCLUDE_DIR)/prdb_query_abi_constants.h $(INCLUDE_DIR)/prdb_ipc_operation_cases_v1.h | $(BUILD_DIR)
+$(SDK_IPC_FRAME_TEST): engine/tests/fixtures/ipc_frame_v1.c engine/csrc/ipc_frame_v1.c $(INCLUDE_DIR)/prdb_ipc_frame_v1.h $(INCLUDE_DIR)/prdb_query_abi_constants.h $(INCLUDE_DIR)/prdb_query_abi_payload_codecs.h $(INCLUDE_DIR)/prdb_ipc_operation_cases_v1.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" engine/tests/fixtures/ipc_frame_v1.c engine/csrc/ipc_frame_v1.c -o "$@"
 
 $(SDK_IPC_PAYLOAD_CODEC_TEST): engine/tests/fixtures/ipc_payload_codec_v1.c $(INCLUDE_DIR)/prdb_query_abi_payload_codecs.h $(INCLUDE_DIR)/prdb_query_abi_constants.h | $(BUILD_DIR)

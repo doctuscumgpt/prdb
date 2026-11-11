@@ -1,41 +1,7 @@
 #include "prdb_ipc_frame_v1.h"
+#include "prdb_query_abi_payload_codecs.h"
 
 #include <string.h>
-
-static uint16_t load_u16_be(const uint8_t *bytes) {
-    return (uint16_t)(((uint16_t)bytes[0] << 8) | bytes[1]);
-}
-
-static uint32_t load_u32_be(const uint8_t *bytes) {
-    return ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) |
-           ((uint32_t)bytes[2] << 8) | (uint32_t)bytes[3];
-}
-
-static uint64_t load_u64_be(const uint8_t *bytes) {
-    uint64_t value = 0;
-    for (uint32_t index = 0; index < 8; ++index) {
-        value = (value << 8) | bytes[index];
-    }
-    return value;
-}
-
-static void store_u16_be(uint8_t *bytes, uint16_t value) {
-    bytes[0] = (uint8_t)(value >> 8);
-    bytes[1] = (uint8_t)value;
-}
-
-static void store_u32_be(uint8_t *bytes, uint32_t value) {
-    bytes[0] = (uint8_t)(value >> 24);
-    bytes[1] = (uint8_t)(value >> 16);
-    bytes[2] = (uint8_t)(value >> 8);
-    bytes[3] = (uint8_t)value;
-}
-
-static void store_u64_be(uint8_t *bytes, uint64_t value) {
-    for (uint32_t index = 0; index < 8; ++index) {
-        bytes[index] = (uint8_t)(value >> (56 - index * 8));
-    }
-}
 
 static int operation_is_known(uint16_t operation) {
     switch (operation) {
@@ -80,11 +46,9 @@ int32_t prdb_ipc_frame_encode_v1(const prdb_ipc_frame_v1 *frame,
     if (frame->payload_len != 0) {
         memmove(output + PRDB_IPC_FRAME_HEADER_LEN, frame->payload, frame->payload_len);
     }
-    store_u32_be(output + PRDB_IPC_FRAME_MAGIC_OFFSET, PRDB_IPC_FRAME_MAGIC);
-    store_u16_be(output + PRDB_IPC_FRAME_VERSION_OFFSET, PRDB_IPC_FRAME_VERSION);
-    store_u16_be(output + PRDB_IPC_FRAME_OPERATION_OFFSET, frame->operation);
-    store_u64_be(output + PRDB_IPC_FRAME_REQUEST_ID_OFFSET, frame->request_id);
-    store_u32_be(output + PRDB_IPC_FRAME_PAYLOAD_LEN_OFFSET, frame->payload_len);
+    prdb_encode_ipc_frame_header_record(
+        output, PRDB_IPC_FRAME_MAGIC, PRDB_IPC_FRAME_VERSION, frame->operation,
+        frame->request_id, frame->payload_len);
     return PRDB_IPC_FRAME_OK;
 }
 
@@ -98,24 +62,31 @@ int32_t prdb_ipc_frame_decode_v1(const uint8_t *input,
     if (input_len < PRDB_IPC_FRAME_HEADER_LEN) {
         return PRDB_IPC_FRAME_TRUNCATED;
     }
-    if (load_u32_be(input + PRDB_IPC_FRAME_MAGIC_OFFSET) != PRDB_IPC_FRAME_MAGIC) {
+    uint32_t magic = 0;
+    uint16_t version = 0;
+    uint16_t operation = 0;
+    uint64_t request_id = 0;
+    uint32_t payload_len = 0;
+    if (!prdb_decode_ipc_frame_header_record(
+            input, PRDB_IPC_FRAME_HEADER_LEN, &magic, &version, &operation,
+            &request_id, &payload_len)) {
+        return PRDB_IPC_FRAME_TRUNCATED;
+    }
+    if (magic != PRDB_IPC_FRAME_MAGIC) {
         return PRDB_IPC_FRAME_INVALID_MAGIC;
     }
-    if (load_u16_be(input + PRDB_IPC_FRAME_VERSION_OFFSET) != PRDB_IPC_FRAME_VERSION) {
+    if (version != PRDB_IPC_FRAME_VERSION) {
         return PRDB_IPC_FRAME_UNSUPPORTED_VERSION;
     }
-    uint16_t operation = load_u16_be(input + PRDB_IPC_FRAME_OPERATION_OFFSET);
     if (operation == 0) {
         return PRDB_IPC_FRAME_INVALID_OPERATION;
     }
     if (!operation_is_known(operation)) {
         return PRDB_IPC_FRAME_UNKNOWN_OPERATION;
     }
-    uint64_t request_id = load_u64_be(input + PRDB_IPC_FRAME_REQUEST_ID_OFFSET);
     if (request_id == 0) {
         return PRDB_IPC_FRAME_INVALID_REQUEST_ID;
     }
-    uint32_t payload_len = load_u32_be(input + PRDB_IPC_FRAME_PAYLOAD_LEN_OFFSET);
     if (payload_len > PRDB_IPC_FRAME_MAX_PAYLOAD_BYTES) {
         return PRDB_IPC_FRAME_PAYLOAD_TOO_LARGE;
     }

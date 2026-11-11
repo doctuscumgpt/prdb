@@ -1771,6 +1771,20 @@
       "trailing_fields": []
     },
     {
+      "name": "IPC_FRAME_HEADER_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "codec_prefix": true,
+      "fields": [
+        { "name": "magic", "encoding": "u32be" },
+        { "name": "version", "encoding": "u16be" },
+        { "name": "operation", "encoding": "u16be" },
+        { "name": "request_id", "encoding": "u64be" },
+        { "name": "payload_length", "encoding": "u32be" }
+      ],
+      "trailing_fields": []
+    },
+    {
       "name": "CLIENT_FRAME_HEADER_RECORD",
       "generate_rust_codec": true,
       "generate_c_codec": true,

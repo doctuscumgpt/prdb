@@ -798,3 +798,12 @@
 - Compatibility: the maintained Rust regression checks the exact header bytes and full streaming round-trip; a TinyCC fixture checks the generated C codec against the same exact bytes and decoded values. No network frame bytes or validation rules changed.
 - Verification: generator tests (7 passed), generated-file drift check, focused client-frame test, forced TinyCC SDK suite, locked workspace build, format check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
 - Remaining: schema generation covers additional nested IPC payloads, but not every external protocol or client JSON operation; TC-2 parity and TC-5 release packaging/profile acceptance remain open.
+
+## TC-2 follow-up: generated internal IPC frame header — implemented
+
+- Contract: the internal `PRDI` v1 frame keeps its 20-byte big-endian header and existing semantic validation rules.
+- Red evidence: the generator regression failed because `IPC_FRAME_HEADER_RECORD` and its Rust/C codecs were absent.
+- Implementation: the schema now declares the internal header record; generated Rust and C codecs encode/decode the header used by `ipc.rs` and `ipc_frame_v1.c`. The generator checks that record field order, widths, offsets, and total length match the canonical IPC frame constants. It also treats a record's ordinary `version` field as data rather than a versioned-payload constant.
+- Compatibility: the maintained Rust IPC and TinyCC C fixtures continue to match the hand-checked wire bytes and reject malformed headers; operation, request ID, and payload-size checks remain in the protocol layer.
+- Verification: generator tests (8 passed), generated-file drift check, focused TinyCC IPC fixture, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
+- Remaining: additional nested IPC payload codecs and full shared-schema parity remain open.

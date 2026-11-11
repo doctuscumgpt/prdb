@@ -274,7 +274,7 @@ def render(schema):
                 field_encoding = field["encoding"]
                 field_offset = field_offsets[field_name]
                 field_end = field_offset + field_widths[field_encoding]
-                if field_name == "version":
+                if field_name == "version" and not is_record:
                     rust_lines.append(
                         f"    payload[{field_offset}..{field_end}].copy_from_slice(&{version_constant}.to_be_bytes());"
                     )
@@ -377,7 +377,7 @@ def render(schema):
                 field_encoding = field["encoding"]
                 field_offset = field_offsets[field_name]
                 field_end = field_offset + field_widths[field_encoding]
-                if field_name == "version":
+                if field_name == "version" and not is_record:
                     c_codec_lines.extend(
                         [
                             f"    payload[{field_offset}] = (uint8_t)(({c_version_constant} >> 8) & 0xffu);",
@@ -847,6 +847,33 @@ def render(schema):
             raise ValueError(f"IPC frame offsets and lengths must be integers: {offset_name}")
         if length <= 0 or offset < 0 or offset + length != next_offset:
             raise ValueError(f"IPC frame field is not contiguous: {offset_name}")
+    ipc_header = next(
+        (record for record in record_schemas if record.get("name") == "IPC_FRAME_HEADER_RECORD"),
+        None,
+    )
+    ipc_header_fields = (
+        ("magic", "u32be", "IPC_FRAME_MAGIC_OFFSET", "IPC_FRAME_MAGIC_LEN"),
+        ("version", "u16be", "IPC_FRAME_VERSION_OFFSET", "IPC_FRAME_VERSION_LEN"),
+        ("operation", "u16be", "IPC_FRAME_OPERATION_OFFSET", "IPC_FRAME_OPERATION_LEN"),
+        ("request_id", "u64be", "IPC_FRAME_REQUEST_ID_OFFSET", "IPC_FRAME_REQUEST_ID_LEN"),
+        ("payload_length", "u32be", "IPC_FRAME_PAYLOAD_LEN_OFFSET", "IPC_FRAME_PAYLOAD_LEN_LEN"),
+    )
+    if ipc_header is None or len(ipc_header.get("fields", [])) != len(ipc_header_fields):
+        raise ValueError("IPC frame header record must match the canonical field layout")
+    offset = 0
+    for field, (name, encoding, offset_name, length_name) in zip(
+        ipc_header["fields"], ipc_header_fields, strict=True
+    ):
+        if (
+            field.get("name") != name
+            or field.get("encoding") != encoding
+            or constant_values[offset_name] != offset
+            or constant_values[length_name] != {"u16be": 2, "u32be": 4, "u64be": 8}[encoding]
+        ):
+            raise ValueError(f"IPC frame header record does not match {offset_name}")
+        offset += constant_values[length_name]
+    if constant_values.get("IPC_FRAME_HEADER_LEN") != offset:
+        raise ValueError("IPC frame header record length does not match IPC_FRAME_HEADER_LEN")
     if constant_values.get("IPC_FRAME_MAGIC") != 0x50524449:
         raise ValueError("IPC frame magic must encode the canonical PRDI bytes")
     if constant_values.get("IPC_FRAME_VERSION") != 1:

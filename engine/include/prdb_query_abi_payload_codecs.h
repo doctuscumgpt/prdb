@@ -1851,6 +1851,78 @@ static inline int prdb_decode_mutation_cell_tag_record(const uint8_t *payload, s
     return 1;
 }
 
+static inline void prdb_encode_ipc_frame_header_record(uint8_t payload[20],
+    uint32_t magic, uint16_t version, uint16_t operation, uint64_t request_id, uint32_t payload_length) {
+    uint64_t magic_wire = (uint64_t)magic;
+    for (size_t i = 0; i < 4; ++i) {
+        payload[0 + i] = (uint8_t)(magic_wire >> ((4 - 1 - i) * 8));
+    }
+    uint64_t version_wire = (uint64_t)version;
+    for (size_t i = 0; i < 2; ++i) {
+        payload[4 + i] = (uint8_t)(version_wire >> ((2 - 1 - i) * 8));
+    }
+    uint64_t operation_wire = (uint64_t)operation;
+    for (size_t i = 0; i < 2; ++i) {
+        payload[6 + i] = (uint8_t)(operation_wire >> ((2 - 1 - i) * 8));
+    }
+    uint64_t request_id_wire = (uint64_t)request_id;
+    for (size_t i = 0; i < 8; ++i) {
+        payload[8 + i] = (uint8_t)(request_id_wire >> ((8 - 1 - i) * 8));
+    }
+    uint64_t payload_length_wire = (uint64_t)payload_length;
+    for (size_t i = 0; i < 4; ++i) {
+        payload[16 + i] = (uint8_t)(payload_length_wire >> ((4 - 1 - i) * 8));
+    }
+}
+
+static inline int prdb_decode_ipc_frame_header_record(const uint8_t *payload, size_t payload_len,
+    uint32_t *magic, uint16_t *version, uint16_t *operation, uint64_t *request_id, uint32_t *payload_length) {
+    if (payload == NULL || payload_len < 20) {
+        return 0;
+    }
+    if (magic == NULL) {
+        return 0;
+    }
+    uint64_t magic_wire_value = 0;
+    for (size_t i = 0; i < 4; ++i) {
+        magic_wire_value = (magic_wire_value << 8) | payload[0 + i];
+    }
+    *magic = (uint32_t)magic_wire_value;
+    if (version == NULL) {
+        return 0;
+    }
+    uint64_t version_wire_value = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        version_wire_value = (version_wire_value << 8) | payload[4 + i];
+    }
+    *version = (uint16_t)version_wire_value;
+    if (operation == NULL) {
+        return 0;
+    }
+    uint64_t operation_wire_value = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        operation_wire_value = (operation_wire_value << 8) | payload[6 + i];
+    }
+    *operation = (uint16_t)operation_wire_value;
+    if (request_id == NULL) {
+        return 0;
+    }
+    uint64_t request_id_wire_value = 0;
+    for (size_t i = 0; i < 8; ++i) {
+        request_id_wire_value = (request_id_wire_value << 8) | payload[8 + i];
+    }
+    *request_id = (uint64_t)request_id_wire_value;
+    if (payload_length == NULL) {
+        return 0;
+    }
+    uint64_t payload_length_wire_value = 0;
+    for (size_t i = 0; i < 4; ++i) {
+        payload_length_wire_value = (payload_length_wire_value << 8) | payload[16 + i];
+    }
+    *payload_length = (uint32_t)payload_length_wire_value;
+    return 1;
+}
+
 static inline void prdb_encode_client_frame_header_record(uint8_t payload[32],
     const uint8_t magic[4], uint16_t major_version, uint16_t minor_version, uint16_t kind, uint16_t flags, uint32_t payload_length, uint64_t request_id, uint64_t response_sequence) {
     for (size_t i = 0; i < 4; ++i) {

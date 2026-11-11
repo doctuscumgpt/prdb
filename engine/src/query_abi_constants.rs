@@ -1120,6 +1120,30 @@ pub fn decode_mutation_cell_tag_record(payload: &[u8]) -> Option<u8> {
     Some(payload[0])
 }
 
+pub const IPC_FRAME_HEADER_RECORD_MAGIC_OFFSET: u32 = 0;
+pub const IPC_FRAME_HEADER_RECORD_VERSION_OFFSET: u32 = 4;
+pub const IPC_FRAME_HEADER_RECORD_OPERATION_OFFSET: u32 = 6;
+pub const IPC_FRAME_HEADER_RECORD_REQUEST_ID_OFFSET: u32 = 8;
+pub const IPC_FRAME_HEADER_RECORD_PAYLOAD_LENGTH_OFFSET: u32 = 16;
+pub const IPC_FRAME_HEADER_RECORD_HEADER_BYTES: u32 = 20;
+pub fn encode_ipc_frame_header_record(magic: u32, version: u16, operation: u16, request_id: u64, payload_length: u32) -> [u8; 20] {
+    let mut payload = [0u8; 20];
+    payload[0..4].copy_from_slice(&magic.to_be_bytes());
+    payload[4..6].copy_from_slice(&version.to_be_bytes());
+    payload[6..8].copy_from_slice(&operation.to_be_bytes());
+    payload[8..16].copy_from_slice(&request_id.to_be_bytes());
+    payload[16..20].copy_from_slice(&payload_length.to_be_bytes());
+    payload
+}
+
+#[allow(clippy::type_complexity)]
+pub fn decode_ipc_frame_header_record(payload: &[u8]) -> Option<(u32, u16, u16, u64, u32)> {
+    if payload.len() < 20 {
+        return None;
+    }
+    Some((u32::from_be_bytes(payload[0..4].try_into().ok()?), u16::from_be_bytes(payload[4..6].try_into().ok()?), u16::from_be_bytes(payload[6..8].try_into().ok()?), u64::from_be_bytes(payload[8..16].try_into().ok()?), u32::from_be_bytes(payload[16..20].try_into().ok()?)))
+}
+
 pub const CLIENT_FRAME_HEADER_RECORD_MAGIC_OFFSET: u32 = 0;
 pub const CLIENT_FRAME_HEADER_RECORD_MAJOR_VERSION_OFFSET: u32 = 4;
 pub const CLIENT_FRAME_HEADER_RECORD_MINOR_VERSION_OFFSET: u32 = 6;

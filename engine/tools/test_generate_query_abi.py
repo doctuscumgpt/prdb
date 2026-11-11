@@ -77,6 +77,14 @@ class PayloadSchemaValidationTests(unittest.TestCase):
         self.assertIn("CLIENT_FRAME_HEADER_RECORD_HEADER_BYTES", rust)
         self.assertIn("encode_client_frame_header_record", rust)
         self.assertIn("decode_client_frame_header_record", rust)
+        self.assertIn("IPC_FRAME_HEADER_RECORD_HEADER_BYTES", rust)
+        self.assertIn("encode_ipc_frame_header_record", rust)
+        self.assertIn("decode_ipc_frame_header_record", rust)
+        self.assertIn("payload[4..6].copy_from_slice(&version.to_be_bytes())", rust)
+        self.assertIn("PRDB_IPC_FRAME_HEADER_RECORD_HEADER_BYTES", c)
+        self.assertIn("prdb_encode_ipc_frame_header_record", c_codecs)
+        self.assertIn("prdb_decode_ipc_frame_header_record", c_codecs)
+        self.assertIn("uint64_t version_wire = (uint64_t)version;", c_codecs)
         self.assertIn("#[allow(clippy::too_many_arguments)]", rust)
         self.assertIn("request_id.to_le_bytes()", rust)
         self.assertIn("u64::from_le_bytes(payload[16..24]", rust)
@@ -267,6 +275,17 @@ class PayloadSchemaValidationTests(unittest.TestCase):
         malformed = copy.deepcopy(self.schema)
         malformed["record_schemas"][0]["version_constant"] = "EXECUTOR_BATCH_PAYLOAD_VERSION"
         with self.assertRaisesRegex(ValueError, "must not declare a payload version"):
+            GENERATOR.render(malformed)
+
+    def test_ipc_frame_header_record_matches_canonical_offsets(self):
+        malformed = copy.deepcopy(self.schema)
+        header = next(
+            record
+            for record in malformed["record_schemas"]
+            if record["name"] == "IPC_FRAME_HEADER_RECORD"
+        )
+        header["fields"][1]["encoding"] = "u16le"
+        with self.assertRaisesRegex(ValueError, "IPC frame header record does not match"):
             GENERATOR.render(malformed)
 
     def test_generated_fixed_codec_rejects_trailing_fields(self):
