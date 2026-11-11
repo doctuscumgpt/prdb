@@ -717,7 +717,159 @@ static int32_t evaluate_predicate_node(
 
 static int columns_equal(const prdb_sdk_optimizer_plan_column_v1 *left,
                          const prdb_sdk_optimizer_plan_column_v1 *right) {
-    return memcmp(left, right, sizeof(*left)) == 0;
+    return memcmp(left->column_id, right->column_id, 16) == 0 &&
+           left->ordinal == right->ordinal &&
+           left->type_code == right->type_code &&
+           memcmp(left->type_parameters, right->type_parameters, 4) == 0 &&
+           left->nullable == right->nullable;
+}
+
+static uint16_t read_be_u16(const uint8_t *bytes) {
+    return (uint16_t)(((uint16_t)bytes[0] << 8) | bytes[1]);
+}
+
+static int join_key_types_match(
+    const prdb_sdk_optimizer_plan_column_v1 *left,
+    const prdb_sdk_optimizer_plan_column_v1 *right) {
+    if (left->type_code != right->type_code) return 0;
+    if (left->type_code == 5)
+        return left->type_parameters[1] == right->type_parameters[1];
+    return memcmp(left->type_parameters, right->type_parameters, 4) == 0;
+}
+
+static int join_scan_contains(
+    const prdb_sdk_optimizer_join_relation_v1 *relation,
+    const prdb_sdk_optimizer_plan_column_v1 *column) {
+    uint32_t index;
+    for (index = 0; index < relation->scan_column_count; ++index) {
+        if (columns_equal(&relation->scan_columns[index], column)) return 1;
+    }
+    return 0;
+}
+
+int32_t prdb_sdk_optimizer_decode_join_plan_v1(
+    const uint8_t *payload, uint64_t payload_len,
+    prdb_sdk_optimizer_join_plan_v1 *out, uint32_t out_capacity) {
+    prdb_sdk_optimizer_join_plan_v1 decoded;
+    plan_reader reader;
+    uint16_t version;
+    uint8_t kind;
+    uint8_t reserved;
+    const uint8_t *bytes;
+    uint32_t side;
+    uint32_t index;
+    uint32_t other;
+    uint16_t count;
+    uint8_t flag;
+
+    if (payload == NULL || out == NULL || out_capacity < sizeof(*out) ||
+        payload_len > PRDB_SDK_OPTIMIZER_MAX_PLAN_BYTES ||
+        ranges_overlap(payload, payload_len, out, sizeof(*out)))
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
+    memset(&decoded, 0, sizeof(decoded));
+    reader.bytes = payload;
+    reader.length = payload_len;
+    reader.offset = 0;
+    if (!prdb_decode_optimizer_plan_header_record(
+            payload, PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES,
+            &version, &kind, &reserved) || version != 1 || kind != 4 ||
+        reserved != 0)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    reader.offset = PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
+    if (!read_name(&reader, &decoded.schema_name,
+                   &decoded.schema_name_len) ||
+        !take(&reader, PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES,
+              &bytes) ||
+        !prdb_decode_optimizer_plan_schema_reference_record(
+            bytes, PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES,
+            decoded.schema_id, &decoded.schema_version) ||
+        all_zero(decoded.schema_id, 16) || decoded.schema_version == 0)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+
+    for (side = 0; side < 2; ++side) {
+        prdb_sdk_optimizer_join_relation_v1 *relation =
+            side == 0 ? &decoded.left_relation : &decoded.right_relation;
+        if (!read_name(&reader, &relation->relation_name,
+                       &relation->relation_name_len) ||
+            !take(&reader,
+                  PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES,
+                  &bytes) ||
+            !prdb_decode_optimizer_plan_relation_reference_record(
+                bytes,
+                PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES,
+                relation->relation_id, &relation->table_epoch) ||
+            all_zero(relation->relation_id, 16) || relation->table_epoch == 0)
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    }
+    for (side = 0; side < 2; ++side) {
+        prdb_sdk_optimizer_join_relation_v1 *relation =
+            side == 0 ? &decoded.left_relation : &decoded.right_relation;
+        if (!take(&reader, 2, &bytes))
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        count = read_be_u16(bytes);
+        if (count == 0 || count > PRDB_SDK_OPTIMIZER_PLAN_MAX_SCAN_COLUMNS)
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        relation->scan_column_count = count;
+        for (index = 0; index < relation->scan_column_count; ++index) {
+            prdb_sdk_optimizer_plan_column_v1 *column =
+                &relation->scan_columns[index];
+            if (!read_column(&reader, column) ||
+                (index != 0 &&
+                 relation->scan_columns[index - 1].ordinal >= column->ordinal))
+                return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+            for (other = 0; other < index; ++other) {
+                if (memcmp(relation->scan_columns[other].column_id,
+                           column->column_id, 16) == 0)
+                    return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+            }
+        }
+    }
+    if (!take(&reader, 2, &bytes))
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    count = read_be_u16(bytes);
+    if (count == 0 || count > PRDB_SDK_OPTIMIZER_PLAN_MAX_PROJECTIONS)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    decoded.projection_count = count;
+    for (index = 0; index < decoded.projection_count; ++index) {
+        prdb_sdk_optimizer_join_projection_v1 *projection =
+            &decoded.projections[index];
+        if (!read_u8(&reader, &flag) || flag > 1 ||
+            !read_column(&reader, &projection->column))
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        projection->relation_side = flag;
+        if (!join_scan_contains(flag == 0 ? &decoded.left_relation
+                                          : &decoded.right_relation,
+                                &projection->column))
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    }
+    if (!read_u8(&reader, &flag) || flag < 2 || flag > 8)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    decoded.join_key_count = flag;
+    for (index = 0; index < decoded.join_key_count; ++index) {
+        prdb_sdk_optimizer_join_key_v1 *key = &decoded.join_keys[index];
+        if (!read_column(&reader, &key->left_column) ||
+            !read_column(&reader, &key->right_column) ||
+            !join_scan_contains(&decoded.left_relation, &key->left_column) ||
+            !join_scan_contains(&decoded.right_relation, &key->right_column) ||
+            !join_key_types_match(&key->left_column, &key->right_column))
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    }
+    if (!read_u8(&reader, &flag) || flag > 1)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    decoded.has_limit = flag;
+    if (decoded.has_limit) {
+        if (!take(&reader, 4, &bytes))
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        decoded.limit = ((uint32_t)bytes[0] << 24) |
+                        ((uint32_t)bytes[1] << 16) |
+                        ((uint32_t)bytes[2] << 8) | bytes[3];
+    }
+    if (reader.offset != reader.length)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    decoded.struct_size = sizeof(decoded);
+    decoded.abi_version = PRDB_SDK_OPTIMIZER_PLAN_ABI_V1_VERSION;
+    *out = decoded;
+    return PRDB_SDK_OPTIMIZER_PLAN_OK;
 }
 
 static int32_t decode_plan_internal(
@@ -1343,6 +1495,153 @@ int32_t prdb_sdk_optimizer_validate_executor_relation_v1(
         return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
     }
     return PRDB_SDK_OPTIMIZER_PLAN_OK;
+}
+
+static int32_t validate_join_relation_identity(
+    const prdb_host_api_v2 *host, const uint8_t *schema_name,
+    uint32_t schema_name_len, const uint8_t schema_id[16],
+    uint64_t schema_version,
+    const prdb_sdk_optimizer_join_relation_v1 *plan_relation,
+    uint8_t *response, uint64_t response_capacity,
+    uint64_t *response_len) {
+    uint8_t request[6 + 2 * 63];
+    uint8_t relation_status;
+    uint8_t response_schema_id[16];
+    uint8_t response_relation_id[16];
+    uint64_t response_schema_version;
+    uint64_t response_table_epoch;
+    uint64_t offset;
+    uint32_t column_count;
+    uint32_t scan_index = 0;
+    int32_t callback_status;
+
+    prdb_encode_executor_resolve_relation_request(
+        request, (uint16_t)schema_name_len,
+        (uint16_t)plan_relation->relation_name_len);
+    memcpy(request + 6, schema_name, schema_name_len);
+    memcpy(request + 6 + schema_name_len, plan_relation->relation_name,
+           plan_relation->relation_name_len);
+    *response_len = 0;
+    callback_status = host->executor_request(
+        host->context, PRDB_IPC_OP_RESOLVE_PLAN_RELATION, request,
+        6 + schema_name_len + plan_relation->relation_name_len, response,
+        response_capacity, response_len);
+    if (callback_status == PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL)
+        return PRDB_SDK_OPTIMIZER_PLAN_RESPONSE_TOO_SMALL;
+    if (callback_status != PRDB_QUERY_CALLBACK_OK ||
+        *response_len > response_capacity || *response_len < 3)
+        return PRDB_SDK_OPTIMIZER_PLAN_CALLBACK_ERROR;
+    if (prdb_decode_planner_describe_plan_relation_unavailable_response(
+            response, (size_t)*response_len, &relation_status) &&
+        relation_status == 1)
+        return PRDB_SDK_OPTIMIZER_PLAN_UNAVAILABLE;
+    if (!prdb_decode_planner_describe_plan_relation_available_response(
+            response, (size_t)*response_len, &relation_status,
+            response_schema_id, &response_schema_version,
+            &response_table_epoch, response_relation_id) ||
+        relation_status != 0 || *response_len < 55)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    if (memcmp(response_schema_id, schema_id, 16) != 0 ||
+        response_schema_version != schema_version ||
+        response_table_epoch != plan_relation->table_epoch ||
+        memcmp(response_relation_id, plan_relation->relation_id, 16) != 0)
+        return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+    offset = 51;
+    if (offset + 2 > *response_len)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    uint32_t relation_name_len = response_u16(response, offset);
+    offset += 2;
+    if (relation_name_len == 0 || relation_name_len > 63 ||
+        offset + relation_name_len + 2 > *response_len ||
+        !response_identifier(response + offset, relation_name_len))
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    if (relation_name_len != plan_relation->relation_name_len ||
+        memcmp(response + offset, plan_relation->relation_name,
+               relation_name_len) != 0)
+        return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+    offset += relation_name_len;
+    column_count = response_u16(response, offset);
+    offset += 2;
+    if (column_count == 0 || column_count > 4096)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    for (uint32_t ordinal = 0; ordinal < column_count; ++ordinal) {
+        uint32_t column_ordinal;
+        uint8_t nullable;
+        uint8_t type_code;
+        const uint8_t *column_id;
+        const uint8_t *parameters;
+        uint32_t column_name_len;
+        if (offset + 28 > *response_len)
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        column_id = response + offset;
+        if (all_zero(column_id, 16))
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        offset += 16;
+        column_ordinal = response_u32(response, offset);
+        offset += 4;
+        nullable = response[offset++];
+        type_code = response[offset++];
+        parameters = response + offset;
+        offset += 4;
+        if (column_ordinal != ordinal || nullable > 1 ||
+            !valid_type(type_code, parameters) || offset + 2 > *response_len)
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        column_name_len = response_u16(response, offset);
+        offset += 2;
+        if (column_name_len == 0 || column_name_len > 63 ||
+            offset + column_name_len > *response_len ||
+            !response_identifier(response + offset, column_name_len))
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        offset += column_name_len;
+        if (scan_index < plan_relation->scan_column_count &&
+            plan_relation->scan_columns[scan_index].ordinal < ordinal)
+            return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+        if (scan_index < plan_relation->scan_column_count &&
+            plan_relation->scan_columns[scan_index].ordinal == ordinal) {
+            const prdb_sdk_optimizer_plan_column_v1 *expected =
+                &plan_relation->scan_columns[scan_index++];
+            if (memcmp(column_id, expected->column_id, 16) != 0 ||
+                type_code != expected->type_code ||
+                nullable != expected->nullable ||
+                memcmp(parameters, expected->type_parameters, 4) != 0)
+                return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+        }
+    }
+    if (offset != *response_len)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    if (scan_index != plan_relation->scan_column_count)
+        return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+    return PRDB_SDK_OPTIMIZER_PLAN_OK;
+}
+
+int32_t prdb_sdk_optimizer_validate_executor_join_relations_v1(
+    const prdb_host_api_v2 *host, const uint8_t *plan_payload,
+    uint64_t plan_payload_len, uint8_t *response,
+    uint64_t response_capacity, uint64_t *response_len) {
+    prdb_sdk_optimizer_join_plan_v1 plan = {0};
+    int32_t status;
+    if (host == NULL || host->struct_size < sizeof(*host) ||
+        host->abi_version != PRDB_QUERY_ABI_V2_VERSION ||
+        host->executor_request == NULL || plan_payload == NULL ||
+        response == NULL || response_len == NULL ||
+        response_capacity > PRDB_QUERY_MAX_IPC_RESPONSE_BYTES ||
+        response_capacity < 3 ||
+        plan_payload_len > PRDB_SDK_OPTIMIZER_MAX_PLAN_BYTES ||
+        ranges_overlap(plan_payload, plan_payload_len, response,
+                       response_capacity))
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
+    status = prdb_sdk_optimizer_decode_join_plan_v1(
+        plan_payload, plan_payload_len, &plan, sizeof(plan));
+    if (status != PRDB_SDK_OPTIMIZER_PLAN_OK) return status;
+    status = validate_join_relation_identity(
+        host, plan.schema_name, plan.schema_name_len, plan.schema_id,
+        plan.schema_version, &plan.left_relation, response,
+        response_capacity, response_len);
+    if (status != PRDB_SDK_OPTIMIZER_PLAN_OK) return status;
+    return validate_join_relation_identity(
+        host, plan.schema_name, plan.schema_name_len, plan.schema_id,
+        plan.schema_version, &plan.right_relation, response,
+        response_capacity, response_len);
 }
 
 int32_t prdb_sdk_optimizer_acquire_plan_relation_v1(

@@ -86,6 +86,46 @@ typedef struct prdb_sdk_optimizer_update_plan_v1 {
         assignments[PRDB_SDK_OPTIMIZER_PLAN_MAX_UPDATE_ASSIGNMENTS];
 } prdb_sdk_optimizer_update_plan_v1;
 
+typedef struct prdb_sdk_optimizer_join_relation_v1 {
+    const uint8_t *relation_name;
+    uint32_t relation_name_len;
+    uint8_t relation_id[16];
+    uint64_t table_epoch;
+    uint32_t scan_column_count;
+    prdb_sdk_optimizer_plan_column_v1
+        scan_columns[PRDB_SDK_OPTIMIZER_PLAN_MAX_SCAN_COLUMNS];
+} prdb_sdk_optimizer_join_relation_v1;
+
+typedef struct prdb_sdk_optimizer_join_projection_v1 {
+    uint32_t relation_side;
+    prdb_sdk_optimizer_plan_column_v1 column;
+} prdb_sdk_optimizer_join_projection_v1;
+
+typedef struct prdb_sdk_optimizer_join_key_v1 {
+    prdb_sdk_optimizer_plan_column_v1 left_column;
+    prdb_sdk_optimizer_plan_column_v1 right_column;
+} prdb_sdk_optimizer_join_key_v1;
+
+/* Kind-4 join plans retain independent metadata and scan shape for each side.
+ * Relation/schema names borrow the payload; columns are copied. */
+typedef struct prdb_sdk_optimizer_join_plan_v1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    const uint8_t *schema_name;
+    uint32_t schema_name_len;
+    uint8_t schema_id[16];
+    uint64_t schema_version;
+    prdb_sdk_optimizer_join_relation_v1 left_relation;
+    prdb_sdk_optimizer_join_relation_v1 right_relation;
+    uint32_t projection_count;
+    prdb_sdk_optimizer_join_projection_v1
+        projections[PRDB_SDK_OPTIMIZER_PLAN_MAX_PROJECTIONS];
+    uint32_t join_key_count;
+    prdb_sdk_optimizer_join_key_v1 join_keys[8];
+    uint32_t has_limit;
+    uint32_t limit;
+} prdb_sdk_optimizer_join_plan_v1;
+
 typedef struct prdb_sdk_optimizer_scan_state_v1 {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -133,6 +173,13 @@ int32_t prdb_sdk_optimizer_decode_delete_plan_v1(
 int32_t prdb_sdk_optimizer_decode_update_plan_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_update_plan_v1 *out, uint32_t out_capacity);
+
+/* Independently decodes kind-4 two-relation equality join plans, checking
+ * both scan shapes, side-qualified projections, key references/types, LIMIT,
+ * stable relation identities, and canonical framing. */
+int32_t prdb_sdk_optimizer_decode_join_plan_v1(
+    const uint8_t *payload, uint64_t payload_len,
+    prdb_sdk_optimizer_join_plan_v1 *out, uint32_t out_capacity);
 
 /* Validate a DELETE plan against the parsed DELETE statement and its bound
  * parameters, then re-resolve its relation through executor storage. */
@@ -198,6 +245,13 @@ int32_t prdb_sdk_optimizer_execute_update_ast_v1(
  * and require its stable identity and scanned column definitions to match.
  * The response buffer remains caller-owned. No executor handle is returned. */
 int32_t prdb_sdk_optimizer_validate_executor_relation_v1(
+    const prdb_host_api_v2 *host, const uint8_t *plan_payload,
+    uint64_t plan_payload_len, uint8_t *response,
+    uint64_t response_capacity, uint64_t *response_len);
+
+/* Re-resolve both relations in a validated kind-4 join plan through executor
+ * storage and require each stable identity and scan shape to match. */
+int32_t prdb_sdk_optimizer_validate_executor_join_relations_v1(
     const prdb_host_api_v2 *host, const uint8_t *plan_payload,
     uint64_t plan_payload_len, uint8_t *response,
     uint64_t response_capacity, uint64_t *response_len);

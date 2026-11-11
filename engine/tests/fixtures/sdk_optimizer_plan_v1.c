@@ -37,6 +37,80 @@ static uint32_t put_column(uint8_t *bytes, uint32_t *offset,
     return id_offset;
 }
 
+static void put_name(uint8_t *bytes, uint32_t *offset, const char *name) {
+    uint8_t length = (uint8_t)strlen(name);
+    bytes[(*offset)++] = length;
+    memcpy(bytes + *offset, name, length);
+    *offset += length;
+}
+
+static void set_column_ordinal(uint8_t *bytes, uint32_t column_offset,
+                               uint32_t ordinal) {
+    bytes[column_offset + 16] = (uint8_t)(ordinal >> 24);
+    bytes[column_offset + 17] = (uint8_t)(ordinal >> 16);
+    bytes[column_offset + 18] = (uint8_t)(ordinal >> 8);
+    bytes[column_offset + 19] = (uint8_t)ordinal;
+}
+
+static uint32_t build_join_plan(uint8_t *bytes, uint32_t *projection_side_offset,
+                                uint32_t *right_key_type_offset) {
+    uint32_t offset = 0;
+    uint8_t identifier[16];
+    prdb_encode_optimizer_plan_header_record(bytes + offset, 1, 4, 0);
+    offset += PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "public");
+    memset(identifier, 1, sizeof(identifier));
+    prdb_encode_optimizer_plan_schema_reference_record(bytes + offset,
+                                                       identifier, 3);
+    offset += PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES;
+    for (uint32_t side = 0; side < 2; ++side) {
+        put_name(bytes, &offset, side == 0 ? "lefts" : "rights");
+        memset(identifier, side == 0 ? 0x31 : 0x32, sizeof(identifier));
+        prdb_encode_optimizer_plan_relation_reference_record(
+            bytes + offset, identifier, side == 0 ? 4 : 5);
+        offset += PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES;
+    }
+    for (uint32_t side = 0; side < 2; ++side) {
+        put_u16(bytes, &offset, 3);
+        uint32_t column = put_column(bytes, &offset, 3, 0);
+        bytes[column] = side == 0 ? 0x41 : 0x51;
+        set_column_ordinal(bytes, column, 0);
+        column = put_column(bytes, &offset, 1, 0);
+        bytes[column] = side == 0 ? 0x42 : 0x52;
+        set_column_ordinal(bytes, column, 1);
+        column = put_column(bytes, &offset, 6, 1);
+        bytes[column] = side == 0 ? 0x43 : 0x53;
+        set_column_ordinal(bytes, column, 2);
+    }
+    put_u16(bytes, &offset, 2);
+    *projection_side_offset = offset;
+    bytes[offset++] = 0;
+    uint32_t column = put_column(bytes, &offset, 6, 1);
+    bytes[column] = 0x43;
+    set_column_ordinal(bytes, column, 2);
+    bytes[offset++] = 1;
+    column = put_column(bytes, &offset, 6, 1);
+    bytes[column] = 0x53;
+    set_column_ordinal(bytes, column, 2);
+    bytes[offset++] = 2;
+    column = put_column(bytes, &offset, 3, 0);
+    bytes[column] = 0x41;
+    set_column_ordinal(bytes, column, 0);
+    column = put_column(bytes, &offset, 3, 0);
+    bytes[column] = 0x51;
+    set_column_ordinal(bytes, column, 0);
+    *right_key_type_offset = column + 20;
+    column = put_column(bytes, &offset, 1, 0);
+    bytes[column] = 0x42;
+    set_column_ordinal(bytes, column, 1);
+    column = put_column(bytes, &offset, 1, 0);
+    bytes[column] = 0x52;
+    set_column_ordinal(bytes, column, 1);
+    bytes[offset++] = 1;
+    put_u32(bytes, &offset, 5);
+    return offset;
+}
+
 static uint32_t put_header(uint8_t *bytes, uint32_t *offset,
                            uint8_t node_count) {
     bytes[(*offset)++] = 0;
@@ -236,6 +310,7 @@ typedef struct resolve_context {
     uint32_t calls;
     uint32_t optimizer_calls;
     uint32_t fail_optimizer_request;
+    uint32_t fail_join_identity;
     uint32_t stage_delete_calls;
     uint32_t stage_update_calls;
     uint32_t fail_stage_update;
@@ -303,6 +378,8 @@ static int32_t write_result(void *context, const uint8_t *bytes,
     return PRDB_QUERY_CALLBACK_OK;
 }
 
+static uint32_t build_join_relation_response(uint8_t *bytes, uint32_t side);
+
 static int32_t resolve_plan_relation(void *context, uint16_t operation,
                                      const uint8_t *request,
                                      uint64_t request_len, uint8_t *response,
@@ -311,15 +388,29 @@ static int32_t resolve_plan_relation(void *context, uint16_t operation,
     resolve_context *resolved = (resolve_context *)context;
     const uint8_t *source;
     uint32_t source_len;
+    uint8_t join_relation_response[512];
     int32_t callback_status = PRDB_QUERY_CALLBACK_OK;
     if (operation == PRDB_IPC_OP_RESOLVE_PLAN_RELATION) {
-        assert(request_len == 17 && request[0] == 0 && request[1] == 1);
+        assert((request_len == 17 || request_len == 18) &&
+               request[0] == 0 && request[1] == 1);
         assert(request[2] == 0 && request[3] == 6);
         assert(memcmp(request + 6, "public", 6) == 0);
-        assert(request[4] == 0 && request[5] == 5);
-        assert(memcmp(request + 12, "items", 5) == 0);
-        source = resolved->response;
-        source_len = resolved->response_len;
+        assert(request[4] == 0);
+        if (request[5] == 5 && memcmp(request + 12, "items", 5) == 0) {
+            source = resolved->response;
+            source_len = resolved->response_len;
+        } else if (request[5] == 5 &&
+                   memcmp(request + 12, "lefts", 5) == 0) {
+            source_len = build_join_relation_response(join_relation_response, 0);
+            source = join_relation_response;
+        } else {
+            assert(request[5] == 6 && request_len == 18 &&
+                   memcmp(request + 12, "rights", 6) == 0);
+            source_len = build_join_relation_response(join_relation_response, 1);
+            if (resolved->fail_join_identity != 0)
+                join_relation_response[34] ^= 1;
+            source = join_relation_response;
+        }
     } else if (operation == PRDB_SDK_EXECUTOR_OP_RESOLVE_RELATION) {
         assert(request_len == 17 && request[0] == 0 && request[1] == 1);
         assert(request[2] == 0 && request[3] == 6);
@@ -411,6 +502,47 @@ static uint32_t build_relation_response(uint8_t *bytes) {
         put_u16(bytes, &offset, 2);
         bytes[offset++] = 'c';
         bytes[offset++] = (uint8_t)('0' + ordinal);
+    }
+    return offset;
+}
+
+static uint32_t build_join_relation_response(uint8_t *bytes, uint32_t side) {
+    uint32_t offset = 0;
+    const char *name = side == 0 ? "lefts" : "rights";
+    uint8_t relation_id = side == 0 ? 0x31 : 0x32;
+    uint8_t column_base = side == 0 ? 0x41 : 0x51;
+    bytes[offset++] = 0;
+    bytes[offset++] = 1;
+    bytes[offset++] = 0;
+    memset(bytes + offset, 1, 16);
+    offset += 16;
+    put_u64(bytes, &offset, 3);
+    put_u64(bytes, &offset, side == 0 ? 4 : 5);
+    memset(bytes + offset, relation_id, 16);
+    offset += 16;
+    put_u16(bytes, &offset, (uint16_t)strlen(name));
+    memcpy(bytes + offset, name, strlen(name));
+    offset += (uint32_t)strlen(name);
+    put_u16(bytes, &offset, 3);
+    for (uint32_t ordinal = 0; ordinal < 3; ++ordinal) {
+        bytes[offset++] = (uint8_t)(column_base + ordinal);
+        memset(bytes + offset, 0, 15);
+        offset += 15;
+        put_u32(bytes, &offset, ordinal);
+        bytes[offset++] = ordinal == 2 ? 1 : 0;
+        bytes[offset++] = ordinal == 0 ? 3 : ordinal == 1 ? 1 : 6;
+        memset(bytes + offset, 0, 4);
+        offset += 4;
+        put_u16(bytes, &offset,
+                (uint16_t)(ordinal == 0 ? 2 : ordinal == 1 ? 6 : 5));
+        if (ordinal == 0) {
+            memcpy(bytes + offset, "id", 2);
+        } else if (ordinal == 1) {
+            memcpy(bytes + offset, "active", 6);
+        } else {
+            memcpy(bytes + offset, "value", 5);
+        }
+        offset += ordinal == 0 ? 2 : ordinal == 1 ? 6 : 5;
     }
     return offset;
 }
@@ -531,6 +663,8 @@ static int32_t fail_projected_row(
 int main(void) {
     uint8_t payload[256] = {0};
     uint8_t malformed[sizeof(payload)];
+    uint8_t join_payload[1024] = {0};
+    uint8_t join_malformed[sizeof(join_payload)];
     uint32_t projected_id_offset;
     uint32_t project_node_offset;
     uint32_t predicate_offset;
@@ -539,6 +673,7 @@ int main(void) {
     static prdb_sdk_optimizer_plan_v1 decoded;
     static prdb_sdk_optimizer_filter_v1 filter;
     static prdb_sdk_optimizer_update_plan_v1 update_decoded;
+    static prdb_sdk_optimizer_join_plan_v1 join_decoded;
     static resolve_context resolve = {0};
     static prdb_host_api_v2 host = {0};
     static prdb_host_api_v4 host_v4 = {0};
@@ -1046,6 +1181,55 @@ int main(void) {
            update_decoded.assignments[0].value_kind ==
                PRDB_OPTIMIZER_UPDATE_PARAMETER_VALUE &&
            update_decoded.assignments[0].parameter_index == 2);
+
+    uint32_t join_projection_side_offset;
+    uint32_t join_right_key_type_offset;
+    uint32_t join_payload_len = build_join_plan(
+        join_payload, &join_projection_side_offset,
+        &join_right_key_type_offset);
+    assert(prdb_sdk_optimizer_decode_join_plan_v1(
+               join_payload, join_payload_len, &join_decoded,
+               sizeof(join_decoded)) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(join_decoded.left_relation.relation_name_len == 5 &&
+           memcmp(join_decoded.left_relation.relation_name, "lefts", 5) == 0);
+    assert(join_decoded.right_relation.relation_name_len == 6 &&
+           memcmp(join_decoded.right_relation.relation_name, "rights", 6) == 0);
+    assert(join_decoded.left_relation.scan_column_count == 3 &&
+           join_decoded.right_relation.scan_column_count == 3 &&
+           join_decoded.projection_count == 2 &&
+           join_decoded.projections[0].relation_side == 0 &&
+           join_decoded.projections[1].relation_side == 1 &&
+           join_decoded.join_key_count == 2 && join_decoded.has_limit == 1 &&
+           join_decoded.limit == 5);
+    resolve.calls = 0;
+    assert(prdb_sdk_optimizer_validate_executor_join_relations_v1(
+               &host, join_payload, join_payload_len, response,
+               sizeof(response), &response_len) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(resolve.calls == 2);
+    resolve.calls = 0;
+    resolve.fail_join_identity = 1;
+    assert(prdb_sdk_optimizer_validate_executor_join_relations_v1(
+               &host, join_payload, join_payload_len, response,
+               sizeof(response), &response_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
+    assert(resolve.calls == 2);
+    resolve.fail_join_identity = 0;
+    memcpy(join_malformed, join_payload, join_payload_len);
+    join_malformed[join_projection_side_offset] = 2;
+    assert(prdb_sdk_optimizer_decode_join_plan_v1(
+               join_malformed, join_payload_len, &join_decoded,
+               sizeof(join_decoded)) == PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    memcpy(join_malformed, join_payload, join_payload_len);
+    join_malformed[join_right_key_type_offset] = 6;
+    assert(prdb_sdk_optimizer_decode_join_plan_v1(
+               join_malformed, join_payload_len, &join_decoded,
+               sizeof(join_decoded)) == PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    memcpy(join_malformed, join_payload, join_payload_len);
+    join_malformed[join_payload_len] = 0;
+    assert(prdb_sdk_optimizer_decode_join_plan_v1(
+               join_malformed, join_payload_len + 1, &join_decoded,
+               sizeof(join_decoded)) == PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+
     assert(prdb_sdk_optimizer_validate_executor_relation_v1(
                &host, update_plan, update_plan_len, response,
                sizeof(response), &response_len) ==
