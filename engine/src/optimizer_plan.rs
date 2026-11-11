@@ -278,15 +278,20 @@ fn put_predicate(output: &mut Vec<u8>, predicate: &BoundPredicate) -> Result<(),
             left,
             right,
         } => {
-            output.push(0x20);
-            output.push(match operator {
+            let comparison_operator = match operator {
                 crate::optimizer_request::Comparison::Equal => 0,
                 crate::optimizer_request::Comparison::NotEqual => 1,
                 crate::optimizer_request::Comparison::Less => 2,
                 crate::optimizer_request::Comparison::LessOrEqual => 3,
                 crate::optimizer_request::Comparison::Greater => 4,
                 crate::optimizer_request::Comparison::GreaterOrEqual => 5,
-            });
+            };
+            output.extend_from_slice(
+                &crate::query_abi::encode_optimizer_plan_compare_predicate_header_record(
+                    0x20,
+                    comparison_operator,
+                ),
+            );
             put_predicate(output, left)?;
             put_predicate(output, right)?;
         }
@@ -450,6 +455,26 @@ impl PlanReader<'_> {
         Ok(column_id)
     }
 
+    fn compare_predicate_operator(&mut self, header_offset: usize) -> Result<u8, PlanError> {
+        let header_len =
+            crate::query_abi::OPTIMIZER_PLAN_COMPARE_PREDICATE_HEADER_RECORD_HEADER_BYTES as usize;
+        let end = header_offset
+            .checked_add(header_len)
+            .ok_or(PlanError::TooLarge)?;
+        let header = self
+            .bytes
+            .get(header_offset..end)
+            .ok_or(PlanError::Truncated)?;
+        let (node_tag, comparison_operator) =
+            crate::query_abi::decode_optimizer_plan_compare_predicate_header_record(header)
+                .ok_or(PlanError::Truncated)?;
+        if node_tag != 0x20 {
+            return Err(PlanError::InvalidEncoding);
+        }
+        self.offset = end;
+        Ok(comparison_operator)
+    }
+
     fn column(&mut self) -> Result<BoundColumn, PlanError> {
         let bytes =
             self.take(crate::query_abi::OPTIMIZER_PLAN_COLUMN_RECORD_HEADER_BYTES as usize)?;
@@ -518,7 +543,7 @@ impl PlanReader<'_> {
                 Ok(BoundPredicate::Column(column.clone()))
             }
             0x20 => {
-                let operator = match self.u8()? {
+                let operator = match self.compare_predicate_operator(tag_offset)? {
                     0 => crate::optimizer_request::Comparison::Equal,
                     1 => crate::optimizer_request::Comparison::NotEqual,
                     2 => crate::optimizer_request::Comparison::Less,
@@ -1104,6 +1129,25 @@ mod tests {
             offset: 0,
         };
         assert_eq!(reader.predicate(&[source_column]).unwrap(), predicate);
+        assert_eq!(reader.offset, encoded.len());
+    }
+
+    #[test]
+    fn compare_predicate_header_matches_the_generated_wire_record() {
+        let predicate = BoundPredicate::Compare {
+            operator: Comparison::GreaterOrEqual,
+            left: Box::new(BoundPredicate::Null),
+            right: Box::new(BoundPredicate::Null),
+        };
+        let mut encoded = Vec::new();
+        put_predicate(&mut encoded, &predicate).unwrap();
+        assert_eq!(encoded, [0x20, 0x05, 0x00, 0x00]);
+
+        let mut reader = PlanReader {
+            bytes: &encoded,
+            offset: 0,
+        };
+        assert_eq!(reader.predicate(&[]).unwrap(), predicate);
         assert_eq!(reader.offset, encoded.len());
     }
 

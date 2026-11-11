@@ -105,6 +105,23 @@ static int read_column_predicate_record(plan_reader *reader,
     return node_tag == 0x10;
 }
 
+static int read_compare_predicate_header(plan_reader *reader,
+                                        uint64_t header_offset,
+                                        uint8_t *comparison_operator) {
+    const uint8_t *ignored;
+    uint8_t node_tag;
+    if (!take(reader,
+              PRDB_OPTIMIZER_PLAN_COMPARE_PREDICATE_HEADER_RECORD_HEADER_BYTES - 1,
+              &ignored) ||
+        !prdb_decode_optimizer_plan_compare_predicate_header_record(
+            reader->bytes + header_offset,
+            PRDB_OPTIMIZER_PLAN_COMPARE_PREDICATE_HEADER_RECORD_HEADER_BYTES,
+            &node_tag, comparison_operator)) {
+        return 0;
+    }
+    return node_tag == 0x20;
+}
+
 static int read_column_list_header(plan_reader *reader, uint8_t expected_tag,
                                    uint16_t *column_count) {
     const uint8_t *ignored;
@@ -322,7 +339,8 @@ static int decode_predicate(plan_reader *reader,
             uint8_t comparison;
             predicate_type left;
             predicate_type right;
-            if (!read_u8(reader, &comparison) || comparison > 5 ||
+            if (!read_compare_predicate_header(reader, tag_offset, &comparison) ||
+                comparison > 5 ||
                 !decode_predicate(reader, columns, column_count, depth + 1,
                                   nodes, &left) ||
                 !decode_predicate(reader, columns, column_count, depth + 1,
@@ -408,7 +426,8 @@ static int skip_predicate_node(plan_reader *reader, uint32_t depth) {
         }
     case 0x20: {
         uint8_t comparison;
-        return read_u8(reader, &comparison) && comparison <= 5 &&
+        return read_compare_predicate_header(reader, tag_offset, &comparison) &&
+               comparison <= 5 &&
                skip_predicate_node(reader, depth + 1) &&
                skip_predicate_node(reader, depth + 1);
     }
@@ -497,7 +516,8 @@ static int32_t evaluate_predicate_node(
         predicate_value left = {0}, right = {0};
         uint32_t truth = PRDB_SDK_SQL_TRUTH_UNKNOWN;
         int32_t status;
-        if (!read_u8(reader, &comparison) || comparison > 5)
+        if (!read_compare_predicate_header(reader, tag_offset, &comparison) ||
+            comparison > 5)
             return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
         status = evaluate_predicate_node(reader, plan, source_cells, &left,
                                          depth + 1, nodes);
