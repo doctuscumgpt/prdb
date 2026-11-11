@@ -4,12 +4,14 @@
 #include <assert.h>
 #include <string.h>
 
+#define JOIN_V16_STRESS_ROWS 47
+
 typedef struct mock_state {
     uint8_t planner[2][256];
     uint32_t planner_len[2];
     uint8_t executor[2][256];
     uint32_t executor_len[2];
-    uint8_t batch[2][512];
+    uint8_t batch[2][4096];
     uint32_t batch_len[2];
     uint32_t planner_calls;
     uint32_t resolve_calls;
@@ -246,13 +248,16 @@ static int32_t on_row_v16(void *context,
     assert(binding->base.projection_count == 2 &&
            (binding->join_key_count == 2 || binding->join_key_count == 8) &&
            projection_count == 2);
-    assert(capture->calls < 8);
-    assert(prdb_sdk_value_get_integer_v1(
-               &projected_values[0], &capture->left_values[capture->calls]) ==
-           PRDB_SDK_VALUE_ACCESS_OK);
-    assert(prdb_sdk_value_get_integer_v1(
-               &projected_values[1], &capture->right_values[capture->calls]) ==
-           PRDB_SDK_VALUE_ACCESS_OK);
+    if (capture->calls < 8) {
+        assert(prdb_sdk_value_get_integer_v1(
+                   &projected_values[0],
+                   &capture->left_values[capture->calls]) ==
+               PRDB_SDK_VALUE_ACCESS_OK);
+        assert(prdb_sdk_value_get_integer_v1(
+                   &projected_values[1],
+                   &capture->right_values[capture->calls]) ==
+               PRDB_SDK_VALUE_ACCESS_OK);
+    }
     ++capture->calls;
     return capture->callback_status;
 }
@@ -315,8 +320,8 @@ static int32_t run_query_v16(mock_state *mock, row_capture *capture,
     uint8_t right_planner_response[256] = {0};
     uint8_t left_executor_response[256] = {0};
     uint8_t right_executor_response[256] = {0};
-    uint8_t batch_response[512] = {0};
-    uint8_t materialized_bytes[1024] = {0};
+    uint8_t batch_response[4096] = {0};
+    uint8_t materialized_bytes[4096] = {0};
     uint8_t integer_names[2][11] = {{0}};
     prdb_sdk_sql_column_shape_v2 left_planner_columns[2] = {{0}};
     prdb_sdk_sql_column_shape_v2 right_planner_columns[2] = {{0}};
@@ -528,6 +533,36 @@ int main(void) {
                PRDB_SDK_SQL_EXEC_OK);
         assert(capture.calls == 1 && capture.left_values[0] == 10 &&
                capture.right_values[0] == 10);
+
+        {
+            int32_t stress_keys[JOIN_V16_STRESS_ROWS];
+            int32_t stress_values[JOIN_V16_STRESS_ROWS];
+            uint8_t stress_states[JOIN_V16_STRESS_ROWS];
+            for (uint32_t row = 0; row < JOIN_V16_STRESS_ROWS; ++row) {
+                stress_keys[row] = 1;
+                stress_values[row] = 77;
+                stress_states[row] = PRDB_SDK_VALUE_STATE_VALUE;
+            }
+            mock.batch_len[0] = make_batch(
+                mock.batch[0], stress_keys, stress_states, stress_values,
+                JOIN_V16_STRESS_ROWS);
+            mock.batch_len[1] = make_batch(
+                mock.batch[1], stress_keys, stress_states, stress_values,
+                JOIN_V16_STRESS_ROWS);
+            reset(&mock, &capture);
+            mock.cancel_after_check = 4;
+            assert(run_query_v16(&mock, &capture, composite_sql,
+                                 sizeof(composite_sql) - 1, 2048) ==
+                   PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+            assert(capture.calls == 2048 &&
+                   mock.check_cancel_calls == 4 &&
+                   mock.executor_requests == 10 &&
+                   mock.statement_failed == 1);
+        }
+        mock.batch_len[0] = make_batch(mock.batch[0], left_keys, left_states,
+                                       composite_left_values, 3);
+        mock.batch_len[1] = make_batch(mock.batch[1], right_keys, right_states,
+                                       composite_right_values, 3);
 
         reset(&mock, &capture);
         assert(run_query_v16(&mock, &capture, composite_sql,

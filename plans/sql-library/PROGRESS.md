@@ -509,3 +509,11 @@
 - Contract: the SQL library ABI inventory must match the separately versioned parser and binder APIs already implemented and exercised by the v18 compound-HAVING runner and fuzz target above.
 - Correction: added `prdb_sdk_sql_v18.h` to the linked header inventory, extended the parser-version range to v1–v18, and summarized its bounded compound Boolean HAVING grammar. The previous inventory ended at v17 despite the v18 contract and implementation being present.
 - Verification: all local links in `specs/sql-library.md` resolve, the v18 header and grammar appear in the ABI inventory, and `git diff --check` passed. Documentation-only change; no runtime checks were run.
+
+## SQL-8 follow-up: composite join cancellation during result publication — verified
+
+- Contract: the v16 two-relation runner must poll cancellation during potentially long joined output and latch statement failure after provisional rows have been delivered, allowing the supervisor/storage path to abort the invocation.
+- Red/green evidence: the maintained TinyCC host fixture now creates 47 matching rows per side (2,209 composite join results), requests cancellation at the fourth check, and verifies that the runner stops after exactly 2,048 callbacks with the SQL statement-failure callback latched. Temporarily moving the poll interval to 4,096 made the regression fail because execution did not terminate at the expected checkpoint.
+- Implementation: no production change was needed; `sql_exec_v16.c` already polls before the first output and every 2,048 joined pairs. This acceptance test now protects that cancellation and request-budget behavior under output pressure.
+- Verification: targeted `sdk-sql-execute-v8` TinyCC fixture passed with TinyCC 0.9.27-unstable-2025-01-06 after the regression failed under the intentionally delayed polling interval.
+- Remaining: broader mixed-workload measurements, spill support, and cancellation pressure coverage during other long-running operators remain open.
