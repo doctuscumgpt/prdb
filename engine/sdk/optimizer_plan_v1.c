@@ -534,9 +534,13 @@ static int32_t decode_plan_internal(
     reader.length = payload_len;
     reader.offset = 0;
 
-    if (!read_u16(&reader, &version) || version != 1 ||
-        !read_u8(&reader, &kind) || !read_u8(&reader, &reserved) ||
-        kind != 1 || reserved != 0) {
+    if (!prdb_decode_optimizer_plan_header_record(
+            payload, PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES,
+            &version, &kind, &reserved)) {
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    }
+    reader.offset = PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
+    if (version != 1 || kind != 1 || reserved != 0) {
         return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
     }
     if (!read_name(&reader, &decoded.schema_name, &decoded.schema_name_len) ||

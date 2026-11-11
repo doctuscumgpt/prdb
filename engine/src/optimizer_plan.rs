@@ -60,9 +60,9 @@ impl std::error::Error for PlanError {}
 pub fn encode_plan_v1(plan: &SingleTablePlanV1) -> Result<Vec<u8>, PlanError> {
     validate_plan_v1(plan)?;
     let mut output = Vec::with_capacity(256);
-    output.extend_from_slice(&1u16.to_be_bytes());
-    output.push(1); // SELECT plan
-    output.push(0); // reserved
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_header_record(
+        1, 1, 0,
+    ));
     put_name(&mut output, &plan.relation.schema_name)?;
     output.extend_from_slice(&plan.relation.schema_id);
     output.extend_from_slice(&plan.relation.schema_version.to_be_bytes());
@@ -117,7 +117,10 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
     if version != 1 {
         return Err(PlanError::UnsupportedVersion(version));
     }
-    if reader.u8()? != 1 || reader.u8()? != 0 {
+    let (_, kind, reserved) =
+        crate::query_abi::decode_optimizer_plan_header_record(bytes).ok_or(PlanError::Truncated)?;
+    reader.offset = crate::query_abi::OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES as usize;
+    if kind != 1 || reserved != 0 {
         return Err(PlanError::InvalidEncoding);
     }
     let schema_name = reader.name()?;

@@ -807,3 +807,12 @@
 - Compatibility: the maintained Rust IPC and TinyCC C fixtures continue to match the hand-checked wire bytes and reject malformed headers; operation, request ID, and payload-size checks remain in the protocol layer.
 - Verification: generator tests (8 passed), generated-file drift check, focused TinyCC IPC fixture, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
 - Remaining: additional nested IPC payload codecs and full shared-schema parity remain open.
+
+## TC-2 follow-up: generated optimizer plan header — implemented
+
+- Contract: the SELECT plan retains its four-byte header: big-endian version 1, kind 1, and reserved byte 0.
+- Red evidence: generator regression failed because `OPTIMIZER_PLAN_HEADER_RECORD` and its Rust/C codecs were absent.
+- Implementation: the shared schema now defines the plan header. Rust plan encoding and decoding and the TinyCC SDK decoder use generated codecs; semantic validation of supported version, SELECT kind, and zero reserved byte stays in their respective decoders. The Makefile tracks the generated codec header for the plan decoder object.
+- Compatibility: the existing Rust golden header assertion and TinyCC maintained optimizer-plan fixture pass with the unchanged bytes and malformed-plan handling.
+- Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
+- Remaining: additional nested optimizer plan records and full shared-schema parity remain open.

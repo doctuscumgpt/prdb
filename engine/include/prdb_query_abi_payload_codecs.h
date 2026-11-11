@@ -1923,6 +1923,40 @@ static inline int prdb_decode_ipc_frame_header_record(const uint8_t *payload, si
     return 1;
 }
 
+static inline void prdb_encode_optimizer_plan_header_record(uint8_t payload[4],
+    uint16_t version, uint8_t kind, uint8_t reserved) {
+    uint64_t version_wire = (uint64_t)version;
+    for (size_t i = 0; i < 2; ++i) {
+        payload[0 + i] = (uint8_t)(version_wire >> ((2 - 1 - i) * 8));
+    }
+    payload[2] = kind;
+    payload[3] = reserved;
+}
+
+static inline int prdb_decode_optimizer_plan_header_record(const uint8_t *payload, size_t payload_len,
+    uint16_t *version, uint8_t *kind, uint8_t *reserved) {
+    if (payload == NULL || payload_len < 4) {
+        return 0;
+    }
+    if (version == NULL) {
+        return 0;
+    }
+    uint64_t version_wire_value = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        version_wire_value = (version_wire_value << 8) | payload[0 + i];
+    }
+    *version = (uint16_t)version_wire_value;
+    if (kind == NULL) {
+        return 0;
+    }
+    *kind = payload[2];
+    if (reserved == NULL) {
+        return 0;
+    }
+    *reserved = payload[3];
+    return 1;
+}
+
 static inline void prdb_encode_client_frame_header_record(uint8_t payload[32],
     const uint8_t magic[4], uint16_t major_version, uint16_t minor_version, uint16_t kind, uint16_t flags, uint32_t payload_length, uint64_t request_id, uint64_t response_sequence) {
     for (size_t i = 0; i < 4; ++i) {

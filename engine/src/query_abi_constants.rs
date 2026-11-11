@@ -1144,6 +1144,25 @@ pub fn decode_ipc_frame_header_record(payload: &[u8]) -> Option<(u32, u16, u16, 
     Some((u32::from_be_bytes(payload[0..4].try_into().ok()?), u16::from_be_bytes(payload[4..6].try_into().ok()?), u16::from_be_bytes(payload[6..8].try_into().ok()?), u64::from_be_bytes(payload[8..16].try_into().ok()?), u32::from_be_bytes(payload[16..20].try_into().ok()?)))
 }
 
+pub const OPTIMIZER_PLAN_HEADER_RECORD_VERSION_OFFSET: u32 = 0;
+pub const OPTIMIZER_PLAN_HEADER_RECORD_KIND_OFFSET: u32 = 2;
+pub const OPTIMIZER_PLAN_HEADER_RECORD_RESERVED_OFFSET: u32 = 3;
+pub const OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES: u32 = 4;
+pub fn encode_optimizer_plan_header_record(version: u16, kind: u8, reserved: u8) -> [u8; 4] {
+    let mut payload = [0u8; 4];
+    payload[0..2].copy_from_slice(&version.to_be_bytes());
+    payload[2] = kind;
+    payload[3] = reserved;
+    payload
+}
+
+pub fn decode_optimizer_plan_header_record(payload: &[u8]) -> Option<(u16, u8, u8)> {
+    if payload.len() < 4 {
+        return None;
+    }
+    Some((u16::from_be_bytes(payload[0..2].try_into().ok()?), payload[2], payload[3]))
+}
+
 pub const CLIENT_FRAME_HEADER_RECORD_MAGIC_OFFSET: u32 = 0;
 pub const CLIENT_FRAME_HEADER_RECORD_MAJOR_VERSION_OFFSET: u32 = 4;
 pub const CLIENT_FRAME_HEADER_RECORD_MINOR_VERSION_OFFSET: u32 = 6;
