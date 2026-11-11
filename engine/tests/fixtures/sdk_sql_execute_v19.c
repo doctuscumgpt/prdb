@@ -2,6 +2,7 @@
 #include "prdb_sdk_sql_exec_v16.h"
 #include "prdb_sdk_sql_exec_v19.h"
 #include "prdb_sdk_sql_exec_v20.h"
+#include "prdb_sdk_optimizer_v1.h"
 
 #include <assert.h>
 #include <string.h>
@@ -14,6 +15,11 @@ typedef struct mock_state {
     uint32_t planner_len[2];
     uint8_t executor[2][256];
     uint32_t executor_len[2];
+    uint8_t plan_relation[2][512];
+    uint32_t plan_relation_len[2];
+    uint8_t optimizer_response[2048];
+    uint32_t optimizer_response_len;
+    uint32_t optimizer_calls;
     uint8_t batch[2][8192];
     uint32_t batch_len[2];
     uint32_t planner_calls;
@@ -49,11 +55,98 @@ static void put_u32(uint8_t *bytes, uint32_t *offset, uint32_t value) {
     bytes[(*offset)++] = (uint8_t)value;
 }
 
+static void put_u64(uint8_t *bytes, uint32_t *offset, uint64_t value) {
+    put_u32(bytes, offset, (uint32_t)(value >> 32));
+    put_u32(bytes, offset, (uint32_t)value);
+}
+
 static void put_name(uint8_t *bytes, uint32_t *offset, const char *name) {
     uint16_t length = (uint16_t)strlen(name);
     put_u16(bytes, offset, length);
     memcpy(bytes + *offset, name, length);
     *offset += length;
+}
+
+static void put_plan_name(uint8_t *bytes, uint32_t *offset, const char *name) {
+    uint8_t length = (uint8_t)strlen(name);
+    bytes[(*offset)++] = length;
+    memcpy(bytes + *offset, name, length);
+    *offset += length;
+}
+
+static uint32_t put_plan_column(uint8_t *bytes, uint32_t *offset,
+                                uint8_t id, uint32_t ordinal,
+                                uint8_t nullable) {
+    memset(bytes + *offset, id, 16);
+    *offset += 16;
+    put_u32(bytes, offset, ordinal);
+    bytes[(*offset)++] = 3; /* INTEGER */
+    memset(bytes + *offset, 0, 4);
+    *offset += 4;
+    bytes[(*offset)++] = nullable;
+    return *offset;
+}
+
+static uint32_t build_optimizer_join_plan(uint8_t *bytes) {
+    uint32_t offset = 0;
+    bytes[offset++] = 0;
+    bytes[offset++] = 1;
+    bytes[offset++] = 4;
+    bytes[offset++] = 0;
+    put_plan_name(bytes, &offset, "app");
+    memset(bytes + offset, 0x61, 16);
+    offset += 16;
+    put_u64(bytes, &offset, 1);
+    for (uint32_t side = 0; side < 2; ++side) {
+        put_plan_name(bytes, &offset, side == 0 ? "accounts" : "orders");
+        memset(bytes + offset, (int)(0x11 + side), 16);
+        offset += 16;
+        put_u64(bytes, &offset, 1);
+    }
+    for (uint32_t side = 0; side < 2; ++side) {
+        put_u16(bytes, &offset, 2);
+        put_plan_column(bytes, &offset, 0x31, 0, 1);
+        put_plan_column(bytes, &offset, 0x32, 1, 1);
+    }
+    put_u16(bytes, &offset, 2);
+    bytes[offset++] = 0;
+    put_plan_column(bytes, &offset, 0x32, 1, 1);
+    bytes[offset++] = 1;
+    put_plan_column(bytes, &offset, 0x32, 1, 1);
+    bytes[offset++] = 2;
+    put_plan_column(bytes, &offset, 0x31, 0, 1);
+    put_plan_column(bytes, &offset, 0x31, 0, 1);
+    put_plan_column(bytes, &offset, 0x32, 1, 1);
+    put_plan_column(bytes, &offset, 0x32, 1, 1);
+    bytes[offset++] = 0;
+    return offset;
+}
+
+static uint32_t build_plan_relation(uint8_t *bytes, uint32_t index) {
+    uint32_t offset = 0;
+    const char *name = index == 0 ? "accounts" : "orders";
+    bytes[offset++] = 0;
+    bytes[offset++] = 1;
+    bytes[offset++] = 0;
+    memset(bytes + offset, 0x61, 16);
+    offset += 16;
+    put_u64(bytes, &offset, 1);
+    put_u64(bytes, &offset, 1);
+    memset(bytes + offset, (int)(0x11 + index), 16);
+    offset += 16;
+    put_name(bytes, &offset, name);
+    put_u16(bytes, &offset, 2);
+    for (uint32_t ordinal = 0; ordinal < 2; ++ordinal) {
+        memset(bytes + offset, (int)(0x31 + ordinal), 16);
+        offset += 16;
+        put_u32(bytes, &offset, ordinal);
+        bytes[offset++] = 1;
+        bytes[offset++] = PRDB_SDK_VALUE_TYPE_INTEGER;
+        memset(bytes + offset, 0, 4);
+        offset += 4;
+        put_name(bytes, &offset, ordinal == 0 ? "account_id" : "value");
+    }
+    return offset;
 }
 
 static uint32_t relation_index(const uint8_t *request, uint64_t request_len) {
@@ -165,6 +258,39 @@ static int32_t planner_request(void *context, uint16_t operation,
     return PRDB_QUERY_CALLBACK_OK;
 }
 
+static int32_t optimizer_request_v4(void *context, const uint8_t *request,
+                                    uint64_t request_len, uint8_t *response,
+                                    uint64_t capacity,
+                                    uint64_t *response_len) {
+    (void)context;
+    (void)request;
+    (void)request_len;
+    (void)response;
+    (void)capacity;
+    (void)response_len;
+    return PRDB_QUERY_CALLBACK_INTERNAL_ERROR;
+}
+
+static int32_t optimizer_request_v5(void *context, uint16_t operation,
+                                   const uint8_t *request,
+                                   uint64_t request_len, uint8_t *response,
+                                   uint64_t capacity,
+                                   uint64_t *response_len) {
+    mock_state *mock = (mock_state *)context;
+    assert(operation == PRDB_IPC_OP_OPTIMIZE_JOIN_SELECT);
+    assert(request_len >= 4 && request[0] == 0 && request[1] == 1 &&
+           request[2] == PRDB_OPTIMIZER_JOIN_SELECT_STATEMENT &&
+           request[3] == 0);
+    ++mock->optimizer_calls;
+    if (mock->optimizer_response_len > capacity) {
+        *response_len = mock->optimizer_response_len;
+        return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
+    }
+    memcpy(response, mock->optimizer_response, mock->optimizer_response_len);
+    *response_len = mock->optimizer_response_len;
+    return PRDB_QUERY_CALLBACK_OK;
+}
+
 static int32_t executor_request(void *context, uint16_t operation,
                                 const uint8_t *request, uint64_t request_len,
                                 uint8_t *response, uint64_t capacity,
@@ -182,6 +308,12 @@ static int32_t executor_request(void *context, uint16_t operation,
         }
         memcpy(response, reply, sizeof(reply));
         *response_len = sizeof(reply);
+    } else if (operation == PRDB_SDK_EXECUTOR_OP_RESOLVE_PLAN_RELATION) {
+        uint32_t index = relation_index(request, request_len);
+        assert(mock->plan_relation_len[index] <= capacity);
+        memcpy(response, mock->plan_relation[index],
+               mock->plan_relation_len[index]);
+        *response_len = mock->plan_relation_len[index];
     } else if (operation == PRDB_SDK_EXECUTOR_OP_RESOLVE_RELATION) {
         uint32_t index = relation_index(request, request_len);
         assert(mock->executor_len[index] <= capacity);
@@ -377,6 +509,61 @@ static int32_t run_query_v19(mock_state *mock, row_capture *capture,
         materialized_capacity, on_row_v19, capture);
 }
 
+static int32_t run_query_optimizer(mock_state *mock, row_capture *capture,
+                                   const uint8_t *sql, uint64_t sql_len) {
+    static const uint8_t schema[] = "app";
+    uint8_t optimizer_request[512] = {0};
+    uint8_t optimizer_response[2048] = {0};
+    uint8_t left_planner_response[256] = {0};
+    uint8_t right_planner_response[256] = {0};
+    uint8_t left_executor_response[512] = {0};
+    uint8_t right_executor_response[512] = {0};
+    uint8_t batch_response[8192] = {0};
+    uint8_t materialized_bytes[4096] = {0};
+    uint8_t integer_names[2][11] = {{0}};
+    prdb_sdk_sql_column_shape_v2 left_planner_columns[2] = {{0}};
+    prdb_sdk_sql_column_shape_v2 right_planner_columns[2] = {{0}};
+    prdb_sdk_sql_column_shape_v2 left_executor_columns[2] = {{0}};
+    prdb_sdk_sql_column_shape_v2 right_executor_columns[2] = {{0}};
+    prdb_sdk_value_v1 cell_scratch[2] = {{0}};
+    prdb_sdk_sql_join_materialized_row_v16 left_rows[
+        PRDB_SDK_SQL_EXEC_V8_MAX_ROWS] = {{{0}}};
+    prdb_sdk_sql_join_materialized_row_v16 right_rows[
+        PRDB_SDK_SQL_EXEC_V8_MAX_ROWS] = {{{0}}};
+    prdb_host_api_v3 host3 = {sizeof(host3), PRDB_QUERY_ABI_V3_VERSION,
+                              mock, executor_request, planner_request, NULL,
+                              statement_failure};
+    prdb_host_api_v4 host4 = {host3, optimizer_request_v4};
+    prdb_host_api_v5 host5 = {host4, optimizer_request_v5};
+    memcpy(integer_names[0], "account_id", sizeof("account_id") - 1);
+    memcpy(integer_names[1], "value", sizeof("value") - 1);
+    for (uint32_t index = 0; index < 2; ++index) {
+        const char *name = index == 0 ? "account_id" : "value";
+        uint32_t len = (uint32_t)strlen(name);
+        left_planner_columns[index] = (prdb_sdk_sql_column_shape_v2){
+            integer_names[index], len, index, PRDB_SDK_VALUE_TYPE_INTEGER, 0,
+            0};
+        right_planner_columns[index] = left_planner_columns[index];
+        left_executor_columns[index] = left_planner_columns[index];
+        right_executor_columns[index] = left_planner_columns[index];
+    }
+    return prdb_sdk_sql_execute_inner_join_optimizer_v1(
+        &host5, schema, sizeof(schema) - 1, sql, sql_len,
+        JOIN_V16_ROW_LIMIT, 8192, optimizer_request,
+        sizeof(optimizer_request), optimizer_response,
+        sizeof(optimizer_response), left_planner_response,
+        sizeof(left_planner_response), right_planner_response,
+        sizeof(right_planner_response), left_executor_response,
+        sizeof(left_executor_response), right_executor_response,
+        sizeof(right_executor_response), batch_response,
+        sizeof(batch_response), left_planner_columns, 2,
+        right_planner_columns, 2, left_executor_columns, 2,
+        right_executor_columns, 2, cell_scratch, 2, left_rows,
+        PRDB_SDK_SQL_EXEC_V8_MAX_ROWS, right_rows,
+        PRDB_SDK_SQL_EXEC_V8_MAX_ROWS, materialized_bytes,
+        sizeof(materialized_bytes), on_row_v19, capture);
+}
+
 static int32_t on_row_v20(void *context,
                           const prdb_sdk_value_v1 *projected_values,
                           uint32_t projection_count,
@@ -440,6 +627,7 @@ static int32_t run_query_v20(mock_state *mock, row_capture *capture,
 
 static void reset(mock_state *mock, row_capture *capture) {
     mock->planner_calls = 0;
+    mock->optimizer_calls = 0;
     mock->resolve_calls = 0;
     mock->open_calls = 0;
     mock->check_cancel_calls = 0;
@@ -529,7 +717,18 @@ int main(void) {
                           PRDB_SDK_PLANNER_TABLE_HANDLE_KIND);
         mock.executor_len[index] =
             make_relation(mock.executor[index], index, 6);
+        mock.plan_relation_len[index] =
+            build_plan_relation(mock.plan_relation[index], index);
     }
+    uint32_t optimizer_plan_len =
+        build_optimizer_join_plan(mock.optimizer_response + 7);
+    uint32_t optimizer_offset = 0;
+    put_u16(mock.optimizer_response, &optimizer_offset, 1);
+    mock.optimizer_response[optimizer_offset++] =
+        PRDB_SDK_OPTIMIZER_STATUS_SUCCESS;
+    put_u32(mock.optimizer_response, &optimizer_offset, optimizer_plan_len);
+    optimizer_offset += optimizer_plan_len;
+    mock.optimizer_response_len = optimizer_offset;
     mock.batch_len[0] = make_batch(mock.batch[0], left_keys, left_states,
                                    left_values, 3);
     mock.batch_len[1] = make_batch(mock.batch[1], right_keys, right_states,
@@ -544,6 +743,29 @@ int main(void) {
     assert(capture.calls == 2 && capture.left_values[0] == 101 &&
            capture.right_values[0] == 201 && capture.left_values[1] == 102 &&
            capture.right_values[1] == 202);
+
+    {
+        const int32_t pair_key[] = {1};
+        const uint8_t pair_state[] = {PRDB_SDK_VALUE_STATE_VALUE};
+        const int32_t pair_value[] = {101};
+        mock.batch_len[0] = make_batch(mock.batch[0], pair_key, pair_state,
+                                       pair_value, 1);
+        mock.batch_len[1] = make_batch(mock.batch[1], pair_key, pair_state,
+                                       pair_value, 1);
+        reset(&mock, &capture);
+        assert(run_query_optimizer(&mock, &capture, composite_sql,
+                                   sizeof(composite_sql) - 1) ==
+               PRDB_SDK_SQL_EXEC_OK);
+        assert(mock.optimizer_calls == 1 && mock.planner_calls == 4 &&
+               mock.resolve_calls == 2 && mock.open_calls == 2 &&
+               capture.calls == 1 && capture.left_values[0] == 101 &&
+               capture.right_values[0] == 101 &&
+               mock.statement_failed == 0);
+        mock.batch_len[0] = make_batch(mock.batch[0], left_keys, left_states,
+                                       left_values, 3);
+        mock.batch_len[1] = make_batch(mock.batch[1], right_keys, right_states,
+                                       right_values, 3);
+    }
 
     reset(&mock, &capture);
     assert(run_query_v19(&mock, &capture, alias_sql, sizeof(alias_sql) - 1,
