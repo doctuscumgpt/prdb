@@ -4,7 +4,8 @@ use crate::metadata_discovery::{
     AuthorizedPlanRelation, AuthorizedRelationDescription, VisibleColumn,
 };
 use crate::optimizer_request::{
-    Comparison, Predicate, RequestError, decode_delete_request, decode_select_request,
+    Comparison, Predicate, RequestError, UpdateValue, decode_delete_request, decode_select_request,
+    decode_update_request,
 };
 use crate::transaction::{PlannerMetadataConnection, TransactionError};
 use crate::tuple::ScalarType;
@@ -32,6 +33,30 @@ pub struct BoundDelete {
     pub relation_id: [u8; 16],
     pub relation_name: String,
     pub predicate: BoundPredicate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundUpdate {
+    pub schema_name: String,
+    pub schema_id: [u8; 16],
+    pub schema_version: u64,
+    pub table_epoch: u64,
+    pub relation_id: [u8; 16],
+    pub relation_name: String,
+    pub assignments: Vec<BoundUpdateAssignment>,
+    pub predicate: BoundPredicate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundUpdateAssignment {
+    pub column: BoundColumn,
+    pub value: BoundUpdateValue,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundUpdateValue {
+    Parameter(u32),
+    Null,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -147,6 +172,26 @@ pub fn bind_delete_request_via_metadata(
     bind_decoded_delete(request, relation).map_err(MetadataBindError::Bind)
 }
 
+pub fn bind_update_request(
+    request_bytes: &[u8],
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundUpdate, BindError> {
+    let request = decode_update_request(request_bytes)?;
+    bind_decoded_update(request, relation)
+}
+
+pub fn bind_update_request_via_metadata(
+    request_bytes: &[u8],
+    connection: &mut PlannerMetadataConnection<'_, '_>,
+) -> Result<BoundUpdate, MetadataBindError> {
+    let request = decode_update_request(request_bytes).map_err(BindError::from)?;
+    let relation = connection
+        .resolve_relation_for_plan(&request.schema_name, &request.relation_name)
+        .map_err(MetadataBindError::Transaction)?
+        .map(|(_, description)| description);
+    bind_decoded_update(request, relation).map_err(MetadataBindError::Bind)
+}
+
 fn bind_decoded_select(
     request: crate::optimizer_request::SelectRequest,
     relation: Option<AuthorizedPlanRelation>,
@@ -196,6 +241,44 @@ fn bind_decoded_delete(
         table_epoch: relation.table_epoch,
         relation_id: relation.relation.relation_id,
         relation_name: relation.relation.name,
+        predicate,
+    })
+}
+
+fn bind_decoded_update(
+    request: crate::optimizer_request::UpdateRequest,
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundUpdate, BindError> {
+    let relation = authorized_relation(&request.relation_name, relation)?;
+    let mut assignments = Vec::with_capacity(request.assignments.len());
+    let mut assigned_ordinals = HashSet::with_capacity(request.assignments.len());
+    for assignment in request.assignments {
+        let column = resolve_column(&relation.relation.columns, &assignment.column_name)?;
+        if !assigned_ordinals.insert(column.ordinal) {
+            return Err(BindError::InvalidQuery);
+        }
+        let value = match assignment.value {
+            UpdateValue::Parameter(index) => BoundUpdateValue::Parameter(index),
+            UpdateValue::Null if column.nullable => BoundUpdateValue::Null,
+            UpdateValue::Null => return Err(BindError::InvalidQuery),
+        };
+        assignments.push(BoundUpdateAssignment {
+            column: column.into(),
+            value,
+        });
+    }
+    let (predicate, scalar_type) = bind_predicate(&request.predicate, &relation.relation.columns)?;
+    if scalar_type != Some(ScalarType::Boolean) {
+        return Err(BindError::InvalidQuery);
+    }
+    Ok(BoundUpdate {
+        schema_name: request.schema_name,
+        schema_id: relation.schema_id,
+        schema_version: relation.schema_version,
+        table_epoch: relation.table_epoch,
+        relation_id: relation.relation.relation_id,
+        relation_name: relation.relation.name,
+        assignments,
         predicate,
     })
 }
@@ -363,6 +446,23 @@ mod tests {
         bytes
     }
 
+    fn update_request(assignments: &[(&str, u8, Option<u32>)], predicate: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0, 1, crate::query_abi::OPTIMIZER_UPDATE_STATEMENT, 0];
+        put_name(&mut bytes, "public");
+        put_name(&mut bytes, "items");
+        bytes.extend_from_slice(&(assignments.len() as u16).to_be_bytes());
+        for (name, kind, parameter) in assignments {
+            put_name(&mut bytes, name);
+            bytes.push(*kind);
+            if let Some(parameter) = parameter {
+                bytes.extend_from_slice(&parameter.to_be_bytes());
+            }
+        }
+        bytes.extend_from_slice(&(predicate.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(predicate);
+        bytes
+    }
+
     fn relation() -> AuthorizedPlanRelation {
         AuthorizedPlanRelation {
             schema_id: [0x10; 16],
@@ -445,6 +545,94 @@ mod tests {
                 })),
                 right: Box::new(BoundPredicate::Integer(7)),
             }
+        );
+    }
+
+    #[test]
+    fn binds_update_targets_values_and_predicate_to_authorized_metadata() {
+        let predicate = [0x20, 0, 0x10, 2, b'i', b'd', 0x02, 0, 0, 0, 0, 0, 0, 0, 7];
+        let request = update_request(&[("active", 0, Some(2)), ("id", 0, Some(1))], &predicate);
+        let bound = bind_update_request(&request, Some(relation())).unwrap();
+        assert_eq!(bound.schema_name, "public");
+        assert_eq!(bound.schema_id, [0x10; 16]);
+        assert_eq!(bound.schema_version, 3);
+        assert_eq!(bound.table_epoch, 4);
+        assert_eq!(bound.relation_id, [0x11; 16]);
+        assert_eq!(bound.relation_name, "items");
+        assert_eq!(
+            bound.assignments,
+            [
+                BoundUpdateAssignment {
+                    column: BoundColumn {
+                        column_id: [0x22; 16],
+                        ordinal: 1,
+                        scalar_type: ScalarType::Boolean,
+                        nullable: true,
+                    },
+                    value: BoundUpdateValue::Parameter(2),
+                },
+                BoundUpdateAssignment {
+                    column: BoundColumn {
+                        column_id: [0x21; 16],
+                        ordinal: 0,
+                        scalar_type: ScalarType::Integer,
+                        nullable: false,
+                    },
+                    value: BoundUpdateValue::Parameter(1),
+                },
+            ]
+        );
+        assert_eq!(
+            bound.predicate,
+            BoundPredicate::Compare {
+                operator: Comparison::Equal,
+                left: Box::new(BoundPredicate::Column(BoundColumn {
+                    column_id: [0x21; 16],
+                    ordinal: 0,
+                    scalar_type: ScalarType::Integer,
+                    nullable: false,
+                })),
+                right: Box::new(BoundPredicate::Integer(7)),
+            }
+        );
+    }
+
+    #[test]
+    fn update_binding_rejects_duplicates_unknown_columns_and_nullability_violations() {
+        let predicate = [0x01, 1];
+        let duplicate = update_request(&[("active", 0, Some(1)), ("ACTIVE", 1, None)], &predicate);
+        assert_eq!(
+            bind_update_request(&duplicate, Some(relation())),
+            Err(BindError::InvalidQuery)
+        );
+        let unknown = update_request(&[("hidden", 0, Some(1))], &predicate);
+        assert_eq!(
+            bind_update_request(&unknown, Some(relation())),
+            Err(BindError::InvalidQuery)
+        );
+        let null_to_required = update_request(&[("id", 1, None)], &predicate);
+        assert_eq!(
+            bind_update_request(&null_to_required, Some(relation())),
+            Err(BindError::InvalidQuery)
+        );
+        let nullable_null = update_request(&[("active", 1, None)], &predicate);
+        assert_eq!(
+            bind_update_request(&nullable_null, Some(relation()))
+                .unwrap()
+                .assignments[0]
+                .value,
+            BoundUpdateValue::Null
+        );
+        let no_relation = update_request(&[("active", 1, None)], &predicate);
+        assert_eq!(
+            bind_update_request(&no_relation, None),
+            Err(BindError::RelationUnavailable)
+        );
+        let non_boolean_where =
+            update_request(&[("active", 1, None)], &[0x02, 0, 0, 0, 0, 0, 0, 0, 7]);
+        assert_eq!(
+            bind_update_request(&non_boolean_where, Some(relation())),
+            Err(BindError::InvalidQuery)
         );
     }
 

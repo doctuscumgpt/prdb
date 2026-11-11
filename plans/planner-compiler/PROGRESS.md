@@ -276,4 +276,12 @@
 - Wire format: generated statement tag `OPTIMIZER_UPDATE_STATEMENT=3`; after schema/relation identifiers come 1–64 assignments, each containing a column identifier and either a nonzero parameter index or NULL, followed by a nonempty bounded predicate.
 - Implementation: `decode_update_request` validates the request envelope, identifiers, assignment count/kinds, parameter indices, predicate size/tree, and trailing bytes. It does not resolve names, infer assignment types, or grant mutation authority.
 - Coverage: Rust tests decode mixed parameter/NULL assignments and reject missing WHERE, invalid assignment kinds, zero parameter indices, and trailing bytes. ABI generation and format checks passed.
-- Remaining: bind assignments against authorized relation metadata, define and validate a canonical UPDATE plan, route a dedicated optimizer process operation, and add C SDK submission/verification/execution.
+- Remaining: define and validate a canonical UPDATE plan, route a dedicated optimizer process operation, and add C SDK submission/verification/execution.
+
+## OP-3 dependency: bind bounded UPDATE requests against invocation metadata — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). Binding resolves the target relation and assignment/predicate columns only through authorized planner metadata and produces no executor handle or write grant.
+- Implementation: `bind_update_request` and `bind_update_request_via_metadata` bind parameter/NULL assignments to stable column identities, preserve assignment order, reject unknown and duplicate targets, reject NULL for non-nullable columns, and require a Boolean predicate root.
+- Parameter values remain untyped in this optimizer request and must be checked against the parsed SQL AST and the storage mutation contract before staging.
+- Coverage: tests verify stable identity binding, source-order assignments, predicate binding, duplicate case-insensitive targets, hidden columns, nullability, missing relation, and non-Boolean WHERE.
+- Remaining: define and validate a canonical UPDATE plan, route a dedicated optimizer process operation, and add C SDK submission/verification/execution.
