@@ -91,9 +91,17 @@ def render(schema):
     payload_schemas = schema.get("payload_schemas")
     if not isinstance(payload_schemas, list) or not payload_schemas:
         raise ValueError("schema must contain at least one IPC payload schema")
+    record_schemas = schema.get("record_schemas", [])
+    if not isinstance(record_schemas, list):
+        raise ValueError("record_schemas must be a list")
+    if any(not isinstance(record, dict) for record in record_schemas):
+        raise ValueError("record schemas must be objects")
     payload_names = set()
     constants_by_name = {item["rust_name"]: item for item in constants}
-    for payload in payload_schemas:
+    schemas_to_render = [(payload, False) for payload in payload_schemas] + [
+        (record, True) for record in record_schemas
+    ]
+    for payload, is_record in schemas_to_render:
         name = payload.get("name")
         version_constant = payload.get("version_constant")
         fields = payload.get("fields")
@@ -107,18 +115,22 @@ def render(schema):
             or not isinstance(trailing_fields, list)
         ):
             raise ValueError("invalid IPC payload schema")
-        if version_constant not in constants_by_name:
-            raise ValueError(f"unknown payload version constant for {name}")
-        version_field = fields[0]
-        version_item = constants_by_name[version_constant]
-        if (
-            version_field.get("name") != "version"
-            or version_field.get("encoding") != "u16be"
-            or version_item.get("rust_type") != "u16"
-            or not isinstance(version_item.get("value"), int)
-            or not 0 <= version_item["value"] <= 0xFFFF
-        ):
-            raise ValueError(f"payload {name} must start with its u16 version constant")
+        if is_record:
+            if version_constant is not None:
+                raise ValueError(f"record {name} must not declare a payload version")
+        else:
+            if version_constant not in constants_by_name:
+                raise ValueError(f"unknown payload version constant for {name}")
+            version_field = fields[0]
+            version_item = constants_by_name[version_constant]
+            if (
+                version_field.get("name") != "version"
+                or version_field.get("encoding") != "u16be"
+                or version_item.get("rust_type") != "u16"
+                or not isinstance(version_item.get("value"), int)
+                or not 0 <= version_item["value"] <= 0xFFFF
+            ):
+                raise ValueError(f"payload {name} must start with its u16 version constant")
         payload_names.add(name)
         field_names = set()
         field_offsets = {}
@@ -130,6 +142,7 @@ def render(schema):
             "u64be": 8,
             "i64be": 8,
             "bytes16": 16,
+            "bytes4": 4,
         }
         for field in fields:
             field_name = field.get("name")
@@ -225,10 +238,11 @@ def render(schema):
                 "u64be": "u64",
                 "i64be": "i64",
                 "bytes16": "[u8; 16]",
+                "bytes4": "[u8; 4]",
             }
             encode_name = f"encode_{name.lower()}"
             decode_name = f"decode_{name.lower()}"
-            value_fields = fields[1:]
+            value_fields = fields[1:] if not is_record else fields
             for field in fields:
                 if field["encoding"] not in rust_types:
                     raise ValueError(f"unsupported generated Rust codec field in {name}")
@@ -258,7 +272,7 @@ def render(schema):
                     )
                 elif field_encoding == "u8":
                     rust_lines.append(f"    payload[{field_offset}] = {field_name};")
-                elif field_encoding == "bytes16":
+                elif field_encoding in ("bytes16", "bytes4"):
                     rust_lines.append(
                         f"    payload[{field_offset}..{field_end}].copy_from_slice(&{field_name});"
                     )
@@ -272,7 +286,9 @@ def render(schema):
             rust_lines.extend(
                 [
                     f"pub fn {decode_name}(payload: &[u8]) -> Option<{result_type}> {{",
-                    f"    if payload.len() {'<' if codec_prefix else '!='} {offset} || u16::from_be_bytes([payload[0], payload[1]]) != {version_constant} {{",
+                    f"    if payload.len() {'<' if codec_prefix else '!='} {offset}"
+                    + (f" || u16::from_be_bytes([payload[0], payload[1]]) != {version_constant}" if not is_record else "")
+                    + " {",
                     "        return None;",
                     "    }",
                 ]
@@ -285,7 +301,7 @@ def render(schema):
                 field_end = field_offset + field_widths[field_encoding]
                 if field_encoding == "u8":
                     decoded_values.append(f"payload[{field_offset}]")
-                elif field_encoding == "bytes16":
+                elif field_encoding in ("bytes16", "bytes4"):
                     decoded_values.append(
                         f"payload[{field_offset}..{field_end}].try_into().ok()"
                         + ("" if len(value_fields) == 1 else "?")
@@ -297,7 +313,7 @@ def render(schema):
             decoded = ", ".join(decoded_values)
             if len(decoded_values) == 1:
                 decoded_field_encoding = value_fields[0]["encoding"]
-                if decoded_field_encoding == "bytes16":
+                if decoded_field_encoding in ("bytes16", "bytes4"):
                     rust_lines.append(f"    {decoded}")
                 else:
                     rust_lines.append(f"    Some({decoded})")
@@ -315,18 +331,23 @@ def render(schema):
                 "u64be": "uint64_t",
                 "i64be": "int64_t",
                 "bytes16": "uint8_t",
+                "bytes4": "uint8_t",
             }
-            value_fields = fields[1:]
+            value_fields = fields[1:] if not is_record else fields
             if any(field["encoding"] not in c_types for field in fields):
                 raise ValueError(f"unsupported generated C codec field in {name}")
             encode_name = f"prdb_encode_{name.lower()}"
             decode_name = f"prdb_decode_{name.lower()}"
-            c_version_constant = constants_by_name[version_constant]["c_name"]
+            c_version_constant = (
+                constants_by_name[version_constant]["c_name"] if not is_record else None
+            )
             arguments = []
             for field in value_fields:
                 field_name = field["name"]
-                if field["encoding"] == "bytes16":
-                    arguments.append(f"const uint8_t {field_name}[16]")
+                if field["encoding"] in ("bytes16", "bytes4"):
+                    arguments.append(
+                        f"const uint8_t {field_name}[{field_widths[field['encoding']]}]"
+                    )
                 else:
                     arguments.append(f"{c_types[field['encoding']]} {field_name}")
             encode_parameters = f",\n    {', '.join(arguments)}" if arguments else ""
@@ -349,10 +370,10 @@ def render(schema):
                     )
                 elif field_encoding == "u8":
                     c_codec_lines.append(f"    payload[{field_offset}] = {field_name};")
-                elif field_encoding == "bytes16":
+                elif field_encoding in ("bytes16", "bytes4"):
                     c_codec_lines.extend(
                         [
-                            "    for (size_t i = 0; i < 16; ++i) {",
+                            f"    for (size_t i = 0; i < {field_widths[field_encoding]}; ++i) {{",
                             f"        payload[{field_offset} + i] = {field_name}[i];",
                             "    }",
                         ]
@@ -371,8 +392,10 @@ def render(schema):
             output_arguments = []
             for field in value_fields:
                 field_name = field["name"]
-                if field["encoding"] == "bytes16":
-                    output_arguments.append(f"uint8_t {field_name}[16]")
+                if field["encoding"] in ("bytes16", "bytes4"):
+                    output_arguments.append(
+                        f"uint8_t {field_name}[{field_widths[field['encoding']]}]"
+                    )
                 else:
                     output_arguments.append(f"{c_types[field['encoding']]} *{field_name}")
             decode_parameters = f",\n    {', '.join(output_arguments)}" if output_arguments else ""
@@ -382,23 +405,28 @@ def render(schema):
                     f"    if (payload == NULL || payload_len {'<' if codec_prefix else '!='} {offset}) {{",
                     "        return 0;",
                     "    }",
-                    f"    if (payload[0] != (uint8_t)(({c_version_constant} >> 8) & 0xffu) ||",
-                    f"        payload[1] != (uint8_t)({c_version_constant} & 0xffu)) {{",
-                    "        return 0;",
-                    "    }",
                 ]
             )
+            if not is_record:
+                c_codec_lines.extend(
+                    [
+                        f"    if (payload[0] != (uint8_t)(({c_version_constant} >> 8) & 0xffu) ||",
+                        f"        payload[1] != (uint8_t)({c_version_constant} & 0xffu)) {{",
+                        "        return 0;",
+                        "    }",
+                    ]
+                )
             for field in value_fields:
                 field_name = field["name"]
                 field_encoding = field["encoding"]
                 field_offset = field_offsets[field_name]
-                if field_encoding == "bytes16":
+                if field_encoding in ("bytes16", "bytes4"):
                     c_codec_lines.extend(
                         [
                             "    if (" + field_name + " == NULL) {",
                             "        return 0;",
                             "    }",
-                            "    for (size_t i = 0; i < 16; ++i) {",
+                            f"    for (size_t i = 0; i < {field_widths[field_encoding]}; ++i) {{",
                             f"        {field_name}[i] = payload[{field_offset} + i];",
                             "    }",
                         ]

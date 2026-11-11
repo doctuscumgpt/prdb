@@ -22,6 +22,16 @@ class PayloadSchemaValidationTests(unittest.TestCase):
 
     def test_current_schema_renders(self):
         rust, c, c_codecs, *_ = GENERATOR.render(self.schema)
+        self.assertIn("VISIBLE_COLUMN_RECORD_HEADER_BYTES", rust)
+        self.assertIn("encode_visible_column_record", rust)
+        self.assertIn("decode_visible_column_record", rust)
+        self.assertIn("encode_visible_column_record_column_name", rust)
+        self.assertIn("decode_visible_column_record_column_name", rust)
+        self.assertIn("PRDB_VISIBLE_COLUMN_RECORD_HEADER_BYTES", c)
+        self.assertIn("prdb_encode_visible_column_record", c_codecs)
+        self.assertIn("prdb_decode_visible_column_record", c_codecs)
+        self.assertIn("prdb_encode_visible_column_record_column_name", c_codecs)
+        self.assertIn("prdb_decode_visible_column_record_column_name", c_codecs)
         self.assertIn("EXECUTOR_NEXT_BATCH_RESPONSE_CONTINUATION_HEADER_BYTES", rust)
         self.assertIn("encode_supervisor_invocation_control_request", rust)
         self.assertIn("decode_supervisor_invocation_control_request", rust)
@@ -189,6 +199,12 @@ class PayloadSchemaValidationTests(unittest.TestCase):
         )
         request["fields"][2]["encoding"] = "u32be"
         with self.assertRaisesRegex(ValueError, "must use a u16 count"):
+            GENERATOR.render(malformed)
+
+    def test_versionless_record_rejects_a_payload_version(self):
+        malformed = copy.deepcopy(self.schema)
+        malformed["record_schemas"][0]["version_constant"] = "EXECUTOR_BATCH_PAYLOAD_VERSION"
+        with self.assertRaisesRegex(ValueError, "must not declare a payload version"):
             GENERATOR.render(malformed)
 
     def test_generated_fixed_codec_rejects_trailing_fields(self):

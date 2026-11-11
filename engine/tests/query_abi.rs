@@ -70,6 +70,19 @@ fn generated_relation_description_tail_codecs_preserve_prefix_boundaries() {
         ),
         Some(3)
     );
+
+    let column =
+        prdb_engine::query_abi::encode_visible_column_record([0x42; 16], 0x0102_0304, 1, 3, [0; 4]);
+    assert_eq!(
+        column,
+        [[0x42; 16].as_slice(), &[1, 2, 3, 4, 1, 3, 0, 0, 0, 0],]
+            .concat()
+            .as_slice()
+    );
+    assert_eq!(
+        prdb_engine::query_abi::decode_visible_column_record(&column),
+        Some(([0x42; 16], 0x0102_0304, 1, 3, [0; 4]))
+    );
 }
 
 #[test]

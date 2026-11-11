@@ -839,75 +839,57 @@ fn decode_scalar_value(type_code: u8, bytes: &[u8]) -> Result<ScalarValue, Execu
     Ok(value)
 }
 
-pub(crate) fn encode_name(payload: &mut Vec<u8>, name: &str) -> Result<(), ExecutorRequestError> {
-    let name_len = u16::try_from(name.len()).map_err(|_| ExecutorRequestError::ResponseTooLarge)?;
-    if name.is_empty() {
-        return Err(ExecutorRequestError::InvalidPayload);
-    }
-    payload.extend_from_slice(&name_len.to_be_bytes());
-    payload.extend_from_slice(name.as_bytes());
-    ensure_response_size(payload)
-}
-
-pub(crate) fn decode_name(
-    payload: &[u8],
-    offset: &mut usize,
-) -> Result<String, ExecutorRequestError> {
-    let name_len = usize::from(read_u16(payload, offset)?);
-    if name_len == 0 {
-        return Err(ExecutorRequestError::InvalidPayload);
-    }
-    let end = offset
-        .checked_add(name_len)
-        .filter(|end| *end <= payload.len())
-        .ok_or(ExecutorRequestError::InvalidPayload)?;
-    let name = std::str::from_utf8(&payload[*offset..end])
-        .map_err(|_| ExecutorRequestError::InvalidPayload)?
-        .to_owned();
-    *offset = end;
-    Ok(name)
-}
-
 pub(crate) fn encode_visible_column(
     payload: &mut Vec<u8>,
     column: &VisibleColumn,
 ) -> Result<(), ExecutorRequestError> {
-    payload.extend_from_slice(&column.column_id);
-    payload.extend_from_slice(&column.ordinal.to_be_bytes());
-    payload.push(u8::from(column.nullable));
+    if column.name.is_empty() {
+        return Err(ExecutorRequestError::InvalidPayload);
+    }
     let (type_code, parameters) = encode_scalar_type(column.scalar_type);
-    payload.push(type_code);
-    payload.extend_from_slice(&parameters);
-    encode_name(payload, &column.name)
+    payload.extend_from_slice(&generated::encode_visible_column_record(
+        column.column_id,
+        column.ordinal,
+        u8::from(column.nullable),
+        type_code,
+        parameters,
+    ));
+    let name = generated::encode_visible_column_record_column_name(&column.name)
+        .ok_or(ExecutorRequestError::ResponseTooLarge)?;
+    payload.extend_from_slice(&name);
+    ensure_response_size(payload)
 }
 
 pub(crate) fn decode_visible_column(
     payload: &[u8],
     offset: &mut usize,
 ) -> Result<VisibleColumn, ExecutorRequestError> {
-    let column_id = read_array_16(payload, offset)?;
-    let ordinal = read_u32(payload, offset)?;
-    let nullable = *payload
-        .get(*offset)
+    let record = payload
+        .get(*offset..)
         .ok_or(ExecutorRequestError::InvalidPayload)?;
-    *offset += 1;
-    let type_code = *payload
-        .get(*offset)
+    let (column_id, ordinal, nullable, type_code, parameters) =
+        generated::decode_visible_column_record(record)
+            .ok_or(ExecutorRequestError::InvalidPayload)?;
+    *offset = offset
+        .checked_add(generated::VISIBLE_COLUMN_RECORD_HEADER_BYTES as usize)
         .ok_or(ExecutorRequestError::InvalidPayload)?;
-    *offset += 1;
-    let param_end = offset
-        .checked_add(4)
-        .filter(|end| *end <= payload.len())
+    let (name, name_bytes) = generated::decode_visible_column_record_column_name(
+        payload
+            .get(*offset..)
+            .ok_or(ExecutorRequestError::InvalidPayload)?,
+    )
+    .ok_or(ExecutorRequestError::InvalidPayload)?;
+    if name.is_empty() {
+        return Err(ExecutorRequestError::InvalidPayload);
+    }
+    let name = name.to_owned();
+    *offset = offset
+        .checked_add(name_bytes)
         .ok_or(ExecutorRequestError::InvalidPayload)?;
-    let parameters: [u8; 4] = payload[*offset..param_end]
-        .try_into()
-        .map_err(|_| ExecutorRequestError::InvalidPayload)?;
-    *offset = param_end;
     if nullable > 1 {
         return Err(ExecutorRequestError::InvalidPayload);
     }
     let scalar_type = decode_scalar_type(type_code, parameters)?;
-    let name = decode_name(payload, offset)?;
     Ok(VisibleColumn {
         column_id,
         name,

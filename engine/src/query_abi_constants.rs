@@ -986,3 +986,45 @@ pub fn decode_supervisor_abort_request(payload: &[u8]) -> Option<()> {
     }
     Some(())
 }
+
+pub const VISIBLE_COLUMN_RECORD_COLUMN_ID_OFFSET: u32 = 0;
+pub const VISIBLE_COLUMN_RECORD_ORDINAL_OFFSET: u32 = 16;
+pub const VISIBLE_COLUMN_RECORD_NULLABLE_OFFSET: u32 = 20;
+pub const VISIBLE_COLUMN_RECORD_TYPE_CODE_OFFSET: u32 = 21;
+pub const VISIBLE_COLUMN_RECORD_TYPE_PARAMETERS_OFFSET: u32 = 22;
+pub const VISIBLE_COLUMN_RECORD_HEADER_BYTES: u32 = 26;
+pub fn encode_visible_column_record(column_id: [u8; 16], ordinal: u32, nullable: u8, type_code: u8, type_parameters: [u8; 4]) -> [u8; 26] {
+    let mut payload = [0u8; 26];
+    payload[0..16].copy_from_slice(&column_id);
+    payload[16..20].copy_from_slice(&ordinal.to_be_bytes());
+    payload[20] = nullable;
+    payload[21] = type_code;
+    payload[22..26].copy_from_slice(&type_parameters);
+    payload
+}
+
+#[allow(clippy::type_complexity)]
+pub fn decode_visible_column_record(payload: &[u8]) -> Option<([u8; 16], u32, u8, u8, [u8; 4])> {
+    if payload.len() < 26 {
+        return None;
+    }
+    Some((payload[0..16].try_into().ok()?, u32::from_be_bytes(payload[16..20].try_into().ok()?), payload[20], payload[21], payload[22..26].try_into().ok()?))
+}
+
+pub fn encode_visible_column_record_column_name(value: &str) -> Option<Vec<u8>> {
+    let length = u16::try_from(value.len()).ok()?;
+    let mut payload = Vec::with_capacity(2 + value.len());
+    payload.extend_from_slice(&length.to_be_bytes());
+    payload.extend_from_slice(value.as_bytes());
+    Some(payload)
+}
+
+pub fn decode_visible_column_record_column_name(payload: &[u8]) -> Option<(&str, usize)> {
+    if payload.len() < 2 {
+        return None;
+    }
+    let length = usize::from(u16::from_be_bytes([payload[0], payload[1]]));
+    let end = 2usize.checked_add(length)?;
+    let value = std::str::from_utf8(payload.get(2..end)?).ok()?;
+    Some((value, end))
+}

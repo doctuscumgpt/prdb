@@ -1629,4 +1629,85 @@ static inline int prdb_decode_supervisor_abort_request(const uint8_t *payload, s
     return 1;
 }
 
+static inline void prdb_encode_visible_column_record(uint8_t payload[26],
+    const uint8_t column_id[16], uint32_t ordinal, uint8_t nullable, uint8_t type_code, const uint8_t type_parameters[4]) {
+    for (size_t i = 0; i < 16; ++i) {
+        payload[0 + i] = column_id[i];
+    }
+    uint64_t ordinal_wire = (uint64_t)ordinal;
+    for (size_t i = 0; i < 4; ++i) {
+        payload[16 + i] = (uint8_t)(ordinal_wire >> ((4 - 1 - i) * 8));
+    }
+    payload[20] = nullable;
+    payload[21] = type_code;
+    for (size_t i = 0; i < 4; ++i) {
+        payload[22 + i] = type_parameters[i];
+    }
+}
+
+static inline int prdb_decode_visible_column_record(const uint8_t *payload, size_t payload_len,
+    uint8_t column_id[16], uint32_t *ordinal, uint8_t *nullable, uint8_t *type_code, uint8_t type_parameters[4]) {
+    if (payload == NULL || payload_len < 26) {
+        return 0;
+    }
+    if (column_id == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < 16; ++i) {
+        column_id[i] = payload[0 + i];
+    }
+    if (ordinal == NULL) {
+        return 0;
+    }
+    uint64_t ordinal_wire_value = 0;
+    for (size_t i = 0; i < 4; ++i) {
+        ordinal_wire_value = (ordinal_wire_value << 8) | payload[16 + i];
+    }
+    *ordinal = (uint32_t)ordinal_wire_value;
+    if (nullable == NULL) {
+        return 0;
+    }
+    *nullable = payload[20];
+    if (type_code == NULL) {
+        return 0;
+    }
+    *type_code = payload[21];
+    if (type_parameters == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        type_parameters[i] = payload[22 + i];
+    }
+    return 1;
+}
+
+static inline int prdb_encode_visible_column_record_column_name(uint8_t *payload, size_t payload_capacity, const uint8_t *bytes, size_t bytes_len) {
+    if (payload == NULL || bytes_len > UINT16_MAX ||
+        payload_capacity < 2 + bytes_len ||
+        (bytes_len != 0 && bytes == NULL)) {
+        return 0;
+    }
+    payload[0] = (uint8_t)(bytes_len >> 8);
+    payload[1] = (uint8_t)bytes_len;
+    for (size_t i = 0; i < bytes_len; ++i) {
+        payload[2 + i] = bytes[i];
+    }
+    return 1;
+}
+
+static inline int prdb_decode_visible_column_record_column_name(const uint8_t *payload, size_t payload_len, const uint8_t **bytes, size_t *bytes_len, size_t *consumed) {
+    if (payload == NULL || payload_len < 2 || bytes == NULL ||
+        bytes_len == NULL || consumed == NULL) {
+        return 0;
+    }
+    size_t length = ((size_t)payload[0] << 8) | payload[1];
+    if (length > payload_len - 2) {
+        return 0;
+    }
+    *bytes = payload + 2;
+    *bytes_len = length;
+    *consumed = 2 + length;
+    return 1;
+}
+
 #endif /* PRDB_QUERY_ABI_PAYLOAD_CODECS_H */

@@ -169,6 +169,12 @@ fn executor_relation_response_uses_generated_prefix_codecs() {
     let mut empty_relation_name = payload.clone();
     empty_relation_name[35..37].copy_from_slice(&[0, 0]);
     assert!(ResolveRelationResponse::decode(&empty_relation_name).is_err());
+    let mut invalid_column_name = payload.clone();
+    invalid_column_name[72] = 0xff;
+    assert!(ResolveRelationResponse::decode(&invalid_column_name).is_err());
+    let mut invalid_nullable_flag = payload.clone();
+    invalid_nullable_flag[64] = 2;
+    assert!(ResolveRelationResponse::decode(&invalid_nullable_flag).is_err());
 }
 
 #[test]

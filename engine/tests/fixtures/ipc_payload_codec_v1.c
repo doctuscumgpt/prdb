@@ -504,6 +504,38 @@ int main(void) {
             &decoded_description_name_len, &decoded_description_name_consumed)) {
         return 49;
     }
+    uint8_t visible_column_id[16];
+    memset(visible_column_id, 0x42, sizeof(visible_column_id));
+    uint8_t visible_column_parameters[4] = {0, 0, 0, 0};
+    uint8_t visible_column_record[30] = {0};
+    uint8_t decoded_visible_column_id[16] = {0};
+    uint8_t decoded_visible_column_parameters[4] = {0};
+    uint32_t decoded_visible_column_ordinal = 0;
+    uint8_t decoded_visible_column_nullable = 0;
+    uint8_t decoded_visible_column_type = 0;
+    prdb_encode_visible_column_record(
+        visible_column_record, visible_column_id, UINT32_C(0x01020304), 1, 3,
+        visible_column_parameters);
+    if (!prdb_encode_visible_column_record_column_name(
+            visible_column_record + 26, sizeof(visible_column_record) - 26,
+            (const uint8_t *)"id", 2) ||
+        visible_column_record[16] != 1 || visible_column_record[17] != 2 ||
+        visible_column_record[18] != 3 || visible_column_record[19] != 4 ||
+        !prdb_decode_visible_column_record(
+            visible_column_record, sizeof(visible_column_record),
+            decoded_visible_column_id, &decoded_visible_column_ordinal,
+            &decoded_visible_column_nullable, &decoded_visible_column_type,
+            decoded_visible_column_parameters) ||
+        decoded_visible_column_ordinal != UINT32_C(0x01020304) ||
+        decoded_visible_column_nullable != 1 || decoded_visible_column_type != 3 ||
+        memcmp(decoded_visible_column_id, visible_column_id, 16) != 0 ||
+        !prdb_decode_visible_column_record_column_name(
+            visible_column_record + 26, 4, &decoded_description_name,
+            &decoded_description_name_len, &decoded_description_name_consumed) ||
+        decoded_description_name_len != 2 || decoded_description_name_consumed != 4 ||
+        memcmp(decoded_description_name, "id", 2) != 0) {
+        return 50;
+    }
     uint8_t planner_schema_id[16];
     uint8_t planner_plan_relation_id[16];
     uint8_t decoded_planner_schema_id[16] = {0};

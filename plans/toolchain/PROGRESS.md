@@ -687,6 +687,15 @@
 - Verification: generator schema/drift tests, Rust generated-tail boundary and executor response round-trip tests, planner stream regression, and the forced TinyCC IPC payload codec fixture passed. The full forced TinyCC SDK suite, locked workspace build, format check, warning-denied Clippy, serial tests, and `git diff --check` passed; the commit integration reported 138 passed and 4 cgroup-dependent tests ignored.
 - Remaining: other structured IPC tails and full shared-schema parity remain open.
 
+## TC-2 follow-up: generated visible-column wire record — implemented
+
+- Contract: relation-description column entries have identical Rust/C field order, widths, endianness, and name framing, while remaining a nested versionless record inside versioned payloads.
+- Red evidence: generator tests initially failed because the shared schema had no `VISIBLE_COLUMN_RECORD` declaration or generated fixed-prefix/name-tail helpers.
+- Implementation: the schema now declares the versionless column record and its length-prefixed name. The generator supports versionless records and fixed four-byte fields. Rust executor/planner IPC now uses generated codecs for column ID, ordinal, nullability, scalar type code/parameters, and column name; scalar type semantic validation remains in the executor codec.
+- Compatibility: encoded column bytes are unchanged. Empty names, invalid nullable flags, malformed UTF-8, unsupported scalar codes/parameters, and truncated records still fail closed.
+- Verification: generated schema/drift tests, Rust codec and executor IPC round-trip/malformed-input tests, and the forced TinyCC IPC payload codec fixture passed. The full forced TinyCC SDK suite, locked workspace build, format check, warning-denied Clippy, serial tests, and `git diff --check` passed; the commit integration reported 138 passed and 4 cgroup-dependent tests ignored.
+- Remaining: additional structured IPC tails and full shared-schema parity remain open.
+
 ## TC-1 / TC-3: maintained TinyCC SDK and shared-artifact link profile — partial
 
 - Observed development tools: Rust/Cargo 1.95.0 with rustfmt and Clippy; TinyCC `0.9.27-unstable-2025-01-06` on x86_64 Linux. The SDK archive and C fixtures build with TinyCC `-Wall -Wextra -Werror`.
