@@ -180,6 +180,45 @@ static uint32_t build_composite_group_count_plan(
     return offset;
 }
 
+static uint32_t build_ordered_select_plan(uint8_t *bytes,
+                                          uint32_t *order_key_id_offset) {
+    uint32_t offset = 0;
+    uint8_t identifier[16];
+    uint32_t column;
+    prdb_encode_optimizer_plan_header_record(bytes + offset, 1, 7, 0);
+    offset += PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "public");
+    memset(identifier, 1, sizeof(identifier));
+    prdb_encode_optimizer_plan_schema_reference_record(bytes + offset,
+                                                       identifier, 3);
+    offset += PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "items");
+    memset(identifier, 2, sizeof(identifier));
+    prdb_encode_optimizer_plan_relation_reference_record(bytes + offset,
+                                                         identifier, 4);
+    offset += PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES;
+    put_u16(bytes, &offset, 2);
+    column = put_column(bytes, &offset, 1, 0);
+    bytes[column] = 4;
+    set_column_ordinal(bytes, column, 0);
+    column = put_column(bytes, &offset, 1, 1);
+    bytes[column] = 5;
+    set_column_ordinal(bytes, column, 1);
+    put_u16(bytes, &offset, 1);
+    column = put_column(bytes, &offset, 1, 0);
+    bytes[column] = 4;
+    set_column_ordinal(bytes, column, 0);
+    bytes[offset++] = 9;
+    *order_key_id_offset = offset;
+    column = put_column(bytes, &offset, 1, 1);
+    bytes[column] = 5;
+    set_column_ordinal(bytes, column, 1);
+    bytes[offset++] = 1;
+    bytes[offset++] = 1;
+    put_u32(bytes, &offset, 5);
+    return offset;
+}
+
 static uint32_t put_header(uint8_t *bytes, uint32_t *offset,
                            uint8_t node_count) {
     bytes[(*offset)++] = 0;
@@ -739,6 +778,8 @@ int main(void) {
     uint8_t composite_group_count_payload[512] = {0};
     uint8_t composite_group_count_malformed[
         sizeof(composite_group_count_payload)];
+    uint8_t ordered_select_payload[512] = {0};
+    uint8_t ordered_select_malformed[sizeof(ordered_select_payload)];
     uint32_t projected_id_offset;
     uint32_t project_node_offset;
     uint32_t predicate_offset;
@@ -751,12 +792,35 @@ int main(void) {
     static prdb_sdk_optimizer_group_count_plan_v1 group_count_decoded;
     static prdb_sdk_optimizer_composite_group_count_plan_v1
         composite_group_count_decoded;
+    static prdb_sdk_optimizer_ordered_select_plan_v1 ordered_select_decoded;
     static prdb_sdk_select_v19 join_statement;
     static prdb_sdk_select_binding_v19 join_binding;
     static prdb_sdk_select_v4 group_count_statement;
     static prdb_sdk_select_binding_v4 group_count_binding;
     static prdb_sdk_select_v13 composite_group_count_statement;
     static prdb_sdk_select_binding_v13 composite_group_count_binding;
+    uint32_t ordered_select_order_key_offset;
+    uint32_t ordered_select_payload_len = build_ordered_select_plan(
+        ordered_select_payload, &ordered_select_order_key_offset);
+    assert(prdb_sdk_optimizer_decode_ordered_select_plan_v1(
+               ordered_select_payload, ordered_select_payload_len,
+               &ordered_select_decoded, sizeof(ordered_select_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(ordered_select_decoded.plan.plan_kind == 7 &&
+           ordered_select_decoded.plan.scan_column_count == 2 &&
+           ordered_select_decoded.plan.projection_count == 1 &&
+           ordered_select_decoded.plan.projections[0].ordinal == 0 &&
+           ordered_select_decoded.order_key.ordinal == 1 &&
+           ordered_select_decoded.descending == 1 &&
+           ordered_select_decoded.plan.has_limit == 1 &&
+           ordered_select_decoded.plan.limit == 5);
+    memcpy(ordered_select_malformed, ordered_select_payload,
+           ordered_select_payload_len);
+    ordered_select_malformed[ordered_select_order_key_offset] = 9;
+    assert(prdb_sdk_optimizer_decode_ordered_select_plan_v1(
+               ordered_select_malformed, ordered_select_payload_len,
+               &ordered_select_decoded, sizeof(ordered_select_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
     static prdb_sdk_sql_column_shape_v2 join_left_columns[3];
     static prdb_sdk_sql_column_shape_v2 join_right_columns[3];
     static resolve_context resolve = {0};

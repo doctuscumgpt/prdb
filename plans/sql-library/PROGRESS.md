@@ -1,11 +1,11 @@
 # SQL Library Progress
 
-## SQL-8: bounded ordered SELECT optimizer plan — partial
+## SQL-8: bounded ordered SELECT optimizer plan decoding — partial
 
 - Contract: an explicit single-column `ORDER BY` key is resolved through the authorized relation description. Its source column may remain hidden from the SELECT projection; LIMIT is applied after stable ordering by the existing bounded SQL v3 runner.
-- Implementation: ordered SELECT statement 7 is decoded, bound to stable column IDs, and dispatched through the optimizer submission process. The canonical kind-7 plan includes the sorted union of projected columns and the hidden order key, direction, and optional LIMIT. Optimizer responses revalidate this plan encoding.
-- Evidence: focused request, binding, plan round-trip/rejection, and optimizer-process dispatch tests passed. Locked workspace build, format check, warning-denied Clippy, and ABI generator drift check passed.
-- Remaining: implement the maintained C SDK ordered-request encoder, independent kind-7 plan decoding/AST matching, and confined sorted query acceptance. The Rust plan path alone does not verify SQL execution.
+- Implementation: ordered SELECT statement 7 is decoded, bound to stable column IDs, and dispatched through the optimizer submission process. The canonical kind-7 plan includes the sorted union of projected columns and the hidden order key, direction, and optional LIMIT. Rust optimizer responses and the maintained C SDK independently validate the plan encoding.
+- Evidence: focused Rust request, binding, plan round-trip/rejection, and optimizer-process dispatch tests passed. The TinyCC SDK suite passed with a hand-built kind-7 payload fixture that checks hidden order-key decoding and rejects a mismatched key.
+- Remaining: implement the maintained C SDK ordered-request encoder, AST matching and sorted execution, then confined query acceptance. The plan codecs alone do not verify SQL execution.
 
 ## SQL-7: filtered aliased INNER JOIN runner and mandatory cgroup acceptance — implemented
 

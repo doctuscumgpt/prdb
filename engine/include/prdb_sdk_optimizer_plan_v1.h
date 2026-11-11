@@ -59,6 +59,16 @@ typedef struct prdb_sdk_optimizer_plan_v1 {
     uint32_t plan_kind;
 } prdb_sdk_optimizer_plan_v1;
 
+/* Kind-7 ordered SELECT plans keep their sort key and direction alongside
+ * the common scan/projection shape. */
+typedef struct prdb_sdk_optimizer_ordered_select_plan_v1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    prdb_sdk_optimizer_plan_v1 plan;
+    prdb_sdk_optimizer_plan_column_v1 order_key;
+    uint32_t descending;
+} prdb_sdk_optimizer_ordered_select_plan_v1;
+
 /* A validated filter subtree borrows its canonical prefix bytes from the
  * plan payload. It is absent when the plan has no Filter node. */
 typedef struct prdb_sdk_optimizer_filter_v1 {
@@ -169,6 +179,10 @@ typedef int32_t (*prdb_sdk_optimizer_projected_row_v1_fn)(
 int32_t prdb_sdk_optimizer_decode_plan_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_plan_v1 *out, uint32_t out_capacity);
+
+int32_t prdb_sdk_optimizer_decode_ordered_select_plan_v1(
+    const uint8_t *payload, uint64_t payload_len,
+    prdb_sdk_optimizer_ordered_select_plan_v1 *out, uint32_t out_capacity);
 
 /* Decode all plan-v1 pipelines, independently validating a Filter node's
  * bounded prefix tree, scanned column references, scalar compatibility, and
