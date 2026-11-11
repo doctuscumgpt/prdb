@@ -23371,6 +23371,27 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         ]
         .concat()
     );
+    for expected_right_key in [9u32, 7u32] {
+        let ordered_select =
+            read_frame(&mut gateway)?.ok_or("missing ordered SELECT SQLR result")?;
+        assert_eq!(
+            ordered_select.operation,
+            Operation::GatewayResultData as u16
+        );
+        assert_eq!(ordered_select.request_id, accepted.request_id);
+        assert_eq!(
+            ordered_select.payload,
+            [
+                b"SQLR".as_slice(),
+                &[
+                    0, 1, 0, 1, 0, 9, b'r', b'i', b'g', b'h', b't', b'_', b'k', b'e', b'y', 0, 0,
+                    0, 3, 0, 0, 0, 0, 0, 0, 4,
+                ][..],
+                &expected_right_key.to_be_bytes(),
+            ]
+            .concat()
+        );
+    }
     drop(gateway);
     assert!(matches!(
         finalize_gateway_invocation_and_send_terminal(

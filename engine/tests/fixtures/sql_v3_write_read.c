@@ -1,4 +1,5 @@
 #include "prdb_sdk_sql_exec_v2.h"
+#include "prdb_sdk_sql_exec_v3.h"
 #include "prdb_sdk_sql_exec_v5.h"
 #include "prdb_sdk_sql_exec_v6.h"
 #include "prdb_sdk_sql_exec_v7.h"
@@ -37,6 +38,16 @@ typedef struct optimizer_result_context {
     uint32_t matched_expected_value;
 } optimizer_result_context;
 
+typedef struct ordered_optimizer_result_context {
+    const prdb_host_api_v3 *host;
+    const prdb_sdk_sql_column_shape_v2 *columns;
+    const prdb_sdk_executor_relation_v1 *relation;
+    uint8_t *record_buffer;
+    uint64_t record_capacity;
+    uint32_t row_count;
+    uint32_t expected_values[2];
+} ordered_optimizer_result_context;
+
 static int32_t verify_optimizer_row(
     void *opaque, const prdb_sdk_optimizer_plan_column_v1 *projections,
     const prdb_sdk_value_v1 *values, uint32_t projection_count) {
@@ -54,6 +65,43 @@ static int32_t verify_optimizer_row(
         memcmp(values[0].data, expected_value, sizeof(expected_value)) == 0;
     ++context->row_count;
     return context->matched_expected_value ? 0 : 1;
+}
+
+static int32_t emit_ordered_optimizer_row(
+    void *opaque, const prdb_sdk_optimizer_plan_column_v1 *projections,
+    const prdb_sdk_value_v1 *values, uint32_t projection_count) {
+    ordered_optimizer_result_context *context = opaque;
+    uint32_t ordinals[PRDB_SDK_OPTIMIZER_PLAN_MAX_PROJECTIONS];
+    uint8_t expected_bytes[4];
+    uint64_t record_len = 0;
+    uint32_t expected_value;
+    if (context != NULL && context->row_count < 2) {
+        expected_value = context->expected_values[context->row_count];
+        expected_bytes[0] = (uint8_t)(expected_value >> 24);
+        expected_bytes[1] = (uint8_t)(expected_value >> 16);
+        expected_bytes[2] = (uint8_t)(expected_value >> 8);
+        expected_bytes[3] = (uint8_t)expected_value;
+    } else {
+        memset(expected_bytes, 0, sizeof(expected_bytes));
+    }
+    if (context == NULL || context->host == NULL || context->columns == NULL ||
+        context->relation == NULL || projections == NULL || values == NULL ||
+        projection_count != 1 || context->row_count >= 2 ||
+        values[0].state != PRDB_SDK_VALUE_STATE_VALUE ||
+        values[0].type_code != PRDB_SDK_VALUE_TYPE_INTEGER ||
+        values[0].data == NULL || values[0].data_len != 4 ||
+        memcmp(values[0].data, expected_bytes, sizeof(expected_bytes)) != 0) {
+        return -1;
+    }
+    ordinals[0] = projections[0].ordinal;
+    if (prdb_sdk_sql_write_projected_result_v1(
+            context->host, context->columns, context->relation->column_count,
+            ordinals, values, projection_count, context->record_buffer,
+            context->record_capacity, &record_len) != PRDB_SDK_SQL_RESULT_OK) {
+        return -1;
+    }
+    ++context->row_count;
+    return 0;
 }
 
 typedef struct result_context {
@@ -474,6 +522,9 @@ static int32_t run_write_read_fixture(
         "SELECT id FROM records WHERE id = $1";
     static const uint8_t optimizer_select_sql[] =
         "SELECT id FROM records WHERE id = $1 LIMIT 1";
+    static const uint8_t optimizer_ordered_select_sql[] =
+        "SELECT right_key FROM grouped_records "
+        "ORDER BY left_key DESC LIMIT 2";
     static const uint8_t select_grouped_min_sql[] =
         "SELECT id, MIN(id) FROM records GROUP BY id";
     static const uint8_t select_grouped_sum_sql[] =
@@ -1528,6 +1579,51 @@ static int32_t run_write_read_fixture(
             !optimizer_results.matched_expected_value) {
             static const uint8_t message[] = "fixture-error-optimizer-filter";
             return report_failure(host, message, sizeof(message) - 1);
+        }
+
+        {
+            static uint8_t ordered_request[PRDB_SDK_OPTIMIZER_MAX_REQUEST_BYTES];
+            static uint8_t ordered_response[PRDB_SDK_OPTIMIZER_MAX_PLAN_BYTES + 64];
+            static uint8_t ordered_relation_response[4096];
+            static uint8_t ordered_scan_response[4096];
+            static uint8_t ordered_batch[4096];
+            static uint8_t ordered_materialized[
+                PRDB_SDK_SQL_EXEC_V3_MAX_MATERIALIZED_BYTES];
+            static uint8_t ordered_record[256];
+            prdb_sdk_select_v3 ordered_statement = {0};
+            prdb_sdk_executor_relation_v1 ordered_relation = {0};
+            prdb_sdk_sql_column_shape_v2 ordered_columns[9] = {{0}};
+            prdb_sdk_value_v1 ordered_source_cells[9] = {{0}};
+            prdb_sdk_value_v1 ordered_projected_values[1] = {{0}};
+            ordered_optimizer_result_context ordered_results = {
+                host, ordered_columns, &ordered_relation, ordered_record,
+                sizeof(ordered_record), 0, {9, 7}};
+            uint32_t ordered_rows = 0;
+            uint32_t ordered_parse_error = 0;
+            if (prdb_sdk_sql_parse_select_v3(
+                    optimizer_ordered_select_sql,
+                    sizeof(optimizer_ordered_select_sql) - 1,
+                    &ordered_statement, sizeof(ordered_statement),
+                    &ordered_parse_error) != PRDB_SDK_SQL_OK ||
+                prdb_sdk_optimizer_execute_ordered_select_ast_v1(
+                    optimizer_host, &ordered_statement, schema,
+                    sizeof(schema) - 1, 16, sizeof(ordered_batch),
+                    ordered_request, sizeof(ordered_request),
+                    ordered_response, sizeof(ordered_response),
+                    ordered_relation_response,
+                    sizeof(ordered_relation_response), ordered_scan_response,
+                    sizeof(ordered_scan_response), ordered_batch,
+                    sizeof(ordered_batch), &ordered_relation,
+                    sizeof(ordered_relation), ordered_columns, 9,
+                    ordered_source_cells, 9, ordered_projected_values, 1,
+                    ordered_materialized, sizeof(ordered_materialized),
+                    emit_ordered_optimizer_row, &ordered_results,
+                    &ordered_rows) != PRDB_SDK_OPTIMIZER_PLAN_OK ||
+                ordered_rows != 2 || ordered_results.row_count != 2) {
+                static const uint8_t message[] =
+                    "fixture-error-optimizer-ordered-select";
+                return report_failure(host, message, sizeof(message) - 1);
+            }
         }
     }
 
