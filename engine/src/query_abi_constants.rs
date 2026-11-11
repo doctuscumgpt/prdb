@@ -1221,6 +1221,23 @@ pub fn decode_optimizer_plan_relation_reference_record(payload: &[u8]) -> Option
     Some((payload[0..16].try_into().ok()?, u64::from_be_bytes(payload[16..24].try_into().ok()?)))
 }
 
+pub const OPTIMIZER_PLAN_COLUMN_LIST_HEADER_RECORD_NODE_TAG_OFFSET: u32 = 0;
+pub const OPTIMIZER_PLAN_COLUMN_LIST_HEADER_RECORD_COLUMN_COUNT_OFFSET: u32 = 1;
+pub const OPTIMIZER_PLAN_COLUMN_LIST_HEADER_RECORD_HEADER_BYTES: u32 = 3;
+pub fn encode_optimizer_plan_column_list_header_record(node_tag: u8, column_count: u16) -> [u8; 3] {
+    let mut payload = [0u8; 3];
+    payload[0] = node_tag;
+    payload[1..3].copy_from_slice(&column_count.to_be_bytes());
+    payload
+}
+
+pub fn decode_optimizer_plan_column_list_header_record(payload: &[u8]) -> Option<(u8, u16)> {
+    if payload.len() != 3 {
+        return None;
+    }
+    Some((payload[0], u16::from_be_bytes(payload[1..3].try_into().ok()?)))
+}
+
 pub const CLIENT_FRAME_HEADER_RECORD_MAGIC_OFFSET: u32 = 0;
 pub const CLIENT_FRAME_HEADER_RECORD_MAJOR_VERSION_OFFSET: u32 = 4;
 pub const CLIENT_FRAME_HEADER_RECORD_MINOR_VERSION_OFFSET: u32 = 6;

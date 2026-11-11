@@ -1830,6 +1830,16 @@
       "trailing_fields": []
     },
     {
+      "name": "OPTIMIZER_PLAN_COLUMN_LIST_HEADER_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "node_tag", "encoding": "u8" },
+        { "name": "column_count", "encoding": "u16be" }
+      ],
+      "trailing_fields": []
+    },
+    {
       "name": "CLIENT_FRAME_HEADER_RECORD",
       "generate_rust_codec": true,
       "generate_c_codec": true,

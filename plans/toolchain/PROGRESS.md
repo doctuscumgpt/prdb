@@ -834,3 +834,12 @@
 - Compatibility: the canonical plan round-trip and TinyCC optimizer-plan fixture pass with unchanged bytes and invalid identity rejection.
 - Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
 - Remaining: additional nested optimizer plan records and full shared-schema parity remain open.
+
+## TC-2 follow-up: generated optimizer plan column-list headers — implemented
+
+- Contract: Scan and Project node headers contain their one-byte node tag followed by a big-endian u16 column count.
+- Red evidence: generator regression failed because `OPTIMIZER_PLAN_COLUMN_LIST_HEADER_RECORD` and its Rust/C codecs were absent.
+- Implementation: the shared schema defines the node tag/count record. Rust plan encoding and decoding and the TinyCC decoder now use the generated codec; node-order and count-limit checks remain in the plan layer.
+- Compatibility: the hand-checked plan header/payload round trip and maintained TinyCC optimizer-plan fixture pass with unchanged bytes and malformed-count handling.
+- Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
+- Remaining: other nested optimizer plan records and full shared-schema parity remain open.

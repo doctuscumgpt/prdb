@@ -81,8 +81,7 @@ pub fn encode_plan_v1(plan: &SingleTablePlanV1) -> Result<Vec<u8>, PlanError> {
     for node in &plan.nodes {
         match node {
             PlanNode::Scan { columns } => {
-                output.push(1);
-                put_u16(&mut output, columns.len())?;
+                put_column_list_header(&mut output, 1, columns.len())?;
                 for column in columns {
                     put_column(&mut output, column);
                 }
@@ -92,8 +91,7 @@ pub fn encode_plan_v1(plan: &SingleTablePlanV1) -> Result<Vec<u8>, PlanError> {
                 put_predicate(&mut output, predicate)?;
             }
             PlanNode::Project(columns) => {
-                output.push(3);
-                put_u16(&mut output, columns.len())?;
+                put_column_list_header(&mut output, 3, columns.len())?;
                 for column in columns {
                     put_column(&mut output, column);
                 }
@@ -158,10 +156,11 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
     let mut nodes = Vec::with_capacity(node_count);
     let mut scan_columns = Vec::new();
     for index in 0..node_count {
+        let tag_offset = reader.offset;
         let tag = reader.u8()?;
         let node = match tag {
             1 if index == 0 => {
-                let count = reader.u16_count(MAX_PLAN_SCAN_COLUMNS)?;
+                let count = reader.column_list_count(tag_offset, 1, MAX_PLAN_SCAN_COLUMNS)?;
                 if count == 0 {
                     return Err(PlanError::InvalidColumnReference);
                 }
@@ -174,7 +173,11 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
             }
             2 => PlanNode::Filter(reader.predicate(&scan_columns)?),
             3 => {
-                let count = reader.u16_count(crate::optimizer_request::MAX_PROJECTIONS)?;
+                let count = reader.column_list_count(
+                    tag_offset,
+                    3,
+                    crate::optimizer_request::MAX_PROJECTIONS,
+                )?;
                 let mut columns = Vec::with_capacity(count);
                 for _ in 0..count {
                     columns.push(reader.column()?);
@@ -208,6 +211,18 @@ fn put_u16(output: &mut Vec<u8>, value: usize) -> Result<(), PlanError> {
         &u16::try_from(value)
             .map_err(|_| PlanError::TooLarge)?
             .to_be_bytes(),
+    );
+    Ok(())
+}
+
+fn put_column_list_header(
+    output: &mut Vec<u8>,
+    node_tag: u8,
+    column_count: usize,
+) -> Result<(), PlanError> {
+    let column_count = u16::try_from(column_count).map_err(|_| PlanError::TooLarge)?;
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_column_list_header_record(node_tag, column_count),
     );
     Ok(())
 }
@@ -335,8 +350,29 @@ impl PlanReader<'_> {
         Ok(name.to_owned())
     }
 
-    fn u16_count(&mut self, maximum: usize) -> Result<usize, PlanError> {
-        let count = usize::from(self.u16()?);
+    fn column_list_count(
+        &mut self,
+        header_offset: usize,
+        expected_tag: u8,
+        maximum: usize,
+    ) -> Result<usize, PlanError> {
+        let header_len =
+            crate::query_abi::OPTIMIZER_PLAN_COLUMN_LIST_HEADER_RECORD_HEADER_BYTES as usize;
+        let end = header_offset
+            .checked_add(header_len)
+            .ok_or(PlanError::TooLarge)?;
+        let header = self
+            .bytes
+            .get(header_offset..end)
+            .ok_or(PlanError::Truncated)?;
+        let (node_tag, count) =
+            crate::query_abi::decode_optimizer_plan_column_list_header_record(header)
+                .ok_or(PlanError::Truncated)?;
+        if node_tag != expected_tag {
+            return Err(PlanError::InvalidPipeline);
+        }
+        self.offset = end;
+        let count = usize::from(count);
         if count > maximum {
             return Err(PlanError::TooLarge);
         }
