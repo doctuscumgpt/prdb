@@ -141,6 +141,9 @@ def render(schema):
             "u32be": 4,
             "u64be": 8,
             "i64be": 8,
+            "u16le": 2,
+            "u32le": 4,
+            "u64le": 8,
             "bytes16": 16,
             "bytes4": 4,
         }
@@ -237,6 +240,9 @@ def render(schema):
                 "u32be": "u32",
                 "u64be": "u64",
                 "i64be": "i64",
+                "u16le": "u16",
+                "u32le": "u32",
+                "u64le": "u64",
                 "bytes16": "[u8; 16]",
                 "bytes4": "[u8; 4]",
             }
@@ -255,6 +261,8 @@ def render(schema):
                 if len(value_fields) != 1
                 else result_types
             )
+            if len(value_fields) >= 8:
+                rust_lines.append("#[allow(clippy::too_many_arguments)]")
             rust_lines.extend(
                 [
                     f"pub fn {encode_name}({arguments}) -> [u8; {offset}] {{",
@@ -275,6 +283,10 @@ def render(schema):
                 elif field_encoding in ("bytes16", "bytes4"):
                     rust_lines.append(
                         f"    payload[{field_offset}..{field_end}].copy_from_slice(&{field_name});"
+                    )
+                elif field_encoding.endswith("le"):
+                    rust_lines.append(
+                        f"    payload[{field_offset}..{field_end}].copy_from_slice(&{field_name}.to_le_bytes());"
                     )
                 else:
                     rust_lines.append(
@@ -307,8 +319,9 @@ def render(schema):
                         + ("" if len(value_fields) == 1 else "?")
                     )
                 else:
+                    endian = "le" if field_encoding.endswith("le") else "be"
                     decoded_values.append(
-                        f"{rust_types[field_encoding]}::from_be_bytes(payload[{field_offset}..{field_end}].try_into().ok()?)"
+                        f"{rust_types[field_encoding]}::from_{endian}_bytes(payload[{field_offset}..{field_end}].try_into().ok()?)"
                     )
             decoded = ", ".join(decoded_values)
             if len(decoded_values) == 1:
@@ -330,6 +343,9 @@ def render(schema):
                 "u32be": "uint32_t",
                 "u64be": "uint64_t",
                 "i64be": "int64_t",
+                "u16le": "uint16_t",
+                "u32le": "uint32_t",
+                "u64le": "uint64_t",
                 "bytes16": "uint8_t",
                 "bytes4": "uint8_t",
             }
@@ -383,7 +399,7 @@ def render(schema):
                         [
                             f"    uint64_t {field_name}_wire = (uint64_t){field_name};",
                             f"    for (size_t i = 0; i < {field_widths[field_encoding]}; ++i) {{",
-                            f"        payload[{field_offset} + i] = (uint8_t)({field_name}_wire >> (({field_widths[field_encoding]} - 1 - i) * 8));",
+                            f"        payload[{field_offset} + i] = (uint8_t)({field_name}_wire >> (({'i' if field_encoding.endswith('le') else f'{field_widths[field_encoding]} - 1 - i'}) * 8));",
                             "    }",
                         ]
                     )
@@ -443,7 +459,11 @@ def render(schema):
                             [
                                 f"    uint64_t {field_name}_wire_value = 0;",
                                 f"    for (size_t i = 0; i < {width}; ++i) {{",
-                                f"        {field_name}_wire_value = ({field_name}_wire_value << 8) | payload[{field_offset} + i];",
+                                (
+                                    f"        {field_name}_wire_value |= ((uint64_t)payload[{field_offset} + i] << (i * 8));"
+                                    if field_encoding.endswith("le")
+                                    else f"        {field_name}_wire_value = ({field_name}_wire_value << 8) | payload[{field_offset} + i];"
+                                ),
                                 "    }",
                             ]
                         )

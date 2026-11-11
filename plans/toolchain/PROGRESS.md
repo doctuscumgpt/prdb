@@ -789,3 +789,12 @@
 - Hardening: the release validator also requires cache metadata to reference exactly the compressed NAR files present, rejecting missing, escaping, or unreferenced NAR objects before packaging.
 - Verification: a fresh `release-profile-package` run passed the new complete-cache validation and regenerated the archive and detached checksum.
 - Negative acceptance: removed one NAR referenced by a copied cache's `.narinfo`; `validate_release_profile.py` rejected the profile with the missing-object path before checksum generation.
+
+## TC-2 follow-up: generated external client frame header — implemented
+
+- Contract: the external TCP frame retains its 32-byte `PDBN` v1.0 header with little-endian numeric fields as specified in [client protocol](../../specs/client-protocol.md).
+- Red evidence: the generator schema regression failed because no shared fixed-header record covered the external frame; `ClientFrame::encode` and the streaming decoder each contained separate handwritten field encoders/decoders.
+- Implementation: the schema now declares `CLIENT_FRAME_HEADER_RECORD`; the generator supports unsigned little-endian fixed-width fields in Rust and C codecs. The Rust encoder/decoder use the generated 32-byte record while keeping semantic checks for magic, protocol version, flags, kind, length, request ID, and sequence at the protocol layer.
+- Compatibility: the maintained Rust regression checks the exact header bytes and full streaming round-trip; a TinyCC fixture checks the generated C codec against the same exact bytes and decoded values. No network frame bytes or validation rules changed.
+- Verification: generator tests (7 passed), generated-file drift check, focused client-frame test, forced TinyCC SDK suite, locked workspace build, format check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
+- Remaining: schema generation covers additional nested IPC payloads, but not every external protocol or client JSON operation; TC-2 parity and TC-5 release packaging/profile acceptance remain open.

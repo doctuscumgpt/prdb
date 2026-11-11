@@ -1119,3 +1119,34 @@ pub fn decode_mutation_cell_tag_record(payload: &[u8]) -> Option<u8> {
     }
     Some(payload[0])
 }
+
+pub const CLIENT_FRAME_HEADER_RECORD_MAGIC_OFFSET: u32 = 0;
+pub const CLIENT_FRAME_HEADER_RECORD_MAJOR_VERSION_OFFSET: u32 = 4;
+pub const CLIENT_FRAME_HEADER_RECORD_MINOR_VERSION_OFFSET: u32 = 6;
+pub const CLIENT_FRAME_HEADER_RECORD_KIND_OFFSET: u32 = 8;
+pub const CLIENT_FRAME_HEADER_RECORD_FLAGS_OFFSET: u32 = 10;
+pub const CLIENT_FRAME_HEADER_RECORD_PAYLOAD_LENGTH_OFFSET: u32 = 12;
+pub const CLIENT_FRAME_HEADER_RECORD_REQUEST_ID_OFFSET: u32 = 16;
+pub const CLIENT_FRAME_HEADER_RECORD_RESPONSE_SEQUENCE_OFFSET: u32 = 24;
+pub const CLIENT_FRAME_HEADER_RECORD_HEADER_BYTES: u32 = 32;
+#[allow(clippy::too_many_arguments)]
+pub fn encode_client_frame_header_record(magic: [u8; 4], major_version: u16, minor_version: u16, kind: u16, flags: u16, payload_length: u32, request_id: u64, response_sequence: u64) -> [u8; 32] {
+    let mut payload = [0u8; 32];
+    payload[0..4].copy_from_slice(&magic);
+    payload[4..6].copy_from_slice(&major_version.to_le_bytes());
+    payload[6..8].copy_from_slice(&minor_version.to_le_bytes());
+    payload[8..10].copy_from_slice(&kind.to_le_bytes());
+    payload[10..12].copy_from_slice(&flags.to_le_bytes());
+    payload[12..16].copy_from_slice(&payload_length.to_le_bytes());
+    payload[16..24].copy_from_slice(&request_id.to_le_bytes());
+    payload[24..32].copy_from_slice(&response_sequence.to_le_bytes());
+    payload
+}
+
+#[allow(clippy::type_complexity)]
+pub fn decode_client_frame_header_record(payload: &[u8]) -> Option<([u8; 4], u16, u16, u16, u16, u32, u64, u64)> {
+    if payload.len() != 32 {
+        return None;
+    }
+    Some((payload[0..4].try_into().ok()?, u16::from_le_bytes(payload[4..6].try_into().ok()?), u16::from_le_bytes(payload[6..8].try_into().ok()?), u16::from_le_bytes(payload[8..10].try_into().ok()?), u16::from_le_bytes(payload[10..12].try_into().ok()?), u32::from_le_bytes(payload[12..16].try_into().ok()?), u64::from_le_bytes(payload[16..24].try_into().ok()?), u64::from_le_bytes(payload[24..32].try_into().ok()?)))
+}

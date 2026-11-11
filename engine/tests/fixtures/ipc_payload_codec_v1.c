@@ -957,5 +957,28 @@ int main(void) {
         relation_status != 1 || unknown_estimate[0] != 0 || unknown_estimate[1] != 1) {
         return 67;
     }
+    const uint8_t client_magic[4] = {'P', 'D', 'B', 'N'};
+    uint8_t client_header[PRDB_CLIENT_FRAME_HEADER_RECORD_HEADER_BYTES] = {0};
+    prdb_encode_client_frame_header_record(
+        client_header, client_magic, 1, 0, 102, 0, 1,
+        UINT64_C(0x0102030405060708), UINT64_C(0x1112131415161718));
+    const uint8_t client_header_expected[PRDB_CLIENT_FRAME_HEADER_RECORD_HEADER_BYTES] = {
+        'P', 'D', 'B', 'N', 1, 0, 0, 0, 102, 0, 0, 0, 1, 0, 0, 0,
+        8, 7, 6, 5, 4, 3, 2, 1, 24, 23, 22, 21, 20, 19, 18, 17,
+    };
+    uint8_t decoded_magic[4] = {0};
+    uint16_t major = 0, minor = 0, kind = 0, flags = 0;
+    uint32_t payload_length = 0;
+    uint64_t request_id = 0, response_sequence = 0;
+    if (memcmp(client_header, client_header_expected, sizeof(client_header)) != 0 ||
+        !prdb_decode_client_frame_header_record(
+            client_header, sizeof(client_header), decoded_magic, &major, &minor,
+            &kind, &flags, &payload_length, &request_id, &response_sequence) ||
+        memcmp(decoded_magic, client_magic, sizeof(client_magic)) != 0 ||
+        major != 1 || minor != 0 || kind != 102 || flags != 0 ||
+        payload_length != 1 || request_id != UINT64_C(0x0102030405060708) ||
+        response_sequence != UINT64_C(0x1112131415161718)) {
+        return 68;
+    }
     return 0;
 }

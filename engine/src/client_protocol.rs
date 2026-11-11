@@ -7,12 +7,13 @@ use crate::transaction::TransactionError;
 use std::collections::HashMap;
 use zeroize::{Zeroize, Zeroizing};
 
-pub const CLIENT_FRAME_HEADER_BYTES: usize = 32;
+pub const CLIENT_FRAME_HEADER_BYTES: usize =
+    crate::query_abi::CLIENT_FRAME_HEADER_RECORD_HEADER_BYTES as usize;
 pub const CLIENT_MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 pub const CLIENT_MAX_CONTROL_BYTES: usize = 64 * 1024;
 pub const CLIENT_MAX_CHUNK_BYTES: usize = 256 * 1024;
 pub const CLIENT_ERROR_KIND: u16 = 101;
-const CLIENT_MAGIC: &[u8; 4] = b"PDBN";
+const CLIENT_MAGIC: [u8; 4] = *b"PDBN";
 const CLIENT_METADATA_CURSOR_KIND: u8 = 0xd3;
 pub const CLIENT_METADATA_MAX_PAGE: usize = 128;
 
@@ -6777,37 +6778,39 @@ impl ClientFrame {
         output
             .try_reserve_exact(total_bytes)
             .map_err(|_| ClientFrameError::AllocationFailed)?;
-        output.extend_from_slice(CLIENT_MAGIC);
-        output.extend_from_slice(&1u16.to_le_bytes());
-        output.extend_from_slice(&0u16.to_le_bytes());
-        output.extend_from_slice(&self.kind.to_le_bytes());
-        output.extend_from_slice(&0u16.to_le_bytes());
-        output.extend_from_slice(&payload_bytes.to_le_bytes());
-        output.extend_from_slice(&self.request_id.to_le_bytes());
-        output.extend_from_slice(&self.response_sequence.to_le_bytes());
+        let header = crate::query_abi::encode_client_frame_header_record(
+            CLIENT_MAGIC,
+            1,
+            0,
+            self.kind,
+            0,
+            payload_bytes,
+            self.request_id,
+            self.response_sequence,
+        );
+        output.extend_from_slice(&header);
         output.extend_from_slice(&self.payload);
         Ok(output)
     }
 }
 
 fn decode_header(bytes: &[u8; CLIENT_FRAME_HEADER_BYTES]) -> Result<Header, ClientFrameError> {
-    if &bytes[..4] != CLIENT_MAGIC {
+    let Some((magic, major, minor, kind, flags, payload_length, request_id, response_sequence)) =
+        crate::query_abi::decode_client_frame_header_record(bytes)
+    else {
+        return Err(ClientFrameError::InvalidMagic);
+    };
+    if magic != CLIENT_MAGIC {
         return Err(ClientFrameError::InvalidMagic);
     }
-    let major = u16::from_le_bytes([bytes[4], bytes[5]]);
-    let minor = u16::from_le_bytes([bytes[6], bytes[7]]);
     if major != 1 || minor != 0 {
         return Err(ClientFrameError::UnsupportedVersion { major, minor });
     }
-    let kind = u16::from_le_bytes([bytes[8], bytes[9]]);
-    let flags = u16::from_le_bytes([bytes[10], bytes[11]]);
     if flags != 0 {
         return Err(ClientFrameError::NonzeroFlags);
     }
-    let payload_bytes = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
-    let request_id = u64::from_le_bytes(bytes[16..24].try_into().expect("fixed request ID"));
-    let response_sequence =
-        u64::from_le_bytes(bytes[24..32].try_into().expect("fixed response sequence"));
+    let payload_bytes =
+        usize::try_from(payload_length).map_err(|_| ClientFrameError::PayloadTooLarge)?;
     let header = Header {
         kind,
         payload_bytes,

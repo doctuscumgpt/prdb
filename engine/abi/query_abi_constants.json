@@ -1769,6 +1769,22 @@
         { "name": "state_code", "encoding": "u8" }
       ],
       "trailing_fields": []
+    },
+    {
+      "name": "CLIENT_FRAME_HEADER_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "magic", "encoding": "bytes4" },
+        { "name": "major_version", "encoding": "u16le" },
+        { "name": "minor_version", "encoding": "u16le" },
+        { "name": "kind", "encoding": "u16le" },
+        { "name": "flags", "encoding": "u16le" },
+        { "name": "payload_length", "encoding": "u32le" },
+        { "name": "request_id", "encoding": "u64le" },
+        { "name": "response_sequence", "encoding": "u64le" }
+      ],
+      "trailing_fields": []
     }
   ]
 }

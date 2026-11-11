@@ -1,6 +1,6 @@
 use prdb_engine::client_protocol::{
-    ClientFrame, ClientFrameDecoder, decode_client_chunk, decode_client_credentials,
-    decode_client_prepare,
+    CLIENT_FRAME_HEADER_BYTES, ClientFrame, ClientFrameDecoder, decode_client_chunk,
+    decode_client_credentials, decode_client_prepare,
 };
 use prdb_engine::client_submit::SubmissionClient;
 use prdb_engine::submission_manifest::decode_manifest_v1;
@@ -23,6 +23,28 @@ fn unique_temp_dir() -> PathBuf {
         "prdb-client-package-{}-{suffix}",
         std::process::id()
     ))
+}
+
+#[test]
+fn generated_client_frame_header_preserves_little_endian_wire_bytes() {
+    let frame = ClientFrame {
+        kind: 102,
+        request_id: 0x0102_0304_0506_0708,
+        response_sequence: 0x1112_1314_1516_1718,
+        payload: vec![b'X'],
+    };
+    let encoded = frame.encode().unwrap();
+    assert_eq!(CLIENT_FRAME_HEADER_BYTES, 32);
+    assert_eq!(
+        &encoded[..CLIENT_FRAME_HEADER_BYTES],
+        &[
+            b'P', b'D', b'B', b'N', 1, 0, 0, 0, 102, 0, 0, 0, 1, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1,
+            24, 23, 22, 21, 20, 19, 18, 17,
+        ]
+    );
+    let mut decoder = ClientFrameDecoder::default();
+    assert_eq!(decoder.push(&encoded).unwrap(), [frame]);
+    decoder.finish().unwrap();
 }
 
 #[test]

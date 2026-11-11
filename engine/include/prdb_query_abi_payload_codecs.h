@@ -1851,4 +1851,109 @@ static inline int prdb_decode_mutation_cell_tag_record(const uint8_t *payload, s
     return 1;
 }
 
+static inline void prdb_encode_client_frame_header_record(uint8_t payload[32],
+    const uint8_t magic[4], uint16_t major_version, uint16_t minor_version, uint16_t kind, uint16_t flags, uint32_t payload_length, uint64_t request_id, uint64_t response_sequence) {
+    for (size_t i = 0; i < 4; ++i) {
+        payload[0 + i] = magic[i];
+    }
+    uint64_t major_version_wire = (uint64_t)major_version;
+    for (size_t i = 0; i < 2; ++i) {
+        payload[4 + i] = (uint8_t)(major_version_wire >> ((i) * 8));
+    }
+    uint64_t minor_version_wire = (uint64_t)minor_version;
+    for (size_t i = 0; i < 2; ++i) {
+        payload[6 + i] = (uint8_t)(minor_version_wire >> ((i) * 8));
+    }
+    uint64_t kind_wire = (uint64_t)kind;
+    for (size_t i = 0; i < 2; ++i) {
+        payload[8 + i] = (uint8_t)(kind_wire >> ((i) * 8));
+    }
+    uint64_t flags_wire = (uint64_t)flags;
+    for (size_t i = 0; i < 2; ++i) {
+        payload[10 + i] = (uint8_t)(flags_wire >> ((i) * 8));
+    }
+    uint64_t payload_length_wire = (uint64_t)payload_length;
+    for (size_t i = 0; i < 4; ++i) {
+        payload[12 + i] = (uint8_t)(payload_length_wire >> ((i) * 8));
+    }
+    uint64_t request_id_wire = (uint64_t)request_id;
+    for (size_t i = 0; i < 8; ++i) {
+        payload[16 + i] = (uint8_t)(request_id_wire >> ((i) * 8));
+    }
+    uint64_t response_sequence_wire = (uint64_t)response_sequence;
+    for (size_t i = 0; i < 8; ++i) {
+        payload[24 + i] = (uint8_t)(response_sequence_wire >> ((i) * 8));
+    }
+}
+
+static inline int prdb_decode_client_frame_header_record(const uint8_t *payload, size_t payload_len,
+    uint8_t magic[4], uint16_t *major_version, uint16_t *minor_version, uint16_t *kind, uint16_t *flags, uint32_t *payload_length, uint64_t *request_id, uint64_t *response_sequence) {
+    if (payload == NULL || payload_len != 32) {
+        return 0;
+    }
+    if (magic == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        magic[i] = payload[0 + i];
+    }
+    if (major_version == NULL) {
+        return 0;
+    }
+    uint64_t major_version_wire_value = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        major_version_wire_value |= ((uint64_t)payload[4 + i] << (i * 8));
+    }
+    *major_version = (uint16_t)major_version_wire_value;
+    if (minor_version == NULL) {
+        return 0;
+    }
+    uint64_t minor_version_wire_value = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        minor_version_wire_value |= ((uint64_t)payload[6 + i] << (i * 8));
+    }
+    *minor_version = (uint16_t)minor_version_wire_value;
+    if (kind == NULL) {
+        return 0;
+    }
+    uint64_t kind_wire_value = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        kind_wire_value |= ((uint64_t)payload[8 + i] << (i * 8));
+    }
+    *kind = (uint16_t)kind_wire_value;
+    if (flags == NULL) {
+        return 0;
+    }
+    uint64_t flags_wire_value = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        flags_wire_value |= ((uint64_t)payload[10 + i] << (i * 8));
+    }
+    *flags = (uint16_t)flags_wire_value;
+    if (payload_length == NULL) {
+        return 0;
+    }
+    uint64_t payload_length_wire_value = 0;
+    for (size_t i = 0; i < 4; ++i) {
+        payload_length_wire_value |= ((uint64_t)payload[12 + i] << (i * 8));
+    }
+    *payload_length = (uint32_t)payload_length_wire_value;
+    if (request_id == NULL) {
+        return 0;
+    }
+    uint64_t request_id_wire_value = 0;
+    for (size_t i = 0; i < 8; ++i) {
+        request_id_wire_value |= ((uint64_t)payload[16 + i] << (i * 8));
+    }
+    *request_id = (uint64_t)request_id_wire_value;
+    if (response_sequence == NULL) {
+        return 0;
+    }
+    uint64_t response_sequence_wire_value = 0;
+    for (size_t i = 0; i < 8; ++i) {
+        response_sequence_wire_value |= ((uint64_t)payload[24 + i] << (i * 8));
+    }
+    *response_sequence = (uint64_t)response_sequence_wire_value;
+    return 1;
+}
+
 #endif /* PRDB_QUERY_ABI_PAYLOAD_CODECS_H */
