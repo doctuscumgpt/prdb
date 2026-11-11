@@ -26,6 +26,11 @@ typedef struct mock_host {
     uint32_t stream_next_calls;
     uint32_t executor_requests;
     uint16_t expected_max_candidates;
+    uint32_t stage_update_calls;
+    uint32_t stage_delete_calls;
+    uint32_t stage_handles_repeated;
+    uint32_t require_finished_scan_before_stage;
+    uint32_t scan_finished;
 } mock_host;
 
 static int32_t statement_failure(void *context, uint32_t failure_code) {
@@ -128,6 +133,7 @@ static int32_t executor_request(void *context, uint16_t operation,
                 assert(sizeof(finished_reply) <= capacity);
                 memcpy(response, finished_reply, sizeof(finished_reply));
                 *response_len = sizeof(finished_reply);
+                mock->scan_finished = 1;
             }
             ++mock->stream_next_calls;
         } else if (mock->executor_calls >= 3) {
@@ -141,6 +147,7 @@ static int32_t executor_request(void *context, uint16_t operation,
             assert(sizeof(finished_reply) <= capacity);
             memcpy(response, finished_reply, sizeof(finished_reply));
             *response_len = sizeof(finished_reply);
+            mock->scan_finished = 1;
         } else {
             const uint8_t *expected_request =
                 mock->expected_max_candidates == 40
@@ -163,25 +170,35 @@ static int32_t executor_request(void *context, uint16_t operation,
         memcpy(response, reply, sizeof(reply));
         *response_len = sizeof(reply);
     } else if (operation == PRDB_SDK_EXECUTOR_OP_STAGE_UPDATE) {
-        static const uint8_t expected[] = {
+        uint8_t expected[] = {
             0, 1, 8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
             0, 1, 0, 0, 0, 0, 0, PRDB_SDK_VALUE_TYPE_INTEGER,
             0, 0, 0, 4, 0, 0, 0, 4};
         static const uint8_t reply[] = {0, 1, 0};
+        assert(!mock->require_finished_scan_before_stage || mock->scan_finished);
+        if (mock->stage_handles_repeated) {
+            memset(expected + 3, (int)(mock->stage_update_calls + 1), 15);
+        }
         assert(request_len == sizeof(expected));
         assert(memcmp(request, expected, sizeof(expected)) == 0);
         assert(sizeof(reply) <= capacity);
         memcpy(response, reply, sizeof(reply));
         *response_len = sizeof(reply);
+        ++mock->stage_update_calls;
     } else if (operation == PRDB_SDK_EXECUTOR_OP_STAGE_DELETE) {
-        static const uint8_t expected[] = {
-            0, 1, 8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+        uint8_t expected[] = {0, 1, 8, 1, 2, 3, 4, 5, 6,
+                              7, 8, 9, 10, 11, 12, 13, 14, 15};
         static const uint8_t reply[] = {0, 1, 0};
+        assert(!mock->require_finished_scan_before_stage || mock->scan_finished);
+        if (mock->stage_handles_repeated) {
+            memset(expected + 3, (int)(mock->stage_delete_calls + 1), 15);
+        }
         assert(request_len == sizeof(expected));
         assert(memcmp(request, expected, sizeof(expected)) == 0);
         assert(sizeof(reply) <= capacity);
         memcpy(response, reply, sizeof(reply));
         *response_len = sizeof(reply);
+        ++mock->stage_delete_calls;
     } else if (operation == PRDB_SDK_EXECUTOR_OP_STAGE_INSERT) {
         if (mock->accept_multi_insert) {
             static const uint8_t reply[18] = {
@@ -469,9 +486,14 @@ int main(void) {
     uint32_t planner_len = make_relation(planner_payload,
                                          PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99);
     uint32_t executor_len = make_relation(executor_payload, 6, 0x22);
-    mock_host mock = {planner_payload, planner_len, executor_payload,
-                      executor_len, batch_payload, sizeof(batch_payload),
-                      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    mock_host mock = {
+        .planner = planner_payload,
+        .planner_len = planner_len,
+        .executor = executor_payload,
+        .executor_len = executor_len,
+        .batch = batch_payload,
+        .batch_len = sizeof(batch_payload),
+    };
     prdb_host_api_v3 host = {sizeof(host), PRDB_QUERY_ABI_V3_VERSION,
                              &mock, executor_request, planner_request, NULL,
                              statement_failure};
@@ -742,6 +764,8 @@ int main(void) {
     prdb_sdk_select_binding_v2 update_binding = {0};
     prdb_sdk_value_v1 update_cell_scratch[1] = {{0}};
     prdb_sdk_executor_update_patch_v1 update_patches[1] = {{0}};
+    uint8_t two_rows_batch[128] = {0};
+    uint32_t two_rows_batch_len = make_two_matching_rows(two_rows_batch);
     uint32_t updated_count = 0;
     assert(prdb_sdk_sql_execute_update_v1(
                &host, schema, sizeof(schema) - 1, update_sql,
@@ -756,8 +780,34 @@ int main(void) {
     assert(updated_count == 1 && mock.planner_calls == 1 &&
            mock.executor_calls == 5 && mock.statement_failed == 0);
 
-    uint8_t two_rows_batch[128] = {0};
-    uint32_t two_rows_batch_len = make_two_matching_rows(two_rows_batch);
+    mock.batch = two_rows_batch;
+    mock.batch_len = two_rows_batch_len;
+    mock.planner_calls = 0;
+    mock.executor_calls = 0;
+    mock.statement_failed = 0;
+    mock.stage_update_calls = 0;
+    mock.stage_handles_repeated = 1;
+    mock.require_finished_scan_before_stage = 1;
+    mock.scan_finished = 0;
+    updated_count = 777;
+    assert(prdb_sdk_sql_execute_update_v1(
+               &host, schema, sizeof(schema) - 1, update_sql,
+               sizeof(update_sql) - 1, &parameter, 1, 2, 1024,
+               planner_response, sizeof(planner_response), executor_response,
+               sizeof(executor_response), batch_response,
+               sizeof(batch_response), update_request, sizeof(update_request),
+               planner_columns, 1, executor_columns, 1, &update_binding,
+               sizeof(update_binding), update_cell_scratch, 1, update_targets,
+               2, update_patches, 1, &updated_count) ==
+           PRDB_SDK_SQL_EXEC_OK);
+    assert(updated_count == 2);
+    assert(mock.stage_update_calls == 2);
+    assert(mock.planner_calls == 1);
+    assert(mock.executor_calls == 6);
+    assert(mock.statement_failed == 0);
+    mock.stage_handles_repeated = 0;
+    mock.require_finished_scan_before_stage = 0;
+
     mock.batch = two_rows_batch;
     mock.batch_len = two_rows_batch_len;
     mock.planner_calls = 0;
@@ -795,6 +845,30 @@ int main(void) {
            PRDB_SDK_SQL_EXEC_OK);
     assert(deleted_count == 1 && mock.planner_calls == 1 &&
            mock.executor_calls == 5 && mock.statement_failed == 0);
+
+    mock.batch = two_rows_batch;
+    mock.batch_len = two_rows_batch_len;
+    mock.planner_calls = 0;
+    mock.executor_calls = 0;
+    mock.statement_failed = 0;
+    mock.stage_delete_calls = 0;
+    mock.stage_handles_repeated = 1;
+    mock.require_finished_scan_before_stage = 1;
+    mock.scan_finished = 0;
+    deleted_count = 888;
+    assert(prdb_sdk_sql_execute_delete_v1(
+               &host, schema, sizeof(schema) - 1, delete_sql,
+               sizeof(delete_sql) - 1, &parameter, 1, 2, 1024,
+               planner_response, sizeof(planner_response), executor_response,
+               sizeof(executor_response), batch_response,
+               sizeof(batch_response), planner_columns, 1, executor_columns,
+               1, &update_binding, sizeof(update_binding), update_cell_scratch,
+               1, update_targets, 2, &deleted_count) == PRDB_SDK_SQL_EXEC_OK);
+    assert(deleted_count == 2 && mock.stage_delete_calls == 2 &&
+           mock.planner_calls == 1 && mock.executor_calls == 6 &&
+           mock.statement_failed == 0);
+    mock.stage_handles_repeated = 0;
+    mock.require_finished_scan_before_stage = 0;
 
     mock.batch = two_rows_batch;
     mock.batch_len = two_rows_batch_len;
