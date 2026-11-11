@@ -2299,6 +2299,45 @@ static inline int prdb_decode_optimizer_plan_not_predicate_record(const uint8_t 
     return 1;
 }
 
+static inline void prdb_encode_optimizer_plan_null_predicate_record(uint8_t payload[1],
+    uint8_t node_tag) {
+    payload[0] = node_tag;
+}
+
+static inline int prdb_decode_optimizer_plan_null_predicate_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *node_tag) {
+    if (payload == NULL || payload_len != 1) {
+        return 0;
+    }
+    if (node_tag == NULL) {
+        return 0;
+    }
+    *node_tag = payload[0];
+    return 1;
+}
+
+static inline void prdb_encode_optimizer_plan_boolean_literal_predicate_record(uint8_t payload[2],
+    uint8_t node_tag, uint8_t boolean_value) {
+    payload[0] = node_tag;
+    payload[1] = boolean_value;
+}
+
+static inline int prdb_decode_optimizer_plan_boolean_literal_predicate_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *node_tag, uint8_t *boolean_value) {
+    if (payload == NULL || payload_len != 2) {
+        return 0;
+    }
+    if (node_tag == NULL) {
+        return 0;
+    }
+    *node_tag = payload[0];
+    if (boolean_value == NULL) {
+        return 0;
+    }
+    *boolean_value = payload[1];
+    return 1;
+}
+
 static inline void prdb_encode_client_frame_header_record(uint8_t payload[32],
     const uint8_t magic[4], uint16_t major_version, uint16_t minor_version, uint16_t kind, uint16_t flags, uint32_t payload_length, uint64_t request_id, uint64_t response_sequence) {
     for (size_t i = 0; i < 4; ++i) {

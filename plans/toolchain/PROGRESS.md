@@ -915,3 +915,12 @@
 - Compatibility: predicate bytes and recursive semantics remain unchanged; a Rust regression checks the exact encoding and round trip, and the maintained TinyCC optimizer-plan fixture passes.
 - Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the pinned Nix flake environment using its supported `--no-update-lock-file` option.
 - Remaining: full shared-schema parity remains open.
+
+## TC-2 follow-up: generated optimizer NULL and Boolean literal records — implemented
+
+- Contract: NULL retains tag `0x00`; Boolean retains tag `0x01` followed by canonical value byte 0 or 1.
+- Red evidence: generator regression failed because the NULL and Boolean literal records and their Rust/C codecs were absent.
+- Implementation: the shared schema declares both records. Rust plan encoding/decoding and TinyCC predicate decoding, traversal, skipping, evaluation, and parameter matching now consume generated records; the plan layer continues to reject Boolean values outside 0 and 1.
+- Compatibility: literal tags and wire bytes are unchanged; Rust regressions assert exact encodings and round trips for NULL and both Boolean values, and the maintained TinyCC optimizer-plan fixture passes.
+- Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the pinned Nix flake environment using its supported `--no-update-lock-file` option.
+- Remaining: the optimizer plan predicate records are represented in the shared schema; broader IPC, SDK, and release-profile schema parity remains open.

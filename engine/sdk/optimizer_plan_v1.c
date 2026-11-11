@@ -157,6 +157,37 @@ static int read_not_predicate_tag(const plan_reader *reader,
     return node_tag == 0x32;
 }
 
+static int read_null_predicate_tag(const plan_reader *reader,
+                                   uint64_t header_offset) {
+    uint8_t node_tag;
+    if (header_offset > reader->length ||
+        PRDB_OPTIMIZER_PLAN_NULL_PREDICATE_RECORD_HEADER_BYTES >
+            reader->length - header_offset ||
+        !prdb_decode_optimizer_plan_null_predicate_record(
+            reader->bytes + header_offset,
+            PRDB_OPTIMIZER_PLAN_NULL_PREDICATE_RECORD_HEADER_BYTES,
+            &node_tag)) {
+        return 0;
+    }
+    return node_tag == 0x00;
+}
+
+static int read_boolean_literal_predicate_record(
+    plan_reader *reader, uint64_t header_offset, uint8_t *boolean_value) {
+    const uint8_t *ignored;
+    uint8_t node_tag;
+    if (!take(reader,
+              PRDB_OPTIMIZER_PLAN_BOOLEAN_LITERAL_PREDICATE_RECORD_HEADER_BYTES - 1,
+              &ignored) ||
+        !prdb_decode_optimizer_plan_boolean_literal_predicate_record(
+            reader->bytes + header_offset,
+            PRDB_OPTIMIZER_PLAN_BOOLEAN_LITERAL_PREDICATE_RECORD_HEADER_BYTES,
+            &node_tag, boolean_value)) {
+        return 0;
+    }
+    return node_tag == 0x01;
+}
+
 static int read_column_list_header(plan_reader *reader, uint8_t expected_tag,
                                    uint16_t *column_count) {
     const uint8_t *ignored;
@@ -333,10 +364,12 @@ static int decode_predicate(plan_reader *reader,
     if (depth > 32 || ++*nodes > 256 || !read_u8(reader, &tag)) return 0;
     switch (tag) {
         case 0x00:
+            if (!read_null_predicate_tag(reader, tag_offset)) return 0;
             type.is_null = 1;
             break;
         case 0x01:
-            if (!read_u8(reader, &tag) || tag > 1) return 0;
+            if (!read_boolean_literal_predicate_record(reader, tag_offset, &tag) ||
+                tag > 1) return 0;
             type.type_code = 1;
             break;
         case 0x02:
@@ -449,9 +482,13 @@ static int skip_predicate_node(plan_reader *reader, uint32_t depth) {
     if (depth > 32 || !read_u8(reader, &tag)) return 0;
     switch (tag) {
     case 0x00:
-        return 1;
+        return read_null_predicate_tag(reader, tag_offset);
     case 0x01:
-        return take(reader, 1, &bytes);
+        {
+            uint8_t boolean_value;
+            return read_boolean_literal_predicate_record(reader, tag_offset,
+                                                         &boolean_value);
+        }
     case 0x02:
         {
             int64_t integer_value;
@@ -506,14 +543,21 @@ static int32_t evaluate_predicate_node(
         return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
     switch (tag) {
     case 0x00:
+        if (!read_null_predicate_tag(reader, tag_offset))
+            return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
         predicate_value_init(out, 0, NULL, 0);
         out->value.state = PRDB_SDK_VALUE_STATE_NULL;
         return PRDB_SDK_SQL_EVAL_OK;
     case 0x01:
-        if (!take(reader, 1, &bytes) || bytes[0] > 1)
-            return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
-        predicate_value_init(out, PRDB_SDK_VALUE_TYPE_BOOLEAN, NULL, 1);
-        out->bytes[0] = bytes[0];
+        {
+            uint8_t boolean_value;
+            if (!read_boolean_literal_predicate_record(reader, tag_offset,
+                                                       &boolean_value) ||
+                boolean_value > 1)
+                return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
+            predicate_value_init(out, PRDB_SDK_VALUE_TYPE_BOOLEAN, NULL, 1);
+            out->bytes[0] = boolean_value;
+        }
         out->value.data = out->bytes;
         return PRDB_SDK_SQL_EVAL_OK;
     case 0x02: {
@@ -1505,12 +1549,18 @@ static int match_optimizer_parameter(plan_reader *reader,
     if (value == NULL || prdb_sdk_value_validate_v1(value) !=
                              PRDB_SDK_VALUE_VALID ||
         !read_u8(reader, &tag)) return 0;
-    if (value->state == PRDB_SDK_VALUE_STATE_NULL) return tag == 0x00;
+    if (value->state == PRDB_SDK_VALUE_STATE_NULL)
+        return tag == 0x00 && read_null_predicate_tag(reader, tag_offset);
     if (value->state != PRDB_SDK_VALUE_STATE_VALUE) return 0;
     switch (value->type_code) {
     case PRDB_SDK_VALUE_TYPE_BOOLEAN:
-        return tag == 0x01 && take(reader, 1, &bytes) &&
-               bytes[0] == value->data[0];
+        {
+            uint8_t boolean_value;
+            return tag == 0x01 &&
+                   read_boolean_literal_predicate_record(
+                       reader, tag_offset, &boolean_value) &&
+                   boolean_value == value->data[0];
+        }
     case PRDB_SDK_VALUE_TYPE_INTEGER: {
         int64_t integer_value;
         int32_t expected;

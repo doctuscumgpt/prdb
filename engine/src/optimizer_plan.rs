@@ -251,8 +251,15 @@ fn encode_scalar_type(scalar_type: ScalarType) -> (u8, [u8; 4]) {
 
 fn put_predicate(output: &mut Vec<u8>, predicate: &BoundPredicate) -> Result<(), PlanError> {
     match predicate {
-        BoundPredicate::Null => output.push(0x00),
-        BoundPredicate::Boolean(value) => output.extend_from_slice(&[0x01, u8::from(*value)]),
+        BoundPredicate::Null => output.extend_from_slice(
+            &crate::query_abi::encode_optimizer_plan_null_predicate_record(0x00),
+        ),
+        BoundPredicate::Boolean(value) => output.extend_from_slice(
+            &crate::query_abi::encode_optimizer_plan_boolean_literal_predicate_record(
+                0x01,
+                u8::from(*value),
+            ),
+        ),
         BoundPredicate::Integer(value) => {
             output.extend_from_slice(
                 &crate::query_abi::encode_optimizer_plan_integer_predicate_record(0x02, *value),
@@ -527,6 +534,49 @@ impl PlanReader<'_> {
         Ok(())
     }
 
+    fn null_predicate_tag(&mut self, header_offset: usize) -> Result<(), PlanError> {
+        let header_len =
+            crate::query_abi::OPTIMIZER_PLAN_NULL_PREDICATE_RECORD_HEADER_BYTES as usize;
+        let end = header_offset
+            .checked_add(header_len)
+            .ok_or(PlanError::TooLarge)?;
+        let header = self
+            .bytes
+            .get(header_offset..end)
+            .ok_or(PlanError::Truncated)?;
+        let node_tag = crate::query_abi::decode_optimizer_plan_null_predicate_record(header)
+            .ok_or(PlanError::Truncated)?;
+        if node_tag != 0x00 {
+            return Err(PlanError::InvalidEncoding);
+        }
+        self.offset = end;
+        Ok(())
+    }
+
+    fn boolean_literal_value(&mut self, header_offset: usize) -> Result<bool, PlanError> {
+        let header_len =
+            crate::query_abi::OPTIMIZER_PLAN_BOOLEAN_LITERAL_PREDICATE_RECORD_HEADER_BYTES as usize;
+        let end = header_offset
+            .checked_add(header_len)
+            .ok_or(PlanError::TooLarge)?;
+        let header = self
+            .bytes
+            .get(header_offset..end)
+            .ok_or(PlanError::Truncated)?;
+        let (node_tag, boolean_value) =
+            crate::query_abi::decode_optimizer_plan_boolean_literal_predicate_record(header)
+                .ok_or(PlanError::Truncated)?;
+        if node_tag != 0x01 {
+            return Err(PlanError::InvalidEncoding);
+        }
+        self.offset = end;
+        match boolean_value {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(PlanError::InvalidEncoding),
+        }
+    }
+
     fn column(&mut self) -> Result<BoundColumn, PlanError> {
         let bytes =
             self.take(crate::query_abi::OPTIMIZER_PLAN_COLUMN_RECORD_HEADER_BYTES as usize)?;
@@ -567,12 +617,13 @@ impl PlanReader<'_> {
         }
         let tag_offset = self.offset;
         match self.u8()? {
-            0x00 => Ok(BoundPredicate::Null),
-            0x01 => match self.u8()? {
-                0 => Ok(BoundPredicate::Boolean(false)),
-                1 => Ok(BoundPredicate::Boolean(true)),
-                _ => Err(PlanError::InvalidEncoding),
-            },
+            0x00 => {
+                self.null_predicate_tag(tag_offset)?;
+                Ok(BoundPredicate::Null)
+            }
+            0x01 => Ok(BoundPredicate::Boolean(
+                self.boolean_literal_value(tag_offset)?,
+            )),
             0x02 => Ok(BoundPredicate::Integer(
                 self.integer_predicate_value(tag_offset)?,
             )),
@@ -1251,6 +1302,26 @@ mod tests {
         };
         assert_eq!(reader.predicate(&[]).unwrap(), predicate);
         assert_eq!(reader.offset, encoded.len());
+    }
+
+    #[test]
+    fn null_and_boolean_predicate_records_match_the_generated_wire_records() {
+        for (predicate, expected) in [
+            (BoundPredicate::Null, vec![0x00]),
+            (BoundPredicate::Boolean(true), vec![0x01, 0x01]),
+            (BoundPredicate::Boolean(false), vec![0x01, 0x00]),
+        ] {
+            let mut encoded = Vec::new();
+            put_predicate(&mut encoded, &predicate).unwrap();
+            assert_eq!(encoded, expected);
+
+            let mut reader = PlanReader {
+                bytes: &encoded,
+                offset: 0,
+            };
+            assert_eq!(reader.predicate(&[]).unwrap(), predicate);
+            assert_eq!(reader.offset, encoded.len());
+        }
     }
 
     #[test]
