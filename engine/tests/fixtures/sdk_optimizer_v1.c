@@ -37,9 +37,12 @@ static int32_t mock_request_v5(void *opaque, uint16_t operation,
                                uint64_t response_capacity,
                                uint64_t *response_len) {
     mock_optimizer *mock = (mock_optimizer *)opaque;
-    assert(operation == PRDB_IPC_OP_OPTIMIZE_JOIN_SELECT);
+    assert(request_len >= 4);
+    assert((operation == PRDB_IPC_OP_OPTIMIZE_JOIN_SELECT &&
+            request[2] == PRDB_OPTIMIZER_JOIN_SELECT_STATEMENT) ||
+           (operation == PRDB_IPC_OP_OPTIMIZE_GROUP_COUNT &&
+            request[2] == PRDB_OPTIMIZER_GROUP_COUNT_STATEMENT));
     assert(request_len >= 4 && request[0] == 0 && request[1] == 1 &&
-           request[2] == PRDB_OPTIMIZER_JOIN_SELECT_STATEMENT &&
            request[3] == 0);
     if (mock->callback_status != PRDB_QUERY_CALLBACK_OK) {
         *response_len = mock->payload_len;
@@ -76,6 +79,11 @@ int main(void) {
     static const uint8_t join_sql[] =
         "SELECT l.value, r.value FROM lefts AS l INNER JOIN rights AS r "
         "ON l.id = r.id AND l.active = r.active LIMIT 5;";
+    static const uint8_t group_count_sql[] =
+        "SELECT category, COUNT(*) FROM items GROUP BY category LIMIT 5;";
+    static const uint8_t expected_group_count_request[] = {
+        0, 1, 5, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'i', 't', 'e', 'm',
+        's', 8, 'c', 'a', 't', 'e', 'g', 'o', 'r', 'y', 1, 0, 0, 0, 5};
     static const uint8_t expected_join_request[] = {
         0, 1, 4, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'l', 'e', 'f', 't',
         's', 6, 'r', 'i', 'g', 'h', 't', 's', 0, 2, 0, 5, 'v', 'a', 'l', 'u',
@@ -101,6 +109,7 @@ int main(void) {
     uint64_t encoded_len = 0;
     uint32_t error_offset = 0;
     prdb_sdk_select_v19 join_statement = {0};
+    prdb_sdk_select_v4 group_count_statement = {0};
 
     assert(prdb_sdk_sql_parse_select_v2(
                sql, sizeof(sql) - 1, &statement, sizeof(statement),
@@ -139,6 +148,37 @@ int main(void) {
                &response_len, &decoded, sizeof(decoded)) ==
            PRDB_SDK_OPTIMIZER_RESULT_OK);
     assert(decoded.status == PRDB_SDK_OPTIMIZER_STATUS_SUCCESS);
+
+    assert(prdb_sdk_sql_parse_select_v4(
+               group_count_sql, sizeof(group_count_sql) - 1,
+               &group_count_statement, sizeof(group_count_statement),
+               &error_offset) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_optimizer_encode_group_count_v1(
+               &group_count_statement, schema, sizeof(schema) - 1, encoded,
+               sizeof(encoded), &encoded_len) == PRDB_SDK_OPTIMIZER_ENCODE_OK);
+    assert(encoded_len == sizeof(expected_group_count_request));
+    assert(memcmp(encoded, expected_group_count_request,
+                  sizeof(expected_group_count_request)) == 0);
+    assert(prdb_sdk_optimizer_submit_group_count_v1(
+               &host_v5, encoded, encoded_len, response, sizeof(response),
+               &response_len, &decoded, sizeof(decoded)) ==
+           PRDB_SDK_OPTIMIZER_RESULT_OK);
+    assert(decoded.status == PRDB_SDK_OPTIMIZER_STATUS_SUCCESS);
+    {
+        static const uint8_t filtered_group_sql[] =
+            "SELECT category, COUNT(*) FROM items WHERE active = $1 "
+            "GROUP BY category";
+        prdb_sdk_select_v4 filtered_group_statement = {0};
+        assert(prdb_sdk_sql_parse_select_v4(
+                   filtered_group_sql, sizeof(filtered_group_sql) - 1,
+                   &filtered_group_statement,
+                   sizeof(filtered_group_statement), &error_offset) ==
+               PRDB_SDK_SQL_OK);
+        assert(prdb_sdk_optimizer_encode_group_count_v1(
+                   &filtered_group_statement, schema, sizeof(schema) - 1,
+                   encoded, sizeof(encoded), &encoded_len) ==
+               PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED);
+    }
 
     memset(encoded, 0xa5, sizeof(encoded));
     encoded_len = 0;

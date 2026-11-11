@@ -126,6 +126,15 @@ typedef struct prdb_sdk_optimizer_join_plan_v1 {
     uint32_t limit;
 } prdb_sdk_optimizer_join_plan_v1;
 
+/* Kind-5 single-key COUNT(*) plan. Its scan shape contains exactly the
+ * grouping key; relation and column names borrow the encoded payload. */
+typedef struct prdb_sdk_optimizer_group_count_plan_v1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    prdb_sdk_optimizer_plan_v1 plan;
+    prdb_sdk_optimizer_plan_column_v1 group_key;
+} prdb_sdk_optimizer_group_count_plan_v1;
+
 typedef struct prdb_sdk_optimizer_scan_state_v1 {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -180,6 +189,12 @@ int32_t prdb_sdk_optimizer_decode_update_plan_v1(
 int32_t prdb_sdk_optimizer_decode_join_plan_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_join_plan_v1 *out, uint32_t out_capacity);
+
+/* Independently decode kind-5 single-key COUNT(*) plans, requiring an exact
+ * one-column scan shape and canonical relation/limit records. */
+int32_t prdb_sdk_optimizer_decode_group_count_plan_v1(
+    const uint8_t *payload, uint64_t payload_len,
+    prdb_sdk_optimizer_group_count_plan_v1 *out, uint32_t out_capacity);
 
 /* Require a decoded kind-4 plan to preserve the parsed v19 join's qualified
  * projections, composite keys, relation names, and LIMIT. Relation IDs and

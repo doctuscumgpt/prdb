@@ -111,6 +111,37 @@ static uint32_t build_join_plan(uint8_t *bytes, uint32_t *projection_side_offset
     return offset;
 }
 
+static uint32_t build_group_count_plan(uint8_t *bytes,
+                                       uint32_t *group_key_id_offset) {
+    uint32_t offset = 0;
+    uint8_t identifier[16];
+    uint32_t column;
+    prdb_encode_optimizer_plan_header_record(bytes + offset, 1, 5, 0);
+    offset += PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "public");
+    memset(identifier, 1, sizeof(identifier));
+    prdb_encode_optimizer_plan_schema_reference_record(bytes + offset,
+                                                       identifier, 3);
+    offset += PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "items");
+    memset(identifier, 2, sizeof(identifier));
+    prdb_encode_optimizer_plan_relation_reference_record(bytes + offset,
+                                                         identifier, 4);
+    offset += PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES;
+    put_u16(bytes, &offset, 1);
+    column = put_column(bytes, &offset, 1, 0);
+    bytes[column] = 4;
+    set_column_ordinal(bytes, column, 0);
+    bytes[offset++] = 7;
+    *group_key_id_offset = offset;
+    column = put_column(bytes, &offset, 1, 0);
+    bytes[column] = 4;
+    set_column_ordinal(bytes, column, 0);
+    bytes[offset++] = 1;
+    put_u32(bytes, &offset, 5);
+    return offset;
+}
+
 static uint32_t put_header(uint8_t *bytes, uint32_t *offset,
                            uint8_t node_count) {
     bytes[(*offset)++] = 0;
@@ -665,6 +696,8 @@ int main(void) {
     uint8_t malformed[sizeof(payload)];
     uint8_t join_payload[1024] = {0};
     uint8_t join_malformed[sizeof(join_payload)];
+    uint8_t group_count_payload[256] = {0};
+    uint8_t group_count_malformed[sizeof(group_count_payload)];
     uint32_t projected_id_offset;
     uint32_t project_node_offset;
     uint32_t predicate_offset;
@@ -674,6 +707,7 @@ int main(void) {
     static prdb_sdk_optimizer_filter_v1 filter;
     static prdb_sdk_optimizer_update_plan_v1 update_decoded;
     static prdb_sdk_optimizer_join_plan_v1 join_decoded;
+    static prdb_sdk_optimizer_group_count_plan_v1 group_count_decoded;
     static prdb_sdk_select_v19 join_statement;
     static prdb_sdk_select_binding_v19 join_binding;
     static prdb_sdk_sql_column_shape_v2 join_left_columns[3];
@@ -1205,6 +1239,26 @@ int main(void) {
            join_decoded.projections[1].relation_side == 1 &&
            join_decoded.join_key_count == 2 && join_decoded.has_limit == 1 &&
            join_decoded.limit == 5);
+
+    uint32_t group_key_id_offset;
+    uint32_t group_count_payload_len = build_group_count_plan(
+        group_count_payload, &group_key_id_offset);
+    assert(prdb_sdk_optimizer_decode_group_count_plan_v1(
+               group_count_payload, group_count_payload_len,
+               &group_count_decoded, sizeof(group_count_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(group_count_decoded.plan.plan_kind == 5 &&
+           group_count_decoded.plan.scan_column_count == 1 &&
+           group_count_decoded.group_key.column_id[0] == 4 &&
+           group_count_decoded.plan.has_limit == 1 &&
+           group_count_decoded.plan.limit == 5);
+    memcpy(group_count_malformed, group_count_payload,
+           group_count_payload_len);
+    group_count_malformed[group_key_id_offset] = 5;
+    assert(prdb_sdk_optimizer_decode_group_count_plan_v1(
+               group_count_malformed, group_count_payload_len,
+               &group_count_decoded, sizeof(group_count_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
     static const uint8_t join_sql[] =
         "SELECT l.value, r.value FROM lefts AS l INNER JOIN rights AS r "
         "ON l.id = r.id AND l.active = r.active LIMIT 5;";

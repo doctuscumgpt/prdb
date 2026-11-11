@@ -4,6 +4,7 @@
 #include "prdb_query_abi_v4.h"
 #include "prdb_query_abi_v5.h"
 #include "prdb_sdk_sql_dml_v1.h"
+#include "prdb_sdk_sql_v4.h"
 #include "prdb_sdk_sql_v2.h"
 #include "prdb_sdk_sql_v19.h"
 
@@ -75,6 +76,13 @@ int32_t prdb_sdk_optimizer_encode_join_select_v1(
     const uint8_t *schema, uint32_t schema_len,
     uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
 
+/* Encode the bounded single-key COUNT(*) GROUP BY AST as statement 5. The
+ * request subset rejects WHERE, HAVING, ORDER BY, and composite keys. */
+int32_t prdb_sdk_optimizer_encode_group_count_v1(
+    const prdb_sdk_select_v4 *statement,
+    const uint8_t *schema, uint32_t schema_len,
+    uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
+
 int32_t prdb_sdk_optimizer_decode_response_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_response_v1 *out, uint32_t out_capacity);
@@ -98,6 +106,12 @@ int32_t prdb_sdk_optimizer_submit_update_v1(
 /* Submit one encoded join SELECT request using the role-authorized v5
  * operation-selected optimizer callback. */
 int32_t prdb_sdk_optimizer_submit_join_select_v1(
+    const prdb_host_api_v5 *host,
+    const uint8_t *request, uint64_t request_len,
+    uint8_t *response, uint64_t response_capacity, uint64_t *response_len,
+    prdb_sdk_optimizer_response_v1 *out, uint32_t out_capacity);
+
+int32_t prdb_sdk_optimizer_submit_group_count_v1(
     const prdb_host_api_v5 *host,
     const uint8_t *request, uint64_t request_len,
     uint8_t *response, uint64_t response_capacity, uint64_t *response_len,

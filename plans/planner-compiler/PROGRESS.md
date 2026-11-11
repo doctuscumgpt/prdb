@@ -24,7 +24,9 @@
 - Contract: the first grouped optimizer plan accepts `SELECT key, COUNT(*) FROM relation GROUP BY key [LIMIT n]`; it carries only authorized stable relation identity and the one scanned key column. It has no WHERE, HAVING, or ORDER BY.
 - Implementation: statement 5 (`OptimizeGroupCount`, `0x1208`) is bounded and decoded, binds the key against invocation-authorized metadata, and lowers to validated plan kind 5. The scan shape must equal the group key exactly; the optional LIMIT applies after grouping.
 - Verification: request bounds/trailing bytes, authorized key binding, kind-5 round-trip/scan validation, and optimizer process dispatch are covered by four focused Rust regressions; they passed. ABI generation was refreshed and checked.
-- Remaining: independently decode the plan in TinyCC, serialize/match the supported SQL AST, gate SDK group execution on the validated plan, and add confined acceptance. Composite grouping, aggregates beyond COUNT(*), WHERE/HAVING, and ordering remain unsupported by this optimizer request subset.
+- TinyCC boundary: `prdb_sdk_optimizer_decode_group_count_plan_v1` independently validates kind 5, the exact one-column scan/group key, stable relation references, optional LIMIT, and canonical framing. The SDK encodes the v4 COUNT(*) AST as statement 5 and submits it through ABI v5's `OptimizeGroupCount` operation.
+- Verification: maintained TinyCC tests cover a valid kind-5 plan, scan/key mismatch, canonical group request bytes, buffer sizing, operation selection, successful response decoding, and rejection of a filtered v4 query. `make -f engine/sdk/Makefile test` passed, including ABI generator checks.
+- Remaining: match the returned plan against the parsed/bound SQL AST, re-resolve and gate SDK group execution, and add confined acceptance. Composite grouping, aggregates beyond COUNT(*), WHERE/HAVING, and ordering remain unsupported by this optimizer request subset.
 
 ## OP-2 dependency: generated unknown estimate response — implemented
 
