@@ -2,12 +2,14 @@
 
 use crate::metadata_discovery::AuthorizedPlanRelation;
 use crate::optimizer_binding::{
-    MetadataBindError, bind_delete_request, bind_delete_request_via_metadata, bind_select_request,
+    MetadataBindError, bind_delete_request, bind_delete_request_via_metadata,
+    bind_join_select_request, bind_join_select_request_via_metadata, bind_select_request,
     bind_select_request_via_metadata, bind_update_request, bind_update_request_via_metadata,
 };
 use crate::optimizer_plan::{
-    PlanError, RelationReference, encode_delete_plan_v1, encode_plan_v1, encode_update_plan_v1,
-    plan_delete_v1, plan_select_v1, plan_update_v1,
+    PlanError, RelationReference, encode_delete_plan_v1, encode_join_select_plan_v1,
+    encode_plan_v1, encode_update_plan_v1, plan_delete_v1, plan_join_select_v1, plan_select_v1,
+    plan_update_v1,
 };
 use crate::transaction::PlannerMetadataConnection;
 use std::fmt;
@@ -65,6 +67,28 @@ pub fn optimize_select_v1_with_relation(
     encode_bound_select(bound)
 }
 
+/// Resolve, bind, lower, and encode a two-relation equality join using only
+/// the invocation-bound planner metadata connection.
+pub fn optimize_join_select_v1(
+    request: &[u8],
+    connection: &mut PlannerMetadataConnection<'_, '_>,
+) -> Result<Vec<u8>, OptimizerError> {
+    let bound = bind_join_select_request_via_metadata(request, connection)?;
+    encode_bound_join_select(bound)
+}
+
+/// Optimize a join request using two independently authorized stable
+/// relation descriptions obtained through the planner channel.
+pub fn optimize_join_select_v1_with_relations(
+    request: &[u8],
+    left_relation: Option<AuthorizedPlanRelation>,
+    right_relation: Option<AuthorizedPlanRelation>,
+) -> Result<Vec<u8>, OptimizerError> {
+    let bound = bind_join_select_request(request, left_relation, right_relation)
+        .map_err(|error| OptimizerError::Bind(MetadataBindError::Bind(error)))?;
+    encode_bound_join_select(bound)
+}
+
 /// Resolve, bind, lower, and encode one canonical DELETE request using only
 /// the invocation-bound planner metadata connection. Storage still owns
 /// authorization and every eventual mutation.
@@ -114,6 +138,13 @@ fn encode_bound_select(
 ) -> Result<Vec<u8>, OptimizerError> {
     let plan = plan_select_v1(bound)?;
     Ok(encode_plan_v1(&plan)?)
+}
+
+fn encode_bound_join_select(
+    bound: crate::optimizer_binding::BoundJoinSelect,
+) -> Result<Vec<u8>, OptimizerError> {
+    let plan = plan_join_select_v1(bound)?;
+    Ok(encode_join_select_plan_v1(&plan)?)
 }
 
 fn encode_bound_delete(

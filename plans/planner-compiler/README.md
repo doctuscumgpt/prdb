@@ -18,7 +18,7 @@ Define bounded query/logical/physical IR, type/operator validation, stable objec
 | OP-4 | Unknown estimate uses fixed heuristics while cancelled/expired planning terminates | Use dedicated role-bound storage estimates; cap each planner connection at 16 estimates independently of the 256-request stream cap, while preserving overall planning deadline/cancellation behavior |
 | OP-5 | Index/predicate rewrites preserve authorized-view results and redaction errors | Add point/range access after scan equivalence; storage validates every access path/pushdown, and estimates never establish permission |
 | OP-6 | Mutation generation, policy/schema differences or missed invalidation prevent stale/cross-user cache reuse | Initially avoid shared scoped caches; key any later reuse by complete validity context, private-write generation and dependencies |
-| OP-7 | Required join/group/sort plans match reference semantics within admitted memory/work | In progress: add a bounded composite INNER JOIN request and bind both sides to authorized stable metadata with typed key checks; next encode/validate plans, route process IPC, and connect the SDK executor. Then add grouping/sort plans with bounded search/candidates and measure operational planning latency under analytical load |
+| OP-7 | Required join/group/sort plans match reference semantics within admitted memory/work | In progress: bounded composite join request/binding, Rust kind-4 plan codec and validator, and two-relation optimizer IPC dispatch are implemented. Next add C plan decoding, executor re-resolution and SDK execution; then grouping/sort plans and analytical-load measurements |
 
 ## Acceptance and Handoff
 

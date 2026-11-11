@@ -2,7 +2,8 @@
 
 use crate::optimizer_binding::{BindError, MetadataBindError};
 use crate::optimizer_plan::{
-    MAX_PLAN_BYTES, decode_delete_plan_v1, decode_plan_v1, decode_update_plan_v1,
+    MAX_PLAN_BYTES, decode_delete_plan_v1, decode_join_select_plan_v1, decode_plan_v1,
+    decode_update_plan_v1,
 };
 use crate::optimizer_request::{RequestError, SelectRequest, decode_select_request};
 use crate::optimizer_service::OptimizerError;
@@ -56,6 +57,7 @@ pub fn decode_optimizer_request(bytes: &[u8]) -> Result<SelectRequest, Optimizer
 fn validate_optimizer_plan(bytes: &[u8]) -> Result<(), OptimizerPayloadError> {
     if decode_plan_v1(bytes).is_ok()
         || decode_delete_plan_v1(bytes).is_ok()
+        || decode_join_select_plan_v1(bytes).is_ok()
         || decode_update_plan_v1(bytes).is_ok()
     {
         Ok(())

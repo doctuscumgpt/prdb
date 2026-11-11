@@ -1,8 +1,10 @@
 //! Deterministic single-table SELECT plan construction for optimizer v1.
 
 use crate::optimizer_binding::{
-    BoundColumn, BoundPredicate, BoundSelect, BoundUpdateAssignment, BoundUpdateValue,
+    BoundColumn, BoundJoinSelect, BoundPredicate, BoundSelect, BoundUpdateAssignment,
+    BoundUpdateValue,
 };
+use crate::optimizer_request::JoinRelationSide;
 use crate::tuple::ScalarType;
 use std::collections::HashSet;
 
@@ -52,11 +54,28 @@ pub struct UpdatePlanV1 {
     pub assignments: Vec<BoundUpdateAssignment>,
 }
 
+/// Bounded two-relation equality join plan. Each relation is identified by
+/// stable metadata and join/projection columns carry their bound shape.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JoinSelectPlanV1 {
+    pub schema_name: String,
+    pub schema_id: [u8; 16],
+    pub schema_version: u64,
+    pub left_relation: RelationReference,
+    pub right_relation: RelationReference,
+    pub left_scan_columns: Vec<BoundColumn>,
+    pub right_scan_columns: Vec<BoundColumn>,
+    pub projections: Vec<(JoinRelationSide, BoundColumn)>,
+    pub join_keys: Vec<(BoundColumn, BoundColumn)>,
+    pub limit: Option<u32>,
+}
+
 pub const MAX_PLAN_BYTES: usize = 64 * 1024;
 pub const MAX_PLAN_SCAN_COLUMNS: usize = crate::optimizer_request::MAX_PROJECTIONS * 2;
 const PLAN_KIND_SELECT: u8 = 1;
 const PLAN_KIND_DELETE: u8 = 2;
 const PLAN_KIND_UPDATE: u8 = 3;
+const PLAN_KIND_JOIN_SELECT: u8 = 4;
 const DELETE_SINK_NODE: u8 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -231,6 +250,251 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
     let plan = SingleTablePlanV1 { relation, nodes };
     validate_plan_v1(&plan)?;
     Ok(plan)
+}
+
+/// Encode an independently validated two-relation equality join plan. This
+/// uses plan kind 4 and leaves the established single-table encoding intact.
+pub fn encode_join_select_plan_v1(plan: &JoinSelectPlanV1) -> Result<Vec<u8>, PlanError> {
+    validate_join_select_plan_v1(plan)?;
+    let mut output = Vec::with_capacity(256);
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_header_record(
+        1,
+        PLAN_KIND_JOIN_SELECT,
+        0,
+    ));
+    put_name(&mut output, &plan.schema_name)?;
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_schema_reference_record(
+            plan.schema_id,
+            plan.schema_version,
+        ),
+    );
+    for relation in [&plan.left_relation, &plan.right_relation] {
+        put_name(&mut output, &relation.relation_name)?;
+        output.extend_from_slice(
+            &crate::query_abi::encode_optimizer_plan_relation_reference_record(
+                relation.relation_id,
+                relation.table_epoch,
+            ),
+        );
+    }
+    for columns in [&plan.left_scan_columns, &plan.right_scan_columns] {
+        output.extend_from_slice(&(columns.len() as u16).to_be_bytes());
+        for column in columns {
+            put_column(&mut output, column);
+        }
+    }
+    output.extend_from_slice(&(plan.projections.len() as u16).to_be_bytes());
+    for (side, column) in &plan.projections {
+        output.push(match side {
+            JoinRelationSide::Left => 0,
+            JoinRelationSide::Right => 1,
+        });
+        put_column(&mut output, column);
+    }
+    output.push(plan.join_keys.len() as u8);
+    for (left, right) in &plan.join_keys {
+        put_column(&mut output, left);
+        put_column(&mut output, right);
+    }
+    match plan.limit {
+        None => output.push(0),
+        Some(limit) => {
+            output.push(1);
+            output.extend_from_slice(&limit.to_be_bytes());
+        }
+    }
+    if output.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    Ok(output)
+}
+
+/// Decode and independently validate canonical plan kind 4.
+pub fn decode_join_select_plan_v1(bytes: &[u8]) -> Result<JoinSelectPlanV1, PlanError> {
+    if bytes.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    let (version, kind, reserved) =
+        crate::query_abi::decode_optimizer_plan_header_record(bytes).ok_or(PlanError::Truncated)?;
+    if version != 1 {
+        return Err(PlanError::UnsupportedVersion(version));
+    }
+    if kind != PLAN_KIND_JOIN_SELECT || reserved != 0 {
+        return Err(PlanError::InvalidEncoding);
+    }
+    let mut reader = PlanReader {
+        bytes,
+        offset: crate::query_abi::OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES as usize,
+    };
+    let schema_name = reader.name()?;
+    let schema_reference = reader
+        .take(crate::query_abi::OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES as usize)?;
+    let (schema_id, schema_version) =
+        crate::query_abi::decode_optimizer_plan_schema_reference_record(schema_reference)
+            .ok_or(PlanError::Truncated)?;
+    let mut relation_references = Vec::with_capacity(2);
+    for _ in 0..2 {
+        let relation_name = reader.name()?;
+        let reference = reader.take(
+            crate::query_abi::OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES as usize,
+        )?;
+        let (relation_id, table_epoch) =
+            crate::query_abi::decode_optimizer_plan_relation_reference_record(reference)
+                .ok_or(PlanError::Truncated)?;
+        relation_references.push(RelationReference {
+            schema_name: schema_name.clone(),
+            schema_id,
+            schema_version,
+            relation_name,
+            relation_id,
+            table_epoch,
+        });
+    }
+    let mut scan_shapes = Vec::with_capacity(2);
+    for _ in 0..2 {
+        let count = usize::from(u16::from_be_bytes(
+            reader
+                .take(2)?
+                .try_into()
+                .map_err(|_| PlanError::Truncated)?,
+        ));
+        if count == 0 || count > MAX_PLAN_SCAN_COLUMNS {
+            return Err(PlanError::InvalidColumnReference);
+        }
+        let mut columns = Vec::with_capacity(count);
+        for _ in 0..count {
+            columns.push(reader.column()?);
+        }
+        scan_shapes.push(columns);
+    }
+    let projection_count = usize::from(u16::from_be_bytes(
+        reader
+            .take(2)?
+            .try_into()
+            .map_err(|_| PlanError::Truncated)?,
+    ));
+    if !(1..=crate::optimizer_request::MAX_PROJECTIONS).contains(&projection_count) {
+        return Err(PlanError::EmptyProjection);
+    }
+    let mut projections = Vec::with_capacity(projection_count);
+    for _ in 0..projection_count {
+        let side = match reader.u8()? {
+            0 => JoinRelationSide::Left,
+            1 => JoinRelationSide::Right,
+            _ => return Err(PlanError::InvalidEncoding),
+        };
+        projections.push((side, reader.column()?));
+    }
+    let key_count = usize::from(reader.u8()?);
+    if !(2..=8).contains(&key_count) {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    let mut join_keys = Vec::with_capacity(key_count);
+    for _ in 0..key_count {
+        join_keys.push((reader.column()?, reader.column()?));
+    }
+    let limit = match reader.u8()? {
+        0 => None,
+        1 => Some(u32::from_be_bytes(
+            reader
+                .take(4)?
+                .try_into()
+                .map_err(|_| PlanError::Truncated)?,
+        )),
+        _ => return Err(PlanError::InvalidEncoding),
+    };
+    if reader.offset != bytes.len() {
+        return Err(PlanError::TrailingBytes);
+    }
+    let plan = JoinSelectPlanV1 {
+        schema_name,
+        schema_id,
+        schema_version,
+        left_relation: relation_references.remove(0),
+        right_relation: relation_references.remove(0),
+        left_scan_columns: scan_shapes.remove(0),
+        right_scan_columns: scan_shapes.remove(0),
+        projections,
+        join_keys,
+        limit,
+    };
+    validate_join_select_plan_v1(&plan)?;
+    Ok(plan)
+}
+
+/// Check relation identity, key shape/type compatibility, projection
+/// membership, and all collection bounds before an executor interprets a
+/// decoded join plan.
+pub fn validate_join_select_plan_v1(plan: &JoinSelectPlanV1) -> Result<(), PlanError> {
+    if plan.schema_id == [0; 16]
+        || plan.schema_version == 0
+        || !valid_identifier(&plan.schema_name)
+        || plan.left_relation.schema_name != plan.schema_name
+        || plan.right_relation.schema_name != plan.schema_name
+        || plan.left_relation.schema_id != plan.schema_id
+        || plan.right_relation.schema_id != plan.schema_id
+        || plan.left_relation.schema_version != plan.schema_version
+        || plan.right_relation.schema_version != plan.schema_version
+    {
+        return Err(PlanError::InvalidRelationReference);
+    }
+    validate_relation(&plan.left_relation)?;
+    validate_relation(&plan.right_relation)?;
+    if plan.projections.is_empty() {
+        return Err(PlanError::EmptyProjection);
+    }
+    if plan.projections.len() > crate::optimizer_request::MAX_PROJECTIONS
+        || !(2..=8).contains(&plan.join_keys.len())
+    {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    validate_columns(&plan.left_scan_columns)?;
+    validate_columns(&plan.right_scan_columns)?;
+    for (side, column) in &plan.projections {
+        if !valid_scalar_type(column.scalar_type) || column.column_id == [0; 16] {
+            return Err(PlanError::InvalidScalarType);
+        }
+        let scan_columns = match side {
+            JoinRelationSide::Left => &plan.left_scan_columns,
+            JoinRelationSide::Right => &plan.right_scan_columns,
+        };
+        if !scan_columns.contains(column) {
+            return Err(PlanError::InvalidColumnReference);
+        }
+    }
+    for (left, right) in &plan.join_keys {
+        if left.column_id == [0; 16]
+            || right.column_id == [0; 16]
+            || !valid_scalar_type(left.scalar_type)
+            || !valid_scalar_type(right.scalar_type)
+            || !join_key_types_compatible(left.scalar_type, right.scalar_type)
+        {
+            return Err(PlanError::InvalidColumnReference);
+        }
+        for (side, key) in [
+            (JoinRelationSide::Left, left),
+            (JoinRelationSide::Right, right),
+        ] {
+            let scan_columns = match side {
+                JoinRelationSide::Left => &plan.left_scan_columns,
+                JoinRelationSide::Right => &plan.right_scan_columns,
+            };
+            if !scan_columns.contains(key) {
+                return Err(PlanError::InvalidColumnReference);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn join_key_types_compatible(left: ScalarType, right: ScalarType) -> bool {
+    match (left, right) {
+        (ScalarType::Decimal { scale: left, .. }, ScalarType::Decimal { scale: right, .. }) => {
+            left == right
+        }
+        (left, right) => left == right,
+    }
 }
 
 /// Construct a deterministic DELETE plan from an already bound relation and
@@ -1220,6 +1484,60 @@ pub fn plan_select_v1(bound: BoundSelect) -> Result<SingleTablePlanV1, PlanError
     Ok(plan)
 }
 
+/// Lower authorized join bindings to a canonical join plan. Each scan reads
+/// the ordinal-sorted union of its projected and equality-key columns.
+pub fn plan_join_select_v1(bound: BoundJoinSelect) -> Result<JoinSelectPlanV1, PlanError> {
+    let relation = |relation: crate::optimizer_binding::BoundJoinRelation| RelationReference {
+        schema_name: bound.schema_name.clone(),
+        schema_id: bound.schema_id,
+        schema_version: bound.schema_version,
+        relation_name: relation.relation_name,
+        relation_id: relation.relation_id,
+        table_epoch: relation.table_epoch,
+    };
+    let left_relation = relation(bound.left_relation);
+    let right_relation = relation(bound.right_relation);
+    let mut left_scan_columns = Vec::new();
+    let mut right_scan_columns = Vec::new();
+    for projection in &bound.projections {
+        add_column(
+            match projection.relation_side {
+                JoinRelationSide::Left => &mut left_scan_columns,
+                JoinRelationSide::Right => &mut right_scan_columns,
+            },
+            &projection.column,
+        )?;
+    }
+    for key in &bound.join_keys {
+        add_column(&mut left_scan_columns, &key.left_column)?;
+        add_column(&mut right_scan_columns, &key.right_column)?;
+    }
+    left_scan_columns.sort_by_key(|column| column.ordinal);
+    right_scan_columns.sort_by_key(|column| column.ordinal);
+    let plan = JoinSelectPlanV1 {
+        schema_name: bound.schema_name,
+        schema_id: bound.schema_id,
+        schema_version: bound.schema_version,
+        left_relation,
+        right_relation,
+        left_scan_columns,
+        right_scan_columns,
+        projections: bound
+            .projections
+            .into_iter()
+            .map(|projection| (projection.relation_side, projection.column))
+            .collect(),
+        join_keys: bound
+            .join_keys
+            .into_iter()
+            .map(|key| (key.left_column, key.right_column))
+            .collect(),
+        limit: bound.limit,
+    };
+    validate_join_select_plan_v1(&plan)?;
+    Ok(plan)
+}
+
 /// Validate the structural invariants an executor must check independently
 /// before interpreting a decoded plan.
 pub fn validate_plan_v1(plan: &SingleTablePlanV1) -> Result<(), PlanError> {
@@ -2033,5 +2351,53 @@ mod tests {
             scale: 0,
         };
         assert_eq!(encode_plan_v1(&plan), Err(PlanError::InvalidScalarType));
+    }
+
+    #[test]
+    fn join_plan_round_trips_and_rejects_unscanned_keys() {
+        let left_key = column(1, 0, ScalarType::Integer);
+        let left_payload = column(2, 1, ScalarType::Text);
+        let left_key2 = column(3, 2, ScalarType::BigInt);
+        let right_key = column(4, 0, ScalarType::Integer);
+        let right_payload = column(5, 1, ScalarType::Text);
+        let right_key2 = column(6, 2, ScalarType::BigInt);
+        let plan = JoinSelectPlanV1 {
+            schema_name: "sales".to_owned(),
+            schema_id: [0x10; 16],
+            schema_version: 7,
+            left_relation: RelationReference {
+                schema_name: "sales".to_owned(),
+                schema_id: [0x10; 16],
+                schema_version: 7,
+                relation_name: "orders".to_owned(),
+                relation_id: [0x20; 16],
+                table_epoch: 11,
+            },
+            right_relation: RelationReference {
+                schema_name: "sales".to_owned(),
+                schema_id: [0x10; 16],
+                schema_version: 7,
+                relation_name: "customers".to_owned(),
+                relation_id: [0x30; 16],
+                table_epoch: 12,
+            },
+            left_scan_columns: vec![left_key.clone(), left_payload.clone(), left_key2.clone()],
+            right_scan_columns: vec![right_key.clone(), right_payload.clone(), right_key2.clone()],
+            projections: vec![
+                (JoinRelationSide::Left, left_payload),
+                (JoinRelationSide::Right, right_payload),
+            ],
+            join_keys: vec![(left_key, right_key), (left_key2, right_key2)],
+            limit: Some(9),
+        };
+        let bytes = encode_join_select_plan_v1(&plan).unwrap();
+        assert_eq!(decode_join_select_plan_v1(&bytes).unwrap(), plan);
+
+        let mut invalid = plan;
+        invalid.join_keys[0].0.column_id = [0x7f; 16];
+        assert_eq!(
+            validate_join_select_plan_v1(&invalid),
+            Err(PlanError::InvalidColumnReference)
+        );
     }
 }

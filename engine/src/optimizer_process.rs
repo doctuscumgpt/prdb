@@ -57,7 +57,10 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             .map_err(OptimizerProcessError::Dispatch)?;
         if !matches!(
             operation,
-            Operation::OptimizeSelect | Operation::OptimizeDelete | Operation::OptimizeUpdate
+            Operation::OptimizeSelect
+                | Operation::OptimizeDelete
+                | Operation::OptimizeUpdate
+                | Operation::OptimizeJoinSelect
         ) {
             return Err(OptimizerProcessError::Dispatch(
                 DispatchError::OperationNotAllowed {
@@ -70,19 +73,28 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
         let decoded_names = match operation {
             Operation::OptimizeSelect => {
                 crate::optimizer_request::decode_select_request(&request.payload)
-                    .map(|decoded| (decoded.schema_name, decoded.relation_name))
+                    .map(|decoded| vec![(decoded.schema_name, decoded.relation_name)])
             }
             Operation::OptimizeDelete => {
                 crate::optimizer_request::decode_delete_request(&request.payload)
-                    .map(|decoded| (decoded.schema_name, decoded.relation_name))
+                    .map(|decoded| vec![(decoded.schema_name, decoded.relation_name)])
             }
             Operation::OptimizeUpdate => {
                 crate::optimizer_request::decode_update_request(&request.payload)
-                    .map(|decoded| (decoded.schema_name, decoded.relation_name))
+                    .map(|decoded| vec![(decoded.schema_name, decoded.relation_name)])
             }
+            Operation::OptimizeJoinSelect => crate::optimizer_request::decode_join_select_request(
+                &request.payload,
+            )
+            .map(|decoded| {
+                vec![
+                    (decoded.schema_name.clone(), decoded.left_relation_name),
+                    (decoded.schema_name, decoded.right_relation_name),
+                ]
+            }),
             _ => unreachable!("optimizer operation was checked above"),
         };
-        let (schema_name, relation_name) = match decoded_names {
+        let relation_names = match decoded_names {
             Ok(names) => names,
             Err(_) => {
                 write_submission_response(
@@ -95,47 +107,60 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
                 continue;
             }
         };
-        let planner_request = IpcFrame {
-            operation: Operation::DescribePlanRelation as u16,
-            request_id: request.request_id,
-            payload: ResolveRelationRequest {
-                schema_name,
-                relation_name,
+        let mut relations = Vec::with_capacity(relation_names.len());
+        for (schema_name, relation_name) in relation_names {
+            let planner_request = IpcFrame {
+                operation: Operation::DescribePlanRelation as u16,
+                request_id: request.request_id,
+                payload: ResolveRelationRequest {
+                    schema_name,
+                    relation_name,
+                }
+                .encode()
+                .map_err(|error| OptimizerProcessError::PlannerPayload(error.into()))?,
+            };
+            authorize_operation(ServiceRole::Planner, Operation::DescribePlanRelation)
+                .map_err(OptimizerProcessError::Dispatch)?;
+            crate::ipc::write_frame(planner, &planner_request)
+                .map_err(OptimizerProcessError::Frame)?;
+            let planner_response = crate::ipc::read_frame(planner)
+                .map_err(OptimizerProcessError::Frame)?
+                .ok_or(OptimizerProcessError::PlannerClosed)?;
+            if planner_response.operation != planner_request.operation
+                || planner_response.request_id != planner_request.request_id
+            {
+                return Err(OptimizerProcessError::PlannerResponseMismatch);
             }
-            .encode()
-            .map_err(|error| OptimizerProcessError::PlannerPayload(error.into()))?,
-        };
-        authorize_operation(ServiceRole::Planner, Operation::DescribePlanRelation)
-            .map_err(OptimizerProcessError::Dispatch)?;
-        crate::ipc::write_frame(planner, &planner_request).map_err(OptimizerProcessError::Frame)?;
-        let planner_response = crate::ipc::read_frame(planner)
-            .map_err(OptimizerProcessError::Frame)?
-            .ok_or(OptimizerProcessError::PlannerClosed)?;
-        if planner_response.operation != planner_request.operation
-            || planner_response.request_id != planner_request.request_id
-        {
-            return Err(OptimizerProcessError::PlannerResponseMismatch);
+            relations.push(
+                DescribePlanRelationResponse::decode(&planner_response.payload)
+                    .map_err(OptimizerProcessError::PlannerPayload)?
+                    .relation,
+            );
         }
-        let relation = DescribePlanRelationResponse::decode(&planner_response.payload)
-            .map_err(OptimizerProcessError::PlannerPayload)?
-            .relation;
         let optimized = match operation {
             Operation::OptimizeSelect => {
                 crate::optimizer_service::optimize_select_v1_with_relation(
                     &request.payload,
-                    relation,
+                    relations.remove(0),
                 )
             }
             Operation::OptimizeDelete => {
                 crate::optimizer_service::optimize_delete_v1_with_relation(
                     &request.payload,
-                    relation,
+                    relations.remove(0),
                 )
             }
             Operation::OptimizeUpdate => {
                 crate::optimizer_service::optimize_update_v1_with_relation(
                     &request.payload,
-                    relation,
+                    relations.remove(0),
+                )
+            }
+            Operation::OptimizeJoinSelect => {
+                crate::optimizer_service::optimize_join_select_v1_with_relations(
+                    &request.payload,
+                    relations.remove(0),
+                    relations.remove(0),
                 )
             }
             _ => unreachable!("optimizer operation was checked above"),
@@ -216,6 +241,27 @@ mod tests {
         let predicate = [0x20, 0, 0x10, 2, b'i', b'd', 0x02, 0, 0, 0, 0, 0, 0, 0, 7];
         bytes.extend_from_slice(&(predicate.len() as u32).to_be_bytes());
         bytes.extend_from_slice(&predicate);
+        bytes
+    }
+
+    fn join_select_request() -> Vec<u8> {
+        let mut bytes = vec![0, 1, crate::query_abi::OPTIMIZER_JOIN_SELECT_STATEMENT, 0];
+        for name in ["public", "lefts", "rights"] {
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.extend_from_slice(&2u16.to_be_bytes());
+        for (side, name) in [(0, "value"), (1, "value")] {
+            bytes.push(side);
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.push(2);
+        for name in ["id", "id", "active", "active"] {
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.extend_from_slice(&[1, 0, 0, 0, 5]);
         bytes
     }
 
@@ -443,6 +489,103 @@ mod tests {
                 plan.assignments[0].value,
                 crate::optimizer_binding::BoundUpdateValue::Parameter(1)
             );
+            submission_client.shutdown(Shutdown::Write).unwrap();
+            planner_thread.join().unwrap();
+            optimizer_thread.join().unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn process_protocol_resolves_both_join_relations_and_returns_a_validated_join_plan() {
+        let (mut submission_client, mut submission_server) = UnixStream::pair().unwrap();
+        let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
+        std::thread::scope(|scope| {
+            let planner_thread = scope.spawn(|| {
+                for (name, relation_id, base_column_id) in
+                    [("lefts", 0x31, 0x41), ("rights", 0x32, 0x51)]
+                {
+                    let request = crate::ipc::read_frame(&mut planner_server)
+                        .unwrap()
+                        .expect("optimizer must resolve each join relation");
+                    let decoded = ResolveRelationRequest::decode(&request.payload).unwrap();
+                    assert_eq!(decoded.schema_name, "public");
+                    assert_eq!(decoded.relation_name, name);
+                    let relation = AuthorizedPlanRelation {
+                        schema_id: [1; 16],
+                        schema_version: 3,
+                        table_epoch: u64::from(relation_id),
+                        relation: AuthorizedRelationDescription {
+                            relation_id: [relation_id; 16],
+                            name: name.to_owned(),
+                            columns: vec![
+                                VisibleColumn {
+                                    column_id: [base_column_id; 16],
+                                    name: "id".to_owned(),
+                                    ordinal: 0,
+                                    scalar_type: ScalarType::Integer,
+                                    nullable: false,
+                                },
+                                VisibleColumn {
+                                    column_id: [base_column_id + 1; 16],
+                                    name: "active".to_owned(),
+                                    ordinal: 1,
+                                    scalar_type: ScalarType::Boolean,
+                                    nullable: false,
+                                },
+                                VisibleColumn {
+                                    column_id: [base_column_id + 2; 16],
+                                    name: "value".to_owned(),
+                                    ordinal: 2,
+                                    scalar_type: ScalarType::Text,
+                                    nullable: true,
+                                },
+                            ],
+                        },
+                    };
+                    crate::ipc::write_frame(
+                        &mut planner_server,
+                        &IpcFrame {
+                            operation: request.operation,
+                            request_id: request.request_id,
+                            payload: DescribePlanRelationResponse {
+                                relation: Some(relation),
+                            }
+                            .encode()
+                            .unwrap(),
+                        },
+                    )
+                    .unwrap();
+                }
+            });
+            let optimizer_thread = scope
+                .spawn(|| serve_optimizer_process(&mut submission_server, &mut planner_client));
+
+            crate::ipc::write_frame(
+                &mut submission_client,
+                &IpcFrame {
+                    operation: Operation::OptimizeJoinSelect as u16,
+                    request_id: 12,
+                    payload: join_select_request(),
+                },
+            )
+            .unwrap();
+            let response = crate::ipc::read_frame(&mut submission_client)
+                .unwrap()
+                .expect("optimizer must return a join plan");
+            assert_eq!(response.operation, Operation::OptimizeJoinSelect as u16);
+            assert_eq!(response.request_id, 12);
+            let response = OptimizerResponse::decode(&response.payload).unwrap();
+            assert_eq!(response.status, OptimizerStatus::Success);
+            let plan = crate::optimizer_plan::decode_join_select_plan_v1(
+                response.plan.as_deref().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(plan.left_relation.relation_name, "lefts");
+            assert_eq!(plan.right_relation.relation_name, "rights");
+            assert_eq!(plan.left_scan_columns.len(), 3);
+            assert_eq!(plan.right_scan_columns.len(), 3);
+            assert_eq!(plan.join_keys.len(), 2);
+            assert_eq!(plan.limit, Some(5));
             submission_client.shutdown(Shutdown::Write).unwrap();
             planner_thread.join().unwrap();
             optimizer_thread.join().unwrap().unwrap();
