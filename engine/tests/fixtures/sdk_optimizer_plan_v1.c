@@ -1,4 +1,5 @@
 #include "prdb_sdk_optimizer_plan_v1.h"
+#include "prdb_sdk_optimizer_v2.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -203,6 +204,7 @@ typedef struct resolve_context {
     uint32_t optimizer_response_len;
     uint32_t calls;
     uint32_t optimizer_calls;
+    uint32_t stage_delete_calls;
     uint32_t statement_failures;
     uint16_t events[32];
     uint32_t event_count;
@@ -226,6 +228,17 @@ static int32_t optimizer_request(void *context, const uint8_t *request,
            resolved->optimizer_response_len);
     *response_len = resolved->optimizer_response_len;
     return PRDB_QUERY_CALLBACK_OK;
+}
+
+static int32_t optimizer_request_v5(
+    void *context, uint16_t operation, const uint8_t *request,
+    uint64_t request_len, uint8_t *response, uint64_t response_capacity,
+    uint64_t *response_len) {
+    assert(operation == PRDB_IPC_OP_OPTIMIZE_DELETE);
+    assert(request_len >= PRDB_OPTIMIZER_SELECT_REQUEST_HEADER_BYTES);
+    assert(request[2] == PRDB_OPTIMIZER_DELETE_STATEMENT);
+    return optimizer_request(context, request, request_len, response,
+                             response_capacity, response_len);
 }
 
 static int32_t statement_failure(void *context, uint32_t failure_code) {
@@ -289,6 +302,13 @@ static int32_t resolve_plan_relation(void *context, uint16_t operation,
         assert(request_len == 24 && request[2] == 7);
         source = resolved->batch_response;
         source_len = resolved->batch_response_len;
+    } else if (operation == PRDB_SDK_EXECUTOR_OP_STAGE_DELETE) {
+        static const uint8_t acknowledgement[] = {0, 1, 0};
+        assert(request_len == 18 && request[0] == 0 && request[1] == 1);
+        assert(request[2] == 8);
+        ++resolved->stage_delete_calls;
+        source = acknowledgement;
+        source_len = sizeof(acknowledgement);
     } else {
         assert(operation == PRDB_SDK_EXECUTOR_OP_CLOSE_CURSOR);
         assert(request_len == 18 && request[2] == 7);
@@ -459,12 +479,15 @@ int main(void) {
     static resolve_context resolve = {0};
     static prdb_host_api_v2 host = {0};
     static prdb_host_api_v4 host_v4 = {0};
+    static prdb_host_api_v5 host_v5 = {0};
     static prdb_sdk_executor_relation_v1 acquired_relation;
     static prdb_sdk_sql_column_shape_v2 acquired_columns[4];
     static prdb_sdk_optimizer_scan_state_v1 scan_state;
     static prdb_sdk_batch_v1 row_batch;
     static prdb_sdk_value_v1 source_cells[4];
     static prdb_sdk_value_v1 projected_values[1];
+    static prdb_sdk_value_v1 delete_cell_scratch[4];
+    static prdb_sdk_select_binding_v2 delete_binding;
     uint8_t row_batch_bytes[128];
     uint8_t batch_response[128];
     uint8_t result_record_buffer[256];
@@ -475,6 +498,8 @@ int main(void) {
     uint8_t response[512];
     uint8_t request[512];
     uint8_t optimizer_response[512];
+    uint8_t delete_target_handles[
+        PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS * 16];
     uint8_t sql[] = "SELECT c3 FROM items LIMIT 1";
     static prdb_sdk_select_v2 statement;
     static prdb_sdk_delete_v1 delete_statement;
@@ -1063,5 +1088,50 @@ int main(void) {
                acquired_columns, 4) ==
            PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
     resolve.executor_response[3] = 2;
+
+    uint8_t execute_delete_sql[] = "DELETE FROM items WHERE c0 = $1";
+    uint8_t execute_delete_parameter_bytes[4] = {0, 0, 0, 1};
+    prdb_sdk_value_v1 execute_delete_parameters[1] = {{
+        sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+        PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+        execute_delete_parameter_bytes,
+        sizeof(execute_delete_parameter_bytes)}};
+    uint8_t execute_delete_plan[512];
+    uint32_t execute_delete_plan_len = build_delete_filter_plan(
+        execute_delete_plan, &predicate_offset);
+    uint32_t deleted_count = 0;
+    assert(prdb_sdk_sql_parse_delete_v1(
+               execute_delete_sql, sizeof(execute_delete_sql) - 1,
+               &delete_statement,
+               sizeof(delete_statement), NULL) == PRDB_SDK_SQL_OK);
+    resolve.optimizer_response_len = build_optimizer_response(
+        resolve.optimizer_response, execute_delete_plan,
+        execute_delete_plan_len);
+    resolve.batch_response_len = build_row_batch(resolve.batch_response);
+    resolve.calls = 0;
+    resolve.optimizer_calls = 0;
+    resolve.stage_delete_calls = 0;
+    resolve.statement_failures = 0;
+    resolve.event_count = 0;
+    host_v5.v4 = host_v4;
+    host_v5.optimizer_request = optimizer_request_v5;
+    assert(prdb_sdk_optimizer_encode_delete_v1(
+               &delete_statement, execute_delete_parameters, 1,
+               (const uint8_t *)"public", 6, request, sizeof(request),
+               &response_len) == PRDB_SDK_OPTIMIZER_ENCODE_OK);
+    assert(prdb_sdk_optimizer_execute_delete_ast_v1(
+               &host_v5, &delete_statement, execute_delete_parameters, 1,
+               (const uint8_t *)"public", 6, 2, sizeof(batch_response), request,
+               sizeof(request), optimizer_response, sizeof(optimizer_response),
+               response, sizeof(response), scan_response, sizeof(scan_response),
+               batch_response, sizeof(batch_response), &acquired_relation,
+               sizeof(acquired_relation), acquired_columns, 4, &delete_binding,
+               sizeof(delete_binding), delete_cell_scratch, 4,
+               delete_target_handles,
+               PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS,
+               &deleted_count) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(deleted_count == 1 && resolve.optimizer_calls == 1 &&
+           resolve.stage_delete_calls == 1 && resolve.statement_failures == 0);
+    assert(resolve.calls == 7);
     return 0;
 }

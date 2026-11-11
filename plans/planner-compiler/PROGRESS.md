@@ -261,3 +261,11 @@
 - Coverage: the TinyCC fixture accepts a matching integer predicate, rejects a changed parameter and a changed column, and acquires the independently resolved relation handle for the DELETE plan.
 - Verification: focused plan fixture, maintained TinyCC SDK suite, and ABI generator checks passed in the pinned Nix shell.
 - Remaining: scan authorized rows, evaluate the verified filter, stage matching row handles through executor mutation IPC, and add confined process acceptance. UPDATE request and plan support remains open.
+
+## OP-3 dependency: execute verified DELETE plans through SDK mutation IPC — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). Only after plan-to-AST and stable relation checks may the executor scan authorized rows; matching opaque handles are staged through its ordinary mutation operation.
+- Implementation: `prdb_sdk_optimizer_execute_delete_ast_v1` submits with ABI v5, validates the returned plan, opens the independently resolved full scan, binds the DELETE predicate to executor relation metadata, polls cancellation between bounded pages, collects matching row handles, closes incomplete scans, and stages deletes. It enforces the executor request budget before staging.
+- Coverage: the maintained TinyCC fixture drives a parsed parameterized DELETE through operation-selected optimizer submission, relation validation and acquisition, one executor batch, predicate evaluation, and one successful stage-delete acknowledgement.
+- Verification: focused optimizer plan fixture and maintained TinyCC SDK suite passed in the pinned Nix shell; ABI generator checks passed.
+- Remaining: exercise DELETE through the confined optimizer/executor process acceptance harness and continue UPDATE request/plan support.
