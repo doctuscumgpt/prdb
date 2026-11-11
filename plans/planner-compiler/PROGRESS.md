@@ -354,3 +354,10 @@
 - Regression: the maintained `sdk_optimizer_plan_v1.c` callback fixture now returns cancellation at that checkpoint and checks the cancellation status, cursor-close operation, zero stage-update calls, one failure latch, and zero published updated rows. The successful mock UPDATE remains covered.
 - Verification: `nix develop -c make -f engine/sdk/Makefile test` passed, including all eight ABI generator tests and the full maintained TinyCC SDK suite.
 - Remaining: cover cancellation in the confined process harness, optimizer response loss, target exhaustion, stage-update failure, and transaction conflict/policy behavior.
+
+## OP-3 dependency: fail UPDATE when executor staging fails — verified
+
+- Behavior: if the ordinary executor rejects StageUpdate after a completed scan, the SDK returns callback failure, latches statement failure, and leaves the updated-row count at zero.
+- Regression: the maintained `sdk_optimizer_plan_v1.c` mock injects an executor callback error for StageUpdate. It verifies the row batch completed before staging, no success count is published, and exactly one failure is latched. The neighboring cancellation regression still verifies cursor closure before staging begins.
+- Verification: `nix develop -c make -f engine/sdk/Makefile test` passed, including the full TinyCC SDK suite and all eight ABI generator tests.
+- Remaining: exercise stage failure and cancellation through confined processes, test optimizer response loss and target exhaustion, and expand transaction conflict/policy cases.

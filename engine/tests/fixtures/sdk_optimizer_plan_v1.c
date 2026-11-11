@@ -237,6 +237,7 @@ typedef struct resolve_context {
     uint32_t optimizer_calls;
     uint32_t stage_delete_calls;
     uint32_t stage_update_calls;
+    uint32_t fail_stage_update;
     uint32_t statement_failures;
     uint16_t events[32];
     uint32_t event_count;
@@ -307,6 +308,7 @@ static int32_t resolve_plan_relation(void *context, uint16_t operation,
     resolve_context *resolved = (resolve_context *)context;
     const uint8_t *source;
     uint32_t source_len;
+    int32_t callback_status = PRDB_QUERY_CALLBACK_OK;
     if (operation == PRDB_IPC_OP_RESOLVE_PLAN_RELATION) {
         assert(request_len == 17 && request[0] == 0 && request[1] == 1);
         assert(request[2] == 0 && request[3] == 6);
@@ -353,6 +355,8 @@ static int32_t resolve_plan_relation(void *context, uint16_t operation,
         assert(request[24] == 0 &&
                request[25] == PRDB_SDK_VALUE_TYPE_INTEGER);
         ++resolved->stage_update_calls;
+        if (resolved->fail_stage_update != 0)
+            callback_status = PRDB_QUERY_CALLBACK_INTERNAL_ERROR;
         source = acknowledgement;
         source_len = sizeof(acknowledgement);
     } else {
@@ -365,6 +369,7 @@ static int32_t resolve_plan_relation(void *context, uint16_t operation,
     if (resolved->event_count < 32) {
         resolved->events[resolved->event_count++] = operation;
     }
+    if (callback_status != PRDB_QUERY_CALLBACK_OK) return callback_status;
     if (response_capacity < source_len) {
         *response_len = source_len;
         return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
@@ -1317,5 +1322,31 @@ int main(void) {
     assert(resolve.calls == 6);
     assert(resolve.events[6] == PRDB_SDK_EXECUTOR_OP_CLOSE_CURSOR);
     resolve.cancellation_response[2] = 0;
+
+    resolve.calls = 0;
+    resolve.optimizer_calls = 0;
+    resolve.stage_update_calls = 0;
+    resolve.statement_failures = 0;
+    resolve.event_count = 0;
+    resolve.fail_stage_update = 1;
+    updated_count = 99;
+    assert(prdb_sdk_optimizer_execute_update_ast_v1(
+               &host_v5, &execute_update_statement, update_parameters, 2,
+               (const uint8_t *)"public", 6, 2, sizeof(batch_response),
+               request, sizeof(request), optimizer_response,
+               sizeof(optimizer_response), response, sizeof(response),
+               scan_response, sizeof(scan_response), batch_response,
+               sizeof(batch_response), &acquired_relation,
+               sizeof(acquired_relation), acquired_columns, 4, &delete_binding,
+               sizeof(delete_binding), delete_cell_scratch, 4,
+               delete_target_handles,
+               PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS,
+               &updated_count) == PRDB_SDK_OPTIMIZER_PLAN_CALLBACK_ERROR);
+    assert(updated_count == 0 && resolve.optimizer_calls == 1 &&
+           resolve.stage_update_calls == 1 && resolve.statement_failures == 1);
+    assert(resolve.calls == 7);
+    assert(resolve.events[6] == PRDB_SDK_EXECUTOR_OP_NEXT_BATCH);
+    assert(resolve.events[7] == PRDB_SDK_EXECUTOR_OP_STAGE_UPDATE);
+    resolve.fail_stage_update = 0;
     return 0;
 }
