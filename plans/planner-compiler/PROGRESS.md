@@ -346,7 +346,7 @@
 - Verification: `nix develop -c make -f engine/sdk/Makefile sandbox-query-fixture` rebuilt the fixture with pinned TinyCC; the confined `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed with the optimizer and executor processes, authenticated staging, durable commit, and result relay. The fixture setup grants only the grouped table/columns needed for this UPDATE and installs UPDATE table/cell policies.
 - NULL assignment acceptance: the confined fixture now runs `UPDATE records SET id = NULL WHERE id = $1` through optimizer submission, verifies both rows as SQL NULL through the regular SELECT path, then restores their values through the authorized SQL UPDATE path so optimizer DELETE acceptance still runs.
 - Verification: the rebuilt TinyCC sandbox fixture and delegated-cgroup `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed, including the NULL assignment, its readback, optimizer-backed DELETE, and durable commit.
-- Remaining: cover cancellation in the confined process harness, optimizer response loss, target exhaustion, stage-update failure, and transaction conflict/policy behavior.
+- Remaining: cover cancellation in the confined process harness, target exhaustion, stage-update failure in confined execution, and transaction conflict/policy behavior.
 
 ## OP-3 dependency: cancel an in-progress optimizer UPDATE — verified
 
@@ -360,4 +360,11 @@
 - Behavior: if the ordinary executor rejects StageUpdate after a completed scan, the SDK returns callback failure, latches statement failure, and leaves the updated-row count at zero.
 - Regression: the maintained `sdk_optimizer_plan_v1.c` mock injects an executor callback error for StageUpdate. It verifies the row batch completed before staging, no success count is published, and exactly one failure is latched. The neighboring cancellation regression still verifies cursor closure before staging begins.
 - Verification: `nix develop -c make -f engine/sdk/Makefile test` passed, including the full TinyCC SDK suite and all eight ABI generator tests.
-- Remaining: exercise stage failure and cancellation through confined processes, test optimizer response loss and target exhaustion, and expand transaction conflict/policy cases.
+- Remaining: exercise stage failure and cancellation through confined processes, test target exhaustion, and expand transaction conflict/policy cases.
+
+## OP-3 dependency: optimizer submission callback failure aborts UPDATE — verified
+
+- Behavior: an optimizer callback error before a plan response stops execution before executor relation resolution or mutation and latches statement failure.
+- Regression: the TinyCC `sdk_optimizer_plan_v1.c` mock injects an optimizer callback error and checks the returned callback status, one failure latch, zero executor requests, zero staged updates, and zero published row count.
+- Verification: `nix develop -c make -f engine/sdk/Makefile test` passed, including all ABI generator tests and maintained TinyCC SDK executables.
+- Remaining: test target exhaustion and confined mutation cancellation/staging failures, then expand transaction conflict/policy cases.

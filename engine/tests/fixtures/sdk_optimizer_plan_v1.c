@@ -235,6 +235,7 @@ typedef struct resolve_context {
     uint32_t optimizer_response_len;
     uint32_t calls;
     uint32_t optimizer_calls;
+    uint32_t fail_optimizer_request;
     uint32_t stage_delete_calls;
     uint32_t stage_update_calls;
     uint32_t fail_stage_update;
@@ -253,6 +254,8 @@ static int32_t optimizer_request(void *context, const uint8_t *request,
         resolved->events[resolved->event_count++] = UINT16_C(0xffff);
     }
     resolved->optimizer_calls++;
+    if (resolved->fail_optimizer_request != 0)
+        return PRDB_QUERY_CALLBACK_INTERNAL_ERROR;
     if (response_capacity < resolved->optimizer_response_len) {
         *response_len = resolved->optimizer_response_len;
         return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
@@ -1348,5 +1351,30 @@ int main(void) {
     assert(resolve.events[6] == PRDB_SDK_EXECUTOR_OP_NEXT_BATCH);
     assert(resolve.events[7] == PRDB_SDK_EXECUTOR_OP_STAGE_UPDATE);
     resolve.fail_stage_update = 0;
+
+    resolve.calls = 0;
+    resolve.optimizer_calls = 0;
+    resolve.stage_update_calls = 0;
+    resolve.statement_failures = 0;
+    resolve.event_count = 0;
+    resolve.fail_optimizer_request = 1;
+    updated_count = 99;
+    assert(prdb_sdk_optimizer_execute_update_ast_v1(
+               &host_v5, &execute_update_statement, update_parameters, 2,
+               (const uint8_t *)"public", 6, 2, sizeof(batch_response),
+               request, sizeof(request), optimizer_response,
+               sizeof(optimizer_response), response, sizeof(response),
+               scan_response, sizeof(scan_response), batch_response,
+               sizeof(batch_response), &acquired_relation,
+               sizeof(acquired_relation), acquired_columns, 4, &delete_binding,
+               sizeof(delete_binding), delete_cell_scratch, 4,
+               delete_target_handles,
+               PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS,
+               &updated_count) == PRDB_SDK_OPTIMIZER_PLAN_CALLBACK_ERROR);
+    assert(updated_count == 0 && resolve.optimizer_calls == 1 &&
+           resolve.calls == 0 && resolve.stage_update_calls == 0 &&
+           resolve.statement_failures == 1);
+    assert(resolve.event_count == 1 && resolve.events[0] == UINT16_C(0xffff));
+    resolve.fail_optimizer_request = 0;
     return 0;
 }
