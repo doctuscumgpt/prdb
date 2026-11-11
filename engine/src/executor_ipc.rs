@@ -561,9 +561,9 @@ fn encode_mutation_value(
     value: Option<&ScalarValue>,
 ) -> Result<(), ExecutorRequestError> {
     match value {
-        None => payload.push(1),
+        None => payload.extend_from_slice(&generated::encode_mutation_cell_tag_record(1)),
         Some(value) => {
-            payload.push(0);
+            payload.extend_from_slice(&generated::encode_mutation_cell_tag_record(0));
             let (type_code, bytes) = encode_scalar_value(value)?;
             append_scalar_value_record(payload, type_code, &bytes)?;
         }
