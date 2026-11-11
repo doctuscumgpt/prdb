@@ -1,4 +1,5 @@
 #include "prdb_sdk_optimizer_v1.h"
+#include "prdb_sdk_optimizer_v2.h"
 #include "prdb_query_abi_payload_codecs.h"
 
 #include <stddef.h>
@@ -334,6 +335,128 @@ int32_t prdb_sdk_optimizer_encode_select_with_parameters_v1(
         request_capacity, request_len);
 }
 
+static int32_t optimizer_encode_delete_internal(
+    const prdb_sdk_delete_v1 *statement,
+    const prdb_sdk_value_v1 *parameters, uint32_t parameter_count,
+    const uint8_t *schema, uint32_t schema_len,
+    uint8_t *request, uint64_t request_capacity, uint64_t *request_len) {
+    const prdb_sdk_select_v2 *predicate;
+    uint8_t seen[PRDB_SDK_SQL_MAX_PREDICATE_NODES] = {0};
+    uint64_t predicate_len = 0;
+    uint64_t encoded_len;
+    uint64_t offset;
+    uint32_t index;
+    int predicate_status;
+
+    if (request_len == NULL) return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    if (statement == NULL || statement->struct_size != sizeof(*statement) ||
+        statement->abi_version != PRDB_SDK_SQL_DML_ABI_V1_VERSION ||
+        statement->sql == NULL || statement->sql_len == 0 ||
+        statement->sql_len > PRDB_SDK_SQL_MAX_QUERY_BYTES ||
+        request_capacity > PRDB_SDK_OPTIMIZER_MAX_REQUEST_BYTES ||
+        (request_capacity != 0 && request == NULL) ||
+        parameter_count > PRDB_SDK_SQL_MAX_PARAMETER_INDEX ||
+        (parameter_count != 0 && parameters == NULL) ||
+        !valid_identifier(schema, schema_len) ||
+        ranges_overlap(request_len, sizeof(*request_len), statement,
+                       sizeof(*statement)) ||
+        ranges_overlap(request_len, sizeof(*request_len), schema, schema_len) ||
+        ranges_overlap(request_len, sizeof(*request_len), statement->sql,
+                       statement->sql_len) ||
+        ranges_overlap(request_len, sizeof(*request_len), parameters,
+                       (uint64_t)parameter_count * sizeof(*parameters)) ||
+        ranges_overlap(request, request_capacity, statement,
+                       sizeof(*statement)) ||
+        ranges_overlap(request, request_capacity, schema, schema_len) ||
+        ranges_overlap(request, request_capacity, statement->sql,
+                       statement->sql_len) ||
+        ranges_overlap(request, request_capacity, parameters,
+                       (uint64_t)parameter_count * sizeof(*parameters))) {
+        return request_capacity > PRDB_SDK_OPTIMIZER_MAX_REQUEST_BYTES
+                   ? PRDB_SDK_OPTIMIZER_ENCODE_LIMIT_EXCEEDED
+                   : PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    }
+    for (index = 0; index < parameter_count; ++index) {
+        uint64_t data_len = parameters[index].data_len;
+        const uint8_t *data = parameters[index].data;
+        if (data_len != 0 &&
+            (ranges_overlap(request_len, sizeof(*request_len), data, data_len) ||
+             ranges_overlap(request, request_capacity, data, data_len))) {
+            return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+        }
+    }
+    *request_len = 0;
+    predicate = &statement->predicate_statement;
+    if (predicate->struct_size != sizeof(*predicate) ||
+        predicate->abi_version != PRDB_SDK_SQL_ABI_V2_VERSION ||
+        predicate->sql != statement->sql ||
+        predicate->sql_len != statement->sql_len ||
+        predicate->projection_star != 1 || predicate->projection_count != 0 ||
+        predicate->has_limit != 0 || predicate->limit != 0 ||
+        predicate->predicate_count == 0 ||
+        predicate->predicate_count > PRDB_SDK_SQL_MAX_PREDICATE_NODES ||
+        predicate->predicate_root >= predicate->predicate_count ||
+        predicate->relation.offset != statement->relation.offset ||
+        predicate->relation.length != statement->relation.length ||
+        !span_is_identifier(predicate, statement->relation)) {
+        return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    }
+    predicate_status = encode_optimizer_predicate_node(
+        predicate, parameters, parameter_count, predicate->predicate_root,
+        1, seen, NULL, 0, &predicate_len);
+    if (predicate_status == 2) return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+    if (predicate_status != 1) return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    for (index = 0; index < predicate->predicate_count; ++index) {
+        if (seen[index] == 0) return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    }
+    if (predicate_len == 0 || predicate_len > UINT32_C(16384))
+        return PRDB_SDK_OPTIMIZER_ENCODE_LIMIT_EXCEEDED;
+
+    encoded_len = PRDB_OPTIMIZER_SELECT_REQUEST_HEADER_BYTES + 1 + schema_len +
+                  1 + statement->relation.length + 4 + predicate_len;
+    if (encoded_len > PRDB_SDK_OPTIMIZER_MAX_REQUEST_BYTES)
+        return PRDB_SDK_OPTIMIZER_ENCODE_LIMIT_EXCEEDED;
+    if (request_capacity < encoded_len) {
+        *request_len = encoded_len;
+        return PRDB_SDK_OPTIMIZER_ENCODE_BUFFER_TOO_SMALL;
+    }
+    offset = 0;
+    prdb_encode_optimizer_select_request(request,
+                                         PRDB_OPTIMIZER_DELETE_STATEMENT, 0);
+    offset = PRDB_OPTIMIZER_SELECT_REQUEST_HEADER_BYTES;
+    request[offset++] = (uint8_t)schema_len;
+    memcpy(request + offset, schema, schema_len);
+    offset += schema_len;
+    request[offset++] = (uint8_t)statement->relation.length;
+    memcpy(request + offset, statement->sql + statement->relation.offset,
+           statement->relation.length);
+    offset += statement->relation.length;
+    write_u32(request + offset, (uint32_t)predicate_len);
+    offset += 4;
+    {
+        uint64_t written = 0;
+        memset(seen, 0, sizeof(seen));
+        predicate_status = encode_optimizer_predicate_node(
+            predicate, parameters, parameter_count, predicate->predicate_root,
+            1, seen, request + offset, request_capacity - offset, &written);
+        if (predicate_status != 1 || written != predicate_len)
+            return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+        offset += written;
+    }
+    *request_len = offset;
+    return PRDB_SDK_OPTIMIZER_ENCODE_OK;
+}
+
+int32_t prdb_sdk_optimizer_encode_delete_v1(
+    const prdb_sdk_delete_v1 *statement,
+    const prdb_sdk_value_v1 *parameters, uint32_t parameter_count,
+    const uint8_t *schema, uint32_t schema_len,
+    uint8_t *request, uint64_t request_capacity, uint64_t *request_len) {
+    return optimizer_encode_delete_internal(
+        statement, parameters, parameter_count, schema, schema_len, request,
+        request_capacity, request_len);
+}
+
 static int ranges_overlap(const void *left, uint64_t left_len,
                           const void *right, uint64_t right_len) {
     uintptr_t left_start = (uintptr_t)left;
@@ -441,6 +564,43 @@ int32_t prdb_sdk_optimizer_submit_select_v1(
     if (*response_len > response_capacity) {
         return PRDB_SDK_OPTIMIZER_RESULT_INVALID_RESPONSE;
     }
+    return prdb_sdk_optimizer_decode_response_v1(response, *response_len, out,
+                                                 out_capacity);
+}
+
+int32_t prdb_sdk_optimizer_submit_delete_v1(
+    const prdb_host_api_v5 *host, const uint8_t *request, uint64_t request_len,
+    uint8_t *response, uint64_t response_capacity, uint64_t *response_len,
+    prdb_sdk_optimizer_response_v1 *out, uint32_t out_capacity) {
+    int32_t callback_status;
+    if (host == NULL || host->v4.v3.struct_size != sizeof(prdb_host_api_v3) ||
+        host->v4.v3.abi_version != PRDB_QUERY_ABI_V3_VERSION ||
+        host->v4.v3.context == NULL || host->v4.optimizer_request == NULL ||
+        host->optimizer_request == NULL || request_len == 0 || request == NULL ||
+        request_len > OPTIMIZER_REQUEST_MAX_BYTES || response_len == NULL ||
+        response_capacity > PRDB_QUERY_MAX_IPC_REQUEST_BYTES ||
+        (response_capacity != 0 && response == NULL) || out == NULL ||
+        out_capacity < sizeof(*out) ||
+        ranges_overlap(out, sizeof(*out), response, response_capacity)) {
+        return request_len > OPTIMIZER_REQUEST_MAX_BYTES ||
+                       response_capacity > PRDB_QUERY_MAX_IPC_REQUEST_BYTES
+                   ? PRDB_SDK_OPTIMIZER_RESULT_LIMIT_EXCEEDED
+                   : PRDB_SDK_OPTIMIZER_RESULT_INVALID_ARGUMENT;
+    }
+    callback_status = host->optimizer_request(
+        host->v4.v3.context, PRDB_IPC_OP_OPTIMIZE_DELETE, request, request_len,
+        response, response_capacity, response_len);
+    if (callback_status == PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL) {
+        if (*response_len > PRDB_QUERY_MAX_IPC_REQUEST_BYTES)
+            return PRDB_SDK_OPTIMIZER_RESULT_INVALID_RESPONSE;
+        return PRDB_SDK_OPTIMIZER_RESULT_RESPONSE_TOO_SMALL;
+    }
+    if (callback_status == PRDB_QUERY_CALLBACK_LIMIT_EXCEEDED)
+        return PRDB_SDK_OPTIMIZER_RESULT_LIMIT_EXCEEDED;
+    if (callback_status != PRDB_QUERY_CALLBACK_OK)
+        return PRDB_SDK_OPTIMIZER_RESULT_CALLBACK_ERROR;
+    if (*response_len > response_capacity)
+        return PRDB_SDK_OPTIMIZER_RESULT_INVALID_RESPONSE;
     return prdb_sdk_optimizer_decode_response_v1(response, *response_len, out,
                                                  out_capacity);
 }

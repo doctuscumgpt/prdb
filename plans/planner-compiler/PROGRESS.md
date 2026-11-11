@@ -244,4 +244,12 @@
 - Implementation: ABI v5 preserves the complete v4 host table prefix and adds an operation parameter. The confined executor validates the v5 descriptor before dispatch, supplies both callbacks, and applies the existing `OptimizerSubmission` role allowlist. PMF1 encoders/validators accept v5 with its exact symbol pair.
 - Evidence: Rust ABI layout and descriptor validation, operation forwarding/denial, ELF manifest validation, and TinyCC C layout/callback fixtures pass. The v4 fixed-operation fixture still passes.
 - Verification: workspace build, formatting, warning-denied Clippy, full locked tests, ABI generator check, and TinyCC SDK tests passed.
-- Remaining: encode SQL DELETE into request v1 through the v5 callback, validate its returned plan against the AST, and execute matching row handles through authorized scan/stage-delete IPC.
+- Remaining: validate the returned plan against the AST and execute matching row handles through authorized scan/stage-delete IPC.
+
+## OP-3 dependency: encode and submit bounded C DELETE requests — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). Parsed DELETE statements require a bounded Boolean WHERE tree; the SDK callback grants only the `OptimizeDelete` submission operation.
+- Implementation: `prdb_sdk_optimizer_encode_delete_v1` writes canonical statement tag 2 requests with schema/relation identifiers and a mandatory prefix predicate. `prdb_sdk_optimizer_submit_delete_v1` uses ABI v5's operation-selected callback and validates the bounded optimizer response envelope.
+- Coverage: the maintained TinyCC fixture checks exact wire bytes, missing parameter rejection, unsupported `IS NULL`, no partial output on a short buffer, null output-buffer validation, callback operation selection, and successful response decoding.
+- Verification: the pinned Nix shell's maintained SDK suite and ABI generator checks passed. Workspace build, format check, warning-denied Clippy, and full locked tests passed (four cgroup-dependent tests ignored by default). The initial test attempt inherited a root-only Nix temporary directory and failed unrelated permission-sensitive tests; rerunning with `TMPDIR=/tmp` as the repository user passed.
+- Remaining: compare the returned DELETE plan against the submitted AST and execute matched row handles through independently resolved relation handles and ordinary authorized scan/stage-delete IPC. UPDATE request and plan support remains open.
