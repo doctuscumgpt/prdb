@@ -380,7 +380,8 @@ static int predicate_boolean(const predicate_type *type) {
 static int decode_predicate(plan_reader *reader,
                             const prdb_sdk_optimizer_plan_column_v1 *columns,
                             uint32_t column_count, uint32_t depth,
-                            uint32_t *nodes, predicate_type *type_out) {
+                            uint32_t *nodes, uint8_t *references,
+                            predicate_type *type_out) {
     uint8_t tag;
     uint64_t tag_offset = reader->offset;
     const uint8_t *bytes;
@@ -426,6 +427,7 @@ static int decode_predicate(plan_reader *reader,
                     type.type_code = columns[index].type_code;
                     memcpy(type.parameters,
                            columns[index].type_parameters, 4);
+                    if (references != NULL) references[index] = 1;
                     found = 1;
                     break;
                 }
@@ -440,9 +442,9 @@ static int decode_predicate(plan_reader *reader,
             if (!read_compare_predicate_header(reader, tag_offset, &comparison) ||
                 comparison > 5 ||
                 !decode_predicate(reader, columns, column_count, depth + 1,
-                                  nodes, &left) ||
+                                  nodes, references, &left) ||
                 !decode_predicate(reader, columns, column_count, depth + 1,
-                                  nodes, &right) ||
+                                  nodes, references, &right) ||
                 !same_type(&left, &right)) {
                 return 0;
             }
@@ -462,7 +464,7 @@ static int decode_predicate(plan_reader *reader,
             for (index = 0; index < child_count; ++index) {
                 predicate_type child;
                 if (!decode_predicate(reader, columns, column_count,
-                                      depth + 1, nodes, &child) ||
+                                      depth + 1, nodes, references, &child) ||
                     !predicate_boolean(&child)) {
                     return 0;
                 }
@@ -474,7 +476,7 @@ static int decode_predicate(plan_reader *reader,
             predicate_type child;
             if (!read_not_predicate_tag(reader, tag_offset) ||
                 !decode_predicate(reader, columns, column_count, depth + 1,
-                                  nodes, &child) ||
+                                  nodes, references, &child) ||
                 !predicate_boolean(&child)) {
                 return 0;
             }
@@ -739,6 +741,7 @@ static int32_t decode_plan_internal(
     uint8_t has_limit = 0;
     uint32_t limit = 0;
     uint8_t has_filter = 0;
+    uint8_t predicate_references[PRDB_SDK_OPTIMIZER_PLAN_MAX_SCAN_COLUMNS] = {0};
 
     if (payload == NULL || out == NULL || out_capacity < sizeof(*out) ||
         (allow_filter &&
@@ -850,7 +853,7 @@ static int32_t decode_plan_internal(
         if (!allow_filter) return PRDB_SDK_OPTIMIZER_PLAN_UNSUPPORTED;
         if (!decode_predicate(&reader, decoded.scan_columns,
                               decoded.scan_column_count, 1, &predicate_nodes,
-                              &predicate_type_out) ||
+                              predicate_references, &predicate_type_out) ||
             !predicate_boolean(&predicate_type_out)) {
             return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
         }
@@ -948,12 +951,222 @@ int32_t prdb_sdk_optimizer_decode_delete_plan_v1(
                                 filter_out, filter_out_capacity, 1, 2);
 }
 
+int32_t prdb_sdk_optimizer_decode_update_plan_v1(
+    const uint8_t *payload, uint64_t payload_len,
+    prdb_sdk_optimizer_update_plan_v1 *out, uint32_t out_capacity) {
+    prdb_sdk_optimizer_update_plan_v1 decoded;
+    plan_reader reader;
+    uint16_t version;
+    uint8_t kind;
+    uint8_t reserved;
+    uint8_t node_count;
+    uint8_t node_tag;
+    uint16_t column_count;
+    uint16_t assignment_count;
+    uint32_t index;
+    uint32_t other;
+    uint8_t predicate_references[PRDB_SDK_OPTIMIZER_PLAN_MAX_SCAN_COLUMNS] = {0};
+
+    if (payload == NULL || out == NULL ||
+        out_capacity < sizeof(*out) ||
+        ranges_overlap(payload, payload_len, out, sizeof(*out))) {
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
+    }
+    if (payload_len > PRDB_SDK_OPTIMIZER_MAX_PLAN_BYTES) {
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    }
+    memset(&decoded, 0, sizeof(decoded));
+    reader.bytes = payload;
+    reader.length = payload_len;
+    reader.offset = 0;
+    if (!prdb_decode_optimizer_plan_header_record(
+            payload, PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES,
+            &version, &kind, &reserved) || version != 1 || kind != 3 ||
+        reserved != 0) {
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    }
+    reader.offset = PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
+    if (!read_name(&reader, &decoded.plan.schema_name,
+                   &decoded.plan.schema_name_len) ||
+        decoded.plan.schema_name_len == 0) {
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    }
+    {
+        const uint8_t *bytes;
+        if (!take(&reader,
+                  PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES,
+                  &bytes) ||
+            !prdb_decode_optimizer_plan_schema_reference_record(
+                bytes, PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES,
+                decoded.plan.schema_id, &decoded.plan.schema_version) ||
+            all_zero(decoded.plan.schema_id, 16) ||
+            decoded.plan.schema_version == 0) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        }
+    }
+    if (!read_name(&reader, &decoded.plan.relation_name,
+                   &decoded.plan.relation_name_len) ||
+        decoded.plan.relation_name_len == 0) {
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    }
+    {
+        const uint8_t *bytes;
+        if (!take(&reader,
+                  PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES,
+                  &bytes) ||
+            !prdb_decode_optimizer_plan_relation_reference_record(
+                bytes, PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES,
+                decoded.plan.relation_id, &decoded.plan.table_epoch) ||
+            all_zero(decoded.plan.relation_id, 16) ||
+            decoded.plan.table_epoch == 0) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        }
+    }
+    if (!read_plan_node_count(&reader, &node_count) || node_count != 3 ||
+        !read_u8(&reader, &node_tag) || node_tag != 1 ||
+        !read_column_list_header(&reader, 1, &column_count) ||
+        column_count == 0 ||
+        column_count > PRDB_SDK_OPTIMIZER_PLAN_MAX_SCAN_COLUMNS) {
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    }
+    decoded.plan.scan_column_count = column_count;
+    for (index = 0; index < decoded.plan.scan_column_count; ++index) {
+        prdb_sdk_optimizer_plan_column_v1 *column =
+            &decoded.plan.scan_columns[index];
+        if (!read_column(&reader, column) ||
+            (index != 0 &&
+             decoded.plan.scan_columns[index - 1].ordinal >= column->ordinal)) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        }
+        for (other = 0; other < index; ++other) {
+            if (memcmp(decoded.plan.scan_columns[other].column_id,
+                       column->column_id, 16) == 0) {
+                return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+            }
+        }
+    }
+    {
+        uint64_t filter_node_offset = reader.offset;
+        uint64_t predicate_start;
+        uint32_t predicate_nodes = 0;
+        predicate_type predicate_type_out;
+        const uint8_t *node_bytes;
+        if (!read_u8(&reader, &node_tag) || node_tag != 2 ||
+            !read_filter_node_tag(&reader, filter_node_offset)) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        }
+        predicate_start = reader.offset;
+        if (!decode_predicate(&reader, decoded.plan.scan_columns,
+                              decoded.plan.scan_column_count, 1,
+                              &predicate_nodes, predicate_references,
+                              &predicate_type_out) ||
+            !predicate_boolean(&predicate_type_out) ||
+            !take(&reader, PRDB_OPTIMIZER_PLAN_UPDATE_NODE_RECORD_HEADER_BYTES,
+                  &node_bytes) ||
+            !prdb_decode_optimizer_plan_update_node_record(
+                node_bytes, PRDB_OPTIMIZER_PLAN_UPDATE_NODE_RECORD_HEADER_BYTES,
+                &node_tag, &assignment_count) ||
+            node_tag != PRDB_OPTIMIZER_PLAN_UPDATE_NODE ||
+            assignment_count == 0 ||
+            assignment_count > PRDB_SDK_OPTIMIZER_PLAN_MAX_UPDATE_ASSIGNMENTS) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        }
+        decoded.filter.present = 1;
+        decoded.filter.prefix = payload + predicate_start;
+        decoded.filter.prefix_len = (uint32_t)(reader.offset - predicate_start -
+            PRDB_OPTIMIZER_PLAN_UPDATE_NODE_RECORD_HEADER_BYTES);
+    }
+    decoded.assignment_count = assignment_count;
+    for (index = 0; index < decoded.assignment_count; ++index) {
+        prdb_sdk_optimizer_assignment_v1 *assignment =
+            &decoded.assignments[index];
+        const uint8_t *value_bytes;
+        uint8_t value_kind;
+        uint32_t parameter_index;
+        int found = 0;
+        if (!read_column(&reader, &assignment->column) ||
+            !take(&reader,
+                  PRDB_OPTIMIZER_PLAN_UPDATE_ASSIGNMENT_VALUE_RECORD_HEADER_BYTES,
+                  &value_bytes) ||
+            !prdb_decode_optimizer_plan_update_assignment_value_record(
+                value_bytes,
+                PRDB_OPTIMIZER_PLAN_UPDATE_ASSIGNMENT_VALUE_RECORD_HEADER_BYTES,
+                &value_kind, &parameter_index)) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        }
+        for (other = 0; other < decoded.plan.scan_column_count; ++other) {
+            if (columns_equal(&assignment->column,
+                              &decoded.plan.scan_columns[other])) {
+                predicate_references[other] = 1;
+                found = 1;
+                break;
+            }
+        }
+        if (!found) return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        for (other = 0; other < index; ++other) {
+            if (decoded.assignments[other].column.ordinal ==
+                    assignment->column.ordinal ||
+                memcmp(decoded.assignments[other].column.column_id,
+                       assignment->column.column_id, 16) == 0) {
+                return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+            }
+        }
+        if (value_kind == PRDB_OPTIMIZER_UPDATE_PARAMETER_VALUE) {
+            if (parameter_index == 0 || parameter_index > 256) {
+                return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+            }
+            assignment->value_kind = value_kind;
+            assignment->parameter_index = parameter_index;
+        } else if (value_kind == PRDB_OPTIMIZER_UPDATE_NULL_VALUE) {
+            if (parameter_index != 0 || assignment->column.nullable == 0) {
+                return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+            }
+            assignment->value_kind = value_kind;
+        } else {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        }
+    }
+    for (index = 0; index < decoded.plan.scan_column_count; ++index) {
+        if (predicate_references[index] == 0) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        }
+    }
+    if (reader.offset != reader.length) {
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    }
+    decoded.plan.plan_kind = 3;
+    decoded.plan.struct_size = sizeof(decoded.plan);
+    decoded.plan.abi_version = PRDB_SDK_OPTIMIZER_PLAN_ABI_V1_VERSION;
+    decoded.filter.struct_size = sizeof(decoded.filter);
+    decoded.filter.abi_version = PRDB_SDK_OPTIMIZER_PLAN_ABI_V1_VERSION;
+    decoded.struct_size = sizeof(decoded);
+    decoded.abi_version = PRDB_SDK_OPTIMIZER_PLAN_ABI_V1_VERSION;
+    *out = decoded;
+    return PRDB_SDK_OPTIMIZER_PLAN_OK;
+}
+
 static int32_t decode_any_optimizer_plan_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_plan_v1 *plan, uint32_t plan_capacity,
     prdb_sdk_optimizer_filter_v1 *filter, uint32_t filter_capacity) {
     if (payload == NULL || payload_len < 3)
         return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    if (payload[2] == 3) {
+        prdb_sdk_optimizer_update_plan_v1 update = {0};
+        if (plan == NULL || plan_capacity < sizeof(*plan) || filter == NULL ||
+            filter_capacity < sizeof(*filter) ||
+            ranges_overlap(payload, payload_len, plan, sizeof(*plan)) ||
+            ranges_overlap(payload, payload_len, filter, sizeof(*filter)) ||
+            ranges_overlap(plan, sizeof(*plan), filter, sizeof(*filter))) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
+        }
+        int32_t status = prdb_sdk_optimizer_decode_update_plan_v1(
+            payload, payload_len, &update, sizeof(update));
+        if (status != PRDB_SDK_OPTIMIZER_PLAN_OK) return status;
+        *plan = update.plan;
+        *filter = update.filter;
+        return PRDB_SDK_OPTIMIZER_PLAN_OK;
+    }
     if (payload[2] == 2) {
         return prdb_sdk_optimizer_decode_delete_plan_v1(
             payload, payload_len, plan, plan_capacity, filter,

@@ -305,4 +305,12 @@
 - Contract: [optimizer specification](../../specs/planner-compiler.md). UPDATE uses a distinct optimizer submission operation and the same authorized planner metadata channel as SELECT/DELETE.
 - Implementation: generated IPC op `OptimizeUpdate=0x1206`, role allowlist, request name decoding, relation metadata resolution, service dispatch, and response plan validation now include kind-3 UPDATE plans.
 - Coverage: IPC code/role tests, optimizer response round-trip test, and a two-stream process protocol test verify relation lookup and validated UPDATE plan output.
-- Remaining: independently decode kind-3 plans in the C SDK, submit UPDATE ASTs, verify plan-to-AST values, and execute through authorized scan/stage-update IPC.
+- Remaining: submit UPDATE ASTs, verify plan-to-AST values, and execute through authorized scan/stage-update IPC.
+
+## OP-3 dependency: independently validate UPDATE plans in the C SDK — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). The C SDK independently checks optimizer output before trusting target columns or obtaining an executor relation capability.
+- Implementation: `prdb_sdk_optimizer_decode_update_plan_v1` validates kind 3 and the `Scan -> Filter -> Update` pipeline, resolves predicate references against scanned IDs, enforces the exact predicate/assignment scan union, and validates unique targets, parameter indices, fixed NULL records, and target nullability. Generic relation validation now accepts UPDATE plans only through this independent decoder.
+- Coverage: TinyCC fixture tests a valid parameterized UPDATE plan, malformed/truncated assignment values, target nullability, output/payload overlap, and executor relation re-resolution.
+- Verification: maintained TinyCC SDK suite, all eight ABI generator tests, and ABI generated-file check passed in the pinned Nix shell.
+- Remaining: encode and submit SQL UPDATE ASTs, match decoded assignments against AST and parameter types, then execute via authorized scan/stage-update IPC.

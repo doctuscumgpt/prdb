@@ -11,6 +11,7 @@
 #define PRDB_SDK_OPTIMIZER_PLAN_MAX_PROJECTIONS UINT32_C(128)
 #define PRDB_SDK_OPTIMIZER_PLAN_MAX_NEXT_REQUESTS UINT32_C(125)
 #define PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS UINT32_C(128)
+#define PRDB_SDK_OPTIMIZER_PLAN_MAX_UPDATE_ASSIGNMENTS UINT32_C(64)
 
 #define PRDB_SDK_OPTIMIZER_PLAN_OK INT32_C(0)
 #define PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT INT32_C(1)
@@ -67,6 +68,24 @@ typedef struct prdb_sdk_optimizer_filter_v1 {
     uint32_t prefix_len;
 } prdb_sdk_optimizer_filter_v1;
 
+typedef struct prdb_sdk_optimizer_assignment_v1 {
+    prdb_sdk_optimizer_plan_column_v1 column;
+    uint32_t value_kind;
+    uint32_t parameter_index;
+} prdb_sdk_optimizer_assignment_v1;
+
+/* Kind-3 UPDATE plans expose a validated base relation/scan/filter plan and
+ * source-order assignment records. Names and filter bytes borrow the payload. */
+typedef struct prdb_sdk_optimizer_update_plan_v1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    prdb_sdk_optimizer_plan_v1 plan;
+    prdb_sdk_optimizer_filter_v1 filter;
+    uint32_t assignment_count;
+    prdb_sdk_optimizer_assignment_v1
+        assignments[PRDB_SDK_OPTIMIZER_PLAN_MAX_UPDATE_ASSIGNMENTS];
+} prdb_sdk_optimizer_update_plan_v1;
+
 typedef struct prdb_sdk_optimizer_scan_state_v1 {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -107,6 +126,13 @@ int32_t prdb_sdk_optimizer_decode_delete_plan_v1(
     prdb_sdk_optimizer_plan_v1 *out, uint32_t out_capacity,
     prdb_sdk_optimizer_filter_v1 *filter_out,
     uint32_t filter_out_capacity);
+
+/* Independently decode canonical kind-3 `Scan -> Filter -> Update` plans,
+ * checking exact predicate/assignment scan shape, stable target metadata,
+ * target uniqueness, parameter bounds, NULLability, and canonical values. */
+int32_t prdb_sdk_optimizer_decode_update_plan_v1(
+    const uint8_t *payload, uint64_t payload_len,
+    prdb_sdk_optimizer_update_plan_v1 *out, uint32_t out_capacity);
 
 /* Validate a DELETE plan against the parsed DELETE statement and its bound
  * parameters, then re-resolve its relation through executor storage. */

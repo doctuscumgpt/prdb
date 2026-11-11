@@ -1,5 +1,6 @@
 #include "prdb_sdk_optimizer_plan_v1.h"
 #include "prdb_sdk_optimizer_v2.h"
+#include "prdb_query_abi_payload_codecs.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -183,6 +184,36 @@ static uint32_t build_delete_filter_plan(uint8_t *bytes,
     *predicate_offset = offset;
     put_integer_comparison(bytes, &offset, 1);
     bytes[offset++] = 5; /* Delete */
+    return offset;
+}
+
+static uint32_t build_update_plan(uint8_t *bytes) {
+    uint32_t offset = 0;
+    uint32_t column_id_offset;
+    (void)put_header(bytes, &offset, 3);
+    bytes[2] = 3; /* UPDATE */
+    bytes[offset++] = 1;
+    put_u16(bytes, &offset, 1);
+    column_id_offset = put_column(bytes, &offset, 3, 0);
+    bytes[column_id_offset] = 10;
+    bytes[column_id_offset + 16] = 0;
+    bytes[column_id_offset + 17] = 0;
+    bytes[column_id_offset + 18] = 0;
+    bytes[column_id_offset + 19] = 0;
+    bytes[offset++] = 2;
+    put_integer_comparison(bytes, &offset, 1);
+    prdb_encode_optimizer_plan_update_node_record(
+        bytes + offset, PRDB_OPTIMIZER_PLAN_UPDATE_NODE, 1);
+    offset += PRDB_OPTIMIZER_PLAN_UPDATE_NODE_RECORD_HEADER_BYTES;
+    column_id_offset = put_column(bytes, &offset, 3, 0);
+    bytes[column_id_offset] = 10;
+    bytes[column_id_offset + 16] = 0;
+    bytes[column_id_offset + 17] = 0;
+    bytes[column_id_offset + 18] = 0;
+    bytes[column_id_offset + 19] = 0;
+    prdb_encode_optimizer_plan_update_assignment_value_record(
+        bytes + offset, PRDB_OPTIMIZER_UPDATE_PARAMETER_VALUE, 2);
+    offset += PRDB_OPTIMIZER_PLAN_UPDATE_ASSIGNMENT_VALUE_RECORD_HEADER_BYTES;
     return offset;
 }
 
@@ -476,6 +507,7 @@ int main(void) {
                                       &project_node_offset);
     static prdb_sdk_optimizer_plan_v1 decoded;
     static prdb_sdk_optimizer_filter_v1 filter;
+    static prdb_sdk_optimizer_update_plan_v1 update_decoded;
     static resolve_context resolve = {0};
     static prdb_host_api_v2 host = {0};
     static prdb_host_api_v4 host_v4 = {0};
@@ -967,6 +999,47 @@ int main(void) {
     assert(prdb_sdk_optimizer_decode_delete_plan_v1(
                payload, payload_len, &decoded, sizeof(decoded), &filter,
                sizeof(filter)) == PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+
+    uint8_t update_plan[512];
+    uint32_t update_plan_len = build_update_plan(update_plan);
+    assert(prdb_sdk_optimizer_decode_update_plan_v1(
+               update_plan, update_plan_len, &update_decoded,
+               sizeof(update_decoded)) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(update_decoded.plan.plan_kind == 3 &&
+           update_decoded.plan.scan_column_count == 1 &&
+           update_decoded.filter.present == 1 &&
+           update_decoded.assignment_count == 1);
+    assert(update_decoded.assignments[0].column.ordinal == 0 &&
+           update_decoded.assignments[0].column.type_code == 3 &&
+           update_decoded.assignments[0].value_kind ==
+               PRDB_OPTIMIZER_UPDATE_PARAMETER_VALUE &&
+           update_decoded.assignments[0].parameter_index == 2);
+    assert(prdb_sdk_optimizer_validate_executor_relation_v1(
+               &host, update_plan, update_plan_len, response,
+               sizeof(response), &response_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(prdb_sdk_optimizer_decode_update_plan_v1(
+               update_plan, update_plan_len - 1, &update_decoded,
+               sizeof(update_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    memcpy(malformed, update_plan, update_plan_len);
+    malformed[update_plan_len - 5] = 9; /* unsupported assignment kind */
+    assert(prdb_sdk_optimizer_decode_update_plan_v1(
+               malformed, update_plan_len, &update_decoded,
+               sizeof(update_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    memcpy(malformed, update_plan, update_plan_len);
+    malformed[update_plan_len - 1] = 1; /* NULL must have zero parameter index */
+    malformed[update_plan_len - 5] = PRDB_OPTIMIZER_UPDATE_NULL_VALUE;
+    assert(prdb_sdk_optimizer_decode_update_plan_v1(
+               malformed, update_plan_len, &update_decoded,
+               sizeof(update_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    assert(prdb_sdk_optimizer_decode_update_plan_v1(
+               update_plan, update_plan_len,
+               (prdb_sdk_optimizer_update_plan_v1 *)update_plan,
+               sizeof(update_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT);
 
     uint8_t delete_plan[512];
     uint32_t delete_plan_len = build_delete_filter_plan(
