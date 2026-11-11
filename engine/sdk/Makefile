@@ -123,7 +123,7 @@ NIX_STORE_QUERY ?= nix-store
 TCC_STORE_PATH ?= $(shell readlink -f "$$(command -v "$(firstword $(TCC))")" | sed -E 's#(/nix/store/[a-z0-9]{32}-[^/]+).*#\1#')
 SIGNING_SECRET_KEY ?=
 SIGNING_PUBLIC_KEY ?=
-RELEASE_BINARIES := prdb-client prdb-executor prdb-gateway prdb-optimizer prdb-packager prdb-sandbox-probe prdb-supervisor
+RELEASE_BINARIES := prdb-client prdb-executor prdb-gateway prdb-init prdb-landlock-run prdb-optimizer prdb-packager prdb-sandbox-probe prdb-supervisor
 
 .PHONY: all test
 

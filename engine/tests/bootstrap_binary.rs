@@ -1,0 +1,128 @@
+use prdb_engine::bootstrap::StorageInstance;
+use prdb_engine::client_credentials::read_client_credentials;
+use std::os::unix::fs::PermissionsExt;
+use std::process::Command;
+
+struct Fixture(std::path::PathBuf);
+
+impl Fixture {
+    fn new() -> Self {
+        let directory = std::env::temp_dir().join(format!(
+            "prdb-init-cli-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).expect("create fixture directory");
+        Self(directory)
+    }
+
+    fn instance_dir(&self) -> std::path::PathBuf {
+        self.0.join("instance")
+    }
+
+    fn credential_file(&self) -> std::path::PathBuf {
+        self.0.join("admin.credentials")
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn initialize_command(fixture: &Fixture, resume: bool) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_prdb-init"));
+    command
+        .arg("--instance-dir")
+        .arg(fixture.instance_dir())
+        .arg("--administrator")
+        .arg("first_admin")
+        .arg("--credential-file")
+        .arg(fixture.credential_file())
+        .arg("--expires-in-seconds")
+        .arg("86400");
+    if resume {
+        command.arg("--resume");
+    }
+    command.output().expect("run prdb-init")
+}
+
+#[test]
+fn init_help_lists_required_bootstrap_inputs_cleanly() {
+    let output = Command::new(env!("CARGO_BIN_EXE_prdb-init"))
+        .arg("--help")
+        .output()
+        .expect("run prdb-init help");
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).expect("UTF-8 help");
+    for option in [
+        "--instance-dir",
+        "--administrator",
+        "--credential-file",
+        "--expires-in-seconds",
+        "--resume",
+    ] {
+        assert!(help.contains(option), "missing {option} from help");
+    }
+    assert!(!help.contains('+'));
+}
+
+#[test]
+fn init_delivers_and_persists_one_time_credential_before_ready() {
+    let fixture = Fixture::new();
+    let output = initialize_command(&fixture, false);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("database is READY"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("token_secret"));
+    let metadata = std::fs::metadata(fixture.credential_file()).expect("credential metadata");
+    assert_eq!(metadata.permissions().mode() & 0o7777, 0o600);
+    let credentials = read_client_credentials(fixture.credential_file())
+        .expect("read saved bootstrap credential");
+    assert_ne!(credentials.token_id, [0; 16]);
+    drop(credentials);
+    drop(StorageInstance::open(fixture.instance_dir()).expect("open READY instance"));
+}
+
+#[test]
+fn init_resumes_interrupted_bootstrap_and_rotates_the_credential() {
+    let fixture = Fixture::new();
+    let session =
+        prdb_engine::bootstrap::initialize(fixture.instance_dir(), "first_admin", i64::MAX)
+            .expect("create interrupted bootstrap");
+    let original_token = session.token_id();
+    drop(session);
+
+    let output = initialize_command(&fixture, true);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let credentials = read_client_credentials(fixture.credential_file())
+        .expect("read replacement bootstrap credential");
+    assert_ne!(credentials.token_id, original_token);
+    drop(credentials);
+    drop(StorageInstance::open(fixture.instance_dir()).expect("open resumed READY instance"));
+}
+
+#[test]
+fn init_refuses_to_overwrite_credential_files_before_creating_database() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.credential_file(), b"existing").expect("write sentinel");
+    let output = initialize_command(&fixture, false);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("refusing to overwrite"));
+    assert!(!fixture.instance_dir().exists());
+    assert_eq!(
+        std::fs::read(fixture.credential_file()).expect("read sentinel"),
+        b"existing"
+    );
+}

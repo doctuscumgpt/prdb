@@ -16,6 +16,8 @@ ENGINE_BINARIES = (
     "prdb-client",
     "prdb-executor",
     "prdb-gateway",
+    "prdb-init",
+    "prdb-landlock-run",
     "prdb-optimizer",
     "prdb-packager",
     "prdb-sandbox-probe",

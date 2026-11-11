@@ -19,4 +19,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Real-file tests cover successful delivery and acknowledgement, unacknowledged disconnect, mismatched request ID, stale-socket cleanup, and READY publication only after delivery.
 - Contract updates: [catalog lifecycle](../../specs/catalog-lifecycle.md), [IPC protocol](../../specs/ipc-protocol.md), and [catalog lifecycle plan](../catalog-lifecycle/README.md).
 - Verification: prescribed Nix-shell workspace build, formatting check, Clippy with warnings denied, and all 237 workspace integration tests passed.
-- Remaining: production supervisor and operator-facing setup client integration, OS-account deployment policy, and process/power-loss fault injection remain open. Same-UID access to this local socket is not itself a database identity; possession of the issued token authenticates database use.
+- Remaining at this checkpoint: production service integration, OS-account deployment policy, and process/power-loss fault injection. Same-UID access to this local socket is not itself a database identity; possession of the issued token authenticates database use. The operator CLI is recorded in the later CL-2 entry below.
+
+## CL-2 operator setup client — verified
+
+- Added `prdb-init` to initialize a new instance or resume an interrupted bootstrap. It connects to the owner-only setup socket, validates and receives the one-time secret, atomically stores the canonical client credential file with mode 0600, acknowledges delivery, then waits for the bootstrap server to publish READY.
+- The CLI rejects existing credential paths before changing the instance and never prints the token. `--resume` rotates the unacknowledged token; operators remove any credential left by an unconfirmed prior attempt before resuming.
+- Verification: binary integration tests cover first initialization, READY reopen, interrupted setup/token rotation, private credential readability, and no-overwrite behavior. The locked workspace build, formatting, warning-denied Clippy, workspace tests, and systemd unit verification passed. The release profile now includes and validates `prdb-init`.
+- Remaining: live service unit activation still depends on operator-supplied runtime allowlists/profile and real service account provisioning; backup/offline upgrade and recovery workflows remain open.

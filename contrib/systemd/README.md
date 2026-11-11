@@ -14,16 +14,17 @@ limitations.
 
 ## Per-login user service
 
-Install the supervisor, gateway, executor, optimizer, `prdb-landlock-run`, and
-`with_delegated_cgroup.sh` executables under `~/.local/libexec/prdb/`, and copy
-both unit files to `~/.config/systemd/user/`. For a release build from this
-checkout:
+Install the supervisor, gateway, executor, optimizer, `prdb-init`,
+`prdb-landlock-run`, and `with_delegated_cgroup.sh` executables under
+`~/.local/libexec/prdb/`, and copy both unit files to
+`~/.config/systemd/user/`. For a release build from this checkout:
 
 ```sh
 install -Dm755 target/release/prdb-supervisor ~/.local/libexec/prdb/prdb-supervisor
 install -Dm755 target/release/prdb-gateway ~/.local/libexec/prdb/prdb-gateway
 install -Dm755 target/release/prdb-executor ~/.local/libexec/prdb/prdb-executor
 install -Dm755 target/release/prdb-optimizer ~/.local/libexec/prdb/prdb-optimizer
+install -Dm755 target/release/prdb-init ~/.local/libexec/prdb/prdb-init
 install -Dm755 target/release/prdb-landlock-run ~/.local/libexec/prdb/prdb-landlock-run
 install -Dm755 engine/tools/with_delegated_cgroup.sh ~/.local/libexec/prdb/with_delegated_cgroup.sh
 install -Dm644 contrib/systemd/user/prdb-supervisor.service ~/.config/systemd/user/prdb-supervisor.service
@@ -33,6 +34,23 @@ install -Dm644 contrib/systemd/user/prdb-gateway.service ~/.config/systemd/user/
 Create `~/.config/prdb/` and put `supervisor.env` and `gateway.env` there,
 readable only by the login user. Example values (replace the binary profile
 paths and IDs for the host):
+
+Create and initialize the instance as the same login user that will own the
+user service. The setup command writes the first administrator token only to
+the selected mode-0600 credential file; it never prints the secret.
+
+```sh
+install -dm700 ~/.local/state/prdb ~/.config/prdb
+~/.local/libexec/prdb/prdb-init \
+  --instance-dir ~/.local/state/prdb/instance \
+  --administrator first_admin \
+  --credential-file ~/.config/prdb/admin.credentials \
+  --expires-in-seconds 2592000
+```
+
+If a prior initialization was interrupted, remove any credential file from
+that incomplete attempt and run the same command with `--resume`; resume
+rotates the unacknowledged bootstrap token.
 
 ```ini
 # ~/.config/prdb/supervisor.env
@@ -84,7 +102,7 @@ owned by that account and its state under the user's systemd state directory.
 
 ## System manager installation
 
-Install all five executables root-owned under `/usr/libexec/prdb/`, then create
+Install all six executables root-owned under `/usr/libexec/prdb/`, then create
 a dedicated `prdb-gateway` system group plus `prdb` and `prdb-gateway` system
 accounts. On systems with `groupadd` and `useradd`, the account setup is:
 
@@ -100,6 +118,7 @@ Install executables and units, then create `/etc/prdb/supervisor.env` and
 ```sh
 install -d -o root -g root -m 0755 /usr/libexec/prdb /etc/prdb
 install -m 0755 target/release/prdb-supervisor target/release/prdb-gateway target/release/prdb-executor target/release/prdb-optimizer /usr/libexec/prdb/
+install -m 0755 target/release/prdb-init target/release/prdb-landlock-run /usr/libexec/prdb/
 install -m 0755 engine/tools/with_delegated_cgroup.sh /usr/libexec/prdb/
 install -m 0644 contrib/systemd/system/prdb-supervisor.service contrib/systemd/system/prdb-gateway.service /etc/systemd/system/
 ```
@@ -109,6 +128,23 @@ The supervisor runs as `prdb`; its database directory is mode 0700. The
 gateway runs as `prdb-gateway`, and can reach only the 0660 supervisor socket
 through the 0750 runtime directory. The socket inherits the supervisor's
 primary group (`prdb-gateway`).
+
+Create the state directory and initialize the database as its service owner
+before starting systemd. The one-time admin credential is written with mode
+0600 under the database service account; arrange its delivery to the intended
+database administrator through your operator secret-distribution process.
+
+```sh
+install -d -o prdb -g prdb-gateway -m 0700 /var/lib/prdb
+runuser -u prdb -- /usr/libexec/prdb/prdb-init \
+  --instance-dir /var/lib/prdb/instance \
+  --administrator first_admin \
+  --credential-file /var/lib/prdb/admin.credentials \
+  --expires-in-seconds 2592000
+```
+
+For an interrupted attempt, remove its credential file as the service owner,
+then repeat with `--resume` so a replacement token is issued.
 
 Configure `PRDB_SUPERVISOR_ARGS` in `/etc/prdb/supervisor.env` with the same
 required supervisor options as above, using these paths and values:

@@ -1,5 +1,12 @@
 # Toolchain Progress
 
+## TC-5: package operational setup binaries — verified
+
+- Red evidence: the existing release staging tree failed the expanded validator because `bin/prdb-init` was missing.
+- Implementation: release staging and its validator now include `prdb-init` and `prdb-landlock-run` with the existing engine binaries, so service installation artifacts contain the bootstrap and user-service confinement tools.
+- Verification: `make -f engine/sdk/Makefile release-profile-package` built and validated nine engine binaries plus all three query fixtures on the pinned NixOS/glibc 2.42 profile. The package contains both new binaries; profile and archive SHA-256 checks passed.
+- Remaining: regenerate/package/sign the full release archive with the two added binaries; signing-key custody, other runtime profiles, and confined compatibility acceptance remain open.
+
 ## TC-5: signed release-profile archive workflow — implemented
 
 - Contract: a normalized release archive must be independently checkable by checksum and verifiable against an operator-supplied public key; no release signing secret belongs in the repository.
