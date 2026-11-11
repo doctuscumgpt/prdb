@@ -6,7 +6,7 @@ After=prdb-supervisor.service
 [Service]
 Type=simple
 EnvironmentFile=%h/.config/prdb/gateway.env
-ExecStart=%h/.local/libexec/prdb/prdb-gateway $PRDB_GATEWAY_ARGS
+ExecStart=%h/.local/libexec/prdb/prdb-landlock-run --traverse-env PRDB_GATEWAY_LANDLOCK_TRAVERSE_PATHS --read-execute %h/.local/libexec/prdb/prdb-gateway --read-execute-env PRDB_GATEWAY_LANDLOCK_PATHS --read %t/prdb -- %h/.local/libexec/prdb/prdb-gateway $PRDB_GATEWAY_ARGS
 Restart=on-failure
 RestartSec=2s
 UMask=0077

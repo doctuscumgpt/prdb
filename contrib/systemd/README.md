@@ -14,7 +14,7 @@ limitations.
 
 ## Per-login user service
 
-Install the supervisor, gateway, executor, optimizer, and
+Install the supervisor, gateway, executor, optimizer, `prdb-landlock-run`, and
 `with_delegated_cgroup.sh` executables under `~/.local/libexec/prdb/`, and copy
 both unit files to `~/.config/systemd/user/`. For a release build from this
 checkout:
@@ -24,6 +24,7 @@ install -Dm755 target/release/prdb-supervisor ~/.local/libexec/prdb/prdb-supervi
 install -Dm755 target/release/prdb-gateway ~/.local/libexec/prdb/prdb-gateway
 install -Dm755 target/release/prdb-executor ~/.local/libexec/prdb/prdb-executor
 install -Dm755 target/release/prdb-optimizer ~/.local/libexec/prdb/prdb-optimizer
+install -Dm755 target/release/prdb-landlock-run ~/.local/libexec/prdb/prdb-landlock-run
 install -Dm755 engine/tools/with_delegated_cgroup.sh ~/.local/libexec/prdb/with_delegated_cgroup.sh
 install -Dm644 contrib/systemd/user/prdb-supervisor.service ~/.config/systemd/user/prdb-supervisor.service
 install -Dm644 contrib/systemd/user/prdb-gateway.service ~/.config/systemd/user/prdb-gateway.service
@@ -36,6 +37,8 @@ paths and IDs for the host):
 ```ini
 # ~/.config/prdb/supervisor.env
 PRDB_SUPERVISOR_ARGS=--instance-dir\ /home/USER/.local/state/prdb/instance\ --service-socket\ /run/user/1000/prdb/supervisor.sock\ --gateway-uid\ 1000\ --cgroup-parent\ systemd\ --executor\ /home/USER/.local/libexec/prdb/prdb-executor\ --optimizer\ /home/USER/.local/libexec/prdb/prdb-optimizer\ --scratch-parent\ /home/USER/.local/state/prdb/scratch\ --runtime-read-execute\ /usr/lib64/ld-linux-x86-64.so.2\ --runtime-read-execute\ /usr/lib64/libc.so.6\ --runtime-profile\ nixos-x86_64-glibc-2.42\ --cpu-baseline\ x86_64-v1\ --sdk-release\ 1\ --retention-seconds\ 86400\ --max-rows\ 100000\ --max-bytes\ 67108864\ --cpu-quota-us\ 100000\ --cpu-period-us\ 100000\ --memory-max-bytes\ 536870912\ --max-processes\ 32
+PRDB_LANDLOCK_TRAVERSE_PATHS=/home\ /run\ /run/user\ /run/user/1000\ /sys\ /sys/fs\ /sys/fs/cgroup\ /nix\ /nix/store
+PRDB_SUPERVISOR_LANDLOCK_PATHS=/home/USER/.local/libexec/prdb/prdb-executor\ /home/USER/.local/libexec/prdb/prdb-optimizer\ /nix/store/HASH-glibc\ /nix/store/HASH-gcc-lib
 ```
 
 `EnvironmentFile` does not process shell quoting; systemd expands the unquoted
@@ -48,7 +51,23 @@ socket.
 ```ini
 # ~/.config/prdb/gateway.env
 PRDB_GATEWAY_ARGS=--bind\ 127.0.0.1:8765\ --service-socket\ /run/user/1000/prdb/supervisor.sock\ --service-uid\ 1000
+PRDB_GATEWAY_LANDLOCK_TRAVERSE_PATHS=/home\ /run\ /run/user\ /run/user/1000\ /nix\ /nix/store
+PRDB_GATEWAY_LANDLOCK_PATHS=/nix/store/HASH-glibc\ /nix/store/HASH-gcc-lib
 ```
+
+The user units apply separate Landlock policies before starting each service.
+The gateway can read its executable/runtime files and the supervisor socket
+directory. The supervisor can write its instance, scratch, and runtime
+directories, `/dev/null`, and the delegated cgroup subtree; its additional
+allowlist covers the executor, optimizer, and runtime libraries. Child workers
+receive their own narrower Landlock layer before untrusted query code starts.
+`prdb-landlock-run` fails closed unless Landlock ABI 3 or newer is available.
+Keep the two `*_LANDLOCK_PATHS` lists minimal and machine-specific. On NixOS,
+use the store output directories containing the needed loader and libraries
+(for example, find them with `ldd` and `readlink -f`). Each traversal list
+grants directory traversal but not file-content reads for path ancestors; the
+gateway list deliberately omits cgroup paths. All lists are whitespace-
+separated, so configured paths must not contain whitespace.
 
 Enable and start the pair:
 

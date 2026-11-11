@@ -24,8 +24,35 @@ impl LandlockPolicy {
         self.add_path(path.as_ref(), LANDLOCK_READ_ACCESS)
     }
 
+    /// Grant directory traversal without granting access to file contents.
+    /// This is useful for traversing ancestors of separately allowlisted
+    /// files and directories.
+    pub fn allow_path_traversal(&mut self, path: impl AsRef<Path>) -> io::Result<&mut Self> {
+        let path = path.as_ref();
+        if !path.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Landlock traversal rules require a directory",
+            ));
+        }
+        self.add_path(path, LANDLOCK_READ_DIR)
+    }
+
     pub fn allow_read_execute(&mut self, path: impl AsRef<Path>) -> io::Result<&mut Self> {
         self.add_path(path.as_ref(), LANDLOCK_READ_ACCESS | LANDLOCK_EXECUTE)
+    }
+
+    /// Grant read and write access to one existing non-directory path, such as
+    /// a regular file or `/dev/null`.
+    pub fn allow_read_write_file(&mut self, path: impl AsRef<Path>) -> io::Result<&mut Self> {
+        let path = path.as_ref();
+        if path.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "read-write Landlock file rules do not accept directories",
+            ));
+        }
+        self.add_path(path, LANDLOCK_READ_ACCESS | LANDLOCK_WRITE_ACCESS)
     }
 
     /// Grant read and write access, including creation, removal, and truncate
@@ -99,6 +126,25 @@ impl LandlockRuleset {
             add_landlock_path_rule(fd.as_raw_fd(), path, *access)?;
         }
         Ok(Self { fd })
+    }
+
+    /// Restrict the current thread before it execs a service process. The
+    /// resulting policy is inherited by that process and its descendants.
+    pub fn restrict_current_thread(&self) -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+
+        // SAFETY: PR_SET_NO_NEW_PRIVS takes scalar arguments and the ruleset
+        // descriptor remains owned by `self` for the syscall below.
+        if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `self.fd` is a live Landlock ruleset descriptor created by
+        // `LandlockRuleset::new`; flags are zero as required by ABI v1-3.
+        if unsafe { libc::syscall(libc::SYS_landlock_restrict_self, self.fd.as_raw_fd(), 0u32) } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     /// Install the ruleset after earlier pre-exec hooks have placed the child

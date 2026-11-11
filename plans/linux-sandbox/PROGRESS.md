@@ -15,6 +15,12 @@
 - Verification: `systemd-analyze verify` accepted both unit pairs with temporary executable placeholders; locked workspace build, formatting, warning-denied Clippy, and workspace tests passed (138 library unit tests, 4 cgroup-dependent tests ignored by default, all active integration/doc tests passed). Focused tests cover delegated cgroup path validation and socket permission modes.
 - Scope: deployment instructions require a READY instance plus host-specific runtime and compatibility settings. Live activation of the installed pair awaits a prepared deployment instance; confined runtime behavior was already verified in the delegated user service above.
 
+## user-service Landlock policies — in progress
+
+- Added `prdb-landlock-run`, a fail-closed launcher using the engine Landlock ruleset. User supervisor and gateway units apply separate allowlists before `exec`.
+- The supervisor policy allows instance/scratch/runtime writes and its delegated cgroup subtree; the gateway policy allows its own executable/runtime files and the supervisor socket directory. Worker launch adds its existing narrower policy.
+- Verification: warning-denied Clippy and full locked workspace tests passed. Transient systemd user services successfully read an allowlisted file and received `Permission denied` for it when omitted; a separate run exercised the environment-backed path lists used by the units. Full installed-unit startup still needs a READY instance fixture.
+
 ## SB-1: fail-closed host capability preflight
 
 - Behavior: `linux_sandbox::probe` reports user-namespace configuration, Landlock ABI, seccomp `KILL_PROCESS`, and cgroup v2 availability/delegation. `require_supported` lists missing profile requirements; capability reporting does not launch a worker or claim confinement.
