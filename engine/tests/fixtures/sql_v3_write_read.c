@@ -11,6 +11,7 @@
 #include "prdb_sdk_sql_exec_v17.h"
 #include "prdb_sdk_sql_exec_v18.h"
 #include "prdb_sdk_sql_exec_v16.h"
+#include "prdb_sdk_sql_exec_v19.h"
 #include "prdb_sdk_sql_result_v1.h"
 #include "prdb_sdk_executor_v1.h"
 #include "prdb_sdk_optimizer_plan_v1.h"
@@ -198,6 +199,15 @@ static int32_t write_composite_joined_row(
     if (status != PRDB_SDK_SQL_RESULT_OK) return 1;
     ++context->row_count;
     return 0;
+}
+
+static int32_t write_composite_joined_row_v19(
+    void *opaque, const prdb_sdk_value_v1 *projected_values,
+    uint32_t projection_count,
+    const prdb_sdk_select_binding_v19 *binding) {
+    if (binding == NULL) return 1;
+    return write_composite_joined_row(opaque, projected_values,
+                                      projection_count, &binding->base);
 }
 
 static int32_t write_grouped_min(void *opaque,
@@ -431,11 +441,9 @@ static int32_t run_write_read_fixture(
         "SELECT records.id, linked_records.id FROM records INNER JOIN "
         "linked_records ON records.id = linked_records.id LIMIT 1";
     static const uint8_t select_composite_join_sql[] =
-        "SELECT grouped_records.left_key, grouped_records.right_key, "
-        "linked_records.id, linked_records.match_key FROM grouped_records "
-        "INNER JOIN linked_records ON grouped_records.left_key = "
-        "linked_records.id AND grouped_records.right_key = "
-        "linked_records.match_key LIMIT 2";
+        "SELECT g.left_key, g.right_key, l.id, l.match_key "
+        "FROM grouped_records AS g INNER JOIN linked_records AS l ON "
+        "g.left_key = l.id AND g.right_key = l.match_key LIMIT 2";
     static const uint8_t delete_sql[] = "DELETE FROM records WHERE id = $1";
     static const uint8_t multi_insert_sql[] =
         "INSERT INTO records VALUES ($1), ($2)";
@@ -1189,7 +1197,7 @@ static int32_t run_write_read_fixture(
     joined_results.output_len = 0;
     joined_results.left_columns = composite_join_left_executor_columns;
     joined_results.right_columns = composite_join_right_executor_columns;
-    status = prdb_sdk_sql_execute_inner_join_v16(
+    status = prdb_sdk_sql_execute_inner_join_v19(
         host, schema, sizeof(schema) - 1, select_composite_join_sql,
         sizeof(select_composite_join_sql) - 1, 16, sizeof(batch_response),
         composite_join_left_planner_response,
@@ -1207,7 +1215,7 @@ static int32_t run_write_read_fixture(
         composite_join_left_rows, 128, composite_join_right_rows, 128,
         composite_join_materialized_bytes,
         sizeof(composite_join_materialized_bytes),
-        write_composite_joined_row, &joined_results);
+        write_composite_joined_row_v19, &joined_results);
     if (status != PRDB_SDK_SQL_EXEC_OK || joined_results.row_count != 2) {
         static const uint8_t message[] = "fixture-error-composite-inner-join";
         return report_failure(host, message, sizeof(message) - 1);
