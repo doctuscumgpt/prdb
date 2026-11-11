@@ -1284,6 +1284,76 @@ static int plan_spans_equal(
     return 1;
 }
 
+int32_t prdb_sdk_optimizer_match_ordered_select_plan_v1(
+    const prdb_sdk_select_v3 *statement,
+    const prdb_sdk_select_binding_v3 *binding,
+    const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *plan_payload, uint64_t plan_payload_len) {
+    prdb_sdk_optimizer_ordered_select_plan_v1 plan = {0};
+    const prdb_sdk_select_v2 *base;
+    const uint8_t *sql;
+    uint64_t sql_len;
+    int32_t status;
+    if (statement == NULL || binding == NULL || schema == NULL ||
+        plan_payload == NULL || schema_len == 0 || schema_len > 63 ||
+        statement->struct_size != sizeof(*statement) ||
+        statement->abi_version != PRDB_SDK_SQL_ABI_V3_VERSION ||
+        statement->base.struct_size != sizeof(statement->base) ||
+        statement->base.abi_version != PRDB_SDK_SQL_ABI_V2_VERSION ||
+        statement->base.sql == NULL ||
+        statement->base.sql_len > PRDB_SDK_SQL_MAX_QUERY_BYTES ||
+        statement->base.projection_count == 0 ||
+        statement->base.projection_count > PRDB_SDK_SQL_MAX_PROJECTION_COLUMNS ||
+        statement->base.projection_star != 0 ||
+        statement->base.predicate_count != 0 ||
+        statement->base.has_limit > 1 || statement->has_order_by != 1 ||
+        statement->order_descending > 1 ||
+        binding->struct_size != sizeof(*binding) ||
+        binding->abi_version != PRDB_SDK_SQL_ABI_V3_VERSION ||
+        binding->base.struct_size != sizeof(binding->base) ||
+        binding->base.abi_version != PRDB_SDK_SQL_ABI_V2_VERSION ||
+        binding->base.projection_count != statement->base.projection_count ||
+        binding->base.projection_star != 0)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
+
+    status = prdb_sdk_optimizer_decode_ordered_select_plan_v1(
+        plan_payload, plan_payload_len, &plan, sizeof(plan));
+    if (status != PRDB_SDK_OPTIMIZER_PLAN_OK) return status;
+    base = &statement->base;
+    sql = base->sql;
+    sql_len = base->sql_len;
+    if (base->relation.offset > sql_len ||
+        base->relation.length > sql_len - base->relation.offset ||
+        plan.plan.relation_name_len != base->relation.length ||
+        schema_len != plan.plan.schema_name_len ||
+        memcmp(schema, plan.plan.schema_name, schema_len) != 0 ||
+        plan.plan.projection_count != base->projection_count ||
+        plan.plan.has_limit != base->has_limit ||
+        (base->has_limit != 0 && plan.plan.limit != base->limit) ||
+        plan.descending != statement->order_descending ||
+        binding->has_order_by != 1 ||
+        !plan_column_matches_bound(&plan.order_key,
+                                   &binding->order_by_column)) {
+        return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+    }
+    for (uint32_t index = 0; index < base->relation.length; ++index) {
+        if (plan_ascii_fold(plan.plan.relation_name[index]) !=
+            plan_ascii_fold(sql[base->relation.offset + index])) {
+            return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+        }
+    }
+    for (uint32_t index = 0; index < base->projection_count; ++index) {
+        if (binding->base.projection_ordinals[index] !=
+                plan.plan.projections[index].ordinal ||
+            base->projection[index].offset > sql_len ||
+            base->projection[index].length >
+                sql_len - base->projection[index].offset) {
+            return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+        }
+    }
+    return PRDB_SDK_OPTIMIZER_PLAN_OK;
+}
+
 int32_t prdb_sdk_optimizer_match_composite_group_count_plan_v1(
     const prdb_sdk_select_v13 *statement,
     const prdb_sdk_select_binding_v13 *binding,

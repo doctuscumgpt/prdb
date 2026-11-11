@@ -1,11 +1,11 @@
 # SQL Library Progress
 
-## SQL-8: bounded ordered SELECT optimizer plan decoding — partial
+## SQL-8: bounded ordered SELECT optimizer path — partial
 
 - Contract: an explicit single-column `ORDER BY` key is resolved through the authorized relation description. Its source column may remain hidden from the SELECT projection; LIMIT is applied after stable ordering by the existing bounded SQL v3 runner.
-- Implementation: ordered SELECT statement 7 is decoded, bound to stable column IDs, and dispatched through the optimizer submission process. The canonical kind-7 plan includes the sorted union of projected columns and the hidden order key, direction, and optional LIMIT. Rust optimizer responses and the maintained C SDK independently validate the plan encoding.
-- Evidence: focused Rust request, binding, plan round-trip/rejection, and optimizer-process dispatch tests passed. The TinyCC SDK suite passed with a hand-built kind-7 payload fixture that checks hidden order-key decoding and rejects a mismatched key.
-- Remaining: implement the maintained C SDK ordered-request encoder, AST matching and sorted execution, then confined query acceptance. The plan codecs alone do not verify SQL execution.
+- Implementation: ordered SELECT statement 7 is decoded, bound to stable column IDs, and dispatched through the optimizer submission process. The canonical kind-7 plan includes the sorted union of projected columns and the hidden order key, direction, and optional LIMIT. Rust optimizer responses and the maintained C SDK independently validate the plan. The SDK encodes SQL v3 ordered SELECT ASTs and matches plans against their parsed relation, projections, direction, order binding, and LIMIT.
+- Evidence: focused Rust request, binding, plan round-trip/rejection, and optimizer-process dispatch tests passed. The TinyCC SDK suite passed exact ordered request-byte, hidden order-key decoding, AST match, and mutation rejection checks.
+- Remaining: execute matched ordered plans with stable bounded sorting, then add confined sorted query acceptance. The optimizer codecs and matcher alone do not verify SQL execution.
 
 ## SQL-7: filtered aliased INNER JOIN runner and mandatory cgroup acceptance — implemented
 

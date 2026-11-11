@@ -184,6 +184,12 @@ int32_t prdb_sdk_optimizer_decode_ordered_select_plan_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_ordered_select_plan_v1 *out, uint32_t out_capacity);
 
+int32_t prdb_sdk_optimizer_match_ordered_select_plan_v1(
+    const prdb_sdk_select_v3 *statement,
+    const prdb_sdk_select_binding_v3 *binding,
+    const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *plan_payload, uint64_t plan_payload_len);
+
 /* Decode all plan-v1 pipelines, independently validating a Filter node's
  * bounded prefix tree, scanned column references, scalar compatibility, and
  * Boolean root. `filter_out` is written only after the whole plan succeeds. */

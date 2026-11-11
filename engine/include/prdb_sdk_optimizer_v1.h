@@ -6,6 +6,7 @@
 #include "prdb_sdk_sql_dml_v1.h"
 #include "prdb_sdk_sql_v4.h"
 #include "prdb_sdk_sql_v2.h"
+#include "prdb_sdk_sql_v3.h"
 #include "prdb_sdk_sql_v19.h"
 #include "prdb_sdk_sql_v13.h"
 
@@ -49,6 +50,12 @@ typedef struct prdb_sdk_optimizer_response_v1 {
  * v1. This compatibility form supports no WHERE tree. */
 int32_t prdb_sdk_optimizer_encode_select_v1(
     const prdb_sdk_select_v2 *statement,
+    const uint8_t *schema, uint32_t schema_len,
+    uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
+
+/* Encode the bounded unfiltered SQL v3 SELECT with one source-column ORDER BY. */
+int32_t prdb_sdk_optimizer_encode_ordered_select_v1(
+    const prdb_sdk_select_v3 *statement,
     const uint8_t *schema, uint32_t schema_len,
     uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
 

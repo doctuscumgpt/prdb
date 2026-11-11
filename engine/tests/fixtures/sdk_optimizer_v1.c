@@ -85,12 +85,18 @@ int main(void) {
         "SELECT category, COUNT(*) FROM items GROUP BY category LIMIT 5;";
     static const uint8_t composite_group_count_sql[] =
         "SELECT active, id, COUNT(*) FROM items GROUP BY active, id LIMIT 5;";
+    static const uint8_t ordered_select_sql[] =
+        "SELECT id, label FROM items ORDER BY label DESC LIMIT 5;";
     static const uint8_t expected_group_count_request[] = {
         0, 1, 5, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'i', 't', 'e', 'm',
         's', 8, 'c', 'a', 't', 'e', 'g', 'o', 'r', 'y', 1, 0, 0, 0, 5};
     static const uint8_t expected_composite_group_count_request[] = {
         0, 1, 6, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'i', 't', 'e', 'm',
         's', 2, 6, 'a', 'c', 't', 'i', 'v', 'e', 2, 'i', 'd', 1, 0, 0, 0, 5};
+    static const uint8_t expected_ordered_select_request[] = {
+        0, 1, 7, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'i', 't', 'e', 'm',
+        's', 0, 2, 2, 'i', 'd', 5, 'l', 'a', 'b', 'e', 'l', 5, 'l', 'a',
+        'b', 'e', 'l', 1, 1, 0, 0, 0, 5};
     static const uint8_t expected_join_request[] = {
         0, 1, 4, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'l', 'e', 'f', 't',
         's', 6, 'r', 'i', 'g', 'h', 't', 's', 0, 2, 0, 5, 'v', 'a', 'l', 'u',
@@ -118,6 +124,7 @@ int main(void) {
     prdb_sdk_select_v19 join_statement = {0};
     prdb_sdk_select_v4 group_count_statement = {0};
     prdb_sdk_select_v13 composite_group_count_statement = {0};
+    prdb_sdk_select_v3 ordered_select_statement = {0};
 
     assert(prdb_sdk_sql_parse_select_v2(
                sql, sizeof(sql) - 1, &statement, sizeof(statement),
@@ -128,6 +135,24 @@ int main(void) {
            PRDB_SDK_OPTIMIZER_ENCODE_OK);
     assert(encoded_len == sizeof(expected_encoded));
     assert(memcmp(encoded, expected_encoded, sizeof(expected_encoded)) == 0);
+
+    assert(prdb_sdk_sql_parse_select_v3(
+               ordered_select_sql, sizeof(ordered_select_sql) - 1,
+               &ordered_select_statement, sizeof(ordered_select_statement),
+               &error_offset) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_optimizer_encode_ordered_select_v1(
+               &ordered_select_statement, schema, sizeof(schema) - 1,
+               encoded, sizeof(encoded), &encoded_len) ==
+           PRDB_SDK_OPTIMIZER_ENCODE_OK);
+    assert(encoded_len == sizeof(expected_ordered_select_request));
+    assert(memcmp(encoded, expected_ordered_select_request,
+                  sizeof(expected_ordered_select_request)) == 0);
+    ordered_select_statement.order_descending = 2;
+    assert(prdb_sdk_optimizer_encode_ordered_select_v1(
+               &ordered_select_statement, schema, sizeof(schema) - 1,
+               encoded, sizeof(encoded), &encoded_len) ==
+           PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT);
+    ordered_select_statement.order_descending = 1;
 
     assert(prdb_sdk_sql_parse_select_v19(
                join_sql, sizeof(join_sql) - 1, &join_statement,

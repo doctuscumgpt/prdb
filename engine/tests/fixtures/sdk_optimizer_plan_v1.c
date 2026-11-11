@@ -198,19 +198,19 @@ static uint32_t build_ordered_select_plan(uint8_t *bytes,
                                                          identifier, 4);
     offset += PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES;
     put_u16(bytes, &offset, 2);
-    column = put_column(bytes, &offset, 1, 0);
+    column = put_column(bytes, &offset, 3, 0);
     bytes[column] = 4;
     set_column_ordinal(bytes, column, 0);
-    column = put_column(bytes, &offset, 1, 1);
+    column = put_column(bytes, &offset, 6, 1);
     bytes[column] = 5;
     set_column_ordinal(bytes, column, 1);
     put_u16(bytes, &offset, 1);
-    column = put_column(bytes, &offset, 1, 0);
+    column = put_column(bytes, &offset, 3, 0);
     bytes[column] = 4;
     set_column_ordinal(bytes, column, 0);
     bytes[offset++] = 9;
     *order_key_id_offset = offset;
-    column = put_column(bytes, &offset, 1, 1);
+    column = put_column(bytes, &offset, 6, 1);
     bytes[column] = 5;
     set_column_ordinal(bytes, column, 1);
     bytes[offset++] = 1;
@@ -793,6 +793,9 @@ int main(void) {
     static prdb_sdk_optimizer_composite_group_count_plan_v1
         composite_group_count_decoded;
     static prdb_sdk_optimizer_ordered_select_plan_v1 ordered_select_decoded;
+    static prdb_sdk_select_v3 ordered_select_statement;
+    static prdb_sdk_select_binding_v3 ordered_select_binding;
+    static prdb_sdk_sql_column_shape_v2 ordered_select_columns[2];
     static prdb_sdk_select_v19 join_statement;
     static prdb_sdk_select_binding_v19 join_binding;
     static prdb_sdk_select_v4 group_count_statement;
@@ -814,6 +817,32 @@ int main(void) {
            ordered_select_decoded.descending == 1 &&
            ordered_select_decoded.plan.has_limit == 1 &&
            ordered_select_decoded.plan.limit == 5);
+    static const uint8_t ordered_select_sql[] =
+        "SELECT id FROM items ORDER BY label DESC LIMIT 5";
+    assert(prdb_sdk_sql_parse_select_v3(
+               ordered_select_sql, sizeof(ordered_select_sql) - 1,
+               &ordered_select_statement, sizeof(ordered_select_statement),
+               NULL) == PRDB_SDK_SQL_OK);
+    ordered_select_columns[0] = (prdb_sdk_sql_column_shape_v2){
+        (const uint8_t *)"id", 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0};
+    ordered_select_columns[1] = (prdb_sdk_sql_column_shape_v2){
+        (const uint8_t *)"label", 5, 1, PRDB_SDK_VALUE_TYPE_TEXT, 0, 0};
+    assert(prdb_sdk_sql_bind_select_v3(
+               &ordered_select_statement, (const uint8_t *)"items", 5,
+               ordered_select_columns, 2, &ordered_select_binding,
+               sizeof(ordered_select_binding)) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_optimizer_match_ordered_select_plan_v1(
+               &ordered_select_statement, &ordered_select_binding,
+               (const uint8_t *)"public", 6, ordered_select_payload,
+               ordered_select_payload_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    ordered_select_statement.order_descending = 0;
+    assert(prdb_sdk_optimizer_match_ordered_select_plan_v1(
+               &ordered_select_statement, &ordered_select_binding,
+               (const uint8_t *)"public", 6, ordered_select_payload,
+               ordered_select_payload_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
+    ordered_select_statement.order_descending = 1;
     memcpy(ordered_select_malformed, ordered_select_payload,
            ordered_select_payload_len);
     ordered_select_malformed[ordered_select_order_key_offset] = 9;
