@@ -1163,6 +1163,30 @@ pub fn decode_optimizer_plan_header_record(payload: &[u8]) -> Option<(u16, u8, u
     Some((u16::from_be_bytes(payload[0..2].try_into().ok()?), payload[2], payload[3]))
 }
 
+pub const OPTIMIZER_PLAN_COLUMN_RECORD_COLUMN_ID_OFFSET: u32 = 0;
+pub const OPTIMIZER_PLAN_COLUMN_RECORD_ORDINAL_OFFSET: u32 = 16;
+pub const OPTIMIZER_PLAN_COLUMN_RECORD_TYPE_CODE_OFFSET: u32 = 20;
+pub const OPTIMIZER_PLAN_COLUMN_RECORD_TYPE_PARAMETERS_OFFSET: u32 = 21;
+pub const OPTIMIZER_PLAN_COLUMN_RECORD_NULLABLE_OFFSET: u32 = 25;
+pub const OPTIMIZER_PLAN_COLUMN_RECORD_HEADER_BYTES: u32 = 26;
+pub fn encode_optimizer_plan_column_record(column_id: [u8; 16], ordinal: u32, type_code: u8, type_parameters: [u8; 4], nullable: u8) -> [u8; 26] {
+    let mut payload = [0u8; 26];
+    payload[0..16].copy_from_slice(&column_id);
+    payload[16..20].copy_from_slice(&ordinal.to_be_bytes());
+    payload[20] = type_code;
+    payload[21..25].copy_from_slice(&type_parameters);
+    payload[25] = nullable;
+    payload
+}
+
+#[allow(clippy::type_complexity)]
+pub fn decode_optimizer_plan_column_record(payload: &[u8]) -> Option<([u8; 16], u32, u8, [u8; 4], u8)> {
+    if payload.len() != 26 {
+        return None;
+    }
+    Some((payload[0..16].try_into().ok()?, u32::from_be_bytes(payload[16..20].try_into().ok()?), payload[20], payload[21..25].try_into().ok()?, payload[25]))
+}
+
 pub const CLIENT_FRAME_HEADER_RECORD_MAGIC_OFFSET: u32 = 0;
 pub const CLIENT_FRAME_HEADER_RECORD_MAJOR_VERSION_OFFSET: u32 = 4;
 pub const CLIENT_FRAME_HEADER_RECORD_MINOR_VERSION_OFFSET: u32 = 6;

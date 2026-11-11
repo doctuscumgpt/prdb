@@ -138,15 +138,12 @@ static int valid_type(uint8_t type_code, const uint8_t parameters[4]) {
 static int read_column(plan_reader *reader,
                        prdb_sdk_optimizer_plan_column_v1 *column) {
     const uint8_t *bytes;
-    if (!take(reader, 16, &bytes)) return 0;
-    memcpy(column->column_id, bytes, 16);
-    if (all_zero(column->column_id, 16) || !read_u32(reader, &column->ordinal) ||
-        !read_u8(reader, &column->type_code) ||
-        !take(reader, 4, &bytes)) {
-        return 0;
-    }
-    memcpy(column->type_parameters, bytes, 4);
-    if (!read_u8(reader, &column->nullable) || column->nullable > 1 ||
+    if (!take(reader, PRDB_OPTIMIZER_PLAN_COLUMN_RECORD_HEADER_BYTES, &bytes) ||
+        !prdb_decode_optimizer_plan_column_record(
+            bytes, PRDB_OPTIMIZER_PLAN_COLUMN_RECORD_HEADER_BYTES,
+            column->column_id, &column->ordinal, &column->type_code,
+            column->type_parameters, &column->nullable) ||
+        all_zero(column->column_id, 16) || column->nullable > 1 ||
         !valid_type(column->type_code, column->type_parameters)) {
         return 0;
     }

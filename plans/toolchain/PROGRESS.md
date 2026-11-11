@@ -816,3 +816,12 @@
 - Compatibility: the existing Rust golden header assertion and TinyCC maintained optimizer-plan fixture pass with the unchanged bytes and malformed-plan handling.
 - Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
 - Remaining: additional nested optimizer plan records and full shared-schema parity remain open.
+
+## TC-2 follow-up: generated optimizer plan column record — implemented
+
+- Contract: each optimizer plan column keeps its fixed 26-byte encoding: column ID, ordinal, scalar type code and parameters, and nullability.
+- Red evidence: generator regression failed because `OPTIMIZER_PLAN_COLUMN_RECORD` and its Rust/C codecs were absent.
+- Implementation: the shared schema now defines the record; Rust plan encoding/decoding and the TinyCC plan decoder use the generated codecs. Scalar type, nullable value, and nonzero column identity validation remain in the plan layer.
+- Compatibility: the existing plan golden-byte round trip and maintained TinyCC optimizer-plan fixture pass with unchanged bytes and validation behavior.
+- Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the required Nix toolchain.
+- Remaining: additional nested optimizer plan records and full shared-schema parity remain open.

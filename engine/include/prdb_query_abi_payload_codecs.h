@@ -1957,6 +1957,58 @@ static inline int prdb_decode_optimizer_plan_header_record(const uint8_t *payloa
     return 1;
 }
 
+static inline void prdb_encode_optimizer_plan_column_record(uint8_t payload[26],
+    const uint8_t column_id[16], uint32_t ordinal, uint8_t type_code, const uint8_t type_parameters[4], uint8_t nullable) {
+    for (size_t i = 0; i < 16; ++i) {
+        payload[0 + i] = column_id[i];
+    }
+    uint64_t ordinal_wire = (uint64_t)ordinal;
+    for (size_t i = 0; i < 4; ++i) {
+        payload[16 + i] = (uint8_t)(ordinal_wire >> ((4 - 1 - i) * 8));
+    }
+    payload[20] = type_code;
+    for (size_t i = 0; i < 4; ++i) {
+        payload[21 + i] = type_parameters[i];
+    }
+    payload[25] = nullable;
+}
+
+static inline int prdb_decode_optimizer_plan_column_record(const uint8_t *payload, size_t payload_len,
+    uint8_t column_id[16], uint32_t *ordinal, uint8_t *type_code, uint8_t type_parameters[4], uint8_t *nullable) {
+    if (payload == NULL || payload_len != 26) {
+        return 0;
+    }
+    if (column_id == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < 16; ++i) {
+        column_id[i] = payload[0 + i];
+    }
+    if (ordinal == NULL) {
+        return 0;
+    }
+    uint64_t ordinal_wire_value = 0;
+    for (size_t i = 0; i < 4; ++i) {
+        ordinal_wire_value = (ordinal_wire_value << 8) | payload[16 + i];
+    }
+    *ordinal = (uint32_t)ordinal_wire_value;
+    if (type_code == NULL) {
+        return 0;
+    }
+    *type_code = payload[20];
+    if (type_parameters == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        type_parameters[i] = payload[21 + i];
+    }
+    if (nullable == NULL) {
+        return 0;
+    }
+    *nullable = payload[25];
+    return 1;
+}
+
 static inline void prdb_encode_client_frame_header_record(uint8_t payload[32],
     const uint8_t magic[4], uint16_t major_version, uint16_t minor_version, uint16_t kind, uint16_t flags, uint32_t payload_length, uint64_t request_id, uint64_t response_sequence) {
     for (size_t i = 0; i < 4; ++i) {

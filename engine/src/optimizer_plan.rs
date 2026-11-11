@@ -199,12 +199,14 @@ fn put_u16(output: &mut Vec<u8>, value: usize) -> Result<(), PlanError> {
 }
 
 fn put_column(output: &mut Vec<u8>, column: &BoundColumn) {
-    output.extend_from_slice(&column.column_id);
-    output.extend_from_slice(&column.ordinal.to_be_bytes());
     let (type_code, parameters) = encode_scalar_type(column.scalar_type);
-    output.push(type_code);
-    output.extend_from_slice(&parameters);
-    output.push(u8::from(column.nullable));
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_column_record(
+        column.column_id,
+        column.ordinal,
+        type_code,
+        parameters,
+        u8::from(column.nullable),
+    ));
 }
 
 fn encode_scalar_type(scalar_type: ScalarType) -> (u8, [u8; 4]) {
@@ -334,11 +336,12 @@ impl PlanReader<'_> {
     }
 
     fn column(&mut self) -> Result<BoundColumn, PlanError> {
-        let column_id = self.array16()?;
-        let ordinal = self.u32()?;
-        let type_code = self.u8()?;
-        let parameters: [u8; 4] = self.take(4)?.try_into().map_err(|_| PlanError::Truncated)?;
-        let nullable = match self.u8()? {
+        let bytes =
+            self.take(crate::query_abi::OPTIMIZER_PLAN_COLUMN_RECORD_HEADER_BYTES as usize)?;
+        let (column_id, ordinal, type_code, parameters, nullable) =
+            crate::query_abi::decode_optimizer_plan_column_record(bytes)
+                .ok_or(PlanError::Truncated)?;
+        let nullable = match nullable {
             0 => false,
             1 => true,
             _ => return Err(PlanError::InvalidEncoding),

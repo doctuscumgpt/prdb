@@ -1797,6 +1797,19 @@
       "trailing_fields": []
     },
     {
+      "name": "OPTIMIZER_PLAN_COLUMN_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "column_id", "encoding": "bytes16" },
+        { "name": "ordinal", "encoding": "u32be" },
+        { "name": "type_code", "encoding": "u8" },
+        { "name": "type_parameters", "encoding": "bytes4" },
+        { "name": "nullable", "encoding": "u8" }
+      ],
+      "trailing_fields": []
+    },
+    {
       "name": "CLIENT_FRAME_HEADER_RECORD",
       "generate_rust_codec": true,
       "generate_c_codec": true,
