@@ -916,7 +916,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         "table owner transfer",
         token_expiration,
     )?;
-    let transfer_token_id = transfer_credentials.token_id;
+    let mut transfer_token_id = transfer_credentials.token_id;
     let transfer_credential_path = root.join("table-owner.cred");
     let transfer_client_credentials = ClientCredentials {
         token_id: transfer_token_id,
@@ -926,6 +926,100 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     drop(transfer_client_credentials);
     drop(transfer_credentials);
     let address_text = address.to_string();
+    let transfer_user_id_text = encode_id_hex(&transfer_owner.identity_id);
+    let admin_cli_credentials = admin_cancel_credentials_path
+        .to_str()
+        .ok_or("credential path is not UTF-8")?;
+    let rename_user_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "user-rename",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--id",
+            &transfer_user_id_text,
+            "--name",
+            "process_table_owner_renamed",
+        ])
+        .output()?;
+    assert!(
+        rename_user_cli.status.success(),
+        "user-rename CLI failed: {}",
+        String::from_utf8_lossy(&rename_user_cli.stderr)
+    );
+    assert!(String::from_utf8_lossy(&rename_user_cli.stdout).contains("renamed identity"));
+    let disable_login_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "user-login",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--user-id",
+            &transfer_user_id_text,
+            "--enabled",
+            "false",
+        ])
+        .output()?;
+    assert!(
+        disable_login_cli.status.success(),
+        "user-login disable CLI failed: {}",
+        String::from_utf8_lossy(&disable_login_cli.stderr)
+    );
+    assert!(String::from_utf8_lossy(&disable_login_cli.stdout).contains("changed user login"));
+    let mut revoked_transfer_credentials = read_client_credentials(&transfer_credential_path)?;
+    let revoked_transfer_token_id = revoked_transfer_credentials.token_id;
+    assert!(
+        SubmissionClient::connect_authenticated(
+            address,
+            revoked_transfer_token_id,
+            &mut revoked_transfer_credentials.token_secret,
+        )
+        .is_err()
+    );
+    let enable_login_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "user-login",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--user-id",
+            &transfer_user_id_text,
+            "--enabled",
+            "true",
+        ])
+        .output()?;
+    assert!(
+        enable_login_cli.status.success(),
+        "user-login enable CLI failed: {}",
+        String::from_utf8_lossy(&enable_login_cli.stderr)
+    );
+    assert!(String::from_utf8_lossy(&enable_login_cli.stdout).contains("changed user login"));
+    let mut still_revoked_credentials = read_client_credentials(&transfer_credential_path)?;
+    assert!(
+        SubmissionClient::connect_authenticated(
+            address,
+            still_revoked_credentials.token_id,
+            &mut still_revoked_credentials.token_secret,
+        )
+        .is_err()
+    );
+    let renewed_credentials = admin.issue_token(
+        transfer_owner.identity_id,
+        "table owner transfer renewed",
+        token_expiration,
+    )?;
+    transfer_token_id = renewed_credentials.token_id;
+    remove_client_credentials(&transfer_credential_path)?;
+    let transfer_client_credentials = ClientCredentials {
+        token_id: transfer_token_id,
+        token_secret: *renewed_credentials.token_secret(),
+    };
+    write_client_credentials(&transfer_credential_path, &transfer_client_credentials)?;
+    drop(transfer_client_credentials);
+    drop(renewed_credentials);
     let admin_owner_id_text = encode_id_hex(&admin_user_id);
     admin.set_schema_owner(created_schema.identity_id, transfer_owner.identity_id)?;
     let schema_id_text = encode_id_hex(&created_schema.identity_id);
@@ -977,8 +1071,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&transfer_command.stderr)
     );
     assert!(String::from_utf8_lossy(&transfer_command.stdout).contains("changed table owner"));
-    admin.revoke_token(transfer_token_id)?;
-    remove_client_credentials(&transfer_credential_path)?;
     let added_column = admin.add_column(
         created_table.table_id,
         &AdminColumnDefinition {
@@ -1611,7 +1703,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&drop_index_cli.stderr)
     );
     assert!(String::from_utf8_lossy(&drop_index_cli.stdout).contains("dropped index"));
-    remove_client_credentials(&admin_cancel_credentials_path)?;
     let renamed_table = admin.rename_table(created_table.table_id, "process_admin_table_v2")?;
     let dropped_source_table = admin.drop_table(source_table.table_id)?;
     let dropped_table = admin.drop_table(created_table.table_id)?;
@@ -1619,6 +1710,34 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     assert!(dropped_table.commit_sequence > dropped_source_table.commit_sequence);
     let dropped_schema = admin.drop_schema(created_schema.identity_id)?;
     assert!(dropped_schema.commit_sequence > dropped_table.commit_sequence);
+    let drop_user_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "user-drop",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--id",
+            &transfer_user_id_text,
+        ])
+        .output()?;
+    assert!(
+        drop_user_cli.status.success(),
+        "user-drop CLI failed: {}",
+        String::from_utf8_lossy(&drop_user_cli.stderr)
+    );
+    assert!(String::from_utf8_lossy(&drop_user_cli.stdout).contains("dropped identity"));
+    let mut dropped_user_credentials = read_client_credentials(&transfer_credential_path)?;
+    assert!(
+        SubmissionClient::connect_authenticated(
+            address,
+            dropped_user_credentials.token_id,
+            &mut dropped_user_credentials.token_secret,
+        )
+        .is_err()
+    );
+    remove_client_credentials(&transfer_credential_path)?;
+    remove_client_credentials(&admin_cancel_credentials_path)?;
 
     let created_user = admin.create_user("process_token_user")?;
     let now_us = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?;

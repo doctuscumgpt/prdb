@@ -61,3 +61,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Contract and implementation: [DROP ADMIN protocol](../../specs/client-protocol.md), [storage-manager contract](../../specs/storage-manager.md), [identity lifecycle](../../engine/src/storage_manager.rs), and [ADMIN dispatch](../../engine/src/client_protocol.rs).
 - Regression evidence: decoder coverage checks both strict operation schemas. Real-redb tests exercise successful user/role drops, user credential revocation and tombstones, plus rejection of a drop while a privilege grant references the user.
 - Remaining: remaining ADMIN operations and separate supervisor/worker process integration.
+
+## SM-5 / SDK-5: user lifecycle CLI across gateway and supervisor processes — verified
+
+- Contract: user rename, login-state changes, and drop are authenticated ADMIN mutations; disabling login and dropping a user revoke all outstanding tokens atomically.
+- Regression: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` renames a token-bearing user, disables login through `prdb-client`, verifies its token fails authentication, re-enables login and verifies the old token remains revoked, issues a replacement token, then drops the user through the CLI and verifies the replacement token fails authentication.
+- Verification: the focused real-process test passed with separate gateway and supervisor binaries.
+- Remaining: process coverage of further administrative families, control-path stress, and confined query execution remain open.
