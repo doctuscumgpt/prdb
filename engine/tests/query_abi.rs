@@ -131,6 +131,16 @@ fn generated_nested_record_codecs_preserve_wire_bytes_and_boundaries() {
         );
     }
     assert!(prdb_engine::query_abi::decode_sanitized_cell_tag_record(&[]).is_none());
+
+    for state in 0..=2 {
+        let state_record = prdb_engine::query_abi::encode_mutation_cell_tag_record(state);
+        assert_eq!(state_record, [state]);
+        assert_eq!(
+            prdb_engine::query_abi::decode_mutation_cell_tag_record(&state_record),
+            Some(state)
+        );
+    }
+    assert!(prdb_engine::query_abi::decode_mutation_cell_tag_record(&[]).is_none());
 }
 
 #[test]

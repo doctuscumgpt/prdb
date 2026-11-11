@@ -187,8 +187,11 @@ int32_t prdb_sdk_executor_stage_insert_v1(
             return PRDB_SDK_EXECUTOR_INVALID_ARGUMENT;
         }
         if (input->state == PRDB_SDK_EXECUTOR_INSERT_DEFAULT) {
-            if (offset >= request_capacity) return PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL;
-            request[offset++] = 2;
+            if (offset + PRDB_MUTATION_CELL_TAG_RECORD_HEADER_BYTES > request_capacity) {
+                return PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL;
+            }
+            prdb_encode_mutation_cell_tag_record(request + offset, 2);
+            offset += PRDB_MUTATION_CELL_TAG_RECORD_HEADER_BYTES;
         } else if (input->state == PRDB_SDK_EXECUTOR_INSERT_NULL ||
                    input->state == PRDB_SDK_EXECUTOR_INSERT_VALUE) {
             if (prdb_sdk_value_validate_v1(&input->value) != PRDB_SDK_VALUE_VALID ||
@@ -199,8 +202,11 @@ int32_t prdb_sdk_executor_stage_insert_v1(
                 return PRDB_SDK_EXECUTOR_INVALID_ARGUMENT;
             }
             if (input->state == PRDB_SDK_EXECUTOR_INSERT_NULL) {
-                if (offset >= request_capacity) return PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL;
-                request[offset++] = 1;
+                if (offset + PRDB_MUTATION_CELL_TAG_RECORD_HEADER_BYTES > request_capacity) {
+                    return PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL;
+                }
+                prdb_encode_mutation_cell_tag_record(request + offset, 1);
+                offset += PRDB_MUTATION_CELL_TAG_RECORD_HEADER_BYTES;
             } else {
                 uint64_t value_len = input->value.data_len;
                 uint64_t value_end = offset + 6 + value_len;
@@ -208,7 +214,8 @@ int32_t prdb_sdk_executor_stage_insert_v1(
                     value_end > request_capacity) {
                     return PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL;
                 }
-                request[offset++] = 0;
+                prdb_encode_mutation_cell_tag_record(request + offset, 0);
+                offset += PRDB_MUTATION_CELL_TAG_RECORD_HEADER_BYTES;
                 uint8_t value_header[PRDB_SCALAR_VALUE_RECORD_HEADER_BYTES] = {0};
                 prdb_encode_scalar_value_record(
                     value_header, (uint8_t)input->value.type_code,
@@ -285,9 +292,11 @@ int32_t prdb_sdk_executor_stage_update_v1(
         prdb_encode_patch_ordinal_record(request + offset, patch->ordinal);
         offset += PRDB_PATCH_ORDINAL_RECORD_HEADER_BYTES;
         if (patch->value.state == PRDB_SDK_VALUE_STATE_NULL) {
-            request[offset++] = 1;
+            prdb_encode_mutation_cell_tag_record(request + offset, 1);
+            offset += PRDB_MUTATION_CELL_TAG_RECORD_HEADER_BYTES;
         } else {
-            request[offset++] = 0;
+            prdb_encode_mutation_cell_tag_record(request + offset, 0);
+            offset += PRDB_MUTATION_CELL_TAG_RECORD_HEADER_BYTES;
             uint8_t value_header[PRDB_SCALAR_VALUE_RECORD_HEADER_BYTES] = {0};
             prdb_encode_scalar_value_record(
                 value_header, (uint8_t)patch->value.type_code,

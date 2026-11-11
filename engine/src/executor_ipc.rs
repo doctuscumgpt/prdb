@@ -379,16 +379,16 @@ impl StageInsertRequest {
                 .to_vec();
         for value in &self.values {
             match value {
-                InsertInput::Default => payload.push(2),
-                InsertInput::Value(None) => payload.push(1),
+                InsertInput::Default => {
+                    payload.extend_from_slice(&generated::encode_mutation_cell_tag_record(2))
+                }
+                InsertInput::Value(None) => {
+                    payload.extend_from_slice(&generated::encode_mutation_cell_tag_record(1))
+                }
                 InsertInput::Value(Some(value)) => {
-                    payload.push(0);
+                    payload.extend_from_slice(&generated::encode_mutation_cell_tag_record(0));
                     let (type_code, bytes) = encode_scalar_value(value)?;
-                    payload.push(type_code);
-                    let len = u32::try_from(bytes.len())
-                        .map_err(|_| ExecutorRequestError::InvalidPayload)?;
-                    payload.extend_from_slice(&len.to_be_bytes());
-                    payload.extend_from_slice(&bytes);
+                    append_scalar_value_record(&mut payload, type_code, &bytes)?;
                 }
             }
             ensure_response_size(&payload)?;
@@ -413,17 +413,15 @@ impl StageInsertRequest {
         let mut offset = EXECUTOR_STAGE_INSERT_REQUEST_HEADER_BYTES as usize;
         let mut values = Vec::with_capacity(count);
         for _ in 0..count {
-            let state = *payload
-                .get(offset)
-                .ok_or(ExecutorRequestError::InvalidPayload)?;
-            if state == 2 {
-                offset += 1;
-                values.push(InsertInput::Default);
-            } else {
-                values.push(InsertInput::Value(decode_mutation_value(
+            let state = decode_mutation_cell_tag(payload, &mut offset)?;
+            match state {
+                2 => values.push(InsertInput::Default),
+                1 => values.push(InsertInput::Value(None)),
+                0 => values.push(InsertInput::Value(Some(decode_scalar_value_record(
                     payload,
                     &mut offset,
-                )?));
+                )?))),
+                _ => return Err(ExecutorRequestError::InvalidPayload),
             }
         }
         if offset != payload.len() {
@@ -577,15 +575,28 @@ fn decode_mutation_value(
     payload: &[u8],
     offset: &mut usize,
 ) -> Result<Option<ScalarValue>, ExecutorRequestError> {
-    let state = *payload
-        .get(*offset)
-        .ok_or(ExecutorRequestError::InvalidPayload)?;
-    *offset += 1;
+    let state = decode_mutation_cell_tag(payload, offset)?;
     match state {
         1 => Ok(None),
         0 => decode_scalar_value_record(payload, offset).map(Some),
         _ => Err(ExecutorRequestError::InvalidPayload),
     }
+}
+
+fn decode_mutation_cell_tag(
+    payload: &[u8],
+    offset: &mut usize,
+) -> Result<u8, ExecutorRequestError> {
+    let state_bytes = payload
+        .get(*offset..)
+        .and_then(|bytes| bytes.get(..generated::MUTATION_CELL_TAG_RECORD_HEADER_BYTES as usize))
+        .ok_or(ExecutorRequestError::InvalidPayload)?;
+    let state = generated::decode_mutation_cell_tag_record(state_bytes)
+        .ok_or(ExecutorRequestError::InvalidPayload)?;
+    *offset = offset
+        .checked_add(generated::MUTATION_CELL_TAG_RECORD_HEADER_BYTES as usize)
+        .ok_or(ExecutorRequestError::InvalidPayload)?;
+    Ok(state)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

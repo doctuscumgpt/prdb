@@ -1104,3 +1104,18 @@ pub fn decode_sanitized_cell_tag_record(payload: &[u8]) -> Option<u8> {
     }
     Some(payload[0])
 }
+
+pub const MUTATION_CELL_TAG_RECORD_STATE_CODE_OFFSET: u32 = 0;
+pub const MUTATION_CELL_TAG_RECORD_HEADER_BYTES: u32 = 1;
+pub fn encode_mutation_cell_tag_record(state_code: u8) -> [u8; 1] {
+    let mut payload = [0u8; 1];
+    payload[0] = state_code;
+    payload
+}
+
+pub fn decode_mutation_cell_tag_record(payload: &[u8]) -> Option<u8> {
+    if payload.len() != 1 {
+        return None;
+    }
+    Some(payload[0])
+}

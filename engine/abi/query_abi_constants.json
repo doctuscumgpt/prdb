@@ -1760,6 +1760,15 @@
         { "name": "state_code", "encoding": "u8" }
       ],
       "trailing_fields": []
+    },
+    {
+      "name": "MUTATION_CELL_TAG_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "state_code", "encoding": "u8" }
+      ],
+      "trailing_fields": []
     }
   ]
 }

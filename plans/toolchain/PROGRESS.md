@@ -748,6 +748,15 @@
 - Verification: the focused SQL DML fixture, complete SDK suite, and full workspace gates passed.
 - Remaining: additional nested IPC records and full shared-schema parity remain open.
 
+## TC-2 follow-up: generated mutation cell state tags — implemented
+
+- Contract: INSERT and UPDATE cells begin with one state byte: VALUE 0, NULL 1, and INSERT DEFAULT 2; VALUE carries the shared scalar-value record.
+- Red evidence: the generator regression failed because `MUTATION_CELL_TAG_RECORD` and its Rust/C helpers were absent.
+- Implementation: Rust INSERT/UPDATE encoders and decoders and TinyCC INSERT/UPDATE encoders use generated tag codecs. Rust INSERT values now use the shared scalar-value record encoder as well.
+- Compatibility: state meanings, patch order, DEFAULT restrictions, and all encoded bytes remain unchanged.
+- Verification: generator schema/drift tests (7 tests), all 6 executor IPC tests, forced TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, `git diff --check`, and full locked workspace tests passed. The commit suite reported 138 passed and 4 cgroup-dependent tests ignored; the metadata process suite reported 1 passed and 1 cgroup-dependent test ignored.
+- Remaining: additional nested IPC records and full shared-schema parity remain open.
+
 ## TC-1 / TC-3: maintained TinyCC SDK and shared-artifact link profile — partial
 
 - Observed development tools: Rust/Cargo 1.95.0 with rustfmt and Clippy; TinyCC `0.9.27-unstable-2025-01-06` on x86_64 Linux. The SDK archive and C fixtures build with TinyCC `-Wall -Wextra -Werror`.
