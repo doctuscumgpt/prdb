@@ -311,7 +311,9 @@ fn put_predicate(output: &mut Vec<u8>, predicate: &BoundPredicate) -> Result<(),
             }
         }
         BoundPredicate::Not(child) => {
-            output.push(0x32);
+            output.extend_from_slice(
+                &crate::query_abi::encode_optimizer_plan_not_predicate_record(0x32),
+            );
             put_predicate(output, child)?;
         }
     }
@@ -506,6 +508,25 @@ impl PlanReader<'_> {
         Ok((node_tag, child_count))
     }
 
+    fn not_predicate_tag(&mut self, header_offset: usize) -> Result<(), PlanError> {
+        let header_len =
+            crate::query_abi::OPTIMIZER_PLAN_NOT_PREDICATE_RECORD_HEADER_BYTES as usize;
+        let end = header_offset
+            .checked_add(header_len)
+            .ok_or(PlanError::TooLarge)?;
+        let header = self
+            .bytes
+            .get(header_offset..end)
+            .ok_or(PlanError::Truncated)?;
+        let node_tag = crate::query_abi::decode_optimizer_plan_not_predicate_record(header)
+            .ok_or(PlanError::Truncated)?;
+        if node_tag != 0x32 {
+            return Err(PlanError::InvalidEncoding);
+        }
+        self.offset = end;
+        Ok(())
+    }
+
     fn column(&mut self) -> Result<BoundColumn, PlanError> {
         let bytes =
             self.take(crate::query_abi::OPTIMIZER_PLAN_COLUMN_RECORD_HEADER_BYTES as usize)?;
@@ -607,11 +628,14 @@ impl PlanReader<'_> {
                     Ok(BoundPredicate::Or(children))
                 }
             }
-            0x32 => Ok(BoundPredicate::Not(Box::new(self.predicate_at_depth(
-                scan_columns,
-                depth + 1,
-                nodes,
-            )?))),
+            0x32 => {
+                self.not_predicate_tag(tag_offset)?;
+                Ok(BoundPredicate::Not(Box::new(self.predicate_at_depth(
+                    scan_columns,
+                    depth + 1,
+                    nodes,
+                )?)))
+            }
             _ => Err(PlanError::InvalidEncoding),
         }
     }
@@ -1211,6 +1235,21 @@ mod tests {
             offset: 0,
         };
         assert_eq!(reader.name().unwrap(), "sales");
+        assert_eq!(reader.offset, encoded.len());
+    }
+
+    #[test]
+    fn not_predicate_record_matches_the_generated_wire_record() {
+        let predicate = BoundPredicate::Not(Box::new(BoundPredicate::Boolean(true)));
+        let mut encoded = Vec::new();
+        put_predicate(&mut encoded, &predicate).unwrap();
+        assert_eq!(encoded, [0x32, 0x01, 0x01]);
+
+        let mut reader = PlanReader {
+            bytes: &encoded,
+            offset: 0,
+        };
+        assert_eq!(reader.predicate(&[]).unwrap(), predicate);
         assert_eq!(reader.offset, encoded.len());
     }
 

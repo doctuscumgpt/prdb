@@ -142,6 +142,21 @@ static int read_boolean_predicate_header(plan_reader *reader,
     return 1;
 }
 
+static int read_not_predicate_tag(const plan_reader *reader,
+                                  uint64_t header_offset) {
+    uint8_t node_tag;
+    if (header_offset > reader->length ||
+        PRDB_OPTIMIZER_PLAN_NOT_PREDICATE_RECORD_HEADER_BYTES >
+            reader->length - header_offset ||
+        !prdb_decode_optimizer_plan_not_predicate_record(
+            reader->bytes + header_offset,
+            PRDB_OPTIMIZER_PLAN_NOT_PREDICATE_RECORD_HEADER_BYTES,
+            &node_tag)) {
+        return 0;
+    }
+    return node_tag == 0x32;
+}
+
 static int read_column_list_header(plan_reader *reader, uint8_t expected_tag,
                                    uint16_t *column_count) {
     const uint8_t *ignored;
@@ -400,7 +415,8 @@ static int decode_predicate(plan_reader *reader,
         }
         case 0x32: {
             predicate_type child;
-            if (!decode_predicate(reader, columns, column_count, depth + 1,
+            if (!read_not_predicate_tag(reader, tag_offset) ||
+                !decode_predicate(reader, columns, column_count, depth + 1,
                                   nodes, &child) ||
                 !predicate_boolean(&child)) {
                 return 0;
@@ -472,7 +488,8 @@ static int skip_predicate_node(plan_reader *reader, uint32_t depth) {
         return 1;
     }
     case 0x32:
-        return skip_predicate_node(reader, depth + 1);
+        return read_not_predicate_tag(reader, tag_offset) &&
+               skip_predicate_node(reader, depth + 1);
     default:
         return 0;
     }
@@ -606,8 +623,11 @@ static int32_t evaluate_predicate_node(
     case 0x32: {
         predicate_value child = {0};
         uint32_t truth;
-        int32_t status = evaluate_predicate_node(
-            reader, plan, source_cells, &child, depth + 1, nodes);
+        int32_t status;
+        if (!read_not_predicate_tag(reader, tag_offset))
+            return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
+        status = evaluate_predicate_node(reader, plan, source_cells, &child,
+                                         depth + 1, nodes);
         if (status != PRDB_SDK_SQL_EVAL_OK) return status;
         status = child.is_truth != 0
                      ? PRDB_SDK_SQL_EVAL_OK
@@ -1522,6 +1542,7 @@ static int match_optimizer_filter_node(
     uint32_t node_index, uint8_t *seen, uint32_t depth) {
     const prdb_sdk_predicate_node_v2 *node;
     uint8_t tag;
+    uint64_t tag_offset = reader->offset;
     if (depth > PRDB_SDK_SQL_MAX_EXPRESSION_DEPTH ||
         node_index >= statement->predicate_count || seen[node_index] != 0 ||
         !read_u8(reader, &tag)) return 0;
@@ -1582,7 +1603,7 @@ static int match_optimizer_filter_node(
                    seen, depth + 1);
     }
     case PRDB_SDK_SQL_PREDICATE_NOT:
-        return tag == 0x32 &&
+        return tag == 0x32 && read_not_predicate_tag(reader, tag_offset) &&
                match_optimizer_filter_node(
                    reader, plan, metadata_response, metadata_response_len,
                    statement, parameters, parameter_count, node->left_child,

@@ -1909,6 +1909,15 @@
       "trailing_fields": []
     },
     {
+      "name": "OPTIMIZER_PLAN_NOT_PREDICATE_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "node_tag", "encoding": "u8" }
+      ],
+      "trailing_fields": []
+    },
+    {
       "name": "CLIENT_FRAME_HEADER_RECORD",
       "generate_rust_codec": true,
       "generate_c_codec": true,

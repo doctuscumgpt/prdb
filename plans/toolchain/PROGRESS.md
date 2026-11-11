@@ -906,3 +906,12 @@
 - Compatibility: name bytes and identifier limits are unchanged; a Rust regression asserts the exact header and round trip, and the maintained TinyCC optimizer-plan fixture passes.
 - Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the pinned Nix flake environment using its supported `--no-update-lock-file` option.
 - Remaining: NOT predicate tag coverage and full shared-schema parity remain open.
+
+## TC-2 follow-up: generated optimizer NOT-predicate tag — implemented
+
+- Contract: a NOT predicate retains its one-byte `0x32` node tag before its child predicate.
+- Red evidence: generator regression failed because `OPTIMIZER_PLAN_NOT_PREDICATE_RECORD` and its Rust/C codecs were absent.
+- Implementation: the shared schema defines the node tag. Rust plan encoding/decoding and TinyCC validation, traversal, evaluation, skipping, and parameter-filter matching now validate the tag through generated codecs.
+- Compatibility: predicate bytes and recursive semantics remain unchanged; a Rust regression checks the exact encoding and round trip, and the maintained TinyCC optimizer-plan fixture passes.
+- Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the pinned Nix flake environment using its supported `--no-update-lock-file` option.
+- Remaining: full shared-schema parity remains open.
