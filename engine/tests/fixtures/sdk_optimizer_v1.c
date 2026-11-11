@@ -31,6 +31,29 @@ static int32_t mock_request(void *opaque, const uint8_t *request,
     return PRDB_QUERY_CALLBACK_OK;
 }
 
+static int32_t mock_request_v5(void *opaque, uint16_t operation,
+                               const uint8_t *request, uint64_t request_len,
+                               uint8_t *response,
+                               uint64_t response_capacity,
+                               uint64_t *response_len) {
+    mock_optimizer *mock = (mock_optimizer *)opaque;
+    assert(operation == PRDB_IPC_OP_OPTIMIZE_JOIN_SELECT);
+    assert(request_len >= 4 && request[0] == 0 && request[1] == 1 &&
+           request[2] == PRDB_OPTIMIZER_JOIN_SELECT_STATEMENT &&
+           request[3] == 0);
+    if (mock->callback_status != PRDB_QUERY_CALLBACK_OK) {
+        *response_len = mock->payload_len;
+        return mock->callback_status;
+    }
+    if (response_capacity < mock->payload_len) {
+        *response_len = mock->payload_len;
+        return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
+    }
+    memcpy(response, mock->payload, (size_t)mock->payload_len);
+    *response_len = mock->payload_len;
+    return PRDB_QUERY_CALLBACK_OK;
+}
+
 static prdb_host_api_v4 host_for(mock_optimizer *mock) {
     prdb_host_api_v4 host = {
         {
@@ -50,6 +73,15 @@ static prdb_host_api_v4 host_for(mock_optimizer *mock) {
 int main(void) {
     static const uint8_t sql[] = "SELECT name FROM items LIMIT 7;";
     static const uint8_t schema[] = "public";
+    static const uint8_t join_sql[] =
+        "SELECT l.value, r.value FROM lefts AS l INNER JOIN rights AS r "
+        "ON l.id = r.id AND l.active = r.active LIMIT 5;";
+    static const uint8_t expected_join_request[] = {
+        0, 1, 4, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'l', 'e', 'f', 't',
+        's', 6, 'r', 'i', 'g', 'h', 't', 's', 0, 2, 0, 5, 'v', 'a', 'l', 'u',
+        'e', 1, 5, 'v', 'a', 'l', 'u', 'e', 2, 2, 'i', 'd', 2, 'i', 'd', 6,
+        'a', 'c', 't', 'i', 'v', 'e', 6, 'a', 'c', 't', 'i', 'v', 'e', 1, 0,
+        0, 0, 5};
     static const uint8_t expected_encoded[] = {
         0, 1, 1, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'i', 't', 'e', 'm',
         's', 0, 1, 4, 'n', 'a', 'm', 'e', 0, 0, 0, 0, 1, 0, 0, 0, 7};
@@ -60,6 +92,7 @@ int main(void) {
     mock_optimizer mock = {success, sizeof(success),
                            PRDB_QUERY_CALLBACK_OK};
     prdb_host_api_v4 host = host_for(&mock);
+    prdb_host_api_v5 host_v5 = {host, mock_request_v5};
     uint8_t response[sizeof(success)] = {0};
     uint64_t response_len = 0;
     prdb_sdk_optimizer_response_v1 decoded = {0};
@@ -67,6 +100,7 @@ int main(void) {
     uint8_t encoded[128];
     uint64_t encoded_len = 0;
     uint32_t error_offset = 0;
+    prdb_sdk_select_v19 join_statement = {0};
 
     assert(prdb_sdk_sql_parse_select_v2(
                sql, sizeof(sql) - 1, &statement, sizeof(statement),
@@ -77,6 +111,34 @@ int main(void) {
            PRDB_SDK_OPTIMIZER_ENCODE_OK);
     assert(encoded_len == sizeof(expected_encoded));
     assert(memcmp(encoded, expected_encoded, sizeof(expected_encoded)) == 0);
+
+    assert(prdb_sdk_sql_parse_select_v19(
+               join_sql, sizeof(join_sql) - 1, &join_statement,
+               sizeof(join_statement), &error_offset) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_optimizer_encode_join_select_v1(
+               &join_statement, schema, sizeof(schema) - 1, encoded,
+               sizeof(encoded), &encoded_len) ==
+           PRDB_SDK_OPTIMIZER_ENCODE_OK);
+    assert(encoded_len == sizeof(expected_join_request));
+    assert(memcmp(encoded, expected_join_request,
+                  sizeof(expected_join_request)) == 0);
+    memset(encoded, 0xa5, sizeof(encoded));
+    encoded_len = 0;
+    assert(prdb_sdk_optimizer_encode_join_select_v1(
+               &join_statement, schema, sizeof(schema) - 1, encoded, 1,
+               &encoded_len) ==
+           PRDB_SDK_OPTIMIZER_ENCODE_BUFFER_TOO_SMALL);
+    assert(encoded_len == sizeof(expected_join_request));
+    assert(encoded[0] == 0xa5);
+    assert(prdb_sdk_optimizer_encode_join_select_v1(
+               &join_statement, schema, sizeof(schema) - 1, encoded,
+               sizeof(encoded), &encoded_len) ==
+           PRDB_SDK_OPTIMIZER_ENCODE_OK);
+    assert(prdb_sdk_optimizer_submit_join_select_v1(
+               &host_v5, encoded, encoded_len, response, sizeof(response),
+               &response_len, &decoded, sizeof(decoded)) ==
+           PRDB_SDK_OPTIMIZER_RESULT_OK);
+    assert(decoded.status == PRDB_SDK_OPTIMIZER_STATUS_SUCCESS);
 
     memset(encoded, 0xa5, sizeof(encoded));
     encoded_len = 0;
