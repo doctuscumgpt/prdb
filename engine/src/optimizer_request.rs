@@ -1,13 +1,13 @@
 //! Bounded version-1 structured query requests for the isolated optimizer.
 //!
-//! This decoder accepts only a logical single-relation SELECT request. It does
-//! not resolve names or grant authority; those checks belong to the invocation
-//! bound planner service and the executor/storage path.
+//! This decoder accepts bounded single-relation SELECT, DELETE, and UPDATE
+//! requests. It does not resolve names or grant authority; those checks belong
+//! to the invocation-bound planner service and executor/storage path.
 
 use crate::query_abi::{
     OPTIMIZER_DELETE_STATEMENT, OPTIMIZER_REQUEST_VERSION, OPTIMIZER_SELECT_REQUEST_HEADER_BYTES,
     OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET, OPTIMIZER_SELECT_STATEMENT,
-    decode_optimizer_select_request,
+    OPTIMIZER_UPDATE_STATEMENT, decode_optimizer_select_request,
 };
 
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
@@ -17,6 +17,8 @@ pub const MAX_PREDICATE_BYTES: usize = 16 * 1024;
 pub const MAX_PREDICATE_NODES: usize = 256;
 pub const MAX_PREDICATE_DEPTH: usize = 32;
 pub const MAX_TEXT_LITERAL_BYTES: usize = 4096;
+pub const MAX_UPDATE_ASSIGNMENTS: usize = 64;
+pub const MAX_PARAMETER_INDEX: u32 = 256;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SelectRequest {
@@ -32,6 +34,26 @@ pub struct DeleteRequest {
     pub schema_name: String,
     pub relation_name: String,
     pub predicate: Predicate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpdateRequest {
+    pub schema_name: String,
+    pub relation_name: String,
+    pub assignments: Vec<UpdateAssignment>,
+    pub predicate: Predicate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpdateAssignment {
+    pub column_name: String,
+    pub value: UpdateValue,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UpdateValue {
+    Parameter(u32),
+    Null,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,6 +94,8 @@ pub enum RequestError {
     InvalidPredicate,
     PredicateTooLarge,
     TooManyProjections,
+    TooManyAssignments,
+    InvalidAssignment,
     TooManyPredicateNodes,
     PredicateTooDeep,
     TrailingBytes,
@@ -201,6 +225,77 @@ pub fn decode_delete_request(bytes: &[u8]) -> Result<DeleteRequest, RequestError
     Ok(DeleteRequest {
         schema_name,
         relation_name,
+        predicate,
+    })
+}
+
+/// Decode a canonical UPDATE request. Assignments are bounded parameter or
+/// NULL values and a Boolean WHERE tree is mandatory; the request grants no
+/// executor or mutation capability.
+pub fn decode_update_request(bytes: &[u8]) -> Result<UpdateRequest, RequestError> {
+    if bytes.len() > MAX_REQUEST_BYTES {
+        return Err(RequestError::TooLarge);
+    }
+    let header_bytes = OPTIMIZER_SELECT_REQUEST_HEADER_BYTES as usize;
+    if bytes.len() < header_bytes {
+        return Err(RequestError::Truncated);
+    }
+    let version_offset = OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET as usize;
+    let version = u16::from_be_bytes([bytes[version_offset], bytes[version_offset + 1]]);
+    if version != OPTIMIZER_REQUEST_VERSION {
+        return Err(RequestError::UnsupportedVersion(version));
+    }
+    let (statement, flags) =
+        decode_optimizer_select_request(bytes).ok_or(RequestError::Truncated)?;
+    if statement != OPTIMIZER_UPDATE_STATEMENT {
+        return Err(RequestError::UnsupportedStatement(statement));
+    }
+    if flags != 0 {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut cursor = Cursor {
+        bytes,
+        offset: header_bytes,
+    };
+    let schema_name = cursor.identifier()?;
+    let relation_name = cursor.identifier()?;
+    let assignment_count = usize::from(cursor.u16()?);
+    if assignment_count == 0 || assignment_count > MAX_UPDATE_ASSIGNMENTS {
+        return Err(RequestError::TooManyAssignments);
+    }
+    let mut assignments = Vec::with_capacity(assignment_count);
+    for _ in 0..assignment_count {
+        let column_name = cursor.identifier()?;
+        let value = match cursor.u8()? {
+            0 => {
+                let index = cursor.u32()?;
+                if index == 0 || index > MAX_PARAMETER_INDEX {
+                    return Err(RequestError::InvalidAssignment);
+                }
+                UpdateValue::Parameter(index)
+            }
+            1 => UpdateValue::Null,
+            _ => return Err(RequestError::InvalidAssignment),
+        };
+        assignments.push(UpdateAssignment { column_name, value });
+    }
+    let predicate_len = usize::try_from(cursor.u32()?).map_err(|_| RequestError::TooLarge)?;
+    if predicate_len == 0 {
+        return Err(RequestError::InvalidPredicate);
+    }
+    if predicate_len > MAX_PREDICATE_BYTES {
+        return Err(RequestError::PredicateTooLarge);
+    }
+    let predicate_bytes = cursor.take(predicate_len)?;
+    let mut parser = PredicateParser::new(predicate_bytes);
+    let predicate = parser.node(1)?;
+    if !parser.cursor.is_empty() || !cursor.is_empty() {
+        return Err(RequestError::TrailingBytes);
+    }
+    Ok(UpdateRequest {
+        schema_name,
+        relation_name,
+        assignments,
         predicate,
     })
 }
@@ -397,6 +492,21 @@ mod tests {
         bytes
     }
 
+    fn update_request(predicate: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0, OPTIMIZER_REQUEST_VERSION as u8, 3, 0];
+        name("public", &mut bytes);
+        name("items", &mut bytes);
+        u16_bytes(2, &mut bytes);
+        name("label", &mut bytes);
+        bytes.push(0);
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        name("active", &mut bytes);
+        bytes.push(1);
+        u32_bytes(predicate.len(), &mut bytes);
+        bytes.extend_from_slice(predicate);
+        bytes
+    }
+
     #[test]
     fn decodes_bounded_delete_request_without_projection_or_limit() {
         let predicate = [0x20, 0, 0x10, 2, b'i', b'd', 0x02, 0, 0, 0, 0, 0, 0, 0, 7];
@@ -430,6 +540,64 @@ mod tests {
             Err(RequestError::UnsupportedStatement(
                 OPTIMIZER_SELECT_STATEMENT
             ))
+        );
+    }
+
+    #[test]
+    fn decodes_bounded_update_assignments_and_required_predicate() {
+        let predicate = [0x20, 0, 0x10, 2, b'i', b'd', 0x02, 0, 0, 0, 0, 0, 0, 0, 7];
+        let request = decode_update_request(&update_request(&predicate)).unwrap();
+        assert_eq!(request.schema_name, "public");
+        assert_eq!(request.relation_name, "items");
+        assert_eq!(
+            request.assignments,
+            [
+                UpdateAssignment {
+                    column_name: "label".to_owned(),
+                    value: UpdateValue::Parameter(1),
+                },
+                UpdateAssignment {
+                    column_name: "active".to_owned(),
+                    value: UpdateValue::Null,
+                },
+            ]
+        );
+        assert_eq!(
+            request.predicate,
+            Predicate::Compare {
+                operator: Comparison::Equal,
+                left: Box::new(Predicate::Column("id".to_owned())),
+                right: Box::new(Predicate::Integer(7)),
+            }
+        );
+    }
+
+    #[test]
+    fn update_request_rejects_invalid_assignment_and_missing_where() {
+        assert_eq!(
+            decode_update_request(&update_request(&[])),
+            Err(RequestError::InvalidPredicate)
+        );
+        let mut invalid_kind = update_request(&[0x01, 1]);
+        let first_assignment_value =
+            4 + 1 + "public".len() + 1 + "items".len() + 2 + 1 + "label".len();
+        invalid_kind[first_assignment_value] = 9;
+        assert_eq!(
+            decode_update_request(&invalid_kind),
+            Err(RequestError::InvalidAssignment)
+        );
+        let mut zero_parameter = update_request(&[0x01, 1]);
+        zero_parameter[first_assignment_value + 1..first_assignment_value + 5]
+            .copy_from_slice(&0u32.to_be_bytes());
+        assert_eq!(
+            decode_update_request(&zero_parameter),
+            Err(RequestError::InvalidAssignment)
+        );
+        let mut trailing = update_request(&[0x01, 1]);
+        trailing.push(0);
+        assert_eq!(
+            decode_update_request(&trailing),
+            Err(RequestError::TrailingBytes)
         );
     }
 

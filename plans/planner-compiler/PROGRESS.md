@@ -269,3 +269,11 @@
 - Coverage: the maintained TinyCC fixture drives a parsed parameterized DELETE through operation-selected optimizer submission, relation validation and acquisition, one executor batch, predicate evaluation, and one successful stage-delete acknowledgement.
 - Verification: focused optimizer plan fixture and maintained TinyCC SDK suite passed in the pinned Nix shell; ABI generator checks passed.
 - Remaining: exercise DELETE through the confined optimizer/executor process acceptance harness and continue UPDATE request/plan support.
+
+## OP-3 dependency: decode bounded UPDATE optimizer requests — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). UPDATE requests identify a bounded assignment set and require a Boolean WHERE tree; names and values remain untrusted until invocation-bound binding.
+- Wire format: generated statement tag `OPTIMIZER_UPDATE_STATEMENT=3`; after schema/relation identifiers come 1–64 assignments, each containing a column identifier and either a nonzero parameter index or NULL, followed by a nonempty bounded predicate.
+- Implementation: `decode_update_request` validates the request envelope, identifiers, assignment count/kinds, parameter indices, predicate size/tree, and trailing bytes. It does not resolve names, infer assignment types, or grant mutation authority.
+- Coverage: Rust tests decode mixed parameter/NULL assignments and reject missing WHERE, invalid assignment kinds, zero parameter indices, and trailing bytes. ABI generation and format checks passed.
+- Remaining: bind assignments against authorized relation metadata, define and validate a canonical UPDATE plan, route a dedicated optimizer process operation, and add C SDK submission/verification/execution.
