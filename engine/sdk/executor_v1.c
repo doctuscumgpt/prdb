@@ -215,8 +215,10 @@ int32_t prdb_sdk_executor_stage_insert_v1(
                     (uint32_t)value_len);
                 memcpy(request + offset, value_header, sizeof(value_header));
                 offset += sizeof(value_header);
-                if (value_len != 0) {
-                    memcpy(request + offset, input->value.data, (size_t)value_len);
+                if (!prdb_encode_scalar_value_record_value_bytes(
+                        request + offset, (size_t)(request_capacity - offset),
+                        input->value.data, (size_t)value_len)) {
+                    return PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL;
                 }
                 offset += value_len;
             }
@@ -292,8 +294,10 @@ int32_t prdb_sdk_executor_stage_update_v1(
                 (uint32_t)value_len);
             memcpy(request + offset, value_header, sizeof(value_header));
             offset += sizeof(value_header);
-            if (value_len != 0) {
-                memcpy(request + offset, patch->value.data, (size_t)value_len);
+            if (!prdb_encode_scalar_value_record_value_bytes(
+                    request + offset, (size_t)(request_capacity - offset),
+                    patch->value.data, (size_t)value_len)) {
+                return PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL;
             }
             offset += value_len;
         }
