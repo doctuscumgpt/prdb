@@ -23261,6 +23261,30 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         .concat();
         assert_eq!(composite_joined.payload, expected_payload);
     }
+    for expected_id in [42u32, 1u32] {
+        let integer_id_field = |value: u32| {
+            [
+                &[0, 2][..],
+                b"id",
+                &[0, 0, 0, 3],
+                &[0, 0, 0],
+                &[0, 0, 0, 4],
+                &value.to_be_bytes(),
+            ]
+            .concat()
+        };
+        let expected_payload = [
+            b"SQLR".as_slice(),
+            &[0, 1, 0, 2],
+            &integer_id_field(expected_id),
+            &integer_id_field(expected_id),
+        ]
+        .concat();
+        let self_joined = read_frame(&mut gateway)?.ok_or("missing self-join SQLR result")?;
+        assert_eq!(self_joined.operation, Operation::GatewayResultData as u16);
+        assert_eq!(self_joined.request_id, accepted.request_id);
+        assert_eq!(self_joined.payload, expected_payload);
+    }
     drop(gateway);
     assert!(matches!(
         finalize_gateway_invocation_and_send_terminal(

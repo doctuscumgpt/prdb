@@ -23,10 +23,14 @@ int main(void) {
     static const uint8_t missing_alias[] =
         "SELECT l.id FROM lefts AS INNER JOIN rights ON "
         "lefts.id = rights.id AND lefts.region = rights.region";
+    static const uint8_t self_join_sql[] =
+        "SELECT a.label, b.label FROM lefts AS a INNER JOIN lefts AS b ON "
+        "a.id = b.id AND a.region = b.region";
     static const uint8_t left_name[] = "lefts";
     static const uint8_t right_name[] = "rights";
     prdb_sdk_select_v19 statement = {0};
     prdb_sdk_select_v19 no_alias_statement = {0};
+    prdb_sdk_select_v19 self_join_statement = {0};
     prdb_sdk_select_v19 unchanged_statement = {0};
     prdb_sdk_select_v16 frozen_statement = {0};
     prdb_sdk_select_binding_v19 binding = {0};
@@ -85,6 +89,23 @@ int main(void) {
                left_columns, 3, right_name, sizeof(right_name) - 1,
                right_columns, 3, &binding, sizeof(binding)) ==
            PRDB_SDK_SQL_BIND_OK);
+
+    assert(prdb_sdk_sql_parse_select_v19(
+               self_join_sql, sizeof(self_join_sql) - 1, &self_join_statement,
+               sizeof(self_join_statement), NULL) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_sql_bind_select_v19(
+               &self_join_statement, left_name, sizeof(left_name) - 1,
+               left_columns, 3, left_name, sizeof(left_name) - 1,
+               left_columns, 3, &binding, sizeof(binding)) ==
+           PRDB_SDK_SQL_BIND_OK);
+    assert(binding.base.base.projections[0].relation_side ==
+               PRDB_SDK_SQL_V8_LEFT &&
+           binding.base.base.projections[1].relation_side ==
+               PRDB_SDK_SQL_V8_RIGHT &&
+           binding.base.join_keys[0].left.ordinal == 0 &&
+           binding.base.join_keys[0].right.ordinal == 0 &&
+           binding.base.join_keys[1].left.ordinal == 1 &&
+           binding.base.join_keys[1].right.ordinal == 1);
 
     unchanged_statement.struct_size = 73;
     assert(prdb_sdk_sql_parse_select_v19(

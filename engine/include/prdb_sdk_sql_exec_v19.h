@@ -9,10 +9,11 @@ typedef int32_t (*prdb_sdk_sql_join_result_row_v19_fn)(
     uint32_t projection_count, const prdb_sdk_select_binding_v19 *binding);
 
 /* Executes the v19 two-relation INNER JOIN over independently described and
- * resolved authorized relations. It supports v19 relation aliases while
- * preserving the v16 row, byte, scan-page, and cancellation bounds. Projected
- * value views and the binding are valid only during the callback. Any nonzero
- * callback status fails the statement; earlier output is provisional and must
+ * resolved authorized relations. Distinct aliases can identify two scans of
+ * the same relation. It preserves the v16 row, byte, scan-page, and
+ * cancellation bounds. Projected value views and the binding are valid only
+ * during the callback. Any nonzero callback status fails the statement;
+ * earlier output is provisional and must
  * be discarded by the host transaction. All caller buffers, arrays, and row
  * storage must be disjoint. */
 int32_t prdb_sdk_sql_execute_inner_join_v19(

@@ -5598,15 +5598,12 @@ failed_join_select_v19:
 static int rebase_v19_relation(
     const prdb_sdk_select_v19 *statement,
     prdb_sdk_sql_qualified_column_v8 *reference) {
-    const prdb_sdk_select_v8 *base = &statement->base.base;
     if (spans_equal_ascii_case(statement->base.base.sql,
                                reference->relation, statement->left_alias)) {
-        reference->relation = base->left_relation;
         return 1;
     }
     if (spans_equal_ascii_case(statement->base.base.sql,
                                reference->relation, statement->right_alias)) {
-        reference->relation = base->right_relation;
         return 1;
     }
     return 0;
@@ -5629,9 +5626,17 @@ int32_t prdb_sdk_sql_bind_select_v19(
     uint32_t out_capacity) {
     prdb_sdk_select_v19 checked;
     prdb_sdk_select_binding_v19 result = {0};
+    prdb_sdk_select_v2 relation_names = {0};
     int32_t status;
 
     if (statement == NULL || out == NULL || out_capacity < sizeof(*out)) {
+        return PRDB_SDK_SQL_BIND_INVALID_ARGUMENT;
+    }
+    if (left_relation_name == NULL || right_relation_name == NULL ||
+        !valid_identifier_bytes(left_relation_name,
+                                left_relation_name_len) ||
+        !valid_identifier_bytes(right_relation_name,
+                                right_relation_name_len)) {
         return PRDB_SDK_SQL_BIND_INVALID_ARGUMENT;
     }
     if (statement->struct_size < sizeof(*statement) ||
@@ -5659,6 +5664,24 @@ int32_t prdb_sdk_sql_bind_select_v19(
         spans_equal_ascii_case(statement->base.base.sql,
                                statement->left_alias, statement->right_alias)) {
         return PRDB_SDK_SQL_BIND_INVALID_STATEMENT;
+    }
+    if (!valid_identifier_bytes(
+            statement->base.base.sql + statement->left_alias.offset,
+            statement->left_alias.length) ||
+        !valid_identifier_bytes(
+            statement->base.base.sql + statement->right_alias.offset,
+            statement->right_alias.length)) {
+        return PRDB_SDK_SQL_BIND_INVALID_STATEMENT;
+    }
+    relation_names.sql = statement->base.base.sql;
+    relation_names.sql_len = statement->base.base.sql_len;
+    if (!span_matches_name(&relation_names,
+                           statement->base.base.left_relation,
+                           left_relation_name, left_relation_name_len) ||
+        !span_matches_name(&relation_names,
+                           statement->base.base.right_relation,
+                           right_relation_name, right_relation_name_len)) {
+        return PRDB_SDK_SQL_BIND_RELATION_MISMATCH;
     }
     checked = *statement;
     for (uint32_t index = 0;
@@ -5698,12 +5721,16 @@ int32_t prdb_sdk_sql_bind_select_v19(
             return PRDB_SDK_SQL_BIND_INVALID_STATEMENT;
         }
     }
+    checked.base.base.left_relation = checked.left_alias;
+    checked.base.base.right_relation = checked.right_alias;
     checked.base.base.left_join_key = checked.base.left_join_keys[0];
     checked.base.base.right_join_key = checked.base.right_join_keys[0];
     status = prdb_sdk_sql_bind_select_v16(
-        &checked.base, left_relation_name, left_relation_name_len,
-        left_columns, left_column_count, right_relation_name,
-        right_relation_name_len, right_columns, right_column_count,
+        &checked.base,
+        checked.base.base.sql + checked.left_alias.offset,
+        checked.left_alias.length, left_columns, left_column_count,
+        checked.base.base.sql + checked.right_alias.offset,
+        checked.right_alias.length, right_columns, right_column_count,
         &result.base, sizeof(result.base));
     if (status != PRDB_SDK_SQL_BIND_OK) return status;
     result.struct_size = sizeof(result);

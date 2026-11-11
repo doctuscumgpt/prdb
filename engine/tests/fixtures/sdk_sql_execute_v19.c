@@ -397,6 +397,10 @@ int main(void) {
         "SELECT a.value, o.value FROM accounts AS a INNER JOIN "
         "orders AS o ON a.account_id = o.account_id AND "
         "a.account_id = o.account_id";
+    static const uint8_t self_join_sql[] =
+        "SELECT a.value, b.value FROM accounts AS a INNER JOIN "
+        "accounts AS b ON a.account_id = b.account_id AND "
+        "a.account_id = b.account_id";
     static const uint8_t composite_sql[] =
         "SELECT accounts.value, orders.value FROM accounts INNER JOIN "
         "orders ON accounts.account_id = orders.account_id AND "
@@ -456,6 +460,33 @@ int main(void) {
     assert(capture.calls == 2 && capture.left_values[0] == 101 &&
            capture.right_values[0] == 201 && capture.left_values[1] == 102 &&
            capture.right_values[1] == 202 && mock.statement_failed == 0);
+
+    {
+        const int32_t self_keys[] = {1, 2, 3};
+        const uint8_t self_states[] = {
+            PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_STATE_VALUE,
+            PRDB_SDK_VALUE_STATE_NULL};
+        const int32_t self_values[] = {101, 102, 103};
+        mock.batch_len[0] = make_batch(mock.batch[0], self_keys, self_states,
+                                       self_values, 3);
+        mock.batch_len[1] = make_batch(mock.batch[1], self_keys, self_states,
+                                       self_values, 3);
+        reset(&mock, &capture);
+        assert(run_query_v19(&mock, &capture, self_join_sql,
+                             sizeof(self_join_sql) - 1, 1024) ==
+               PRDB_SDK_SQL_EXEC_OK);
+        assert(mock.planner_calls == 2 && mock.resolve_calls == 2 &&
+               mock.open_calls == 2 && mock.next_calls[0] == 1 &&
+               mock.next_calls[1] == 1 && mock.statement_failed == 0);
+        assert(capture.calls == 2 && capture.left_values[0] == 101 &&
+               capture.right_values[0] == 101 &&
+               capture.left_values[1] == 102 &&
+               capture.right_values[1] == 102);
+        mock.batch_len[0] = make_batch(mock.batch[0], left_keys, left_states,
+                                       left_values, 3);
+        mock.batch_len[1] = make_batch(mock.batch[1], right_keys, right_states,
+                                       right_values, 3);
+    }
 
     reset(&mock, &capture);
     assert(run_query(&mock, &capture, limit_sql, sizeof(limit_sql) - 1, 1024) ==

@@ -359,9 +359,7 @@ int32_t prdb_sdk_sql_execute_inner_join_v19(
                                 left_executor_columns) ||
         !same_relation_shape_v19(&planned_right, &resolved_right,
                                 right_planner_columns,
-                                right_executor_columns) ||
-        memcmp(resolved_left.relation_id, resolved_right.relation_id, 16) ==
-            0) {
+                                right_executor_columns)) {
         return fail_statement_v19(host_v3,
                                  PRDB_SDK_SQL_EXEC_SHAPE_MISMATCH);
     }
