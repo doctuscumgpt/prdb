@@ -1751,6 +1751,15 @@
         { "name": "cell_count", "encoding": "u16be" }
       ],
       "trailing_fields": []
+    },
+    {
+      "name": "SANITIZED_CELL_TAG_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "state_code", "encoding": "u8" }
+      ],
+      "trailing_fields": []
     }
   ]
 }

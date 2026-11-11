@@ -31,10 +31,12 @@ static int32_t decode_cell(const uint8_t *payload, uint64_t payload_len,
     uint32_t start = *offset;
     uint8_t state;
 
-    if (!take(payload, payload_len, offset, 1, &bytes)) {
+    if (!take(payload, payload_len, offset,
+              PRDB_SANITIZED_CELL_TAG_RECORD_HEADER_BYTES, &bytes) ||
+        !prdb_decode_sanitized_cell_tag_record(
+            bytes, PRDB_SANITIZED_CELL_TAG_RECORD_HEADER_BYTES, &state)) {
         return PRDB_SDK_BATCH_INVALID_PAYLOAD;
     }
-    state = bytes[0];
     value->struct_size = sizeof(*value);
     value->abi_version = PRDB_SDK_VALUE_ABI_V1_VERSION;
     value->data = NULL;

@@ -705,10 +705,17 @@ impl NextBatchResponse {
             }
             let mut cells = Vec::with_capacity(cell_count);
             for _ in 0..cell_count {
-                let state = *payload
-                    .get(offset)
+                let state_bytes = payload
+                    .get(offset..)
+                    .and_then(|bytes| {
+                        bytes.get(..generated::SANITIZED_CELL_TAG_RECORD_HEADER_BYTES as usize)
+                    })
                     .ok_or(ExecutorRequestError::InvalidPayload)?;
-                offset += 1;
+                let state = generated::decode_sanitized_cell_tag_record(state_bytes)
+                    .ok_or(ExecutorRequestError::InvalidPayload)?;
+                offset = offset
+                    .checked_add(generated::SANITIZED_CELL_TAG_RECORD_HEADER_BYTES as usize)
+                    .ok_or(ExecutorRequestError::InvalidPayload)?;
                 cells.push(match state {
                     0 => SanitizedCell::Value(decode_scalar_value_record(payload, &mut offset)?),
                     1 => SanitizedCell::Null,
@@ -758,10 +765,14 @@ fn encode_sanitized_cell(
     max_bytes: usize,
 ) -> Result<(), ExecutorRequestError> {
     match cell {
-        SanitizedCell::Null => payload.push(1),
-        SanitizedCell::Redacted => payload.push(2),
+        SanitizedCell::Null => {
+            payload.extend_from_slice(&generated::encode_sanitized_cell_tag_record(1))
+        }
+        SanitizedCell::Redacted => {
+            payload.extend_from_slice(&generated::encode_sanitized_cell_tag_record(2))
+        }
         SanitizedCell::Value(value) => {
-            payload.push(0);
+            payload.extend_from_slice(&generated::encode_sanitized_cell_tag_record(0));
             let (type_code, bytes) = encode_scalar_value(value)?;
             append_scalar_value_record(payload, type_code, &bytes)?;
         }

@@ -1817,4 +1817,21 @@ static inline int prdb_decode_executor_batch_row_record(const uint8_t *payload, 
     return 1;
 }
 
+static inline void prdb_encode_sanitized_cell_tag_record(uint8_t payload[1],
+    uint8_t state_code) {
+    payload[0] = state_code;
+}
+
+static inline int prdb_decode_sanitized_cell_tag_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *state_code) {
+    if (payload == NULL || payload_len != 1) {
+        return 0;
+    }
+    if (state_code == NULL) {
+        return 0;
+    }
+    *state_code = payload[0];
+    return 1;
+}
+
 #endif /* PRDB_QUERY_ABI_PAYLOAD_CODECS_H */

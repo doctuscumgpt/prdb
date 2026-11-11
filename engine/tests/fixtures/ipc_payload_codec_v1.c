@@ -588,6 +588,18 @@ int main(void) {
         memcmp(decoded_batch_row_handle, visible_column_id, 16) != 0) {
         return 69;
     }
+    uint8_t sanitized_cell_tag[1] = {0};
+    uint8_t decoded_sanitized_cell_tag = 0xff;
+    prdb_encode_sanitized_cell_tag_record(sanitized_cell_tag, 2);
+    if (sanitized_cell_tag[0] != 2 ||
+        !prdb_decode_sanitized_cell_tag_record(
+            sanitized_cell_tag, sizeof(sanitized_cell_tag),
+            &decoded_sanitized_cell_tag) ||
+        decoded_sanitized_cell_tag != 2 ||
+        prdb_decode_sanitized_cell_tag_record(
+            sanitized_cell_tag, 0, &decoded_sanitized_cell_tag)) {
+        return 70;
+    }
     uint8_t planner_schema_id[16];
     uint8_t planner_plan_relation_id[16];
     uint8_t decoded_planner_schema_id[16] = {0};

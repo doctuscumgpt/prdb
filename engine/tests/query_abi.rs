@@ -121,6 +121,16 @@ fn generated_nested_record_codecs_preserve_wire_bytes_and_boundaries() {
         Some((row_handle, 2))
     );
     assert!(prdb_engine::query_abi::decode_executor_batch_row_record(&batch_row[..17]).is_none());
+
+    for state in 0..=2 {
+        let state_record = prdb_engine::query_abi::encode_sanitized_cell_tag_record(state);
+        assert_eq!(state_record, [state]);
+        assert_eq!(
+            prdb_engine::query_abi::decode_sanitized_cell_tag_record(&state_record),
+            Some(state)
+        );
+    }
+    assert!(prdb_engine::query_abi::decode_sanitized_cell_tag_record(&[]).is_none());
 }
 
 #[test]

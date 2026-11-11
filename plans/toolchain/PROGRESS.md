@@ -723,6 +723,15 @@
 - Verification: generator schema/drift tests (7 tests), generated Rust codec boundary test, all 6 executor IPC tests, forced TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, `git diff --check`, and full locked workspace tests passed. The commit suite reported 138 passed and 4 cgroup-dependent tests ignored; the metadata process suite reported 1 passed and 1 cgroup-dependent test ignored.
 - Remaining: additional nested IPC records and full shared-schema parity remain open.
 
+## TC-2 follow-up: generated sanitized-cell state tag — implemented
+
+- Contract: each sanitized batch cell begins with exactly one state byte: VALUE 0, NULL 1, or REDACTED 2; only VALUE carries a scalar value record.
+- Red evidence: the generator regression failed because `SANITIZED_CELL_TAG_RECORD` did not exist in the shared schema.
+- Implementation: the schema generates Rust and C one-byte encoders/decoders. Rust batch response encoding/decoding and the TinyCC SDK batch parser now use them; state-specific validation remains at each caller.
+- Compatibility: all state values and batch bytes are unchanged. Unknown values, missing tags, and truncated value records remain rejected.
+- Verification: generator schema/drift tests (7 tests), generated Rust state-tag tests, all 6 executor IPC tests, forced TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, `git diff --check`, and full locked workspace tests passed. The commit suite reported 138 passed and 4 cgroup-dependent tests ignored; the metadata process suite reported 1 passed and 1 cgroup-dependent test ignored.
+- Remaining: additional nested IPC records and full shared-schema parity remain open.
+
 ## TC-1 / TC-3: maintained TinyCC SDK and shared-artifact link profile — partial
 
 - Observed development tools: Rust/Cargo 1.95.0 with rustfmt and Clippy; TinyCC `0.9.27-unstable-2025-01-06` on x86_64 Linux. The SDK archive and C fixtures build with TinyCC `-Wall -Wextra -Werror`.

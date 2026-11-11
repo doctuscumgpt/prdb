@@ -1089,3 +1089,18 @@ pub fn decode_executor_batch_row_record(payload: &[u8]) -> Option<([u8; 16], u16
     }
     Some((payload[0..16].try_into().ok()?, u16::from_be_bytes(payload[16..18].try_into().ok()?)))
 }
+
+pub const SANITIZED_CELL_TAG_RECORD_STATE_CODE_OFFSET: u32 = 0;
+pub const SANITIZED_CELL_TAG_RECORD_HEADER_BYTES: u32 = 1;
+pub fn encode_sanitized_cell_tag_record(state_code: u8) -> [u8; 1] {
+    let mut payload = [0u8; 1];
+    payload[0] = state_code;
+    payload
+}
+
+pub fn decode_sanitized_cell_tag_record(payload: &[u8]) -> Option<u8> {
+    if payload.len() != 1 {
+        return None;
+    }
+    Some(payload[0])
+}
