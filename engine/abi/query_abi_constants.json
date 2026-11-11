@@ -798,6 +798,13 @@
       "c_type": "UINT16_C"
     },
     {
+      "rust_name": "IPC_OP_OPTIMIZE_DELETE",
+      "rust_type": "u16",
+      "value": 4613,
+      "c_name": "PRDB_IPC_OP_OPTIMIZE_DELETE",
+      "c_type": "UINT16_C"
+    },
+    {
       "rust_name": "IPC_OP_FINALIZE_TRANSACTION",
       "rust_type": "u16",
       "value": 4865,

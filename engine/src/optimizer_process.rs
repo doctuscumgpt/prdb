@@ -4,7 +4,7 @@ use crate::executor_ipc::ResolveRelationRequest;
 use crate::ipc::{DispatchError, IpcFrame, Operation, ServiceRole, authorize_operation};
 use crate::optimizer_ipc::{
     MAX_OPTIMIZER_REQUESTS_PER_CONNECTION, OptimizerPayloadError, OptimizerResponse,
-    OptimizerStatus, decode_optimizer_request, status_for_error,
+    OptimizerStatus, status_for_error,
 };
 use crate::optimizer_plan::MAX_PLAN_BYTES;
 use crate::planner_ipc::{DescribePlanRelationResponse, PlannerRequestError};
@@ -55,7 +55,10 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             Operation::from_code(request.operation).map_err(OptimizerProcessError::Dispatch)?;
         authorize_operation(ServiceRole::OptimizerSubmission, operation)
             .map_err(OptimizerProcessError::Dispatch)?;
-        if operation != Operation::OptimizeSelect {
+        if !matches!(
+            operation,
+            Operation::OptimizeSelect | Operation::OptimizeDelete
+        ) {
             return Err(OptimizerProcessError::Dispatch(
                 DispatchError::OperationNotAllowed {
                     role: ServiceRole::OptimizerSubmission,
@@ -64,8 +67,19 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             ));
         }
 
-        let request_value = match decode_optimizer_request(&request.payload) {
-            Ok(request_value) => request_value,
+        let decoded_names = match operation {
+            Operation::OptimizeSelect => {
+                crate::optimizer_request::decode_select_request(&request.payload)
+                    .map(|decoded| (decoded.schema_name, decoded.relation_name))
+            }
+            Operation::OptimizeDelete => {
+                crate::optimizer_request::decode_delete_request(&request.payload)
+                    .map(|decoded| (decoded.schema_name, decoded.relation_name))
+            }
+            _ => unreachable!("optimizer operation was checked above"),
+        };
+        let (schema_name, relation_name) = match decoded_names {
+            Ok(names) => names,
             Err(_) => {
                 write_submission_response(
                     submission,
@@ -81,8 +95,8 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             operation: Operation::DescribePlanRelation as u16,
             request_id: request.request_id,
             payload: ResolveRelationRequest {
-                schema_name: request_value.schema_name.clone(),
-                relation_name: request_value.relation_name.clone(),
+                schema_name,
+                relation_name,
             }
             .encode()
             .map_err(|error| OptimizerProcessError::PlannerPayload(error.into()))?,
@@ -101,10 +115,22 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
         let relation = DescribePlanRelationResponse::decode(&planner_response.payload)
             .map_err(OptimizerProcessError::PlannerPayload)?
             .relation;
-        let response = match crate::optimizer_service::optimize_select_v1_with_relation(
-            &request.payload,
-            relation,
-        ) {
+        let optimized = match operation {
+            Operation::OptimizeSelect => {
+                crate::optimizer_service::optimize_select_v1_with_relation(
+                    &request.payload,
+                    relation,
+                )
+            }
+            Operation::OptimizeDelete => {
+                crate::optimizer_service::optimize_delete_v1_with_relation(
+                    &request.payload,
+                    relation,
+                )
+            }
+            _ => unreachable!("optimizer operation was checked above"),
+        };
+        let response = match optimized {
             Ok(plan) if plan.len() <= MAX_PLAN_BYTES => OptimizerResponse::success(plan),
             Ok(_) => OptimizerResponse::failure(OptimizerStatus::Internal),
             Err(error) => OptimizerResponse::failure(status_for_error(&error)),
@@ -152,6 +178,17 @@ mod tests {
         bytes.extend_from_slice(b"name");
         bytes.extend_from_slice(&0u32.to_be_bytes());
         bytes.push(0);
+        bytes
+    }
+
+    fn delete_request() -> Vec<u8> {
+        let mut bytes = vec![0, 1, 2, 0];
+        for name in ["public", "items"] {
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(&[0x01, 1]);
         bytes
     }
 
@@ -221,6 +258,78 @@ mod tests {
             assert!(
                 matches!(plan.nodes.first(), Some(PlanNode::Scan { columns }) if columns[0].column_id == [3; 16])
             );
+            submission_client.shutdown(Shutdown::Write).unwrap();
+            planner_thread.join().unwrap();
+            optimizer_thread.join().unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn process_protocol_dispatches_delete_and_returns_a_validated_delete_plan() {
+        let (mut submission_client, mut submission_server) = UnixStream::pair().unwrap();
+        let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
+        std::thread::scope(|scope| {
+            let planner_thread = scope.spawn(|| {
+                let request = crate::ipc::read_frame(&mut planner_server)
+                    .unwrap()
+                    .expect("optimizer must resolve DELETE relation metadata");
+                assert_eq!(request.operation, Operation::DescribePlanRelation as u16);
+                assert_eq!(request.request_id, 10);
+                let relation = AuthorizedPlanRelation {
+                    schema_id: [1; 16],
+                    schema_version: 3,
+                    table_epoch: 7,
+                    relation: AuthorizedRelationDescription {
+                        relation_id: [2; 16],
+                        name: "items".to_owned(),
+                        columns: vec![VisibleColumn {
+                            column_id: [3; 16],
+                            name: "id".to_owned(),
+                            ordinal: 0,
+                            scalar_type: ScalarType::Integer,
+                            nullable: false,
+                        }],
+                    },
+                };
+                crate::ipc::write_frame(
+                    &mut planner_server,
+                    &IpcFrame {
+                        operation: request.operation,
+                        request_id: request.request_id,
+                        payload: DescribePlanRelationResponse {
+                            relation: Some(relation),
+                        }
+                        .encode()
+                        .unwrap(),
+                    },
+                )
+                .unwrap();
+            });
+            let optimizer_thread = scope
+                .spawn(|| serve_optimizer_process(&mut submission_server, &mut planner_client));
+
+            crate::ipc::write_frame(
+                &mut submission_client,
+                &IpcFrame {
+                    operation: Operation::OptimizeDelete as u16,
+                    request_id: 10,
+                    payload: delete_request(),
+                },
+            )
+            .unwrap();
+            let response = crate::ipc::read_frame(&mut submission_client)
+                .unwrap()
+                .expect("optimizer must return a DELETE plan");
+            assert_eq!(response.operation, Operation::OptimizeDelete as u16);
+            assert_eq!(response.request_id, 10);
+            let response = OptimizerResponse::decode(&response.payload).unwrap();
+            assert_eq!(response.status, OptimizerStatus::Success);
+            let plan =
+                crate::optimizer_plan::decode_delete_plan_v1(response.plan.as_deref().unwrap())
+                    .unwrap();
+            assert_eq!(plan.relation.schema_id, [1; 16]);
+            assert_eq!(plan.relation.table_epoch, 7);
+            assert!(plan.scan_columns.is_empty());
             submission_client.shutdown(Shutdown::Write).unwrap();
             planner_thread.join().unwrap();
             optimizer_thread.join().unwrap().unwrap();

@@ -1,7 +1,7 @@
 //! Versioned request/response payloads for executor-to-optimizer submission.
 
 use crate::optimizer_binding::{BindError, MetadataBindError};
-use crate::optimizer_plan::{MAX_PLAN_BYTES, decode_plan_v1};
+use crate::optimizer_plan::{MAX_PLAN_BYTES, decode_delete_plan_v1, decode_plan_v1};
 use crate::optimizer_request::{RequestError, SelectRequest, decode_select_request};
 use crate::optimizer_service::OptimizerError;
 pub use crate::query_abi::{
@@ -51,12 +51,20 @@ pub fn decode_optimizer_request(bytes: &[u8]) -> Result<SelectRequest, Optimizer
     decode_select_request(bytes).map_err(OptimizerPayloadError::InvalidRequest)
 }
 
+fn validate_optimizer_plan(bytes: &[u8]) -> Result<(), OptimizerPayloadError> {
+    if decode_plan_v1(bytes).is_ok() || decode_delete_plan_v1(bytes).is_ok() {
+        Ok(())
+    } else {
+        Err(OptimizerPayloadError::InvalidPlan)
+    }
+}
+
 impl OptimizerResponse {
     pub fn success(plan: Vec<u8>) -> Result<Self, OptimizerPayloadError> {
         if plan.is_empty() || plan.len() > MAX_PLAN_BYTES {
             return Err(OptimizerPayloadError::PlanTooLarge);
         }
-        decode_plan_v1(&plan).map_err(|_| OptimizerPayloadError::InvalidPlan)?;
+        validate_optimizer_plan(&plan)?;
         Ok(Self {
             status: OptimizerStatus::Success,
             plan: Some(plan),
@@ -76,7 +84,7 @@ impl OptimizerResponse {
                 if plan.is_empty() || plan.len() > MAX_PLAN_BYTES {
                     return Err(OptimizerPayloadError::PlanTooLarge);
                 }
-                decode_plan_v1(plan).map_err(|_| OptimizerPayloadError::InvalidPlan)?;
+                validate_optimizer_plan(plan)?;
                 let plan_length =
                     u32::try_from(plan.len()).map_err(|_| OptimizerPayloadError::PlanTooLarge)?;
                 let mut output = crate::query_abi::encode_optimizer_response_success(
@@ -142,7 +150,7 @@ impl OptimizerResponse {
         )
         .ok_or(OptimizerPayloadError::InvalidResponse)?
         .to_vec();
-        decode_plan_v1(&plan).map_err(|_| OptimizerPayloadError::InvalidPlan)?;
+        validate_optimizer_plan(&plan)?;
         Ok(Self {
             status,
             plan: Some(plan),
@@ -193,6 +201,22 @@ mod tests {
         encode_plan_v1(&plan_select_v1(bound).unwrap()).unwrap()
     }
 
+    fn delete_plan_bytes() -> Vec<u8> {
+        let plan = crate::optimizer_plan::plan_delete_v1(
+            crate::optimizer_plan::RelationReference {
+                schema_name: "public".to_owned(),
+                schema_id: [1; 16],
+                schema_version: 1,
+                relation_name: "items".to_owned(),
+                relation_id: [2; 16],
+                table_epoch: 1,
+            },
+            crate::optimizer_binding::BoundPredicate::Boolean(true),
+        )
+        .unwrap();
+        crate::optimizer_plan::encode_delete_plan_v1(&plan).unwrap()
+    }
+
     #[test]
     fn optimizer_responses_roundtrip_only_validated_plans() {
         let plan = plan_bytes();
@@ -205,6 +229,12 @@ mod tests {
         assert_eq!(
             OptimizerResponse::decode(&failure.encode().unwrap()),
             Ok(failure)
+        );
+
+        let delete = OptimizerResponse::success(delete_plan_bytes()).unwrap();
+        assert_eq!(
+            OptimizerResponse::decode(&delete.encode().unwrap()),
+            Ok(delete)
         );
     }
 

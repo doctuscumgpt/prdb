@@ -179,6 +179,7 @@ fn ipc_operation_codes_are_fixed_and_unknown_codes_fail_closed() {
     assert_eq!(Operation::ResolveRelation as u16, 0x1101);
     assert_eq!(Operation::ResolvePlanRelation as u16, 0x1105);
     assert_eq!(Operation::EstimateScan as u16, 0x1202);
+    assert_eq!(Operation::OptimizeDelete as u16, 0x1205);
     assert_eq!(Operation::CommitAdministrativeDdl as u16, 0x1501);
     assert_eq!(
         Operation::from_code(Operation::StageUpdate as u16),
@@ -238,6 +239,10 @@ fn ipc_operation_allowlists_separate_executor_planner_and_control_roles() {
     );
     assert_eq!(
         authorize_operation(ServiceRole::OptimizerSubmission, Operation::OptimizeSelect),
+        Ok(())
+    );
+    assert_eq!(
+        authorize_operation(ServiceRole::OptimizerSubmission, Operation::OptimizeDelete),
         Ok(())
     );
     assert_eq!(
