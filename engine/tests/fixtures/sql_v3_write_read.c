@@ -15,6 +15,7 @@
 #include "prdb_sdk_sql_result_v1.h"
 #include "prdb_sdk_executor_v1.h"
 #include "prdb_sdk_optimizer_plan_v1.h"
+#include "prdb_sdk_optimizer_v2.h"
 
 #include <string.h>
 
@@ -24,6 +25,9 @@ const prdb_query_descriptor_v3_record prdb_query_descriptor_v3 = {
 const prdb_query_descriptor_v4_record prdb_query_descriptor_v4 = {
     sizeof(prdb_query_descriptor_v4_record), PRDB_QUERY_ABI_V4_VERSION,
     sizeof(prdb_host_api_v4), sizeof(prdb_invocation_v4)};
+const prdb_query_descriptor_v5_record prdb_query_descriptor_v5 = {
+    sizeof(prdb_query_descriptor_v5_record), PRDB_QUERY_ABI_V5_VERSION,
+    sizeof(prdb_host_api_v5), sizeof(prdb_invocation_v5)};
 
 typedef struct optimizer_result_context {
     uint32_t row_count;
@@ -405,7 +409,8 @@ static int32_t report_failure(const prdb_host_api_v3 *host,
 
 static int32_t run_write_read_fixture(
     const prdb_host_api_v3 *host, const prdb_invocation_v3 *invocation,
-    const prdb_host_api_v4 *optimizer_host) {
+    const prdb_host_api_v4 *optimizer_host,
+    const prdb_host_api_v5 *optimizer_host_v5) {
     static const uint8_t insert_sql[] = "INSERT INTO records VALUES (NULL)";
     static const uint8_t select_null_sql[] =
         "SELECT id FROM records WHERE id IS NULL";
@@ -1371,12 +1376,133 @@ static int32_t run_write_read_fixture(
         static const uint8_t message[] = "fixture-error-multi-insert-visible";
         return report_failure(host, message, sizeof(message) - 1);
     }
+    if (optimizer_host_v5 != NULL) {
+        static const uint8_t optimizer_update_sql[] =
+            "UPDATE records SET id = $2 WHERE id = $1";
+        static const uint8_t updated_integer_bytes[] = {0, 0, 0, 43};
+        prdb_sdk_update_v1 optimizer_update = {0};
+        uint8_t optimizer_update_request[4096] = {0};
+        uint8_t optimizer_update_response[4096] = {0};
+        uint8_t optimizer_relation_response[4096] = {0};
+        uint8_t optimizer_scan_response[4096] = {0};
+        uint8_t optimizer_batch_response[4096] = {0};
+        uint8_t old_parameter_bytes[4] = {0, 0, 0, 42};
+        prdb_sdk_value_v1 optimizer_update_parameters[2] = {
+            {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+             old_parameter_bytes, sizeof(old_parameter_bytes)},
+            {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+             updated_integer_bytes, sizeof(updated_integer_bytes)}};
+        prdb_sdk_executor_relation_v1 optimizer_update_relation = {0};
+        prdb_sdk_sql_column_shape_v2 optimizer_update_columns[1] = {{0}};
+        prdb_sdk_select_binding_v2 optimizer_update_binding = {0};
+        prdb_sdk_value_v1 optimizer_update_cell_scratch[1] = {{0}};
+        uint8_t optimizer_update_targets[
+            PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS * 16] = {0};
+        uint32_t optimized_update_count = 0;
+        int32_t optimized_update_status;
+
+        if (optimizer_host_v5->optimizer_request == NULL ||
+            prdb_sdk_sql_parse_update_v1(
+                optimizer_update_sql, sizeof(optimizer_update_sql) - 1,
+                &optimizer_update, sizeof(optimizer_update), NULL) !=
+                PRDB_SDK_SQL_OK) {
+            static const uint8_t message[] = "fixture-error-optimizer-update";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+        optimized_update_status = prdb_sdk_optimizer_execute_update_ast_v1(
+            optimizer_host_v5, &optimizer_update, optimizer_update_parameters,
+            2, schema, sizeof(schema) - 1, 16,
+            sizeof(optimizer_batch_response), optimizer_update_request,
+            sizeof(optimizer_update_request), optimizer_update_response,
+            sizeof(optimizer_update_response), optimizer_relation_response,
+            sizeof(optimizer_relation_response), optimizer_scan_response,
+            sizeof(optimizer_scan_response), optimizer_batch_response,
+            sizeof(optimizer_batch_response), &optimizer_update_relation,
+            sizeof(optimizer_update_relation), optimizer_update_columns, 1,
+            &optimizer_update_binding, sizeof(optimizer_update_binding),
+            optimizer_update_cell_scratch, 1, optimizer_update_targets,
+            PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS,
+            &optimized_update_count);
+        if (optimized_update_status != PRDB_SDK_OPTIMIZER_PLAN_OK) {
+            static const uint8_t message[] = "fixture-error-optimizer-update";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+        if (optimized_update_count != 2) {
+            static const uint8_t message[] =
+                "fixture-error-optimizer-update-count";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+        parameter.data = updated_integer_bytes;
+        parameter.data_len = sizeof(updated_integer_bytes);
+        results.expected_state = PRDB_SDK_VALUE_STATE_VALUE;
+        results.expected_value = updated_integer_bytes;
+        results.expected_value_len = sizeof(updated_integer_bytes);
+        results.marker = NULL;
+        results.row_count = 0;
+        status = prdb_sdk_sql_execute_select_v2(
+            host, schema, sizeof(schema) - 1, select_value_sql,
+            sizeof(select_value_sql) - 1, &parameter, 1, 16,
+            sizeof(batch_response), planner_response, sizeof(planner_response),
+            executor_response, sizeof(executor_response), batch_response,
+            sizeof(batch_response), planner_columns, 1, executor_columns, 1,
+            cell_scratch, 1, verify_selected_value, &results);
+        if (status != PRDB_SDK_SQL_EXEC_OK || results.row_count != 2) {
+            static const uint8_t message[] =
+                "fixture-error-optimizer-update-visible";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+
+        static const uint8_t optimizer_delete_sql[] =
+            "DELETE FROM records WHERE id = $1";
+        prdb_sdk_delete_v1 optimizer_delete = {0};
+        uint8_t optimizer_delete_targets[
+            PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS * 16] = {0};
+        uint32_t optimized_delete_count = 0;
+        if (prdb_sdk_sql_parse_delete_v1(
+                optimizer_delete_sql, sizeof(optimizer_delete_sql) - 1,
+                &optimizer_delete, sizeof(optimizer_delete), NULL) !=
+                PRDB_SDK_SQL_OK ||
+            prdb_sdk_optimizer_execute_delete_ast_v1(
+                optimizer_host_v5, &optimizer_delete,
+                &optimizer_update_parameters[1], 1, schema,
+                sizeof(schema) - 1, 16, sizeof(optimizer_batch_response),
+                optimizer_update_request, sizeof(optimizer_update_request),
+                optimizer_update_response, sizeof(optimizer_update_response),
+                optimizer_relation_response, sizeof(optimizer_relation_response),
+                optimizer_scan_response, sizeof(optimizer_scan_response),
+                optimizer_batch_response, sizeof(optimizer_batch_response),
+                &optimizer_update_relation, sizeof(optimizer_update_relation),
+                optimizer_update_columns, 1, &optimizer_update_binding,
+                sizeof(optimizer_update_binding), optimizer_update_cell_scratch,
+                1, optimizer_delete_targets,
+                PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS,
+                &optimized_delete_count) != PRDB_SDK_OPTIMIZER_PLAN_OK ||
+            optimized_delete_count != 2) {
+            static const uint8_t message[] = "fixture-error-optimizer-delete";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+        results.row_count = 0;
+        status = prdb_sdk_sql_execute_select_v2(
+            host, schema, sizeof(schema) - 1, select_value_sql,
+            sizeof(select_value_sql) - 1, &parameter, 1, 16,
+            sizeof(batch_response), planner_response, sizeof(planner_response),
+            executor_response, sizeof(executor_response), batch_response,
+            sizeof(batch_response), planner_columns, 1, executor_columns, 1,
+            cell_scratch, 1, verify_selected_value, &results);
+        if (status != PRDB_SDK_SQL_EXEC_OK || results.row_count != 0) {
+            static const uint8_t message[] =
+                "fixture-error-optimizer-delete-visible";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+    }
     return 0;
 }
 
 int32_t prdb_query_main_v3(const prdb_host_api_v3 *host,
                            const prdb_invocation_v3 *invocation) {
-    return run_write_read_fixture(host, invocation, NULL);
+    return run_write_read_fixture(host, invocation, NULL, NULL);
 }
 
 int32_t prdb_query_main_v4(const prdb_host_api_v4 *host,
@@ -1386,5 +1512,15 @@ int32_t prdb_query_main_v4(const prdb_host_api_v4 *host,
         host->optimizer_request == NULL) {
         return 1;
     }
-    return run_write_read_fixture(&host->v3, invocation, host);
+    return run_write_read_fixture(&host->v3, invocation, host, NULL);
+}
+
+int32_t prdb_query_main_v5(const prdb_host_api_v5 *host,
+                           const prdb_invocation_v5 *invocation) {
+    if (host == NULL || host->v4.v3.struct_size < sizeof(host->v4.v3) ||
+        host->v4.v3.abi_version != PRDB_QUERY_ABI_V3_VERSION ||
+        host->v4.optimizer_request == NULL || host->optimizer_request == NULL) {
+        return 1;
+    }
+    return run_write_read_fixture(&host->v4.v3, invocation, &host->v4, host);
 }
