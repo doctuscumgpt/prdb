@@ -345,3 +345,10 @@
 - Multi-column acceptance: the same confined fixture now updates both `left_key` and `right_key` on `grouped_records`, then runs a second optimizer UPDATE whose predicate matches both assigned values. Two affected rows confirm both assignments became visible through ordinary executor storage and mutation IPC. The acceptance was run in a delegated `systemd --user` cgroup and passed.
 - Verification: `nix develop -c make -f engine/sdk/Makefile sandbox-query-fixture` rebuilt the fixture with pinned TinyCC; the confined `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed with the optimizer and executor processes, authenticated staging, durable commit, and result relay. The fixture setup grants only the grouped table/columns needed for this UPDATE and installs UPDATE table/cell policies.
 - Remaining: add dedicated cancellation, response-loss, target-limit, and staging-failure acceptance cases; cover NULL assignments and broaden mutation policy/conflict cases.
+
+## OP-3 dependency: cancel an in-progress optimizer UPDATE — verified
+
+- Behavior: if executor cancellation arrives between opening an authorized scan and reading its next page, the SDK closes the cursor, stages no UPDATE, latches statement failure, and leaves the result count at its failure value.
+- Regression: the maintained `sdk_optimizer_plan_v1.c` callback fixture now returns cancellation at that checkpoint and checks the cancellation status, cursor-close operation, zero stage-update calls, one failure latch, and zero published updated rows. The successful mock UPDATE remains covered.
+- Verification: `nix develop -c make -f engine/sdk/Makefile test` passed, including all eight ABI generator tests and the full maintained TinyCC SDK suite.
+- Remaining: cover cancellation in the confined process harness, optimizer response loss, target exhaustion, stage-update failure, NULL assignment, and transaction conflict/policy behavior.

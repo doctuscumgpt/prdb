@@ -1292,5 +1292,30 @@ int main(void) {
     assert(updated_count == 1 && resolve.optimizer_calls == 1 &&
            resolve.stage_update_calls == 1 && resolve.statement_failures == 0);
     assert(resolve.calls == 7);
+
+    resolve.calls = 0;
+    resolve.optimizer_calls = 0;
+    resolve.stage_update_calls = 0;
+    resolve.statement_failures = 0;
+    resolve.event_count = 0;
+    resolve.cancellation_response[2] = 1;
+    updated_count = 99;
+    assert(prdb_sdk_optimizer_execute_update_ast_v1(
+               &host_v5, &execute_update_statement, update_parameters, 2,
+               (const uint8_t *)"public", 6, 2, sizeof(batch_response),
+               request, sizeof(request), optimizer_response,
+               sizeof(optimizer_response), response, sizeof(response),
+               scan_response, sizeof(scan_response), batch_response,
+               sizeof(batch_response), &acquired_relation,
+               sizeof(acquired_relation), acquired_columns, 4, &delete_binding,
+               sizeof(delete_binding), delete_cell_scratch, 4,
+               delete_target_handles,
+               PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS,
+               &updated_count) == PRDB_SDK_OPTIMIZER_PLAN_CANCELLED);
+    assert(updated_count == 0 && resolve.optimizer_calls == 1 &&
+           resolve.stage_update_calls == 0 && resolve.statement_failures == 1);
+    assert(resolve.calls == 6);
+    assert(resolve.events[6] == PRDB_SDK_EXECUTOR_OP_CLOSE_CURSOR);
+    resolve.cancellation_response[2] = 0;
     return 0;
 }
