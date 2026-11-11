@@ -3,7 +3,9 @@
 use crate::metadata_discovery::{
     AuthorizedPlanRelation, AuthorizedRelationDescription, VisibleColumn,
 };
-use crate::optimizer_request::{Comparison, Predicate, RequestError, decode_select_request};
+use crate::optimizer_request::{
+    Comparison, Predicate, RequestError, decode_delete_request, decode_select_request,
+};
 use crate::transaction::{PlannerMetadataConnection, TransactionError};
 use crate::tuple::ScalarType;
 use std::collections::HashSet;
@@ -19,6 +21,17 @@ pub struct BoundSelect {
     pub projections: Vec<BoundColumn>,
     pub predicate: Option<BoundPredicate>,
     pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundDelete {
+    pub schema_name: String,
+    pub schema_id: [u8; 16],
+    pub schema_version: u64,
+    pub table_epoch: u64,
+    pub relation_id: [u8; 16],
+    pub relation_name: String,
+    pub predicate: BoundPredicate,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -114,19 +127,31 @@ pub fn bind_select_request_via_metadata(
     bind_decoded_select(request, relation).map_err(MetadataBindError::Bind)
 }
 
+pub fn bind_delete_request(
+    request_bytes: &[u8],
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundDelete, BindError> {
+    let request = decode_delete_request(request_bytes)?;
+    bind_decoded_delete(request, relation)
+}
+
+pub fn bind_delete_request_via_metadata(
+    request_bytes: &[u8],
+    connection: &mut PlannerMetadataConnection<'_, '_>,
+) -> Result<BoundDelete, MetadataBindError> {
+    let request = decode_delete_request(request_bytes).map_err(BindError::from)?;
+    let relation = connection
+        .resolve_relation_for_plan(&request.schema_name, &request.relation_name)
+        .map_err(MetadataBindError::Transaction)?
+        .map(|(_, description)| description);
+    bind_decoded_delete(request, relation).map_err(MetadataBindError::Bind)
+}
+
 fn bind_decoded_select(
     request: crate::optimizer_request::SelectRequest,
     relation: Option<AuthorizedPlanRelation>,
 ) -> Result<BoundSelect, BindError> {
-    let relation = relation.ok_or(BindError::RelationUnavailable)?;
-    if !relation
-        .relation
-        .name
-        .eq_ignore_ascii_case(&request.relation_name)
-    {
-        return Err(BindError::RelationUnavailable);
-    }
-    validate_relation_shape(&relation.relation)?;
+    let relation = authorized_relation(&request.relation_name, relation)?;
     let mut projections = Vec::with_capacity(request.projections.len());
     for name in &request.projections {
         projections.push(resolve_column(&relation.relation.columns, name)?.into());
@@ -153,6 +178,38 @@ fn bind_decoded_select(
         predicate,
         limit: request.limit,
     })
+}
+
+fn bind_decoded_delete(
+    request: crate::optimizer_request::DeleteRequest,
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundDelete, BindError> {
+    let relation = authorized_relation(&request.relation_name, relation)?;
+    let (predicate, scalar_type) = bind_predicate(&request.predicate, &relation.relation.columns)?;
+    if scalar_type != Some(ScalarType::Boolean) {
+        return Err(BindError::InvalidQuery);
+    }
+    Ok(BoundDelete {
+        schema_name: request.schema_name,
+        schema_id: relation.schema_id,
+        schema_version: relation.schema_version,
+        table_epoch: relation.table_epoch,
+        relation_id: relation.relation.relation_id,
+        relation_name: relation.relation.name,
+        predicate,
+    })
+}
+
+fn authorized_relation(
+    requested_name: &str,
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<AuthorizedPlanRelation, BindError> {
+    let relation = relation.ok_or(BindError::RelationUnavailable)?;
+    if !relation.relation.name.eq_ignore_ascii_case(requested_name) {
+        return Err(BindError::RelationUnavailable);
+    }
+    validate_relation_shape(&relation.relation)?;
+    Ok(relation)
 }
 
 fn validate_relation_shape(relation: &AuthorizedRelationDescription) -> Result<(), BindError> {
@@ -297,6 +354,15 @@ mod tests {
         bytes
     }
 
+    fn delete_request(predicate: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0, 1, 2, 0];
+        put_name(&mut bytes, "public");
+        put_name(&mut bytes, "items");
+        bytes.extend_from_slice(&(predicate.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(predicate);
+        bytes
+    }
+
     fn relation() -> AuthorizedPlanRelation {
         AuthorizedPlanRelation {
             schema_id: [0x10; 16],
@@ -355,6 +421,60 @@ mod tests {
                 })),
                 right: Box::new(BoundPredicate::Integer(7)),
             })
+        );
+    }
+
+    #[test]
+    fn binds_delete_predicate_to_the_authorized_relation_without_a_handle() {
+        let predicate = [0x20, 0, 0x10, 2, b'i', b'd', 0x02, 0, 0, 0, 0, 0, 0, 0, 7];
+        let bound = bind_delete_request(&delete_request(&predicate), Some(relation())).unwrap();
+        assert_eq!(bound.schema_id, [0x10; 16]);
+        assert_eq!(bound.schema_version, 3);
+        assert_eq!(bound.table_epoch, 4);
+        assert_eq!(bound.relation_id, [0x11; 16]);
+        assert_eq!(bound.relation_name, "items");
+        assert_eq!(
+            bound.predicate,
+            BoundPredicate::Compare {
+                operator: Comparison::Equal,
+                left: Box::new(BoundPredicate::Column(BoundColumn {
+                    column_id: [0x21; 16],
+                    ordinal: 0,
+                    scalar_type: ScalarType::Integer,
+                    nullable: false,
+                })),
+                right: Box::new(BoundPredicate::Integer(7)),
+            }
+        );
+    }
+
+    #[test]
+    fn delete_binding_is_non_disclosing_and_requires_a_boolean_predicate() {
+        let constant_true = delete_request(&[0x01, 1]);
+        assert_eq!(
+            bind_delete_request(&constant_true, None),
+            Err(BindError::RelationUnavailable)
+        );
+        let mut mismatched = relation();
+        mismatched.relation.name = "secret".to_owned();
+        assert_eq!(
+            bind_delete_request(&constant_true, Some(mismatched)),
+            Err(BindError::RelationUnavailable)
+        );
+
+        let mut integer = vec![0x02];
+        integer.extend_from_slice(&7i64.to_be_bytes());
+        assert_eq!(
+            bind_delete_request(&delete_request(&integer), Some(relation())),
+            Err(BindError::InvalidQuery)
+        );
+        let unknown_column = [
+            0x20, 0, 0x10, 8, b's', b'e', b'c', b'r', b'e', b't', b'_', b'x', 0x02, 0, 0, 0, 0, 0,
+            0, 0, 7,
+        ];
+        assert_eq!(
+            bind_delete_request(&delete_request(&unknown_column), Some(relation())),
+            Err(BindError::InvalidQuery)
         );
     }
 

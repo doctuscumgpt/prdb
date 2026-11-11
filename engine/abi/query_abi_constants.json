@@ -1209,6 +1209,13 @@
       "value": 1,
       "c_name": "PRDB_OPTIMIZER_SELECT_STATEMENT",
       "c_type": "UINT8_C"
+    },
+    {
+      "rust_name": "OPTIMIZER_DELETE_STATEMENT",
+      "rust_type": "u8",
+      "value": 2,
+      "c_name": "PRDB_OPTIMIZER_DELETE_STATEMENT",
+      "c_type": "UINT8_C"
     }
   ],
   "payload_schemas": [

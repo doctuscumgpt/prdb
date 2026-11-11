@@ -5,7 +5,7 @@
 //! bound planner service and the executor/storage path.
 
 use crate::query_abi::{
-    OPTIMIZER_REQUEST_VERSION, OPTIMIZER_SELECT_REQUEST_HEADER_BYTES,
+    OPTIMIZER_DELETE_STATEMENT, OPTIMIZER_REQUEST_VERSION, OPTIMIZER_SELECT_REQUEST_HEADER_BYTES,
     OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET, OPTIMIZER_SELECT_STATEMENT,
     decode_optimizer_select_request,
 };
@@ -25,6 +25,13 @@ pub struct SelectRequest {
     pub projections: Vec<String>,
     pub predicate: Option<Predicate>,
     pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeleteRequest {
+    pub schema_name: String,
+    pub relation_name: String,
+    pub predicate: Predicate,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -146,6 +153,55 @@ pub fn decode_select_request(bytes: &[u8]) -> Result<SelectRequest, RequestError
         projections,
         predicate,
         limit,
+    })
+}
+
+/// Decode a canonical DELETE request. DELETE requires a bounded WHERE tree;
+/// the encoded relation and predicate confer no storage authority.
+pub fn decode_delete_request(bytes: &[u8]) -> Result<DeleteRequest, RequestError> {
+    if bytes.len() > MAX_REQUEST_BYTES {
+        return Err(RequestError::TooLarge);
+    }
+    let header_bytes = OPTIMIZER_SELECT_REQUEST_HEADER_BYTES as usize;
+    if bytes.len() < header_bytes {
+        return Err(RequestError::Truncated);
+    }
+    let version_offset = OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET as usize;
+    let version = u16::from_be_bytes([bytes[version_offset], bytes[version_offset + 1]]);
+    if version != OPTIMIZER_REQUEST_VERSION {
+        return Err(RequestError::UnsupportedVersion(version));
+    }
+    let (statement, flags) =
+        decode_optimizer_select_request(bytes).ok_or(RequestError::Truncated)?;
+    if statement != OPTIMIZER_DELETE_STATEMENT {
+        return Err(RequestError::UnsupportedStatement(statement));
+    }
+    if flags != 0 {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut cursor = Cursor {
+        bytes,
+        offset: header_bytes,
+    };
+    let schema_name = cursor.identifier()?;
+    let relation_name = cursor.identifier()?;
+    let predicate_len = usize::try_from(cursor.u32()?).map_err(|_| RequestError::TooLarge)?;
+    if predicate_len == 0 {
+        return Err(RequestError::InvalidPredicate);
+    }
+    if predicate_len > MAX_PREDICATE_BYTES {
+        return Err(RequestError::PredicateTooLarge);
+    }
+    let predicate_bytes = cursor.take(predicate_len)?;
+    let mut parser = PredicateParser::new(predicate_bytes);
+    let predicate = parser.node(1)?;
+    if !parser.cursor.is_empty() || !cursor.is_empty() {
+        return Err(RequestError::TrailingBytes);
+    }
+    Ok(DeleteRequest {
+        schema_name,
+        relation_name,
+        predicate,
     })
 }
 
@@ -330,6 +386,51 @@ mod tests {
         bytes.extend_from_slice(predicate);
         bytes.extend_from_slice(&[1, 0, 0, 0, 10]);
         bytes
+    }
+
+    fn delete_request(predicate: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0, OPTIMIZER_REQUEST_VERSION as u8, 2, 0];
+        name("public", &mut bytes);
+        name("items", &mut bytes);
+        u32_bytes(predicate.len(), &mut bytes);
+        bytes.extend_from_slice(predicate);
+        bytes
+    }
+
+    #[test]
+    fn decodes_bounded_delete_request_without_projection_or_limit() {
+        let predicate = [0x20, 0, 0x10, 2, b'i', b'd', 0x02, 0, 0, 0, 0, 0, 0, 0, 7];
+        let request = decode_delete_request(&delete_request(&predicate)).unwrap();
+        assert_eq!(request.schema_name, "public");
+        assert_eq!(request.relation_name, "items");
+        assert_eq!(
+            request.predicate,
+            Predicate::Compare {
+                operator: Comparison::Equal,
+                left: Box::new(Predicate::Column("id".to_owned())),
+                right: Box::new(Predicate::Integer(7)),
+            }
+        );
+    }
+
+    #[test]
+    fn delete_request_requires_where_and_rejects_trailing_data() {
+        assert_eq!(
+            decode_delete_request(&delete_request(&[])),
+            Err(RequestError::InvalidPredicate)
+        );
+        let mut trailing = delete_request(&[0x01, 1]);
+        trailing.push(0);
+        assert_eq!(
+            decode_delete_request(&trailing),
+            Err(RequestError::TrailingBytes)
+        );
+        assert_eq!(
+            decode_delete_request(&select_request(&[])),
+            Err(RequestError::UnsupportedStatement(
+                OPTIMIZER_SELECT_STATEMENT
+            ))
+        );
     }
 
     #[test]
