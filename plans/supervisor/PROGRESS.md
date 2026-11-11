@@ -348,14 +348,14 @@
 - Implementation: the gateway service captures the authenticated staging owner and invocation ID before handing control to the START callback, then calls `StagingStore::finish_started` on callback return. A staging cleanup error closes that service stream.
 - Red/green evidence: `started_callback_releases_reservation_before_same_session_resumes` first failed because a second PREPARE on the same connection returned `InvalidState`; after the callback cleanup path was added, the next PREPARE succeeds with a new invocation ID.
 - Verification: focused lifecycle regression passed. Workspace build, format check, warning-denied Clippy, all workspace tests, and `git diff --check` passed. The engine library had 35 passing unit tests; the commit target had 109 passing and 2 pre-existing cgroup/TinyCC fixture tests ignored.
-- Remaining: the production callback that runs the sandboxed executor and resolves its durable terminal outcome is still not provided by a supervisor executable.
+- Remaining: run end-to-end worker execution on a host with the required writable delegated cgroup controllers. Broader SQL, DDL, pressure, and analytical stages remain open. The production callback is wired by `prdb-supervisor` to launch the sandboxed executor, relay its result, and finalize the durable outcome.
 
 ## SU-5 / GW-2: provide the live storage manager to START callbacks — implemented
 
 - Behavior and normative contracts: [supervisor lifecycle](../../specs/supervisor.md), steps 4–6; [gateway service IPC](../../specs/ipc-protocol.md), START and terminal events. Trusted START handling must confirm outcomes through the same validated storage instance owned by the recovery loop.
 - Implementation: `serve_gateway_service_listener` and `run_gateway_service_with_recovery` pass the current `StorageManager` reference into their START callback. When storage reports an ambiguous commit and the recovery loop reopens the database, later callbacks receive the new validated manager rather than reopening a second database handle.
 - Regression/build evidence: all in-repository listener and recovery callback call sites compile against the new signature; focused supervisor IPC unit tests passed. Workspace build, format check, warning-denied Clippy, all workspace tests, and `git diff --check` passed. The engine library had 35 passing unit tests; the commit target had 109 passing and 2 existing cgroup/TinyCC sandbox tests ignored.
-- Remaining: provide a supervisor executable that wires the callback to executor result relay, durable finalization, and its configured compatibility profile; exercise the gateway/supervisor boundary across processes.
+- Remaining: run sandboxed query execution on a host with a writable delegated cgroup with the required controllers. Separate gateway/supervisor process coverage exists for metadata and outcome recovery; `prdb-supervisor` configures the compatibility profile and wires the callback to executor result relay and durable finalization.
 
 ## SM-6 / SU-5: authenticated metadata discovery across gateway and supervisor processes — verified
 
