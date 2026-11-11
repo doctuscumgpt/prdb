@@ -924,3 +924,11 @@
 - Compatibility: literal tags and wire bytes are unchanged; Rust regressions assert exact encodings and round trips for NULL and both Boolean values, and the maintained TinyCC optimizer-plan fixture passes.
 - Verification: generator tests (8 passed), generated-file drift check, full TinyCC SDK suite, locked workspace build, formatting check, warning-denied Clippy, full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the pinned Nix flake environment using its supported `--no-update-lock-file` option.
 - Remaining: the optimizer plan predicate records are represented in the shared schema; broader IPC, SDK, and release-profile schema parity remains open.
+
+## TC-2 follow-up: generated codecs in the C optimizer AST matcher — implemented
+
+- Contract: before execution, the C SDK must match a validated optimizer Filter tree against the submitted SQL AST, including comparison operators, scanned column IDs, and AND/OR child structure.
+- Implementation: the AST matcher now uses the generated comparison, column-reference, and Boolean node-header decoders, matching the generated codecs already used by plan decoding/evaluation. A maintained parameterized SQL fixture exercises an AND tree with two comparisons and verifies the projected row.
+- Compatibility: operator numbering, parameter matching, node ordering, and plan bytes remain unchanged; shape and scalar checks stay in the plan/AST validation layer.
+- Verification: full TinyCC SDK suite and generator tests (8 passed), locked workspace build, formatting check, warning-denied Clippy, full workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed in the pinned Nix flake environment using its supported `--no-update-lock-file` option.
+- Remaining: broader IPC, SDK, and release-profile schema parity remains open.

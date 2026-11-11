@@ -1602,7 +1602,7 @@ static int match_optimizer_filter_node(
     case PRDB_SDK_SQL_PREDICATE_COMPARE: {
         uint8_t comparison;
         uint8_t column_tag;
-        const uint8_t *column_id;
+        uint8_t column_id[16];
         const uint8_t *column_name = NULL;
         uint32_t column_name_len = 0;
         uint32_t ordinal = UINT32_MAX;
@@ -1613,10 +1613,12 @@ static int match_optimizer_filter_node(
             node->column.length > statement->sql_len - node->column.offset ||
             !valid_identifier(statement->sql + node->column.offset,
                               node->column.length) ||
-            !read_u8(reader, &comparison) ||
+            !read_compare_predicate_header(reader, tag_offset, &comparison) ||
             comparison != node->comparison - PRDB_SDK_SQL_COMPARE_EQUAL ||
             !read_u8(reader, &column_tag) || column_tag != 0x10 ||
-            !take(reader, 16, &column_id)) return 0;
+            !read_column_predicate_record(reader, reader->offset - 1,
+                                          column_id))
+            return 0;
         for (uint32_t index = 0; index < plan->scan_column_count; ++index) {
             if (memcmp(column_id, plan->scan_columns[index].column_id, 16) == 0) {
                 ordinal = plan->scan_columns[index].ordinal;
@@ -1637,11 +1639,15 @@ static int match_optimizer_filter_node(
     }
     case PRDB_SDK_SQL_PREDICATE_AND:
     case PRDB_SDK_SQL_PREDICATE_OR: {
+        uint8_t node_tag;
         uint8_t child_count;
         uint8_t expected_tag = node->node_kind == PRDB_SDK_SQL_PREDICATE_AND
                                    ? 0x30
                                    : 0x31;
-        return tag == expected_tag && read_u8(reader, &child_count) &&
+        return tag == expected_tag &&
+               read_boolean_predicate_header(reader, tag_offset, &node_tag,
+                                             &child_count) &&
+               node_tag == expected_tag &&
                child_count == 2 &&
                match_optimizer_filter_node(
                    reader, plan, metadata_response, metadata_response_len,
