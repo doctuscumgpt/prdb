@@ -159,7 +159,32 @@ required supervisor options as above, using these paths and values:
 Configure `PRDB_GATEWAY_ARGS` in `/etc/prdb/gateway.env` with
 `--service-socket /run/prdb/supervisor.sock` and `--service-uid` set to
 `id -u prdb`. Bind loopback unless a trusted plaintext network is explicitly
-intended. Then load and enable the gateway (which pulls in the supervisor):
+intended. The system units also set a standard command search path (including
+the NixOS system profile) for the delegated-cgroup helper and apply separate
+Landlock policies to both processes. Add these host-specific allowlists to the
+environment files, using systemd EnvironmentFile escaping for spaces:
+
+```ini
+# /etc/prdb/supervisor.env
+PRDB_LANDLOCK_TRAVERSE_PATHS=/run\ /run/prdb\ /sys\ /sys/fs\ /sys/fs/cgroup\ /usr\ /usr/lib\ /usr/libexec\ /usr/libexec/prdb\ /var\ /var/lib\ /var/lib/prdb\ /nix\ /nix/store
+PRDB_SUPERVISOR_LANDLOCK_PATHS=/usr/libexec/prdb/prdb-executor\ /usr/libexec/prdb/prdb-optimizer\ /nix/store/HASH-glibc\ /nix/store/HASH-gcc-lib
+```
+
+The supervisor executable and `/dev` traversal are granted directly by its
+unit. The environment-backed traversal list provides ancestors for its state,
+runtime, delegated cgroup, executable, and runtime-library paths. On systems
+without Nix, omit `/nix` and add the actual loader/library directories used by
+the validated runtime profile.
+
+```ini
+# /etc/prdb/gateway.env
+PRDB_GATEWAY_LANDLOCK_TRAVERSE_PATHS=/run\ /run/prdb\ /usr\ /usr/lib\ /usr/libexec\ /usr/libexec/prdb\ /nix\ /nix/store
+PRDB_GATEWAY_LANDLOCK_PATHS=/nix/store/HASH-glibc\ /nix/store/HASH-gcc-lib
+```
+
+The gateway policy allows its executable/runtime files and the supervisor
+socket directory; it does not grant database-directory access. Then load and
+enable the gateway (which pulls in the supervisor):
 
 ```sh
 systemctl daemon-reload

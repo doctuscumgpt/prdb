@@ -12,7 +12,8 @@ StateDirectoryMode=0700
 RuntimeDirectory=prdb
 RuntimeDirectoryMode=0750
 EnvironmentFile=/etc/prdb/supervisor.env
-ExecStart=/usr/libexec/prdb/with_delegated_cgroup.sh /usr/libexec/prdb/prdb-supervisor $PRDB_SUPERVISOR_ARGS
+Environment=PATH=/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/libexec/prdb/with_delegated_cgroup.sh /usr/libexec/prdb/prdb-landlock-run --traverse-env PRDB_LANDLOCK_TRAVERSE_PATHS --traverse /dev --read-execute /usr/libexec/prdb/prdb-supervisor --read-write-file /dev/null --writable /var/lib/prdb --writable /run/prdb --writable-env PRDB_SYSTEMD_CGROUP_PARENT --read-execute-env PRDB_SUPERVISOR_LANDLOCK_PATHS -- /usr/libexec/prdb/prdb-supervisor $PRDB_SUPERVISOR_ARGS
 Restart=on-failure
 RestartSec=2s
 UMask=0077
