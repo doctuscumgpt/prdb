@@ -29,8 +29,22 @@ pub struct SingleTablePlanV1 {
     pub nodes: Vec<PlanNode>,
 }
 
+/// Bounded DELETE plan carrying only the authorized logical relation, the
+/// columns needed to evaluate its predicate, and its predicate tree.
+/// Storage must still authorize every staged delete through its opaque row
+/// handle and transaction policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeletePlanV1 {
+    pub relation: RelationReference,
+    pub scan_columns: Vec<BoundColumn>,
+    pub predicate: BoundPredicate,
+}
+
 pub const MAX_PLAN_BYTES: usize = 64 * 1024;
 pub const MAX_PLAN_SCAN_COLUMNS: usize = crate::optimizer_request::MAX_PROJECTIONS * 2;
+const PLAN_KIND_SELECT: u8 = 1;
+const PLAN_KIND_DELETE: u8 = 2;
+const DELETE_SINK_NODE: u8 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlanError {
@@ -61,7 +75,9 @@ pub fn encode_plan_v1(plan: &SingleTablePlanV1) -> Result<Vec<u8>, PlanError> {
     validate_plan_v1(plan)?;
     let mut output = Vec::with_capacity(256);
     output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_header_record(
-        1, 1, 0,
+        1,
+        PLAN_KIND_SELECT,
+        0,
     ));
     put_name(&mut output, &plan.relation.schema_name)?;
     output.extend_from_slice(
@@ -130,7 +146,7 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
         return Err(PlanError::UnsupportedVersion(version));
     }
     reader.offset = crate::query_abi::OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES as usize;
-    if kind != 1 || reserved != 0 {
+    if kind != PLAN_KIND_SELECT || reserved != 0 {
         return Err(PlanError::InvalidEncoding);
     }
     let schema_name = reader.name()?;
@@ -202,6 +218,157 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
     let plan = SingleTablePlanV1 { relation, nodes };
     validate_plan_v1(&plan)?;
     Ok(plan)
+}
+
+/// Construct a deterministic DELETE plan from an already bound relation and
+/// Boolean predicate. The plan conveys no storage capability or write grant.
+pub fn plan_delete_v1(
+    relation: RelationReference,
+    predicate: BoundPredicate,
+) -> Result<DeletePlanV1, PlanError> {
+    let mut scan_columns = Vec::new();
+    collect_predicate_columns(&predicate, &mut scan_columns)?;
+    scan_columns.sort_by_key(|column| column.ordinal);
+    let plan = DeletePlanV1 {
+        relation,
+        scan_columns,
+        predicate,
+    };
+    validate_delete_plan_v1(&plan)?;
+    Ok(plan)
+}
+
+/// Encode a canonical DELETE plan as a `Scan -> Filter -> Delete` pipeline.
+pub fn encode_delete_plan_v1(plan: &DeletePlanV1) -> Result<Vec<u8>, PlanError> {
+    validate_delete_plan_v1(plan)?;
+    let mut output = Vec::with_capacity(256);
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_header_record(
+        1,
+        PLAN_KIND_DELETE,
+        0,
+    ));
+    put_name(&mut output, &plan.relation.schema_name)?;
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_schema_reference_record(
+            plan.relation.schema_id,
+            plan.relation.schema_version,
+        ),
+    );
+    put_name(&mut output, &plan.relation.relation_name)?;
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_relation_reference_record(
+            plan.relation.relation_id,
+            plan.relation.table_epoch,
+        ),
+    );
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_node_count_record(
+        3,
+    ));
+    put_column_list_header(&mut output, 1, plan.scan_columns.len())?;
+    for column in &plan.scan_columns {
+        put_column(&mut output, column);
+    }
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_filter_node_record(
+        2,
+    ));
+    put_predicate(&mut output, &plan.predicate)?;
+    output.push(DELETE_SINK_NODE);
+    if output.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    Ok(output)
+}
+
+/// Decode and validate a canonical DELETE plan independently from the
+/// optimizer. The executor must re-resolve the relation and still use its
+/// ordinary scan and mutation IPC operations.
+pub fn decode_delete_plan_v1(bytes: &[u8]) -> Result<DeletePlanV1, PlanError> {
+    if bytes.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    let (version, kind, reserved) =
+        crate::query_abi::decode_optimizer_plan_header_record(bytes).ok_or(PlanError::Truncated)?;
+    if version != 1 {
+        return Err(PlanError::UnsupportedVersion(version));
+    }
+    if kind != PLAN_KIND_DELETE || reserved != 0 {
+        return Err(PlanError::InvalidEncoding);
+    }
+    let mut reader = PlanReader {
+        bytes,
+        offset: crate::query_abi::OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES as usize,
+    };
+    let schema_name = reader.name()?;
+    let schema_reference = reader
+        .take(crate::query_abi::OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES as usize)?;
+    let (schema_id, schema_version) =
+        crate::query_abi::decode_optimizer_plan_schema_reference_record(schema_reference)
+            .ok_or(PlanError::Truncated)?;
+    let relation_name = reader.name()?;
+    let relation_reference = reader
+        .take(crate::query_abi::OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES as usize)?;
+    let (relation_id, table_epoch) =
+        crate::query_abi::decode_optimizer_plan_relation_reference_record(relation_reference)
+            .ok_or(PlanError::Truncated)?;
+    let relation = RelationReference {
+        schema_name,
+        schema_id,
+        schema_version,
+        relation_name,
+        relation_id,
+        table_epoch,
+    };
+    if reader.node_count()? != 3 {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let scan_tag_offset = reader.offset;
+    if reader.u8()? != 1 {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let column_count = reader.column_list_count(scan_tag_offset, 1, crate::tuple::MAX_COLUMNS)?;
+    let mut scan_columns = Vec::with_capacity(column_count);
+    for _ in 0..column_count {
+        scan_columns.push(reader.column()?);
+    }
+    if !scan_columns.is_empty() {
+        validate_columns(&scan_columns)?;
+    }
+    let filter_tag_offset = reader.offset;
+    reader.filter_node_tag(filter_tag_offset)?;
+    let predicate = reader.predicate(&scan_columns)?;
+    if reader.u8()? != DELETE_SINK_NODE || !reader.is_empty() {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let plan = DeletePlanV1 {
+        relation,
+        scan_columns,
+        predicate,
+    };
+    validate_delete_plan_v1(&plan)?;
+    Ok(plan)
+}
+
+/// Check a decoded DELETE plan's structural, type, and bounded-scan
+/// invariants. Relation authorization and row-level permissions remain owned
+/// by invocation-bound storage.
+pub fn validate_delete_plan_v1(plan: &DeletePlanV1) -> Result<(), PlanError> {
+    validate_relation(&plan.relation)?;
+    if plan.scan_columns.len() > crate::tuple::MAX_COLUMNS {
+        return Err(PlanError::TooLarge);
+    }
+    if !plan.scan_columns.is_empty() {
+        validate_columns(&plan.scan_columns)?;
+    }
+    if predicate_type(&plan.predicate, &plan.scan_columns)? != Some(ScalarType::Boolean) {
+        return Err(PlanError::InvalidPredicate);
+    }
+    let mut referenced_columns = Vec::new();
+    collect_predicate_columns(&plan.predicate, &mut referenced_columns)?;
+    referenced_columns.sort_by_key(|column| column.ordinal);
+    if referenced_columns != plan.scan_columns {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    Ok(())
 }
 
 fn put_name(output: &mut Vec<u8>, name: &str) -> Result<(), PlanError> {
@@ -330,6 +497,9 @@ fn put_predicate(output: &mut Vec<u8>, predicate: &BoundPredicate) -> Result<(),
             put_predicate(output, child)?;
         }
     }
+    if output.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
     Ok(())
 }
 
@@ -339,6 +509,10 @@ struct PlanReader<'a> {
 }
 
 impl PlanReader<'_> {
+    fn is_empty(&self) -> bool {
+        self.offset == self.bytes.len()
+    }
+
     fn take(&mut self, count: usize) -> Result<&[u8], PlanError> {
         let end = self.offset.checked_add(count).ok_or(PlanError::TooLarge)?;
         let value = self
@@ -927,19 +1101,38 @@ fn collect_predicate_columns(
     predicate: &BoundPredicate,
     columns: &mut Vec<BoundColumn>,
 ) -> Result<(), PlanError> {
+    let mut nodes = 0;
+    collect_predicate_columns_at_depth(predicate, columns, 1, &mut nodes)
+}
+
+fn collect_predicate_columns_at_depth(
+    predicate: &BoundPredicate,
+    columns: &mut Vec<BoundColumn>,
+    depth: usize,
+    nodes: &mut usize,
+) -> Result<(), PlanError> {
+    if depth > crate::optimizer_request::MAX_PREDICATE_DEPTH {
+        return Err(PlanError::InvalidPredicate);
+    }
+    *nodes += 1;
+    if *nodes > crate::optimizer_request::MAX_PREDICATE_NODES {
+        return Err(PlanError::InvalidPredicate);
+    }
     match predicate {
         BoundPredicate::Column(column) => add_column(columns, column),
         BoundPredicate::Compare { left, right, .. } => {
-            collect_predicate_columns(left, columns)?;
-            collect_predicate_columns(right, columns)
+            collect_predicate_columns_at_depth(left, columns, depth + 1, nodes)?;
+            collect_predicate_columns_at_depth(right, columns, depth + 1, nodes)
         }
         BoundPredicate::And(children) | BoundPredicate::Or(children) => {
             for child in children {
-                collect_predicate_columns(child, columns)?;
+                collect_predicate_columns_at_depth(child, columns, depth + 1, nodes)?;
             }
             Ok(())
         }
-        BoundPredicate::Not(child) => collect_predicate_columns(child, columns),
+        BoundPredicate::Not(child) => {
+            collect_predicate_columns_at_depth(child, columns, depth + 1, nodes)
+        }
         BoundPredicate::Null
         | BoundPredicate::Boolean(_)
         | BoundPredicate::Integer(_)
@@ -1105,6 +1298,108 @@ mod tests {
             ]
         );
         assert_eq!(validate_plan_v1(&plan), Ok(()));
+    }
+
+    #[test]
+    fn builds_and_roundtrips_a_bounded_delete_plan() {
+        let bound = bound_select();
+        let relation = RelationReference {
+            schema_name: bound.schema_name,
+            schema_id: bound.schema_id,
+            schema_version: bound.schema_version,
+            relation_name: bound.relation_name,
+            relation_id: bound.relation_id,
+            table_epoch: bound.table_epoch,
+        };
+        let predicate = BoundPredicate::And(vec![
+            BoundPredicate::Compare {
+                operator: Comparison::Equal,
+                left: Box::new(BoundPredicate::Column(column(2, 1, ScalarType::Boolean))),
+                right: Box::new(BoundPredicate::Boolean(true)),
+            },
+            BoundPredicate::Compare {
+                operator: Comparison::Equal,
+                left: Box::new(BoundPredicate::Column(column(1, 0, ScalarType::Integer))),
+                right: Box::new(BoundPredicate::Integer(7)),
+            },
+        ]);
+
+        let plan = plan_delete_v1(relation, predicate).unwrap();
+        assert_eq!(
+            plan.scan_columns,
+            vec![
+                column(1, 0, ScalarType::Integer),
+                column(2, 1, ScalarType::Boolean),
+            ]
+        );
+        assert_eq!(
+            validate_delete_plan_v1(&plan),
+            Ok(()),
+            "the plan is valid before crossing the optimizer boundary"
+        );
+        let encoded = encode_delete_plan_v1(&plan).unwrap();
+        assert_eq!(decode_delete_plan_v1(&encoded).unwrap(), plan);
+
+        let mut malformed = encoded;
+        *malformed.last_mut().unwrap() = 4;
+        assert_eq!(
+            decode_delete_plan_v1(&malformed),
+            Err(PlanError::InvalidPipeline)
+        );
+    }
+
+    #[test]
+    fn delete_plan_supports_constant_predicates_with_full_shape_scans() {
+        let bound = bound_select();
+        let relation = RelationReference {
+            schema_name: bound.schema_name,
+            schema_id: bound.schema_id,
+            schema_version: bound.schema_version,
+            relation_name: bound.relation_name,
+            relation_id: bound.relation_id,
+            table_epoch: bound.table_epoch,
+        };
+        let plan = plan_delete_v1(relation, BoundPredicate::Boolean(true)).unwrap();
+        assert!(plan.scan_columns.is_empty());
+        let encoded = encode_delete_plan_v1(&plan).unwrap();
+        let mut expected = vec![0x00, 0x01, PLAN_KIND_DELETE, 0x00];
+        expected.extend_from_slice(&[5]);
+        expected.extend_from_slice(b"sales");
+        expected.extend_from_slice(&[0x10; 16]);
+        expected.extend_from_slice(&4u64.to_be_bytes());
+        expected.extend_from_slice(&[6]);
+        expected.extend_from_slice(b"orders");
+        expected.extend_from_slice(&[0x20; 16]);
+        expected.extend_from_slice(&6u64.to_be_bytes());
+        expected.extend_from_slice(&[3, 1, 0, 0, 2, 0x01, 0x01, DELETE_SINK_NODE]);
+        assert_eq!(encoded, expected);
+        assert_eq!(decode_delete_plan_v1(&encoded).unwrap(), plan);
+    }
+
+    #[test]
+    fn delete_plan_rejects_non_boolean_and_unbounded_predicates() {
+        let bound = bound_select();
+        let relation = RelationReference {
+            schema_name: bound.schema_name,
+            schema_id: bound.schema_id,
+            schema_version: bound.schema_version,
+            relation_name: bound.relation_name,
+            relation_id: bound.relation_id,
+            table_epoch: bound.table_epoch,
+        };
+        assert_eq!(
+            plan_delete_v1(relation.clone(), BoundPredicate::Integer(7)),
+            Err(PlanError::InvalidPredicate)
+        );
+
+        let mut predicate = BoundPredicate::Boolean(true);
+        for _ in 0..crate::optimizer_request::MAX_PREDICATE_DEPTH {
+            predicate = BoundPredicate::Not(Box::new(predicate));
+        }
+        assert_eq!(
+            plan_delete_v1(relation, predicate),
+            Err(PlanError::InvalidPredicate)
+        );
     }
 
     #[test]
