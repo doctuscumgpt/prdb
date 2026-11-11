@@ -375,3 +375,10 @@
 - Regression: the TinyCC optimizer-plan fixture supplies a two-row matching batch with capacity for one target. It checks `REQUEST_LIMIT`, one sticky failure, zero StageUpdate calls, and zero updated count.
 - Verification: `nix develop -c make -f engine/sdk/Makefile test` passed, including all ABI generator tests and maintained TinyCC SDK executables.
 - Remaining: exercise cancellation, target exhaustion, and staging failure through confined processes, then expand transaction conflict/policy cases.
+
+## OP-3 dependency: reject an optimizer UPDATE without storage write authority — verified
+
+- Behavior: a readable relation remains available to optimizer planning, but its absent UPDATE grant must reject staging and abort the invocation without committing.
+- Regression: the confined SQL artifact submits a parameterized UPDATE against `linked_records`, for which the admitted user has SELECT access but no UPDATE grant. It emits a provisional ready event, then the executor/storage path rejects the mutation; the gateway reports `QueryError` and storage records an `Aborted` outcome.
+- Verification: the fixture compiled with pinned TinyCC using `make -f engine/sdk/Makefile sandbox-query-fixture`; `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` passed inside a delegated `systemd --user` cgroup with real optimizer and executor processes.
+- Remaining: confined cancellation and explicit staging-failure injection, plus broader transaction conflict/policy acceptance.

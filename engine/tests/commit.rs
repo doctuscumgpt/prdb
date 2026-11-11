@@ -23503,6 +23503,125 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     assert!(String::from_utf8(cancellation_terminal.payload)?.contains("\"outcome\":\"aborted\""));
     drop(cancellation_gateway);
 
+    let denied_update_row_key = table_row_key(joined_table.table_id, id(0xc5));
+    let denied_update_row_before = row(&database, &denied_update_row_key)?
+        .ok_or("linked record missing before denied UPDATE")?
+        .payload;
+    let failure_parameter = [b'F'];
+    let mut failure_client = ClientConnectionSession::default();
+    failure_client.accept_hello(ClientMode::Query, "sandbox-sql-update-failure")?;
+    failure_client.authenticate(&storage, token_id, &secret)?;
+    let failure_owner = failure_client.staging_owner()?;
+    let failure_staging = StagingStore::new(
+        StagingLimits::default(),
+        Arc::new(AcceptFixture {
+            requested_scope: requested_scope.clone(),
+        }),
+    )?;
+    let failure_reservation = failure_staging
+        .prepare(
+            failure_owner,
+            PrepareSubmission {
+                manifest_version: 1,
+                manifest: b"m".to_vec(),
+                artifact_bytes: u64::try_from(artifact.len())?,
+                artifact_sha256: Sha256::digest(&artifact).into(),
+                scope_version: 1,
+                requested_scope: requested_scope.clone(),
+                parameter_bytes: 1,
+                parameter_sha256: Sha256::digest(failure_parameter).into(),
+                deadline_ms: 30_000,
+                workload_class: WorkloadClass::Operational,
+            },
+        )
+        .map_err(|error| format!("prepare denied UPDATE fixture: {error:?}"))?;
+    let mut failure_artifact_offset = 0;
+    for chunk in artifact.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
+        failure_artifact_offset = failure_staging
+            .upload_chunk(
+                failure_owner,
+                failure_reservation.invocation_id,
+                ChunkKind::Artifact,
+                failure_artifact_offset,
+                chunk,
+            )
+            .map_err(|error| format!("UPDATE failure fixture upload: {error:?}"))?;
+    }
+    failure_staging
+        .upload_chunk(
+            failure_owner,
+            failure_reservation.invocation_id,
+            ChunkKind::Parameters,
+            0,
+            &failure_parameter,
+        )
+        .map_err(|error| format!("UPDATE failure parameter upload: {error:?}"))?;
+    failure_staging
+        .seal(failure_owner, failure_reservation.invocation_id)
+        .map_err(|error| format!("seal denied UPDATE fixture: {error:?}"))?;
+    let failure_invocation_hex = failure_reservation
+        .invocation_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let (failure_accepted, mut failure_invocation, mut failure_executor) = failure_client
+        .handle_start_request_with_executor(
+            &storage,
+            &failure_staging,
+            ClientFrame {
+                kind: 7,
+                request_id: 3,
+                response_sequence: 0,
+                payload: format!("{{\"invocation_id\":\"{failure_invocation_hex}\"}}").into_bytes(),
+            },
+            GatewayAdmissionConfig {
+                retention_period_us: 3_600_000_000,
+                max_rows: 8,
+                max_bytes: 4096,
+            },
+            &runtime,
+        )
+        .map_err(|error| format!("start denied UPDATE fixture: {error:?}"))?;
+    assert_eq!(failure_accepted.payload, b"{\"state\":\"accepted\"}");
+    let (mut failure_service, mut failure_gateway) = UnixStream::pair()?;
+    assert_eq!(
+        observe_executor_relay_and_finalize_gateway(
+            &storage,
+            &mut failure_invocation,
+            &mut failure_executor,
+            &mut failure_service,
+            failure_accepted.request_id,
+        )
+        .map_err(|error| format!("finalize denied UPDATE fixture: {error:?}"))?,
+        GatewayTerminalDecision::Abort(GatewayAbortReason::QueryError)
+    );
+    let failure_ready =
+        read_frame(&mut failure_gateway)?.ok_or("missing denied UPDATE ready event")?;
+    assert_eq!(failure_ready.operation, Operation::GatewayResultData as u16);
+    assert_eq!(failure_ready.payload, b"UPDATE_REJECTION_READY");
+    let failure_terminal =
+        read_frame(&mut failure_gateway)?.ok_or("missing UPDATE failure terminal event")?;
+    assert_eq!(
+        failure_terminal.operation,
+        Operation::GatewayTerminal as u16
+    );
+    assert!(String::from_utf8(failure_terminal.payload)?.contains("\"outcome\":\"aborted\""));
+    assert_eq!(
+        storage
+            .lookup_invocation_outcome(failure_reservation.invocation_id, user_id, now + 4)?
+            .ok_or("missing denied UPDATE outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    assert_eq!(
+        row(&database, &denied_update_row_key)?
+            .ok_or("linked record missing after denied UPDATE")?
+            .payload,
+        denied_update_row_before,
+        "denied optimizer UPDATE changed a committed row"
+    );
+    drop(failure_gateway);
+
     let restricted_scope = [
         b"PSC1\0\x01".as_slice(),
         &[1, 1],
