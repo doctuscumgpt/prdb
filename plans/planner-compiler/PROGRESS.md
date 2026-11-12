@@ -16,6 +16,15 @@
 - Verification: focused real-redb planner metadata and executor IPC regression passed. Full delegated-cgroup tests, including executor cancellation, passed with 189 library tests, 148 commit tests, and 74 transaction tests; workspace formatting and warning-denied Clippy passed. The first full run caught the planner-only path suffix leaking into the C executor identity response; `resolve_plan_relation` now retains its prior identity-only bytes, while `describe_plan_relation` carries the optional path suffix.
 - Remaining: the optimizer does not yet select a path, match it to an exact equality filter, or execute the resulting plan through the C SDK.
 
+## OP-5 follow-up: select an authorized unique path in the SELECT plan — implemented; SDK execution remains open
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). A point hint is allowed only for an exact root equality on one statically authorized single-column unique path; it conveys no storage authority and must remain a valid SELECT plan when ignored.
+- Implementation: bound SELECTs retain authorized unique paths. `plan_select_v1` emits optional suffix `0xa1` with the stable index ID, complete key-column record, and literal value only for same-typed Boolean, INTEGER, or TEXT equality. Rust validation ties it back to the scan shape and root filter. The TinyCC decoder accepts the suffix only on SELECT, checks its ID, scanned key record and scalar type, and still validates the standard pipeline.
+- Regression: Rust plan tests cover an exact approved equality, canonical round-trip, no-path fallback, and composite-path rejection. TinyCC fixture coverage accepts a matching integer hint and rejects a mismatched scalar type and zero index ID.
+- Verification: focused Rust plan tests and the maintained `sdk-optimizer-plan-v1` TinyCC fixture passed. The full maintained SDK suite and delegated workspace suite remain to be rerun after the SDK point-probe execution work.
+- Limitation: the C SDK does not yet match the hint to the parsed SQL AST or invoke executor operation `ProbeUniqueIndex`; it continues through the authorized full-scan path. Those checks are required before this hint can affect execution.
+- Next: validate the hint against the exact AST equality, construct a bounded probe request, handle unavailable/no-match/match outcomes, and fall back to the existing scan when the executor reports unavailable.
+
 ## OP-7 follow-up: backpressure per-invocation planner submissions — verified
 
 - Contract: [optimizer specification](../../specs/planner-compiler.md). The isolated optimizer handles one submission at a time and waits for the matching invocation-scoped metadata response before planning the next request; request and estimate counts are bounded per connection.

@@ -508,6 +508,25 @@ static uint32_t build_filter_plan(uint8_t *bytes,
     return offset;
 }
 
+static uint32_t build_unique_probe_plan(uint8_t *bytes,
+                                        uint32_t *predicate_offset) {
+    uint32_t offset = build_filter_plan(bytes, predicate_offset);
+    bytes[offset++] = 0xa1;
+    memset(bytes + offset, 0x71, 16);
+    offset += 16;
+    uint32_t column_id_offset = put_column(bytes, &offset, 3, 0);
+    bytes[column_id_offset] = 10;
+    bytes[column_id_offset + 16] = 0;
+    bytes[column_id_offset + 17] = 0;
+    bytes[column_id_offset + 18] = 0;
+    bytes[column_id_offset + 19] = 0;
+    bytes[offset++] = 0x02;
+    memset(bytes + offset, 0, 7);
+    offset += 7;
+    bytes[offset++] = 1;
+    return offset;
+}
+
 static uint32_t build_boolean_filter_plan(uint8_t *bytes,
                                           uint32_t *predicate_offset) {
     uint32_t offset = 0;
@@ -1147,6 +1166,9 @@ int main(void) {
     uint8_t response[512];
     uint8_t request[512];
     uint8_t optimizer_response[512];
+    uint8_t probe_plan[512];
+    uint32_t probe_predicate_offset;
+    uint32_t probe_plan_len;
     uint8_t delete_target_handles[
         PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS * 16];
     uint8_t sql[] = "SELECT c3 FROM items LIMIT 1";
@@ -2409,6 +2431,22 @@ int main(void) {
     assert(prdb_sdk_optimizer_decode_plan_with_filter_v1(
                payload, payload_len, &decoded, sizeof(decoded), &filter,
                sizeof(filter) - 1) == PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT);
+
+    probe_plan_len = build_unique_probe_plan(probe_plan,
+                                              &probe_predicate_offset);
+    assert(prdb_sdk_optimizer_decode_plan_with_filter_v1(
+               probe_plan, probe_plan_len, &decoded, sizeof(decoded), &filter,
+               sizeof(filter)) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(filter.present == 1 && filter.prefix_len != 0);
+    probe_plan[probe_plan_len - 9] = 0x01;
+    assert(prdb_sdk_optimizer_decode_plan_with_filter_v1(
+               probe_plan, probe_plan_len, &decoded, sizeof(decoded), &filter,
+               sizeof(filter)) == PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    probe_plan[probe_plan_len - 9] = 0x02;
+    memset(probe_plan + probe_plan_len - 9 - 26 - 16, 0, 16);
+    assert(prdb_sdk_optimizer_decode_plan_with_filter_v1(
+               probe_plan, probe_plan_len, &decoded, sizeof(decoded), &filter,
+               sizeof(filter)) == PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
 
     payload_len = build_plan(payload, &projected_id_offset,
                              &project_node_offset);

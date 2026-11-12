@@ -213,6 +213,7 @@ mod tests {
                 nullable: true,
             }],
             predicate: None,
+            unique_access_paths: Vec::new(),
             limit: None,
         };
         encode_plan_v1(&plan_select_v1(bound).unwrap()).unwrap()

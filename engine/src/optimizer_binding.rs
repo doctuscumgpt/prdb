@@ -1,7 +1,8 @@
 //! Bind structured optimizer requests against invocation-authorized metadata.
 
 use crate::metadata_discovery::{
-    AuthorizedPlanRelation, AuthorizedRelationDescription, VisibleColumn,
+    AuthorizedPlanRelation, AuthorizedRelationDescription, AuthorizedUniqueAccessPath,
+    VisibleColumn,
 };
 use crate::optimizer_request::{
     Comparison, CompositeGroupCountOrderItem, CompositeGroupCountRequest, GroupAggregateRequest,
@@ -27,6 +28,7 @@ pub struct BoundSelect {
     pub relation_name: String,
     pub projections: Vec<BoundColumn>,
     pub predicate: Option<BoundPredicate>,
+    pub unique_access_paths: Vec<AuthorizedUniqueAccessPath>,
     pub limit: Option<u32>,
 }
 
@@ -640,6 +642,7 @@ fn bind_decoded_select(
         relation_name: relation.relation.name,
         projections,
         predicate,
+        unique_access_paths: relation.unique_access_paths,
         limit: request.limit,
     })
 }

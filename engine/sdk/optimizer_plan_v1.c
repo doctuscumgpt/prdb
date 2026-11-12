@@ -2291,6 +2291,7 @@ static int32_t decode_plan_internal(
     uint8_t has_limit = 0;
     uint32_t limit = 0;
     uint8_t has_filter = 0;
+    uint8_t has_unique_probe = 0;
     uint8_t predicate_references[PRDB_SDK_OPTIMIZER_PLAN_MAX_SCAN_COLUMNS] = {0};
 
     if (payload == NULL || out == NULL || out_capacity < sizeof(*out) ||
@@ -2458,8 +2459,45 @@ static int32_t decode_plan_internal(
         }
         has_limit = 1;
     }
-    if (node_count != (uint8_t)(2 + has_filter + has_limit) ||
-        reader.offset != reader.length) {
+    if (node_count != (uint8_t)(2 + has_filter + has_limit)) {
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    }
+    if (reader.offset != reader.length) {
+        uint8_t tag;
+        const uint8_t *index_id;
+        prdb_sdk_optimizer_plan_column_v1 key_column = {0};
+        predicate_type value_type = {0};
+        uint32_t value_nodes = 0;
+        uint8_t value_references[PRDB_SDK_OPTIMIZER_PLAN_MAX_SCAN_COLUMNS] = {0};
+        int key_found = 0;
+        if (expected_kind != 1 || !read_u8(&reader, &tag) || tag != 0xa1 ||
+            !take(&reader, 16, &index_id) || all_zero(index_id, 16) ||
+            !read_column(&reader, &key_column)) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        }
+        for (index = 0; index < decoded.scan_column_count; ++index) {
+            if (columns_equal(&key_column, &decoded.scan_columns[index])) {
+                key_found = 1;
+                break;
+            }
+        }
+        if (!key_found || !read_u8(&reader, &tag) ||
+            (tag != 0x01 && tag != 0x02 && tag != 0x03)) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        }
+        --reader.offset;
+        if (!decode_predicate(&reader, decoded.scan_columns,
+                              decoded.scan_column_count, 1, &value_nodes,
+                              value_references, &value_type) ||
+            value_nodes != 1 || value_type.is_null != 0 ||
+            value_type.type_code != key_column.type_code ||
+            memcmp(value_type.parameters, key_column.type_parameters, 4) != 0 ||
+            reader.offset != reader.length) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        }
+        has_unique_probe = 1;
+    }
+    if (has_unique_probe != 0 && has_filter == 0) {
         return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
     }
     decoded.struct_size = sizeof(decoded);
