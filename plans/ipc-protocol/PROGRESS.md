@@ -1,5 +1,13 @@
 # Internal IPC Progress
 
+## IPC-2 follow-up: bounded executor index range request — verified
+
+- Behavior: executor operation `0x1115` accepts at least one typed leading-key bound and selected columns; storage revalidates the relation, catalog index, key readability, row policy, and staged-write visibility. Results expose sanitized cells only and return `unavailable` rather than a partial or oversized payload.
+- Implementation: generated operation tag and role allowlist, bounded v1 request/response codecs, principal-bound catalog entry point, and executor dispatch are implemented. Information-schema relations safely return `unavailable`.
+- Regression: bound flags and scalar types round-trip; malformed flags, truncation, trailing bytes, response status, oversized fallback, and executor/planner role separation are covered. The existing transaction range regression covers hidden and conditional keys and overlay reconciliation.
+- Verification: ABI generator checks, focused Rust codec/IPC tests, workspace build, formatting, warning-denied Clippy, maintained TinyCC SDK tests and fixture build passed. The full serial workspace suite passed inside the delegated user service (193 library tests, 148 commit tests, 74 transaction tests; zero ignored tests).
+- Remaining: SDK consumption, optimizer selection, end-to-end optimized/reference result and error equivalence, and broader malformed process-level IPC coverage remain open.
+
 ## IPC-3 dependency: generated supervisor control request validation — implemented
 
 - Behavior: status and administrative-cancel requests are decoded and validated through their exact schema-generated operation layouts.
