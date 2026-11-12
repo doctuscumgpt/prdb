@@ -603,6 +603,8 @@ static int32_t run_write_read_fixture(
     const prdb_host_api_v4 *optimizer_host,
     const prdb_host_api_v5 *optimizer_host_v5) {
     static const uint8_t insert_sql[] = "INSERT INTO records VALUES (NULL)";
+    static const uint8_t generated_identity_insert_sql[] =
+        "INSERT INTO identity_records VALUES (DEFAULT)";
     static const uint8_t select_null_sql[] =
         "SELECT id FROM records WHERE id IS NULL";
     static const uint8_t select_schemata_sql[] =
@@ -2382,6 +2384,18 @@ static int32_t run_write_read_fixture(
                 "fixture-error-optimizer-delete-visible";
             return report_failure(host, message, sizeof(message) - 1);
         }
+    }
+    status = prdb_sdk_sql_execute_insert_v1(
+        host, schema, sizeof(schema) - 1, generated_identity_insert_sql,
+        sizeof(generated_identity_insert_sql) - 1, NULL, 0,
+        planner_response, sizeof(planner_response), executor_response,
+        sizeof(executor_response), insert_request, sizeof(insert_request),
+        planner_columns, 9, executor_columns, 9, insert_values, 1,
+        inserted_handle);
+    if (status != PRDB_SDK_SQL_EXEC_OK ||
+        memcmp(inserted_handle, (uint8_t[16]){0}, sizeof(inserted_handle)) == 0) {
+        static const uint8_t message[] = "fixture-error-generated-identity-insert";
+        return report_failure(host, message, sizeof(message) - 1);
     }
     return 0;
 }

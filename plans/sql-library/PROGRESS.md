@@ -630,3 +630,10 @@
 - Implementation: no SQL runner change was needed; the executor SDK now rejects response row counts above `max_candidates` and leaves the decoded batch output unchanged on failure.
 - Verification: focused executor and SQL runner fixtures plus the full TinyCC SDK suite passed; locked workspace build, formatting, warning-denied Clippy, workspace tests (138 passed; 4 delegated-cgroup tests ignored), and `git diff --check` passed.
 - Remaining: broader analytical memory-pressure, spill, and mixed-workload evidence remains open.
+
+## SQL-4 / SM-6 follow-up: generated UUID DEFAULT through confined SQL — verified
+
+- Contract: [SQL transactional execution](../../specs/sql-library.md) and [generated UUID identity DDL](../../specs/ddl-schema.md). A SQL `DEFAULT` marker must reach storage as a generated identity request; only storage materializes the UUID, and the invocation must commit it through the normal supervisor path.
+- Regression: `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` now creates `identity_records` with a generated UUID column, gives the query principal INSERT scope and an INSERT allow policy, and runs `INSERT INTO identity_records VALUES (DEFAULT)` through the TinyCC SQL SDK and confined planner/executor services. After durable COMMITTED, the test scans the real redb table and verifies exactly one nonzero UUID tuple.
+- Verification: forced TinyCC sandbox fixture build, complete TinyCC SDK suite, focused delegated-cgroup acceptance, locked workspace build, format check, warning-denied Clippy, and full serial workspace suite all passed. The fixture's artifact is loaded only by the confined executor; the Rust assertion reads the committed row after terminal outcome confirmation. Touched documentation links and `git diff --check` pass.
+- Remaining: broader SQL/API parity, transaction conflict and policy acceptance, spill support, and mixed-workload measurements remain open.

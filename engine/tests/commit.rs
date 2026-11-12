@@ -22887,7 +22887,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     use prdb_engine::ipc::{Operation, read_frame};
     use prdb_engine::outcome::OutcomeStatus;
     use prdb_engine::storage_manager::{
-        CreateTableRequest, StorageManagerConfig, TableColumnDefinition,
+        CreatePolicyRequest, CreateTableRequest, PolicyKind, StorageManagerConfig,
+        TableColumnDefinition,
     };
     use prdb_engine::supervisor::{
         ChunkKind, PrepareSubmission, StagingLimits, StagingStore, SubmissionMetadata,
@@ -23083,6 +23084,24 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         }],
         retention_deadline_us: now + 3_600_000_000,
         audit_event: table_audit,
+    })?;
+    let identity_table_invocation = id(0xe0);
+    let mut identity_table_audit = identity_audit_event(0xe0, user_id, schema.schema_id);
+    identity_table_audit.correlation_id = identity_table_invocation;
+    let identity_table = storage.create_table(CreateTableRequest {
+        invocation_id: identity_table_invocation,
+        authenticated_actor_id: user_id,
+        schema_id: schema.schema_id,
+        name: "identity_records".to_owned(),
+        columns: vec![TableColumnDefinition {
+            name: "id".to_owned(),
+            scalar_type: ScalarType::Uuid,
+            nullable: false,
+            generated_uuid_identity: true,
+            default: None,
+        }],
+        retention_deadline_us: now + 3_600_000_000,
+        audit_event: identity_table_audit,
     })?;
     let joined_table_invocation = id(0xc1);
     let mut joined_table_audit = identity_audit_event(0xc2, user_id, id(0xc3));
@@ -23281,6 +23300,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         dependency_write(restricted_user_id, empty_schema.schema_id, 5),
         dependency_write(user_id, records_table.table_id, 5),
         dependency_write(user_id, records_table.column_ids[0], 5),
+        dependency_write(user_id, identity_table.table_id, 5),
         dependency_write(user_id, joined_table.table_id, 5),
         dependency_write(user_id, joined_table.column_ids[0], 5),
         dependency_write(user_id, joined_table.column_ids[1], 5),
@@ -23298,6 +23318,14 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             user_id,
         )
     }));
+    authority_writes.push(grant_write(
+        user_id,
+        identity_table.table_id,
+        3,
+        1,
+        identity_table.table_id,
+        user_id,
+    ));
     authority_writes.extend((2..=4).map(|privilege| {
         grant_write(
             user_id,
@@ -23969,6 +23997,26 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             &[policy_audit],
         )
         .map_err(|error| format!("metadata fixture policies failed: {error:?}"))?;
+    let identity_policy_invocation = id(0xfa);
+    let mut identity_policy_audit = identity_audit_event(0xfa, user_id, identity_table.table_id);
+    identity_policy_audit.correlation_id = identity_policy_invocation;
+    storage.create_policy(CreatePolicyRequest {
+        invocation_id: identity_policy_invocation,
+        authenticated_actor_id: user_id,
+        table_id: identity_table.table_id,
+        name: "sandbox_generated_identity_insert_policy".to_owned(),
+        kind: PolicyKind::Row,
+        operation: prdb_engine::authorization::Operation::Insert,
+        effect: prdb_engine::authorization::Effect::Allow,
+        recipients: vec![prdb_engine::authorization::Subject::Principal(user_id)],
+        target_column_ids: Vec::new(),
+        using_expression: None,
+        with_check_expression: Some(prdb_engine::authorization::Expr::Literal(Some(
+            ScalarValue::Boolean(true),
+        ))),
+        retention_deadline_us: now + 3_600_000_000,
+        audit_event: identity_policy_audit,
+    })?;
     let range_index_invocation = id(0xd7);
     let mut range_index_audit = identity_audit_event(0xd8, user_id, composite_table.table_id);
     range_index_audit.correlation_id = range_index_invocation;
@@ -23991,6 +24039,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     for operation in 2u8..=5 {
         let mut tables = if operation == 2 || operation == 4 {
             vec![&records_table, &joined_table, &composite_table]
+        } else if operation == 3 {
+            vec![&records_table, &identity_table]
         } else {
             vec![&records_table]
         };
@@ -25196,6 +25246,28 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             .status,
         OutcomeStatus::Committed
     );
+    {
+        let read = database.begin_read()?;
+        let rows = read.open_table(ROWS)?;
+        let lower = table_row_key(identity_table.table_id, [0; 16]);
+        let upper = table_row_key(identity_table.table_id, [u8::MAX; 16]);
+        let identity_columns = [ColumnSchema {
+            scalar_type: ScalarType::Uuid,
+            nullable: false,
+        }];
+        let mut identity_rows = 0;
+        for entry in rows.range(lower.as_slice()..=upper.as_slice())? {
+            let (_, record) = entry?;
+            let record = RowRecord::decode(record.value())?;
+            let tuple = decode_tuple(&identity_columns, 1, &record.payload)?;
+            assert!(matches!(
+                tuple.values.as_slice(),
+                [Some(ScalarValue::Uuid(value))] if *value != [0; 16]
+            ));
+            identity_rows += 1;
+        }
+        assert_eq!(identity_rows, 1, "SQL DEFAULT should commit one UUID row");
+    }
 
     for seed in 0xf0u8..0xf8u8 {
         let mut expired_outcome = prdb_engine::transaction::InvocationTransaction::begin(
