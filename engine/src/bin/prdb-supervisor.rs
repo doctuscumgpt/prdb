@@ -47,6 +47,9 @@ mod service {
         profile_cpu: Option<String>,
         profile_runtime: Option<String>,
         sdk_release: Option<u32>,
+        sdk_release_dirs: Vec<PathBuf>,
+        sdk_cache_dir: Option<PathBuf>,
+        sdk_cache_max_bytes: Option<u64>,
         dependencies: HashSet<String>,
         retention_seconds: Option<u64>,
         max_rows: Option<usize>,
@@ -89,6 +92,7 @@ mod service {
              --cgroup-parent PATH --executor PATH --optimizer PATH --scratch-parent PATH\n\
              --runtime-read-execute PATH (repeatable) --runtime-profile NAME\n\
              --cpu-baseline NAME --sdk-release NUMBER --allowed-dependency NAME (repeatable)\n\
+             [--sdk-release-dir DIR (repeatable) --sdk-cache-dir DIR --sdk-cache-max-bytes N]\n\
              --retention-seconds N --max-rows N --max-bytes N\n\
              --max-principal-reservations N\n\
              [--max-pending-operational N --max-pending-analytical N]\n\
@@ -182,13 +186,31 @@ mod service {
             return Err("at least one --runtime-read-execute path is required".into());
         }
         let profile = ArtifactCompatibilityProfile::new(
-            cpu_baseline,
-            runtime_profile,
+            cpu_baseline.clone(),
+            runtime_profile.clone(),
             sdk_release,
             options.dependencies,
         )
         .map_err(|error| format!("invalid compatibility profile: {error:?}"))?;
-        let validator = Arc::new(VersionedSubmissionMetadataValidator::new(profile));
+        let mut validator = VersionedSubmissionMetadataValidator::new(profile);
+        if !options.sdk_release_dirs.is_empty() {
+            let cache_dir = required(options.sdk_cache_dir, "--sdk-cache-dir")?;
+            let registry = prdb_engine::sdk_registry::SdkReleaseRegistry::load(
+                &options.sdk_release_dirs,
+                &cache_dir,
+                "linux-x86_64".to_owned(),
+                cpu_baseline,
+                runtime_profile,
+                options.sdk_cache_max_bytes.unwrap_or(1024 * 1024 * 1024),
+            )
+            .map_err(|error| format!("invalid SQL SDK release registry: {error:?}"))?;
+            validator = validator
+                .with_sdk_registry(Arc::new(registry))
+                .map_err(|error| format!("invalid SQL SDK registry profile: {error:?}"))?;
+        } else if options.sdk_cache_dir.is_some() || options.sdk_cache_max_bytes.is_some() {
+            return Err("SDK cache options require at least one --sdk-release-dir".into());
+        }
+        let validator = Arc::new(validator);
         let default_staging_limits = StagingLimits::default();
         let staging_limits = StagingLimits {
             max_pending_operational: positive(
@@ -426,6 +448,9 @@ mod service {
                 "--cpu-baseline" => set!(profile_cpu, value),
                 "--runtime-profile" => set!(profile_runtime, value),
                 "--sdk-release" => set!(sdk_release, value.parse::<u32>()?),
+                "--sdk-release-dir" => options.sdk_release_dirs.push(value.into()),
+                "--sdk-cache-dir" => set!(sdk_cache_dir, PathBuf::from(value)),
+                "--sdk-cache-max-bytes" => set!(sdk_cache_max_bytes, value.parse::<u64>()?),
                 "--allowed-dependency" => {
                     if !options.dependencies.insert(value) {
                         return Err("duplicate --allowed-dependency".into());

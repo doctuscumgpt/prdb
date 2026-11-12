@@ -36,6 +36,7 @@ pub mod planner_ipc;
 pub mod query_abi;
 pub mod row_record;
 pub mod schema;
+pub mod sdk_registry;
 pub mod snapshot;
 pub mod startup;
 pub mod statistics;

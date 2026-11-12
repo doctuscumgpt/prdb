@@ -192,11 +192,28 @@ impl ArtifactCompatibilityProfile {
 
 pub struct VersionedSubmissionMetadataValidator {
     profile: ArtifactCompatibilityProfile,
+    sdk_registry: Option<std::sync::Arc<crate::sdk_registry::SdkReleaseRegistry>>,
 }
 
 impl VersionedSubmissionMetadataValidator {
     pub fn new(profile: ArtifactCompatibilityProfile) -> Self {
-        Self { profile }
+        Self {
+            profile,
+            sdk_registry: None,
+        }
+    }
+
+    pub fn with_sdk_registry(
+        mut self,
+        registry: std::sync::Arc<crate::sdk_registry::SdkReleaseRegistry>,
+    ) -> Result<Self, ManifestError> {
+        self.profile.allowed_dependencies.extend(
+            registry
+                .sonames()
+                .map_err(|_| ManifestError::InvalidArtifact)?,
+        );
+        self.sdk_registry = Some(registry);
+        Ok(self)
     }
 }
 
@@ -233,6 +250,41 @@ impl SubmissionMetadataValidator for VersionedSubmissionMetadataValidator {
             info.needed.into_iter().collect::<HashSet<_>>()
                 == manifest.dependencies.into_iter().collect::<HashSet<_>>()
         })
+    }
+
+    fn resolve_sdk_release(
+        &self,
+        metadata: &SubmissionMetadata,
+        _artifact: &[u8],
+    ) -> Result<Option<crate::sdk_registry::SdkLibraryPin>, ManifestError> {
+        let manifest = decode_manifest_v1(&metadata.manifest)?;
+        let shared_sql_dependency = manifest
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.starts_with("libprdb_sql.so."));
+        if !shared_sql_dependency {
+            return Ok(None);
+        }
+        let registry = self
+            .sdk_registry
+            .as_ref()
+            .ok_or(ManifestError::UnavailableDependency)?;
+        registry
+            .resolve(&manifest)
+            .map(Some)
+            .map_err(|error| match error {
+                crate::sdk_registry::SdkRegistryError::IncompatibleProfile => {
+                    ManifestError::IncompatibleProfile
+                }
+                crate::sdk_registry::SdkRegistryError::UnavailableRelease => {
+                    ManifestError::UnavailableDependency
+                }
+                crate::sdk_registry::SdkRegistryError::DigestMismatch
+                | crate::sdk_registry::SdkRegistryError::InvalidMetadata => {
+                    ManifestError::DependencyMismatch
+                }
+                _ => ManifestError::InvalidArtifact,
+            })
     }
 }
 

@@ -128,6 +128,17 @@ pub trait SubmissionMetadataValidator: Send + Sync {
     fn validate_artifact(&self, metadata: &SubmissionMetadata, _artifact: &[u8]) -> bool {
         self.validate(metadata)
     }
+
+    /// Resolve shared SDK dependencies before storage admission. Returned pins
+    /// remain owned by the started submission through worker completion.
+    fn resolve_sdk_release(
+        &self,
+        _metadata: &SubmissionMetadata,
+        _artifact: &[u8],
+    ) -> Result<Option<crate::sdk_registry::SdkLibraryPin>, crate::submission_manifest::ManifestError>
+    {
+        Ok(None)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,6 +158,7 @@ pub struct StagingReservation {
 pub struct SealedSubmission {
     invocation_id: [u8; 16],
     data: Arc<SealedSubmissionData>,
+    sdk_library_pin: Option<crate::sdk_registry::SdkLibraryPin>,
 }
 
 #[derive(Debug)]
@@ -171,6 +183,10 @@ impl SealedSubmission {
 
     pub fn parameters(&self) -> &[u8] {
         &self.data.parameters
+    }
+
+    pub fn sdk_library_pin(&self) -> Option<&crate::sdk_registry::SdkLibraryPin> {
+        self.sdk_library_pin.as_ref()
     }
 }
 
@@ -612,6 +628,7 @@ impl StagingStore {
             let submission = SealedSubmission {
                 invocation_id,
                 data: sealed_data,
+                sdk_library_pin: None,
             };
             state
                 .reservations
@@ -621,6 +638,25 @@ impl StagingStore {
             submission
         };
 
+        let mut submission = submission;
+        let resolved_sdk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.metadata_validator
+                .resolve_sdk_release(&submission.data.metadata, &submission.data.artifact)
+        }))
+        .unwrap_or(Err(
+            crate::submission_manifest::ManifestError::InvalidArtifact,
+        ));
+        match resolved_sdk {
+            Ok(pin) => submission.sdk_library_pin = pin,
+            Err(_) => {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|_| StartError::Staging(StagingError::Poisoned))?;
+                discard_reservation(&mut state, invocation_id);
+                return Err(StartError::Staging(StagingError::InvalidMetadata));
+            }
+        }
         let result = revalidate_and_start(&submission);
         let mut state = self
             .state
@@ -910,6 +946,7 @@ impl StagingStore {
         Ok(SealedSubmission {
             invocation_id,
             data,
+            sdk_library_pin: None,
         })
     }
 
@@ -1106,6 +1143,30 @@ mod tests {
         resume: Barrier,
     }
 
+    struct RejectSdkResolution;
+
+    impl SubmissionMetadataValidator for RejectSdkResolution {
+        fn supports_versions(&self, manifest_version: u32, scope_version: u32) -> bool {
+            manifest_version == 1 && scope_version == 1
+        }
+
+        fn validate(&self, metadata: &SubmissionMetadata) -> bool {
+            metadata.manifest == b"manifest"
+                && metadata.requested_scope == requested_scope_fixture()
+        }
+
+        fn resolve_sdk_release(
+            &self,
+            _metadata: &SubmissionMetadata,
+            _artifact: &[u8],
+        ) -> Result<
+            Option<crate::sdk_registry::SdkLibraryPin>,
+            crate::submission_manifest::ManifestError,
+        > {
+            Err(crate::submission_manifest::ManifestError::UnavailableDependency)
+        }
+    }
+
     impl SubmissionMetadataValidator for BlockingMetadata {
         fn supports_versions(&self, manifest_version: u32, scope_version: u32) -> bool {
             manifest_version == 1 && scope_version == 1
@@ -1223,6 +1284,27 @@ mod tests {
         );
         let replacement = store.prepare(owner, request(b"x", b""));
         assert!(replacement.is_ok());
+    }
+
+    #[test]
+    fn sdk_resolution_failure_discards_prepared_work_before_admission_callback() {
+        let store = store(Arc::new(RejectSdkResolution));
+        let owner = make_owner(27, 28);
+        let invocation_id = upload_and_seal(&store, owner, b"artifact", b"params");
+        let mut admission_called = false;
+
+        assert!(matches!(
+            store.start_with(owner, invocation_id, |_| {
+                admission_called = true;
+                Ok::<_, ()>(())
+            }),
+            Err(StartError::Staging(StagingError::InvalidMetadata))
+        ));
+        assert!(!admission_called);
+        assert_eq!(
+            store.status(owner, invocation_id),
+            Err(StagingError::Unavailable)
+        );
     }
 
     #[test]

@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SQLSO-3: supervisor SDK registry and START resolution — implemented
+
+- Contract: [separate SQL library plan](SEPARATE_SQL_LIBRARY.md), [client SDK](../../specs/client-sdk.md), and [SQL library](../../specs/sql-library.md). Supervisor startup accepts explicit installed release directories and a bounded cache location; query uploads cannot supply or install SDK libraries.
+- Implementation: the registry validates canonical release metadata, compatibility fields, SONAME, actual dependencies, and SHA-256 before atomically publishing read-only cache entries keyed by digest and compatibility identity. It resolves the PMF release/ABI and profile, rechecks cached bytes for each resolution, and returns RAII pins. The supervisor binary adds repeatable `--sdk-release-dir`, `--sdk-cache-dir`, and bounded `--sdk-cache-max-bytes` configuration. START resolves shared SQL dependencies before the storage-admission callback and fails closed if resolution fails. Eviction removes only unpinned entries.
+- Regression: registry tests cover release resolution, absent and mismatched profiles/releases, release and cached-byte corruption, cache limits, pin-aware eviction, concurrent resolution, and concurrent atomic publication. A START regression confirms resolution failure skips the admission callback and discards the reservation. Supervisor help coverage includes the registry options.
+- Verification: focused registry tests (4), START failure test, supervisor help test, locked workspace build, warning-denied Clippy, rustfmt check, and `git diff --check` passed in the locked Nix shell. No cgroup-backed integration test was ignored or used as evidence for this registry increment; the most recent full delegated-cgroup suite evidence remains under SQLSO-2 and will be refreshed for the final acceptance run.
+- Remaining: stage the selected pinned library beside query.so and prove SQL execution through the confined executor; finalize release configuration and migration policy.
+
 ## SQLSO-2: package queries against the shared SDK — implemented
 
 - Contract: [separate SQL library plan](SEPARATE_SQL_LIBRARY.md) and [client SDK spec](../../specs/client-sdk.md). The package path now consumes a release library plus its compatibility metadata; it never accepts the transition archive.
