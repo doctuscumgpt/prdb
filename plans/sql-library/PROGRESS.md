@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-8 follow-up: grouped ORDER BY limits and cancellation — verified
+
+- Contract: grouped sort stays within the existing 128 matching-row/group and 1 MiB materialization bounds. A bound violation fails before any group callback; cancellation is checked during output so a later group is not published after cancellation.
+- Regression: the maintained v12 executor fixture orders 128 distinct COUNT groups and verifies the complete ascending-key result after aggregate ties. It streams a 129th row on a second cursor page and verifies materialization failure with zero callbacks. A 40-group sort cancels after 32 callbacks and verifies failure before callback 33.
+- Verification: the focused `sdk-sql-execute-v10` fixture and complete TinyCC SDK suite passed. Locked workspace build, format, warning-denied Clippy, ABI drift check, and the serial workspace suite passed inside the delegated `systemd --user` service; commit integration reported 142 passed, zero ignored, metadata process integration reported 2 passed, and every test target reported zero ignored.
+- Remaining: byte-budget boundary coverage for grouped sorting, concurrent operational latency under real confined analytics, and wider workload/host measurements remain open.
+
 ## SQL-8: bounded ordered SELECT optimizer path — implemented
 
 - Contract: an explicit single-column `ORDER BY` key is resolved through the authorized relation description. Its source column may remain hidden from the SELECT projection; LIMIT is applied after stable ordering by the bounded SQL v3 runner or optimizer-backed ordered SELECT path.
