@@ -126,6 +126,8 @@ SQL_V3_NETWORK_CONSTRUCTOR_OBJECT := $(BUILD_DIR)/sql-v3-network-constructor.o
 SQL_V3_NETWORK_CONSTRUCTOR_QUERY := $(BUILD_DIR)/sql-v3-network-constructor.so
 SQL_V3_WRITE_READ_QUERY := $(BUILD_DIR)/sql-v3-write-read.so
 SQL_V3_RESTRICTED_METADATA_QUERY := $(BUILD_DIR)/sql-v3-restricted-metadata.so
+SQL_V3_FORGED_HANDLE_OBJECT := $(BUILD_DIR)/sql-v3-forged-relation-handle.o
+SQL_V3_FORGED_HANDLE_QUERY := $(BUILD_DIR)/sql-v3-forged-relation-handle.so
 SQL_V3_CAUGHT_ERROR_OBJECT := $(BUILD_DIR)/sql-v3-caught-error.o
 SQL_V3_WRITE_READ_OBJECT := $(BUILD_DIR)/sql-v3-write-read.o
 SQL_V3_RESTRICTED_METADATA_OBJECT := $(BUILD_DIR)/sql-v3-restricted-metadata.o
@@ -491,8 +493,16 @@ $(SQL_V3_RESTRICTED_METADATA_OBJECT): engine/tests/fixtures/sql_v3_restricted_me
 $(SQL_V3_RESTRICTED_METADATA_QUERY): $(SQL_V3_RESTRICTED_METADATA_OBJECT) $(SDK_ARCHIVE) | $(BUILD_DIR)
 	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack "$<" "$(SDK_ARCHIVE)" -o "$@"
 
+# This untrusted query deliberately bypasses the SDK and submits a forged
+# relation handle through the executor callback. Run it only in the sandbox.
+$(SQL_V3_FORGED_HANDLE_OBJECT): engine/tests/fixtures/sql_v3_forged_relation_handle.c $(INCLUDE_DIR)/prdb_query_abi_v3.h $(INCLUDE_DIR)/prdb_query_abi_constants.h $(INCLUDE_DIR)/prdb_query_abi_payload_codecs.h $(QUERY_ABI_GENERATED_HEADERS) | $(BUILD_DIR)
+	$(TCC) -Wall -Wextra -Werror -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
+
+$(SQL_V3_FORGED_HANDLE_QUERY): $(SQL_V3_FORGED_HANDLE_OBJECT) | $(BUILD_DIR)
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack "$<" -o "$@"
+
 .PHONY: sandbox-query-fixture
-sandbox-query-fixture: $(SQL_V3_CAUGHT_ERROR_QUERY) $(SQL_V3_SHARED_LIBRARY_QUERY) $(SQL_V3_MISSING_DEPENDENCY_QUERY) $(SQL_V3_NETWORK_CONSTRUCTOR_QUERY) $(SQL_V3_WRITE_READ_QUERY) $(SQL_V3_RESTRICTED_METADATA_QUERY) sdk-hostile-constructor-release
+sandbox-query-fixture: $(SQL_V3_CAUGHT_ERROR_QUERY) $(SQL_V3_SHARED_LIBRARY_QUERY) $(SQL_V3_MISSING_DEPENDENCY_QUERY) $(SQL_V3_NETWORK_CONSTRUCTOR_QUERY) $(SQL_V3_WRITE_READ_QUERY) $(SQL_V3_RESTRICTED_METADATA_QUERY) $(SQL_V3_FORGED_HANDLE_QUERY) sdk-hostile-constructor-release
 
 .PHONY: release-profile
 release-profile: sandbox-query-fixture

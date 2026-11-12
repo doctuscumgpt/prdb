@@ -21792,7 +21792,8 @@ fn run_sandboxed_v3_sql_error_fixture(
     artifact_env: &str,
     expect_network_denial: bool,
     shared_sdk_release_dir_env: Option<&str>,
-    expect_load_failure: bool,
+    expect_terminal_without_result: bool,
+    expect_query_error: bool,
     upload_client_sdk: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::client_protocol::{ClientConnectionSession, ClientFrame, ClientMode};
@@ -22087,6 +22088,11 @@ fn run_sandboxed_v3_sql_error_fixture(
 
     let (mut service, mut gateway) = UnixStream::pair()?;
     gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
+    let expected_abort_reason = if expect_query_error {
+        prdb_engine::supervisor_ipc::GatewayAbortReason::QueryError
+    } else {
+        prdb_engine::supervisor_ipc::GatewayAbortReason::WorkerFailure
+    };
     assert_eq!(
         observe_executor_relay_and_finalize_gateway(
             &storage,
@@ -22095,9 +22101,7 @@ fn run_sandboxed_v3_sql_error_fixture(
             &mut service,
             accepted.request_id,
         )?,
-        GatewayTerminalDecision::Abort(
-            prdb_engine::supervisor_ipc::GatewayAbortReason::WorkerFailure
-        )
+        GatewayTerminalDecision::Abort(expected_abort_reason)
     );
     staging.finish_started(owner, reservation.invocation_id)?;
     drop(executor);
@@ -22123,7 +22127,7 @@ fn run_sandboxed_v3_sql_error_fixture(
         !sdk_constructor_escaped,
         "SQL SDK constructor created a file outside its invocation scratch"
     );
-    let terminal = if expect_load_failure {
+    let terminal = if expect_terminal_without_result {
         assert_eq!(first_frame.operation, Operation::GatewayTerminal as u16);
         first_frame
     } else if expect_network_denial {
@@ -22161,7 +22165,7 @@ fn run_sandboxed_v3_sql_error_fixture(
 #[test]
 fn sandboxed_v3_sql_error_latches_failure_and_durably_aborts_after_partial_output()
 -> Result<(), Box<dyn std::error::Error>> {
-    run_sandboxed_v3_sql_error_fixture("PRDB_TEST_QUERY_ARTIFACT", false, None, false, false)
+    run_sandboxed_v3_sql_error_fixture("PRDB_TEST_QUERY_ARTIFACT", false, None, false, false, false)
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -22172,6 +22176,7 @@ fn sandboxed_v3_shared_sql_library_resolves_loads_and_durably_aborts_on_sql_erro
         "PRDB_TEST_SHARED_SQL_QUERY_ARTIFACT",
         false,
         Some("PRDB_TEST_SDK_RELEASE_DIR"),
+        false,
         false,
         false,
     )
@@ -22187,6 +22192,7 @@ fn sandboxed_shared_sql_missing_dependency_aborts_inside_executor()
         Some("PRDB_TEST_SDK_RELEASE_DIR"),
         true,
         false,
+        false,
     )
 }
 
@@ -22200,6 +22206,21 @@ fn sandboxed_v3_constructor_cannot_connect_to_host_loopback()
         None,
         false,
         false,
+        false,
+    )
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn sandboxed_direct_executor_ipc_rejects_forged_relation_handle()
+-> Result<(), Box<dyn std::error::Error>> {
+    run_sandboxed_v3_sql_error_fixture(
+        "PRDB_TEST_FORGED_HANDLE_QUERY_ARTIFACT",
+        false,
+        None,
+        true,
+        true,
+        false,
     )
 }
 
@@ -22211,6 +22232,7 @@ fn sandboxed_client_supplied_sql_library_loads_and_durably_aborts_on_sql_error()
         "PRDB_TEST_SHARED_SQL_QUERY_ARTIFACT",
         false,
         Some("PRDB_TEST_SDK_RELEASE_DIR"),
+        false,
         false,
         true,
     )

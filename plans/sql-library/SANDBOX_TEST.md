@@ -8,6 +8,8 @@ The `sandboxed_client_supplied_sql_library_loads_and_durably_aborts_on_sql_error
 
 The `sandboxed_shared_sql_missing_dependency_aborts_inside_executor` acceptance links a second query against the same SDK release and a test-only `libprdb_missing.so.1`, then omits that library from the staged directory and runtime profile. The confined dynamic loader rejects the query before its entry point or either constructor runs; the supervisor records durable ABORTED. The fixture is built only to test this failure path and is never executed outside the sandbox.
 
+The `sandboxed_direct_executor_ipc_rejects_forged_relation_handle` acceptance loads `sql-v3-forged-relation-handle.so` only in the confined executor. The native query skips the SDK and submits OPEN SCAN through the executor callback with a valid wire-shaped but never-issued relation handle. Storage rejects the request; the query fails, no result frame is emitted, and the invocation is durably ABORTED. This covers one direct callback bypass attempt and forged relation handle, not every hostile IPC sequence.
+
 The `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance configures the storage analytical admission cap to two and starts the primary SQL worker plus a cancellation SQL worker, both marked analytical, alongside four operational workers. Both sandbox observers start behind a barrier. The cancellation fixture submits an optimizer-backed UPDATE; its executor callback reports readiness at the first cancellation check after the authorized scan opens, then waits for the real cancellation response. While both analytics workers are live, a third START from a separate principal must fail specifically with storage `AdmissionLimitExceeded`; four operational workers continue authorized point reads and commits. The SDK must close the cancelled scan, stage no UPDATE rows, latch statement failure, and return `CANCELLED` with an update count of zero. The acceptance confirms the cancellation result events and durable ABORTED outcome, while checking that cancellation reaches the SDK poll within two seconds. This covers a two-client analytical cap and operational progress through the cgroup/Landlock path; it is not a configured latency target or a broader saturation profile.
 
 The same acceptance also exercises bounded result backpressure. With parameter `O`, the confined TinyCC fixture writes 256 maximum-sized 16-KiB chunks (4 MiB total). The gateway-side reader delays 2 ms per chunk while four operational workers perform 64 authorized reads and commits and outcome maintenance prunes a bounded batch containing eight expired outcomes. The test verifies every chunk and terminal frame, requires the supervisor relay itself to take at least 200 ms, and confirms all operational operations finish. This drives the bounded result queue against a slow consumer without running the artifact outside the sandbox.
@@ -51,6 +53,7 @@ Configure these environment variables in the shell command run by the unit:
 - `PRDB_TEST_WRITE_READ_QUERY_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-write-read.so`.
 - `PRDB_TEST_RESTRICTED_METADATA_QUERY_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-restricted-metadata.so`, used by the restricted-principal metadata acceptance.
 - `PRDB_TEST_NETWORK_CONSTRUCTOR_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-network-constructor.so`.
+- `PRDB_TEST_FORGED_HANDLE_QUERY_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-forged-relation-handle.so`.
 - `PRDB_TEST_RUNTIME_READ_EXECUTE`: platform-separated absolute paths for the pinned dynamic loader, libc, and other executor runtime dependencies.
 - `PRDB_TEST_RUNTIME_READ_ONLY`: platform-separated absolute paths for runtime configuration files the dynamic loader needs, such as its loader cache when applicable. Set it to an empty string when the selected runtime has no read-only files; do not use absent paths as placeholders.
 
@@ -69,6 +72,7 @@ systemd-run --user --wait --pipe --collect \
     export PRDB_TEST_INSTALLED_SDK_RELEASE_DIR="$PWD/target/release-profile/sdk/releases/linux-x86_64/x86_64-v1/nixos-x86_64-glibc-2.42/sdk-1-abis1,2,3,4,5"
     export PRDB_TEST_SDK_CACHE_DIR="/tmp/prdb-sdk-cache"
     export PRDB_TEST_NETWORK_CONSTRUCTOR_ARTIFACT="$PWD/target/sdk-v1/sql-v3-network-constructor.so"
+    export PRDB_TEST_FORGED_HANDLE_QUERY_ARTIFACT="$PWD/target/sdk-v1/sql-v3-forged-relation-handle.so"
     export PRDB_TEST_WRITE_READ_QUERY_ARTIFACT="$PWD/target/sdk-v1/sql-v3-write-read.so"
     export PRDB_TEST_RESTRICTED_METADATA_QUERY_ARTIFACT="$PWD/target/sdk-v1/sql-v3-restricted-metadata.so"
     export PRDB_TEST_RUNTIME_READ_EXECUTE="/absolute/path/ld-linux-x86-64.so.2:/absolute/path/libc.so.6:/absolute/path/libgcc_s.so.1"
