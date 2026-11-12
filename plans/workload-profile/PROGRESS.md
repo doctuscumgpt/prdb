@@ -1,5 +1,11 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: physical page reclamation after snapshot release — verified
+
+- Regression: [`retained_reader_blocks_compaction_until_release_then_reclaims_deleted_pages`](../../engine/tests/redb_foundation.rs) holds a 64-row, 100-KiB-per-row snapshot while deleting 58 rows. It verifies compaction is rejected with `TransactionInProgress`, the old snapshot still reads deleted values, and after release compaction reduces file size and allocated pages while preserving the six current rows.
+- Verification: all four `redb_foundation` tests passed. Workspace build, formatting, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed; commit integration reported 142 passed/0 ignored and transaction integration 74 passed/0 ignored. The fuller storage-manager progress record describes the exact fixture and limitations.
+- Scope: this establishes redb-level history release and explicit compaction on the local x86_64 Linux `/tmp` profile. It does not establish managed service scheduling, compaction latency during operational load, or target-filesystem behavior.
+
 ## WI-7 follow-up: cancellation releases snapshot admission during writer load — covered
 
 - Regression: [`managed_cancellation_releases_snapshot_admission_during_write_pressure`](../../engine/tests/transaction.rs) fills the configured managed-snapshot cap, verifies new work is rejected, accepts cancellation and observes it through the executor metadata checkpoint, then proves a new admission succeeds while an unrelated staged writer and retained reader remain active. The cancelled overlay is durably ABORTED and unpublished; the retained reader preserves its original value during 32 concurrent durable writes.

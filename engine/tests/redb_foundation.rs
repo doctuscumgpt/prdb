@@ -198,12 +198,31 @@ fn retained_reader_blocks_compaction_until_release_then_reclaims_deleted_pages()
     ));
     drop(retained_reader);
 
+    let stats_before_compaction = {
+        let write = db.begin_write()?;
+        let stats = write.stats()?;
+        write.abort()?;
+        stats
+    };
+
     let file_size_before = std::fs::metadata(fixture.path())?.len();
     assert!(db.compact()?);
     let file_size_after = std::fs::metadata(fixture.path())?.len();
     assert!(
         file_size_after < file_size_before,
         "compaction did not reclaim deleted pages: {file_size_before} -> {file_size_after}"
+    );
+    let stats_after_compaction = {
+        let write = db.begin_write()?;
+        let stats = write.stats()?;
+        write.abort()?;
+        stats
+    };
+    assert!(
+        stats_after_compaction.allocated_pages() < stats_before_compaction.allocated_pages(),
+        "compaction did not reduce allocated pages: {} -> {}",
+        stats_before_compaction.allocated_pages(),
+        stats_after_compaction.allocated_pages()
     );
 
     let current_reader = db.begin_read()?;

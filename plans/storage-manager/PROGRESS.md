@@ -1,5 +1,12 @@
 # Storage Manager Progress
 
+## SM-1 follow-up: retained-reader reclamation after release — verified
+
+- Contract: [redb storage](../../specs/redb-storage.md). redb's compactor must refuse while an old read snapshot is pinned; after the last reader closes, an explicit compaction must reclaim obsolete copy-on-write pages without losing live data.
+- Regression: [`retained_reader_blocks_compaction_until_release_then_reclaims_deleted_pages`](../../engine/tests/redb_foundation.rs) retains 64 100-KiB rows, deletes 58 while the snapshot is live, verifies the old snapshot still reads deleted rows, and confirms compaction returns `TransactionInProgress`. After dropping the reader, compaction reduces both the file size and `DatabaseStats::allocated_pages`; all six surviving rows remain intact.
+- Verification: all four `redb_foundation` integration tests passed with redb 4.4.0 on x86_64 Linux using Immediate durability and two-phase commit. Workspace build, format check, warning-denied Clippy, and full serial delegated-cgroup workspace tests passed; commit integration reported 142 passed/0 ignored and transaction integration 74 passed/0 ignored. This is an upstream storage API acceptance, not evidence that the service currently schedules compaction.
+- Remaining: measure compaction latency and operational contention through a managed maintenance entry point; test larger database shapes and target filesystems.
+
 ## SM-3 follow-up: catalog-derived authorized point reads — verified
 
 - Behavior: `InvocationTransaction::read_catalog_authorized_row` takes only a table ID and row ID, loads the pinned schema, role closure, grants, and policies internally, and returns the row through the existing VALUE/NULL/REDACTED projection path. Zero table or row IDs abort with `InvalidContext`; absent or row-filtered rows return `None`.
