@@ -1291,6 +1291,59 @@ impl<'db> InvocationTransaction<'db> {
         }
     }
 
+    /// Read one authorized row using schema, grants, and policies loaded from
+    /// this invocation's pinned catalog. Callers cannot substitute authorization
+    /// contexts or grant records for this read path.
+    pub fn read_catalog_authorized_row(
+        &mut self,
+        table_id: [u8; 16],
+        row_id: [u8; 16],
+    ) -> Result<Option<Vec<SanitizedCell>>, TransactionError> {
+        let result = (|| {
+            if table_id == [0; 16] || row_id == [0; 16] {
+                return Err(TransactionError::InvalidContext);
+            }
+            let schema = self.load_catalog_table_schema(table_id)?;
+            let principal_id = self.principal_id;
+            let (role_ids, grants) = self.load_catalog_grants(principal_id, &schema)?;
+            let policies = self.load_catalog_policies(principal_id, &schema)?;
+            let scope = self.scope_from_grants(&grants);
+            let context = AuthorizationContext {
+                principal_id,
+                role_ids,
+                scope,
+            };
+            let projection = AuthorizedProjection {
+                columns: &schema.columns,
+                column_ids: &schema.column_ids,
+                schema_version: schema.schema_version,
+                schema_id: schema.schema_id,
+                context: &context,
+                grants: &grants,
+                policies: &policies,
+                checks: &[],
+                policy_driving_columns: &[],
+                dependencies: &[],
+            };
+            self.read_authorized(
+                RowId {
+                    table: table_id,
+                    row: row_id,
+                },
+                &projection,
+            )
+        })();
+        match result {
+            Ok(row) => Ok(row),
+            Err(error) => {
+                if !self.aborted {
+                    self.abort()?;
+                }
+                Err(error)
+            }
+        }
+    }
+
     /// Scan authorized rows using schema, grants, and policies loaded from this
     /// invocation's pinned catalog. Callers cannot substitute authorization
     /// contexts or grant records for this read path.

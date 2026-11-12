@@ -1,5 +1,11 @@
 # Storage Manager Progress
 
+## SM-3 follow-up: catalog-derived authorized point reads — verified
+
+- Behavior: `InvocationTransaction::read_catalog_authorized_row` takes only a table ID and row ID, loads the pinned schema, role closure, grants, and policies internally, and returns the row through the existing VALUE/NULL/REDACTED projection path. Zero table or row IDs abort with `InvalidContext`; absent or row-filtered rows return `None`.
+- Regression: the catalog-authorized scan fixture now verifies an allowed point read returns the expected value and an absent row remains `None`. The confined SQL workload harness exercises this API across baseline and live-analytics phases.
+- Verification: the focused real-redb transaction regression, five delegated-cgroup latency runs, workspace build, formatting, warning-denied Clippy, full serial delegated workspace tests, and `git diff --check` passed.
+
 ## SM-2: persisted index scan matches the row reference scan — verified
 
 - Contract: persisted index entries must identify exactly the committed rows in a reference table scan, preserve the indexed value order, point to the current row version, and rederive from the tuple.

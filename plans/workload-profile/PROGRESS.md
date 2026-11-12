@@ -1,5 +1,12 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: authorized point reads and commits during confined SQL — measured
+
+- Harness: the confined SQL acceptance compares authorized point reads and `commit()` durations across four operational threads. Baseline uses 64 reads and commits before START; the analytics phase records only operations that finish while the confined executor process is still live. Point-read time covers `read_catalog_authorized_row`, including pinned schema/grant/policy loading and projection; commit time covers `commit()` only.
+- Profile and result: five sequential fresh-database runs on Linux x86_64, Rust 1.95.0, redb 4.4.0. Median of run-level p50/p95/p99 was 1.420/2.250/3.241 ms for point reads at baseline and 1.786/3.088/3.994 ms with SQL active. Commit medians were 11.626/15.378/20.622 ms at baseline and 11.544/16.710/20.198 ms with SQL active. Concurrent phases yielded 139–163 active-worker samples.
+- Verification: the catalog-derived point-read regression, five focused delegated-cgroup runs, workspace build, formatting, warning-denied Clippy, and full serial delegated workspace tests passed; the commit integration target reported 142 passed and 0 ignored.
+- Scope: these short runs use a three-row table and one SQL worker; they are local comparisons, not saturation-capacity evidence or latency targets. Larger scans/joins/sorts, cancellation/reclamation pressure, maintenance, memory/copy accounting, and target-hardware repeats remain open.
+
 ## WI-7 follow-up: commit latency beside confined SQL — measured
 
 - Harness: the enabled `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance measures `commit()` duration for authorized read-only operational invocations. It compares 64 baseline commits across four operational threads with commits completed while the confined SQL executor is still live; each phase uses the same fresh three-row table and authorization path.

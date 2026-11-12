@@ -3534,6 +3534,31 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
 
     let mut invocation =
         InvocationTransaction::begin(&database, [225; 16], principal_id, 9_999, 4, 16_384)?;
+    let point_read = invocation
+        .read_catalog_authorized_row(table_id, row_id.row)?
+        .expect("catalog grants authorize the seeded point read");
+    assert_eq!(
+        point_read,
+        vec![SanitizedCell::Value(ScalarValue::Bytea(
+            first_value.clone()
+        ))]
+    );
+    assert!(
+        invocation
+            .read_catalog_authorized_row(table_id, [0x99; 16])?
+            .is_none()
+    );
+    for (invocation_id, requested_table_id, requested_row_id) in [
+        ([226; 16], [0; 16], [0xd3; 16]),
+        ([227; 16], table_id, [0; 16]),
+    ] {
+        let mut invalid =
+            InvocationTransaction::begin(&database, invocation_id, principal_id, 9_999, 1, 1024)?;
+        assert!(matches!(
+            invalid.read_catalog_authorized_row(requested_table_id, requested_row_id),
+            Err(TransactionError::InvalidContext)
+        ));
+    }
     let page = invocation.scan_catalog_authorized_rows(table_id, None, 3)?;
     assert_eq!(page.rows.len(), 2);
     assert_eq!(page.rows[0].0, row_id);
