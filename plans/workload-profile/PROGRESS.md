@@ -9,8 +9,8 @@
 
 ## WI-7 follow-up: configured global START cap boundaries — covered
 
-- Regression: `configured_global_active_start_caps_allow_64_operational_and_8_analytical` fills the default active START reservations with distinct principals, proves the 65th operational and 9th analytical START are rejected while remaining prepared, then verifies both can start after their class capacity is released.
-- Verification: the focused locked/offline supervisor unit test passed (`1 passed, 0 ignored`); `cargo fmt --all -- --check`, warning-denied workspace Clippy, and the full serial workspace suite in delegated `systemd --user` cgroups all passed. The suite reported 187 library unit tests and 145 commit integration tests passed, with zero ignored in those targets.
+- Regression: `configured_global_active_start_caps_allow_64_operational_and_8_analytical` fills the default active START reservations with distinct principals, proves the 65th operational and 9th analytical START are rejected while remaining prepared, then verifies both can start after their class capacity is released. `concurrent_start_callbacks_count_toward_the_operational_cap` synchronizes 64 concurrent START callbacks, holds them in progress, and proves an additional operational START is rejected until those callbacks finish.
+- Verification: both focused locked/offline supervisor unit tests passed (`1 passed, 0 ignored` each); `cargo fmt --all -- --check`, warning-denied workspace Clippy, and the full serial workspace suite in delegated `systemd --user` cgroups passed. The latest full suite reported 188 library unit tests and 145 commit integration tests passed, with zero ignored in those targets.
 - Scope: this verifies the supervisor's configured admission boundaries and prepared-work retry behavior. It does not run 72 real optimizer/executor processes simultaneously or measure cgroup/process resource saturation; those checks and target-hardware behavior remain open.
 
 ## WI-7 follow-up: bounded executor output under a slow gateway — covered

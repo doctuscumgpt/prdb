@@ -1593,6 +1593,75 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_start_callbacks_count_toward_the_operational_cap() {
+        use std::sync::mpsc;
+
+        const ACTIVE_CAP: usize = 64;
+        let store = store(Arc::new(AcceptMetadata));
+        let submissions: Vec<_> = (1..=ACTIVE_CAP as u8)
+            .map(|principal| {
+                let owner = make_owner(principal, principal);
+                let invocation_id = upload_and_seal(&store, owner, b"op", b"");
+                (owner, invocation_id)
+            })
+            .collect();
+        let overflow_owner = make_owner(250, 250);
+        let overflow_id = upload_and_seal(&store, overflow_owner, b"overflow", b"");
+        let start_together = Arc::new(Barrier::new(ACTIVE_CAP + 1));
+        let (entered_sender, entered_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let release_receiver = Arc::new(Mutex::new(release_receiver));
+
+        std::thread::scope(|scope| {
+            let mut starters = Vec::with_capacity(ACTIVE_CAP);
+            for (owner, invocation_id) in submissions.iter().copied() {
+                let start_together = Arc::clone(&start_together);
+                let entered_sender = entered_sender.clone();
+                let release_receiver = Arc::clone(&release_receiver);
+                let store = &store;
+                starters.push(scope.spawn(move || {
+                    start_together.wait();
+                    store.start_with(owner, invocation_id, |_| {
+                        entered_sender.send(()).unwrap();
+                        release_receiver.lock().unwrap().recv().unwrap();
+                        Ok::<_, ()>(())
+                    })
+                }));
+            }
+
+            start_together.wait();
+            for _ in 0..ACTIVE_CAP {
+                entered_receiver
+                    .recv()
+                    .expect("each admitted START callback must enter");
+            }
+            assert!(matches!(
+                store.start_with(overflow_owner, overflow_id, |_| Ok::<_, ()>(())),
+                Err(StartError::Staging(StagingError::ResourceLimit))
+            ));
+            assert_eq!(
+                store.status(overflow_owner, overflow_id),
+                Ok(SubmissionState::Prepared)
+            );
+
+            for _ in 0..ACTIVE_CAP {
+                release_sender.send(()).unwrap();
+            }
+            for starter in starters {
+                starter.join().unwrap().unwrap();
+            }
+        });
+
+        for (owner, invocation_id) in submissions {
+            store.finish_started(owner, invocation_id).unwrap();
+        }
+        store
+            .start_with(overflow_owner, overflow_id, |_| Ok::<_, ()>(()))
+            .unwrap();
+        store.finish_started(overflow_owner, overflow_id).unwrap();
+    }
+
+    #[test]
     fn start_retries_preserve_fifo_order_within_eligible_capacity() {
         let store = StagingStore::new(
             StagingLimits {
