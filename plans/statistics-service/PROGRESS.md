@@ -34,6 +34,13 @@
 - Verification: `nix develop --offline --command cargo test --test transaction authorized_scan_estimate_counts_sanitized_cells_and_private_writes --locked` passed. This checks returned estimate contents only; timing/cache noninterference is not established.
 - Remaining: test hidden values and invisible rows through paired authorized reference views, then address planner task draining, cache validity, and bounded maintenance collection.
 
+## ST-3 follow-up: invisible candidates preserve the authorized reference view — verified
+
+- Contract: adding rows hidden by a value-dependent row policy must not change the planner-visible estimate when the authorized view is unchanged; unsupported policy shapes return `Unknown` without partial counts.
+- Regression: `authorized_scan_estimate_counts_sanitized_cells_and_private_writes` compares two invocation snapshots with different hidden candidate counts. Both estimates are `Unknown`, and independent paged authorized scans return the same single visible row with its hidden cell represented only as `REDACTED`.
+- Verification: the focused real-redb transaction test passed (`1 passed, 0 failed`).
+- Scope: checks normalized estimate results and reference rows, not timing or resource-use noninterference. Planner task draining, cache validity, and bounded maintenance collection remain open.
+
 ## ST-1 / ST-2 dependency: planner metadata and estimate dispatch
 
 - Behavior: planner-only connection handles resolve and revalidate authorized relation descriptions, and estimate requests return bounded visible/readable/null/redacted summaries or UNKNOWN. Planner projections derive read grants and policies without loading write constraints or indexes; executor handles cannot be decoded as planner handles.

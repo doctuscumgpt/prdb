@@ -5787,6 +5787,23 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
         more_candidates.estimate_authorized_scan(table_id, &filtered_projection)?,
         prdb_engine::statistics::AuthorizedScanEstimate::Unknown
     );
+    let fewer_authorized_rows =
+        fewer_candidates.scan_authorized(table_id, None, 32, &filtered_projection)?;
+    let more_authorized_rows =
+        more_candidates.scan_authorized(table_id, None, 32, &filtered_projection)?;
+    assert!(fewer_authorized_rows.continuation.is_none());
+    assert!(more_authorized_rows.continuation.is_none());
+    assert_eq!(fewer_authorized_rows.rows, more_authorized_rows.rows);
+    assert_eq!(
+        fewer_authorized_rows.rows,
+        vec![(
+            id(1),
+            vec![
+                SanitizedCell::Value(ScalarValue::Text("first".to_owned())),
+                SanitizedCell::Redacted,
+            ],
+        )]
+    );
     assert!(fewer_candidates.check_deadline().is_ok());
     assert!(more_candidates.check_deadline().is_ok());
     Ok(())
@@ -6227,12 +6244,8 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
     let mut reference_matches = Vec::new();
     let mut reference_cursor = None;
     loop {
-        let page = invocation.scan_authorized(
-            table_id,
-            reference_cursor.as_ref(),
-            128,
-            &projection,
-        )?;
+        let page =
+            invocation.scan_authorized(table_id, reference_cursor.as_ref(), 128, &projection)?;
         reference_matches.extend(page.rows.into_iter().filter_map(|(row_id, cells)| {
             (cells.first() == Some(&target_cell)).then_some((row_id, cells))
         }));
@@ -6310,12 +6323,8 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
             let mut cursor = None;
             let mut matches = Vec::new();
             loop {
-                let page = invocation.scan_authorized(
-                    table_id,
-                    cursor.as_ref(),
-                    128,
-                    &projection,
-                )?;
+                let page =
+                    invocation.scan_authorized(table_id, cursor.as_ref(), 128, &projection)?;
                 matches.extend(page.rows.into_iter().filter_map(|(row_id, cells)| {
                     (cells.first() == Some(&target_cell)).then_some(row_id)
                 }));
@@ -6339,12 +6348,7 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         let reference_scan = median_and_p95_ms(&mut reference_scan_times);
         eprintln!(
             "index access benchmark: rows={INDEX_PROFILE_ROWS}, runs={RUNS}, point probe median/p95={:.3}/{:.3} ms, range median/p95={:.3}/{:.3} ms, authorized scan+filter median/p95={:.3}/{:.3} ms",
-            point_probe.0,
-            point_probe.1,
-            range.0,
-            range.1,
-            reference_scan.0,
-            reference_scan.1,
+            point_probe.0, point_probe.1, range.0, range.1, reference_scan.0, reference_scan.1,
         );
     }
     let hidden_context = AuthorizationContext {
