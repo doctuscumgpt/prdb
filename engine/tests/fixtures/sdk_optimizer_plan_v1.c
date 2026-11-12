@@ -246,6 +246,29 @@ static uint32_t build_ordered_composite_group_count_plan(uint8_t *bytes) {
     return offset;
 }
 
+static uint32_t build_group_aggregate_plan(uint8_t *bytes) {
+    uint32_t offset = 0;
+    uint8_t identifier[16];
+    uint32_t column;
+    prdb_encode_optimizer_plan_header_record(bytes + offset, 1, 10, 0);
+    offset += PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "public"); memset(identifier, 1, sizeof(identifier));
+    prdb_encode_optimizer_plan_schema_reference_record(bytes + offset, identifier, 3);
+    offset += PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "items"); memset(identifier, 2, sizeof(identifier));
+    prdb_encode_optimizer_plan_relation_reference_record(bytes + offset, identifier, 4);
+    offset += PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES;
+    put_u16(bytes, &offset, 2);
+    column = put_column(bytes, &offset, 3, 0); bytes[column] = 3; bytes[column + 20] = PRDB_SDK_VALUE_TYPE_INTEGER; set_column_ordinal(bytes, column, 0);
+    column = put_column(bytes, &offset, 3, 0); bytes[column] = 4; bytes[column + 20] = PRDB_SDK_VALUE_TYPE_BIGINT; set_column_ordinal(bytes, column, 1);
+    bytes[offset++] = 11; bytes[offset++] = 5;
+    column = put_column(bytes, &offset, 3, 0); bytes[column] = 3; bytes[column + 20] = PRDB_SDK_VALUE_TYPE_INTEGER; set_column_ordinal(bytes, column, 0);
+    bytes[offset++] = 1;
+    column = put_column(bytes, &offset, 3, 0); bytes[column] = 4; bytes[column + 20] = PRDB_SDK_VALUE_TYPE_BIGINT; set_column_ordinal(bytes, column, 1);
+    bytes[offset++] = 1; put_u32(bytes, &offset, 5);
+    return offset;
+}
+
 static uint32_t build_ordered_select_plan(uint8_t *bytes,
                                           uint32_t *order_key_id_offset) {
     uint32_t offset = 0;
@@ -919,6 +942,7 @@ int main(void) {
     uint8_t ordered_group_count_payload[256] = {0};
     uint8_t composite_group_count_payload[512] = {0};
     uint8_t ordered_composite_group_count_payload[512] = {0};
+    uint8_t group_aggregate_payload[512] = {0};
     uint8_t composite_group_count_malformed[
         sizeof(composite_group_count_payload)];
     uint8_t ordered_select_payload[512] = {0};
@@ -939,6 +963,7 @@ int main(void) {
         composite_group_count_decoded;
     static prdb_sdk_optimizer_ordered_composite_group_count_plan_v1
         ordered_composite_group_count_decoded;
+    static prdb_sdk_optimizer_group_aggregate_plan_v1 group_aggregate_decoded;
     static prdb_sdk_optimizer_ordered_select_plan_v1 ordered_select_decoded;
     static prdb_sdk_select_v3 ordered_select_statement;
     static prdb_sdk_select_binding_v3 ordered_select_binding;
@@ -955,6 +980,9 @@ int main(void) {
     static prdb_sdk_select_v15 ordered_composite_group_count_statement;
     static prdb_sdk_select_binding_v15 ordered_composite_group_count_binding;
     static prdb_sdk_sql_column_shape_v2 ordered_composite_group_count_columns[2];
+    static prdb_sdk_select_v7 group_aggregate_statement;
+    static prdb_sdk_select_binding_v7 group_aggregate_binding;
+    static prdb_sdk_sql_column_shape_v2 group_aggregate_columns[2];
     uint32_t ordered_select_order_key_offset;
     uint32_t ordered_select_payload_len = build_ordered_select_plan(
         ordered_select_payload, &ordered_select_order_key_offset);
@@ -1883,6 +1911,23 @@ int main(void) {
                &ordered_composite_group_count_statement, &ordered_composite_group_count_binding,
                (const uint8_t *)"public", 6, ordered_composite_group_count_payload,
                ordered_composite_group_count_payload_len) == PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
+    uint32_t group_aggregate_payload_len = build_group_aggregate_plan(group_aggregate_payload);
+    assert(prdb_sdk_optimizer_decode_group_aggregate_plan_v1(group_aggregate_payload,
+               group_aggregate_payload_len, &group_aggregate_decoded, sizeof(group_aggregate_decoded)) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(group_aggregate_decoded.plan.plan_kind == 10 && group_aggregate_decoded.aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_AVG &&
+           group_aggregate_decoded.has_aggregate_column == 1 && group_aggregate_decoded.plan.scan_column_count == 2);
+    static const uint8_t group_aggregate_sql[] = "SELECT id, AVG(amount) FROM items GROUP BY id LIMIT 5";
+    group_aggregate_columns[0] = (prdb_sdk_sql_column_shape_v2){(const uint8_t *)"id", 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0};
+    group_aggregate_columns[1] = (prdb_sdk_sql_column_shape_v2){(const uint8_t *)"amount", 6, 1, PRDB_SDK_VALUE_TYPE_BIGINT, 0, 0};
+    assert(prdb_sdk_sql_parse_select_v7(group_aggregate_sql, sizeof(group_aggregate_sql) - 1,
+               &group_aggregate_statement, sizeof(group_aggregate_statement), NULL) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_sql_bind_select_v7(&group_aggregate_statement, (const uint8_t *)"items", 5,
+               group_aggregate_columns, 2, &group_aggregate_binding, sizeof(group_aggregate_binding)) == PRDB_SDK_SQL_BIND_OK);
+    assert(prdb_sdk_optimizer_match_group_aggregate_plan_v1(&group_aggregate_statement, &group_aggregate_binding,
+               (const uint8_t *)"public", 6, group_aggregate_payload, group_aggregate_payload_len) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    group_aggregate_statement.base.limit = 4;
+    assert(prdb_sdk_optimizer_match_group_aggregate_plan_v1(&group_aggregate_statement, &group_aggregate_binding,
+               (const uint8_t *)"public", 6, group_aggregate_payload, group_aggregate_payload_len) == PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
     static const uint8_t join_sql[] =
         "SELECT l.value, r.value FROM lefts AS l INNER JOIN rights AS r "
         "ON l.id = r.id AND l.active = r.active LIMIT 5;";

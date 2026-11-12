@@ -4,7 +4,8 @@ use crate::metadata_discovery::AuthorizedPlanRelation;
 use crate::optimizer_binding::{
     MetadataBindError, bind_composite_group_count_request,
     bind_composite_group_count_request_via_metadata, bind_delete_request,
-    bind_delete_request_via_metadata, bind_group_count_request,
+    bind_delete_request_via_metadata, bind_group_aggregate_request,
+    bind_group_aggregate_request_via_metadata, bind_group_count_request,
     bind_group_count_request_via_metadata, bind_join_select_request,
     bind_join_select_request_via_metadata, bind_ordered_composite_group_count_request,
     bind_ordered_composite_group_count_request_via_metadata, bind_ordered_group_count_request,
@@ -14,12 +15,12 @@ use crate::optimizer_binding::{
 };
 use crate::optimizer_plan::{
     PlanError, RelationReference, encode_composite_group_count_plan_v1, encode_delete_plan_v1,
-    encode_group_count_plan_v1, encode_join_select_plan_v1,
+    encode_group_aggregate_plan_v1, encode_group_count_plan_v1, encode_join_select_plan_v1,
     encode_ordered_composite_group_count_plan_v1, encode_ordered_group_count_plan_v1,
     encode_ordered_select_plan_v1, encode_plan_v1, encode_update_plan_v1,
-    plan_composite_group_count_v1, plan_delete_v1, plan_group_count_v1, plan_join_select_v1,
-    plan_ordered_composite_group_count_v1, plan_ordered_group_count_v1, plan_ordered_select_v1,
-    plan_select_v1, plan_update_v1,
+    plan_composite_group_count_v1, plan_delete_v1, plan_group_aggregate_v1, plan_group_count_v1,
+    plan_join_select_v1, plan_ordered_composite_group_count_v1, plan_ordered_group_count_v1,
+    plan_ordered_select_v1, plan_select_v1, plan_update_v1,
 };
 use crate::transaction::PlannerMetadataConnection;
 use std::fmt;
@@ -177,6 +178,23 @@ pub fn optimize_group_count_v1_with_relation(
     encode_bound_group_count(bound)
 }
 
+pub fn optimize_group_aggregate_v1(
+    request: &[u8],
+    connection: &mut PlannerMetadataConnection<'_, '_>,
+) -> Result<Vec<u8>, OptimizerError> {
+    let bound = bind_group_aggregate_request_via_metadata(request, connection)?;
+    encode_bound_group_aggregate(bound)
+}
+
+pub fn optimize_group_aggregate_v1_with_relation(
+    request: &[u8],
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<Vec<u8>, OptimizerError> {
+    let bound = bind_group_aggregate_request(request, relation)
+        .map_err(|error| OptimizerError::Bind(MetadataBindError::Bind(error)))?;
+    encode_bound_group_aggregate(bound)
+}
+
 pub fn optimize_ordered_group_count_v1(
     request: &[u8],
     connection: &mut PlannerMetadataConnection<'_, '_>,
@@ -261,6 +279,13 @@ fn encode_bound_group_count(
 ) -> Result<Vec<u8>, OptimizerError> {
     let plan = plan_group_count_v1(bound)?;
     Ok(encode_group_count_plan_v1(&plan)?)
+}
+
+fn encode_bound_group_aggregate(
+    bound: crate::optimizer_binding::BoundGroupAggregate,
+) -> Result<Vec<u8>, OptimizerError> {
+    let plan = plan_group_aggregate_v1(bound)?;
+    Ok(encode_group_aggregate_plan_v1(&plan)?)
 }
 
 fn encode_bound_ordered_group_count(

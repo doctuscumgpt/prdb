@@ -190,6 +190,16 @@ typedef struct prdb_sdk_optimizer_ordered_composite_group_count_plan_v1 {
     prdb_sdk_optimizer_composite_order_item_v1 order_items[9];
 } prdb_sdk_optimizer_ordered_composite_group_count_plan_v1;
 
+typedef struct prdb_sdk_optimizer_group_aggregate_plan_v1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    prdb_sdk_optimizer_plan_v1 plan;
+    prdb_sdk_optimizer_plan_column_v1 group_key;
+    uint32_t aggregate_kind;
+    uint32_t has_aggregate_column;
+    prdb_sdk_optimizer_plan_column_v1 aggregate_column;
+} prdb_sdk_optimizer_group_aggregate_plan_v1;
+
 typedef struct prdb_sdk_optimizer_scan_state_v1 {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -278,6 +288,11 @@ int32_t prdb_sdk_optimizer_decode_ordered_composite_group_count_plan_v1(
     prdb_sdk_optimizer_ordered_composite_group_count_plan_v1 *out,
     uint32_t out_capacity);
 
+int32_t prdb_sdk_optimizer_decode_group_aggregate_plan_v1(
+    const uint8_t *payload, uint64_t payload_len,
+    prdb_sdk_optimizer_group_aggregate_plan_v1 *out,
+    uint32_t out_capacity);
+
 /* Require a decoded kind-5 plan to match the parsed single-key COUNT(*)
  * statement, authorized grouping-key binding, schema, and optional LIMIT. */
 int32_t prdb_sdk_optimizer_match_group_count_plan_v1(
@@ -301,6 +316,12 @@ int32_t prdb_sdk_optimizer_match_composite_group_count_plan_v1(
 int32_t prdb_sdk_optimizer_match_ordered_composite_group_count_plan_v1(
     const prdb_sdk_select_v15 *statement,
     const prdb_sdk_select_binding_v15 *binding,
+    const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *plan_payload, uint64_t plan_payload_len);
+
+int32_t prdb_sdk_optimizer_match_group_aggregate_plan_v1(
+    const prdb_sdk_select_v7 *statement,
+    const prdb_sdk_select_binding_v7 *binding,
     const uint8_t *schema, uint32_t schema_len,
     const uint8_t *plan_payload, uint64_t plan_payload_len);
 

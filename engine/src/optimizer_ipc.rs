@@ -3,7 +3,7 @@
 use crate::optimizer_binding::{BindError, MetadataBindError};
 use crate::optimizer_plan::{
     MAX_PLAN_BYTES, decode_composite_group_count_plan_v1, decode_delete_plan_v1,
-    decode_group_count_plan_v1, decode_join_select_plan_v1,
+    decode_group_aggregate_plan_v1, decode_group_count_plan_v1, decode_join_select_plan_v1,
     decode_ordered_composite_group_count_plan_v1, decode_ordered_group_count_plan_v1,
     decode_ordered_select_plan_v1, decode_plan_v1, decode_update_plan_v1,
 };
@@ -61,6 +61,7 @@ fn validate_optimizer_plan(bytes: &[u8]) -> Result<(), OptimizerPayloadError> {
         || decode_delete_plan_v1(bytes).is_ok()
         || decode_join_select_plan_v1(bytes).is_ok()
         || decode_group_count_plan_v1(bytes).is_ok()
+        || decode_group_aggregate_plan_v1(bytes).is_ok()
         || decode_composite_group_count_plan_v1(bytes).is_ok()
         || decode_ordered_select_plan_v1(bytes).is_ok()
         || decode_ordered_group_count_plan_v1(bytes).is_ok()

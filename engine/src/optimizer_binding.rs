@@ -4,9 +4,10 @@ use crate::metadata_discovery::{
     AuthorizedPlanRelation, AuthorizedRelationDescription, VisibleColumn,
 };
 use crate::optimizer_request::{
-    Comparison, CompositeGroupCountOrderItem, CompositeGroupCountRequest, GroupCountOrderItem,
-    GroupCountRequest, JoinRelationSide, OrderedGroupCountRequest, OrderedSelectRequest, Predicate,
-    RequestError, UpdateValue, decode_composite_group_count_request, decode_delete_request,
+    Comparison, CompositeGroupCountOrderItem, CompositeGroupCountRequest, GroupAggregateRequest,
+    GroupCountOrderItem, GroupCountRequest, JoinRelationSide, OrderedGroupCountRequest,
+    OrderedSelectRequest, Predicate, RequestError, UpdateValue,
+    decode_composite_group_count_request, decode_delete_request, decode_group_aggregate_request,
     decode_group_count_request, decode_join_select_request,
     decode_ordered_composite_group_count_request, decode_ordered_group_count_request,
     decode_ordered_select_request, decode_select_request, decode_update_request,
@@ -62,6 +63,20 @@ pub struct BoundGroupCount {
     pub relation_id: [u8; 16],
     pub relation_name: String,
     pub group_key: BoundColumn,
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundGroupAggregate {
+    pub schema_name: String,
+    pub schema_id: [u8; 16],
+    pub schema_version: u64,
+    pub table_epoch: u64,
+    pub relation_id: [u8; 16],
+    pub relation_name: String,
+    pub group_key: BoundColumn,
+    pub aggregate_kind: u8,
+    pub aggregate_column: Option<BoundColumn>,
     pub limit: Option<u32>,
 }
 
@@ -315,6 +330,69 @@ pub fn bind_group_count_request_via_metadata(
         .map_err(MetadataBindError::Transaction)?
         .map(|(_, relation)| relation);
     bind_decoded_group_count(request, relation).map_err(MetadataBindError::Bind)
+}
+
+pub fn bind_group_aggregate_request(
+    request_bytes: &[u8],
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundGroupAggregate, BindError> {
+    let request = decode_group_aggregate_request(request_bytes)?;
+    bind_decoded_group_aggregate(request, relation)
+}
+
+pub fn bind_group_aggregate_request_via_metadata(
+    request_bytes: &[u8],
+    connection: &mut PlannerMetadataConnection<'_, '_>,
+) -> Result<BoundGroupAggregate, MetadataBindError> {
+    let request = decode_group_aggregate_request(request_bytes).map_err(BindError::from)?;
+    let relation = connection
+        .resolve_relation_for_plan(&request.schema_name, &request.relation_name)
+        .map_err(MetadataBindError::Transaction)?
+        .map(|(_, relation)| relation);
+    bind_decoded_group_aggregate(request, relation).map_err(MetadataBindError::Bind)
+}
+
+fn bind_decoded_group_aggregate(
+    request: GroupAggregateRequest,
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundGroupAggregate, BindError> {
+    let relation = authorized_relation(&request.relation_name, relation)?;
+    let group_key = resolve_column(&relation.relation.columns, &request.group_key_name)?;
+    let aggregate_column = request
+        .aggregate_column_name
+        .as_deref()
+        .map(|name| resolve_column(&relation.relation.columns, name))
+        .transpose()?;
+    if request.aggregate_kind == 1 && aggregate_column.is_some()
+        || request.aggregate_kind != 1 && aggregate_column.is_none()
+    {
+        return Err(BindError::InvalidQuery);
+    }
+    if matches!(request.aggregate_kind, 4 | 5)
+        && !matches!(
+            aggregate_column.as_ref().map(|column| column.scalar_type),
+            Some(
+                ScalarType::SmallInt
+                    | ScalarType::Integer
+                    | ScalarType::BigInt
+                    | ScalarType::Decimal { .. }
+            )
+        )
+    {
+        return Err(BindError::InvalidQuery);
+    }
+    Ok(BoundGroupAggregate {
+        schema_name: request.schema_name,
+        schema_id: relation.schema_id,
+        schema_version: relation.schema_version,
+        table_epoch: relation.table_epoch,
+        relation_id: relation.relation.relation_id,
+        relation_name: relation.relation.name,
+        group_key: group_key.into(),
+        aggregate_kind: request.aggregate_kind,
+        aggregate_column: aggregate_column.map(Into::into),
+        limit: request.limit,
+    })
 }
 
 pub fn bind_ordered_group_count_request(
@@ -928,6 +1006,24 @@ mod tests {
         bytes
     }
 
+    fn group_aggregate_request(kind: u8, column: Option<&str>) -> Vec<u8> {
+        let mut bytes = vec![
+            0,
+            1,
+            crate::query_abi::OPTIMIZER_GROUP_AGGREGATE_STATEMENT,
+            0,
+        ];
+        put_name(&mut bytes, "public");
+        put_name(&mut bytes, "items");
+        put_name(&mut bytes, "id");
+        bytes.push(kind);
+        if let Some(column) = column {
+            put_name(&mut bytes, column);
+        }
+        bytes.extend_from_slice(&[1, 0, 0, 0, 3]);
+        bytes
+    }
+
     fn composite_group_count_request(keys: &[&str]) -> Vec<u8> {
         let mut bytes = vec![0, crate::query_abi::OPTIMIZER_REQUEST_VERSION as u8];
         bytes.push(crate::query_abi::OPTIMIZER_COMPOSITE_GROUP_COUNT_STATEMENT);
@@ -963,6 +1059,13 @@ mod tests {
                         name: "active".to_owned(),
                         ordinal: 1,
                         scalar_type: ScalarType::Boolean,
+                        nullable: true,
+                    },
+                    VisibleColumn {
+                        column_id: [0x23; 16],
+                        name: "amount".to_owned(),
+                        ordinal: 2,
+                        scalar_type: ScalarType::BigInt,
                         nullable: true,
                     },
                 ],
@@ -1090,6 +1193,26 @@ mod tests {
             }
         );
         assert_eq!(bound.limit, Some(4));
+    }
+
+    #[test]
+    fn binds_group_aggregate_argument_and_rejects_nonnumeric_sum() {
+        let bound = bind_group_aggregate_request(
+            &group_aggregate_request(4, Some("amount")),
+            Some(relation()),
+        )
+        .unwrap();
+        assert_eq!(bound.group_key.ordinal, 0);
+        assert_eq!(bound.aggregate_kind, 4);
+        assert_eq!(bound.aggregate_column.as_ref().unwrap().ordinal, 2);
+        assert_eq!(bound.limit, Some(3));
+        assert_eq!(
+            bind_group_aggregate_request(
+                &group_aggregate_request(4, Some("active")),
+                Some(relation())
+            ),
+            Err(BindError::InvalidQuery)
+        );
     }
 
     #[test]

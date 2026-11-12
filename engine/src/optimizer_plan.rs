@@ -1,7 +1,7 @@
 //! Deterministic single-table SELECT plan construction for optimizer v1.
 
 use crate::optimizer_binding::{
-    BoundColumn, BoundCompositeGroupCount, BoundGroupCount, BoundJoinSelect,
+    BoundColumn, BoundCompositeGroupCount, BoundGroupAggregate, BoundGroupCount, BoundJoinSelect,
     BoundOrderedCompositeGroupCount, BoundOrderedGroupCount, BoundOrderedSelect, BoundPredicate,
     BoundSelect, BoundUpdateAssignment, BoundUpdateValue,
 };
@@ -82,6 +82,16 @@ pub struct GroupCountPlanV1 {
     pub limit: Option<u32>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroupAggregatePlanV1 {
+    pub relation: RelationReference,
+    pub scan_columns: Vec<BoundColumn>,
+    pub group_key: BoundColumn,
+    pub aggregate_kind: u8,
+    pub aggregate_column: Option<BoundColumn>,
+    pub limit: Option<u32>,
+}
+
 /// Bounded composite-key COUNT(*) grouping plan. Scan columns are sorted by
 /// relation ordinal; group keys retain their SQL projection order.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -132,10 +142,12 @@ const PLAN_KIND_COMPOSITE_GROUP_COUNT: u8 = 6;
 const PLAN_KIND_ORDERED_SELECT: u8 = 7;
 const PLAN_KIND_ORDERED_GROUP_COUNT: u8 = 8;
 const PLAN_KIND_ORDERED_COMPOSITE_GROUP_COUNT: u8 = 9;
+const PLAN_KIND_GROUP_AGGREGATE: u8 = 10;
 const GROUP_COUNT_NODE: u8 = 7;
 const COMPOSITE_GROUP_COUNT_NODE: u8 = 8;
 const ORDER_BY_NODE: u8 = 9;
 const ORDERED_COMPOSITE_GROUP_COUNT_NODE: u8 = 10;
+const GROUP_AGGREGATE_NODE: u8 = 11;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlanError {
@@ -692,6 +704,216 @@ pub fn plan_group_count_v1(bound: BoundGroupCount) -> Result<GroupCountPlanV1, P
     };
     validate_group_count_plan_v1(&plan)?;
     Ok(plan)
+}
+
+pub fn plan_group_aggregate_v1(
+    bound: BoundGroupAggregate,
+) -> Result<GroupAggregatePlanV1, PlanError> {
+    let relation = RelationReference {
+        schema_name: bound.schema_name,
+        schema_id: bound.schema_id,
+        schema_version: bound.schema_version,
+        relation_name: bound.relation_name,
+        relation_id: bound.relation_id,
+        table_epoch: bound.table_epoch,
+    };
+    let mut scan_columns = vec![bound.group_key.clone()];
+    if let Some(column) = &bound.aggregate_column
+        && !scan_columns
+            .iter()
+            .any(|existing| existing.ordinal == column.ordinal)
+    {
+        scan_columns.push(column.clone());
+    }
+    scan_columns.sort_by_key(|column| column.ordinal);
+    let plan = GroupAggregatePlanV1 {
+        relation,
+        scan_columns,
+        group_key: bound.group_key,
+        aggregate_kind: bound.aggregate_kind,
+        aggregate_column: bound.aggregate_column,
+        limit: bound.limit,
+    };
+    validate_group_aggregate_plan_v1(&plan)?;
+    Ok(plan)
+}
+
+pub fn encode_group_aggregate_plan_v1(plan: &GroupAggregatePlanV1) -> Result<Vec<u8>, PlanError> {
+    validate_group_aggregate_plan_v1(plan)?;
+    let mut output = Vec::with_capacity(224);
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_header_record(
+        1,
+        PLAN_KIND_GROUP_AGGREGATE,
+        0,
+    ));
+    put_name(&mut output, &plan.relation.schema_name)?;
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_schema_reference_record(
+            plan.relation.schema_id,
+            plan.relation.schema_version,
+        ),
+    );
+    put_name(&mut output, &plan.relation.relation_name)?;
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_relation_reference_record(
+            plan.relation.relation_id,
+            plan.relation.table_epoch,
+        ),
+    );
+    output.extend_from_slice(&(plan.scan_columns.len() as u16).to_be_bytes());
+    for column in &plan.scan_columns {
+        put_column(&mut output, column);
+    }
+    output.extend_from_slice(&[GROUP_AGGREGATE_NODE, plan.aggregate_kind]);
+    put_column(&mut output, &plan.group_key);
+    match &plan.aggregate_column {
+        None => output.push(0),
+        Some(column) => {
+            output.push(1);
+            put_column(&mut output, column);
+        }
+    }
+    match plan.limit {
+        None => output.push(0),
+        Some(limit) => {
+            output.push(1);
+            output.extend_from_slice(&limit.to_be_bytes());
+        }
+    }
+    if output.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    Ok(output)
+}
+
+pub fn decode_group_aggregate_plan_v1(bytes: &[u8]) -> Result<GroupAggregatePlanV1, PlanError> {
+    if bytes.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    let (version, kind, reserved) =
+        crate::query_abi::decode_optimizer_plan_header_record(bytes).ok_or(PlanError::Truncated)?;
+    if version != 1 {
+        return Err(PlanError::UnsupportedVersion(version));
+    }
+    if kind != PLAN_KIND_GROUP_AGGREGATE || reserved != 0 {
+        return Err(PlanError::InvalidEncoding);
+    }
+    let mut reader = PlanReader {
+        bytes,
+        offset: crate::query_abi::OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES as usize,
+    };
+    let schema_name = reader.name()?;
+    let (schema_id, schema_version) =
+        crate::query_abi::decode_optimizer_plan_schema_reference_record(reader.take(
+            crate::query_abi::OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES as usize,
+        )?)
+        .ok_or(PlanError::Truncated)?;
+    let relation_name = reader.name()?;
+    let (relation_id, table_epoch) =
+        crate::query_abi::decode_optimizer_plan_relation_reference_record(reader.take(
+            crate::query_abi::OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES as usize,
+        )?)
+        .ok_or(PlanError::Truncated)?;
+    let scan_count = usize::from(u16::from_be_bytes(
+        reader
+            .take(2)?
+            .try_into()
+            .map_err(|_| PlanError::Truncated)?,
+    ));
+    if !(1..=2).contains(&scan_count) {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let mut scan_columns = Vec::with_capacity(scan_count);
+    for _ in 0..scan_count {
+        scan_columns.push(reader.column()?);
+    }
+    if reader.u8()? != GROUP_AGGREGATE_NODE {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let aggregate_kind = reader.u8()?;
+    let group_key = reader.column()?;
+    let aggregate_column = match reader.u8()? {
+        0 => None,
+        1 => Some(reader.column()?),
+        _ => return Err(PlanError::InvalidEncoding),
+    };
+    let limit = match reader.u8()? {
+        0 => None,
+        1 => Some(u32::from_be_bytes(
+            reader
+                .take(4)?
+                .try_into()
+                .map_err(|_| PlanError::Truncated)?,
+        )),
+        _ => return Err(PlanError::InvalidEncoding),
+    };
+    if reader.offset != bytes.len() {
+        return Err(PlanError::TrailingBytes);
+    }
+    let plan = GroupAggregatePlanV1 {
+        relation: RelationReference {
+            schema_name,
+            schema_id,
+            schema_version,
+            relation_name,
+            relation_id,
+            table_epoch,
+        },
+        scan_columns,
+        group_key,
+        aggregate_kind,
+        aggregate_column,
+        limit,
+    };
+    validate_group_aggregate_plan_v1(&plan)?;
+    Ok(plan)
+}
+
+pub fn validate_group_aggregate_plan_v1(plan: &GroupAggregatePlanV1) -> Result<(), PlanError> {
+    validate_relation(&plan.relation)?;
+    validate_columns(&plan.scan_columns)?;
+    if !(1..=5).contains(&plan.aggregate_kind)
+        || plan.group_key.column_id == [0; 16]
+        || !valid_scalar_type(plan.group_key.scalar_type)
+    {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    let mut expected = vec![plan.group_key.clone()];
+    match (plan.aggregate_kind, &plan.aggregate_column) {
+        (1, None) => {}
+        (2..=5, Some(column))
+            if column.column_id != [0; 16] && valid_scalar_type(column.scalar_type) =>
+        {
+            if (plan.aggregate_kind == 4 || plan.aggregate_kind == 5)
+                && !is_numeric_type(column.scalar_type)
+            {
+                return Err(PlanError::InvalidColumnReference);
+            }
+            if let Some(existing) = expected.iter().find(|item| item.ordinal == column.ordinal) {
+                if existing != column {
+                    return Err(PlanError::InvalidColumnReference);
+                }
+            } else {
+                expected.push(column.clone());
+            }
+        }
+        _ => return Err(PlanError::InvalidColumnReference),
+    }
+    expected.sort_by_key(|column| column.ordinal);
+    if expected != plan.scan_columns {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    Ok(())
+}
+
+fn is_numeric_type(scalar_type: ScalarType) -> bool {
+    matches!(
+        scalar_type,
+        ScalarType::SmallInt
+            | ScalarType::Integer
+            | ScalarType::BigInt
+            | ScalarType::Decimal { .. }
+    )
 }
 
 pub fn plan_ordered_group_count_v1(
@@ -3413,6 +3635,31 @@ mod tests {
         invalid.scan_columns.clear();
         assert_eq!(
             validate_group_count_plan_v1(&invalid),
+            Err(PlanError::InvalidColumnReference)
+        );
+    }
+
+    #[test]
+    fn group_aggregate_plan_roundtrips_and_checks_argument_scan_shape() {
+        let plan = plan_group_aggregate_v1(BoundGroupAggregate {
+            schema_name: "public".into(),
+            schema_id: [1; 16],
+            schema_version: 1,
+            table_epoch: 1,
+            relation_id: [2; 16],
+            relation_name: "items".into(),
+            group_key: column(1, 0, ScalarType::Integer),
+            aggregate_kind: 4,
+            aggregate_column: Some(column(2, 1, ScalarType::BigInt)),
+            limit: Some(5),
+        })
+        .unwrap();
+        let bytes = encode_group_aggregate_plan_v1(&plan).unwrap();
+        assert_eq!(decode_group_aggregate_plan_v1(&bytes).unwrap(), plan);
+        let mut invalid = plan;
+        invalid.scan_columns.pop();
+        assert_eq!(
+            validate_group_aggregate_plan_v1(&invalid),
             Err(PlanError::InvalidColumnReference)
         );
     }

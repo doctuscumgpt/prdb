@@ -1,5 +1,12 @@
 # Optimizer Progress
 
+## OP-7 follow-up: single-key grouped aggregate plans — verified
+
+- Contract: request statement 10 / plan kind 10 plans one group key with COUNT(*), MIN, MAX, SUM, or AVG and optional LIMIT. It rejects WHERE, HAVING, ORDER BY, extra projections, invalid arguments, and trailing bytes; SUM/AVG require numeric arguments.
+- Implementation: Rust request decoding, metadata binding, type checks, exact ordinal-sorted union scan planning, canonical plan validation, process dispatch, and IPC validation are implemented. TinyCC encodes statement 10, decodes kind 10, validates scan and aggregate shape, matches the v7 AST/binding, re-resolves executor relation identity, then calls the bounded v7 runner.
+- Confined acceptance: the ABI v5 SQL fixture routes `SELECT id, AVG(id) FROM records GROUP BY id` through statement 10 and kind 10. It verifies the established AVG SQLR result through result relay and durable commit.
+- Verification: focused Rust aggregate binding/plan tests passed; the TinyCC SDK suite and fixture build passed; the focused confined SQL DML sequence passed. Locked workspace build, formatting, warning-denied Clippy, and the complete workspace suite passed. The suite ran inside the delegated `systemd --user` cgroup; all four cgroup-backed commit tests and both metadata process tests ran, with every test target reporting zero ignored cases. `git diff --check` passed.
+
 ## OP-7 follow-up: composite grouped COUNT sort plan — verified
 
 - Contract: request statement 9 / plan kind 9 handles two to eight authorized group keys, up to nine distinct key/COUNT(*) sort items, and LIMIT. WHERE, HAVING, and non-COUNT aggregates remain unsupported.

@@ -84,6 +84,18 @@ pub struct GroupCountRequest {
     pub limit: Option<u32>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroupAggregateRequest {
+    pub schema_name: String,
+    pub relation_name: String,
+    pub group_key_name: String,
+    /// 1 COUNT(*), 2 MIN, 3 MAX, 4 SUM, 5 AVG.
+    pub aggregate_kind: u8,
+    /// Absent only for COUNT(*).
+    pub aggregate_column_name: Option<String>,
+    pub limit: Option<u32>,
+}
+
 /// One stable sort key for the bounded single-key COUNT(*) grouping shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GroupCountOrderItem {
@@ -461,6 +473,61 @@ pub fn decode_group_count_request(bytes: &[u8]) -> Result<GroupCountRequest, Req
         schema_name,
         relation_name,
         group_key_name,
+        limit,
+    })
+}
+
+pub fn decode_group_aggregate_request(bytes: &[u8]) -> Result<GroupAggregateRequest, RequestError> {
+    if bytes.len() > MAX_REQUEST_BYTES {
+        return Err(RequestError::TooLarge);
+    }
+    let header_bytes = OPTIMIZER_SELECT_REQUEST_HEADER_BYTES as usize;
+    if bytes.len() < header_bytes {
+        return Err(RequestError::Truncated);
+    }
+    let version_offset = OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET as usize;
+    let version = u16::from_be_bytes([bytes[version_offset], bytes[version_offset + 1]]);
+    if version != OPTIMIZER_REQUEST_VERSION {
+        return Err(RequestError::UnsupportedVersion(version));
+    }
+    let (statement, flags) =
+        decode_optimizer_select_request(bytes).ok_or(RequestError::Truncated)?;
+    if statement != crate::query_abi::OPTIMIZER_GROUP_AGGREGATE_STATEMENT {
+        return Err(RequestError::UnsupportedStatement(statement));
+    }
+    if flags != 0 {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut cursor = Cursor {
+        bytes,
+        offset: header_bytes,
+    };
+    let schema_name = cursor.identifier()?;
+    let relation_name = cursor.identifier()?;
+    let group_key_name = cursor.identifier()?;
+    let aggregate_kind = cursor.u8()?;
+    if !(1..=5).contains(&aggregate_kind) {
+        return Err(RequestError::InvalidValue);
+    }
+    let aggregate_column_name = if aggregate_kind == 1 {
+        None
+    } else {
+        Some(cursor.identifier()?)
+    };
+    let limit = match cursor.u8()? {
+        0 => None,
+        1 => Some(cursor.u32()?),
+        _ => return Err(RequestError::InvalidValue),
+    };
+    if !cursor.is_empty() {
+        return Err(RequestError::TrailingBytes);
+    }
+    Ok(GroupAggregateRequest {
+        schema_name,
+        relation_name,
+        group_key_name,
+        aggregate_kind,
+        aggregate_column_name,
         limit,
     })
 }
@@ -1087,6 +1154,24 @@ mod tests {
         bytes
     }
 
+    fn group_aggregate_request(kind: u8) -> Vec<u8> {
+        let mut bytes = vec![
+            0,
+            OPTIMIZER_REQUEST_VERSION as u8,
+            crate::query_abi::OPTIMIZER_GROUP_AGGREGATE_STATEMENT,
+            0,
+        ];
+        name("public", &mut bytes);
+        name("items", &mut bytes);
+        name("category", &mut bytes);
+        bytes.push(kind);
+        if kind != 1 {
+            name("amount", &mut bytes);
+        }
+        bytes.extend_from_slice(&[1, 0, 0, 0, 5]);
+        bytes
+    }
+
     fn ordered_group_count_request() -> Vec<u8> {
         let mut bytes = vec![0, OPTIMIZER_REQUEST_VERSION as u8];
         bytes.push(crate::query_abi::OPTIMIZER_GROUP_COUNT_ORDERED_STATEMENT);
@@ -1143,6 +1228,28 @@ mod tests {
         trailing.push(0);
         assert_eq!(
             decode_group_count_request(&trailing),
+            Err(RequestError::TrailingBytes)
+        );
+    }
+
+    #[test]
+    fn decodes_single_key_aggregate_request_and_rejects_invalid_shapes() {
+        for kind in 1..=5 {
+            let request = decode_group_aggregate_request(&group_aggregate_request(kind)).unwrap();
+            assert_eq!(request.aggregate_kind, kind);
+            assert_eq!(request.aggregate_column_name.is_some(), kind != 1);
+            assert_eq!(request.limit, Some(5));
+        }
+        let mut bad_kind = group_aggregate_request(4);
+        bad_kind[4 + 1 + 6 + 1 + 5 + 1 + 8] = 6;
+        assert_eq!(
+            decode_group_aggregate_request(&bad_kind),
+            Err(RequestError::InvalidValue)
+        );
+        let mut trailing = group_aggregate_request(2);
+        trailing.push(0);
+        assert_eq!(
+            decode_group_aggregate_request(&trailing),
             Err(RequestError::TrailingBytes)
         );
     }

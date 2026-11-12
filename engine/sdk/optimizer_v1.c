@@ -738,6 +738,51 @@ int32_t prdb_sdk_optimizer_encode_ordered_composite_group_count_v1(
     return PRDB_SDK_OPTIMIZER_ENCODE_OK;
 }
 
+int32_t prdb_sdk_optimizer_encode_group_aggregate_v1(
+    const prdb_sdk_select_v7 *statement, const uint8_t *schema,
+    uint32_t schema_len, uint8_t *request, uint64_t request_capacity,
+    uint64_t *request_len) {
+    const prdb_sdk_select_v2 *base;
+    const uint8_t *sql;
+    uint64_t offset = 0, required = 4 + 1 + schema_len;
+    uint8_t header[4] = {0, 1, PRDB_OPTIMIZER_GROUP_AGGREGATE_STATEMENT, 0};
+    if (statement == NULL || schema == NULL || request == NULL || request_len == NULL ||
+        statement->struct_size != sizeof(*statement) || statement->abi_version != PRDB_SDK_SQL_ABI_V7_VERSION ||
+        statement->has_group_by != 1 || statement->aggregate_kind < PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR || statement->aggregate_kind > PRDB_SDK_SQL_V7_AGGREGATE_AVG ||
+        statement->base.projection_count != 1 || statement->base.projection_star != 0 || statement->base.predicate_count != 0 || statement->base.has_limit > 1 ||
+        schema_len == 0 || schema_len > 63 || !valid_identifier(schema, schema_len) || request_capacity > OPTIMIZER_REQUEST_MAX_BYTES)
+        return request_capacity > OPTIMIZER_REQUEST_MAX_BYTES ? PRDB_SDK_OPTIMIZER_ENCODE_LIMIT_EXCEEDED : PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    base = &statement->base; sql = base->sql;
+    if (sql == NULL || base->sql_len == 0 || base->sql_len > PRDB_SDK_SQL_MAX_QUERY_BYTES || !span_is_identifier(base, base->relation) ||
+        !span_is_identifier(base, statement->group_by_column) || !span_is_identifier(base, base->projection[0]) ||
+        !optimizer_spans_equal_folded(sql, base->sql_len, statement->group_by_column, base->projection[0]) ||
+        (statement->aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR ? statement->aggregate_column.length != 0 : !span_is_identifier(base, statement->aggregate_column)))
+        return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+    if (ranges_overlap(statement, sizeof(*statement), request, request_capacity) || ranges_overlap(schema, schema_len, request, request_capacity) ||
+        ranges_overlap(sql, base->sql_len, request, request_capacity) || ranges_overlap(request_len, sizeof(*request_len), request, request_capacity) ||
+        ranges_overlap(request_len, sizeof(*request_len), statement, sizeof(*statement)) || ranges_overlap(request_len, sizeof(*request_len), schema, schema_len) ||
+        ranges_overlap(request_len, sizeof(*request_len), sql, base->sql_len)) return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    if (!append_identifier_span(sql, base->sql_len, base->relation, NULL, 0, &required) ||
+        !append_identifier_span(sql, base->sql_len, statement->group_by_column, NULL, 0, &required)) return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+    required += 1;
+    if (statement->aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR &&
+        !append_identifier_span(sql, base->sql_len, statement->aggregate_column, NULL, 0, &required)) return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+    required += 1 + (base->has_limit ? 4 : 0);
+    if (required > OPTIMIZER_REQUEST_MAX_BYTES) return PRDB_SDK_OPTIMIZER_ENCODE_LIMIT_EXCEEDED;
+    if (request_capacity < required) { *request_len = required; return PRDB_SDK_OPTIMIZER_ENCODE_BUFFER_TOO_SMALL; }
+    predicate_append(request, request_capacity, &offset, header, sizeof(header));
+    predicate_append_u8(request, request_capacity, &offset, (uint8_t)schema_len);
+    predicate_append(request, request_capacity, &offset, schema, schema_len);
+    append_identifier_span(sql, base->sql_len, base->relation, request, request_capacity, &offset);
+    append_identifier_span(sql, base->sql_len, statement->group_by_column, request, request_capacity, &offset);
+    predicate_append_u8(request, request_capacity, &offset, (uint8_t)statement->aggregate_kind);
+    if (statement->aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR) append_identifier_span(sql, base->sql_len, statement->aggregate_column, request, request_capacity, &offset);
+    predicate_append_u8(request, request_capacity, &offset, (uint8_t)base->has_limit);
+    if (base->has_limit) { uint8_t limit[4]; write_u32(limit, base->limit); predicate_append(request, request_capacity, &offset, limit, sizeof(limit)); }
+    *request_len = offset;
+    return PRDB_SDK_OPTIMIZER_ENCODE_OK;
+}
+
 static int32_t optimizer_encode_join_select_internal(
     const prdb_sdk_select_v19 *statement, const uint8_t *schema,
     uint32_t schema_len, uint8_t *request, uint64_t request_capacity,
