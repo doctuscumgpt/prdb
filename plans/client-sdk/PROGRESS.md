@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SQLSO-1: build a versioned SQL SDK shared release — implemented
+
+- Contract: [separate SQL library plan](SEPARATE_SQL_LIBRARY.md), [SQL library spec](../../specs/sql-library.md), and [toolchain spec](../../specs/toolchain.md). Keep the static archive for transition tests while producing a separately loadable SQL SDK release.
+- Implementation: `make -f engine/sdk/Makefile sdk-shared-release` builds dedicated TinyCC `-fPIC` objects, links `libprdb_sql.so.<release>` with the GNU linker, a versioned SONAME, defined symbols, and a non-executable stack. The metadata writer inspects ELF type, machine, SONAME, dependencies, exports, relocation classes, and stack permissions, then atomically writes compatibility JSON and a SHA-256 sidecar. Release/profile/ABI inputs are explicit Make variables.
+- Regression: `sdk-shared-tests` adds maintained value, SQL v20 parser, and optimizer UPDATE fixtures linked against the shared library with an `$ORIGIN` runpath. Metadata tests verify compatibility fields and digest and reject a mismatched SONAME and noncanonical ABI lists. Existing static SDK tests remain available during transition.
+- Verification: `make -f engine/sdk/Makefile sdk-shared-release` and `make -f engine/sdk/Makefile sdk-shared-tests` passed under the locked Nix shell. `readelf` confirmed SONAME `libprdb_sql.so.1`, `DT_NEEDED` only `libc.so.6`, exported SQL/manifest/scope/optimizer symbols, position-independent relocations, and RW `GNU_STACK`; the checksum sidecar verified.
+- Remaining: migrate `prdb-packager` to shared linking and final-ELF metadata derivation (SQLSO-2); supervisor resolution, worker staging, and release-profile migration remain future increments.
+
 ## SDK-3/SDK-5: authenticated metadata discovery CLI — implemented
 
 - Contract: [Client SDK](../../specs/client-sdk.md). `prdb-client discover` lists only authenticated visible schemas, relations, and declared columns, with optional exact-name schema/relation filters. Relation filtering requires a schema. Output is tab-separated, uses lowercase IDs, preserves ordinal order, and includes the declared scalar type and nullability.

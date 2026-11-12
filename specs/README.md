@@ -33,6 +33,7 @@ These documents capture the current research design for an operational database 
 - [Statistics service](statistics-service.md): trusted collection, scoped estimates, and statistics disclosure.
 - [Executor](query-worker.md): untrusted execution and the native extension contract.
 - [Client SDK](client-sdk.md): TinyCC compilation, component contracts, and artifact packaging.
+- [Separate SQL library implementation plan](../plans/client-sdk/SEPARATE_SQL_LIBRARY.md): versioned SDK shared library, supervisor cache, packaging, and confined loading increments.
 - [SQL library](sql-library.md): SDK SQL frontend, initial language subset, and plan execution.
 - [IPC protocol](ipc-protocol.md): scoped handles, bounded requests, and authorized batches.
 - [Linux sandbox](linux-sandbox.md): confinement requirements and launch ordering.
@@ -43,7 +44,7 @@ These documents capture the current research design for an operational database 
 - **SQL statement:** one SDK SQL call within an invocation. Sequential calls share one transaction; only one statement/request stream is active at a time initially. Any statement error aborts the transaction in the baseline.
 - **Executor:** the sandboxed native host, also called the query worker in earlier discussions. `query-worker.md` retains its filename.
 - **Optimizer:** the isolated planning service, also called the planner. It returns structured physical plans, not native libraries. `planner-compiler.md` retains its historical filename; compilation runs in the client.
-- **Query library:** the client-built `query.so`, linked with a prebuilt SDK SQL/runtime archive in the proposed baseline. A physical plan is data, not this native artifact.
+- **Query library:** the client-built `query.so`, dynamically linked to a versioned SQL/runtime SDK library selected from the supervisor's verified local cache. A physical plan is data, not this native artifact.
 
 Administrative DDL is a separate authenticated catalog transaction, not a query-library statement. It includes schema, identity, role, and permission changes; catalog authority does not automatically grant executor data access.
 

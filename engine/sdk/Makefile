@@ -55,6 +55,20 @@ SDK_OPTIMIZER_OBJECT := $(BUILD_DIR)/optimizer_v1.o
 SDK_OPTIMIZER_PLAN_OBJECT := $(BUILD_DIR)/optimizer_plan_v1.o
 SDK_OBJECTS := $(SDK_VALUE_OBJECT) $(SDK_BATCH_OBJECT) $(SDK_OWNED_BATCH_OBJECT) $(SDK_SQL_OBJECT) $(SDK_SQL_ORDER_OBJECT) $(SDK_SQL_GROUP_OBJECT) $(SDK_SQL_JOIN_OBJECT) $(SDK_SQL_JOIN_V2_OBJECT) $(SDK_PLANNER_OBJECT) $(SDK_EXECUTOR_OBJECT) $(SDK_SQL_EXEC_OBJECT) $(SDK_SQL_EXEC_V4_OBJECT) $(SDK_SQL_EXEC_V5_OBJECT) $(SDK_SQL_EXEC_V6_OBJECT) $(SDK_SQL_EXEC_V7_OBJECT) $(SDK_SQL_EXEC_V8_OBJECT) $(SDK_SQL_EXEC_V16_OBJECT) $(SDK_SQL_EXEC_V19_OBJECT) $(SDK_SQL_RESULT_OBJECT) $(SDK_MANIFEST_OBJECT) $(SDK_SCOPE_OBJECT) $(SDK_OPTIMIZER_OBJECT) $(SDK_OPTIMIZER_PLAN_OBJECT)
 SDK_ARCHIVE := $(BUILD_DIR)/libprdb_sdk.a
+SDK_RELEASE ?= 1
+SDK_TARGET ?= linux-x86_64
+SDK_CPU_BASELINE ?= x86_64-v1
+SDK_RUNTIME_PROFILE ?= nixos-x86_64-glibc-2.42
+SDK_NATIVE_ABIS ?= 1,2,3,4,5
+SDK_RELEASE_DIR := $(BUILD_DIR)/releases/$(SDK_TARGET)/$(SDK_CPU_BASELINE)/$(SDK_RUNTIME_PROFILE)/sdk-$(SDK_RELEASE)-abis$(SDK_NATIVE_ABIS)
+SDK_PIC_OBJECT_DIR := $(SDK_RELEASE_DIR)/pic
+SDK_PIC_OBJECTS := $(patsubst $(BUILD_DIR)/%,$(SDK_PIC_OBJECT_DIR)/%,$(SDK_OBJECTS))
+SDK_SQL_SONAME := libprdb_sql.so.$(SDK_RELEASE)
+SDK_SQL_SHARED_LIBRARY := $(SDK_RELEASE_DIR)/$(SDK_SQL_SONAME)
+SDK_RELEASE_METADATA := $(SDK_RELEASE_DIR)/sdk-release.json
+SDK_RELEASE_CHECKSUM := $(SDK_RELEASE_DIR)/sdk-release.sha256
+SDK_SHARED_TEST_FIXTURES := sdk_value_v1 sdk_sql_select_v20 sdk_optimizer_update_v1
+SDK_SHARED_TESTS := $(addprefix $(SDK_RELEASE_DIR)/shared-test-,$(SDK_SHARED_TEST_FIXTURES))
 SDK_VALUE_TEST := $(BUILD_DIR)/sdk-value-v1
 SDK_BATCH_TEST := $(BUILD_DIR)/sdk-batch-v1
 SDK_SQL_TEST := $(BUILD_DIR)/sdk-sql-select-v1
@@ -209,6 +223,32 @@ $(SDK_OPTIMIZER_PLAN_OBJECT): $(SDK_OPTIMIZER_PLAN_SOURCE) $(INCLUDE_DIR)/prdb_s
 
 $(SDK_ARCHIVE): $(SDK_OBJECTS)
 	$(TCC_AR) rcs "$@" $(SDK_OBJECTS)
+
+$(SDK_PIC_OBJECT_DIR):
+	mkdir -p "$@"
+
+$(SDK_PIC_OBJECT_DIR)/%.o: engine/sdk/%.c $(wildcard $(INCLUDE_DIR)/*.h) | $(SDK_PIC_OBJECT_DIR)
+	$(TCC) -Wall -Wextra -Werror -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
+
+$(SDK_SQL_SHARED_LIBRARY): $(SDK_PIC_OBJECTS) | $(SDK_RELEASE_DIR)
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs,-soname,$(SDK_SQL_SONAME) $(SDK_PIC_OBJECTS) -o "$@"
+
+$(SDK_RELEASE_DIR):
+	mkdir -p "$@"
+
+$(SDK_RELEASE_METADATA) $(SDK_RELEASE_CHECKSUM) &: $(SDK_SQL_SHARED_LIBRARY) engine/tools/write_sdk_release_metadata.py | $(SDK_RELEASE_DIR)
+	$(PYTHON) engine/tools/write_sdk_release_metadata.py --library "$(SDK_SQL_SHARED_LIBRARY)" --metadata "$(SDK_RELEASE_METADATA)" --checksum "$(SDK_RELEASE_CHECKSUM)" --release "$(SDK_RELEASE)" --soname "$(SDK_SQL_SONAME)" --target "$(SDK_TARGET)" --cpu-baseline "$(SDK_CPU_BASELINE)" --runtime-profile "$(SDK_RUNTIME_PROFILE)" --native-abis "$(SDK_NATIVE_ABIS)"
+
+$(SDK_RELEASE_DIR)/shared-test-%: engine/tests/fixtures/%.c $(SDK_SQL_SHARED_LIBRARY) | $(SDK_RELEASE_DIR)
+	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" -c "$<" -o "$@.o"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -Wl,--no-eh-frame-hdr,-z,noexecstack "$@.o" "$(SDK_SQL_SHARED_LIBRARY)" -Wl,-rpath,'$$ORIGIN' -o "$@"
+
+.PHONY: sdk-shared-release sdk-shared-tests
+sdk-shared-release: $(SDK_SQL_SHARED_LIBRARY) $(SDK_RELEASE_METADATA) $(SDK_RELEASE_CHECKSUM)
+
+sdk-shared-tests: $(SDK_SHARED_TESTS) $(SDK_RELEASE_METADATA) $(SDK_RELEASE_CHECKSUM)
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) engine/tools/test_sdk_release_metadata.py "$(SDK_SQL_SHARED_LIBRARY)"
+	@set -e; for test in $(SDK_SHARED_TESTS); do "$$test"; done
 
 $(SDK_VALUE_TEST): engine/tests/fixtures/sdk_value_v1.c $(SDK_ARCHIVE) | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
@@ -485,6 +525,7 @@ test: $(SDK_OPTIMIZER_TEST) $(SDK_OPTIMIZER_PLAN_TEST) $(SDK_OPTIMIZER_DELETE_TE
 test: run-query-abi-v5
 test: run-sdk-optimizer-delete
 test: run-sdk-optimizer-update
+test: sdk-shared-tests
 
 .PHONY: run-query-abi-v5
 run-query-abi-v5: $(QUERY_ABI_V5_TEST)

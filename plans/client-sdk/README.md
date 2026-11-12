@@ -4,6 +4,8 @@
 
 Implement the [SDK](../../specs/client-sdk.md) using the pinned [toolchain](../toolchain/README.md), generated [IPC](../ipc-protocol/README.md)/ABI contracts and [SQL library](../sql-library/README.md). Runtime C code linked into query.so and the client-only submission/authentication/admin helper are distinct packages and authority surfaces.
 
+The migration from a statically linked SDK archive to a supervisor-cached shared SQL library is planned in [Separate SQL Shared Library and Supervisor Cache](SEPARATE_SQL_LIBRARY.md).
+
 ## Decisions Before Implementation
 
 Freeze manifest/scope encodings and independent compatibility checks for target, CPU/libc, entry-point ABI, IPC, query/plan, SQL API and SDK release. Specify explicit buffer borrowing/release rules, compiler input restrictions and wrapper resource limits. Exact public symbols and Rust-helper bindings become normative before publishing headers.
@@ -13,7 +15,7 @@ Freeze manifest/scope encodings and independent compatibility checks for target,
 | ID | Observable test first | Minimum implementation and evidence |
 | --- | --- | --- |
 | SDK-1 | Maintained C tests exercise sized/versioned APIs, value states and correct allocator release | Generate public headers/types, opaque handles and borrowed immutable batches; invalid lengths/layout versions fail explicitly |
-| SDK-2 | One source edit recompiles only user code and links a reusable prebuilt TinyCC SDK archive | Bounded client compiler subprocess emitting query.so without execution; explicit source/include/link inputs and no credential-bearing environment |
+| SDK-2 | One source edit recompiles only user code and links a reusable prebuilt TinyCC SQL SDK shared library | Bounded client compiler subprocess emitting query.so without execution; explicit source/include/link inputs and no credential-bearing environment |
 | SDK-3 | Manifest mismatch/malformed scope is rejected without trusting compiler identity | Bounded packaging with target/dependencies/version declarations and digest; validate again independently at admission/loading |
 | SDK-4 | Real helper uploads/seals/starts, records ID and distinguishes provisional bytes from durable completion | Implement TCP/authentication outside runtime archive, status/cancel via another connection and no automatic replay after uncertain START |
 | SDK-5 | Credential/admin APIs and live monitoring are unavailable through executor callbacks or artifacts | Separate control connection/builders, typed allowlisted operations, secret-once handling and protected client credential storage |
