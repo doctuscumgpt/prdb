@@ -37,6 +37,8 @@ const prdb_query_descriptor_v5_record prdb_query_descriptor_v5 = {
 static const prdb_host_api_v5 *cancel_update_original_host;
 static uint32_t cancel_update_ready_sent;
 static uint32_t fail_next_stage_update;
+static uint32_t observe_next_stage_update;
+static uint32_t observe_only_stage_update;
 
 static int32_t cancel_update_executor_request(
     void *context, uint16_t operation, const uint8_t *request,
@@ -56,6 +58,28 @@ static int32_t cancel_update_executor_request(
         (void)cancel_update_original_host->v4.v3.write_result(
             context, injected, sizeof(injected) - 1);
         return PRDB_QUERY_CALLBACK_IO_ERROR;
+    }
+    if (operation == PRDB_IPC_OP_STAGE_UPDATE &&
+        observe_next_stage_update != 0) {
+        static const uint8_t reached[] = "UPDATE_STAGE_REACHED";
+        observe_next_stage_update = 0;
+        if (cancel_update_original_host->v4.v3.write_result(
+                context, reached, sizeof(reached) - 1) != 0) {
+            return PRDB_QUERY_CALLBACK_IO_ERROR;
+        }
+    }
+    if (observe_only_stage_update != 0) {
+        int32_t status = cancel_update_original_host->v4.v3.executor_request(
+            context, operation, request, request_len, response,
+            response_capacity, response_len);
+        if (operation == PRDB_IPC_OP_STAGE_UPDATE) {
+            static const uint8_t returned[] = "UPDATE_STAGE_RETURNED";
+            if (cancel_update_original_host->v4.v3.write_result(
+                    context, returned, sizeof(returned) - 1) != 0) {
+                return PRDB_QUERY_CALLBACK_IO_ERROR;
+            }
+        }
+        return status;
     }
     if (operation != PRDB_IPC_OP_EXECUTOR_CHECK_CANCELLATION ||
         cancel_update_ready_sent != 0) {
@@ -973,7 +997,7 @@ static int32_t run_write_read_fixture(
     if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
         invocation->parameters[0] == 'F') {
         static const uint8_t denied_update_sql[] =
-            "UPDATE linked_records SET id = $2 WHERE id = $1";
+            "UPDATE linked_records SET match_key = $2 WHERE id = $1";
         static const uint8_t old_id_bytes[] = {0, 0, 0, 42};
         static const uint8_t new_id_bytes[] = {0, 0, 0, 99};
         prdb_sdk_update_v1 denied_update = {0};
@@ -994,6 +1018,7 @@ static int32_t run_write_read_fixture(
         prdb_sdk_sql_column_shape_v2 columns[2] = {{0}};
         prdb_sdk_select_binding_v2 binding = {0};
         prdb_sdk_value_v1 scratch[2] = {{0}};
+        prdb_host_api_v5 observed_host;
         uint32_t updated = 0;
         int32_t update_status;
 
@@ -1009,8 +1034,13 @@ static int32_t run_write_read_fixture(
                 return 1;
             }
         }
+        observed_host = *optimizer_host_v5;
+        observed_host.v4.v3.executor_request = cancel_update_executor_request;
+        cancel_update_original_host = optimizer_host_v5;
+        observe_next_stage_update = 1;
+        observe_only_stage_update = 1;
         update_status = prdb_sdk_optimizer_execute_update_ast_v1(
-            optimizer_host_v5, &denied_update, denied_parameters, 2,
+            &observed_host, &denied_update, denied_parameters, 2,
             schema, sizeof(schema) - 1, 16, sizeof(batch_response),
             request, sizeof(request), response, sizeof(response),
             relation_response, sizeof(relation_response), scan_response,
@@ -1018,7 +1048,10 @@ static int32_t run_write_read_fixture(
             &relation, sizeof(relation), columns, 2, &binding, sizeof(binding),
             scratch, 2, targets, PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS,
             &updated);
-        if (update_status == PRDB_SDK_OPTIMIZER_PLAN_OK || updated != 0) {
+        cancel_update_original_host = NULL;
+        observe_only_stage_update = 0;
+        if (update_status == PRDB_SDK_OPTIMIZER_PLAN_OK || updated != 0 ||
+            observe_next_stage_update != 0) {
             static const uint8_t message[] = "fixture-error-update-was-not-denied";
             return report_failure(host, message, sizeof(message) - 1);
         }

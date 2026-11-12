@@ -600,3 +600,11 @@
 - Acceptance: the enabled DML sequence acceptance requires the readiness and injection result frames, confirms worker failure and durable ABORTED, and compares both committed row payloads byte-for-byte.
 - Verification: forced TinyCC fixture rebuild and the focused delegated-cgroup acceptance passed (`1 passed, 0 ignored`).
 - Remaining: broader transaction conflict/policy acceptance.
+
+## OP-3 follow-up: default-deny UPDATE policy with explicit grants — verified
+
+- Behavior: an UPDATE with table and target-column privileges still fails closed when no applicable UPDATE row policy allows it. The test targets `match_key`, which is not used by the table's SELECT policy predicates, so the failure occurs at row-policy authorization rather than the immutable policy-driving-column guard.
+- Regression: the confined SQL fixture reaches the real StageUpdate callback, forwards the request to storage, and confirms that callback returns an error. The gateway reports `QueryError`; storage records durable `Aborted`; the committed row payload remains byte-identical.
+- Supervisor fix: worker-channel deadline polling now treats an already-aborted transaction as a worker error path and waits for the handler result. The monotonic invocation deadline still bounds a worker that does not exit after aborting.
+- Verification: TinyCC sandbox fixture rebuild and complete maintained SDK suite passed. The focused confined DML acceptance passed; locked workspace build, format check, warning-denied Clippy, and the full serial workspace suite inside the delegated `systemd --user` cgroup passed.
+- Remaining: broader transaction conflict and policy acceptance.

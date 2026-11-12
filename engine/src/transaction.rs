@@ -832,11 +832,12 @@ impl<'db> InvocationTransaction<'db> {
             return Err(TransactionError::Expired);
         }
         if self.aborted {
-            return if self.cancellation_triggered {
-                Ok(())
-            } else {
-                Err(TransactionError::Aborted)
-            };
+            // The worker may abort its transaction while handling a query
+            // error (for example, a denied write). That is a normal terminal
+            // path; the worker-channel handler will report the cause and
+            // close its peers. The supervisor's monotonic deadline still
+            // bounds a worker that fails to exit after the abort.
+            return Ok(());
         }
         if self.coordination.cancellation_requested() {
             return Ok(());

@@ -23370,6 +23370,19 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             user_id,
         ),
     ]);
+    authority_writes.push(grant_write(
+        user_id,
+        joined_table.table_id,
+        4,
+        1,
+        joined_table.table_id,
+        user_id,
+    ));
+    authority_writes.extend(
+        joined_table.column_ids.iter().map(|column_id| {
+            grant_write(user_id, joined_table.table_id, 4, 2, *column_id, user_id)
+        }),
+    );
     authority_writes.extend(composite_table.column_ids.iter().map(|column_id| {
         grant_write(user_id, composite_table.table_id, 2, 2, *column_id, user_id)
     }));
@@ -24855,6 +24868,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         user_table.payload == b"records"
             || user_table.payload == b"linked_records"
             || user_table.payload == b"grouped_records"
+            || user_table.payload == b"identity_records",
+        "unexpected SQL user table result: {:?}",
+        user_table.payload
     );
     let user_column = read_frame(&mut gateway)?.ok_or("missing SQL user column result")?;
     assert_eq!(user_column.operation, Operation::GatewayResultData as u16);
@@ -25834,21 +25850,33 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         .map_err(|error| format!("start denied UPDATE fixture: {error:?}"))?;
     assert_eq!(failure_accepted.payload, b"{\"state\":\"accepted\"}");
     let (mut failure_service, mut failure_gateway) = UnixStream::pair()?;
-    assert_eq!(
-        observe_executor_relay_and_finalize_gateway(
-            &storage,
-            &mut failure_invocation,
-            &mut failure_executor,
-            &mut failure_service,
-            failure_accepted.request_id,
-        )
-        .map_err(|error| format!("finalize denied UPDATE fixture: {error:?}"))?,
-        GatewayTerminalDecision::Abort(GatewayAbortReason::QueryError)
-    );
+    let failure_decision = observe_executor_relay_and_finalize_gateway(
+        &storage,
+        &mut failure_invocation,
+        &mut failure_executor,
+        &mut failure_service,
+        failure_accepted.request_id,
+    )
+    .map_err(|error| format!("finalize denied UPDATE fixture: {error:?}"))?;
     let failure_ready =
         read_frame(&mut failure_gateway)?.ok_or("missing denied UPDATE ready event")?;
     assert_eq!(failure_ready.operation, Operation::GatewayResultData as u16);
     assert_eq!(failure_ready.payload, b"UPDATE_REJECTION_READY");
+    let failure_stage =
+        read_frame(&mut failure_gateway)?.ok_or("missing UPDATE stage-reached event")?;
+    assert_eq!(failure_stage.operation, Operation::GatewayResultData as u16);
+    assert_eq!(failure_stage.payload, b"UPDATE_STAGE_REACHED");
+    let failure_returned =
+        read_frame(&mut failure_gateway)?.ok_or("missing UPDATE stage-returned event")?;
+    assert_eq!(
+        failure_returned.operation,
+        Operation::GatewayResultData as u16
+    );
+    assert_eq!(failure_returned.payload, b"UPDATE_STAGE_RETURNED");
+    assert_eq!(
+        failure_decision,
+        GatewayTerminalDecision::Abort(GatewayAbortReason::QueryError)
+    );
     let failure_terminal =
         read_frame(&mut failure_gateway)?.ok_or("missing UPDATE failure terminal event")?;
     assert_eq!(
