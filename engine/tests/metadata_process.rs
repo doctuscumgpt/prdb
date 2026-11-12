@@ -1826,23 +1826,38 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     );
     remove_client_credentials(&transfer_credential_path)?;
     let created_user = admin.create_user("process_token_user")?;
-    let now_us = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?;
-    let issued = admin.issue_token(
-        created_user.identity_id,
-        "multi-process token",
-        now_us.saturating_add(60_000_000),
-    )?;
-    let issued_token_id = issued.token_id;
     let credential_path = root.join("issued-token.cred");
-    let issued_credentials = ClientCredentials {
-        token_id: issued.token_id,
-        token_secret: *issued.token_secret(),
-    };
-    write_client_credentials(&credential_path, &issued_credentials)?;
-    drop(issued_credentials);
-    drop(issued);
-
     let issued_user_id_text = encode_id_hex(&created_user.identity_id);
+    let credential_path_text = credential_path
+        .to_str()
+        .ok_or("credential path is not UTF-8")?;
+    let issue_token_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "token-issue",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--user-id",
+            &issued_user_id_text,
+            "--label",
+            "multi-process token",
+            "--ttl-seconds",
+            "60",
+            "--output-credentials",
+            credential_path_text,
+        ])
+        .output()?;
+    assert!(
+        issue_token_cli.status.success(),
+        "token-issue CLI failed: {}",
+        String::from_utf8_lossy(&issue_token_cli.stderr)
+    );
+    let issued_cli_output = String::from_utf8_lossy(&issue_token_cli.stdout);
+    assert!(issued_cli_output.contains("saved token"));
+    assert!(!issued_cli_output.contains("token_secret"));
+    let issued_token_id = read_client_credentials(&credential_path)?.token_id;
+
     let list_tokens_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
             "token-list",
@@ -1881,7 +1896,22 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     drop(issued_metadata);
     drop(saved_credentials);
 
-    admin.revoke_token(issued_token_id)?;
+    let revoke_token_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "token-revoke",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--token-id",
+            &encode_id_hex(&issued_token_id),
+        ])
+        .output()?;
+    assert!(
+        revoke_token_cli.status.success(),
+        "token-revoke CLI failed: {}",
+        String::from_utf8_lossy(&revoke_token_cli.stderr)
+    );
     let revoked_inventory_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
             "token-list",
