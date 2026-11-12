@@ -1,5 +1,12 @@
 # Optimizer Progress
 
+## OP-7 follow-up: authorized filtered aliased-join plan backend — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). Statement 12 preserves the frozen statement-4 join request and adds one side-qualified parameter comparison or NULL test; kind 12 preserves kind-4 join metadata and appends the authorized filter column and expression.
+- Implementation: the bounded decoder rejects invalid sides/operators, zero or over-limit parameter indexes, malformed identifiers, and trailing bytes. Binding resolves the filter against the selected authorized relation; plan lowering adds it to that side's ordinal-sorted scan shape. Rust kind-12 decoding validates the filter column is scanned on its declared side and preserves kind-4 behavior unchanged.
+- Verification: the filtered request/bounds, side-specific metadata binding, kind-12 round-trip/scan membership, authorized service plan, and optimizer-process dispatch regressions passed. Generated ABI checks, workspace build, format check, warning-denied Clippy, maintained TinyCC tests, sandbox fixture build, and the full serial delegated-cgroup workspace suite passed. The suite reported 179 library tests, 142 commit tests, and 74 transaction tests, with zero ignored tests across all targets. The TinyCC suite does not yet exercise kind 12.
+- Remaining: TinyCC statement encoding and kind-12 decoding/AST matching, executor identity validation for the filter column, optimizer-backed v20 runner integration, confined cgroup acceptance, and full workspace validation remain open.
+
 ## OP-7 follow-up: ordered single-key grouped aggregates — verified
 
 - Contract: request statement 11 / plan kind 11 extends the statement-10 single-key COUNT/MIN/MAX/SUM/AVG shape with up to two distinct ORDER BY expressions drawn from the group key or selected aggregate, preserving direction, NULL placement, and optional LIMIT. WHERE, HAVING, extra projections, and unsupported argument types remain rejected.

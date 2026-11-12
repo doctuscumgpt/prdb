@@ -1,9 +1,10 @@
 //! Deterministic single-table SELECT plan construction for optimizer v1.
 
 use crate::optimizer_binding::{
-    BoundColumn, BoundCompositeGroupCount, BoundGroupAggregate, BoundGroupCount, BoundJoinSelect,
-    BoundOrderedCompositeGroupCount, BoundOrderedGroupAggregate, BoundOrderedGroupCount,
-    BoundOrderedSelect, BoundPredicate, BoundSelect, BoundUpdateAssignment, BoundUpdateValue,
+    BoundColumn, BoundCompositeGroupCount, BoundGroupAggregate, BoundGroupCount, BoundJoinFilter,
+    BoundJoinSelect, BoundOrderedCompositeGroupCount, BoundOrderedGroupAggregate,
+    BoundOrderedGroupCount, BoundOrderedSelect, BoundPredicate, BoundSelect, BoundUpdateAssignment,
+    BoundUpdateValue,
 };
 use crate::optimizer_request::JoinRelationSide;
 use crate::optimizer_request::{CompositeGroupCountOrderItem, GroupCountOrderItem};
@@ -70,6 +71,7 @@ pub struct JoinSelectPlanV1 {
     pub projections: Vec<(JoinRelationSide, BoundColumn)>,
     pub join_keys: Vec<(BoundColumn, BoundColumn)>,
     pub limit: Option<u32>,
+    pub filter: Option<BoundJoinFilter>,
 }
 
 /// Bounded single-key COUNT(*) grouping plan. The scan carries only the
@@ -142,6 +144,7 @@ const PLAN_KIND_SELECT: u8 = 1;
 const PLAN_KIND_DELETE: u8 = 2;
 const PLAN_KIND_UPDATE: u8 = 3;
 const PLAN_KIND_JOIN_SELECT: u8 = 4;
+const PLAN_KIND_FILTERED_JOIN_SELECT: u8 = 12;
 const DELETE_SINK_NODE: u8 = 5;
 const PLAN_KIND_GROUP_COUNT: u8 = 5;
 const PLAN_KIND_COMPOSITE_GROUP_COUNT: u8 = 6;
@@ -331,14 +334,18 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
     Ok(plan)
 }
 
-/// Encode an independently validated two-relation equality join plan. This
-/// uses plan kind 4 and leaves the established single-table encoding intact.
+/// Encode an independently validated two-relation join plan. Unfiltered joins
+/// retain kind 4; v20 qualified-filter joins use kind 12.
 pub fn encode_join_select_plan_v1(plan: &JoinSelectPlanV1) -> Result<Vec<u8>, PlanError> {
     validate_join_select_plan_v1(plan)?;
     let mut output = Vec::with_capacity(256);
     output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_header_record(
         1,
-        PLAN_KIND_JOIN_SELECT,
+        if plan.filter.is_some() {
+            PLAN_KIND_FILTERED_JOIN_SELECT
+        } else {
+            PLAN_KIND_JOIN_SELECT
+        },
         0,
     ));
     put_name(&mut output, &plan.schema_name)?;
@@ -383,6 +390,30 @@ pub fn encode_join_select_plan_v1(plan: &JoinSelectPlanV1) -> Result<Vec<u8>, Pl
             output.extend_from_slice(&limit.to_be_bytes());
         }
     }
+    if let Some(filter) = &plan.filter {
+        output.push(match filter.relation_side {
+            JoinRelationSide::Left => 0,
+            JoinRelationSide::Right => 1,
+        });
+        put_column(&mut output, &filter.column);
+        match filter.expression {
+            crate::optimizer_request::JoinFilterExpression::Parameter { operator, index } => {
+                output.push(0);
+                output.push(match operator {
+                    crate::optimizer_request::Comparison::Equal => 0,
+                    crate::optimizer_request::Comparison::NotEqual => 1,
+                    crate::optimizer_request::Comparison::Less => 2,
+                    crate::optimizer_request::Comparison::LessOrEqual => 3,
+                    crate::optimizer_request::Comparison::Greater => 4,
+                    crate::optimizer_request::Comparison::GreaterOrEqual => 5,
+                });
+                output.extend_from_slice(&index.to_be_bytes());
+            }
+            crate::optimizer_request::JoinFilterExpression::IsNull { negated } => {
+                output.push(if negated { 2 } else { 1 });
+            }
+        }
+    }
     if output.len() > MAX_PLAN_BYTES {
         return Err(PlanError::TooLarge);
     }
@@ -399,7 +430,7 @@ pub fn decode_join_select_plan_v1(bytes: &[u8]) -> Result<JoinSelectPlanV1, Plan
     if version != 1 {
         return Err(PlanError::UnsupportedVersion(version));
     }
-    if kind != PLAN_KIND_JOIN_SELECT || reserved != 0 {
+    if !matches!(kind, PLAN_KIND_JOIN_SELECT | PLAN_KIND_FILTERED_JOIN_SELECT) || reserved != 0 {
         return Err(PlanError::InvalidEncoding);
     }
     let mut reader = PlanReader {
@@ -483,6 +514,47 @@ pub fn decode_join_select_plan_v1(bytes: &[u8]) -> Result<JoinSelectPlanV1, Plan
         )),
         _ => return Err(PlanError::InvalidEncoding),
     };
+    let filter = if kind == PLAN_KIND_FILTERED_JOIN_SELECT {
+        let relation_side = match reader.u8()? {
+            0 => JoinRelationSide::Left,
+            1 => JoinRelationSide::Right,
+            _ => return Err(PlanError::InvalidEncoding),
+        };
+        let column = reader.column()?;
+        let expression = match reader.u8()? {
+            0 => {
+                let operator = match reader.u8()? {
+                    0 => crate::optimizer_request::Comparison::Equal,
+                    1 => crate::optimizer_request::Comparison::NotEqual,
+                    2 => crate::optimizer_request::Comparison::Less,
+                    3 => crate::optimizer_request::Comparison::LessOrEqual,
+                    4 => crate::optimizer_request::Comparison::Greater,
+                    5 => crate::optimizer_request::Comparison::GreaterOrEqual,
+                    _ => return Err(PlanError::InvalidEncoding),
+                };
+                let index = u32::from_be_bytes(
+                    reader
+                        .take(4)?
+                        .try_into()
+                        .map_err(|_| PlanError::Truncated)?,
+                );
+                if index == 0 || index > crate::optimizer_request::MAX_PARAMETER_INDEX {
+                    return Err(PlanError::InvalidEncoding);
+                }
+                crate::optimizer_request::JoinFilterExpression::Parameter { operator, index }
+            }
+            1 => crate::optimizer_request::JoinFilterExpression::IsNull { negated: false },
+            2 => crate::optimizer_request::JoinFilterExpression::IsNull { negated: true },
+            _ => return Err(PlanError::InvalidEncoding),
+        };
+        Some(BoundJoinFilter {
+            relation_side,
+            column,
+            expression,
+        })
+    } else {
+        None
+    };
     if reader.offset != bytes.len() {
         return Err(PlanError::TrailingBytes);
     }
@@ -497,6 +569,7 @@ pub fn decode_join_select_plan_v1(bytes: &[u8]) -> Result<JoinSelectPlanV1, Plan
         projections,
         join_keys,
         limit,
+        filter,
     };
     validate_join_select_plan_v1(&plan)?;
     Ok(plan)
@@ -562,6 +635,25 @@ pub fn validate_join_select_plan_v1(plan: &JoinSelectPlanV1) -> Result<(), PlanE
             if !scan_columns.contains(key) {
                 return Err(PlanError::InvalidColumnReference);
             }
+        }
+    }
+    if let Some(filter) = &plan.filter {
+        let scan_columns = match filter.relation_side {
+            JoinRelationSide::Left => &plan.left_scan_columns,
+            JoinRelationSide::Right => &plan.right_scan_columns,
+        };
+        if filter.column.column_id == [0; 16]
+            || !valid_scalar_type(filter.column.scalar_type)
+            || !scan_columns.contains(&filter.column)
+        {
+            return Err(PlanError::InvalidColumnReference);
+        }
+        if matches!(
+            filter.expression,
+            crate::optimizer_request::JoinFilterExpression::Parameter { index, .. }
+            if index == 0 || index > crate::optimizer_request::MAX_PARAMETER_INDEX
+        ) {
+            return Err(PlanError::InvalidEncoding);
         }
     }
     Ok(())
@@ -2959,6 +3051,15 @@ pub fn plan_join_select_v1(bound: BoundJoinSelect) -> Result<JoinSelectPlanV1, P
         add_column(&mut left_scan_columns, &key.left_column)?;
         add_column(&mut right_scan_columns, &key.right_column)?;
     }
+    if let Some(filter) = &bound.filter {
+        add_column(
+            match filter.relation_side {
+                JoinRelationSide::Left => &mut left_scan_columns,
+                JoinRelationSide::Right => &mut right_scan_columns,
+            },
+            &filter.column,
+        )?;
+    }
     left_scan_columns.sort_by_key(|column| column.ordinal);
     right_scan_columns.sort_by_key(|column| column.ordinal);
     let plan = JoinSelectPlanV1 {
@@ -2980,6 +3081,7 @@ pub fn plan_join_select_v1(bound: BoundJoinSelect) -> Result<JoinSelectPlanV1, P
             .map(|key| (key.left_column, key.right_column))
             .collect(),
         limit: bound.limit,
+        filter: bound.filter,
     };
     validate_join_select_plan_v1(&plan)?;
     Ok(plan)
@@ -4091,9 +4193,37 @@ mod tests {
             ],
             join_keys: vec![(left_key, right_key), (left_key2, right_key2)],
             limit: Some(9),
+            filter: None,
         };
         let bytes = encode_join_select_plan_v1(&plan).unwrap();
         assert_eq!(decode_join_select_plan_v1(&bytes).unwrap(), plan);
+
+        let mut filtered = plan.clone();
+        filtered.filter = Some(BoundJoinFilter {
+            relation_side: JoinRelationSide::Left,
+            column: filtered.left_scan_columns[1].clone(),
+            expression: crate::optimizer_request::JoinFilterExpression::Parameter {
+                operator: crate::optimizer_request::Comparison::Greater,
+                index: 3,
+            },
+        });
+        let filtered_bytes = encode_join_select_plan_v1(&filtered).unwrap();
+        assert_eq!(
+            crate::query_abi::decode_optimizer_plan_header_record(&filtered_bytes)
+                .unwrap()
+                .1,
+            PLAN_KIND_FILTERED_JOIN_SELECT
+        );
+        assert_eq!(
+            decode_join_select_plan_v1(&filtered_bytes).unwrap(),
+            filtered
+        );
+        let mut invalid_filter = filtered.clone();
+        invalid_filter.filter.as_mut().unwrap().column.ordinal = 99;
+        assert_eq!(
+            validate_join_select_plan_v1(&invalid_filter),
+            Err(PlanError::InvalidColumnReference)
+        );
 
         let mut invalid = plan;
         invalid.join_keys[0].0.column_id = [0x7f; 16];

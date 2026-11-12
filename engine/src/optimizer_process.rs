@@ -389,6 +389,17 @@ mod tests {
         bytes
     }
 
+    fn filtered_join_select_request() -> Vec<u8> {
+        let mut bytes = join_select_request();
+        bytes[2] = crate::query_abi::OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT;
+        bytes.push(1);
+        bytes.push(6);
+        bytes.extend_from_slice(b"active");
+        bytes.extend_from_slice(&[0, 4]);
+        bytes.extend_from_slice(&3u32.to_be_bytes());
+        bytes
+    }
+
     fn group_count_request() -> Vec<u8> {
         let mut bytes = vec![0, 1, crate::query_abi::OPTIMIZER_GROUP_COUNT_STATEMENT, 0];
         for name in ["public", "items", "active"] {
@@ -759,14 +770,17 @@ mod tests {
         let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
         std::thread::scope(|scope| {
             let planner_thread = scope.spawn(|| {
-                for (name, relation_id, base_column_id) in
-                    [("lefts", 0x31, 0x41), ("rights", 0x32, 0x51)]
-                {
+                for (request_id, name, relation_id, base_column_id) in [
+                    (257, "lefts", 0x31, 0x41),
+                    (258, "rights", 0x32, 0x51),
+                    (259, "lefts", 0x31, 0x41),
+                    (260, "rights", 0x32, 0x51),
+                ] {
                     let request = crate::ipc::read_frame(&mut planner_server)
                         .unwrap()
                         .expect("optimizer must resolve each join relation");
                     let decoded = ResolveRelationRequest::decode(&request.payload).unwrap();
-                    assert_eq!(request.request_id, if name == "lefts" { 257 } else { 258 });
+                    assert_eq!(request.request_id, request_id);
                     assert_eq!(decoded.schema_name, "public");
                     assert_eq!(decoded.relation_name, name);
                     let relation = AuthorizedPlanRelation {
@@ -845,6 +859,41 @@ mod tests {
             assert_eq!(plan.right_scan_columns.len(), 3);
             assert_eq!(plan.join_keys.len(), 2);
             assert_eq!(plan.limit, Some(5));
+
+            crate::ipc::write_frame(
+                &mut submission_client,
+                &IpcFrame {
+                    operation: Operation::OptimizeJoinSelect as u16,
+                    request_id: 13,
+                    payload: filtered_join_select_request(),
+                },
+            )
+            .unwrap();
+            let response = crate::ipc::read_frame(&mut submission_client)
+                .unwrap()
+                .expect("optimizer must return a filtered join plan");
+            assert_eq!(response.operation, Operation::OptimizeJoinSelect as u16);
+            assert_eq!(response.request_id, 13);
+            let response = OptimizerResponse::decode(&response.payload).unwrap();
+            assert_eq!(response.status, OptimizerStatus::Success);
+            let plan = crate::optimizer_plan::decode_join_select_plan_v1(
+                response.plan.as_deref().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(plan.right_scan_columns.len(), 3);
+            let filter = plan.filter.unwrap();
+            assert_eq!(
+                filter.relation_side,
+                crate::optimizer_request::JoinRelationSide::Right
+            );
+            assert_eq!(filter.column.ordinal, 1);
+            assert_eq!(
+                filter.expression,
+                crate::optimizer_request::JoinFilterExpression::Parameter {
+                    operator: crate::optimizer_request::Comparison::Greater,
+                    index: 3,
+                }
+            );
             submission_client.shutdown(Shutdown::Write).unwrap();
             planner_thread.join().unwrap();
             optimizer_thread.join().unwrap().unwrap();

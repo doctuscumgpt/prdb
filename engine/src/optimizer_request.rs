@@ -7,11 +7,11 @@
 
 use crate::query_abi::{
     OPTIMIZER_COMPOSITE_GROUP_COUNT_STATEMENT, OPTIMIZER_DELETE_STATEMENT,
-    OPTIMIZER_GROUP_COUNT_STATEMENT, OPTIMIZER_JOIN_SELECT_STATEMENT,
-    OPTIMIZER_ORDERED_GROUP_AGGREGATE_STATEMENT, OPTIMIZER_ORDERED_SELECT_STATEMENT,
-    OPTIMIZER_REQUEST_VERSION, OPTIMIZER_SELECT_REQUEST_HEADER_BYTES,
-    OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET, OPTIMIZER_SELECT_STATEMENT,
-    OPTIMIZER_UPDATE_STATEMENT, decode_optimizer_select_request,
+    OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT, OPTIMIZER_GROUP_COUNT_STATEMENT,
+    OPTIMIZER_JOIN_SELECT_STATEMENT, OPTIMIZER_ORDERED_GROUP_AGGREGATE_STATEMENT,
+    OPTIMIZER_ORDERED_SELECT_STATEMENT, OPTIMIZER_REQUEST_VERSION,
+    OPTIMIZER_SELECT_REQUEST_HEADER_BYTES, OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET,
+    OPTIMIZER_SELECT_STATEMENT, OPTIMIZER_UPDATE_STATEMENT, decode_optimizer_select_request,
 };
 
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
@@ -73,6 +73,20 @@ pub struct JoinSelectRequest {
     pub projections: Vec<JoinProjection>,
     pub join_keys: Vec<JoinKey>,
     pub limit: Option<u32>,
+    pub filter: Option<JoinFilter>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JoinFilter {
+    pub relation_side: JoinRelationSide,
+    pub column_name: String,
+    pub expression: JoinFilterExpression,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JoinFilterExpression {
+    Parameter { operator: Comparison, index: u32 },
+    IsNull { negated: bool },
 }
 
 /// Bounded first grouped-query shape: one key, COUNT(*), no predicate or
@@ -387,7 +401,9 @@ pub fn decode_join_select_request(bytes: &[u8]) -> Result<JoinSelectRequest, Req
     }
     let (statement, flags) =
         decode_optimizer_select_request(bytes).ok_or(RequestError::Truncated)?;
-    if statement != OPTIMIZER_JOIN_SELECT_STATEMENT {
+    if statement != OPTIMIZER_JOIN_SELECT_STATEMENT
+        && statement != OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT
+    {
         return Err(RequestError::UnsupportedStatement(statement));
     }
     if flags != 0 {
@@ -432,6 +448,42 @@ pub fn decode_join_select_request(bytes: &[u8]) -> Result<JoinSelectRequest, Req
         1 => Some(cursor.u32()?),
         _ => return Err(RequestError::InvalidValue),
     };
+    let filter = if statement == OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT {
+        let relation_side = match cursor.u8()? {
+            0 => JoinRelationSide::Left,
+            1 => JoinRelationSide::Right,
+            _ => return Err(RequestError::InvalidValue),
+        };
+        let column_name = cursor.identifier()?;
+        let expression = match cursor.u8()? {
+            0 => {
+                let operator = match cursor.u8()? {
+                    0 => Comparison::Equal,
+                    1 => Comparison::NotEqual,
+                    2 => Comparison::Less,
+                    3 => Comparison::LessOrEqual,
+                    4 => Comparison::Greater,
+                    5 => Comparison::GreaterOrEqual,
+                    _ => return Err(RequestError::InvalidValue),
+                };
+                let index = cursor.u32()?;
+                if index == 0 || index > MAX_PARAMETER_INDEX {
+                    return Err(RequestError::InvalidValue);
+                }
+                JoinFilterExpression::Parameter { operator, index }
+            }
+            1 => JoinFilterExpression::IsNull { negated: false },
+            2 => JoinFilterExpression::IsNull { negated: true },
+            _ => return Err(RequestError::InvalidValue),
+        };
+        Some(JoinFilter {
+            relation_side,
+            column_name,
+            expression,
+        })
+    } else {
+        None
+    };
     if !cursor.is_empty() {
         return Err(RequestError::TrailingBytes);
     }
@@ -442,6 +494,7 @@ pub fn decode_join_select_request(bytes: &[u8]) -> Result<JoinSelectRequest, Req
         projections,
         join_keys,
         limit,
+        filter,
     })
 }
 
@@ -1243,6 +1296,16 @@ mod tests {
         bytes
     }
 
+    fn filtered_join_select_request() -> Vec<u8> {
+        let mut bytes = join_select_request();
+        bytes[2] = OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT;
+        bytes.push(1);
+        name("active", &mut bytes);
+        bytes.extend_from_slice(&[0, 4]);
+        bytes.extend_from_slice(&3u32.to_be_bytes());
+        bytes
+    }
+
     fn group_count_request() -> Vec<u8> {
         let mut bytes = vec![0, OPTIMIZER_REQUEST_VERSION as u8];
         bytes.push(OPTIMIZER_GROUP_COUNT_STATEMENT);
@@ -1586,6 +1649,66 @@ mod tests {
         assert_eq!(
             decode_join_select_request(&trailing),
             Err(RequestError::TrailingBytes)
+        );
+    }
+
+    #[test]
+    fn decodes_filtered_join_request_and_rejects_malformed_filter() {
+        let request = decode_join_select_request(&filtered_join_select_request()).unwrap();
+        assert_eq!(
+            request.filter,
+            Some(JoinFilter {
+                relation_side: JoinRelationSide::Right,
+                column_name: "active".to_owned(),
+                expression: JoinFilterExpression::Parameter {
+                    operator: Comparison::Greater,
+                    index: 3,
+                },
+            })
+        );
+
+        let mut bad_side = filtered_join_select_request();
+        let side_offset = bad_side.len() - 14;
+        bad_side[side_offset] = 2;
+        assert_eq!(
+            decode_join_select_request(&bad_side),
+            Err(RequestError::InvalidValue)
+        );
+
+        let mut bad_index = filtered_join_select_request();
+        let index_offset = bad_index.len() - 4;
+        bad_index[index_offset..].copy_from_slice(&257u32.to_be_bytes());
+        assert_eq!(
+            decode_join_select_request(&bad_index),
+            Err(RequestError::InvalidValue)
+        );
+        let mut zero_index = filtered_join_select_request();
+        let index_offset = zero_index.len() - 4;
+        zero_index[index_offset..].copy_from_slice(&0u32.to_be_bytes());
+        assert_eq!(
+            decode_join_select_request(&zero_index),
+            Err(RequestError::InvalidValue)
+        );
+
+        let mut trailing = filtered_join_select_request();
+        trailing.push(0);
+        assert_eq!(
+            decode_join_select_request(&trailing),
+            Err(RequestError::TrailingBytes)
+        );
+
+        let mut is_null = join_select_request();
+        is_null[2] = OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT;
+        is_null.push(0);
+        name("value", &mut is_null);
+        is_null.push(2);
+        assert_eq!(
+            decode_join_select_request(&is_null)
+                .unwrap()
+                .filter
+                .unwrap()
+                .expression,
+            JoinFilterExpression::IsNull { negated: true }
         );
     }
 

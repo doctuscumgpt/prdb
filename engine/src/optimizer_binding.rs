@@ -5,10 +5,10 @@ use crate::metadata_discovery::{
 };
 use crate::optimizer_request::{
     Comparison, CompositeGroupCountOrderItem, CompositeGroupCountRequest, GroupAggregateRequest,
-    GroupCountOrderItem, GroupCountRequest, JoinRelationSide, OrderedGroupAggregateRequest,
-    OrderedGroupCountRequest, OrderedSelectRequest, Predicate, RequestError, UpdateValue,
-    decode_composite_group_count_request, decode_delete_request, decode_group_aggregate_request,
-    decode_group_count_request, decode_join_select_request,
+    GroupCountOrderItem, GroupCountRequest, JoinFilterExpression, JoinRelationSide,
+    OrderedGroupAggregateRequest, OrderedGroupCountRequest, OrderedSelectRequest, Predicate,
+    RequestError, UpdateValue, decode_composite_group_count_request, decode_delete_request,
+    decode_group_aggregate_request, decode_group_count_request, decode_join_select_request,
     decode_ordered_composite_group_count_request, decode_ordered_group_aggregate_request,
     decode_ordered_group_count_request, decode_ordered_select_request, decode_select_request,
     decode_update_request,
@@ -166,6 +166,13 @@ pub struct BoundJoinKey {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundJoinFilter {
+    pub relation_side: JoinRelationSide,
+    pub column: BoundColumn,
+    pub expression: JoinFilterExpression,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BoundJoinSelect {
     pub schema_name: String,
     pub schema_id: [u8; 16],
@@ -175,6 +182,7 @@ pub struct BoundJoinSelect {
     pub projections: Vec<BoundJoinProjection>,
     pub join_keys: Vec<BoundJoinKey>,
     pub limit: Option<u32>,
+    pub filter: Option<BoundJoinFilter>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -708,6 +716,20 @@ fn bind_decoded_join_select(
             })
         })
         .collect::<Result<Vec<_>, BindError>>()?;
+    let filter = request
+        .filter
+        .map(|filter| {
+            let columns = match filter.relation_side {
+                JoinRelationSide::Left => &left_relation.relation.columns,
+                JoinRelationSide::Right => &right_relation.relation.columns,
+            };
+            Ok::<_, BindError>(BoundJoinFilter {
+                relation_side: filter.relation_side,
+                column: resolve_column(columns, &filter.column_name)?.into(),
+                expression: filter.expression,
+            })
+        })
+        .transpose()?;
     Ok(BoundJoinSelect {
         schema_name: request.schema_name,
         schema_id: left_relation.schema_id,
@@ -725,6 +747,7 @@ fn bind_decoded_join_select(
         projections,
         join_keys,
         limit: request.limit,
+        filter,
     })
 }
 
@@ -1077,6 +1100,16 @@ mod tests {
         bytes
     }
 
+    fn filtered_join_select_request() -> Vec<u8> {
+        let mut bytes = join_select_request();
+        bytes[2] = crate::query_abi::OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT;
+        bytes.push(1);
+        put_name(&mut bytes, "active");
+        bytes.extend_from_slice(&[0, 4]);
+        bytes.extend_from_slice(&3u32.to_be_bytes());
+        bytes
+    }
+
     fn group_count_request() -> Vec<u8> {
         let mut bytes = vec![0, 1, crate::query_abi::OPTIMIZER_GROUP_COUNT_STATEMENT, 0];
         put_name(&mut bytes, "public");
@@ -1270,6 +1303,41 @@ mod tests {
         assert_eq!(bound.join_keys[1].left_column.ordinal, 1);
         assert_eq!(bound.join_keys[1].right_column.ordinal, 1);
         assert_eq!(bound.limit, Some(5));
+        assert_eq!(bound.filter, None);
+    }
+
+    #[test]
+    fn binds_filtered_join_column_to_the_authorized_relation_side() {
+        let bound = bind_join_select_request(
+            &filtered_join_select_request(),
+            Some(join_relation("lefts", 0x31)),
+            Some(join_relation("rights", 0x41)),
+        )
+        .unwrap();
+        let filter = bound.filter.unwrap();
+        assert_eq!(filter.relation_side, JoinRelationSide::Right);
+        assert_eq!(filter.column.column_id, [0x52; 16]);
+        assert_eq!(filter.column.ordinal, 1);
+        assert_eq!(filter.column.scalar_type, ScalarType::Boolean);
+        assert_eq!(
+            filter.expression,
+            crate::optimizer_request::JoinFilterExpression::Parameter {
+                operator: Comparison::Greater,
+                index: 3,
+            }
+        );
+
+        let mut missing_column = filtered_join_select_request();
+        let rename_index = missing_column.len() - 10;
+        missing_column[rename_index] = b'x';
+        assert_eq!(
+            bind_join_select_request(
+                &missing_column,
+                Some(join_relation("lefts", 0x31)),
+                Some(join_relation("rights", 0x41)),
+            ),
+            Err(BindError::InvalidQuery)
+        );
     }
 
     #[test]

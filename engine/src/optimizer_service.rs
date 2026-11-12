@@ -368,7 +368,8 @@ mod tests {
     use super::*;
     use crate::metadata_discovery::{AuthorizedRelationDescription, VisibleColumn};
     use crate::optimizer_plan::{
-        decode_delete_plan_v1, decode_ordered_group_count_plan_v1, decode_update_plan_v1,
+        decode_delete_plan_v1, decode_join_select_plan_v1, decode_ordered_group_count_plan_v1,
+        decode_update_plan_v1,
     };
     use crate::tuple::ScalarType;
 
@@ -416,6 +417,35 @@ mod tests {
         bytes
     }
 
+    fn filtered_join_select_request() -> Vec<u8> {
+        let mut bytes = vec![
+            0,
+            1,
+            crate::query_abi::OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT,
+            0,
+        ];
+        for name in ["public", "lefts", "rights"] {
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.extend_from_slice(&1u16.to_be_bytes());
+        bytes.push(1);
+        bytes.push(5);
+        bytes.extend_from_slice(b"value");
+        bytes.push(2);
+        for name in ["id", "id", "active", "active"] {
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.extend_from_slice(&[1, 0, 0, 0, 7]);
+        bytes.push(1);
+        bytes.push(6);
+        bytes.extend_from_slice(b"active");
+        bytes.extend_from_slice(&[0, 4]);
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes
+    }
+
     fn relation() -> AuthorizedPlanRelation {
         AuthorizedPlanRelation {
             schema_id: [0x10; 16],
@@ -444,6 +474,41 @@ mod tests {
         }
     }
 
+    fn join_relation(name: &str, relation_id: u8) -> AuthorizedPlanRelation {
+        AuthorizedPlanRelation {
+            schema_id: [0x10; 16],
+            schema_version: 3,
+            table_epoch: u64::from(relation_id),
+            relation: AuthorizedRelationDescription {
+                relation_id: [relation_id; 16],
+                name: name.to_owned(),
+                columns: vec![
+                    VisibleColumn {
+                        column_id: [relation_id + 0x10; 16],
+                        name: "id".to_owned(),
+                        ordinal: 0,
+                        scalar_type: ScalarType::Integer,
+                        nullable: false,
+                    },
+                    VisibleColumn {
+                        column_id: [relation_id + 0x11; 16],
+                        name: "active".to_owned(),
+                        ordinal: 1,
+                        scalar_type: ScalarType::Boolean,
+                        nullable: true,
+                    },
+                    VisibleColumn {
+                        column_id: [relation_id + 0x12; 16],
+                        name: "value".to_owned(),
+                        ordinal: 2,
+                        scalar_type: ScalarType::Text,
+                        nullable: true,
+                    },
+                ],
+            },
+        }
+    }
+
     #[test]
     fn authorized_delete_request_produces_only_a_bounded_delete_plan() {
         let encoded =
@@ -465,6 +530,40 @@ mod tests {
                     }
                 )),
                 right: Box::new(crate::optimizer_binding::BoundPredicate::Integer(7)),
+            }
+        );
+    }
+
+    #[test]
+    fn filtered_join_plan_carries_filter_shape_and_authorized_scan_column() {
+        let encoded = optimize_join_select_v1_with_relations(
+            &filtered_join_select_request(),
+            Some(join_relation("lefts", 0x31)),
+            Some(join_relation("rights", 0x41)),
+        )
+        .unwrap();
+        let plan = decode_join_select_plan_v1(&encoded).unwrap();
+        assert_eq!(plan.left_relation.relation_id, [0x31; 16]);
+        assert_eq!(plan.right_relation.relation_id, [0x41; 16]);
+        assert_eq!(
+            plan.right_scan_columns
+                .iter()
+                .map(|c| c.ordinal)
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        let filter = plan.filter.unwrap();
+        assert_eq!(
+            filter.relation_side,
+            crate::optimizer_request::JoinRelationSide::Right
+        );
+        assert_eq!(filter.column.column_id, [0x52; 16]);
+        assert_eq!(filter.column.scalar_type, ScalarType::Boolean);
+        assert_eq!(
+            filter.expression,
+            crate::optimizer_request::JoinFilterExpression::Parameter {
+                operator: crate::optimizer_request::Comparison::Greater,
+                index: 2,
             }
         );
     }
