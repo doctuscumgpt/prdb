@@ -343,7 +343,7 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
             "--queue-capacity",
             "1",
             "--control-workers",
-            "1",
+            "2",
             "--control-queue-capacity",
             "1",
             "--service-socket",
@@ -634,6 +634,37 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
                 .iter()
                 .any(|token| token.token_id == token_id)
         );
+        let limited_user = control
+            .create_user("process_limited")
+            .expect("create regular user through process ADMIN path");
+        let limited_token = control
+            .issue_token(limited_user.identity_id, "process-test", i64::MAX)
+            .expect("issue regular-user token through process ADMIN path");
+        let mut limited_secret = *limited_token.token_secret();
+        let mut limited = AdminClient::connect_authenticated(
+            control_address,
+            limited_token.token_id,
+            &mut limited_secret,
+        )
+        .expect("authenticate regular user through process control listener");
+        let denied_schema = limited.create_schema("process_denied", limited_user.identity_id);
+        assert!(matches!(
+            denied_schema,
+            Err(
+                prdb_engine::client_submit::ClientSubmitError::AdministrativeOperationRejected { .. }
+            )
+        ));
+        drop(limited);
+        control
+            .drop_user(limited_user.identity_id)
+            .expect("drop regular user and revoke its token through process ADMIN path");
+
+        let authorized_schema = control
+            .create_schema("process_denied", admin_user_id)
+            .expect("denied schema creation left no catalog state behind");
+        control
+            .drop_schema(authorized_schema.identity_id)
+            .expect("remove schema created after regular-user denial");
         let schema = control
             .create_schema("process_admin", admin_user_id)
             .expect("create schema through process ADMIN path");

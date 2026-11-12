@@ -68,3 +68,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` renames a token-bearing user, disables login through `prdb-client`, verifies its token fails authentication, re-enables login and verifies the old token remains revoked, issues a replacement token, then drops the user through the CLI and verifies the replacement token fails authentication.
 - Verification: the focused real-process test passed with separate gateway and supervisor binaries.
 - Remaining: process coverage of further administrative families, control-path stress, and confined query execution remain open.
+
+## ID-3 / NP-6: reject schema DDL from a regular token across service processes — verified
+
+- Contract: [identity DDL](../../specs/ddl-identity.md), [schema DDL](../../specs/ddl-schema.md), and [client protocol](../../specs/client-protocol.md). Authentication establishes a principal but does not grant database-administrator or `CREATE_SCHEMA` authority.
+- Regression: the gateway/supervisor process test creates a regular user and issues a token through ADMIN, authenticates a second control connection with that token, and verifies `schemas.create` returns an administrative rejection. The administrator then creates the same schema name successfully, showing the denied request left no catalog state, and drops the user to revoke the issued token.
+- Verification: the focused separate-process regression passed inside the delegated user service; full workspace, formatting, build, Clippy, and TinyCC acceptance results are recorded with the owning schema DDL increment.
+- Scope: checks identity-based authorization and denial side effects for schema creation across production processes. Other DDL privilege boundaries and concurrent revocation races remain open.

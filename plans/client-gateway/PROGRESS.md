@@ -154,7 +154,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 ## GW-2 / GW-3: process-level schema, table, and key ADMIN lifecycle — covered
 
-- Regression: the production gateway and supervisor binary test now uses `AdminClient` on the reserved control endpoint to create a schema, UUID identity table, and PRIMARY KEY, then drops the table and schema. Before DDL, the same test verifies control STATUS progresses while another authenticated query client is blocked draining its result stream.
+- Regression: the production gateway and supervisor binary test uses `AdminClient` on the reserved control endpoint to create a regular user/token and confirm that token cannot create a schema; the administrator then creates that same name, creates a UUID identity table and PRIMARY KEY, and drops the objects. Before DDL, the same test verifies control STATUS progresses while another authenticated query client is blocked draining its result stream.
 - Verification: the focused process regression passed inside the delegated user service. Full workspace and SDK validation are recorded in [schema DDL progress](../ddl-schema/PROGRESS.md).
 - Scope: confirms that the reserved control lane and process service carry authenticated DDL requests through to storage while query output is backpressured; it does not cover every administrative operation or crash recovery.
 
