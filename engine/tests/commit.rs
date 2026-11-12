@@ -23291,7 +23291,10 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 let mut cancellation_observed_latency: Option<Duration> = None;
                 let cancellation_observation = cancellation_executor
                     .observe_exit_with_results(&cancellation_invocation, |payload| {
-                        if payload != b"CANCEL_READY" && payload != b"CANCEL_OBSERVED" {
+                        if payload != b"CANCEL_READY"
+                            && payload != b"CANCEL_OBSERVED"
+                            && payload != b"CANCEL_UPDATE_CONFIRMED"
+                        {
                             return Err(std::io::Error::new(
                                 std::io::ErrorKind::InvalidData,
                                 "unexpected cancellation fixture result",
@@ -23312,6 +23315,14 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                                 )
                             })?;
                             cancellation_observed_latency = Some(requested_at.elapsed());
+                            return Ok(());
+                        }
+                        if payload == b"CANCEL_UPDATE_CONFIRMED" {
+                            if cancellation_observed_latency.is_none() {
+                                return Err(std::io::Error::other(
+                                    "UPDATE returned before cancellation was observed",
+                                ));
+                            }
                             return Ok(());
                         }
                         let live_deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -23405,11 +23416,18 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 let ready_event = read_frame(&mut cancellation_gateway)?
                     .ok_or("missing cancel ready event")?;
                 assert_eq!(ready_event.operation, Operation::GatewayResultData as u16);
+                assert_eq!(ready_event.request_id, cancellation_accepted.request_id);
                 assert_eq!(ready_event.payload, b"CANCEL_READY");
                 let observed_event = read_frame(&mut cancellation_gateway)?
                     .ok_or("missing cancellation-observed result")?;
                 assert_eq!(observed_event.operation, Operation::GatewayResultData as u16);
+                assert_eq!(observed_event.request_id, cancellation_accepted.request_id);
                 assert_eq!(observed_event.payload, b"CANCEL_OBSERVED");
+                let update_event = read_frame(&mut cancellation_gateway)?
+                    .ok_or("missing cancelled UPDATE confirmation")?;
+                assert_eq!(update_event.operation, Operation::GatewayResultData as u16);
+                assert_eq!(update_event.request_id, cancellation_accepted.request_id);
+                assert_eq!(update_event.payload, b"CANCEL_UPDATE_CONFIRMED");
                 assert_eq!(
                     cancellation_storage
                         .lookup_invocation_outcome(

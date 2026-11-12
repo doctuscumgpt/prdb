@@ -34,6 +34,53 @@ const prdb_query_descriptor_v5_record prdb_query_descriptor_v5 = {
     sizeof(prdb_query_descriptor_v5_record), PRDB_QUERY_ABI_V5_VERSION,
     sizeof(prdb_host_api_v5), sizeof(prdb_invocation_v5)};
 
+static const prdb_host_api_v5 *cancel_update_original_host;
+static uint32_t cancel_update_ready_sent;
+
+static int32_t cancel_update_executor_request(
+    void *context, uint16_t operation, const uint8_t *request,
+    uint64_t request_len, uint8_t *response, uint64_t response_capacity,
+    uint64_t *response_len) {
+    if (cancel_update_original_host == NULL ||
+        context != cancel_update_original_host->v4.v3.context ||
+        cancel_update_original_host->v4.v3.executor_request == NULL ||
+        cancel_update_original_host->v4.v3.write_result == NULL ||
+        response == NULL || response_len == NULL) {
+        return PRDB_QUERY_CALLBACK_INVALID_ARGUMENT;
+    }
+    if (operation != PRDB_IPC_OP_EXECUTOR_CHECK_CANCELLATION ||
+        cancel_update_ready_sent != 0) {
+        return cancel_update_original_host->v4.v3.executor_request(
+            context, operation, request, request_len, response,
+            response_capacity, response_len);
+    }
+
+    static const uint8_t ready[] = "CANCEL_READY";
+    static const uint8_t observed[] = "CANCEL_OBSERVED";
+    if (cancel_update_original_host->v4.v3.write_result(
+            context, ready, sizeof(ready) - 1) != 0) {
+        return PRDB_QUERY_CALLBACK_IO_ERROR;
+    }
+    cancel_update_ready_sent = 1;
+    const struct timespec poll_interval = {0, 1000000};
+    for (uint32_t poll = 0; poll < 200; ++poll) {
+        if (nanosleep(&poll_interval, NULL) != 0) {
+            return PRDB_QUERY_CALLBACK_IO_ERROR;
+        }
+        int32_t status = cancel_update_original_host->v4.v3.executor_request(
+            context, operation, request, request_len, response,
+            response_capacity, response_len);
+        if (status != PRDB_QUERY_CALLBACK_OK) return status;
+        if (*response_len == 3 && response_capacity >= 3 && response[2] == 1) {
+            return cancel_update_original_host->v4.v3.write_result(
+                       context, observed, sizeof(observed) - 1) == 0
+                       ? PRDB_QUERY_CALLBACK_OK
+                       : PRDB_QUERY_CALLBACK_IO_ERROR;
+        }
+    }
+    return PRDB_QUERY_CALLBACK_LIMIT_EXCEEDED;
+}
+
 typedef struct optimizer_result_context {
     uint32_t row_count;
     uint32_t matched_expected_value;
@@ -726,37 +773,59 @@ static int32_t run_write_read_fixture(
     }
     if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
         invocation->parameters[0] == 'C') {
-        static const uint8_t cancellation_ready[] = "CANCEL_READY";
-        static const uint8_t cancellation_observed[] = "CANCEL_OBSERVED";
-        prdb_host_api_v2 executor_host = {
-            sizeof(executor_host), PRDB_QUERY_ABI_V2_VERSION, host->context,
-            host->executor_request, host->planner_request, host->write_result};
-        int32_t cancelled = 0;
-        if (prdb_sdk_executor_check_cancelled_v1(&executor_host, &cancelled) !=
-                PRDB_SDK_EXECUTOR_OK ||
-            cancelled != 0 ||
-            host->write_result(host->context, cancellation_ready,
-                               sizeof(cancellation_ready) - 1) != 0) {
+        static const uint8_t update_sql[] =
+            "UPDATE grouped_records SET left_key = $2 WHERE left_key = $1";
+        static const uint8_t old_key_bytes[] = {0, 0, 0, 4};
+        static const uint8_t new_key_bytes[] = {0, 0, 0, 5};
+        static const uint8_t confirmed[] = "CANCEL_UPDATE_CONFIRMED";
+        prdb_sdk_update_v1 update = {0};
+        prdb_sdk_value_v1 parameters[2] = {
+            {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+             old_key_bytes, sizeof(old_key_bytes)},
+            {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+             new_key_bytes, sizeof(new_key_bytes)}};
+        uint8_t request[4096] = {0};
+        uint8_t response[4096] = {0};
+        uint8_t relation_response[4096] = {0};
+        uint8_t scan_response[4096] = {0};
+        uint8_t batch_response[4096] = {0};
+        uint8_t target_handles[32] = {0};
+        prdb_sdk_executor_relation_v1 relation = {0};
+        prdb_sdk_sql_column_shape_v2 columns[2] = {{0}};
+        prdb_sdk_select_binding_v2 binding = {0};
+        prdb_sdk_value_v1 scratch[2] = {{0}};
+        prdb_host_api_v5 cancel_host;
+        uint32_t updated = UINT32_MAX;
+        int32_t update_status;
+
+        if (optimizer_host_v5 == NULL ||
+            optimizer_host_v5->optimizer_request == NULL ||
+            prdb_sdk_sql_parse_update_v1(update_sql, sizeof(update_sql) - 1,
+                                         &update, sizeof(update), NULL) !=
+                PRDB_SDK_SQL_OK) {
             return 1;
         }
-        /* Stay below the executor IPC request budget while awaiting cancellation. */
-        const struct timespec poll_interval = {0, 1000000};
-        while (cancelled == 0) {
-            if (nanosleep(&poll_interval, NULL) != 0) {
-                return 1;
-            }
-            if (prdb_sdk_executor_check_cancelled_v1(&executor_host,
-                                                     &cancelled) !=
-                PRDB_SDK_EXECUTOR_OK) {
-                return 1;
-            }
-        }
-        if (cancelled != 1 ||
-            host->write_result(host->context, cancellation_observed,
-                               sizeof(cancellation_observed) - 1) != 0) {
+        cancel_host = *optimizer_host_v5;
+        cancel_update_original_host = optimizer_host_v5;
+        cancel_update_ready_sent = 0;
+        cancel_host.v4.v3.executor_request = cancel_update_executor_request;
+        update_status = prdb_sdk_optimizer_execute_update_ast_v1(
+            &cancel_host, &update, parameters, 2, schema, sizeof(schema) - 1,
+            16, sizeof(batch_response), request, sizeof(request), response,
+            sizeof(response), relation_response, sizeof(relation_response),
+            scan_response, sizeof(scan_response), batch_response,
+            sizeof(batch_response), &relation, sizeof(relation), columns, 2,
+            &binding, sizeof(binding), scratch, 2, target_handles, 2, &updated);
+        cancel_update_original_host = NULL;
+        if (update_status != PRDB_SDK_OPTIMIZER_PLAN_CANCELLED || updated != 0 ||
+            cancel_update_ready_sent == 0 ||
+            host->write_result(host->context, confirmed,
+                               sizeof(confirmed) - 1) != 0) {
             return 1;
         }
-        return 1;
+        return 0;
     }
     if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
         invocation->parameters[0] == 'T') {

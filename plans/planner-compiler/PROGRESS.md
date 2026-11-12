@@ -512,3 +512,11 @@
 - Regression: the confined SQL artifact submits a parameterized UPDATE against `linked_records`, for which the admitted user has SELECT access but no UPDATE grant. It emits a provisional ready event, then the executor/storage path rejects the mutation; the gateway reports `QueryError` and storage records an `Aborted` outcome.
 - Verification: the fixture compiled with pinned TinyCC using `make -f engine/sdk/Makefile sandbox-query-fixture`; `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` passed inside a delegated `systemd --user` cgroup with real optimizer and executor processes.
 - Remaining: confined cancellation and explicit staging-failure injection, plus broader transaction conflict/policy acceptance.
+
+## OP-3 follow-up: UPDATE cancellation through confined processes — verified
+
+- Behavior: cancellation delivered at the SDK's first poll after an authorized UPDATE scan opens closes the cursor, stages no rows, latches statement failure, and publishes no updated-row count.
+- Confined fixture: the existing `'C'` invocation now runs `UPDATE grouped_records SET left_key = $2 WHERE left_key = $1`. Its executor callback announces readiness at that first cancellation check, waits for the storage cancellation response, and returns it to the SDK. The artifact confirms `CANCELLED` and zero updated rows, then emits a confirmation event; a successful artifact return after the sticky failure still leads to worker failure.
+- Acceptance: the normal `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test requests cancellation only after confirming overlap with live analytics and an operational transaction. It requires the readiness, observed, and UPDATE-confirmation frames, and verifies durable ABORTED.
+- Verification: forced TinyCC sandbox fixture rebuild passed. The focused acceptance passed inside the delegated `systemd --user` service (`1 passed, 0 ignored`). `make -f engine/sdk/Makefile test`, ABI generation checks (8 passed), workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed. The workspace suite reported 180 library tests, 142 commit tests, 74 transaction tests, and zero ignored tests in every target.
+- Remaining: injected StageUpdate callback failure through confined processes, then broaden transaction conflict/policy acceptance.
