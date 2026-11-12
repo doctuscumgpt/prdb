@@ -2765,8 +2765,8 @@ fn executor_relation_handles_are_connection_scoped_and_revalidated()
 fn executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::executor_ipc::{
-        ExecutorRequestError, ResolveRelationRequest, ResolveRelationResponse,
-        dispatch_executor_resolve_relation,
+        ExecutorRequestError, OpenScanRequest, ResolveRelationRequest, ResolveRelationResponse,
+        dispatch_executor_request, dispatch_executor_resolve_relation,
     };
     use prdb_engine::ipc::{IpcFrame, Operation, ServiceRole};
 
@@ -2813,6 +2813,26 @@ fn executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle()
         connection.revalidate_relation_handle(&handle)?.relation_id,
         [0x10; 16]
     );
+    let mut forged_handle_bytes = handle.to_bytes();
+    forged_handle_bytes[1] ^= 1;
+    let forged_handle =
+        prdb_engine::metadata_discovery::ResolvedRelationHandle::from_bytes(&forged_handle_bytes)
+            .expect("forged token retains the valid wire shape");
+    let forged_open_scan = IpcFrame {
+        operation: Operation::OpenScan as u16,
+        request_id: 42,
+        payload: OpenScanRequest {
+            relation: forged_handle,
+            column_ids: vec![[0x66; 16]],
+        }
+        .encode()?,
+    };
+    assert!(matches!(
+        dispatch_executor_request(ServiceRole::Executor, &mut connection, &forged_open_scan),
+        Err(ExecutorRequestError::Transaction(
+            prdb_engine::transaction::TransactionError::InvalidMetadataRequest
+        ))
+    ));
 
     let hidden_request = IpcFrame {
         payload: encode_request("private", "metrics"),
