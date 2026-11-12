@@ -8577,6 +8577,75 @@ impl PlannerMetadataConnection<'_, '_> {
         )
     }
 
+    /// Estimate a bound planner predicate after re-resolving its relation in
+    /// the invocation snapshot. Predicate column references are decoded
+    /// against the pinned table shape and convey no storage capability.
+    pub fn estimate_predicate_for_plan(
+        &mut self,
+        schema_name: &str,
+        relation_name: &str,
+        predicate_bytes: &[u8],
+    ) -> Result<Option<(u64, u64)>, TransactionError> {
+        self.transaction.check_deadline()?;
+        if predicate_bytes.is_empty()
+            || predicate_bytes.len() > crate::optimizer_request::MAX_PREDICATE_BYTES
+        {
+            return Ok(None);
+        }
+        let Some(relation) = self.describe_relation_for_plan(schema_name, relation_name)? else {
+            return Ok(None);
+        };
+        if schema_name == "information_schema"
+            || !consume_planner_estimate_budget(&mut self.estimate_requests)
+        {
+            return Ok(None);
+        }
+        let state = match self
+            .transaction
+            .load_catalog_estimate_projection(relation.relation.relation_id)
+        {
+            Ok(state) => state,
+            Err(error) if estimate_error_is_terminal(&error) => return Err(error),
+            Err(_) => return Ok(None),
+        };
+        let scan_columns = state
+            .schema
+            .columns
+            .iter()
+            .zip(&state.schema.column_ids)
+            .enumerate()
+            .map(
+                |(ordinal, (column, &column_id))| crate::optimizer_binding::BoundColumn {
+                    column_id,
+                    ordinal: ordinal as u32,
+                    scalar_type: column.scalar_type,
+                    nullable: column.nullable,
+                },
+            )
+            .collect::<Vec<_>>();
+        let predicate =
+            crate::optimizer_plan::decode_bound_predicate_v1(predicate_bytes, &scan_columns)
+                .map_err(|_| TransactionError::InvalidMetadataRequest)?;
+        let projection = AuthorizedProjection {
+            columns: &state.schema.columns,
+            column_ids: &state.schema.column_ids,
+            schema_version: state.schema.schema_version,
+            schema_id: state.schema.schema_id,
+            context: &state.context,
+            grants: &state.grants,
+            policies: &state.policies,
+            checks: &state.checks,
+            policy_driving_columns: &state.policy_driving_columns,
+            dependencies: &[],
+        };
+        self.transaction.estimate_authorized_predicate_at_most(
+            relation.relation.relation_id,
+            &projection,
+            &predicate,
+            4,
+        )
+    }
+
     pub fn close_relation(&mut self, handle: &PlanningTableHandle) -> Result<(), TransactionError> {
         self.handles
             .remove(&handle.token)

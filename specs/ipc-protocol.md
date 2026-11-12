@@ -119,10 +119,11 @@ Provision a separate planner-to-storage channel bound to the same execution auth
 
 ```text
 describe_relation(logical_relation_ref) -> planning_table_handle, authorized_schema_and_access_paths
-estimate_scan(planning_table_handle, columns, predicate_ir) -> scoped_estimate
+estimate_scan(planning_table_handle, columns) -> scoped_estimate
+estimate_predicate(qualified_relation, bound_predicate_ir) -> visible_and_matching_rows | unknown
 ```
 
-Estimates describe population, uncertainty, and context-scoped validity, or return unknown/unsupported. Do not export global statistics, physical counts, private costs, raw samples, or global refresh epochs. Expressions use bounded trusted built-ins, never native callbacks. No planner-accessible unrestricted statistics-refresh operation exists. See [statistics service](statistics-service.md).
+Estimates describe population, uncertainty, and context-scoped validity, or return unknown/unsupported. The bounded predicate request uses the planner-only EstimateScan operation with prefix marker `52 05`, a qualified relation name, predicate bytes, and a trailing big-endian `u32` predicate length. Storage re-resolves the relation and predicate columns against the invocation snapshot. An exact predicate response is marker `52 06` followed by big-endian `u64 visible_rows` and `u64 matching_rows`; unknown uses the existing versioned unknown-estimate response. Both estimate forms share the per-planner-connection request allowance. Do not export global statistics, physical counts, private costs, raw samples, or global refresh epochs. Expressions use bounded trusted built-ins, never native callbacks. No planner-accessible unrestricted statistics-refresh operation exists. See [statistics service](statistics-service.md).
 
 Unknown estimates permit heuristic planning only while the invocation and planning request remain active. Cancellation, expired deadlines, and fatal protocol errors do not permit continued work or broader access. Planning handles and pending requests expire with the execution context. Connection teardown and cancellation must release estimation resources as well as cursors.
 

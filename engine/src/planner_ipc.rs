@@ -112,6 +112,8 @@ const RANGE_ACCESS_PATHS_MARKER: [u8; 2] = [0x52, 0x01];
 const EMPTY_POPULATION_MARKER: [u8; 2] = [0x52, 0x02];
 const SCAN_ESTIMATE_REQUEST_MARKER: [u8; 2] = [0x52, 0x03];
 const CARDINALITY_ESTIMATE_MARKER: [u8; 2] = [0x52, 0x04];
+const PREDICATE_ESTIMATE_REQUEST_MARKER: [u8; 2] = [0x52, 0x05];
+const PREDICATE_ESTIMATE_RESPONSE_MARKER: [u8; 2] = [0x52, 0x06];
 
 /// Relation lookup request with an explicit opt-in for a bounded authorized
 /// scan estimate. Ordinary metadata requests never spend estimate allowance.
@@ -688,6 +690,140 @@ pub struct EstimateScanRequest {
     pub column_ids: Vec<[u8; 16]>,
 }
 
+/// A bounded predicate estimate is bound to the same invocation by its
+/// planner connection and re-resolves the named relation before evaluation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EstimatePredicateRequest {
+    pub schema_name: String,
+    pub relation_name: String,
+    pub predicate_bytes: Vec<u8>,
+}
+
+impl EstimatePredicateRequest {
+    pub fn from_bound_predicate(
+        schema_name: String,
+        relation_name: String,
+        predicate: &crate::optimizer_binding::BoundPredicate,
+    ) -> Result<Self, PlannerRequestError> {
+        let predicate_bytes = crate::optimizer_plan::encode_bound_predicate_v1(predicate)
+            .map_err(|_| PlannerRequestError::InvalidPayload)?;
+        Ok(Self {
+            schema_name,
+            relation_name,
+            predicate_bytes,
+        })
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, PlannerRequestError> {
+        if self.predicate_bytes.is_empty()
+            || self.predicate_bytes.len() > crate::optimizer_request::MAX_PREDICATE_BYTES
+        {
+            return Err(PlannerRequestError::InvalidPayload);
+        }
+        let mut payload = ResolveRelationRequest {
+            schema_name: self.schema_name.clone(),
+            relation_name: self.relation_name.clone(),
+        }
+        .encode()?;
+        payload.splice(0..0, PREDICATE_ESTIMATE_REQUEST_MARKER);
+        payload.extend_from_slice(&self.predicate_bytes);
+        payload.extend_from_slice(
+            &u32::try_from(self.predicate_bytes.len())
+                .map_err(|_| PlannerRequestError::InvalidPayload)?
+                .to_be_bytes(),
+        );
+        ensure_response_size(&payload)?;
+        Ok(payload)
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<Self, PlannerRequestError> {
+        if !payload.starts_with(&PREDICATE_ESTIMATE_REQUEST_MARKER) || payload.len() < 6 {
+            return Err(PlannerRequestError::InvalidPayload);
+        }
+        let body = &payload[PREDICATE_ESTIMATE_REQUEST_MARKER.len()..];
+        let length_bytes: [u8; 4] = body[body.len() - 4..]
+            .try_into()
+            .map_err(|_| PlannerRequestError::InvalidPayload)?;
+        let predicate_len = usize::try_from(u32::from_be_bytes(length_bytes))
+            .map_err(|_| PlannerRequestError::InvalidPayload)?;
+        if predicate_len == 0 || predicate_len > crate::optimizer_request::MAX_PREDICATE_BYTES {
+            return Err(PlannerRequestError::InvalidPayload);
+        }
+        let predicate_start = body
+            .len()
+            .checked_sub(4)
+            .and_then(|end| end.checked_sub(predicate_len))
+            .ok_or(PlannerRequestError::InvalidPayload)?;
+        let base = ResolveRelationRequest::decode(&body[..predicate_start])?;
+        Ok(Self {
+            schema_name: base.schema_name,
+            relation_name: base.relation_name,
+            predicate_bytes: body[predicate_start..predicate_start + predicate_len].to_vec(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EstimatePredicateResponse {
+    Exact {
+        visible_rows: u64,
+        matching_rows: u64,
+    },
+    Unknown,
+}
+
+impl EstimatePredicateResponse {
+    pub fn encode(&self) -> Result<Vec<u8>, PlannerRequestError> {
+        let payload = match self {
+            Self::Exact {
+                visible_rows,
+                matching_rows,
+            } if matching_rows <= visible_rows => {
+                let mut payload = Vec::with_capacity(18);
+                payload.extend_from_slice(&PREDICATE_ESTIMATE_RESPONSE_MARKER);
+                payload.extend_from_slice(&visible_rows.to_be_bytes());
+                payload.extend_from_slice(&matching_rows.to_be_bytes());
+                payload
+            }
+            Self::Exact { .. } => return Err(PlannerRequestError::InvalidPayload),
+            Self::Unknown => {
+                crate::query_abi::encode_planner_estimate_scan_unknown_response(1).to_vec()
+            }
+        };
+        ensure_response_size(&payload)?;
+        Ok(payload)
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<Self, PlannerRequestError> {
+        if payload.starts_with(&PREDICATE_ESTIMATE_RESPONSE_MARKER) {
+            if payload.len() != 18 {
+                return Err(PlannerRequestError::InvalidPayload);
+            }
+            let visible_rows = u64::from_be_bytes(
+                payload[2..10]
+                    .try_into()
+                    .map_err(|_| PlannerRequestError::InvalidPayload)?,
+            );
+            let matching_rows = u64::from_be_bytes(
+                payload[10..18]
+                    .try_into()
+                    .map_err(|_| PlannerRequestError::InvalidPayload)?,
+            );
+            if matching_rows > visible_rows {
+                return Err(PlannerRequestError::InvalidPayload);
+            }
+            return Ok(Self::Exact {
+                visible_rows,
+                matching_rows,
+            });
+        }
+        match crate::query_abi::decode_planner_estimate_scan_unknown_response(payload) {
+            Some(1) => Ok(Self::Unknown),
+            _ => Err(PlannerRequestError::InvalidPayload),
+        }
+    }
+}
+
 impl EstimateScanRequest {
     pub fn encode(&self) -> Result<Vec<u8>, PlannerRequestError> {
         if self.column_ids.len() > crate::tuple::MAX_COLUMNS
@@ -850,11 +986,31 @@ pub fn dispatch_planner_request(
             .encode()?
         }
         Operation::EstimateScan => {
-            let decoded = EstimateScanRequest::decode(&request.payload)?;
-            EstimateScanResponse::from_estimate(
-                connection.estimate_scan(&decoded.handle, &decoded.column_ids)?,
-            )
-            .encode()?
+            if request
+                .payload
+                .starts_with(&PREDICATE_ESTIMATE_REQUEST_MARKER)
+            {
+                let decoded = EstimatePredicateRequest::decode(&request.payload)?;
+                let estimate = connection.estimate_predicate_for_plan(
+                    &decoded.schema_name,
+                    &decoded.relation_name,
+                    &decoded.predicate_bytes,
+                )?;
+                match estimate {
+                    Some((visible_rows, matching_rows)) => EstimatePredicateResponse::Exact {
+                        visible_rows,
+                        matching_rows,
+                    },
+                    None => EstimatePredicateResponse::Unknown,
+                }
+                .encode()?
+            } else {
+                let decoded = EstimateScanRequest::decode(&request.payload)?;
+                EstimateScanResponse::from_estimate(
+                    connection.estimate_scan(&decoded.handle, &decoded.column_ids)?,
+                )
+                .encode()?
+            }
         }
         Operation::DescribePlanRelation => {
             let decoded = DescribePlanRelationRequest::decode(&request.payload)?;
@@ -1038,7 +1194,7 @@ fn abort_shared_planner_invocation(
 
 #[cfg(test)]
 mod scan_estimate_request_tests {
-    use super::DescribePlanRelationRequest;
+    use super::{DescribePlanRelationRequest, EstimatePredicateRequest, EstimatePredicateResponse};
 
     #[test]
     fn scan_estimate_request_is_opt_in_and_canonical() {
@@ -1064,5 +1220,63 @@ mod scan_estimate_request_tests {
         let mut malformed = encoded;
         *malformed.last_mut().unwrap() = 0;
         assert!(DescribePlanRelationRequest::decode(&malformed).is_err());
+    }
+
+    #[test]
+    fn predicate_estimate_request_and_response_are_bounded_and_canonical() {
+        let column = crate::optimizer_binding::BoundColumn {
+            column_id: [7; 16],
+            ordinal: 0,
+            scalar_type: crate::tuple::ScalarType::Integer,
+            nullable: true,
+        };
+        let predicate = crate::optimizer_binding::BoundPredicate::Compare {
+            operator: crate::optimizer_request::Comparison::Equal,
+            left: Box::new(crate::optimizer_binding::BoundPredicate::Column(
+                column.clone(),
+            )),
+            right: Box::new(crate::optimizer_binding::BoundPredicate::Integer(7)),
+        };
+        let request = EstimatePredicateRequest::from_bound_predicate(
+            "public".to_owned(),
+            "items".to_owned(),
+            &predicate,
+        )
+        .unwrap();
+        let encoded = request.encode().unwrap();
+        let decoded = EstimatePredicateRequest::decode(&encoded).unwrap();
+        assert_eq!(decoded, request);
+        assert_eq!(
+            crate::optimizer_plan::decode_bound_predicate_v1(&decoded.predicate_bytes, &[column],)
+                .unwrap(),
+            predicate
+        );
+        for response in [
+            EstimatePredicateResponse::Exact {
+                visible_rows: 4,
+                matching_rows: 1,
+            },
+            EstimatePredicateResponse::Exact {
+                visible_rows: 0,
+                matching_rows: 0,
+            },
+            EstimatePredicateResponse::Unknown,
+        ] {
+            assert_eq!(
+                EstimatePredicateResponse::decode(&response.encode().unwrap()).unwrap(),
+                response
+            );
+        }
+        assert!(
+            EstimatePredicateResponse::Exact {
+                visible_rows: 1,
+                matching_rows: 2,
+            }
+            .encode()
+            .is_err()
+        );
+        let mut malformed = encoded;
+        *malformed.last_mut().unwrap() ^= 1;
+        assert!(EstimatePredicateRequest::decode(&malformed).is_err());
     }
 }

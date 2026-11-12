@@ -2709,6 +2709,30 @@ fn put_predicate(output: &mut Vec<u8>, predicate: &BoundPredicate) -> Result<(),
     Ok(())
 }
 
+pub(crate) fn encode_bound_predicate_v1(predicate: &BoundPredicate) -> Result<Vec<u8>, PlanError> {
+    let mut output = Vec::new();
+    put_predicate(&mut output, predicate)?;
+    if output.len() > crate::optimizer_request::MAX_PREDICATE_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    Ok(output)
+}
+
+pub(crate) fn decode_bound_predicate_v1(
+    bytes: &[u8],
+    scan_columns: &[BoundColumn],
+) -> Result<BoundPredicate, PlanError> {
+    if bytes.is_empty() || bytes.len() > crate::optimizer_request::MAX_PREDICATE_BYTES {
+        return Err(PlanError::InvalidPredicate);
+    }
+    let mut reader = PlanReader { bytes, offset: 0 };
+    let predicate = reader.predicate(scan_columns)?;
+    if !reader.is_empty() {
+        return Err(PlanError::InvalidPredicate);
+    }
+    Ok(predicate)
+}
+
 struct PlanReader<'a> {
     bytes: &'a [u8],
     offset: usize,
