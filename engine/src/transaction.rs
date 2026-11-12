@@ -181,6 +181,13 @@ pub enum AuthorizedIndexRangeScan {
     Rows(Vec<(RowId, Vec<SanitizedCell>)>),
 }
 
+/// A bounded index range result exposed through one executor connection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExecutorIndexRangeScan {
+    Unavailable,
+    Rows(Vec<Vec<SanitizedCell>>),
+}
+
 const MAX_AUTHORIZED_INDEX_RANGE_CANDIDATES: usize = 1_024;
 const MAX_AUTHORIZED_INDEX_RANGE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -1926,6 +1933,36 @@ impl<'db> InvocationTransaction<'db> {
         })();
         match result {
             Ok(probe) => Ok(probe),
+            Err(error) => {
+                if !self.aborted {
+                    self.abort()?;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Catalog-derived entry point for a bounded leading-key range scan.
+    pub fn scan_catalog_index_range_for_principal(
+        &mut self,
+        table_id: [u8; 16],
+        index_id: [u8; 16],
+        lower: Option<AuthorizedIndexRangeBound>,
+        upper: Option<AuthorizedIndexRangeBound>,
+    ) -> Result<AuthorizedIndexRangeScan, TransactionError> {
+        let result = (|| {
+            let catalog_projection = self.load_catalog_estimate_projection(table_id)?;
+            self.load_catalog_indexes(&catalog_projection.schema)?;
+            self.scan_catalog_index_range(
+                table_id,
+                index_id,
+                lower,
+                upper,
+                &catalog_projection.as_projection(),
+            )
+        })();
+        match result {
+            Ok(scan) => Ok(scan),
             Err(error) => {
                 if !self.aborted {
                     self.abort()?;
@@ -7462,6 +7499,76 @@ impl ExecutorMetadataConnection<'_, '_> {
                     cells: selected_cells,
                 })
             }
+        }
+    }
+
+    /// Scan a catalog-validated leading-key range and return only authorized
+    /// projected cells. Storage row identifiers never cross this boundary.
+    pub fn scan_relation_index_range(
+        &mut self,
+        handle: &ResolvedRelationHandle,
+        index_id: [u8; 16],
+        lower: Option<AuthorizedIndexRangeBound>,
+        upper: Option<AuthorizedIndexRangeBound>,
+        requested_column_ids: &[[u8; 16]],
+    ) -> Result<ExecutorIndexRangeScan, TransactionError> {
+        let description = self.revalidate_relation_handle(handle)?;
+        if builtin_information_schema_relation_schema(description.relation_id).is_some() {
+            return Ok(ExecutorIndexRangeScan::Unavailable);
+        }
+        if index_id == [0; 16]
+            || (lower.is_none() && upper.is_none())
+            || requested_column_ids.len() > crate::tuple::MAX_COLUMNS
+            || requested_column_ids.contains(&[0; 16])
+            || requested_column_ids
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>()
+                .len()
+                != requested_column_ids.len()
+        {
+            return Err(TransactionError::InvalidMetadataRequest);
+        }
+        let selected_ordinals = if requested_column_ids.is_empty() {
+            (0..description.columns.len()).collect::<Vec<_>>()
+        } else {
+            let selected = description
+                .columns
+                .iter()
+                .enumerate()
+                .filter_map(|(ordinal, column)| {
+                    requested_column_ids
+                        .contains(&column.column_id)
+                        .then_some(ordinal)
+                })
+                .collect::<Vec<_>>();
+            if selected.len() != requested_column_ids.len() {
+                return Err(TransactionError::InvalidMetadataRequest);
+            }
+            selected
+        };
+        match self.transaction.scan_catalog_index_range_for_principal(
+            description.relation_id,
+            index_id,
+            lower,
+            upper,
+        )? {
+            AuthorizedIndexRangeScan::Unavailable => Ok(ExecutorIndexRangeScan::Unavailable),
+            AuthorizedIndexRangeScan::Rows(rows) => rows
+                .into_iter()
+                .map(|(_, cells)| {
+                    selected_ordinals
+                        .iter()
+                        .map(|ordinal| {
+                            cells
+                                .get(*ordinal)
+                                .cloned()
+                                .ok_or(TransactionError::InvalidMetadataRequest)
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(ExecutorIndexRangeScan::Rows),
         }
     }
 

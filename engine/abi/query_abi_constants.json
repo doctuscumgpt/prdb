@@ -892,6 +892,13 @@
       "c_type": "UINT16_C"
     },
     {
+      "rust_name": "IPC_OP_SCAN_INDEX_RANGE",
+      "rust_type": "u16",
+      "value": 4373,
+      "c_name": "PRDB_IPC_OP_SCAN_INDEX_RANGE",
+      "c_type": "UINT16_C"
+    },
+    {
       "rust_name": "IPC_OP_DESCRIBE_RELATION",
       "rust_type": "u16",
       "value": 4609,

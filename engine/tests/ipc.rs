@@ -178,6 +178,9 @@ fn ipc_operation_codes_are_fixed_and_unknown_codes_fail_closed() {
     assert_eq!(Operation::BootstrapAcknowledgeDelivery as u16, 0x0102);
     assert_eq!(Operation::ResolveRelation as u16, 0x1101);
     assert_eq!(Operation::ResolvePlanRelation as u16, 0x1105);
+    assert_eq!(Operation::ProbeUniqueIndex as u16, 0x1114);
+    assert_eq!(Operation::ScanIndexRange as u16, 0x1115);
+    assert_eq!(Operation::from_code(0x1115), Ok(Operation::ScanIndexRange));
     assert_eq!(Operation::EstimateScan as u16, 0x1202);
     assert_eq!(Operation::OptimizeDelete as u16, 0x1205);
     assert_eq!(Operation::OptimizeUpdate as u16, 0x1206);
@@ -231,6 +234,10 @@ fn ipc_operation_allowlists_separate_executor_planner_and_control_roles() {
         Ok(())
     );
     assert_eq!(
+        authorize_operation(ServiceRole::Executor, Operation::ScanIndexRange),
+        Ok(())
+    );
+    assert_eq!(
         authorize_operation(ServiceRole::Planner, Operation::EstimateScan),
         Ok(())
     );
@@ -272,6 +279,7 @@ fn ipc_operation_allowlists_separate_executor_planner_and_control_roles() {
     for (role, operation) in [
         (ServiceRole::Executor, Operation::EstimateScan),
         (ServiceRole::Executor, Operation::BootstrapDeliverCredential),
+        (ServiceRole::Planner, Operation::ScanIndexRange),
         (ServiceRole::Bootstrap, Operation::ResolveRelation),
         (ServiceRole::Planner, Operation::OptimizeUpdate),
         (ServiceRole::Executor, Operation::FinalizeTransaction),
