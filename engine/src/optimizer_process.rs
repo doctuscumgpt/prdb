@@ -353,6 +353,16 @@ mod tests {
         bytes
     }
 
+    fn range_select_request() -> Vec<u8> {
+        let mut bytes = select_request();
+        let predicate = [0x20, 5, 0x10, 4, b'n', b'a', b'm', b'e', 0x03, 0, 1, b'm'];
+        bytes.truncate(bytes.len() - 5);
+        bytes.extend_from_slice(&(predicate.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&predicate);
+        bytes.push(0);
+        bytes
+    }
+
     fn ordered_select_request() -> Vec<u8> {
         let mut bytes = vec![
             0,
@@ -571,6 +581,80 @@ mod tests {
             assert!(
                 matches!(plan.nodes.first(), Some(PlanNode::Scan { columns }) if columns[0].column_id == [3; 16])
             );
+            submission_client.shutdown(Shutdown::Write).unwrap();
+            planner_thread.join().unwrap();
+            optimizer_thread.join().unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn process_protocol_uses_small_cardinality_to_choose_sequential_scan() {
+        let (mut submission_client, mut submission_server) = UnixStream::pair().unwrap();
+        let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
+        std::thread::scope(|scope| {
+            let planner_thread = scope.spawn(|| {
+                let request = crate::ipc::read_frame(&mut planner_server)
+                    .unwrap()
+                    .expect("optimizer must resolve plan relation metadata");
+                let relation = AuthorizedPlanRelation {
+                    schema_id: [1; 16],
+                    schema_version: 3,
+                    table_epoch: 7,
+                    relation: AuthorizedRelationDescription {
+                        relation_id: [2; 16],
+                        name: "items".to_owned(),
+                        columns: vec![VisibleColumn {
+                            column_id: [3; 16],
+                            name: "name".to_owned(),
+                            ordinal: 0,
+                            scalar_type: ScalarType::Text,
+                            nullable: false,
+                        }],
+                    },
+                    unique_access_paths: Vec::new(),
+                    range_access_paths: vec![
+                        crate::metadata_discovery::AuthorizedRangeAccessPath {
+                            index_id: [4; 16],
+                            column_ids: vec![[3; 16]],
+                        },
+                    ],
+                };
+                crate::ipc::write_frame(
+                    &mut planner_server,
+                    &IpcFrame {
+                        operation: request.operation,
+                        request_id: request.request_id,
+                        payload: DescribePlanRelationResponse {
+                            relation: Some(relation),
+                            proven_empty: false,
+                            visible_rows_estimate: Some(4),
+                        }
+                        .encode()
+                        .unwrap(),
+                    },
+                )
+                .unwrap();
+            });
+            let optimizer_thread = scope
+                .spawn(|| serve_optimizer_process(&mut submission_server, &mut planner_client));
+
+            crate::ipc::write_frame(
+                &mut submission_client,
+                &IpcFrame {
+                    operation: Operation::OptimizeSelect as u16,
+                    request_id: 1,
+                    payload: range_select_request(),
+                },
+            )
+            .unwrap();
+            let response = crate::ipc::read_frame(&mut submission_client)
+                .unwrap()
+                .expect("optimizer must return a plan");
+            let response = OptimizerResponse::decode(&response.payload).unwrap();
+            assert_eq!(response.status, OptimizerStatus::Success);
+            let plan = decode_plan_v1(response.plan.as_deref().unwrap()).unwrap();
+            assert!(plan.range_scan.is_none());
+            assert!(matches!(plan.nodes.get(1), Some(PlanNode::Filter(_))));
             submission_client.shutdown(Shutdown::Write).unwrap();
             planner_thread.join().unwrap();
             optimizer_thread.join().unwrap().unwrap();
