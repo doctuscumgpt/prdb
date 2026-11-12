@@ -781,6 +781,19 @@ static int32_t run_write_read_fixture(
         return 1;
     }
     if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
+        invocation->parameters[0] == 'O') {
+        uint8_t output_chunk[PRDB_QUERY_MAX_RESULT_CHUNK_BYTES];
+        memset(output_chunk, 0xa5, sizeof(output_chunk));
+        for (uint32_t index = 0; index < 256; ++index) {
+            if (host->write_result(host->context, output_chunk,
+                                   sizeof(output_chunk)) !=
+                PRDB_QUERY_CALLBACK_OK) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+    if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
         invocation->parameters[0] == 'C') {
         static const uint8_t update_sql[] =
             "UPDATE grouped_records SET left_key = $2 WHERE left_key = $1";

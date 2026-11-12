@@ -24305,6 +24305,158 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         OutcomeStatus::Committed
     );
 
+    let output_pressure_parameter = [b'O'];
+    let output_pressure_reservation = staging.prepare(
+        owner,
+        PrepareSubmission {
+            manifest_version: 1,
+            manifest: b"m".to_vec(),
+            artifact_bytes: u64::try_from(artifact.len())?,
+            artifact_sha256: Sha256::digest(&artifact).into(),
+            sql_library_bytes: 0,
+            sql_library_sha256: Sha256::digest([]).into(),
+            scope_version: 1,
+            requested_scope: requested_scope.clone(),
+            parameter_bytes: 1,
+            parameter_sha256: Sha256::digest(output_pressure_parameter).into(),
+            deadline_ms: 30_000,
+            workload_class: WorkloadClass::Analytical,
+        },
+    )?;
+    let mut output_artifact_offset = 0;
+    for chunk in artifact.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
+        output_artifact_offset = staging
+            .upload_chunk(
+                owner,
+                output_pressure_reservation.invocation_id,
+                ChunkKind::Artifact,
+                output_artifact_offset,
+                chunk,
+            )
+            .map_err(|error| format!("output-pressure artifact upload: {error:?}"))?;
+    }
+    staging
+        .upload_chunk(
+            owner,
+            output_pressure_reservation.invocation_id,
+            ChunkKind::Parameters,
+            0,
+            &output_pressure_parameter,
+        )
+        .map_err(|error| format!("output-pressure parameter upload: {error:?}"))?;
+    staging.seal(owner, output_pressure_reservation.invocation_id)?;
+    let output_invocation_hex = output_pressure_reservation
+        .invocation_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let (output_accepted, mut output_invocation, mut output_executor) = client
+        .handle_start_request_with_executor(
+            &storage,
+            &staging,
+            ClientFrame {
+                kind: 7,
+                request_id: 4,
+                response_sequence: 0,
+                payload: format!("{{\"invocation_id\":\"{output_invocation_hex}\"}}").into_bytes(),
+            },
+            GatewayAdmissionConfig {
+                retention_period_us: 3_600_000_000,
+                max_rows: 8,
+                max_bytes: 4096,
+            },
+            &runtime,
+        )?;
+    let (mut output_service, mut output_gateway) = UnixStream::pair()?;
+    output_gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
+    const OUTPUT_PRESSURE_CHUNKS: usize = 256;
+    let output_pressure_started = std::time::Instant::now();
+    let (output_decision, (output_chunks, output_bytes), output_operations, output_relay_elapsed) =
+        std::thread::scope(|scope| {
+            let output_reader = scope.spawn(move || -> Result<(usize, usize), String> {
+                let mut chunk_count = 0;
+                let mut output_bytes = 0;
+                loop {
+                    let frame = read_frame(&mut output_gateway)
+                        .map_err(|error| format!("output-pressure gateway read: {error:?}"))?
+                        .ok_or("output-pressure gateway closed before terminal")?;
+                    if frame.request_id != output_accepted.request_id {
+                        return Err("output-pressure frame request ID changed".into());
+                    }
+                    if frame.operation == Operation::GatewayTerminal as u16 {
+                        if !String::from_utf8(frame.payload)
+                            .map_err(|error| format!("terminal payload was not UTF-8: {error}"))?
+                            .contains("\"outcome\":\"committed\"")
+                        {
+                            return Err("output-pressure worker did not commit".into());
+                        }
+                        break;
+                    }
+                    if frame.operation != Operation::GatewayResultData as u16
+                        || frame.payload.len() != 16 * 1024
+                    {
+                        return Err(format!(
+                            "unexpected output-pressure frame: operation={} payload={}",
+                            frame.operation,
+                            frame.payload.len()
+                        ));
+                    }
+                    chunk_count += 1;
+                    output_bytes += frame.payload.len();
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Ok((chunk_count, output_bytes))
+            });
+            let operations = scope.spawn(|| {
+                run_operational_read_commit_samples(
+                    &storage,
+                    composite_table.table_id,
+                    token_id,
+                    secret,
+                    now + 3_600_000_000,
+                    0xe9,
+                )
+                .map_err(|error| error.to_string())
+            });
+            let decision = observe_executor_relay_and_finalize_gateway(
+                &storage,
+                &mut output_invocation,
+                &mut output_executor,
+                &mut output_service,
+                output_accepted.request_id,
+            )?;
+            let relay_elapsed = output_pressure_started.elapsed();
+            let output_read = output_reader
+                .join()
+                .map_err(|_| std::io::Error::other("output reader thread panicked"))?
+                .map_err(std::io::Error::other)?;
+            let operation_samples = operations
+                .join()
+                .map_err(|_| std::io::Error::other("output-pressure operational thread panicked"))?
+                .map_err(std::io::Error::other)?;
+            Ok::<_, Box<dyn std::error::Error>>((
+                decision,
+                output_read,
+                operation_samples,
+                relay_elapsed,
+            ))
+        })?;
+    assert_eq!(output_decision, GatewayTerminalDecision::Commit);
+    staging.finish_started(owner, output_pressure_reservation.invocation_id)?;
+    assert_eq!(output_chunks, OUTPUT_PRESSURE_CHUNKS);
+    assert_eq!(output_bytes, OUTPUT_PRESSURE_CHUNKS * 16 * 1024);
+    assert_eq!(output_operations.0.len(), 64);
+    assert_eq!(output_operations.1.len(), 64);
+    assert!(
+        output_relay_elapsed >= Duration::from_millis(200),
+        "4 MiB result relay completed in {output_relay_elapsed:?} despite the slow gateway reader"
+    );
+    eprintln!(
+        "slow-gateway output pressure: chunks={OUTPUT_PRESSURE_CHUNKS} bytes={output_bytes} operational reads/commits={} relay={} ms",
+        output_operations.0.len(),
+        output_relay_elapsed.as_millis(),
+    );
+
     eprintln!(
         "cancellation alongside live analytics: request={} us; SDK poll relay={} us",
         cancellation_request_latency.as_micros(),
