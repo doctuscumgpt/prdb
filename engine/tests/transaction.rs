@@ -7506,6 +7506,205 @@ fn concurrent_same_row_writers_have_one_commit_and_one_durable_conflict()
 }
 
 #[test]
+fn concurrent_authorized_updates_have_one_commit_and_one_durable_conflict()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let row_id = id(2);
+    let columns = [ColumnSchema {
+        scalar_type: ScalarType::Integer,
+        nullable: false,
+    }];
+    let column_ids = [[0x51; 16]];
+    commit_rows(
+        &database,
+        [20; 16],
+        [9; 16],
+        9_999,
+        &[RowWrite {
+            key: key(row_id),
+            expected_version: None,
+            payload: Some(encode_tuple(
+                &columns,
+                1,
+                &[Some(ScalarValue::Integer(10))],
+            )?),
+        }],
+    )?;
+
+    let table = AccessTarget::Table(row_id.table);
+    let column = AccessTarget::Column {
+        table_id: row_id.table,
+        column_id: column_ids[0],
+    };
+    let context = AuthorizationContext {
+        principal_id: [9; 16],
+        role_ids: std::collections::HashSet::from([[55; 16]]),
+        scope: std::collections::HashSet::from([
+            (Operation::Usage, AccessTarget::Schema(row_id.table)),
+            (Operation::Select, table),
+            (Operation::Update, table),
+            (Operation::Select, column),
+            (Operation::Update, column),
+        ]),
+    };
+    let grants = [
+        Grant {
+            subject: Subject::Role([55; 16]),
+            operation: Operation::Usage,
+            target: AccessTarget::Schema(row_id.table),
+        },
+        Grant {
+            subject: Subject::Role([55; 16]),
+            operation: Operation::Select,
+            target: table,
+        },
+        Grant {
+            subject: Subject::Role([55; 16]),
+            operation: Operation::Update,
+            target: table,
+        },
+        Grant {
+            subject: Subject::Role([55; 16]),
+            operation: Operation::Select,
+            target: column,
+        },
+        Grant {
+            subject: Subject::Role([55; 16]),
+            operation: Operation::Update,
+            target: column,
+        },
+    ];
+    let policies = [
+        Policy {
+            subjects: vec![Subject::Role([55; 16])],
+            operation: Operation::Select,
+            target: table,
+            effect: Effect::Allow,
+            using: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+            with_check: None,
+        },
+        Policy {
+            subjects: vec![Subject::Role([55; 16])],
+            operation: Operation::Update,
+            target: table,
+            effect: Effect::Allow,
+            using: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+            with_check: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+        },
+        Policy {
+            subjects: vec![Subject::Role([55; 16])],
+            operation: Operation::Select,
+            target: column,
+            effect: Effect::Allow,
+            using: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+            with_check: None,
+        },
+        Policy {
+            subjects: vec![Subject::Role([55; 16])],
+            operation: Operation::Update,
+            target: column,
+            effect: Effect::Allow,
+            using: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+            with_check: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+        },
+    ];
+    let projection = AuthorizedProjection {
+        columns: &columns,
+        column_ids: &column_ids,
+        schema_version: 1,
+        schema_id: row_id.table,
+        context: &context,
+        grants: &grants,
+        policies: &policies,
+        checks: &[],
+        policy_driving_columns: &[],
+        dependencies: &[],
+    };
+    let barrier = Arc::new(Barrier::new(3));
+    let outcomes = std::thread::scope(|scope| {
+        let left_barrier = barrier.clone();
+        let left_database = &database;
+        let left_projection = &projection;
+        let left = scope.spawn(move || {
+            let mut transaction =
+                InvocationTransaction::begin(left_database, [21; 16], [9; 16], 9_999, 2, 128)?;
+            transaction.stage_patch_authorized(
+                row_id,
+                left_projection,
+                &[FieldPatch {
+                    ordinal: 0,
+                    value: Some(ScalarValue::Integer(20)),
+                }],
+            )?;
+            left_barrier.wait();
+            transaction.commit()
+        });
+        let right_barrier = barrier.clone();
+        let right_database = &database;
+        let right_projection = &projection;
+        let right = scope.spawn(move || {
+            let mut transaction =
+                InvocationTransaction::begin(right_database, [22; 16], [9; 16], 9_999, 2, 128)?;
+            transaction.stage_patch_authorized(
+                row_id,
+                right_projection,
+                &[FieldPatch {
+                    ordinal: 0,
+                    value: Some(ScalarValue::Integer(30)),
+                }],
+            )?;
+            right_barrier.wait();
+            transaction.commit()
+        });
+        barrier.wait();
+        [left.join().unwrap(), right.join().unwrap()]
+    });
+
+    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|result| matches!(result, Err(TransactionError::Commit(CommitError::Conflict))))
+            .count(),
+        1
+    );
+    assert_eq!(commit_sequence(&database)?, 2);
+    let read = database.begin_read()?;
+    let record = RowRecord::decode(
+        read.open_table(ROWS)?
+            .get(&key(row_id)[..])?
+            .unwrap()
+            .value(),
+    )?;
+    assert_eq!(record.row_version, 2);
+    assert!(matches!(
+        decode_tuple(&columns, 1, &record.payload)?
+            .values
+            .as_slice(),
+        [Some(ScalarValue::Integer(20 | 30))]
+    ));
+    let outcome_table = read.open_table(prdb_engine::schema::OUTCOMES)?;
+    let left = InvocationOutcome::decode(outcome_table.get(&[21; 16][..])?.unwrap().value())?;
+    let right = InvocationOutcome::decode(outcome_table.get(&[22; 16][..])?.unwrap().value())?;
+    assert_eq!(
+        [left.status, right.status]
+            .iter()
+            .filter(|status| **status == OutcomeStatus::Committed)
+            .count(),
+        1
+    );
+    assert_eq!(
+        [left.status, right.status]
+            .iter()
+            .filter(|status| **status == OutcomeStatus::Aborted)
+            .count(),
+        1
+    );
+    Ok(())
+}
+
+#[test]
 fn snapshot_isolation_allows_documented_disjoint_row_write_skew()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

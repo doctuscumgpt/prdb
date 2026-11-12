@@ -608,3 +608,10 @@
 - Supervisor fix: worker-channel deadline polling now treats an already-aborted transaction as a worker error path and waits for the handler result. The monotonic invocation deadline still bounds a worker that does not exit after aborting.
 - Verification: TinyCC sandbox fixture rebuild and complete maintained SDK suite passed. The focused confined DML acceptance passed; locked workspace build, format check, warning-denied Clippy, and the full serial workspace suite inside the delegated `systemd --user` cgroup passed.
 - Remaining: broader transaction conflict and policy acceptance.
+
+## OP-3 follow-up: concurrent authorized UPDATE conflict — verified
+
+- Behavior: two transactions can stage policy-authorized patches from the same row snapshot, but commit validation publishes only one version. The losing transaction records a durable ABORTED outcome and cannot overwrite the winner.
+- Regression: the real-redb transaction test gives both invocations table/column grants and applicable SELECT/UPDATE policies, stages different values through `stage_patch_authorized`, synchronizes before commit, and checks one COMMITTED outcome, one ABORTED conflict, the winning row version, and the final typed value.
+- Verification: the focused `concurrent_authorized_updates_have_one_commit_and_one_durable_conflict` test passed.
+- Remaining: broader transaction conflict and policy acceptance.
