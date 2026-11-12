@@ -1,5 +1,11 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: analytical admission cap under live multi-client SQL — covered
+
+- Harness: the enabled `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance now configures the storage analytical cap to two and runs the primary SQL workload alongside its confined cancellation SQL worker, both classified as analytical. While the primary process is live, a third START from a separate principal must fail with `AdmissionLimitExceeded`, proving storage admission—not the per-principal staging limit—rejects it. Four operational workers continue authorized point reads and durable commits; cancellation and SDK polling proceed during this interval.
+- Verification: focused acceptance passed inside the delegated `systemd --user` service with `cpu`, `memory`, and `pids` controllers (`1 passed, 0 ignored`). It recorded 137 operational reads and commits during live SQL, point-read p50/p95/p99 of 2.508/4.553/7.055 ms and commit p50/p95/p99 of 21.705/37.341/43.619 ms; cancellation request took 7 µs and SDK poll relay took 30.506 ms. These are one local sample, not targets.
+- Scope: this covers a two-client analytical admission cap and operational progress with a three-row fixture. Broader client counts/durations, output and planning queue pressure, maintenance overlap with SQL, memory/copy accounting, cancellation/reclamation at saturation, and target-hardware repeats remain open.
+
 ## WI-7 follow-up: repeatable operational latency beside optimizer-backed filtered joins — measured
 
 - Harness: the enabled `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance ran the real ABI v5 SQL artifact through direct and optimizer-backed v20 filtered joins, grouped/sorted SQL, result relay, and concurrent operational reads/commits. The cancellation observer also ran while analytics and an operational transaction were active.
@@ -38,7 +44,7 @@
 - Repeatability: five sequential fresh-database runs on Linux x86_64, Rust 1.95.0, redb 4.4.0. The median of run-level commit p50/p95/p99 was 5.730/15.595/21.117 ms operational-only and 10.383/14.495/21.385 ms under retained authorized reads plus pruning. Mixed phases completed in 0.650–0.677 s (378.1–393.7 commits/s), 9,693–10,495 full scans, 38,772–41,980 point reads, and removed all 256 expired outcomes in 43–45 bounded transactions.
 - Verification: the five release harness runs completed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, maintained TinyCC SDK tests, and the full serial delegated-cgroup workspace suite passed. The commit integration target reported 142 passed and 0 ignored.
 - Interpretation: a prior unpaced harness run let read and maintenance loops spin, producing up to 43,592 prune transactions and writer p99 values above 10 seconds. Adding cooperative reader yielding and a 5 ms inter-batch pause eliminated that artificial scheduler starvation. The final repeated sample shows higher median commit p50 under this local mixed workload; p95/p99 overlap with operational-only runs. These results are comparative evidence, not service-level targets or a model of the configured 60-second maintenance cadence.
-- Remaining: cross-process saturated SQL analytics, output/planning queue pressure, cancellation/reclamation during load, memory/copy accounting, and target-hardware repeats remain open.
+- Remaining: broader multi-client SQL saturation, output/planning queue pressure, cancellation/reclamation during load, memory/copy accounting, and target-hardware repeats remain open.
 
 ## WI-7 follow-up: authorized point reads and commits during confined SQL — measured
 

@@ -22007,7 +22007,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     use prdb_engine::client_protocol::{ClientConnectionSession, ClientFrame, ClientMode};
     use prdb_engine::ipc::{Operation, read_frame};
     use prdb_engine::outcome::OutcomeStatus;
-    use prdb_engine::storage_manager::{CreateTableRequest, TableColumnDefinition};
+    use prdb_engine::storage_manager::{
+        CreateTableRequest, StorageManagerConfig, TableColumnDefinition,
+    };
     use prdb_engine::supervisor::{
         ChunkKind, PrepareSubmission, StagingLimits, StagingStore, SubmissionMetadata,
         SubmissionMetadataValidator, WorkloadClass,
@@ -22115,7 +22117,13 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         ],
         &[setup_audit],
     )?;
-    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let storage = StorageManager::with_config(
+        &database,
+        StorageManagerConfig {
+            max_active_analytical_invocations: 2,
+            ..StorageManagerConfig::default()
+        },
+    )?;
     let schema_invocation = id(0x7d);
     let mut schema_audit = identity_audit_event(0x7e, user_id, id(0x7f));
     schema_audit.correlation_id = schema_invocation;
@@ -23114,7 +23122,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             parameter_bytes: 0,
             parameter_sha256: Sha256::digest([]).into(),
             deadline_ms: 30_000,
-            workload_class: WorkloadClass::Operational,
+            workload_class: WorkloadClass::Analytical,
         },
     )?;
     let mut artifact_offset = 0;
@@ -23202,7 +23210,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             parameter_bytes: 1,
             parameter_sha256: Sha256::digest(cancellation_parameter).into(),
             deadline_ms: 30_000,
-            workload_class: WorkloadClass::Operational,
+            workload_class: WorkloadClass::Analytical,
         },
     )?;
     let mut cancellation_artifact_offset = 0;
@@ -23251,6 +23259,45 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             &runtime,
         )?;
     assert_eq!(cancellation_accepted.payload, b"{\"state\":\"accepted\"}");
+    let mut saturated_client = ClientConnectionSession::default();
+    saturated_client.accept_hello(ClientMode::Query, "sandbox-sql-saturation")?;
+    saturated_client.authenticate(&storage, restricted_token_id, &restricted_secret)?;
+    let saturated_owner = saturated_client.staging_owner()?;
+    let saturated_reservation = staging.prepare(
+        saturated_owner,
+        PrepareSubmission {
+            manifest_version: 1,
+            manifest: b"m".to_vec(),
+            artifact_bytes: u64::try_from(artifact.len())?,
+            artifact_sha256: Sha256::digest(&artifact).into(),
+            sql_library_bytes: 0,
+            sql_library_sha256: Sha256::digest([]).into(),
+            scope_version: 1,
+            requested_scope: requested_scope.clone(),
+            parameter_bytes: 0,
+            parameter_sha256: Sha256::digest([]).into(),
+            deadline_ms: 30_000,
+            workload_class: WorkloadClass::Analytical,
+        },
+    )?;
+    let mut saturated_artifact_offset = 0;
+    for chunk in artifact.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
+        saturated_artifact_offset = staging
+            .upload_chunk(
+                saturated_owner,
+                saturated_reservation.invocation_id,
+                ChunkKind::Artifact,
+                saturated_artifact_offset,
+                chunk,
+            )
+            .map_err(|error| format!("saturated SQL artifact chunk upload: {error:?}"))?;
+    }
+    staging.seal(saturated_owner, saturated_reservation.invocation_id)?;
+    let saturated_invocation_hex = saturated_reservation
+        .invocation_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let (mut cancellation_service, mut cancellation_gateway) = UnixStream::pair()?;
     cancellation_gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
 
@@ -23373,6 +23420,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     let worker_pid = executor.id();
     let operational_storage = &storage;
     let cancellation_storage = &storage;
+    let saturated_storage = &storage;
+    let saturated_staging = &staging;
+    let saturated_runtime = &runtime;
     let operational_table_id = composite_table.table_id;
     let (
         worker_status_result,
@@ -23381,6 +23431,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         active_worker_commit_latencies,
         cancellation_request_latency,
         cancellation_observed_latency,
+        analytical_cap_rejected,
     ) = std::thread::scope(|scope| {
         let observer_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let analytics_result_relayed = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -23473,7 +23524,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         let cancellation_active_transactions = Arc::clone(&active_operational_transactions);
         let cancellation_worker_pid = worker_pid;
         let cancellation_observer = scope.spawn(move || {
-            let result = (|| -> Result<(Duration, Duration), Box<dyn std::error::Error>> {
+            let result = (|| -> Result<(Duration, Duration, bool), Box<dyn std::error::Error>> {
                 cancellation_start.wait();
                 let mut cancellation_requested_at: Option<std::time::Instant> = None;
                 let mut cancellation_request_latency: Option<Duration> = None;
@@ -23550,6 +23601,45 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                             return Err(std::io::Error::other(
                                 "cancellation did not overlap relayed analytical output and an operational transaction",
                             ));
+                        }
+                        let saturated_start = saturated_client.handle_start_request_with_executor(
+                            saturated_storage,
+                            saturated_staging,
+                            ClientFrame {
+                                kind: 7,
+                                request_id: 3,
+                                response_sequence: 0,
+                                payload: format!(
+                                    "{{\"invocation_id\":\"{saturated_invocation_hex}\"}}"
+                                )
+                                .into_bytes(),
+                            },
+                            GatewayAdmissionConfig {
+                                retention_period_us: 3_600_000_000,
+                                max_rows: 8,
+                                max_bytes: 4096,
+                            },
+                            saturated_runtime,
+                        );
+                        match saturated_start {
+                            Err(prdb_engine::client_protocol::ClientStartError::ExecutorStart(
+                                prdb_engine::supervisor::StartError::Admission(
+                                    prdb_engine::executor_launcher::ExecutorStartError::Admission {
+                                        error: prdb_engine::transaction::TransactionError::AdmissionLimitExceeded,
+                                        ..
+                                    },
+                                ),
+                            )) => {}
+                            Err(error) => {
+                                return Err(std::io::Error::other(format!(
+                                    "third analytical START failed for the wrong reason: {error:?}"
+                                )));
+                            }
+                            Ok(_) => {
+                                return Err(std::io::Error::other(
+                                    "third analytical START was accepted above the configured cap",
+                                ));
+                            }
                         }
                         let request_started = std::time::Instant::now();
                         match cancellation_storage
@@ -23646,7 +23736,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 );
                 assert!(String::from_utf8(cancellation_terminal.payload)?
                     .contains("\"outcome\":\"aborted\""));
-                Ok((cancellation_request_latency, cancellation_observed_latency))
+                Ok((cancellation_request_latency, cancellation_observed_latency, true))
             })();
             result.map_err(|error| error.to_string())
         });
@@ -23657,10 +23747,11 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             analytics_result_relayed.store(true, std::sync::atomic::Ordering::Release);
             Ok(())
         });
-        let (cancellation_request_latency, cancellation_observed_latency) = cancellation_observer
-            .join()
-            .map_err(|_| std::io::Error::other("cancellation observer thread panicked"))?
-            .map_err(std::io::Error::other)?;
+        let (cancellation_request_latency, cancellation_observed_latency, analytical_cap_rejected) =
+            cancellation_observer
+                .join()
+                .map_err(|_| std::io::Error::other("cancellation observer thread panicked"))?
+                .map_err(std::io::Error::other)?;
         observer_done.store(true, std::sync::atomic::Ordering::Release);
         let mut operational_count = 0;
         let mut active_worker_point_read_latencies = Vec::new();
@@ -23681,8 +23772,10 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             active_worker_commit_latencies,
             cancellation_request_latency,
             cancellation_observed_latency,
+            analytical_cap_rejected,
         ))
     })?;
+    assert!(analytical_cap_rejected);
     assert!(concurrent_operational_invocations >= 64);
     assert!(
         !active_worker_point_read_latencies.is_empty()
