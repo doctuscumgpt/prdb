@@ -2073,6 +2073,99 @@ impl<'db> InvocationTransaction<'db> {
         }
     }
 
+    /// Estimate whether the authorized population fits under a small fixed
+    /// bound. It reads at most `maximum_rows + 1` snapshot keys and does not
+    /// decode row values, so larger tables fall back without a table scan.
+    pub fn estimate_authorized_population_at_most(
+        &mut self,
+        table_id: [u8; 16],
+        projection: &AuthorizedProjection<'_>,
+        maximum_rows: u64,
+    ) -> Result<Option<u64>, TransactionError> {
+        self.check_deadline()?;
+        if !valid_estimate_projection(table_id, projection) {
+            return Ok(None);
+        }
+        if let Err(error) =
+            self.capture_authority_dependencies(projection.context, projection.dependencies)
+        {
+            return if estimate_error_is_terminal(&error) {
+                Err(error)
+            } else {
+                Ok(None)
+            };
+        }
+        match estimate_population(table_id, projection) {
+            Some(EstimatePopulation::NoRows) => return self.finish_population_probe(Some(0)),
+            Some(EstimatePopulation::AllRows) => {}
+            None => return self.finish_population_probe(None),
+        }
+        let Some(limit) = usize::try_from(maximum_rows)
+            .ok()
+            .and_then(|rows| rows.checked_add(1))
+            .filter(|limit| *limit <= MAX_ROW_SCAN_PAGE)
+        else {
+            return self.finish_population_probe(None);
+        };
+        let (snapshot_ids, snapshot_complete) = match self
+            .pinned_snapshot()?
+            .scan_row_ids_after(table_id, None, limit)
+        {
+            Ok(page) => page,
+            Err(_) => return self.finish_population_probe(None),
+        };
+        if !snapshot_complete {
+            return self.finish_population_probe(None);
+        }
+        let mut visible_rows = snapshot_ids.into_iter().collect::<HashSet<_>>();
+        let overlay_limit = match self.overlay.staged_row_count() {
+            Ok(rows) if rows <= maximum_rows as usize => rows,
+            Ok(_) => return self.finish_population_probe(None),
+            Err(OverlayError::Aborted) => return Err(TransactionError::Aborted),
+            Err(_) => return self.finish_population_probe(None),
+        };
+        let overlay_row_ids = match self
+            .overlay
+            .bounded_row_ids_for_table(table_id, overlay_limit)
+        {
+            Ok(Some(row_ids)) => row_ids,
+            Ok(None) => return self.finish_population_probe(None),
+            Err(OverlayError::Aborted) => return Err(TransactionError::Aborted),
+            Err(_) => return self.finish_population_probe(None),
+        };
+        for row_id in overlay_row_ids {
+            let staged = match self.overlay.get(&RowId {
+                table: table_id,
+                row: row_id,
+            }) {
+                Ok(Some(staged)) => staged,
+                Ok(None) => return self.finish_population_probe(None),
+                Err(OverlayError::Aborted) => return Err(TransactionError::Aborted),
+                Err(_) => return self.finish_population_probe(None),
+            };
+            match staged {
+                StagedRow::Value(_) => {
+                    visible_rows.insert(row_id);
+                }
+                StagedRow::Delete => {
+                    visible_rows.remove(&row_id);
+                }
+            }
+            if visible_rows.len() > maximum_rows as usize {
+                return self.finish_population_probe(None);
+            }
+        }
+        self.finish_population_probe(Some(visible_rows.len() as u64))
+    }
+
+    fn finish_population_probe(
+        &mut self,
+        visible_rows: Option<u64>,
+    ) -> Result<Option<u64>, TransactionError> {
+        self.check_deadline()?;
+        Ok(visible_rows)
+    }
+
     /// Return summary counts for the trusted planner without returning row
     /// values. This entry point is intended for a provisioned planner channel.
     pub fn estimate_authorized_scan(
@@ -8343,6 +8436,46 @@ impl PlannerMetadataConnection<'_, '_> {
         };
         self.transaction
             .estimate_authorized_scan(description.relation_id, &projection)
+    }
+
+    /// Probe whether a table's authorized view is at most a small row bound.
+    /// Unlike a full column summary, this stops after the bound plus one row.
+    pub fn estimate_small_population(
+        &mut self,
+        handle: &PlanningTableHandle,
+        maximum_rows: u64,
+    ) -> Result<Option<u64>, TransactionError> {
+        let description = self.describe_relation(handle)?;
+        if self
+            .handles
+            .get(&handle.token)
+            .is_some_and(|state| state.schema_name == "information_schema")
+        {
+            return Ok(None);
+        }
+        if !consume_planner_estimate_budget(&mut self.estimate_requests) {
+            return Ok(None);
+        }
+        let state = self
+            .transaction
+            .load_catalog_estimate_projection(description.relation_id)?;
+        let projection = AuthorizedProjection {
+            columns: &state.schema.columns,
+            column_ids: &state.schema.column_ids,
+            schema_version: state.schema.schema_version,
+            schema_id: state.schema.schema_id,
+            context: &state.context,
+            grants: &state.grants,
+            policies: &state.policies,
+            checks: &state.checks,
+            policy_driving_columns: &state.policy_driving_columns,
+            dependencies: &[],
+        };
+        self.transaction.estimate_authorized_population_at_most(
+            description.relation_id,
+            &projection,
+            maximum_rows,
+        )
     }
 
     pub fn close_relation(&mut self, handle: &PlanningTableHandle) -> Result<(), TransactionError> {

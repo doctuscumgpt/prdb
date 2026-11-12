@@ -5652,6 +5652,24 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
     let mut observer = InvocationTransaction::begin(&database, [0x32; 16], [9; 16], 9_999, 8, 512)?;
     let mut writer = InvocationTransaction::begin(&database, [0x33; 16], [9; 16], 9_999, 8, 512)?;
     assert_eq!(
+        observer.estimate_authorized_population_at_most(table_id, &projection, 4)?,
+        Some(2)
+    );
+    let mut boundary_probe =
+        InvocationTransaction::begin(&database, [0x3a; 16], [9; 16], 9_999, 8, 512)?;
+    boundary_probe.stage_put(id(3), &row(Some("third"), "secret-three"))?;
+    boundary_probe.stage_put(id(4), &row(Some("fourth"), "secret-four"))?;
+    assert_eq!(
+        boundary_probe.estimate_authorized_population_at_most(table_id, &projection, 4)?,
+        Some(4)
+    );
+    boundary_probe.stage_put(id(5), &row(Some("fifth"), "secret-five"))?;
+    assert_eq!(
+        boundary_probe.estimate_authorized_population_at_most(table_id, &projection, 4)?,
+        None
+    );
+    boundary_probe.abort()?;
+    assert_eq!(
         observer.estimate_authorized_scan(table_id, &projection)?,
         prdb_engine::statistics::AuthorizedScanEstimate::Exact(
             prdb_engine::statistics::AuthorizedScanSummary {
@@ -5673,6 +5691,10 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
     );
 
     writer.stage_put(id(3), &row(Some("third"), "secret-three"))?;
+    assert_eq!(
+        writer.estimate_authorized_population_at_most(table_id, &projection, 4)?,
+        Some(3)
+    );
     let private_summary = writer.estimate_authorized_scan(table_id, &projection)?;
     assert_eq!(
         private_summary,
@@ -5696,10 +5718,18 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
     );
     writer.stage_put(id(1), &row(Some("first"), "changed-secret"))?;
     assert_eq!(
+        writer.estimate_authorized_population_at_most(table_id, &projection, 4)?,
+        Some(3)
+    );
+    assert_eq!(
         writer.estimate_authorized_scan(table_id, &projection)?,
         private_summary
     );
     writer.stage_delete(id(2))?;
+    assert_eq!(
+        writer.estimate_authorized_population_at_most(table_id, &projection, 4)?,
+        Some(2)
+    );
     assert_eq!(
         writer.estimate_authorized_scan(table_id, &projection)?,
         prdb_engine::statistics::AuthorizedScanEstimate::Exact(
@@ -5786,6 +5816,14 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
     assert_eq!(
         more_candidates.estimate_authorized_scan(table_id, &filtered_projection)?,
         prdb_engine::statistics::AuthorizedScanEstimate::Unknown
+    );
+    assert_eq!(
+        more_candidates.estimate_authorized_population_at_most(
+            table_id,
+            &filtered_projection,
+            4
+        )?,
+        None
     );
     let fewer_authorized_rows =
         fewer_candidates.scan_authorized(table_id, None, 32, &filtered_projection)?;
@@ -6309,6 +6347,18 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         policy_driving_columns: &[],
         dependencies: &[],
     };
+    let visible_row_count = index_profile_rows + 1;
+    let expected_small_population = (visible_row_count
+        <= prdb_engine::optimizer_plan::SMALL_POPULATION_SCAN_ROWS)
+        .then_some(visible_row_count);
+    assert_eq!(
+        invocation.estimate_authorized_population_at_most(
+            table_id,
+            &projection,
+            prdb_engine::optimizer_plan::SMALL_POPULATION_SCAN_ROWS,
+        )?,
+        expected_small_population
+    );
     let range_bound = || prdb_engine::transaction::AuthorizedIndexRangeBound {
         value: ScalarValue::Bytea(b"duplicate".to_vec()),
         inclusive: true,
@@ -6361,7 +6411,21 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         let mut point_probe_times = Vec::with_capacity(RUNS);
         let mut range_times = Vec::with_capacity(RUNS);
         let mut reference_scan_times = Vec::with_capacity(RUNS);
+        let mut small_population_probe_times = Vec::with_capacity(RUNS);
         for _ in 0..RUNS {
+            let started = Instant::now();
+            let small_population = invocation.estimate_authorized_population_at_most(
+                table_id,
+                &projection,
+                prdb_engine::optimizer_plan::SMALL_POPULATION_SCAN_ROWS,
+            )?;
+            small_population_probe_times.push(started.elapsed());
+            let total_rows = index_profile_rows + 1;
+            let expected_population = (total_rows
+                <= prdb_engine::optimizer_plan::SMALL_POPULATION_SCAN_ROWS)
+                .then_some(total_rows);
+            assert_eq!(small_population, expected_population);
+
             let started = Instant::now();
             let probe = invocation.probe_catalog_unique_index(
                 table_id,
@@ -6420,9 +6484,12 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         let point_probe = median_and_p95_ms(&mut point_probe_times);
         let range = median_and_p95_ms(&mut range_times);
         let reference_scan = median_and_p95_ms(&mut reference_scan_times);
+        let small_population_probe = median_and_p95_ms(&mut small_population_probe_times);
         eprintln!(
-            "index access benchmark: numbered_rows={index_profile_rows}, total_rows={}, runs={RUNS}, point probe median/p95={:.3}/{:.3} ms, range median/p95={:.3}/{:.3} ms, authorized scan+filter median/p95={:.3}/{:.3} ms",
+            "index access benchmark: numbered_rows={index_profile_rows}, total_rows={}, runs={RUNS}, small-population probe median/p95={:.3}/{:.3} ms, point probe median/p95={:.3}/{:.3} ms, range median/p95={:.3}/{:.3} ms, authorized scan+filter median/p95={:.3}/{:.3} ms",
             index_profile_rows + 1,
+            small_population_probe.0,
+            small_population_probe.1,
             point_probe.0,
             point_probe.1,
             range.0,

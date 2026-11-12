@@ -858,21 +858,25 @@ pub fn dispatch_planner_request(
         }
         Operation::DescribePlanRelation => {
             let decoded = DescribePlanRelationRequest::decode(&request.payload)?;
-            let resolved = connection
-                .resolve_relation_for_plan(&decoded.schema_name, &decoded.relation_name)?;
             let (relation, visible_rows_estimate) = if decoded.include_scan_estimate {
-                if let Some((handle, relation)) = resolved {
-                    let estimate = connection.estimate_scan(&handle, &[])?;
-                    let visible_rows = match estimate {
-                        AuthorizedScanEstimate::Exact(summary) => Some(summary.visible_rows),
-                        AuthorizedScanEstimate::Unknown => None,
-                    };
-                    (Some(relation), visible_rows)
+                if let Some((handle, relation)) = connection
+                    .resolve_relation_for_plan(&decoded.schema_name, &decoded.relation_name)?
+                {
+                    let estimate = connection.estimate_small_population(
+                        &handle,
+                        crate::optimizer_plan::SMALL_POPULATION_SCAN_ROWS,
+                    );
+                    connection.close_relation(&handle)?;
+                    (Some(relation), estimate?)
                 } else {
                     (None, None)
                 }
             } else {
-                (resolved.map(|(_, relation)| relation), None)
+                (
+                    connection
+                        .describe_relation_for_plan(&decoded.schema_name, &decoded.relation_name)?,
+                    None,
+                )
             };
             let proven_empty = visible_rows_estimate == Some(0);
             DescribePlanRelationResponse {
