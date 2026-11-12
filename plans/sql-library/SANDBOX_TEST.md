@@ -8,6 +8,8 @@ The `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test uses `engine/tes
 
 The current write/read fixture also calls the bounded DML v2 runner to insert two rows, then selects both within the same invocation. This covers multi-row staging and private-write visibility in the confined artifact. Durable multi-row commit and a later-row failure followed by durable abort are checked by the enabled acceptance on a host with delegated cgroups; compiling the artifact alone does not establish those results.
 
+The same acceptance starts a separate ABI v5 invocation that requests an optimizer UPDATE matching two `grouped_records` rows with capacity for one target handle. The SDK returns `REQUEST_LIMIT` without staging rows or publishing an update count. The C entry returns success after observing that expected status, so the sticky statement-failure callback must still make the executor fail; the test verifies durable ABORTED and byte-identical committed rows.
+
 The `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` process test also runs in the normal suite. Set `PRDB_TEST_RESTRICTED_METADATA_QUERY_ARTIFACT` to the built `sql-v3-restricted-metadata.so` to exercise its restricted metadata branch; it packages the artifact for the test principal, uploads and starts it through `SubmissionClient`, and verifies filtered SQL results and committed STATUS through the external gateway and supervisor processes.
 
 First build the artifact and SDK archive:

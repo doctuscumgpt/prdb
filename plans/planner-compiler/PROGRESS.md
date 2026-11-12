@@ -499,6 +499,13 @@
 - Verification: `nix develop -c make -f engine/sdk/Makefile test` passed, including all ABI generator tests and maintained TinyCC SDK executables.
 - Remaining: exercise cancellation, target exhaustion, and staging failure through confined processes, then expand transaction conflict/policy cases.
 
+## OP-3 follow-up: UPDATE target exhaustion through confined processes — verified
+
+- Contract: when a bounded optimizer UPDATE finds more matching rows than the caller's target-handle capacity, it must stop before staging any mutation, publish no updated-row count, latch statement failure, and abort the invocation.
+- Regression: the maintained ABI v5 artifact runs `UPDATE grouped_records SET left_key = $2 WHERE left_key = $1` with two matching rows and target capacity one. The SDK returns `REQUEST_LIMIT` with zero updated rows; the C entry deliberately returns success afterward so the sticky statement-failure latch itself must force worker failure. The delegated acceptance checks durable ABORTED and byte-identical committed rows.
+- Verification: forced TinyCC `sandbox-query-fixture` rebuild and the focused `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed through the delegated service (`1 passed, 0 ignored`). The complete maintained SDK suite and ABI generator's eight tests passed. Format, warning-denied Clippy, and `git diff --check` passed. The final full serial delegated workspace suite passed with 180 library tests, 142 commit tests, and 74 transaction tests; every test target reported zero ignored.
+- Remaining: exercise UPDATE cancellation and explicit StageUpdate callback failure in the confined process harness; broaden transaction conflict/policy acceptance.
+
 ## OP-3 dependency: reject an optimizer UPDATE without storage write authority — verified
 
 - Behavior: a readable relation remains available to optimizer planning, but its absent UPDATE grant must reject staging and abort the invocation without committing.

@@ -24069,6 +24069,146 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     );
     drop(failure_gateway);
 
+    let target_limit_row_keys =
+        [id(0xd3), id(0xd4)].map(|row_id| table_row_key(composite_table.table_id, row_id));
+    let target_limit_rows_before = target_limit_row_keys
+        .iter()
+        .map(|key| {
+            row(&database, key)?
+                .map(|record| record.payload)
+                .ok_or_else(|| "grouped row missing before UPDATE target-limit test".into())
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    let target_limit_parameter = [b'T'];
+    let mut target_limit_client = ClientConnectionSession::default();
+    target_limit_client.accept_hello(ClientMode::Query, "sandbox-sql-update-target-limit")?;
+    target_limit_client.authenticate(&storage, token_id, &secret)?;
+    let target_limit_owner = target_limit_client.staging_owner()?;
+    let target_limit_staging = StagingStore::new(
+        StagingLimits::default(),
+        Arc::new(AcceptFixture {
+            requested_scope: requested_scope.clone(),
+        }),
+    )?;
+    let target_limit_reservation = target_limit_staging
+        .prepare(
+            target_limit_owner,
+            PrepareSubmission {
+                manifest_version: 1,
+                manifest: b"m".to_vec(),
+                artifact_bytes: u64::try_from(artifact.len())?,
+                artifact_sha256: Sha256::digest(&artifact).into(),
+                scope_version: 1,
+                requested_scope: requested_scope.clone(),
+                parameter_bytes: 1,
+                parameter_sha256: Sha256::digest(target_limit_parameter).into(),
+                deadline_ms: 30_000,
+                workload_class: WorkloadClass::Operational,
+            },
+        )
+        .map_err(|error| format!("prepare UPDATE target-limit fixture: {error:?}"))?;
+    let mut target_limit_artifact_offset = 0;
+    for chunk in artifact.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
+        target_limit_artifact_offset = target_limit_staging
+            .upload_chunk(
+                target_limit_owner,
+                target_limit_reservation.invocation_id,
+                ChunkKind::Artifact,
+                target_limit_artifact_offset,
+                chunk,
+            )
+            .map_err(|error| format!("UPDATE target-limit fixture upload: {error:?}"))?;
+    }
+    target_limit_staging
+        .upload_chunk(
+            target_limit_owner,
+            target_limit_reservation.invocation_id,
+            ChunkKind::Parameters,
+            0,
+            &target_limit_parameter,
+        )
+        .map_err(|error| format!("UPDATE target-limit parameter upload: {error:?}"))?;
+    target_limit_staging
+        .seal(target_limit_owner, target_limit_reservation.invocation_id)
+        .map_err(|error| format!("seal UPDATE target-limit fixture: {error:?}"))?;
+    let target_limit_invocation_hex = target_limit_reservation
+        .invocation_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let (target_limit_accepted, mut target_limit_invocation, mut target_limit_executor) =
+        target_limit_client
+            .handle_start_request_with_executor(
+                &storage,
+                &target_limit_staging,
+                ClientFrame {
+                    kind: 7,
+                    request_id: 4,
+                    response_sequence: 0,
+                    payload: format!("{{\"invocation_id\":\"{target_limit_invocation_hex}\"}}")
+                        .into_bytes(),
+                },
+                GatewayAdmissionConfig {
+                    retention_period_us: 3_600_000_000,
+                    max_rows: 8,
+                    max_bytes: 4096,
+                },
+                &runtime,
+            )
+            .map_err(|error| format!("start UPDATE target-limit fixture: {error:?}"))?;
+    assert_eq!(target_limit_accepted.payload, b"{\"state\":\"accepted\"}");
+    let (mut target_limit_service, mut target_limit_gateway) = UnixStream::pair()?;
+    assert_eq!(
+        observe_executor_relay_and_finalize_gateway(
+            &storage,
+            &mut target_limit_invocation,
+            &mut target_limit_executor,
+            &mut target_limit_service,
+            target_limit_accepted.request_id,
+        )
+        .map_err(|error| format!("finalize UPDATE target-limit fixture: {error:?}"))?,
+        GatewayTerminalDecision::Abort(GatewayAbortReason::WorkerFailure)
+    );
+    let target_limit_ready =
+        read_frame(&mut target_limit_gateway)?.ok_or("missing UPDATE target-limit ready event")?;
+    assert_eq!(
+        target_limit_ready.operation,
+        Operation::GatewayResultData as u16
+    );
+    assert_eq!(
+        target_limit_ready.request_id,
+        target_limit_accepted.request_id
+    );
+    assert_eq!(target_limit_ready.payload, b"UPDATE_TARGET_LIMIT_READY");
+    let target_limit_terminal = read_frame(&mut target_limit_gateway)?
+        .ok_or("missing UPDATE target-limit terminal event")?;
+    assert_eq!(
+        target_limit_terminal.operation,
+        Operation::GatewayTerminal as u16
+    );
+    assert_eq!(
+        target_limit_terminal.request_id,
+        target_limit_accepted.request_id
+    );
+    assert!(String::from_utf8(target_limit_terminal.payload)?.contains("\"outcome\":\"aborted\""));
+    assert_eq!(
+        storage
+            .lookup_invocation_outcome(target_limit_reservation.invocation_id, user_id, now + 5,)?
+            .ok_or("missing UPDATE target-limit outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    for (key, expected) in target_limit_row_keys.iter().zip(&target_limit_rows_before) {
+        assert_eq!(
+            row(&database, key)?
+                .ok_or("grouped row missing after UPDATE target-limit test")?
+                .payload,
+            *expected,
+            "capacity-exhausted optimizer UPDATE partially changed a committed row"
+        );
+    }
+    drop(target_limit_gateway);
+
     let restricted_scope = [
         b"PSC1\0\x01".as_slice(),
         &[1, 1],
