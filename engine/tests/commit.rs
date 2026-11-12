@@ -24227,6 +24227,130 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     }
     drop(target_limit_gateway);
 
+    let stage_failure_parameter = [b'G'];
+    let mut stage_failure_client = ClientConnectionSession::default();
+    stage_failure_client.accept_hello(ClientMode::Query, "sandbox-sql-update-stage-failure")?;
+    stage_failure_client.authenticate(&storage, token_id, &secret)?;
+    let stage_failure_owner = stage_failure_client.staging_owner()?;
+    let stage_failure_staging = StagingStore::new(
+        StagingLimits::default(),
+        Arc::new(AcceptFixture {
+            requested_scope: requested_scope.clone(),
+        }),
+    )?;
+    let stage_failure_reservation = stage_failure_staging.prepare(
+        stage_failure_owner,
+        PrepareSubmission {
+            manifest_version: 1,
+            manifest: b"m".to_vec(),
+            artifact_bytes: u64::try_from(artifact.len())?,
+            artifact_sha256: Sha256::digest(&artifact).into(),
+            scope_version: 1,
+            requested_scope: requested_scope.clone(),
+            parameter_bytes: 1,
+            parameter_sha256: Sha256::digest(stage_failure_parameter).into(),
+            deadline_ms: 30_000,
+            workload_class: WorkloadClass::Operational,
+        },
+    )?;
+    let mut stage_failure_artifact_offset = 0;
+    for chunk in artifact.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
+        stage_failure_artifact_offset = stage_failure_staging.upload_chunk(
+            stage_failure_owner,
+            stage_failure_reservation.invocation_id,
+            ChunkKind::Artifact,
+            stage_failure_artifact_offset,
+            chunk,
+        )?;
+    }
+    stage_failure_staging.upload_chunk(
+        stage_failure_owner,
+        stage_failure_reservation.invocation_id,
+        ChunkKind::Parameters,
+        0,
+        &stage_failure_parameter,
+    )?;
+    stage_failure_staging.seal(stage_failure_owner, stage_failure_reservation.invocation_id)?;
+    let stage_failure_invocation_hex = stage_failure_reservation
+        .invocation_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let (stage_failure_accepted, mut stage_failure_invocation, mut stage_failure_executor) =
+        stage_failure_client.handle_start_request_with_executor(
+            &storage,
+            &stage_failure_staging,
+            ClientFrame {
+                kind: 7,
+                request_id: 5,
+                response_sequence: 0,
+                payload: format!("{{\"invocation_id\":\"{stage_failure_invocation_hex}\"}}")
+                    .into_bytes(),
+            },
+            GatewayAdmissionConfig {
+                retention_period_us: 3_600_000_000,
+                max_rows: 8,
+                max_bytes: 4096,
+            },
+            &runtime,
+        )?;
+    assert_eq!(stage_failure_accepted.payload, b"{\"state\":\"accepted\"}");
+    let (mut stage_failure_service, mut stage_failure_gateway) = UnixStream::pair()?;
+    assert_eq!(
+        observe_executor_relay_and_finalize_gateway(
+            &storage,
+            &mut stage_failure_invocation,
+            &mut stage_failure_executor,
+            &mut stage_failure_service,
+            stage_failure_accepted.request_id,
+        )?,
+        GatewayTerminalDecision::Abort(GatewayAbortReason::WorkerFailure)
+    );
+    for (expected, label) in [
+        (
+            b"UPDATE_STAGE_FAILURE_READY".as_slice(),
+            "stage-failure readiness",
+        ),
+        (
+            b"UPDATE_STAGE_FAILURE_INJECTED".as_slice(),
+            "injected StageUpdate failure",
+        ),
+    ] {
+        let event = read_frame(&mut stage_failure_gateway)?
+            .ok_or_else(|| format!("missing UPDATE {label} event"))?;
+        assert_eq!(event.operation, Operation::GatewayResultData as u16);
+        assert_eq!(event.request_id, stage_failure_accepted.request_id);
+        assert_eq!(event.payload, expected);
+    }
+    let stage_failure_terminal = read_frame(&mut stage_failure_gateway)?
+        .ok_or("missing UPDATE stage-failure terminal event")?;
+    assert_eq!(
+        stage_failure_terminal.operation,
+        Operation::GatewayTerminal as u16
+    );
+    assert_eq!(
+        stage_failure_terminal.request_id,
+        stage_failure_accepted.request_id
+    );
+    assert!(String::from_utf8(stage_failure_terminal.payload)?.contains("\"outcome\":\"aborted\""));
+    assert_eq!(
+        storage
+            .lookup_invocation_outcome(stage_failure_reservation.invocation_id, user_id, now + 6)?
+            .ok_or("missing UPDATE stage-failure outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    for (key, expected) in target_limit_row_keys.iter().zip(&target_limit_rows_before) {
+        assert_eq!(
+            row(&database, key)?
+                .ok_or("grouped row missing after UPDATE stage-failure test")?
+                .payload,
+            *expected,
+            "StageUpdate failure partially changed a committed row"
+        );
+    }
+    drop(stage_failure_gateway);
+
     let restricted_scope = [
         b"PSC1\0\x01".as_slice(),
         &[1, 1],

@@ -520,3 +520,11 @@
 - Acceptance: the normal `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test requests cancellation only after confirming overlap with live analytics and an operational transaction. It requires the readiness, observed, and UPDATE-confirmation frames, and verifies durable ABORTED.
 - Verification: forced TinyCC sandbox fixture rebuild passed. The focused acceptance passed inside the delegated `systemd --user` service (`1 passed, 0 ignored`). `make -f engine/sdk/Makefile test`, ABI generation checks (8 passed), workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed. The workspace suite reported 180 library tests, 142 commit tests, 74 transaction tests, and zero ignored tests in every target.
 - Remaining: injected StageUpdate callback failure through confined processes, then broaden transaction conflict/policy acceptance.
+
+## OP-3 follow-up: UPDATE StageUpdate callback failure through confined processes — verified
+
+- Behavior: an executor callback error on the first StageUpdate after a successful scan returns SDK callback failure, latches statement failure, and leaves the updated-row count at zero.
+- Confined fixture: invocation parameter `'G'` submits an optimizer UPDATE for the two grouped rows. The fixture callback intercepts the first StageUpdate, emits an injection marker, and returns an I/O callback error. The C entry verifies the status and zero count, then returns success so the sticky failure latch must still fail the worker.
+- Acceptance: the enabled DML sequence acceptance requires the readiness and injection result frames, confirms worker failure and durable ABORTED, and compares both committed row payloads byte-for-byte.
+- Verification: forced TinyCC fixture rebuild and the focused delegated-cgroup acceptance passed (`1 passed, 0 ignored`).
+- Remaining: broader transaction conflict/policy acceptance.

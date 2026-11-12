@@ -12,6 +12,8 @@ The same acceptance starts a separate ABI v5 invocation that requests an optimiz
 
 The same artifact and acceptance cover cancellation after an optimizer UPDATE scan opens. The executor callback pauses at the SDK's first cancellation check, the test requests cancellation through storage, and the artifact verifies `CANCELLED` with zero staged rows before returning. The acceptance requires the confirmation event and durable ABORTED outcome.
 
+The same acceptance injects an executor callback error on the first `StageUpdate` after a completed scan. The SDK returns its callback-failure status with zero published updates; returning success from the artifact still results in worker failure due to the statement-failure latch. The acceptance checks durable ABORTED and byte-identical committed grouped rows.
+
 The `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` process test also runs in the normal suite. Set `PRDB_TEST_RESTRICTED_METADATA_QUERY_ARTIFACT` to the built `sql-v3-restricted-metadata.so` to exercise its restricted metadata branch; it packages the artifact for the test principal, uploads and starts it through `SubmissionClient`, and verifies filtered SQL results and committed STATUS through the external gateway and supervisor processes.
 
 First build the artifact and SDK archive:

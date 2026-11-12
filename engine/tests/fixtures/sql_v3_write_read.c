@@ -36,6 +36,7 @@ const prdb_query_descriptor_v5_record prdb_query_descriptor_v5 = {
 
 static const prdb_host_api_v5 *cancel_update_original_host;
 static uint32_t cancel_update_ready_sent;
+static uint32_t fail_next_stage_update;
 
 static int32_t cancel_update_executor_request(
     void *context, uint16_t operation, const uint8_t *request,
@@ -47,6 +48,14 @@ static int32_t cancel_update_executor_request(
         cancel_update_original_host->v4.v3.write_result == NULL ||
         response == NULL || response_len == NULL) {
         return PRDB_QUERY_CALLBACK_INVALID_ARGUMENT;
+    }
+    if (operation == PRDB_IPC_OP_STAGE_UPDATE &&
+        fail_next_stage_update != 0) {
+        static const uint8_t injected[] = "UPDATE_STAGE_FAILURE_INJECTED";
+        fail_next_stage_update = 0;
+        (void)cancel_update_original_host->v4.v3.write_result(
+            context, injected, sizeof(injected) - 1);
+        return PRDB_QUERY_CALLBACK_IO_ERROR;
     }
     if (operation != PRDB_IPC_OP_EXECUTOR_CHECK_CANCELLATION ||
         cancel_update_ready_sent != 0) {
@@ -824,6 +833,64 @@ static int32_t run_write_read_fixture(
             host->write_result(host->context, confirmed,
                                sizeof(confirmed) - 1) != 0) {
             return 1;
+        }
+        return 0;
+    }
+    if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
+        invocation->parameters[0] == 'G') {
+        static const uint8_t update_sql[] =
+            "UPDATE grouped_records SET left_key = $2 WHERE left_key = $1";
+        static const uint8_t old_key_bytes[] = {0, 0, 0, 4};
+        static const uint8_t new_key_bytes[] = {0, 0, 0, 6};
+        static const uint8_t ready[] = "UPDATE_STAGE_FAILURE_READY";
+        prdb_sdk_update_v1 update = {0};
+        prdb_sdk_value_v1 parameters[2] = {
+            {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+             old_key_bytes, sizeof(old_key_bytes)},
+            {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+             new_key_bytes, sizeof(new_key_bytes)}};
+        uint8_t request[4096] = {0};
+        uint8_t response[4096] = {0};
+        uint8_t relation_response[4096] = {0};
+        uint8_t scan_response[4096] = {0};
+        uint8_t batch_response[4096] = {0};
+        uint8_t target_handles[32] = {0};
+        prdb_sdk_executor_relation_v1 relation = {0};
+        prdb_sdk_sql_column_shape_v2 columns[2] = {{0}};
+        prdb_sdk_select_binding_v2 binding = {0};
+        prdb_sdk_value_v1 scratch[2] = {{0}};
+        prdb_host_api_v5 failure_host;
+        uint32_t updated = UINT32_MAX;
+        int32_t update_status;
+
+        if (optimizer_host_v5 == NULL ||
+            optimizer_host_v5->optimizer_request == NULL ||
+            prdb_sdk_sql_parse_update_v1(update_sql, sizeof(update_sql) - 1,
+                                         &update, sizeof(update), NULL) !=
+                PRDB_SDK_SQL_OK ||
+            host->write_result(host->context, ready, sizeof(ready) - 1) != 0) {
+            return 1;
+        }
+        failure_host = *optimizer_host_v5;
+        cancel_update_original_host = optimizer_host_v5;
+        cancel_update_ready_sent = 1;
+        fail_next_stage_update = 1;
+        failure_host.v4.v3.executor_request = cancel_update_executor_request;
+        update_status = prdb_sdk_optimizer_execute_update_ast_v1(
+            &failure_host, &update, parameters, 2, schema, sizeof(schema) - 1,
+            16, sizeof(batch_response), request, sizeof(request), response,
+            sizeof(response), relation_response, sizeof(relation_response),
+            scan_response, sizeof(scan_response), batch_response,
+            sizeof(batch_response), &relation, sizeof(relation), columns, 2,
+            &binding, sizeof(binding), scratch, 2, target_handles, 2, &updated);
+        cancel_update_original_host = NULL;
+        if (update_status != PRDB_SDK_OPTIMIZER_PLAN_CALLBACK_ERROR ||
+            updated != 0 || fail_next_stage_update != 0) {
+            static const uint8_t message[] =
+                "fixture-error-update-stage-failure";
+            return report_failure(host, message, sizeof(message) - 1);
         }
         return 0;
     }
