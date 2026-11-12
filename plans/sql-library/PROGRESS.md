@@ -4,7 +4,7 @@
 
 - Contract: an explicit single-column `ORDER BY` key is resolved through the authorized relation description. Its source column may remain hidden from the SELECT projection; LIMIT is applied after stable ordering by the bounded SQL v3 runner or optimizer-backed ordered SELECT path.
 - Implementation: ordered SELECT statement 7 is decoded, bound to stable column IDs, and dispatched through the optimizer submission process. The canonical kind-7 plan includes the sorted union of projected columns and the hidden order key, direction, and optional LIMIT. Rust optimizer responses and the maintained C SDK independently validate the plan. The SDK encodes SQL v3 ordered SELECT ASTs, matches plans against their parsed relation/projections/order/LIMIT, independently re-resolves executor metadata, scans with a 124-page request budget, materializes up to 128 rows/1 MiB, stable-sorts by the authorized typed key, applies LIMIT after sorting, and polls cancellation before sorting and every 32 output rows. Errors latch statement failure.
-- Evidence: focused Rust request, binding, plan round-trip/rejection, and optimizer-process dispatch tests passed. The TinyCC SDK suite passed exact ordered request-byte, hidden order-key decoding, AST match, and mutation rejection checks. `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` passed inside the delegated user service after checking exact relayed SQLR rows for `SELECT right_key FROM grouped_records ORDER BY left_key DESC LIMIT 2` (`9`, then `7`). Cgroup tests remain enabled and the test targets report zero ignored tests.
+- Evidence: focused Rust request, binding, plan round-trip/rejection, and optimizer-process dispatch tests passed. The TinyCC SDK suite passed exact ordered request-byte, hidden order-key decoding, AST match, and mutation rejection checks. The maintained optimizer fixture now also executes `LIMIT 0`, verifies that planner and executor relation identities are still resolved, and asserts that no scan opens and no row callback runs. `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` passed inside the delegated user service after checking exact relayed SQLR rows for `SELECT right_key FROM grouped_records ORDER BY left_key DESC LIMIT 2` (`9`, then `7`). Cgroup tests remain enabled and the test targets report zero ignored tests.
 - Remaining: broaden ordered SELECT parity and stress/error coverage, including composite keys, adversarial executor bounds, and cancellation during publication. SQL-8's wider memory-budget, spill, and analytical workload acceptance remains open.
 
 ## SQL-8 dependency: maximum-cardinality stable sort regression — verified
@@ -13,6 +13,13 @@
 - Regression: the maintained TinyCC sorter fixture now feeds 128 typed INTEGER keys with repeated values through ascending and descending sorts. An independent property check verifies monotonic order, stable tie ordering, and that each source row appears exactly once. The adjacent 129-row rejection remains covered.
 - Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed, including the full maintained SDK fixture suite with TinyCC 0.9.27-unstable-2025-01-06.
 - Remaining: optimizer-backed ordered execution still needs executor-level stress/error coverage for materialization overflow and cancellation during publication; broader analytical memory-pressure, spill, and mixed-workload evidence remain open.
+
+## SQL-8 dependency: optimizer-backed ordered LIMIT 0 — verified
+
+- Contract: a zero LIMIT returns no rows after plan/authority validation and does not open a scan.
+- Regression: the optimizer executor fixture submits a kind-7 plan for `SELECT c0 FROM items ORDER BY c3 DESC LIMIT 0`; it checks zero output, no callback or statement failure, and only planner plus executor relation resolution operations.
+- Verification: the focused `sdk-optimizer-plan-v1` fixture and the complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` suite passed.
+- Remaining: materialization overflow, cancellation during publication, and wider analytical memory-pressure/spill/mixed-workload evidence remain open.
 
 ## SQL-7: filtered aliased INNER JOIN runner and mandatory cgroup acceptance — implemented
 

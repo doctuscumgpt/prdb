@@ -219,6 +219,44 @@ static uint32_t build_ordered_select_plan(uint8_t *bytes,
     return offset;
 }
 
+static uint32_t build_ordered_limit_zero_plan(uint8_t *bytes) {
+    uint32_t offset = 0;
+    uint8_t identifier[16] = {0};
+    uint32_t column;
+    prdb_encode_optimizer_plan_header_record(bytes + offset, 1, 7, 0);
+    offset += PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "public");
+    identifier[0] = 1;
+    prdb_encode_optimizer_plan_schema_reference_record(bytes + offset,
+                                                       identifier, 1);
+    offset += PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "items");
+    memset(identifier, 0, sizeof(identifier));
+    identifier[0] = 2;
+    prdb_encode_optimizer_plan_relation_reference_record(bytes + offset,
+                                                         identifier, 1);
+    offset += PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES;
+    put_u16(bytes, &offset, 2);
+    column = put_column(bytes, &offset, 3, 0);
+    bytes[column] = 10;
+    set_column_ordinal(bytes, column, 0);
+    column = put_column(bytes, &offset, 6, 1);
+    bytes[column] = 3;
+    set_column_ordinal(bytes, column, 3);
+    put_u16(bytes, &offset, 1);
+    column = put_column(bytes, &offset, 3, 0);
+    bytes[column] = 10;
+    set_column_ordinal(bytes, column, 0);
+    bytes[offset++] = 9;
+    column = put_column(bytes, &offset, 6, 1);
+    bytes[column] = 3;
+    set_column_ordinal(bytes, column, 3);
+    bytes[offset++] = 1;
+    bytes[offset++] = 1;
+    put_u32(bytes, &offset, 0);
+    return offset;
+}
+
 static uint32_t put_header(uint8_t *bytes, uint32_t *offset,
                            uint8_t node_count) {
     bytes[(*offset)++] = 0;
@@ -1104,6 +1142,51 @@ int main(void) {
     host_v4.v3.write_result = write_result;
     host_v4.v3.statement_failure = statement_failure;
     host_v4.optimizer_request = optimizer_request;
+
+    {
+        static const uint8_t ordered_limit_zero_sql[] =
+            "SELECT c0 FROM items ORDER BY c3 DESC LIMIT 0";
+        uint32_t ordered_limit_zero_plan_len =
+            build_ordered_limit_zero_plan(ordered_select_malformed);
+        uint32_t ordered_limit_zero_delivered = 99;
+        uint32_t rows_before = projected_rows_seen;
+        assert(prdb_sdk_sql_parse_select_v3(
+                   ordered_limit_zero_sql,
+                   sizeof(ordered_limit_zero_sql) - 1,
+                   &ordered_select_statement,
+                   sizeof(ordered_select_statement), NULL) ==
+               PRDB_SDK_SQL_OK);
+        resolve.optimizer_response_len = build_optimizer_response(
+            resolve.optimizer_response, ordered_select_malformed,
+            ordered_limit_zero_plan_len);
+        resolve.optimizer_calls = 0;
+        resolve.calls = 0;
+        resolve.event_count = 0;
+        resolve.statement_failures = 0;
+        assert(prdb_sdk_optimizer_execute_ordered_select_ast_v1(
+                   &host_v4, &ordered_select_statement,
+                   (const uint8_t *)"public", 6, 2,
+                   sizeof(batch_response), request, sizeof(request),
+                   optimizer_response, sizeof(optimizer_response), response,
+                   sizeof(response), scan_response, sizeof(scan_response),
+                   batch_response, sizeof(batch_response), &acquired_relation,
+                   sizeof(acquired_relation), acquired_columns, 4,
+                   source_cells, 4, projected_values, 1, malformed,
+                   sizeof(malformed), on_projected_row, NULL,
+                   &ordered_limit_zero_delivered) ==
+               PRDB_SDK_OPTIMIZER_PLAN_OK);
+        assert(ordered_limit_zero_delivered == 0 &&
+               projected_rows_seen == rows_before && resolve.calls == 2 &&
+               resolve.optimizer_calls == 1 &&
+               resolve.statement_failures == 0);
+        assert(resolve.event_count == 3 &&
+               resolve.events[0] == UINT16_C(0xffff) &&
+               resolve.events[1] == PRDB_IPC_OP_RESOLVE_PLAN_RELATION &&
+               resolve.events[2] == PRDB_SDK_EXECUTOR_OP_RESOLVE_RELATION);
+        resolve.optimizer_response_len = build_optimizer_response(
+            resolve.optimizer_response, limit_one_plan, payload_len);
+    }
+
     resolve.optimizer_calls = 0;
     resolve.calls = 0;
     resolve.event_count = 0;
