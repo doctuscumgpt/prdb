@@ -384,6 +384,15 @@ int32_t prdb_sdk_optimizer_match_join_plan_v19_v1(
     const uint8_t *schema, uint32_t schema_len,
     const uint8_t *plan_payload, uint64_t plan_payload_len);
 
+/* Require a decoded kind-12 plan to preserve the v20 join and its bound
+ * side-qualified WHERE column, comparison, and parameter index. */
+int32_t prdb_sdk_optimizer_match_filtered_join_plan_v20_v1(
+    const prdb_sdk_select_v20 *statement,
+    const prdb_sdk_select_binding_v20 *binding,
+    const prdb_sdk_value_v1 *parameters, uint32_t parameter_count,
+    const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *plan_payload, uint64_t plan_payload_len);
+
 /* Validate a DELETE plan against the parsed DELETE statement and its bound
  * parameters, then re-resolve its relation through executor storage. */
 int32_t prdb_sdk_optimizer_validate_delete_plan_with_parameters_v1(

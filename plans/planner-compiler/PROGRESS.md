@@ -23,6 +23,14 @@
 - Verification: forced rebuild and full maintained `make -B -f engine/sdk/Makefile test` passed with TinyCC `-Wall -Wextra -Werror`; ABI generator consistency and all eight generator tests passed. `git diff --check` passed.
 - Remaining: match the decoded filter against the v20 AST and invocation parameter types/values, re-resolve the filtered column through executor metadata, and execute the optimizer-backed v20 join through confined acceptance.
 
+## OP-7 follow-up: match filtered join plans to v20 AST — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). Before executor access, kind 12 must preserve the v20 join AST and its authorized WHERE binding and parameter type.
+- Implementation: `prdb_sdk_optimizer_match_filtered_join_plan_v20_v1` decodes kind 12, verifies the common join identity/projection/key/LIMIT records, then compares filter side and full bound column identity, normalized comparison, and parameter index. Parameter comparisons are type-checked against the bound column; NULL tests require no parameter metadata. The base join matcher remains unchanged for kind 4.
+- Regression: the maintained TinyCC fixture accepts the bound parameterized v20 plan and rejects mismatched comparison, parameter index, and parameter type. The earlier decoder fixture covers malformed side/column/index and trailing data.
+- Verification: `make -f engine/sdk/Makefile test` passed with the maintained TinyCC suite, all eight ABI generator tests, and generated ABI consistency. `git diff --check` passed.
+- Remaining: re-resolve both filtered join relation identities and scan shapes through executor metadata, then add the optimizer-backed v20 execution path and delegated-cgroup acceptance.
+
 ## OP-7 follow-up: ordered single-key grouped aggregates — verified
 
 - Contract: request statement 11 / plan kind 11 extends the statement-10 single-key COUNT/MIN/MAX/SUM/AVG shape with up to two distinct ORDER BY expressions drawn from the group key or selected aggregate, preserving direction, NULL placement, and optional LIMIT. WHERE, HAVING, extra projections, and unsupported argument types remain rejected.

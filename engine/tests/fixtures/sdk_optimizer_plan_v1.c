@@ -1056,6 +1056,10 @@ int main(void) {
     static prdb_sdk_sql_column_shape_v2 ordered_select_columns[2];
     static prdb_sdk_select_v19 join_statement;
     static prdb_sdk_select_binding_v19 join_binding;
+    static prdb_sdk_select_v20 filtered_join_statement;
+    static prdb_sdk_select_binding_v20 filtered_join_binding;
+    static prdb_sdk_value_v1 filtered_join_parameters[3];
+    static uint8_t filtered_join_parameter_bytes[3][1] = {{1}, {0}, {1}};
     static prdb_sdk_select_v4 group_count_statement;
     static prdb_sdk_select_binding_v4 group_count_binding;
     static prdb_sdk_select_v12 ordered_group_count_statement;
@@ -2147,6 +2151,9 @@ int main(void) {
     static const uint8_t join_sql[] =
         "SELECT l.value, r.value FROM lefts AS l INNER JOIN rights AS r "
         "ON l.id = r.id AND l.active = r.active LIMIT 5;";
+    static const uint8_t filtered_join_sql[] =
+        "SELECT l.value, r.value FROM lefts AS l INNER JOIN rights AS r "
+        "ON l.id = r.id AND l.active = r.active WHERE r.active > $3 LIMIT 5;";
     static const uint8_t join_left_name[] = "lefts";
     static const uint8_t join_right_name[] = "rights";
     static const uint8_t join_id_name[] = "id";
@@ -2176,6 +2183,48 @@ int main(void) {
     assert(prdb_sdk_optimizer_match_join_plan_v19_v1(
                &join_statement, &join_binding, (const uint8_t *)"public", 6,
                join_payload, join_payload_len) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    for (uint32_t index = 0; index < 3; ++index) {
+        filtered_join_parameters[index] = (prdb_sdk_value_v1){
+            sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+            PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_BOOLEAN,
+            filtered_join_parameter_bytes[index], 1};
+    }
+    assert(prdb_sdk_sql_parse_select_v20(
+               filtered_join_sql, sizeof(filtered_join_sql) - 1,
+               &filtered_join_statement, sizeof(filtered_join_statement),
+               &join_error_offset) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_sql_bind_select_v20(
+               &filtered_join_statement, join_left_name,
+               sizeof(join_left_name) - 1, join_left_columns, 3,
+               join_right_name, sizeof(join_right_name) - 1,
+               join_right_columns, 3, &filtered_join_binding,
+               sizeof(filtered_join_binding)) == PRDB_SDK_SQL_BIND_OK);
+    assert(prdb_sdk_optimizer_match_filtered_join_plan_v20_v1(
+               &filtered_join_statement, &filtered_join_binding,
+               filtered_join_parameters, 3, (const uint8_t *)"public", 6,
+               filtered_join_payload, filtered_join_payload_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    filtered_join_statement.comparison = PRDB_SDK_SQL_COMPARE_EQUAL;
+    assert(prdb_sdk_optimizer_match_filtered_join_plan_v20_v1(
+               &filtered_join_statement, &filtered_join_binding,
+               filtered_join_parameters, 3, (const uint8_t *)"public", 6,
+               filtered_join_payload, filtered_join_payload_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
+    filtered_join_statement.comparison = PRDB_SDK_SQL_COMPARE_GREATER;
+    filtered_join_statement.parameter_index = 2;
+    assert(prdb_sdk_optimizer_match_filtered_join_plan_v20_v1(
+               &filtered_join_statement, &filtered_join_binding,
+               filtered_join_parameters, 3, (const uint8_t *)"public", 6,
+               filtered_join_payload, filtered_join_payload_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
+    filtered_join_statement.parameter_index = 3;
+    filtered_join_parameters[2].type_code = PRDB_SDK_VALUE_TYPE_INTEGER;
+    assert(prdb_sdk_optimizer_match_filtered_join_plan_v20_v1(
+               &filtered_join_statement, &filtered_join_binding,
+               filtered_join_parameters, 3, (const uint8_t *)"public", 6,
+               filtered_join_payload, filtered_join_payload_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
+    filtered_join_parameters[2].type_code = PRDB_SDK_VALUE_TYPE_BOOLEAN;
     join_statement.base.base.limit = 6;
     assert(prdb_sdk_optimizer_match_join_plan_v19_v1(
                &join_statement, &join_binding, (const uint8_t *)"public", 6,
