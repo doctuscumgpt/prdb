@@ -50,6 +50,12 @@
 - Verification: focused real-redb transaction test passed (`1 passed, 0 failed`).
 - Scope: all other row-value-dependent or unsupported policies still return `Unknown`; timing/resource noninterference, planner task draining, cache validity, and bounded maintenance collection remain open.
 
+## ST-2 follow-up: serialize exact empty estimates over the planner stream — verified
+
+- Regression: `planner_stream_estimate_allowance_falls_back_without_aborting_invocation` stages a row in the invocation overlay, applies a constant-FALSE row ALLOW policy, and requests estimates over the real planner IPC stream. The decoded exact response reports zero visible rows and zero cell populations; request 17 still returns `Unknown` without aborting the invocation.
+- Verification: focused real-redb planner-stream integration test passed (`1 passed, 0 failed`).
+- Scope: verifies planner request/response encoding and the shared estimate allowance. Isolated optimizer consumption and heuristic use of estimates remain open.
+
 ## ST-1 / ST-2 dependency: planner metadata and estimate dispatch
 
 - Behavior: planner-only connection handles resolve and revalidate authorized relation descriptions, and estimate requests return bounded visible/readable/null/redacted summaries or UNKNOWN. Planner projections derive read grants and policies without loading write constraints or indexes; executor handles cannot be decoded as planner handles.

@@ -29376,7 +29376,7 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
             effect: Effect::Allow,
             recipients: vec![Subject::Principal(actor)],
             target_column_ids: Vec::new(),
-            using_expression: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+            using_expression: Some(Expr::Literal(Some(ScalarValue::Boolean(false)))),
             with_check_expression: None,
             retention_deadline_us: 9_999,
             audit_event: policy_audit,
@@ -29474,6 +29474,20 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
     binding_transaction.abort()?;
 
     let mut transaction = storage.begin_invocation(id(0x88), actor, 9_999, 8, 512)?;
+    transaction.stage_put(
+        prdb_engine::overlay::RowId {
+            table: table.table_id,
+            row: id(0x8c),
+        },
+        &encode_tuple(
+            &[ColumnSchema {
+                scalar_type: ScalarType::Integer,
+                nullable: true,
+            }],
+            1,
+            &[Some(ScalarValue::Integer(7))],
+        )?,
+    )?;
     let (mut client, mut server) = std::os::unix::net::UnixStream::pair()?;
     std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
         let planner = scope.spawn(|| serve_planner(&mut server, &mut transaction));
@@ -29532,10 +29546,13 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
             )?;
             let response = prdb_engine::ipc::read_frame(&mut client)?
                 .ok_or("planner stream closed before allowance exhaustion")?;
-            assert!(matches!(
+            assert_eq!(
                 EstimateScanResponse::decode(&response.payload)?,
-                EstimateScanResponse::Exact(_)
-            ));
+                EstimateScanResponse::Exact(prdb_engine::statistics::AuthorizedScanSummary {
+                    visible_rows: 0,
+                    columns: vec![prdb_engine::statistics::ColumnPopulation::default()],
+                })
+            );
         }
 
         let exhausted_id = 3 + MAX_PLANNER_ESTIMATE_REQUESTS_PER_CONNECTION as u64;
