@@ -19,7 +19,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - End-to-end regression: [real-redb gateway submission lifecycle](../../engine/tests/commit.rs) now drives HELLO, AUTH, PREPARE, upload, SEAL, STATUS, START, and CANCEL from a loopback TCP client through the frame bridge and per-client Unix service loop, then verifies disconnect cleanup and durable ABORTED.
 - Observed red: the initial focused test failed to compile because the TCP bridge and `PingClientSession` IPC operation were absent.
 - Commands actually run in the configured Nix shell: `cargo fmt --all`; focused `cargo test -p prdb-engine --test gateway --locked tcp_client_hello_and_ping_bridge_over_the_gateway_service_channel` passed; and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
-- Remaining: run bounded concurrent accepted connections with read/write deadlines; implement ADMIN and explicit sanitized ERROR responses; connect a separately runnable gateway process to authenticated service-channel provisioning and result relay.
+- Remaining: exercise the gateway binary and authenticated supervisor service together as separate processes; bind sessions to gateway generation/connection IDs; and verify reserved control-path progress during saturated output.
 
 ## GW-1 dependency: bounded gateway connection admission
 
@@ -108,7 +108,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Changed tests: [network event ordering/correlation](../../engine/tests/gateway.rs) and [real-redb terminal evidence](../../engine/tests/commit.rs).
 - Focused verification: `cargo test -p prdb-engine --test gateway --locked start_gateway_bridge_relays_provisional_data_then_terminal`, `cargo test -p prdb-engine --test commit --locked gateway_terminal_event_requires_a_storage_confirmed_decision`, and the real TCP/IPC lifecycle test `cargo test -p prdb-engine --test commit --locked client_handshake_requires_hello_first_and_sequences_responses` passed.
 - Full validation in the configured Nix shell passed: `cargo fmt --all -- --check`, `cargo build --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and `git diff --check`.
-- Remaining: connect real confined worker output/completion to these events, bound result queues/backpressure across processes, and test cancellation/restart around streaming terminal transitions.
+- Remaining at that increment: real confined output, bounded backpressure across TCP and service streams, and durable cancellation after blocked writes are now covered by the later follow-up entries; streaming restart reconciliation and separate-process acceptance remain open.
 
 ## GW-4 dependency: cumulative gateway result budget — implemented
 
@@ -129,3 +129,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: `stalled_tcp_result_write_times_out_and_closes_service_stream` configures 100-ms gateway idle/write deadlines, constrains the TCP send buffer, and has the supervisor-side service write a 4-MiB result while the client stops reading. The gateway returns a timed-out write error and closing its service stream causes the producer write to fail.
 - Focused verification: the exact test passed (`1 passed, 0 ignored`) in 0.21 seconds. This transport-only check confirms gateway timeout and service-stream closure; durable abort is covered by the confined acceptance below.
 - End-to-end verification: the enabled confined acceptance `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` now drives a third real 4-MiB worker through a loopback TCP gateway with a 150-ms write deadline and an unread client. The timeout closes the service stream, the result relay fails, and the storage lookup confirms durable ABORTED even though the terminal event cannot reach the client. Three sequential fresh-fixture delegated runs passed (`1 passed, 0 ignored` each); the serial full workspace suite passed in the delegated `systemd --user` unit with all sandbox/process tests enabled, along with format, workspace build, warning-denied Clippy, and diff checks.
+
+## GW-2 follow-up: ADMIN TCP-to-service forwarding — covered
+
+- Regression: `gateway_forwards_admin_request_and_correlated_response_over_tcp` sends an ADMIN frame through a loopback TCP socket, verifies the private Unix service receives `SubmitAdministrativeOperation` with the same request ID and payload, and checks the correlated response returns as a sequence-zero client RESPONSE.
+- Verification: the focused test passed (`1 passed, 0 ignored`); all 21 gateway integration tests passed; format, workspace build, warning-denied Clippy, and diff checks passed. The serial full workspace suite passed in the delegated `systemd --user` service with all sandbox/process tests enabled. The bridge forwards the operation; authorization and audit remain supervisor/storage responsibilities. Separate-process deployment and reserved control-path progress during result saturation are still open.

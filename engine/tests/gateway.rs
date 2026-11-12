@@ -779,6 +779,69 @@ fn start_gateway_bridge_relays_provisional_data_then_terminal() {
 }
 
 #[test]
+fn gateway_forwards_admin_request_and_correlated_response_over_tcp() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let (mut gateway_service, mut supervisor_service) =
+        std::os::unix::net::UnixStream::pair().unwrap();
+    let admin_payload = br#"{"operation":"list_schemas"}"#.to_vec();
+    let supervisor_payload = br#"{"schemas":["public"]}"#.to_vec();
+    let supervisor = std::thread::spawn(move || {
+        let request = read_frame(&mut supervisor_service).unwrap().unwrap();
+        assert_eq!(
+            request.operation,
+            Operation::SubmitAdministrativeOperation as u16
+        );
+        assert_eq!(request.request_id, 15);
+        assert_eq!(request.payload, admin_payload);
+        write_frame(
+            &mut supervisor_service,
+            &IpcFrame {
+                operation: request.operation,
+                request_id: request.request_id,
+                payload: supervisor_payload,
+            },
+        )
+        .unwrap();
+    });
+    let gateway = std::thread::spawn(move || {
+        let (mut client, _) = listener.accept().unwrap();
+        prdb_engine::gateway::serve_tcp_client_connection(&mut client, &mut gateway_service)
+            .unwrap();
+    });
+    let mut client = std::net::TcpStream::connect(address).unwrap();
+    client
+        .write_all(
+            &ClientFrame {
+                kind: 10,
+                request_id: 15,
+                response_sequence: 0,
+                payload: br#"{"operation":"list_schemas"}"#.to_vec(),
+            }
+            .encode()
+            .unwrap(),
+        )
+        .unwrap();
+    let mut decoder = ClientFrameDecoder::default();
+    let mut buffer = [0u8; 256];
+    let response = loop {
+        let count = client.read(&mut buffer).unwrap();
+        assert_ne!(count, 0, "gateway disconnected before ADMIN response");
+        if let Some(response) = decoder.push(&buffer[..count]).unwrap().pop() {
+            break response;
+        }
+    };
+    assert_eq!(response.kind, 100);
+    assert_eq!(response.request_id, 15);
+    assert_eq!(response.response_sequence, 0);
+    assert_eq!(response.payload, br#"{"schemas":["public"]}"#);
+    client.shutdown(std::net::Shutdown::Write).unwrap();
+    assert_eq!(client.read(&mut buffer).unwrap(), 0);
+    gateway.join().unwrap();
+    supervisor.join().unwrap();
+}
+
+#[test]
 fn slow_tcp_result_consumer_backpressures_supervisor_service_writer() {
     const RESULT_FRAME_BYTES: usize = 256 * 1024;
     const RESULT_FRAME_COUNT: usize = 16;
