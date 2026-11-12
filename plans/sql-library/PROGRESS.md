@@ -1,5 +1,13 @@
 # SQL Library Progress
 
+## SQL-5 dependency: borrowed SDK views for executor index-range results — verified
+
+- Contract: [client SDK](../../specs/client-sdk.md) and [IPC protocol](../../specs/ipc-protocol.md). Decode the bounded range response without inventing row handles; sanitized cells borrow the immutable response buffer, and `unavailable` explicitly requests the authorized reference path.
+- Red/green: the maintained TinyCC batch fixture first failed to compile because the range-view API was absent. It now checks a typed row/cell read, unavailable status, malformed state, excessive row count, truncation, and trailing-byte rejection.
+- Implementation: `prdb_sdk_index_range_v1` validates the entire response before publishing a range view and provides row/cell iterators with no row-handle field.
+- Verification: focused TinyCC batch fixture and complete `make -f engine/sdk/Makefile test` passed, including 8 ABI generator tests and the SDK release metadata checks.
+- Remaining: submit the new executor operation from the SQL runner and match/fallback against the verified SELECT predicate; optimizer range selection remains open.
+
 ## SQL-8 follow-up: grouped ORDER BY limits and cancellation — verified
 
 - Contract: grouped sort stays within the existing 128 matching-row/group and 1 MiB materialization bounds. A bound violation fails before any group callback; cancellation is checked during output so a later group is not published after cancellation.

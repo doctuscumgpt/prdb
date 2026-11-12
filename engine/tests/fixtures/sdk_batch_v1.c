@@ -26,6 +26,14 @@ int main(void) {
     prdb_sdk_row_v1 row;
     prdb_sdk_cell_iterator_v1 cells;
     prdb_sdk_value_v1 cell;
+    static const uint8_t range_payload[] = {
+        0x01, 0x01, 0x00, 0x01,
+        0x00, 0x01,
+        0x00, PRDB_SDK_VALUE_TYPE_INTEGER, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x2a};
+    prdb_sdk_index_range_v1 range;
+    prdb_sdk_index_range_row_iterator_v1 range_rows;
+    prdb_sdk_index_range_row_v1 range_row;
 
     assert(prdb_sdk_batch_open_v1(&batch, sizeof(batch), payload,
                                   sizeof(payload)) ==
@@ -57,6 +65,49 @@ int main(void) {
     assert(prdb_sdk_cell_next_v1(&cells, &cell, sizeof(cell)) ==
            PRDB_SDK_BATCH_END);
     assert(prdb_sdk_batch_row_next_v1(&rows, &row, sizeof(row)) ==
+           PRDB_SDK_BATCH_END);
+
+    assert(prdb_sdk_index_range_open_v1(&range, sizeof(range), range_payload,
+                                        sizeof(range_payload)) ==
+           PRDB_SDK_BATCH_OK);
+    assert(range.row_count == 1);
+    assert(prdb_sdk_index_range_rows_begin_v1(
+               &range, &range_rows, sizeof(range_rows)) == PRDB_SDK_BATCH_OK);
+    assert(prdb_sdk_index_range_row_next_v1(
+               &range_rows, &range_row, sizeof(range_row)) ==
+           PRDB_SDK_BATCH_OK);
+    assert(range_row.cell_count == 1);
+    assert(prdb_sdk_index_range_row_cells_begin_v1(
+               &range_row, &cells, sizeof(cells)) == PRDB_SDK_BATCH_OK);
+    assert(prdb_sdk_cell_next_v1(&cells, &cell, sizeof(cell)) ==
+           PRDB_SDK_BATCH_OK);
+    assert(cell.type_code == PRDB_SDK_VALUE_TYPE_INTEGER && cell.data[3] == 42);
+    {
+        static const uint8_t unavailable[] = {0x01, 0x00};
+        static const uint8_t trailing[] = {
+            0x01, 0x01, 0x00, 0x00, 0x00};
+        static const uint8_t invalid_state[] = {
+            0x01, 0x01, 0x00, 0x01, 0x00, 0x01, 0x09};
+        static const uint8_t too_many_rows[] = {0x01, 0x01, 0x04, 0x01};
+        assert(prdb_sdk_index_range_open_v1(
+                   &range, sizeof(range), unavailable, sizeof(unavailable)) ==
+               PRDB_SDK_BATCH_UNAVAILABLE);
+        assert(prdb_sdk_index_range_open_v1(
+                   &range, sizeof(range), trailing, sizeof(trailing)) ==
+               PRDB_SDK_BATCH_INVALID_PAYLOAD);
+        assert(prdb_sdk_index_range_open_v1(
+                   &range, sizeof(range), invalid_state,
+                   sizeof(invalid_state)) == PRDB_SDK_BATCH_INVALID_PAYLOAD);
+        assert(prdb_sdk_index_range_open_v1(
+                   &range, sizeof(range), too_many_rows,
+                   sizeof(too_many_rows)) == PRDB_SDK_BATCH_INVALID_PAYLOAD);
+        assert(prdb_sdk_index_range_open_v1(
+                   &range, sizeof(range), range_payload,
+                   sizeof(range_payload) - 1) ==
+               PRDB_SDK_BATCH_INVALID_PAYLOAD);
+    }
+    assert(prdb_sdk_index_range_row_next_v1(
+               &range_rows, &range_row, sizeof(range_row)) ==
            PRDB_SDK_BATCH_END);
 
     assert(prdb_sdk_batch_open_v1(&batch, sizeof(batch), payload,
