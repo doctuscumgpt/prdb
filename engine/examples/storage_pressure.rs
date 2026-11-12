@@ -56,6 +56,18 @@ fn now_us() -> Result<i64, Box<dyn Error>> {
     )?)
 }
 
+fn process_memory_kib(field: &str) -> Result<usize, Box<dyn Error>> {
+    let status = fs::read_to_string("/proc/self/status")?;
+    let value = status
+        .lines()
+        .find_map(|line| line.strip_prefix(field))
+        .ok_or_else(|| format!("process status omitted {field}"))?
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| format!("process status field {field} was empty"))?;
+    Ok(value.parse()?)
+}
+
 fn payload(columns: &[ColumnSchema], value: String) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(encode_tuple(columns, 1, &[Some(ScalarValue::Text(value))])?)
 }
@@ -273,6 +285,9 @@ fn run_in_directory(data_directory: &std::path::Path) -> Result<(), Box<dyn Erro
     {
         return Err("initial authorized scan did not return the seeded rows".into());
     }
+    let resident_before_kib = process_memory_kib("VmRSS:")?;
+    let peak_before_kib = process_memory_kib("VmHWM:")?;
+    let encoded_row_bytes = payload(&columns, "x".repeat(ANALYTIC_ROW_BYTES))?.len();
 
     let barrier = Barrier::new(WRITERS + 2);
     let completed = AtomicUsize::new(0);
@@ -384,6 +399,11 @@ fn run_in_directory(data_directory: &std::path::Path) -> Result<(), Box<dyn Erro
     let elapsed = writers_started.elapsed();
     let mut mixed_commit_latencies = commit_latencies.into_inner().expect("commit latency mutex");
     reader.abort()?;
+    let resident_after_kib = process_memory_kib("VmRSS:")?;
+    let peak_after_kib = process_memory_kib("VmHWM:")?;
+    let scan_value_bytes = analytical_rounds * WRITERS * ANALYTIC_ROW_BYTES;
+    let point_read_value_bytes = point_reads * ANALYTIC_ROW_BYTES;
+    let committed_tuple_bytes = WRITERS * WRITES_PER_WRITER * encoded_row_bytes;
     println!("profile: redb 4.4.0 / Rust 1.95.0 / x86_64 Linux");
     println!(
         "writers: {WRITERS} threads x {WRITES_PER_WRITER} durable commits ({} KiB per row)",
@@ -421,6 +441,12 @@ fn run_in_directory(data_directory: &std::path::Path) -> Result<(), Box<dyn Erro
         percentile(&mut maintenance_latencies, 99).as_secs_f64() * 1_000.0
     );
     println!("reader snapshot: retained original values through all writer commits");
+    println!(
+        "memory: VmRSS {resident_before_kib} KiB before / {resident_after_kib} KiB after; VmHWM {peak_before_kib} KiB before / {peak_after_kib} KiB after"
+    );
+    println!(
+        "API-boundary data bytes: {scan_value_bytes} from full scans; {point_read_value_bytes} from point reads; {committed_tuple_bytes} encoded tuple bytes submitted by {WRITES_PER_WRITER} x {WRITERS} commits"
+    );
     drop(storage);
     drop(instance);
     Ok(())

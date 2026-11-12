@@ -1,5 +1,12 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: resident memory and API-boundary byte accounting — measured
+
+- Harness: [`storage_pressure.rs`](../../engine/examples/storage_pressure.rs) now records `/proc/self/status` VmRSS and VmHWM around its mixed workload, plus exact text-value bytes returned through full authorized scans and point reads and encoded tuple bytes submitted in writer commits. Five sequential release runs used fresh temporary databases with four 32-KiB rows, 256 durable commits, one retained authorized reader, and bounded outcome pruning.
+- Result: median resident memory was 7,112 KiB before and 30,204 KiB after the mixed phase; median VmHWM after the phase was 30,204 KiB. Each phase submitted 8,395,008 encoded tuple bytes. Scan and point-read APIs each returned a median 1,431,699,456 text-value bytes during the roughly 0.65–1.11-second writer interval; individual run totals were 1.338–1.907 GB. Mixed commit throughput ranged from 231.8 to 391.7 commits/s, with one visibly slower run.
+- Verification: all five `cargo run --release --locked --example storage_pressure` runs completed. The release example output reports process residency and logical bytes at API boundaries; these are not allocator-level copy counts, redb physical write bytes, or a peak-memory guarantee under SQL execution.
+- Remaining: SQL executor/optimizer process memory, allocator-level copy accounting, output/planning queue pressure, cancellation/reclamation at saturation, and target-hardware repeats remain open.
+
 ## WI-7 follow-up: analytical admission cap under live multi-client SQL — covered
 
 - Harness: the enabled `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance now configures the storage analytical cap to two and runs the primary SQL workload alongside its confined cancellation SQL worker, both classified as analytical. While the primary process is live, a third START from a separate principal must fail with `AdmissionLimitExceeded`, proving storage admission—not the per-principal staging limit—rejects it. Four operational workers continue authorized point reads and durable commits; cancellation and SDK polling proceed during this interval.
@@ -44,7 +51,7 @@
 - Repeatability: five sequential fresh-database runs on Linux x86_64, Rust 1.95.0, redb 4.4.0. The median of run-level commit p50/p95/p99 was 5.730/15.595/21.117 ms operational-only and 10.383/14.495/21.385 ms under retained authorized reads plus pruning. Mixed phases completed in 0.650–0.677 s (378.1–393.7 commits/s), 9,693–10,495 full scans, 38,772–41,980 point reads, and removed all 256 expired outcomes in 43–45 bounded transactions.
 - Verification: the five release harness runs completed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, maintained TinyCC SDK tests, and the full serial delegated-cgroup workspace suite passed. The commit integration target reported 142 passed and 0 ignored.
 - Interpretation: a prior unpaced harness run let read and maintenance loops spin, producing up to 43,592 prune transactions and writer p99 values above 10 seconds. Adding cooperative reader yielding and a 5 ms inter-batch pause eliminated that artificial scheduler starvation. The final repeated sample shows higher median commit p50 under this local mixed workload; p95/p99 overlap with operational-only runs. These results are comparative evidence, not service-level targets or a model of the configured 60-second maintenance cadence.
-- Remaining: broader multi-client SQL saturation, output/planning queue pressure, cancellation/reclamation during load, memory/copy accounting, and target-hardware repeats remain open.
+- Remaining: broader multi-client SQL saturation, output/planning queue pressure, cancellation/reclamation during load, SQL process memory and allocator-level copy accounting, and target-hardware repeats remain open.
 
 ## WI-7 follow-up: authorized point reads and commits during confined SQL — measured
 
