@@ -914,3 +914,92 @@ fn slow_tcp_result_consumer_backpressures_supervisor_service_writer() {
     gateway.join().unwrap();
     supervisor.join().unwrap();
 }
+
+#[test]
+fn stalled_tcp_result_write_times_out_and_closes_service_stream() {
+    const RESULT_FRAME_BYTES: usize = 256 * 1024;
+    const RESULT_FRAME_COUNT: usize = 16;
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let (mut gateway_service, mut supervisor_service) =
+        std::os::unix::net::UnixStream::pair().unwrap();
+    let supervisor = std::thread::spawn(move || -> Result<(), prdb_engine::ipc::FrameError> {
+        let start = read_frame(&mut supervisor_service).unwrap().unwrap();
+        write_frame(
+            &mut supervisor_service,
+            &IpcFrame {
+                operation: start.operation,
+                request_id: start.request_id,
+                payload: br#"{"state":"accepted"}"#.to_vec(),
+            },
+        )
+        .unwrap();
+        let payload = vec![b'y'; RESULT_FRAME_BYTES];
+        for _ in 0..RESULT_FRAME_COUNT {
+            write_frame(
+                &mut supervisor_service,
+                &IpcFrame {
+                    operation: Operation::GatewayResultData as u16,
+                    request_id: start.request_id,
+                    payload: payload.clone(),
+                },
+            )?;
+        }
+        Ok(())
+    });
+    let gateway = std::thread::spawn(move || {
+        let (mut client, _) = listener.accept().unwrap();
+        // SAFETY: the accepted stream owns a live socket descriptor and the option value is valid.
+        let size: libc::c_int = 16 * 1024;
+        let result = unsafe {
+            libc::setsockopt(
+                std::os::fd::AsRawFd::as_raw_fd(&client),
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
+                (&size as *const libc::c_int).cast(),
+                std::mem::size_of_val(&size) as libc::socklen_t,
+            )
+        };
+        assert_eq!(result, 0);
+        prdb_engine::gateway::serve_tcp_client_connection_with_timeouts(
+            &mut client,
+            &mut gateway_service,
+            std::time::Duration::from_millis(100),
+            std::time::Duration::from_millis(100),
+        )
+    });
+
+    let mut client = std::net::TcpStream::connect(address).unwrap();
+    client
+        .write_all(
+            &ClientFrame {
+                kind: 7,
+                request_id: 9,
+                response_sequence: 0,
+                payload: b"{}".to_vec(),
+            }
+            .encode()
+            .unwrap(),
+        )
+        .unwrap();
+    let mut decoder = ClientFrameDecoder::default();
+    let mut buffer = [0u8; 256];
+    let mut responses = Vec::new();
+    while responses.is_empty() {
+        let count = client.read(&mut buffer).unwrap();
+        assert_ne!(
+            count, 0,
+            "gateway disconnected before START acknowledgement"
+        );
+        responses.extend(decoder.push(&buffer[..count]).unwrap());
+    }
+    assert_eq!(responses[0].kind, 100);
+
+    let gateway_result = gateway.join().unwrap();
+    assert!(matches!(
+        gateway_result,
+        Err(prdb_engine::gateway::GatewayConnectionError::Io(ref error))
+            if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)
+    ));
+    assert!(supervisor.join().unwrap().is_err());
+}
