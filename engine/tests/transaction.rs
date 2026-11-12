@@ -6194,6 +6194,50 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         policy_driving_columns: &[],
         dependencies: &[],
     };
+    let range_bound = || prdb_engine::transaction::AuthorizedIndexRangeBound {
+        value: ScalarValue::Bytea(b"duplicate".to_vec()),
+        inclusive: true,
+    };
+    let reference_scan = invocation.scan_authorized(table_id, None, 16, &projection)?;
+    assert!(reference_scan.continuation.is_none());
+    let reference_matches = reference_scan
+        .rows
+        .iter()
+        .filter(|(_, cells)| {
+            cells.first()
+                == Some(&SanitizedCell::Value(ScalarValue::Bytea(
+                    b"duplicate".to_vec(),
+                )))
+        })
+        .collect::<Vec<_>>();
+    let unique_probe = invocation.probe_catalog_unique_index(
+        table_id,
+        index_id,
+        &[Some(ScalarValue::Bytea(b"duplicate".to_vec()))],
+        &projection,
+    )?;
+    assert!(matches!(
+        &unique_probe,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::Match { id, cells }
+            if reference_matches.len() == 1
+                && *id == reference_matches[0].0
+                && cells == &reference_matches[0].1
+    ));
+    let matching_range = invocation.scan_catalog_index_range(
+        table_id,
+        range_index_id,
+        Some(range_bound()),
+        Some(range_bound()),
+        &projection,
+    )?;
+    assert!(matches!(
+        &matching_range,
+        prdb_engine::transaction::AuthorizedIndexRangeScan::Rows(rows)
+            if rows.len() == reference_matches.len()
+                && rows.iter().zip(&reference_matches).all(|(indexed, reference)| {
+                    indexed.0 == reference.0 && indexed.1 == reference.1
+                })
+    ));
     let hidden_context = AuthorizationContext {
         principal_id,
         role_ids: std::collections::HashSet::new(),
@@ -6296,10 +6340,6 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
             ))],
         },
     );
-    let range_bound = || prdb_engine::transaction::AuthorizedIndexRangeBound {
-        value: ScalarValue::Bytea(b"duplicate".to_vec()),
-        inclusive: true,
-    };
     assert_eq!(
         invocation.scan_catalog_index_range(
             table_id,

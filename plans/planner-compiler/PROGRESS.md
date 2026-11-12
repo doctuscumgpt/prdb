@@ -47,6 +47,12 @@
 - Confined regression: the maintained SQL artifact executes `SELECT left_key FROM grouped_records WHERE left_key >= $1 AND left_key < $2 LIMIT 1` through the optimizer and non-unique range path, with typed parameters 1 and 2; it returns the expected row.
 - Verification: focused Rust planner test, full maintained SDK tests, `sandbox-query-fixture` rebuild, and focused delegated-cgroup acceptance passed. Workspace build, format check, warning-denied Clippy, and release-profile validation passed. The full serial delegated-cgroup workspace suite passed with 195 library tests, 148 commit tests, 74 transaction tests, 5 tuple tests, and zero ignored across test targets.
 
+## OP-5 follow-up: compare index results with the authorized reference scan — verified
+
+- Regression: the real-redb catalog-index fixture now obtains a full authorized scan and independently filters its sanitized values, then checks that both the unique point probe and bounded range scan return the same row identity and sanitized cells. Existing cases in the same fixture continue to require `Unavailable` for hidden/conditionally readable keys and verify staged updates/deletes shadow pinned index entries.
+- Verification: the focused `unique_constraint_uses_its_backing_index_for_invocation_writes` regression passed. Locked workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed; the suite included 195 library tests, 148 commit tests, 74 transaction tests, 5 tuple tests, and zero ignored tests across all targets. `git diff --check` passed.
+- Scope: this proves storage result equivalence for the tested exact key and same authorization snapshot; end-to-end timing against forced SDK scan fallback and wider hidden-data/error equivalence cases remain open.
+
 ## OP-5 follow-up: measure optimizer SQL compilation and linking — measured
 
 - The maintained [`benchmark_sdk_build.py`](../../engine/tools/benchmark_sdk_build.py) now defaults to compiling the real optimizer-backed SQL artifact and retains the caught-error fixture as an explicit alternate profile. It reports the selected fixture alongside SDK archive build, TinyCC compile, and GNU shared-link timings.
