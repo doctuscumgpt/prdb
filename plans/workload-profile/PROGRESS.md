@@ -124,3 +124,10 @@
 - Run-level median latency across repetitions: 0.921 ms for 1,024 rows (range 0.899–0.930), 7.460 ms for 8,192 rows (7.124–7.587), and 15.943 ms for 16,383 rows (14.979–23.795). Median run p95 values were 1.406, 9.170, and 16.738 ms respectively.
 - Scope: one host with uncontrolled cache and competing load; the 16,383-row p95 ranged from 15.835 to 27.299 ms. This measures the storage estimate call, excluding setup and planner IPC, and is not service-level or target-hardware evidence.
 - Verification: each of the three release harness executions completed successfully.
+
+## WI-2 follow-up: token-authenticated principals receive different executor cell views — verified
+
+- Regression: `token_authenticated_catalog_scans_redact_cells_per_principal` creates two users through identity DDL, issues separate tokens, installs independent schema/table/column grants and row/cell policies through `StorageManager`, then compares executor IPC scans over the same variable-length Bytea row. The readable principal receives VALUE; the second principal sees the row and receives only REDACTED.
+- Red evidence: when the restricted principal's row SELECT ALLOW policy was removed, the regression returned zero rows instead of the visible redacted row.
+- Verification: the focused test passed; locked workspace build, formatting, warning-denied Clippy, maintained TinyCC SDK tests, sandbox-query fixture build, and the full serial delegated-cgroup workspace suite passed under Rust/Cargo 1.95.0. The commit integration target reported 146 passed and zero ignored.
+- Remaining: exercise the same setup through the authenticated control socket and run a confined hostile IPC client that attempts handle/SDK bypasses.

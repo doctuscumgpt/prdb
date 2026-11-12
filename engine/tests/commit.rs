@@ -154,6 +154,75 @@ fn table_row_key(table_id: [u8; 16], row_id: [u8; 16]) -> [u8; 32] {
     key
 }
 
+fn executor_ipc_scan_cells(
+    invocation: &mut prdb_engine::transaction::InvocationTransaction<'_>,
+    schema_name: &str,
+    table_name: &str,
+    column_ids: Vec<[u8; 16]>,
+) -> Result<Vec<Vec<prdb_engine::authorization::SanitizedCell>>, Box<dyn std::error::Error>> {
+    use prdb_engine::executor_ipc::{
+        NextBatchRequest, NextBatchResponse, OpenScanRequest, OpenScanResponse,
+        ResolveRelationRequest, ResolveRelationResponse, dispatch_executor_request,
+    };
+    use prdb_engine::ipc::{IpcFrame, Operation, ServiceRole};
+
+    let mut connection = invocation.open_executor_metadata_connection();
+    let resolved = dispatch_executor_request(
+        ServiceRole::Executor,
+        &mut connection,
+        &IpcFrame {
+            operation: Operation::ResolveRelation as u16,
+            request_id: 1,
+            payload: ResolveRelationRequest {
+                schema_name: schema_name.to_owned(),
+                relation_name: table_name.to_owned(),
+            }
+            .encode()?,
+        },
+    )
+    .map_err(|error| format!("executor IPC resolve failed: {error:?}"))?;
+    let ResolveRelationResponse::Resolved { handle, .. } =
+        ResolveRelationResponse::decode(&resolved.payload)?
+    else {
+        return Err("authorized relation did not resolve".into());
+    };
+    let opened = dispatch_executor_request(
+        ServiceRole::Executor,
+        &mut connection,
+        &IpcFrame {
+            operation: Operation::OpenScan as u16,
+            request_id: 2,
+            payload: OpenScanRequest {
+                relation: handle,
+                column_ids,
+            }
+            .encode()?,
+        },
+    )
+    .map_err(|error| format!("executor IPC open scan failed: {error:?}"))?;
+    let cursor = OpenScanResponse::decode(&opened.payload)?.cursor;
+    let page = dispatch_executor_request(
+        ServiceRole::Executor,
+        &mut connection,
+        &IpcFrame {
+            operation: Operation::NextBatch as u16,
+            request_id: 3,
+            payload: NextBatchRequest {
+                cursor: cursor.clone(),
+                max_scanned: 16,
+                max_bytes: 4096,
+            }
+            .encode()?,
+        },
+    )
+    .map_err(|error| format!("executor IPC next batch failed: {error:?}"))?;
+    let page = NextBatchResponse::decode(&page.payload)?;
+    if page.continuation.is_some() {
+        return Err("single row fixture unexpectedly required a continuation".into());
+    }
+    Ok(page.rows.into_iter().map(|row| row.cells).collect())
+}
+
 fn id(n: u8) -> [u8; 16] {
     [n; 16]
 }
@@ -19189,6 +19258,267 @@ fn catalog_commit_rejects_malformed_credential_verifier_profiles()
         Err(CommitError::InvalidCatalog),
     );
     assert_eq!(commit_sequence(&database)?, 0);
+    Ok(())
+}
+
+#[test]
+fn token_authenticated_catalog_scans_redact_cells_per_principal()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::authorization::{Effect, Expr, Operation, SanitizedCell, Subject};
+    use prdb_engine::storage_manager::{
+        CreatePolicyRequest, CreateTableRequest, ObjectGrantPrivilege, ObjectGrantTarget,
+        PolicyKind, SetObjectGrantRequest, TableColumnDefinition, TokenIssueRequest,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let admin_id = id(0x51);
+    let admin_role = builtin_owner_id();
+    let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?;
+    let retention_deadline_us = now + 3_600_000_000;
+
+    let mut setup_audit = identity_audit_event(0x52, admin_role, admin_id);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(
+        id(0x52),
+        admin_role,
+        retention_deadline_us,
+        &[
+            principal_write_with_name(admin_id, 1, 1, "cell_view_admin"),
+            object_write_with_name(admin_id, 8, "cell_view_admin"),
+            membership_write_with_grantor(admin_id, admin_role, admin_role),
+            dependency_write(admin_id, admin_role, 5),
+        ],
+        &[setup_audit],
+    )?;
+
+    let audit = |event_id: u8, invocation_id: [u8; 16], target_id: [u8; 16], action| {
+        let mut event = identity_audit_event(event_id, admin_id, target_id);
+        event.correlation_id = invocation_id;
+        event.action = action;
+        event
+    };
+    let first_user = storage.create_user(
+        id(0x53),
+        admin_id,
+        "cell_view_reader",
+        retention_deadline_us,
+        audit(0x54, id(0x53), admin_id, AuditAction::Ddl),
+    )?;
+    let restricted_user = storage.create_user(
+        id(0x55),
+        admin_id,
+        "cell_view_restricted",
+        retention_deadline_us,
+        audit(0x56, id(0x55), admin_id, AuditAction::Ddl),
+    )?;
+    let mut first_token = storage.issue_token(TokenIssueRequest {
+        invocation_id: id(0x57),
+        authenticated_actor_id: admin_id,
+        user_id: first_user.user_id,
+        label: "cell view reader",
+        expires_at_us: retention_deadline_us,
+        retention_deadline_us,
+        audit_event: audit(
+            0x58,
+            id(0x57),
+            first_user.user_id,
+            AuditAction::TokenLifecycle,
+        ),
+    })?;
+    let first_token_id = first_token.token_id;
+    let first_secret = first_token
+        .take_secret()
+        .ok_or("first token secret missing")?;
+    let mut restricted_token = storage.issue_token(TokenIssueRequest {
+        invocation_id: id(0x59),
+        authenticated_actor_id: admin_id,
+        user_id: restricted_user.user_id,
+        label: "cell view restricted",
+        expires_at_us: retention_deadline_us,
+        retention_deadline_us,
+        audit_event: audit(
+            0x5a,
+            id(0x59),
+            restricted_user.user_id,
+            AuditAction::TokenLifecycle,
+        ),
+    })?;
+    let restricted_token_id = restricted_token.token_id;
+    let restricted_secret = restricted_token
+        .take_secret()
+        .ok_or("restricted token secret missing")?;
+
+    let schema = storage.create_schema(
+        id(0x5b),
+        admin_id,
+        "cell_views",
+        admin_id,
+        retention_deadline_us,
+        audit(0x5c, id(0x5b), admin_id, AuditAction::Ddl),
+    )?;
+    let table = storage.create_table(CreateTableRequest {
+        invocation_id: id(0x5d),
+        authenticated_actor_id: admin_id,
+        schema_id: schema.schema_id,
+        name: "records".to_owned(),
+        columns: vec![TableColumnDefinition {
+            name: "secret".to_owned(),
+            scalar_type: ScalarType::Bytea,
+            nullable: false,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+        retention_deadline_us,
+        audit_event: audit(0x5e, id(0x5d), schema.schema_id, AuditAction::Ddl),
+    })?;
+
+    let mut next_audit_id = 0x60u8;
+    let mut next_invocation_id = 0x61u8;
+    for principal_id in [first_user.user_id, restricted_user.user_id] {
+        for (object_id, privilege, target) in [
+            (
+                schema.schema_id,
+                ObjectGrantPrivilege::Usage,
+                ObjectGrantTarget::Object,
+            ),
+            (
+                table.table_id,
+                ObjectGrantPrivilege::Select,
+                ObjectGrantTarget::Object,
+            ),
+            (
+                table.table_id,
+                ObjectGrantPrivilege::Select,
+                ObjectGrantTarget::Column(table.column_ids[0]),
+            ),
+        ] {
+            let invocation_id = id(next_invocation_id);
+            let mut event = audit(
+                next_audit_id,
+                invocation_id,
+                object_id,
+                AuditAction::AuthorityChange,
+            );
+            event.target_ids.push(principal_id);
+            storage.set_object_grant(SetObjectGrantRequest {
+                invocation_id,
+                authenticated_actor_id: admin_id,
+                grantee_id: principal_id,
+                object_id,
+                privilege,
+                target,
+                grant: true,
+                retention_deadline_us,
+                audit_event: event,
+            })?;
+            next_audit_id = next_audit_id.wrapping_add(1);
+            next_invocation_id = next_invocation_id.wrapping_add(1);
+        }
+    }
+
+    let mut policy_invocation_id = 0x70u8;
+    for (recipient, kind, column_targets, name) in [
+        (
+            first_user.user_id,
+            PolicyKind::Row,
+            Vec::new(),
+            "reader_row",
+        ),
+        (
+            restricted_user.user_id,
+            PolicyKind::Row,
+            Vec::new(),
+            "restricted_row",
+        ),
+        (
+            first_user.user_id,
+            PolicyKind::Cell,
+            vec![table.column_ids[0]],
+            "reader_cell",
+        ),
+    ] {
+        let invocation_id = id(policy_invocation_id);
+        storage.create_policy(CreatePolicyRequest {
+            invocation_id,
+            authenticated_actor_id: admin_id,
+            table_id: table.table_id,
+            name: name.to_owned(),
+            kind,
+            operation: Operation::Select,
+            effect: Effect::Allow,
+            recipients: vec![Subject::Principal(recipient)],
+            target_column_ids: column_targets,
+            using_expression: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+            with_check_expression: None,
+            retention_deadline_us,
+            audit_event: audit(
+                policy_invocation_id.wrapping_add(1),
+                invocation_id,
+                table.table_id,
+                AuditAction::Ddl,
+            ),
+        })?;
+        policy_invocation_id = policy_invocation_id.wrapping_add(2);
+    }
+
+    let row_id = id(0x7f);
+    let row_key = table_row_key(table.table_id, row_id);
+    let row_payload = encode_tuple(
+        &[ColumnSchema {
+            scalar_type: ScalarType::Bytea,
+            nullable: false,
+        }],
+        1,
+        &[Some(ScalarValue::Bytea(b"variable length secret".to_vec()))],
+    )?;
+    commit_rows(
+        &database,
+        id(0x80),
+        admin_id,
+        retention_deadline_us,
+        &[RowWrite {
+            key: row_key,
+            expected_version: None,
+            payload: Some(row_payload),
+        }],
+    )?;
+
+    let (mut first_invocation, first_roles) = storage.begin_token_authenticated_invocation(
+        id(0x81),
+        first_token_id,
+        &first_secret,
+        retention_deadline_us,
+        4,
+        4096,
+    )?;
+    let (mut restricted_invocation, restricted_roles) = storage
+        .begin_token_authenticated_invocation(
+            id(0x82),
+            restricted_token_id,
+            &restricted_secret,
+            retention_deadline_us,
+            4,
+            4096,
+        )?;
+    assert!(first_roles.is_empty());
+    assert!(restricted_roles.is_empty());
+    let first_cells =
+        executor_ipc_scan_cells(&mut first_invocation, "cell_views", "records", vec![])?;
+    let restricted_cells =
+        executor_ipc_scan_cells(&mut restricted_invocation, "cell_views", "records", vec![])?;
+    assert_eq!(
+        first_cells,
+        vec![vec![SanitizedCell::Value(ScalarValue::Bytea(
+            b"variable length secret".to_vec()
+        ))]]
+    );
+    assert_eq!(restricted_cells, vec![vec![SanitizedCell::Redacted]]);
+    first_invocation.abort()?;
+    restricted_invocation.abort()?;
+    assert!(prdb_engine::startup::validate_persisted_records(&database).is_ok());
     Ok(())
 }
 
