@@ -589,11 +589,10 @@ static int point_probe_matches_filter(
             memcmp(left_literal, literal, literal_len) == 0);
 }
 
-static int range_probe_matches_filter(
-    const prdb_sdk_optimizer_filter_v1 *filter,
+static int range_comparison_matches_bound(
+    plan_reader *reader,
     const prdb_sdk_optimizer_plan_column_v1 *key_column,
-    const range_probe_hint *hint) {
-    plan_reader reader;
+    const range_probe_hint *hint, int *is_lower_out) {
     uint8_t tag;
     uint8_t comparison;
     uint8_t left_column[16] = {0};
@@ -608,21 +607,14 @@ static int range_probe_matches_filter(
     uint32_t expected_literal_len;
     uint8_t expected_inclusive;
     int expected_lower;
-
-    if (filter == NULL || filter->present == 0 || filter->prefix == NULL ||
-        hint == NULL || hint->present == 0) return 0;
-    reader.bytes = filter->prefix;
-    reader.length = filter->prefix_len;
-    reader.offset = 0;
-    uint64_t tag_offset = reader.offset;
-    if (!read_u8(&reader, &tag) || tag != 0x20 ||
-        !read_compare_predicate_header(&reader, tag_offset, &comparison) ||
+    uint64_t tag_offset = reader->offset;
+    if (!read_u8(reader, &tag) || tag != 0x20 ||
+        !read_compare_predicate_header(reader, tag_offset, &comparison) ||
         comparison < 2 || comparison > 5 ||
-        !read_point_probe_leaf(&reader, left_column, &left_literal,
+        !read_point_probe_leaf(reader, left_column, &left_literal,
                                &left_literal_len) ||
-        !read_point_probe_leaf(&reader, right_column, &right_literal,
-                               &right_literal_len) ||
-        reader.offset != reader.length) return 0;
+        !read_point_probe_leaf(reader, right_column, &right_literal,
+                               &right_literal_len)) return 0;
     left_is_column = left_literal == NULL;
     right_is_column = right_literal == NULL;
     if (left_is_column == right_is_column) return 0;
@@ -631,26 +623,76 @@ static int range_probe_matches_filter(
         expected_literal = right_literal;
         expected_literal_len = right_literal_len;
         expected_lower = comparison >= 4;
-        expected_inclusive = (uint8_t)(comparison == 3 || comparison == 5);
     } else {
         if (memcmp(right_column, key_column->column_id, 16) != 0) return 0;
         expected_literal = left_literal;
         expected_literal_len = left_literal_len;
-        expected_lower = comparison <= 3;
-        expected_inclusive = (uint8_t)(comparison == 3 || comparison == 5);
+        comparison = comparison == 2 ? 4 : comparison == 3 ? 5 :
+                     comparison == 4 ? 2 : 3;
+        expected_lower = comparison >= 4;
     }
+    expected_inclusive = (uint8_t)(comparison == 3 || comparison == 5);
+    *is_lower_out = expected_lower;
     if (expected_lower) {
-        return hint->lower_literal != NULL && hint->upper_literal == NULL &&
+        return hint->lower_literal != NULL &&
                hint->lower_inclusive == expected_inclusive &&
                hint->lower_literal_len == expected_literal_len &&
                memcmp(hint->lower_literal, expected_literal,
                       expected_literal_len) == 0;
     }
-    return hint->upper_literal != NULL && hint->lower_literal == NULL &&
+    return hint->upper_literal != NULL &&
            hint->upper_inclusive == expected_inclusive &&
            hint->upper_literal_len == expected_literal_len &&
            memcmp(hint->upper_literal, expected_literal,
                   expected_literal_len) == 0;
+}
+
+static int range_probe_matches_filter(
+    const prdb_sdk_optimizer_filter_v1 *filter,
+    const prdb_sdk_optimizer_plan_column_v1 *key_column,
+    const range_probe_hint *hint) {
+    plan_reader reader;
+    uint8_t tag;
+    if (filter == NULL || filter->present == 0 || filter->prefix == NULL ||
+        hint == NULL || hint->present == 0) return 0;
+    reader.bytes = filter->prefix;
+    reader.length = filter->prefix_len;
+    reader.offset = 0;
+    uint64_t tag_offset = reader.offset;
+    if (!read_u8(&reader, &tag)) return 0;
+    if (tag == 0x20) {
+        int is_lower = 0;
+        reader.offset = 0;
+        if (!range_comparison_matches_bound(&reader, key_column, hint,
+                                            &is_lower) ||
+            reader.offset != reader.length) return 0;
+        return is_lower ? hint->upper_literal == NULL
+                        : hint->lower_literal == NULL;
+    }
+    if (tag == 0x30) {
+        uint8_t node_tag;
+        uint8_t child_count;
+        int saw_lower = 0;
+        int saw_upper = 0;
+        if (!read_boolean_predicate_header(&reader, tag_offset, &node_tag,
+                                           &child_count) ||
+            node_tag != 0x30 || child_count != 2) return 0;
+        for (uint32_t child = 0; child < child_count; ++child) {
+            int is_lower = 0;
+            if (!range_comparison_matches_bound(&reader, key_column, hint,
+                                                &is_lower)) return 0;
+            if (is_lower) {
+                if (saw_lower) return 0;
+                saw_lower = 1;
+            } else {
+                if (saw_upper) return 0;
+                saw_upper = 1;
+            }
+        }
+        return saw_lower && saw_upper && reader.offset == reader.length &&
+               hint->lower_literal != NULL && hint->upper_literal != NULL;
+    }
+    return 0;
 }
 
 static void write_u16_be(uint8_t *bytes, uint16_t value) {

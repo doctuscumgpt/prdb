@@ -479,6 +479,22 @@ static void put_integer_comparison(uint8_t *bytes, uint32_t *offset,
     bytes[(*offset)++] = integer_value;
 }
 
+static void put_integer_literal_column_comparison(uint8_t *bytes,
+                                                  uint32_t *offset,
+                                                  uint8_t comparison,
+                                                  uint8_t integer_value) {
+    bytes[(*offset)++] = 0x20;
+    bytes[(*offset)++] = comparison;
+    bytes[(*offset)++] = 0x02;
+    memset(bytes + *offset, 0, 7);
+    *offset += 7;
+    bytes[(*offset)++] = integer_value;
+    bytes[(*offset)++] = 0x10;
+    bytes[(*offset)++] = 10;
+    memset(bytes + *offset, 0, 15);
+    *offset += 15;
+}
+
 static uint32_t build_filter_plan(uint8_t *bytes,
                                   uint32_t *predicate_offset) {
     uint32_t offset = 0;
@@ -538,6 +554,62 @@ static uint32_t append_integer_range_hint(uint8_t *bytes, uint32_t offset) {
     offset += 7;
     bytes[offset++] = 1;
     bytes[offset++] = 0; /* no upper bound */
+    return offset;
+}
+
+static uint32_t build_two_sided_range_plan(uint8_t *bytes,
+                                           uint32_t *predicate_offset) {
+    uint32_t offset = 0;
+    (void)put_header(bytes, &offset, 4);
+    bytes[offset++] = 1;
+    put_u16(bytes, &offset, 1);
+    uint32_t column_id_offset = put_column(bytes, &offset, 3, 0);
+    bytes[column_id_offset] = 10;
+    bytes[column_id_offset + 16] = 0;
+    bytes[column_id_offset + 17] = 0;
+    bytes[column_id_offset + 18] = 0;
+    bytes[column_id_offset + 19] = 0;
+    bytes[offset++] = 2;
+    *predicate_offset = offset;
+    bytes[offset++] = 0x30;
+    bytes[offset++] = 2;
+    put_integer_comparison(bytes, &offset, 20);
+    bytes[*predicate_offset + 3] = 2; /* column < 20 */
+    put_integer_literal_column_comparison(bytes, &offset, 3, 10);
+    bytes[offset++] = 3;
+    put_u16(bytes, &offset, 1);
+    column_id_offset = put_column(bytes, &offset, 3, 0);
+    bytes[column_id_offset] = 10;
+    bytes[column_id_offset + 16] = 0;
+    bytes[column_id_offset + 17] = 0;
+    bytes[column_id_offset + 18] = 0;
+    bytes[column_id_offset + 19] = 0;
+    bytes[offset++] = 4;
+    put_u32(bytes, &offset, 1);
+    return offset;
+}
+
+static uint32_t append_integer_two_sided_range_hint(uint8_t *bytes,
+                                                    uint32_t offset) {
+    bytes[offset++] = 0xa2;
+    memset(bytes + offset, 0x66, 16);
+    offset += 16;
+    uint32_t column_id_offset = put_column(bytes, &offset, 3, 0);
+    bytes[column_id_offset] = 10;
+    bytes[column_id_offset + 16] = 0;
+    bytes[column_id_offset + 17] = 0;
+    bytes[column_id_offset + 18] = 0;
+    bytes[column_id_offset + 19] = 0;
+    bytes[offset++] = 1;
+    bytes[offset++] = 0x02;
+    memset(bytes + offset, 0, 7);
+    offset += 7;
+    bytes[offset++] = 10;
+    bytes[offset++] = 2;
+    bytes[offset++] = 0x02;
+    memset(bytes + offset, 0, 7);
+    offset += 7;
+    bytes[offset++] = 20;
     return offset;
 }
 
@@ -1396,6 +1468,23 @@ int main(void) {
                malformed_range_plan, ranged_plan_len, &decoded_range_plan,
                sizeof(decoded_range_plan), &decoded_range_filter,
                sizeof(decoded_range_filter)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    uint8_t two_sided_range_plan[512];
+    uint32_t two_sided_predicate_offset = 0;
+    uint32_t two_sided_plan_len = build_two_sided_range_plan(
+        two_sided_range_plan, &two_sided_predicate_offset);
+    two_sided_plan_len = append_integer_two_sided_range_hint(
+        two_sided_range_plan, two_sided_plan_len);
+    assert(prdb_sdk_optimizer_decode_plan_with_filter_v1(
+               two_sided_range_plan, two_sided_plan_len,
+               &decoded_range_plan, sizeof(decoded_range_plan),
+               &decoded_range_filter, sizeof(decoded_range_filter)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    two_sided_range_plan[two_sided_predicate_offset + 40] = 11;
+    assert(prdb_sdk_optimizer_decode_plan_with_filter_v1(
+               two_sided_range_plan, two_sided_plan_len,
+               &decoded_range_plan, sizeof(decoded_range_plan),
+               &decoded_range_filter, sizeof(decoded_range_filter)) ==
            PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
     resolve.range_response[0] = 1;
     resolve.range_response[1] = 1;

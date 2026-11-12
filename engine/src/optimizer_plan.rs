@@ -3181,6 +3181,34 @@ fn index_range_bounds(
     Option<IndexRangeBoundV1>,
     Option<IndexRangeBoundV1>,
 )> {
+    match predicate {
+        BoundPredicate::Compare { .. } => index_range_comparison(predicate),
+        BoundPredicate::And(children) if children.len() == 2 => {
+            let (left_column, left_lower, left_upper) = index_range_comparison(&children[0])?;
+            let (right_column, right_lower, right_upper) = index_range_comparison(&children[1])?;
+            if left_column != right_column
+                || left_lower.is_some() == right_lower.is_some()
+                || left_upper.is_some() == right_upper.is_some()
+            {
+                return None;
+            }
+            Some((
+                left_column,
+                left_lower.or(right_lower),
+                left_upper.or(right_upper),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn index_range_comparison(
+    predicate: &BoundPredicate,
+) -> Option<(
+    BoundColumn,
+    Option<IndexRangeBoundV1>,
+    Option<IndexRangeBoundV1>,
+)> {
     let BoundPredicate::Compare {
         operator,
         left,
@@ -3871,6 +3899,62 @@ mod tests {
             panic!("range plan must retain its predicate");
         };
         **right = BoundPredicate::Integer(43);
+        assert_eq!(
+            validate_plan_v1(&mismatched),
+            Err(PlanError::InvalidPredicate)
+        );
+    }
+
+    #[test]
+    fn bounded_range_hint_accepts_a_two_sided_same_key_conjunction() {
+        let key = column(3, 1, ScalarType::Integer);
+        let mut bound = bound_select();
+        bound.predicate = Some(BoundPredicate::And(vec![
+            BoundPredicate::Compare {
+                operator: Comparison::LessOrEqual,
+                left: Box::new(BoundPredicate::Integer(10)),
+                right: Box::new(BoundPredicate::Column(key.clone())),
+            },
+            BoundPredicate::Compare {
+                operator: Comparison::Less,
+                left: Box::new(BoundPredicate::Column(key.clone())),
+                right: Box::new(BoundPredicate::Integer(20)),
+            },
+        ]));
+        bound.range_access_paths = vec![crate::metadata_discovery::AuthorizedRangeAccessPath {
+            index_id: [0x49; 16],
+            column_ids: vec![key.column_id, [0x4a; 16]],
+        }];
+
+        let plan = plan_select_v1(bound).unwrap();
+        assert_eq!(
+            plan.range_scan,
+            Some(IndexRangeScanV1 {
+                index_id: [0x49; 16],
+                key_column: key,
+                lower: Some(IndexRangeBoundV1 {
+                    value: BoundPredicate::Integer(10),
+                    inclusive: true,
+                }),
+                upper: Some(IndexRangeBoundV1 {
+                    value: BoundPredicate::Integer(20),
+                    inclusive: false,
+                }),
+            })
+        );
+        assert_eq!(
+            decode_plan_v1(&encode_plan_v1(&plan).unwrap()).unwrap(),
+            plan
+        );
+        let mut mismatched = plan.clone();
+        let Some(PlanNode::Filter(BoundPredicate::And(children))) = mismatched.nodes.get_mut(1)
+        else {
+            panic!("two-sided range plan must retain its conjunction");
+        };
+        let Some(BoundPredicate::Compare { right, .. }) = children.get_mut(1) else {
+            panic!("upper range term must retain its comparison");
+        };
+        **right = BoundPredicate::Integer(21);
         assert_eq!(
             validate_plan_v1(&mismatched),
             Err(PlanError::InvalidPredicate)
