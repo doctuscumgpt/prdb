@@ -44,10 +44,9 @@ pub struct SingleTablePlanV1 {
     pub empty_view_hint: bool,
 }
 
-/// Prefer a sequential scan over a non-unique range path for very small exact
-/// authorized populations. Unknown estimates and point probes keep their
-/// existing choices. The cutoff is conservative and based on a local storage
-/// API profile; it is not an end-to-end SQL cost estimate.
+/// Prefer a sequential scan over an index path for very small exact
+/// authorized populations. The cutoff is conservative and based on a local
+/// storage API profile; it is not an end-to-end SQL cost estimate.
 pub const SMALL_POPULATION_SCAN_ROWS: u64 = 4;
 
 pub fn apply_population_scan_heuristic(
@@ -55,9 +54,9 @@ pub fn apply_population_scan_heuristic(
     visible_rows: Option<u64>,
 ) -> Result<bool, PlanError> {
     if visible_rows.is_some_and(|rows| rows > 0 && rows <= SMALL_POPULATION_SCAN_ROWS)
-        && plan.unique_probe.is_none()
-        && plan.range_scan.is_some()
+        && (plan.unique_probe.is_some() || plan.range_scan.is_some())
     {
+        plan.unique_probe = None;
         plan.range_scan = None;
         validate_plan_v1(plan)?;
         return Ok(true);
@@ -3853,6 +3852,12 @@ mod tests {
                 value: BoundPredicate::Boolean(true),
             })
         );
+        let mut small_population = plan.clone();
+        assert!(apply_population_scan_heuristic(&mut small_population, Some(4)).unwrap());
+        assert!(small_population.unique_probe.is_none());
+        let mut unknown_population = plan.clone();
+        assert!(!apply_population_scan_heuristic(&mut unknown_population, None).unwrap());
+        assert!(unknown_population.unique_probe.is_some());
         let encoded = encode_plan_v1(&plan).unwrap();
         assert_eq!(decode_plan_v1(&encoded).unwrap(), plan);
 
