@@ -3,7 +3,7 @@ use prdb_engine::client_protocol::{
     decode_client_credentials, decode_client_prepare,
 };
 use prdb_engine::client_submit::SubmissionClient;
-use prdb_engine::submission_manifest::decode_manifest_v1;
+use prdb_engine::submission_manifest::{decode_elf_dynamic_info, decode_manifest_v1};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
@@ -79,7 +79,8 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
             "-f",
             "engine/sdk/Makefile",
             &format!("BUILD_DIR={}", sdk_build.display()),
-            "all",
+            "SDK_RUNTIME_PROFILE=test-runtime",
+            "sdk-shared-release",
         ])
         .output()
         .unwrap();
@@ -89,12 +90,18 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         String::from_utf8_lossy(&build.stderr)
     );
 
-    let archive = sdk_build.join("libprdb_sdk.a");
+    let release_dir =
+        sdk_build.join("releases/linux-x86_64/x86_64-v1/test-runtime/sdk-1-abis1,2,3,4,5");
+    let library = release_dir.join("libprdb_sql.so.1");
     let status = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
         .arg("--source")
         .arg(&source)
-        .arg("--sdk-archive")
-        .arg(&archive)
+        .arg("--sdk-library")
+        .arg(&library)
+        .arg("--sdk-metadata")
+        .arg(release_dir.join("sdk-release.json"))
+        .arg("--shared-linker")
+        .arg("cc")
         .arg("--include-dir")
         .arg(root.join("engine/include"))
         .arg("--scope")
@@ -144,7 +151,119 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         fs::read_to_string(package.join("artifact.sha256")).unwrap(),
         digest
     );
+    let dynamic = decode_elf_dynamic_info(&artifact).unwrap();
+    assert_eq!(dynamic.runpath.as_deref(), Some("$ORIGIN"));
+    assert!(dynamic.rpath.is_none());
+    assert!(dynamic.needed.iter().any(|name| name == "libprdb_sql.so.1"));
     assert!(!temp.join("constructor-ran").exists());
+
+    let valid_metadata = fs::read_to_string(release_dir.join("sdk-release.json")).unwrap();
+    let bad_metadata = temp.join("wrong-soname.json");
+    fs::write(
+        &bad_metadata,
+        valid_metadata.replace("libprdb_sql.so.1", "libprdb_sql.so.2"),
+    )
+    .unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
+        .arg("--source")
+        .arg(&source)
+        .arg("--sdk-library")
+        .arg(&library)
+        .arg("--sdk-metadata")
+        .arg(&bad_metadata)
+        .arg("--shared-linker")
+        .arg("cc")
+        .arg("--include-dir")
+        .arg(root.join("engine/include"))
+        .arg("--scope")
+        .arg(&scope)
+        .arg("--output-dir")
+        .arg(temp.join("rejected-package"))
+        .args([
+            "--abi",
+            "4",
+            "--sdk-release",
+            "1",
+            "--cpu-baseline",
+            "x86_64-v1",
+            "--runtime-profile",
+            "test-runtime",
+            "--compiler-identity",
+            "TinyCC integration test",
+        ])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(!temp.join("rejected-package").exists());
+
+    let bad_abi_metadata = temp.join("wrong-abi.json");
+    fs::write(
+        &bad_abi_metadata,
+        valid_metadata.replace("\"native_abis\":[1,2,3,4,5]", "\"native_abis\":[1,2,3,5]"),
+    )
+    .unwrap();
+    let rejected_abi = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
+        .arg("--source")
+        .arg(&source)
+        .arg("--sdk-library")
+        .arg(&library)
+        .arg("--sdk-metadata")
+        .arg(&bad_abi_metadata)
+        .arg("--shared-linker")
+        .arg("cc")
+        .arg("--include-dir")
+        .arg(root.join("engine/include"))
+        .arg("--scope")
+        .arg(&scope)
+        .arg("--output-dir")
+        .arg(temp.join("rejected-abi-package"))
+        .args([
+            "--abi",
+            "4",
+            "--sdk-release",
+            "1",
+            "--cpu-baseline",
+            "x86_64-v1",
+            "--runtime-profile",
+            "test-runtime",
+            "--compiler-identity",
+            "TinyCC integration test",
+        ])
+        .output()
+        .unwrap();
+    assert!(!rejected_abi.status.success());
+    assert!(!temp.join("rejected-abi-package").exists());
+    let rejected_release = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
+        .arg("--source")
+        .arg(&source)
+        .arg("--sdk-library")
+        .arg(&library)
+        .arg("--sdk-metadata")
+        .arg(release_dir.join("sdk-release.json"))
+        .arg("--shared-linker")
+        .arg("cc")
+        .arg("--include-dir")
+        .arg(root.join("engine/include"))
+        .arg("--scope")
+        .arg(&scope)
+        .arg("--output-dir")
+        .arg(temp.join("rejected-release-package"))
+        .args([
+            "--abi",
+            "4",
+            "--sdk-release",
+            "2",
+            "--cpu-baseline",
+            "x86_64-v1",
+            "--runtime-profile",
+            "test-runtime",
+            "--compiler-identity",
+            "TinyCC integration test",
+        ])
+        .output()
+        .unwrap();
+    assert!(!rejected_release.status.success());
+    assert!(!temp.join("rejected-release-package").exists());
 
     let expected_artifact = artifact.clone();
     let expected_manifest = manifest_bytes.clone();
@@ -305,8 +424,12 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
     let second = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
         .arg("--source")
         .arg(&source)
-        .arg("--sdk-archive")
-        .arg(&archive)
+        .arg("--sdk-library")
+        .arg(&library)
+        .arg("--sdk-metadata")
+        .arg(release_dir.join("sdk-release.json"))
+        .arg("--shared-linker")
+        .arg("cc")
         .arg("--include-dir")
         .arg(root.join("engine/include"))
         .arg("--scope")
@@ -355,7 +478,8 @@ fn packager_validates_abi_v4_exports_on_the_maintained_optimizer_fixture() {
             "-f",
             "engine/sdk/Makefile",
             &format!("BUILD_DIR={}", sdk_build.display()),
-            "all",
+            "SDK_RUNTIME_PROFILE=test-runtime",
+            "sdk-shared-release",
         ])
         .output()
         .unwrap();
@@ -368,8 +492,16 @@ fn packager_validates_abi_v4_exports_on_the_maintained_optimizer_fixture() {
     let status = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
         .arg("--source")
         .arg(root.join("engine/tests/fixtures/sql_v3_write_read.c"))
-        .arg("--sdk-archive")
-        .arg(sdk_build.join("libprdb_sdk.a"))
+        .arg("--sdk-library")
+        .arg(sdk_build.join(
+            "releases/linux-x86_64/x86_64-v1/test-runtime/sdk-1-abis1,2,3,4,5/libprdb_sql.so.1",
+        ))
+        .arg("--sdk-metadata")
+        .arg(sdk_build.join(
+            "releases/linux-x86_64/x86_64-v1/test-runtime/sdk-1-abis1,2,3,4,5/sdk-release.json",
+        ))
+        .arg("--shared-linker")
+        .arg("cc")
         .arg("--include-dir")
         .arg(root.join("engine/include"))
         .arg("--scope")
@@ -402,7 +534,22 @@ fn packager_validates_abi_v4_exports_on_the_maintained_optimizer_fixture() {
     assert_eq!(manifest.native_abi_version, 4);
     assert_eq!(manifest.descriptor_symbol, "prdb_query_descriptor_v4");
     assert_eq!(manifest.entry_point_symbol, "prdb_query_main_v4");
-    assert!(fs::metadata(package.join("query.so")).unwrap().len() > 100_000);
+    let artifact = fs::read(package.join("query.so")).unwrap();
+    assert!(artifact.len() < 100_000);
+    let dynamic = decode_elf_dynamic_info(&artifact).unwrap();
+    assert_eq!(dynamic.runpath.as_deref(), Some("$ORIGIN"));
+    assert!(dynamic.rpath.is_none());
+    assert!(dynamic.needed.iter().any(|name| name == "libprdb_sql.so.1"));
+    let dynamic_symbols = Command::new("readelf")
+        .args(["--dyn-syms", "-W"])
+        .arg(package.join("query.so"))
+        .output()
+        .unwrap();
+    assert!(dynamic_symbols.status.success());
+    let dynamic_symbols = String::from_utf8_lossy(&dynamic_symbols.stdout);
+    assert!(dynamic_symbols.lines().any(|line| {
+        line.contains(" UND ") && line.contains("prdb_sdk_optimizer_execute_update_ast_v1")
+    }));
     assert_eq!(
         fs::read(package.join("requested_scope.psc1")).unwrap(),
         scope_bytes

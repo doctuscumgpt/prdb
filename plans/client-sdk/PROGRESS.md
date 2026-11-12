@@ -1,12 +1,20 @@
 # Client SDK Progress
 
+## SQLSO-2: package queries against the shared SDK — implemented
+
+- Contract: [separate SQL library plan](SEPARATE_SQL_LIBRARY.md) and [client SDK spec](../../specs/client-sdk.md). The package path now consumes a release library plus its compatibility metadata; it never accepts the transition archive.
+- Implementation: `prdb-packager` compiles source to a bounded TinyCC PIC object, then invokes a bounded fixed shared-link command with the selected SDK `.so` and `-z defs`. Nix linker search paths are stripped from the resulting loader path with `patchelf`; the packager then reads the ELF as data and requires exactly `$ORIGIN`, no RPATH, the expected versioned SQL SONAME, and valid ABI exports. It checks canonical release metadata against the library's SHA-256, SONAME, target, runtime profile, CPU baseline, and ABI before compiling. The temporary object is removed before atomic publication.
+- Regression: the aborting-constructor package fixture succeeds without running its constructor and verifies its final `$ORIGIN` RUNPATH and `libprdb_sql.so.1` dependency. The maintained optimizer fixture also packages successfully against the shared release. Existing package sidecar, PMF, PSC1, digest, and no-overwrite assertions remain active.
+- Verification: `make -f engine/sdk/Makefile test sdk-shared-tests`, `cargo build --workspace --locked`, formatting, warning-denied workspace Clippy, and the serial delegated-cgroup workspace suite passed in the locked Nix shell. The cgroup probe reported writable `cpu memory pids` controllers. The full suite included the enabled sandbox and process tests and reported zero ignored tests; the commit target passed 142 tests and the transaction target passed 74. Package tests verify the SDK dependency, undefined optimizer import, exact `$ORIGIN` RUNPATH, no RPATH, no constructor execution, and rejection of wrong SONAME, ABI, and release metadata.
+- Remaining: supervisor release resolution, cache pinning, worker staging, and release-profile migration remain future increments.
+
 ## SQLSO-1: build a versioned SQL SDK shared release — implemented
 
 - Contract: [separate SQL library plan](SEPARATE_SQL_LIBRARY.md), [SQL library spec](../../specs/sql-library.md), and [toolchain spec](../../specs/toolchain.md). Keep the static archive for transition tests while producing a separately loadable SQL SDK release.
 - Implementation: `make -f engine/sdk/Makefile sdk-shared-release` builds dedicated TinyCC `-fPIC` objects, links `libprdb_sql.so.<release>` with the GNU linker, a versioned SONAME, defined symbols, and a non-executable stack. The metadata writer inspects ELF type, machine, SONAME, dependencies, exports, relocation classes, and stack permissions, then atomically writes compatibility JSON and a SHA-256 sidecar. Release/profile/ABI inputs are explicit Make variables.
 - Regression: `sdk-shared-tests` adds maintained value, SQL v20 parser, and optimizer UPDATE fixtures linked against the shared library with an `$ORIGIN` runpath. Metadata tests verify compatibility fields and digest and reject a mismatched SONAME and noncanonical ABI lists. Existing static SDK tests remain available during transition.
 - Verification: `make -f engine/sdk/Makefile sdk-shared-release` and `make -f engine/sdk/Makefile sdk-shared-tests` passed under the locked Nix shell. `readelf` confirmed SONAME `libprdb_sql.so.1`, `DT_NEEDED` only `libc.so.6`, exported SQL/manifest/scope/optimizer symbols, position-independent relocations, and RW `GNU_STACK`; the checksum sidecar verified.
-- Remaining: migrate `prdb-packager` to shared linking and final-ELF metadata derivation (SQLSO-2); supervisor resolution, worker staging, and release-profile migration remain future increments.
+- Remaining: supervisor resolution, worker staging, and release-profile migration remain future increments.
 
 ## SDK-3/SDK-5: authenticated metadata discovery CLI — implemented
 
@@ -61,7 +69,7 @@
 
 ## SDK-3 dependency: bounded TinyCC client packager — implemented
 
-- Behavior: `prdb-packager` compiles one C source against the prebuilt SDK archive in a cleared-environment subprocess with CPU, wall-time, address-space, output-file, core-dump, and descriptor limits. It validates PSC1, derives and encodes PMF1 from the compiled ELF, hashes the artifact, then atomically publishes `query.so`, `manifest.pmf1`, `requested_scope.psc1`, and `artifact.sha256` in a private new directory without loading the query.
+- Behavior: `prdb-packager` compiles one C source against the selected shared SDK release in cleared-environment subprocesses with CPU, wall-time, address-space, output-file, core-dump, and descriptor limits. It validates PSC1, derives and encodes PMF1 from the final linked ELF, hashes the artifact, then atomically publishes `query.so`, `manifest.pmf1`, `requested_scope.psc1`, and `artifact.sha256` in a private new directory without loading the query.
 - Limits: source 1 MiB, SDK archive 128 MiB, PSC1 8 KiB, compiled artifact 64 MiB, diagnostic capture 8 KiB. Package files are mode 0600 and the directory is mode 0700. Existing output paths fail closed.
 - Red/green evidence: the end-to-end test builds the maintained TinyCC SDK archive, invokes the actual packager binary, decodes PMF1, verifies exact PSC1 and SHA-256 output, proves a constructor that aborts is not run, and checks that an existing package path is not overwritten.
 - Remaining: network scope selection through authorized metadata discovery; package generation alone does not grant authority.

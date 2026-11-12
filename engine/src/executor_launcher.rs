@@ -677,12 +677,8 @@ fn build_command(
     let mut policy = LandlockPolicy::default();
     policy.allow_read_execute(&executor_path)?;
     policy.allow_read_execute(&artifact_directory.path)?;
-    for path in &config.runtime_read_execute {
-        policy.allow_read_execute(path)?;
-    }
-    for path in &config.runtime_read_only {
-        policy.allow_read(path)?;
-    }
+    allow_runtime_paths(&mut policy, &config.runtime_read_execute, true)?;
+    allow_runtime_paths(&mut policy, &config.runtime_read_only, false)?;
     let ruleset = LandlockRuleset::new(&policy)?;
 
     let [planner_fd, executor_fd, optimizer_fd, result_fd] = channels.worker_fds();
@@ -716,12 +712,8 @@ fn build_command(
 
     let mut optimizer_policy = LandlockPolicy::default();
     optimizer_policy.allow_read_execute(&optimizer_path)?;
-    for path in &config.runtime_read_execute {
-        optimizer_policy.allow_read_execute(path)?;
-    }
-    for path in &config.runtime_read_only {
-        optimizer_policy.allow_read(path)?;
-    }
+    allow_runtime_paths(&mut optimizer_policy, &config.runtime_read_execute, true)?;
+    allow_runtime_paths(&mut optimizer_policy, &config.runtime_read_only, false)?;
     let optimizer_ruleset = LandlockRuleset::new(&optimizer_policy)?;
     let [optimizer_submission_fd, optimizer_planner_fd] = channels.optimizer_fds();
     let mut optimizer_command = Command::new(optimizer_path);
@@ -740,6 +732,37 @@ fn build_command(
         &[optimizer_submission_fd, optimizer_planner_fd],
     )?;
     Ok((command, optimizer_command, parameters, artifact_directory))
+}
+
+fn allow_runtime_paths(
+    policy: &mut LandlockPolicy,
+    paths: &[PathBuf],
+    executable: bool,
+) -> io::Result<()> {
+    for requested_path in paths {
+        let mut parent = requested_path.parent();
+        while let Some(directory) = parent {
+            policy.allow_path_traversal(directory).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("runtime path traversal {}: {error}", directory.display()),
+                )
+            })?;
+            parent = directory.parent();
+        }
+        let path = requested_path.canonicalize()?;
+        if executable {
+            policy.allow_read_execute(&path)?;
+        } else {
+            policy.allow_read(&path)?;
+        }
+        let mut parent = path.parent();
+        while let Some(directory) = parent {
+            policy.allow_path_traversal(directory)?;
+            parent = directory.parent();
+        }
+    }
+    Ok(())
 }
 
 struct PrivateArtifactDirectory {

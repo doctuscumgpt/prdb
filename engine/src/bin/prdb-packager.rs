@@ -3,10 +3,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 const USAGE: &str = "Usage: prdb-packager \\
-  --source FILE --sdk-archive FILE --include-dir DIR --scope FILE --output-dir DIR \\
+  --source FILE --sdk-library FILE --sdk-metadata FILE --shared-linker FILE \\
+  --include-dir DIR --scope FILE --output-dir DIR \\
   --abi 1|2|3|4 --sdk-release NUMBER --cpu-baseline NAME --runtime-profile NAME \\
   --compiler-identity TEXT [--tcc FILE]\n\n\
-Compiles one C source with TinyCC, validates the compiled ELF without loading it, \\
+Compiles one C source with TinyCC, links it to the selected SQL SDK shared release, \\
+validates the final ELF without loading it, \\
 and atomically publishes query.so, manifest.pmf1, requested_scope.psc1, and \\
 artifact.sha256. The compiler subprocess has a cleared environment, resource \\
 limits, and a 60-second wall-clock bound.";
@@ -46,8 +48,17 @@ fn run() -> Result<(), String> {
         .remove("--tcc")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("tcc"));
+    let shared_linker = fields
+        .remove("--shared-linker")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("cc"));
+    let patchelf = fields
+        .remove("--patchelf")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("patchelf"));
     let source = take_path(&mut fields, "--source")?;
-    let sdk_archive = take_path(&mut fields, "--sdk-archive")?;
+    let sdk_library = take_path(&mut fields, "--sdk-library")?;
+    let sdk_release_metadata = take_path(&mut fields, "--sdk-metadata")?;
     let include_dir = take_path(&mut fields, "--include-dir")?;
     let requested_scope = take_path(&mut fields, "--scope")?;
     let output_dir = take_path(&mut fields, "--output-dir")?;
@@ -64,8 +75,11 @@ fn run() -> Result<(), String> {
     }
     let summary = package_query(&PackageOptions {
         tcc,
+        shared_linker,
+        patchelf,
         source,
-        sdk_archive,
+        sdk_library,
+        sdk_release_metadata,
         include_dir,
         requested_scope,
         output_dir,

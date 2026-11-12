@@ -1,6 +1,8 @@
-//! Client-side bounded TinyCC packaging for submission artifacts.
+//! Client-side bounded compilation and shared-SDK packaging for submissions.
 
-use crate::submission_manifest::{ManifestError, encode_manifest_v1, manifest_v1_from_elf};
+use crate::submission_manifest::{
+    ManifestError, decode_elf_dynamic_info, encode_manifest_v1, manifest_v1_from_elf,
+};
 use crate::submission_scope::decode_requested_scope_v1;
 use sha2::{Digest, Sha256};
 use std::ffi::CString;
@@ -15,7 +17,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub const MAX_SOURCE_BYTES: u64 = 1024 * 1024;
-pub const MAX_SDK_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
+pub const MAX_SDK_LIBRARY_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_SDK_METADATA_BYTES: u64 = 64 * 1024;
 pub const COMPILER_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_COMPILER_DIAGNOSTIC_BYTES: usize = 8192;
 const COMPILER_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -23,8 +26,11 @@ const COMPILER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 #[derive(Clone, Debug)]
 pub struct PackageOptions {
     pub tcc: PathBuf,
+    pub shared_linker: PathBuf,
+    pub patchelf: PathBuf,
     pub source: PathBuf,
-    pub sdk_archive: PathBuf,
+    pub sdk_library: PathBuf,
+    pub sdk_release_metadata: PathBuf,
     pub include_dir: PathBuf,
     pub requested_scope: PathBuf,
     pub output_dir: PathBuf,
@@ -77,14 +83,18 @@ impl From<ManifestError> for PackageError {
     }
 }
 
-/// Compile one source with the prebuilt SDK archive, derive its manifest from
-/// ELF data, and atomically publish query.so plus PMF1, PSC1 and a SHA-256
-/// sidecar. The compiler gets no inherited environment, and the query library
-/// is never loaded or executed here.
+/// Compile one source with TinyCC, link it to the verified shared SDK release,
+/// derive metadata from ELF data, and atomically publish query.so plus PMF1,
+/// PSC1 and a SHA-256 sidecar. Build tools get no inherited environment, and
+/// the query library is never loaded or executed here.
 pub fn package_query(options: &PackageOptions) -> Result<PackageSummary, PackageError> {
     let source = canonical_regular_file(&options.source, MAX_SOURCE_BYTES)?;
-    let sdk_archive = canonical_regular_file(&options.sdk_archive, MAX_SDK_ARCHIVE_BYTES)?;
+    let sdk_library = canonical_regular_file(&options.sdk_library, MAX_SDK_LIBRARY_BYTES)?;
+    let release_metadata =
+        canonical_regular_file(&options.sdk_release_metadata, MAX_SDK_METADATA_BYTES)?;
     let tcc = canonical_compiler(&options.tcc)?;
+    let shared_linker = canonical_compiler(&options.shared_linker)?;
+    let patchelf = canonical_compiler(&options.patchelf)?;
     let include_dir = fs::canonicalize(&options.include_dir)?;
     if !include_dir.is_dir()
         || !(1..=4).contains(&options.native_abi_version)
@@ -92,6 +102,7 @@ pub fn package_query(options: &PackageOptions) -> Result<PackageSummary, Package
     {
         return Err(PackageError::InvalidConfiguration);
     }
+    validate_release_metadata(&release_metadata, &sdk_library, options)?;
     let scope_path = canonical_regular_file(
         &options.requested_scope,
         crate::supervisor::MAX_SCOPE_BYTES as u64,
@@ -100,24 +111,29 @@ pub fn package_query(options: &PackageOptions) -> Result<PackageSummary, Package
     decode_requested_scope_v1(&scope).map_err(|_| PackageError::InvalidScope)?;
     let package_dir = output_path(&options.output_dir)?;
     let mut staging = StagingDirectory::create(&package_dir)?;
+    let object_path = staging.path.join("query.o");
     let artifact_path = staging.path.join("query.so");
 
     let source_parent = source.parent().ok_or(PackageError::InvalidConfiguration)?;
     let source_name = source
         .file_name()
         .ok_or(PackageError::InvalidConfiguration)?;
-    let archive_arg = sdk_archive.as_os_str();
     let include_arg = include_dir.as_os_str();
-    let output_arg = artifact_path.as_os_str();
+    let output_arg = object_path.as_os_str();
     let source_arg = source_name;
-    run_tinycc(
-        &tcc,
-        source_parent,
-        include_arg,
-        source_arg,
-        archive_arg,
-        output_arg,
-    )?;
+    run_tinycc_compile(&tcc, source_parent, include_arg, source_arg, output_arg)?;
+    run_shared_linker(&shared_linker, &object_path, &sdk_library, &artifact_path)?;
+    let mut command = Command::new(patchelf);
+    command
+        .env_clear()
+        .arg("--set-rpath")
+        .arg("$ORIGIN")
+        .arg(&artifact_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    run_bounded_command(command)?;
+    fs::remove_file(&object_path)?;
 
     let artifact = read_bounded_file(&artifact_path, crate::supervisor::MAX_ARTIFACT_BYTES)?;
     if artifact.is_empty() {
@@ -131,6 +147,17 @@ pub fn package_query(options: &PackageOptions) -> Result<PackageSummary, Package
         options.runtime_profile.clone(),
         options.compiler_identity.clone(),
     )?;
+    let dynamic = decode_elf_dynamic_info(&artifact)?;
+    let expected_soname = format!("libprdb_sql.so.{}", options.sdk_release);
+    if dynamic.runpath.as_deref() != Some("$ORIGIN")
+        || dynamic.rpath.is_some()
+        || !dynamic
+            .needed
+            .iter()
+            .any(|dependency| dependency == &expected_soname)
+    {
+        return Err(PackageError::InvalidConfiguration);
+    }
     let manifest_bytes = encode_manifest_v1(&manifest)?;
     let artifact_sha256: [u8; 32] = Sha256::digest(&artifact).into();
     fs::set_permissions(
@@ -152,6 +179,151 @@ pub fn package_query(options: &PackageOptions) -> Result<PackageSummary, Package
         artifact_bytes: artifact.len() as u64,
         artifact_sha256,
     })
+}
+
+fn validate_release_metadata(
+    metadata_path: &Path,
+    library_path: &Path,
+    options: &PackageOptions,
+) -> Result<(), PackageError> {
+    let bytes = read_bounded_file(metadata_path, MAX_SDK_METADATA_BYTES)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| PackageError::InvalidConfiguration)?;
+    if !text.is_ascii() || !text.ends_with('\n') {
+        return Err(PackageError::InvalidConfiguration);
+    }
+    let digest = lower_hex(&Sha256::digest(read_bounded_file(
+        library_path,
+        MAX_SDK_LIBRARY_BYTES,
+    )?));
+    let library_name = library_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(PackageError::InvalidConfiguration)?;
+    let expected_soname = format!("libprdb_sql.so.{}", options.sdk_release);
+    let dynamic =
+        decode_elf_dynamic_info(&read_bounded_file(library_path, MAX_SDK_LIBRARY_BYTES)?)?;
+    let abis = json_integer_array(text, "native_abis")?;
+    let needed = json_string_array(text, "needed")?;
+    let release_format = json_string(text, "format")?;
+    let metadata_library = json_string(text, "library")?;
+    let metadata_soname = json_string(text, "soname")?;
+    let metadata_digest = json_string(text, "sha256")?;
+    let target = json_string(text, "target")?;
+    let cpu_baseline = json_string(text, "cpu_baseline")?;
+    let runtime_profile = json_string(text, "runtime_profile")?;
+    let release = json_integer(text, "sdk_release")?;
+    let canonical_metadata = format!(
+        "{{\"cpu_baseline\":\"{cpu_baseline}\",\"format\":\"{release_format}\",\"library\":\"{metadata_library}\",\"native_abis\":[{}],\"needed\":[{}],\"runtime_profile\":\"{runtime_profile}\",\"sdk_release\":{release},\"sha256\":\"{metadata_digest}\",\"soname\":\"{metadata_soname}\",\"target\":\"{target}\"}}\n",
+        abis.iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        needed
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    if canonical_metadata != text {
+        return Err(PackageError::InvalidConfiguration);
+    }
+    let checks = [
+        ("format", release_format == "PRDB-SDK-RELEASE-1"),
+        ("library", metadata_library == library_name),
+        ("soname", metadata_soname == expected_soname),
+        ("sha256", metadata_digest == digest),
+        ("target", target == "linux-x86_64"),
+        ("cpu", cpu_baseline == options.cpu_baseline),
+        ("runtime", runtime_profile == options.runtime_profile),
+        ("release", release == options.sdk_release),
+        ("abi", abis.contains(&(options.native_abi_version as u64))),
+        (
+            "elf-soname",
+            dynamic.soname.as_deref() == Some(expected_soname.as_str()),
+        ),
+        ("elf-rpath", dynamic.rpath.is_none()),
+        ("elf-runpath", dynamic.runpath.is_none()),
+        ("needed", dynamic.needed == needed),
+    ];
+    if checks.iter().any(|(_, success)| !success) {
+        return Err(PackageError::InvalidConfiguration);
+    }
+    Ok(())
+}
+
+fn json_value<'a>(text: &'a str, key: &str) -> Result<&'a str, PackageError> {
+    let needle = format!("\"{key}\":");
+    let start = text
+        .find(&needle)
+        .ok_or(PackageError::InvalidConfiguration)?
+        + needle.len();
+    let rest = &text[start..];
+    let end = if let Some(content) = rest.strip_prefix('"') {
+        let value_end = content
+            .find('"')
+            .ok_or(PackageError::InvalidConfiguration)?;
+        if content[..value_end].contains('\\') {
+            return Err(PackageError::InvalidConfiguration);
+        }
+        value_end + 2
+    } else if rest.starts_with('[') {
+        rest.find(']').ok_or(PackageError::InvalidConfiguration)? + 1
+    } else {
+        rest.find([',', '}'])
+            .ok_or(PackageError::InvalidConfiguration)?
+    };
+    Ok(&rest[..end])
+}
+
+fn json_string(text: &str, key: &str) -> Result<String, PackageError> {
+    let value = json_value(text, key)?;
+    value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .map(str::to_owned)
+        .ok_or(PackageError::InvalidConfiguration)
+}
+
+fn json_integer(text: &str, key: &str) -> Result<u32, PackageError> {
+    json_value(text, key)?
+        .parse()
+        .map_err(|_| PackageError::InvalidConfiguration)
+}
+
+fn json_integer_array(text: &str, key: &str) -> Result<Vec<u64>, PackageError> {
+    let value = json_value(text, key)?;
+    let inner = value
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .ok_or(PackageError::InvalidConfiguration)?;
+    if inner.is_empty() {
+        return Ok(Vec::new());
+    }
+    inner
+        .split(',')
+        .map(|item| item.parse().map_err(|_| PackageError::InvalidConfiguration))
+        .collect()
+}
+
+fn json_string_array(text: &str, key: &str) -> Result<Vec<String>, PackageError> {
+    let value = json_value(text, key)?;
+    let inner = value
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .ok_or(PackageError::InvalidConfiguration)?;
+    if inner.is_empty() {
+        return Ok(Vec::new());
+    }
+    inner
+        .split(',')
+        .map(|item| {
+            item.strip_prefix('"')
+                .and_then(|item| item.strip_suffix('"'))
+                .filter(|item| !item.contains('\\'))
+                .map(str::to_owned)
+                .ok_or(PackageError::InvalidConfiguration)
+        })
+        .collect()
 }
 
 fn canonical_regular_file(path: &Path, maximum_bytes: u64) -> Result<PathBuf, PackageError> {
@@ -196,12 +368,11 @@ fn read_bounded_file(path: &Path, maximum_bytes: u64) -> Result<Vec<u8>, Package
     Ok(bytes)
 }
 
-fn run_tinycc(
+fn run_tinycc_compile(
     tcc: &Path,
     working_directory: &Path,
     include_dir: &std::ffi::OsStr,
     source: &std::ffi::OsStr,
-    sdk_archive: &std::ffi::OsStr,
     output: &std::ffi::OsStr,
 ) -> Result<(), PackageError> {
     let mut command = Command::new(tcc);
@@ -211,17 +382,43 @@ fn run_tinycc(
         .arg("-Wall")
         .arg("-Wextra")
         .arg("-Werror")
-        .arg("-shared")
+        .arg("-fPIC")
+        .arg("-c")
         .arg("-I")
         .arg(include_dir)
         .arg(source)
-        .arg(sdk_archive)
         .arg("-o")
         .arg(output)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Bound compiler CPU, memory, file output, core dumps and descriptor use
+    run_bounded_command(command)
+}
+
+fn run_shared_linker(
+    linker: &Path,
+    object: &Path,
+    sdk_library: &Path,
+    output: &Path,
+) -> Result<(), PackageError> {
+    let mut command = Command::new(linker);
+    command
+        .env_clear()
+        .arg("-shared")
+        .arg("-Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs")
+        .arg("-Wl,-rpath,$ORIGIN")
+        .arg(object)
+        .arg(sdk_library)
+        .arg("-o")
+        .arg(output)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    run_bounded_command(command)
+}
+
+fn run_bounded_command(mut command: Command) -> Result<(), PackageError> {
+    // Bound compiler/linker CPU, memory, file output, core dumps and descriptor use
     // independently of the wall-clock timeout below.
     // SAFETY: the pre-exec closure uses only async-signal-safe setrlimit calls.
     unsafe {

@@ -35,7 +35,7 @@ impl LandlockPolicy {
                 "Landlock traversal rules require a directory",
             ));
         }
-        self.add_path(path, LANDLOCK_READ_DIR)
+        self.add_path(path, LANDLOCK_EXECUTE)
     }
 
     pub fn allow_read_execute(&mut self, path: impl AsRef<Path>) -> io::Result<&mut Self> {
@@ -77,7 +77,7 @@ impl LandlockPolicy {
         let path = path.canonicalize()?;
         let metadata = path.metadata()?;
         let access = if metadata.is_dir() {
-            access | LANDLOCK_READ_DIR
+            access
         } else {
             access & !LANDLOCK_READ_DIR
         };
@@ -87,6 +87,25 @@ impl LandlockPolicy {
             self.rules.push((path, access));
         }
         Ok(self)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod path_policy_tests {
+    use super::{LANDLOCK_EXECUTE, LANDLOCK_READ_DIR, LandlockPolicy};
+    use std::fs;
+
+    #[test]
+    fn path_traversal_does_not_grant_directory_listing() {
+        let root =
+            std::env::temp_dir().join(format!("prdb-landlock-traversal-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let mut policy = LandlockPolicy::default();
+        policy.allow_path_traversal(&root).unwrap();
+        let canonical = root.canonicalize().unwrap();
+        assert_eq!(policy.rules, [(canonical, LANDLOCK_EXECUTE)]);
+        assert_eq!(policy.rules[0].1 & LANDLOCK_READ_DIR, 0);
+        fs::remove_dir_all(root).unwrap();
     }
 }
 

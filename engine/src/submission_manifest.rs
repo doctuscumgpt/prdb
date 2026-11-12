@@ -109,10 +109,11 @@ pub fn manifest_v1_from_elf(
         return Err(ManifestError::UnsupportedAbi);
     }
     let (descriptor_symbol, entry_point_symbol) = abi_symbols(native_abi_version);
-    let dependencies = decode_elf_needed_dependencies_internal(
+    let dependencies = decode_elf_dynamic_info_internal(
         artifact,
         Some((descriptor_symbol, 1, entry_point_symbol, 2)),
-    )?;
+    )?
+    .needed;
     let manifest = ArtifactManifestV1 {
         native_abi_version,
         sdk_release,
@@ -219,7 +220,7 @@ impl SubmissionMetadataValidator for VersionedSubmissionMetadataValidator {
         let Ok(manifest) = decode_manifest_v1(&metadata.manifest) else {
             return false;
         };
-        decode_elf_needed_dependencies_internal(
+        decode_elf_dynamic_info_internal(
             artifact,
             Some((
                 &manifest.descriptor_symbol,
@@ -228,8 +229,8 @@ impl SubmissionMetadataValidator for VersionedSubmissionMetadataValidator {
                 2,
             )),
         )
-        .is_ok_and(|dependencies| {
-            dependencies.into_iter().collect::<HashSet<_>>()
+        .is_ok_and(|info| {
+            info.needed.into_iter().collect::<HashSet<_>>()
                 == manifest.dependencies.into_iter().collect::<HashSet<_>>()
         })
     }
@@ -331,13 +332,26 @@ fn abi_symbols(abi: u8) -> (&'static str, &'static str) {
 /// Read the ELF64 dynamic dependency table without mapping or loading the
 /// artifact. Only the Linux x86_64 ET_DYN profile is accepted.
 pub fn decode_elf_needed_dependencies(artifact: &[u8]) -> Result<Vec<String>, ManifestError> {
-    decode_elf_needed_dependencies_internal(artifact, None)
+    Ok(decode_elf_dynamic_info_internal(artifact, None)?.needed)
 }
 
-fn decode_elf_needed_dependencies_internal(
+/// ELF dynamic loader fields read without mapping or loading the artifact.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElfDynamicInfo {
+    pub needed: Vec<String>,
+    pub soname: Option<String>,
+    pub rpath: Option<String>,
+    pub runpath: Option<String>,
+}
+
+pub fn decode_elf_dynamic_info(artifact: &[u8]) -> Result<ElfDynamicInfo, ManifestError> {
+    decode_elf_dynamic_info_internal(artifact, None)
+}
+
+fn decode_elf_dynamic_info_internal(
     artifact: &[u8],
     required_symbols: Option<(&str, u8, &str, u8)>,
-) -> Result<Vec<String>, ManifestError> {
+) -> Result<ElfDynamicInfo, ManifestError> {
     if artifact.len() < 64
         || &artifact[..4] != b"\x7fELF"
         || artifact[4] != 2
@@ -404,6 +418,9 @@ fn decode_elf_needed_dependencies_internal(
         return Err(ManifestError::InvalidArtifact);
     }
     let mut needed_offsets = Vec::new();
+    let mut soname_offset = None;
+    let mut rpath_offset = None;
+    let mut runpath_offset = None;
     let mut string_table = None;
     let mut string_table_size = None;
     let mut symbol_table = None;
@@ -420,15 +437,20 @@ fn decode_elf_needed_dependencies_internal(
                 break;
             }
             1 => needed_offsets.push(value),
+            14 if soname_offset.replace(value).is_none() => {}
+            15 if rpath_offset.replace(value).is_none() => {}
+            29 if runpath_offset.replace(value).is_none() => {}
             4 if hash_table.replace(value).is_none() => {}
             6 if symbol_table.replace(value).is_none() => {}
             5 if string_table.replace(value).is_none() => {}
             10 if string_table_size.replace(value).is_none() => {}
             11 if symbol_entry_size.replace(value).is_none() => {}
-            15 | 29 | 0x6fff_fefb | 0x6fff_fefc | 0x7fff_fffd | 0x7fff_ffff => {
+            0x6fff_fefb | 0x6fff_fefc | 0x7fff_fffd | 0x7fff_ffff => {
                 return Err(ManifestError::InvalidArtifact);
             }
-            4 | 5 | 6 | 10 | 11 => return Err(ManifestError::InvalidArtifact),
+            4 | 5 | 6 | 10 | 11 | 14 | 15 | 29 => {
+                return Err(ManifestError::InvalidArtifact);
+            }
             _ => {}
         }
     }
@@ -482,7 +504,35 @@ fn decode_elf_needed_dependencies_internal(
         dependencies.push(name.to_owned());
     }
     dependencies.sort();
-    Ok(dependencies)
+    let dynamic_string = |offset: Option<u64>| -> Result<Option<String>, ManifestError> {
+        let Some(offset) = offset else {
+            return Ok(None);
+        };
+        let start = usize::try_from(offset).map_err(|_| ManifestError::InvalidArtifact)?;
+        let suffix = table.get(start..).ok_or(ManifestError::InvalidArtifact)?;
+        let end = suffix
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or(ManifestError::InvalidArtifact)?;
+        let value =
+            std::str::from_utf8(&suffix[..end]).map_err(|_| ManifestError::InvalidArtifact)?;
+        if value.is_empty() {
+            return Err(ManifestError::InvalidArtifact);
+        }
+        Ok(Some(value.to_owned()))
+    };
+    let soname = dynamic_string(soname_offset)?;
+    let rpath = dynamic_string(rpath_offset)?;
+    let runpath = dynamic_string(runpath_offset)?;
+    if rpath.is_some() || runpath.as_deref().is_some_and(|value| value != "$ORIGIN") {
+        return Err(ManifestError::InvalidArtifact);
+    }
+    Ok(ElfDynamicInfo {
+        needed: dependencies,
+        soname,
+        rpath,
+        runpath,
+    })
 }
 
 fn validate_required_dynamic_symbols(
