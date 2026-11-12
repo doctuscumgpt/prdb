@@ -142,6 +142,52 @@ fn admin_client_lists_bounded_secret_free_token_pages() {
 }
 
 #[test]
+fn admin_client_lists_administratively_visible_schema_pages() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(request.kind, 10);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            r#"{"phase":"read","operation_version":1,"operation":"metadata.schemas.list","arguments":{"limit":"1"}}"#
+        );
+        respond(
+            &mut stream,
+            &request,
+            br#"{"schemas":[{"schema_id":"01010101010101010101010101010101","name":"owned_schema"}],"next_cursor":"d30102030405060708090a0b0c0d0e0f"}"#,
+        );
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            r#"{"phase":"read","operation_version":1,"operation":"metadata.schemas.list","arguments":{"limit":"1","cursor":"d30102030405060708090a0b0c0d0e0f"}}"#
+        );
+        respond(
+            &mut stream,
+            &request,
+            br#"{"schemas":[{"schema_id":"02020202020202020202020202020202","name":"information_schema"}],"next_cursor":null}"#,
+        );
+    });
+
+    let mut secret = [7; 32];
+    let mut client = AdminClient::connect_authenticated(address, [1; 16], &mut secret).unwrap();
+    let first = client.list_schemas_page(1, None).unwrap();
+    assert_eq!(first.records.len(), 1);
+    assert_eq!(first.records[0].schema_id, [1; 16]);
+    assert_eq!(first.records[0].name, "owned_schema");
+    let second = client
+        .list_schemas_page(1, first.next_cursor.as_deref())
+        .unwrap();
+    assert_eq!(second.records[0].schema_id, [2; 16]);
+    assert_eq!(second.records[0].name, "information_schema");
+    assert_eq!(second.next_cursor, None);
+    server.join().unwrap();
+}
+
+#[test]
 fn submission_client_decodes_cancellation_acknowledgements() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

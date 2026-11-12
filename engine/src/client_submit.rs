@@ -1026,6 +1026,18 @@ impl MetadataClient {
     }
 }
 
+fn request_metadata_page(
+    transport: &mut SubmissionClient,
+    operation: &str,
+    arguments: String,
+) -> Result<(Vec<ResponseValue>, Option<String>), ClientSubmitError> {
+    let payload = format!(
+        "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"{operation}\",\"arguments\":{arguments}}}"
+    );
+    let response = transport.exchange(10, payload.into_bytes())?;
+    discovery_page_value(&response.payload, operation)
+}
+
 impl AdminClient {
     /// Connect over TCP in control mode and authenticate. The caller's
     /// credential buffer is zeroized on every return path.
@@ -1051,6 +1063,138 @@ impl AdminClient {
             crate::client_protocol::ClientMode::Control,
         )?;
         Ok(Self { transport })
+    }
+
+    /// Return one ordered page of metadata visible to this authenticated
+    /// control principal. Database administrators and schema owners receive
+    /// their additional administrative visibility from the server.
+    pub fn list_schemas_page(
+        &mut self,
+        page_limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<MetadataPage<crate::metadata_discovery::VisibleSchema>, ClientSubmitError> {
+        validate_metadata_page_request(page_limit, cursor)?;
+        let (records, next_cursor) = request_metadata_page(
+            &mut self.transport,
+            "metadata.schemas.list",
+            metadata_page_arguments(page_limit, cursor),
+        )?;
+        let records = discovery_records(records)?;
+        let mut schemas = Vec::with_capacity(records.len());
+        let mut previous_id = None;
+        for mut record in records {
+            if record.len() != 2 {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let schema_id = response_id(&record, "schema_id")?;
+            let name = response_string(&mut record, "name")?;
+            if name.is_empty() || previous_id.is_some_and(|previous| previous >= schema_id) {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            previous_id = Some(schema_id);
+            schemas.push(crate::metadata_discovery::VisibleSchema { schema_id, name });
+        }
+        Ok(MetadataPage {
+            records: schemas,
+            next_cursor,
+        })
+    }
+
+    /// Return one ordered relation page for a schema visible to this control
+    /// principal. An empty page is also the unavailable-schema projection.
+    pub fn list_relations_page(
+        &mut self,
+        schema_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<MetadataPage<crate::metadata_discovery::VisibleRelation>, ClientSubmitError> {
+        validate_metadata_page_request(page_limit, cursor)?;
+        let arguments = format!(
+            "{{\"schema_id\":\"{}\",{}}}",
+            lower_hex(&schema_id),
+            metadata_page_arguments_fields(page_limit, cursor)
+        );
+        let (records, next_cursor) =
+            request_metadata_page(&mut self.transport, "metadata.relations.list", arguments)?;
+        let records = discovery_records(records)?;
+        let mut relations = Vec::with_capacity(records.len());
+        let mut previous_id = None;
+        for mut record in records {
+            if record.len() != 2 {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let relation_id = response_id(&record, "relation_id")?;
+            let name = response_string(&mut record, "name")?;
+            if name.is_empty() || previous_id.is_some_and(|previous| previous >= relation_id) {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            previous_id = Some(relation_id);
+            relations.push(crate::metadata_discovery::VisibleRelation { relation_id, name });
+        }
+        Ok(MetadataPage {
+            records: relations,
+            next_cursor,
+        })
+    }
+
+    /// Return one ordinal-ordered declared-column page for a visible relation.
+    pub fn list_columns_page(
+        &mut self,
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<MetadataPage<crate::metadata_discovery::VisibleColumn>, ClientSubmitError> {
+        validate_metadata_page_request(page_limit, cursor)?;
+        let arguments = format!(
+            "{{\"schema_id\":\"{}\",\"relation_id\":\"{}\",{}}}",
+            lower_hex(&schema_id),
+            lower_hex(&relation_id),
+            metadata_page_arguments_fields(page_limit, cursor)
+        );
+        let (records, next_cursor) =
+            request_metadata_page(&mut self.transport, "metadata.columns.list", arguments)?;
+        let records = discovery_records(records)?;
+        let mut columns = Vec::with_capacity(records.len());
+        let mut previous_ordinal = None;
+        for mut record in records {
+            if record.len() != 5 {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let column_id = response_id(&record, "column_id")?;
+            let name = response_string(&mut record, "name")?;
+            let ordinal = match record.remove("ordinal") {
+                Some(ResponseValue::Number(value)) => {
+                    u32::try_from(value).map_err(|_| ClientSubmitError::InvalidResponse)?
+                }
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let scalar_type_name = response_string(&mut record, "scalar_type")?;
+            let scalar_type = crate::client_protocol::decode_table_scalar_type(&scalar_type_name)
+                .map_err(|_| ClientSubmitError::InvalidResponse)?;
+            let nullable = match record.remove("nullable") {
+                Some(ResponseValue::Boolean(value)) => value,
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            if column_id == [0; 16]
+                || name.is_empty()
+                || previous_ordinal.is_some_and(|previous| previous >= ordinal)
+            {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            previous_ordinal = Some(ordinal);
+            columns.push(crate::metadata_discovery::VisibleColumn {
+                column_id,
+                name,
+                ordinal,
+                scalar_type,
+                nullable,
+            });
+        }
+        Ok(MetadataPage {
+            records: columns,
+            next_cursor,
+        })
     }
 
     /// Create a login identity. New users have no credential until a token is issued.

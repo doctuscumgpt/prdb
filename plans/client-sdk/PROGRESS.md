@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SDK-6: administrative metadata page API — verified
+
+- Contract: [client SDK](../../specs/client-sdk.md) and [metadata discovery](../../specs/metadata-discovery.md). Administrative visibility remains a read-only control-channel capability and does not grant query access.
+- Implementation: `AdminClient` now exposes typed, bounded page methods for schemas, relations, and declared columns. These use the existing session-bound metadata cursors and validate IDs, ordering, scalar types, and response shape.
+- Regression: the client protocol test follows a schema page cursor through `AdminClient` and checks typed IDs/names and terminal cursor handling.
+- Verification: focused `client_admin` page test and the schema-owner gateway/supervisor process test passed. The full serial workspace suite passed in a delegated `systemd --user` service with sandbox and process tests enabled and zero ignored. Workspace build, rustfmt check, warning-denied Clippy, and diff checks passed.
+- Remaining: verify administrative revocation invalidates an outstanding page cursor in the production connection path; add privileged catalog sections described by `admin_describe_object`.
+
 ## SDK-5 / CP-1: schema, table, key, and object-grant DDL through real processes — verified
 
 - Contract: [client SDK](../../specs/client-sdk.md), [client protocol](../../specs/client-protocol.md), and [schema DDL](../../specs/ddl-schema.md). Authenticated AdminClient DDL must cross the TCP gateway and supervisor service channel, return validated committed IDs, publish catalog metadata, and make grant/revocation changes visible to an authenticated member.

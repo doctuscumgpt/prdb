@@ -692,22 +692,25 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     drop(metadata);
 
     let mut owner_metadata =
-        MetadataClient::connect_authenticated(address, owner_token, &mut owner_secret)?;
+        AdminClient::connect_authenticated(address, owner_token, &mut owner_secret)?;
     assert!(
         owner_metadata
-            .list_schemas()?
+            .list_schemas_page(128, None)?
+            .records
             .iter()
             .any(|schema| schema.name == "admin_private")
     );
     assert!(
         owner_metadata
-            .list_relations(restricted_schema_id)?
+            .list_relations_page(restricted_schema_id, 128, None)?
+            .records
             .iter()
             .any(|relation| relation.relation_id == restricted_table_id)
     );
     assert!(
         !owner_metadata
-            .list_columns(restricted_schema_id, restricted_table_id)?
+            .list_columns_page(restricted_schema_id, restricted_table_id, 128, None)?
+            .records
             .is_empty()
     );
     drop(owner_metadata);
