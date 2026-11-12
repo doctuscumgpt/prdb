@@ -266,13 +266,16 @@ pub fn finalize_gateway_invocation_and_send_terminal<'db, W: Write>(
             },
         )
         .map_err(GatewayTerminalRelayError::Frame)?;
-        let response = crate::ipc::read_frame(&mut supervisor_stream)
-            .map_err(GatewayTerminalRelayError::Frame)?
-            .ok_or(GatewayTerminalRelayError::InvalidStorageResponse)?;
+        // Join before reading: a failed storage decision can close the handler
+        // without producing a response frame. Reading first would wait forever
+        // because this side still owns the peer stream.
         handler
             .join()
             .map_err(|_| GatewayTerminalRelayError::HandlerPanicked)?
             .map_err(GatewayTerminalRelayError::Invocation)?;
+        let response = crate::ipc::read_frame(&mut supervisor_stream)
+            .map_err(GatewayTerminalRelayError::Frame)?
+            .ok_or(GatewayTerminalRelayError::InvalidStorageResponse)?;
         Ok::<_, GatewayTerminalRelayError>(response)
     })?;
     let valid = response.operation == operation as u16
@@ -418,13 +421,34 @@ pub fn observe_executor_relay_and_finalize_gateway<'db>(
             start_request_id,
             GatewayAbortReason::WorkerFailure,
         ),
-        Err(error) => send_gateway_terminal_for_confirmed_outcome(
-            manager,
-            invocation,
-            result_stream,
-            start_request_id,
-            gateway_abort_reason_for_observation(&error),
-        ),
+        Err(error) => {
+            let reason = gateway_abort_reason_for_observation(&error);
+            // A cancellation or relay failure can race with a successful
+            // worker exit. In that case observation has established that the
+            // worker is gone, but no worker error path has durably aborted
+            // the transaction. Request the abort through the normal terminal
+            // storage path before looking up the outcome. If an earlier
+            // worker failure already aborted it, the terminal request is
+            // rejected and the owner-scoped lookup below confirms that result.
+            match finalize_gateway_invocation_and_send_terminal(
+                invocation,
+                result_stream,
+                start_request_id,
+                GatewayTerminalDecision::Abort(reason),
+            ) {
+                Ok(()) => Ok(GatewayTerminalDecision::Abort(reason)),
+                Err(abort_error) => match send_gateway_terminal_for_confirmed_outcome(
+                    manager,
+                    invocation,
+                    result_stream,
+                    start_request_id,
+                    reason,
+                ) {
+                    Ok(decision) => Ok(decision),
+                    Err(_) => Err(abort_error),
+                },
+            }
+        }
     }
 }
 

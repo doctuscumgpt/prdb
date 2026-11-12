@@ -2,9 +2,9 @@
 
 ## WI-7 follow-up: bounded executor output under a slow gateway — covered
 
-- Harness: the confined TinyCC write/read artifact adds an output-only parameter branch that writes 256 maximum-sized 16-KiB chunks (4 MiB). The acceptance drains them through the real executor result stream and supervisor gateway relay while the gateway reader sleeps 2 ms after each chunk; four operational workers concurrently perform 64 authorized point reads and durable commits.
+- Harness: the confined TinyCC write/read artifact adds an output-only parameter branch that writes 256 maximum-sized 16-KiB chunks (4 MiB). The acceptance drains them through the real executor result stream and supervisor gateway relay while the gateway reader sleeps 2 ms after each chunk; four operational workers concurrently perform 64 authorized point reads and durable commits. A second output invocation receives owner cancellation 30 ms into the same slow relay and must end with an aborted terminal.
 - Verification: five sequential fresh-database delegated-cgroup runs passed (`1 passed, 0 ignored` each). All 256 result frames and the committed terminal frame were received; relay time ranged 535–546 ms, exceeding the 200-ms backpressure threshold. All 64 operational reads and commits completed on every run.
-- Scope: the slow-consumer test exercises the bounded executor-to-supervisor result queue and gateway service socket in the confined process path. It does not cover TCP client backpressure, cancellation during a blocked relay, planner queue saturation, or target-hardware behavior.
+- Scope: the slow-consumer test exercises the bounded executor-to-supervisor result queue and gateway service socket in the confined process path. It does not cover TCP client backpressure, planner queue saturation, or target-hardware behavior.
 
 ## WI-7 follow-up: resident memory and API-boundary byte accounting — measured
 

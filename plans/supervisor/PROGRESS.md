@@ -1,5 +1,11 @@
 # Supervisor Progress
 
+## SU-9 follow-up: reconcile terminal storage errors without blocking — verified
+
+- Regression: a cancellation accepted during a slow result relay can race with successful worker exit, causing the subsequent commit request to fail with `CancellationRequested` after the transaction records ABORTED. The terminal helper now joins the storage handler before reading its response, so a handler error cannot leave the caller waiting forever for a frame that was never sent; the gateway then confirms and relays the durable outcome. Observation errors also attempt the normal storage abort path before outcome lookup.
+- Verification: five sequential fresh-database delegated-cgroup runs of `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` passed (`1 passed, 0 ignored` each). In each, cancellation arrived during 4-MiB output, all 256 provisional chunks were received, and the terminal was ABORTED within 506–511 ms. The regression reproduced the previous hang before the handler-join fix.
+- Scope: this covers local supervisor/gateway IPC and durable terminal reconciliation on the delegated Linux x86_64 host. TCP client backpressure and target-hardware behavior remain open.
+
 ## SU-7 follow-up: preserve START progress across principal quota blocks — verified
 
 - Behavior: a sealed START retry keeps its original queue ticket when the caller's per-principal active quota is full. A later ticket from another principal may use independently available class capacity; when the earlier ticket becomes eligible, it retains priority over later retries.
