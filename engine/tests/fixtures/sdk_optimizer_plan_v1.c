@@ -1428,6 +1428,21 @@ int main(void) {
                    &total_rows) == PRDB_SDK_OPTIMIZER_PLAN_OK);
         assert(total_rows == 0 && projected_rows_seen == 0 &&
                resolve.calls == 3 && resolve.cancellation_check_calls == 1);
+        resolve.calls = 0;
+        resolve.cancellation_check_calls = 0;
+        resolve.cancel_on_check_call = 1;
+        assert(prdb_sdk_optimizer_execute_unfiltered_plan_v1(
+                   &host, empty_view_plan, payload_len + 1, 2,
+                   sizeof(batch_response), response, sizeof(response),
+                   scan_response, sizeof(scan_response), batch_response,
+                   sizeof(batch_response), &acquired_relation,
+                   sizeof(acquired_relation), acquired_columns, 4, source_cells,
+                   4, projected_values, 1, on_projected_row, NULL,
+                   &total_rows) == PRDB_SDK_OPTIMIZER_PLAN_CANCELLED);
+        assert(total_rows == 0 && projected_rows_seen == 0 &&
+               resolve.calls == 3 && resolve.cancellation_check_calls == 1);
+        resolve.cancel_on_check_call = 0;
+        resolve.cancellation_response[2] = 0;
         empty_view_plan[payload_len + 1] = 0;
         assert(prdb_sdk_optimizer_decode_plan_v1(
                    empty_view_plan, payload_len + 2, &empty_decoded,
