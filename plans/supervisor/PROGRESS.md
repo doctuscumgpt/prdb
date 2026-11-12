@@ -1,5 +1,10 @@
 # Supervisor Progress
 
+## SU-9 follow-up: keep delegated sandbox acceptances in the normal test suite — verified
+
+- Correction: the four Linux x86_64 sandbox acceptances in `engine/tests/commit.rs` and the sandbox process acceptance in `engine/tests/metadata_process.rs` are active `#[test]` cases with no ignore attributes. Updated the supervisor specification to state that they run in the normal workspace suite when delegated cgroup and runtime prerequisites are configured.
+- Verification: the delegated cgroup probe reported a writable cgroup v2 parent with `cpu`, `memory`, and `pids` available and enabled. `cargo test --workspace --locked -- --test-threads=1` passed through `engine/tools/with_delegated_cgroup.sh`; the commit integration target reported 142 passed and 0 ignored, including all four sandbox acceptances. The full workspace run completed successfully with no ignored tests.
+
 ## SU-2: per-class cgroup resource profiles — implemented
 
 - Behavior: deployments may configure an optional analytical per-invocation cgroup profile with CPU quota/period, memory, and process-count ceilings. Sealed `workload_class` selects the profile before cgroup creation; operational remains the required default and analytical falls back to it when no separate profile is configured.
