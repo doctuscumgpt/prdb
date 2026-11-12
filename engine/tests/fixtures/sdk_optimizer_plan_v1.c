@@ -1187,6 +1187,59 @@ int main(void) {
             resolve.optimizer_response, limit_one_plan, payload_len);
     }
 
+    {
+        static const uint8_t ordered_materialization_sql[] =
+            "SELECT c0 FROM items ORDER BY c3 DESC LIMIT 1";
+        uint32_t ordered_plan_len =
+            build_ordered_limit_zero_plan(ordered_select_malformed);
+        uint32_t ordered_delivered = 99;
+        uint32_t rows_before = projected_rows_seen;
+        uint32_t saw_ordered_open = 0;
+        uint32_t saw_ordered_batch = 0;
+        ordered_select_malformed[ordered_plan_len - 1] = 1;
+        assert(prdb_sdk_sql_parse_select_v3(
+                   ordered_materialization_sql,
+                   sizeof(ordered_materialization_sql) - 1,
+                   &ordered_select_statement,
+                   sizeof(ordered_select_statement), NULL) ==
+               PRDB_SDK_SQL_OK);
+        resolve.optimizer_response_len = build_optimizer_response(
+            resolve.optimizer_response, ordered_select_malformed,
+            ordered_plan_len);
+        resolve.batch_response_len =
+            build_row_batch(resolve.batch_response);
+        resolve.optimizer_calls = 0;
+        resolve.calls = 0;
+        resolve.event_count = 0;
+        resolve.statement_failures = 0;
+        resolve.cancellation_response[2] = 0;
+        assert(prdb_sdk_optimizer_execute_ordered_select_ast_v1(
+                   &host_v4, &ordered_select_statement,
+                   (const uint8_t *)"public", 6, 2,
+                   sizeof(batch_response), request, sizeof(request),
+                   optimizer_response, sizeof(optimizer_response), response,
+                   sizeof(response), scan_response, sizeof(scan_response),
+                   batch_response, sizeof(batch_response), &acquired_relation,
+                   sizeof(acquired_relation), acquired_columns, 4,
+                   source_cells, 4, projected_values, 1, malformed, 8,
+                   on_projected_row, NULL, &ordered_delivered) ==
+               PRDB_SDK_OPTIMIZER_PLAN_RESPONSE_TOO_SMALL);
+        assert(ordered_delivered == 0 && projected_rows_seen == rows_before &&
+               resolve.optimizer_calls == 1 && resolve.statement_failures == 1);
+        for (uint32_t event = 0; event < resolve.event_count; ++event) {
+            if (resolve.events[event] == PRDB_SDK_EXECUTOR_OP_OPEN_SCAN)
+                saw_ordered_open = 1;
+            if (resolve.events[event] == PRDB_SDK_EXECUTOR_OP_NEXT_BATCH)
+                saw_ordered_batch = 1;
+        }
+        assert(saw_ordered_open != 0 && saw_ordered_batch != 0);
+        resolve.optimizer_response_len = build_optimizer_response(
+            resolve.optimizer_response, limit_one_plan, payload_len);
+        resolve.batch_response_len = build_continuing_row_batch(
+            resolve.batch_response);
+        resolve.statement_failures = 0;
+    }
+
     resolve.optimizer_calls = 0;
     resolve.calls = 0;
     resolve.event_count = 0;

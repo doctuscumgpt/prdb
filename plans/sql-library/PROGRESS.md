@@ -14,12 +14,13 @@
 - Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed, including the full maintained SDK fixture suite with TinyCC 0.9.27-unstable-2025-01-06.
 - Remaining: optimizer-backed ordered execution still needs executor-level stress/error coverage for materialization overflow and cancellation during publication; broader analytical memory-pressure, spill, and mixed-workload evidence remain open.
 
-## SQL-8 dependency: optimizer-backed ordered LIMIT 0 — verified
+## SQL-8 dependency: optimizer-backed ordered SELECT bounds — verified
 
 - Contract: a zero LIMIT returns no rows after plan/authority validation and does not open a scan.
 - Regression: the optimizer executor fixture submits a kind-7 plan for `SELECT c0 FROM items ORDER BY c3 DESC LIMIT 0`; it checks zero output, no callback or statement failure, and only planner plus executor relation resolution operations.
 - Verification: the focused `sdk-optimizer-plan-v1` fixture and the complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` suite passed.
-- Remaining: materialization overflow, cancellation during publication, and wider analytical memory-pressure/spill/mixed-workload evidence remain open.
+- Materialization regression: a valid one-row executor batch with a caller scratch capacity too small for its row returns `RESPONSE_TOO_SMALL`, latches statement failure, emits no projected callback, and confirms the scan reached `NEXT_BATCH`.
+- Remaining: cancellation during ordered result publication and wider analytical memory-pressure/spill/mixed-workload evidence remain open.
 
 ## SQL-7: filtered aliased INNER JOIN runner and mandatory cgroup acceptance — implemented
 
