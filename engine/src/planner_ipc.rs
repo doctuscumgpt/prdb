@@ -100,10 +100,59 @@ pub struct DescribeRelationResponse {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DescribePlanRelationResponse {
     pub relation: Option<AuthorizedPlanRelation>,
+    /// Storage-proven empty authorized population, omitted from executor
+    /// identity responses and valid only for optimizer planning.
+    pub proven_empty: bool,
 }
 
 const MAX_PLAN_UNIQUE_ACCESS_PATHS: usize = 256;
 const RANGE_ACCESS_PATHS_MARKER: [u8; 2] = [0x52, 0x01];
+const EMPTY_POPULATION_MARKER: [u8; 2] = [0x52, 0x02];
+const EMPTY_PROOF_REQUEST_MARKER: [u8; 2] = [0x52, 0x03];
+
+/// Relation lookup request with an explicit opt-in for the bounded empty-view
+/// proof. Ordinary metadata requests never spend estimate allowance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DescribePlanRelationRequest {
+    pub schema_name: String,
+    pub relation_name: String,
+    pub include_empty_proof: bool,
+}
+
+impl DescribePlanRelationRequest {
+    pub fn encode(&self) -> Result<Vec<u8>, PlannerRequestError> {
+        let mut payload = ResolveRelationRequest {
+            schema_name: self.schema_name.clone(),
+            relation_name: self.relation_name.clone(),
+        }
+        .encode()?;
+        if self.include_empty_proof {
+            payload.extend_from_slice(&EMPTY_PROOF_REQUEST_MARKER);
+            payload.push(1);
+        }
+        ensure_response_size(&payload)?;
+        Ok(payload)
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<Self, PlannerRequestError> {
+        let (base, include_empty_proof) = if payload.len() >= 3
+            && payload[payload.len() - 3..payload.len() - 1] == EMPTY_PROOF_REQUEST_MARKER
+        {
+            if payload[payload.len() - 1] != 1 {
+                return Err(PlannerRequestError::InvalidPayload);
+            }
+            (&payload[..payload.len() - 3], true)
+        } else {
+            (payload, false)
+        };
+        let decoded = ResolveRelationRequest::decode(base)?;
+        Ok(Self {
+            schema_name: decoded.schema_name,
+            relation_name: decoded.relation_name,
+            include_empty_proof,
+        })
+    }
+}
 
 impl DescribePlanRelationResponse {
     /// Preserve the executor's established identity-only response for C SDK
@@ -114,12 +163,19 @@ impl DescribePlanRelationResponse {
             relation.range_access_paths.clear();
             relation
         });
-        Self { relation }.encode()
+        Self {
+            relation,
+            proven_empty: false,
+        }
+        .encode()
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, PlannerRequestError> {
         match &self.relation {
             None => {
+                if self.proven_empty {
+                    return Err(PlannerRequestError::InvalidPayload);
+                }
                 let payload =
                     crate::query_abi::encode_planner_describe_plan_relation_unavailable_response(1)
                         .to_vec();
@@ -250,6 +306,10 @@ impl DescribePlanRelationResponse {
                         payload.extend_from_slice(column_id);
                     }
                 }
+                if self.proven_empty {
+                    payload.extend_from_slice(&EMPTY_POPULATION_MARKER);
+                    payload.push(1);
+                }
                 ensure_response_size(&payload)?;
                 Ok(payload)
             }
@@ -261,7 +321,10 @@ impl DescribePlanRelationResponse {
             == PLANNER_DESCRIBE_PLAN_RELATION_UNAVAILABLE_RESPONSE_HEADER_BYTES as usize
         {
             return match crate::query_abi::decode_planner_describe_plan_relation_unavailable_response(payload) {
-                Some(1) => Ok(Self { relation: None }),
+                Some(1) => Ok(Self {
+                    relation: None,
+                    proven_empty: false,
+                }),
                 _ => Err(PlannerRequestError::InvalidPayload),
             };
         }
@@ -315,7 +378,9 @@ impl DescribePlanRelationResponse {
             }
             let has_range_marker =
                 payload.get(offset..offset + 2) == Some(RANGE_ACCESS_PATHS_MARKER.as_slice());
-            let path_count = if offset == payload.len() || has_range_marker {
+            let has_empty_marker =
+                payload.get(offset..offset + 2) == Some(EMPTY_POPULATION_MARKER.as_slice());
+            let path_count = if offset == payload.len() || has_range_marker || has_empty_marker {
                 0
             } else {
                 let count = usize::from(u16::from_be_bytes(
@@ -377,10 +442,7 @@ impl DescribePlanRelationResponse {
                 });
             }
             let mut range_access_paths = Vec::new();
-            if offset != payload.len() {
-                if payload.get(offset..offset + 2) != Some(RANGE_ACCESS_PATHS_MARKER.as_slice()) {
-                    return Err(PlannerRequestError::InvalidPayload);
-                }
+            if payload.get(offset..offset + 2) == Some(RANGE_ACCESS_PATHS_MARKER.as_slice()) {
                 offset += RANGE_ACCESS_PATHS_MARKER.len();
                 let range_count = usize::from(u16::from_be_bytes(
                     payload
@@ -441,6 +503,20 @@ impl DescribePlanRelationResponse {
                     });
                 }
             }
+            let proven_empty =
+                if payload.get(offset..offset + 2) == Some(EMPTY_POPULATION_MARKER.as_slice()) {
+                    offset += EMPTY_POPULATION_MARKER.len();
+                    let flag = *payload
+                        .get(offset)
+                        .ok_or(PlannerRequestError::InvalidPayload)?;
+                    offset += 1;
+                    if flag != 1 {
+                        return Err(PlannerRequestError::InvalidPayload);
+                    }
+                    true
+                } else {
+                    false
+                };
             if offset != payload.len() {
                 return Err(PlannerRequestError::InvalidPayload);
             }
@@ -457,6 +533,7 @@ impl DescribePlanRelationResponse {
                     unique_access_paths,
                     range_access_paths,
                 }),
+                proven_empty,
             })
         }
     }
@@ -748,10 +825,30 @@ pub fn dispatch_planner_request(
             .encode()?
         }
         Operation::DescribePlanRelation => {
-            let decoded = ResolveRelationRequest::decode(&request.payload)?;
+            let decoded = DescribePlanRelationRequest::decode(&request.payload)?;
+            let relation = connection
+                .describe_relation_for_plan(&decoded.schema_name, &decoded.relation_name)?;
+            let proven_empty = if decoded.include_empty_proof {
+                if let Some(relation) = &relation {
+                    let visible_column_ids = relation
+                        .relation
+                        .columns
+                        .iter()
+                        .map(|column| column.column_id)
+                        .collect::<Vec<_>>();
+                    connection.prove_empty_population_for_plan(
+                        relation.relation.relation_id,
+                        &visible_column_ids,
+                    )?
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
             DescribePlanRelationResponse {
-                relation: connection
-                    .describe_relation_for_plan(&decoded.schema_name, &decoded.relation_name)?,
+                relation,
+                proven_empty,
             }
             .encode()?
         }
@@ -903,4 +1000,35 @@ fn abort_shared_planner_invocation(
         transaction.abort().map_err(PlannerConnectionError::Abort)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod empty_proof_request_tests {
+    use super::DescribePlanRelationRequest;
+
+    #[test]
+    fn empty_proof_request_is_opt_in_and_canonical() {
+        let request = DescribePlanRelationRequest {
+            schema_name: "public".to_owned(),
+            relation_name: "items".to_owned(),
+            include_empty_proof: false,
+        };
+        assert_eq!(
+            DescribePlanRelationRequest::decode(&request.encode().unwrap()).unwrap(),
+            request
+        );
+        let opted_in = DescribePlanRelationRequest {
+            include_empty_proof: true,
+            ..request
+        };
+        let encoded = opted_in.encode().unwrap();
+        assert_eq!(&encoded[encoded.len() - 3..], &[0x52, 0x03, 0x01]);
+        assert_eq!(
+            DescribePlanRelationRequest::decode(&encoded).unwrap(),
+            opted_in
+        );
+        let mut malformed = encoded;
+        *malformed.last_mut().unwrap() = 0;
+        assert!(DescribePlanRelationRequest::decode(&malformed).is_err());
+    }
 }

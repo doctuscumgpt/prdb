@@ -2730,6 +2730,7 @@ static int32_t decode_plan_internal(
     uint32_t filter_out_capacity, int allow_filter,
     point_probe_hint *point_probe_out,
     range_probe_hint *range_probe_out,
+    uint8_t *empty_view_out,
     uint8_t expected_kind) {
     prdb_sdk_optimizer_plan_v1 decoded;
     prdb_sdk_optimizer_filter_v1 decoded_filter = {0};
@@ -2747,12 +2748,14 @@ static int32_t decode_plan_internal(
     uint32_t limit = 0;
     uint8_t has_filter = 0;
     uint8_t has_unique_probe = 0;
+    uint8_t empty_view_hint = 0;
     uint8_t predicate_references[PRDB_SDK_OPTIMIZER_PLAN_MAX_SCAN_COLUMNS] = {0};
     point_probe_hint decoded_point_probe = {0};
     range_probe_hint decoded_range_probe = {0};
 
     if (point_probe_out != NULL) memset(point_probe_out, 0, sizeof(*point_probe_out));
     if (range_probe_out != NULL) memset(range_probe_out, 0, sizeof(*range_probe_out));
+    if (empty_view_out != NULL) *empty_view_out = 0;
 
     if (payload == NULL || out == NULL || out_capacity < sizeof(*out) ||
         (allow_filter &&
@@ -2927,91 +2930,50 @@ static int32_t decode_plan_internal(
         const uint8_t *index_id;
         prdb_sdk_optimizer_plan_column_v1 key_column = {0};
         int key_found = 0;
-        if (expected_kind != 1 || !read_u8(&reader, &tag) ||
-            (tag != 0xa1 && tag != 0xa2) ||
+        if (expected_kind != 1 || !read_u8(&reader, &tag)) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        }
+        if (tag == 0xa3) {
+            if (reader.offset != reader.length) {
+                return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+            }
+            empty_view_hint = 1;
+        } else if ((tag != 0xa1 && tag != 0xa2) ||
             !take(&reader, 16, &index_id) || all_zero(index_id, 16) ||
             !read_column(&reader, &key_column)) {
             return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
-        }
-        for (index = 0; index < decoded.scan_column_count; ++index) {
-            if (columns_equal(&key_column, &decoded.scan_columns[index])) {
-                key_found = 1;
-                break;
-            }
-        }
-        if (!key_found) return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
-        if (tag == 0xa1) {
-            predicate_type value_type = {0};
-            uint32_t value_nodes = 0;
-            uint8_t value_references[PRDB_SDK_OPTIMIZER_PLAN_MAX_SCAN_COLUMNS] = {0};
-            uint64_t literal_offset;
-            uint8_t literal_tag;
-            if (!read_u8(&reader, &literal_tag) ||
-                (literal_tag != 0x01 && literal_tag != 0x02 && literal_tag != 0x03)) {
-                return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
-            }
-            --reader.offset;
-            literal_offset = reader.offset;
-            if (!decode_predicate(&reader, decoded.scan_columns,
-                                  decoded.scan_column_count, 1, &value_nodes,
-                                  value_references, &value_type) ||
-                value_nodes != 1 || value_type.is_null != 0 ||
-                value_type.type_code != key_column.type_code ||
-                memcmp(value_type.parameters, key_column.type_parameters, 4) != 0 ||
-                reader.offset != reader.length) {
-                return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
-            }
-            if (literal_tag == 0x02) {
-                plan_reader integer_reader = {
-                    payload + literal_offset, reader.offset - literal_offset, 1};
-                int64_t integer_value;
-                if (!read_integer_predicate_record(&integer_reader, 0,
-                                                   &integer_value) ||
-                    integer_reader.offset != integer_reader.length ||
-                    integer_value < INT32_MIN || integer_value > INT32_MAX) {
-                    return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
-                }
-            }
-            decoded_point_probe.present = 1;
-            memcpy(decoded_point_probe.index_id, index_id, 16);
-            decoded_point_probe.key_column = key_column;
-            decoded_point_probe.literal = payload + literal_offset;
-            decoded_point_probe.literal_len =
-                (uint32_t)(reader.offset - literal_offset);
-            has_unique_probe = 1;
         } else {
-            uint8_t *inclusive_values[2] = {
-                &decoded_range_probe.lower_inclusive,
-                &decoded_range_probe.upper_inclusive};
-            const uint8_t **literal_values[2] = {
-                &decoded_range_probe.lower_literal,
-                &decoded_range_probe.upper_literal};
-            uint32_t *literal_lengths[2] = {
-                &decoded_range_probe.lower_literal_len,
-                &decoded_range_probe.upper_literal_len};
-            uint8_t has_bound[2] = {0, 0};
-            for (uint32_t bound_index = 0; bound_index < 2; ++bound_index) {
-                uint8_t bound_flag;
-                if (!read_u8(&reader, &bound_flag) || bound_flag > 2) {
+            for (index = 0; index < decoded.scan_column_count; ++index) {
+                if (columns_equal(&key_column, &decoded.scan_columns[index])) {
+                    key_found = 1;
+                    break;
+                }
+            }
+            if (!key_found) return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+            if (tag == 0xa1) {
+                predicate_type value_type = {0};
+                uint32_t value_nodes = 0;
+                uint8_t value_references[PRDB_SDK_OPTIMIZER_PLAN_MAX_SCAN_COLUMNS] = {0};
+                uint64_t literal_offset;
+                uint8_t literal_tag;
+                if (!read_u8(&reader, &literal_tag) ||
+                    (literal_tag != 0x01 && literal_tag != 0x02 && literal_tag != 0x03)) {
                     return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
                 }
-                if (bound_flag == 0) continue;
-                uint64_t literal_offset = reader.offset;
-                uint32_t value_nodes = 0;
-                predicate_type value_type = {0};
-                uint8_t value_references[PRDB_SDK_OPTIMIZER_PLAN_MAX_SCAN_COLUMNS] = {0};
+                --reader.offset;
+                literal_offset = reader.offset;
                 if (!decode_predicate(&reader, decoded.scan_columns,
                                       decoded.scan_column_count, 1, &value_nodes,
                                       value_references, &value_type) ||
                     value_nodes != 1 || value_type.is_null != 0 ||
                     value_type.type_code != key_column.type_code ||
-                    memcmp(value_type.parameters, key_column.type_parameters, 4) != 0) {
+                    memcmp(value_type.parameters, key_column.type_parameters, 4) != 0 ||
+                    reader.offset != reader.length) {
                     return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
                 }
-                if (payload[literal_offset] == 0x02) {
+                if (literal_tag == 0x02) {
                     plan_reader integer_reader = {
-                        payload + literal_offset,
-                        reader.offset - literal_offset, 1};
+                        payload + literal_offset, reader.offset - literal_offset, 1};
                     int64_t integer_value;
                     if (!read_integer_predicate_record(&integer_reader, 0,
                                                        &integer_value) ||
@@ -3020,19 +2982,68 @@ static int32_t decode_plan_internal(
                         return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
                     }
                 }
-                *literal_values[bound_index] = payload + literal_offset;
-                *literal_lengths[bound_index] =
+                decoded_point_probe.present = 1;
+                memcpy(decoded_point_probe.index_id, index_id, 16);
+                decoded_point_probe.key_column = key_column;
+                decoded_point_probe.literal = payload + literal_offset;
+                decoded_point_probe.literal_len =
                     (uint32_t)(reader.offset - literal_offset);
-                *inclusive_values[bound_index] = (uint8_t)(bound_flag == 1);
-                has_bound[bound_index] = 1;
-            }
-            decoded_range_probe.present = 1;
-            memcpy(decoded_range_probe.index_id, index_id, 16);
-            decoded_range_probe.key_column = key_column;
-            if ((!has_bound[0] && !has_bound[1]) || reader.offset != reader.length ||
-                !range_probe_matches_filter(&decoded_filter, &key_column,
-                                            &decoded_range_probe)) {
-                return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+                has_unique_probe = 1;
+            } else {
+                uint8_t *inclusive_values[2] = {
+                    &decoded_range_probe.lower_inclusive,
+                    &decoded_range_probe.upper_inclusive};
+                const uint8_t **literal_values[2] = {
+                    &decoded_range_probe.lower_literal,
+                    &decoded_range_probe.upper_literal};
+                uint32_t *literal_lengths[2] = {
+                    &decoded_range_probe.lower_literal_len,
+                    &decoded_range_probe.upper_literal_len};
+                uint8_t has_bound[2] = {0, 0};
+                for (uint32_t bound_index = 0; bound_index < 2; ++bound_index) {
+                    uint8_t bound_flag;
+                    if (!read_u8(&reader, &bound_flag) || bound_flag > 2) {
+                        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+                    }
+                    if (bound_flag == 0) continue;
+                    uint64_t literal_offset = reader.offset;
+                    uint32_t value_nodes = 0;
+                    predicate_type value_type = {0};
+                    uint8_t value_references[PRDB_SDK_OPTIMIZER_PLAN_MAX_SCAN_COLUMNS] = {0};
+                    if (!decode_predicate(&reader, decoded.scan_columns,
+                                          decoded.scan_column_count, 1, &value_nodes,
+                                          value_references, &value_type) ||
+                        value_nodes != 1 || value_type.is_null != 0 ||
+                        value_type.type_code != key_column.type_code ||
+                        memcmp(value_type.parameters, key_column.type_parameters, 4) != 0) {
+                        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+                    }
+                    if (payload[literal_offset] == 0x02) {
+                        plan_reader integer_reader = {
+                            payload + literal_offset,
+                            reader.offset - literal_offset, 1};
+                        int64_t integer_value;
+                        if (!read_integer_predicate_record(&integer_reader, 0,
+                                                           &integer_value) ||
+                            integer_reader.offset != integer_reader.length ||
+                            integer_value < INT32_MIN || integer_value > INT32_MAX) {
+                            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+                        }
+                    }
+                    *literal_values[bound_index] = payload + literal_offset;
+                    *literal_lengths[bound_index] =
+                        (uint32_t)(reader.offset - literal_offset);
+                    *inclusive_values[bound_index] = (uint8_t)(bound_flag == 1);
+                    has_bound[bound_index] = 1;
+                }
+                decoded_range_probe.present = 1;
+                memcpy(decoded_range_probe.index_id, index_id, 16);
+                decoded_range_probe.key_column = key_column;
+                if ((!has_bound[0] && !has_bound[1]) || reader.offset != reader.length ||
+                    !range_probe_matches_filter(&decoded_filter, &key_column,
+                                                &decoded_range_probe)) {
+                    return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+                }
             }
         }
     }
@@ -3056,6 +3067,7 @@ static int32_t decode_plan_internal(
     }
     if (point_probe_out != NULL) *point_probe_out = decoded_point_probe;
     if (range_probe_out != NULL) *range_probe_out = decoded_range_probe;
+    if (empty_view_out != NULL) *empty_view_out = empty_view_hint;
     return PRDB_SDK_OPTIMIZER_PLAN_OK;
 }
 
@@ -3063,7 +3075,7 @@ int32_t prdb_sdk_optimizer_decode_plan_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_plan_v1 *out, uint32_t out_capacity) {
     return decode_plan_internal(payload, payload_len, out, out_capacity, NULL,
-                                0, 0, NULL, NULL, 1);
+                                0, 0, NULL, NULL, NULL, 1);
 }
 
 int32_t prdb_sdk_optimizer_decode_plan_with_filter_v1(
@@ -3072,7 +3084,7 @@ int32_t prdb_sdk_optimizer_decode_plan_with_filter_v1(
     prdb_sdk_optimizer_filter_v1 *filter_out,
     uint32_t filter_out_capacity) {
     return decode_plan_internal(payload, payload_len, out, out_capacity,
-                                filter_out, filter_out_capacity, 1, NULL, NULL, 1);
+                                filter_out, filter_out_capacity, 1, NULL, NULL, NULL, 1);
 }
 
 int32_t prdb_sdk_optimizer_decode_delete_plan_v1(
@@ -3081,7 +3093,7 @@ int32_t prdb_sdk_optimizer_decode_delete_plan_v1(
     prdb_sdk_optimizer_filter_v1 *filter_out,
     uint32_t filter_out_capacity) {
     return decode_plan_internal(payload, payload_len, out, out_capacity,
-                                filter_out, filter_out_capacity, 1, NULL, NULL, 2);
+                                filter_out, filter_out_capacity, 1, NULL, NULL, NULL, 2);
 }
 
 static int32_t decode_select_plan_with_access_path_v1(
@@ -3089,12 +3101,13 @@ static int32_t decode_select_plan_with_access_path_v1(
     prdb_sdk_optimizer_plan_v1 *out, uint32_t out_capacity,
     prdb_sdk_optimizer_filter_v1 *filter_out, uint32_t filter_out_capacity,
     point_probe_hint *point_probe_out,
-    range_probe_hint *range_probe_out) {
+    range_probe_hint *range_probe_out, uint8_t *empty_view_out) {
     if (point_probe_out == NULL || range_probe_out == NULL)
         return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
     return decode_plan_internal(payload, payload_len, out, out_capacity,
                                 filter_out, filter_out_capacity, 1,
-                                point_probe_out, range_probe_out, 1);
+                                point_probe_out, range_probe_out,
+                                empty_view_out, 1);
 }
 
 int32_t prdb_sdk_optimizer_decode_update_plan_v1(
@@ -4141,6 +4154,7 @@ int32_t prdb_sdk_optimizer_execute_unfiltered_plan_v1(
     uint64_t batch_response_len = 0;
     uint32_t total_delivered = 0;
     uint32_t scan_opened = 0;
+    uint8_t empty_view_hint = 0;
     int use_full_scan = 1;
     uint32_t max_scan_pages = PRDB_SDK_OPTIMIZER_PLAN_MAX_NEXT_REQUESTS;
     int cursor_open = 0;
@@ -4164,7 +4178,7 @@ int32_t prdb_sdk_optimizer_execute_unfiltered_plan_v1(
     *delivered_rows_out = 0;
     status = decode_select_plan_with_access_path_v1(
         plan_payload, plan_payload_len, &plan, sizeof(plan), &filter,
-        sizeof(filter), &point_probe, &range_probe);
+        sizeof(filter), &point_probe, &range_probe, &empty_view_hint);
     if (status != PRDB_SDK_OPTIMIZER_PLAN_OK) return status;
     status = prdb_sdk_optimizer_scan_state_init_v1(
         plan_payload, plan_payload_len, &state, sizeof(state));
@@ -4174,6 +4188,14 @@ int32_t prdb_sdk_optimizer_execute_unfiltered_plan_v1(
         relation_response_capacity, &relation_response_len, relation_out,
         relation_out_capacity, relation_columns, relation_column_capacity);
     if (status != PRDB_SDK_OPTIMIZER_PLAN_OK) return status;
+    if (empty_view_hint != 0) {
+        int32_t cancelled = 0;
+        status = prdb_sdk_executor_check_cancelled_v1(host, &cancelled);
+        if (status != PRDB_SDK_EXECUTOR_OK)
+            return PRDB_SDK_OPTIMIZER_PLAN_CALLBACK_ERROR;
+        if (cancelled != 0) return PRDB_SDK_OPTIMIZER_PLAN_CANCELLED;
+        return PRDB_SDK_OPTIMIZER_PLAN_OK;
+    }
     if (plan.has_limit != 0 && plan.limit == 0) return PRDB_SDK_OPTIMIZER_PLAN_OK;
 
     if (range_probe.present != 0) {

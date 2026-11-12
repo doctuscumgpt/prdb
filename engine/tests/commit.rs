@@ -19710,12 +19710,14 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
     );
     let plan_relation_payload = prdb_engine::planner_ipc::DescribePlanRelationResponse {
         relation: Some(first_plan_relation.clone()),
+        proven_empty: true,
     }
     .encode()?;
     assert_eq!(
         prdb_engine::planner_ipc::DescribePlanRelationResponse::decode(&plan_relation_payload)?,
         prdb_engine::planner_ipc::DescribePlanRelationResponse {
             relation: Some(first_plan_relation.clone()),
+            proven_empty: true,
         }
     );
     let mut executor_identity_expected = first_plan_relation.clone();
@@ -19723,12 +19725,14 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
     executor_identity_expected.range_access_paths.clear();
     let executor_identity_payload = prdb_engine::planner_ipc::DescribePlanRelationResponse {
         relation: Some(first_plan_relation.clone()),
+        proven_empty: true,
     }
     .encode_executor_identity()?;
     assert_eq!(
         prdb_engine::planner_ipc::DescribePlanRelationResponse::decode(&executor_identity_payload)?,
         prdb_engine::planner_ipc::DescribePlanRelationResponse {
             relation: Some(executor_identity_expected),
+            proven_empty: false,
         }
     );
     let marker_offset = plan_relation_payload
@@ -29266,8 +29270,9 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
     use prdb_engine::optimizer_plan::{PlanNode, decode_plan_v1};
     use prdb_engine::optimizer_service::{OptimizerError, optimize_select_v1};
     use prdb_engine::planner_ipc::{
-        DescribePlanRelationResponse, DescribeRelationResponse, EstimateScanRequest,
-        EstimateScanResponse, MAX_PLANNER_REQUESTS_PER_CONNECTION, serve_planner,
+        DescribePlanRelationRequest, DescribePlanRelationResponse, DescribeRelationResponse,
+        EstimateScanRequest, EstimateScanResponse, MAX_PLANNER_REQUESTS_PER_CONNECTION,
+        serve_planner,
     };
     use prdb_engine::storage_manager::{
         CreatePolicyRequest, CreateTableRequest, ObjectGrantPrivilege, ObjectGrantTarget,
@@ -29514,16 +29519,19 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
             &IpcFrame {
                 operation: IpcOperation::DescribePlanRelation as u16,
                 request_id: 2,
-                payload: ResolveRelationRequest {
+                payload: DescribePlanRelationRequest {
                     schema_name: "planner_stats".to_owned(),
                     relation_name: "observations".to_owned(),
+                    include_empty_proof: true,
                 }
                 .encode()?,
             },
         )?;
         let plan_relation = prdb_engine::ipc::read_frame(&mut client)?
             .ok_or("planner stream closed before plan relation description")?;
-        let plan_relation = DescribePlanRelationResponse::decode(&plan_relation.payload)?
+        let plan_relation_response = DescribePlanRelationResponse::decode(&plan_relation.payload)?;
+        assert!(plan_relation_response.proven_empty);
+        let plan_relation = plan_relation_response
             .relation
             .ok_or("authorized plan relation was not described")?;
         assert_eq!(plan_relation.schema_id, schema.schema_id);
@@ -29531,7 +29539,7 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
         assert_eq!(plan_relation.table_epoch, 2);
         assert_eq!(plan_relation.relation.relation_id, table.table_id);
 
-        for request_id in 3..(3 + MAX_PLANNER_ESTIMATE_REQUESTS_PER_CONNECTION as u64) {
+        for request_id in 3..(2 + MAX_PLANNER_ESTIMATE_REQUESTS_PER_CONNECTION as u64) {
             prdb_engine::ipc::write_frame(
                 &mut client,
                 &IpcFrame {
@@ -29555,7 +29563,7 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
             );
         }
 
-        let exhausted_id = 3 + MAX_PLANNER_ESTIMATE_REQUESTS_PER_CONNECTION as u64;
+        let exhausted_id = 2 + MAX_PLANNER_ESTIMATE_REQUESTS_PER_CONNECTION as u64;
         prdb_engine::ipc::write_frame(
             &mut client,
             &IpcFrame {
@@ -29627,8 +29635,10 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
             )?;
             let response = prdb_engine::ipc::read_frame(&mut executor_client)?
                 .ok_or("executor stream closed before plan relation response")?;
-            let relation = DescribePlanRelationResponse::decode(&response.payload)?.relation;
+            let decoded = DescribePlanRelationResponse::decode(&response.payload)?;
+            let relation = decoded.relation;
             if request_id == 1 {
+                assert!(!decoded.proven_empty);
                 let relation =
                     relation.ok_or("executor did not re-resolve authorized plan relation")?;
                 assert_eq!(relation.schema_id, schema.schema_id);
@@ -29741,6 +29751,7 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
         )?;
         assert_eq!(plan.relation.schema_id, schema.schema_id);
         assert_eq!(plan.relation.relation_id, table.table_id);
+        assert!(plan.empty_view_hint);
         prdb_engine::ipc::write_frame(
             &mut optimizer_client,
             &IpcFrame {

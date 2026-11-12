@@ -1,6 +1,5 @@
 //! Protocol loop used by the isolated optimizer executable.
 
-use crate::executor_ipc::ResolveRelationRequest;
 use crate::ipc::{DispatchError, IpcFrame, Operation, ServiceRole, authorize_operation};
 use crate::optimizer_ipc::{
     MAX_OPTIMIZER_REQUESTS_PER_CONNECTION, OptimizerPayloadError, OptimizerResponse,
@@ -8,7 +7,8 @@ use crate::optimizer_ipc::{
 };
 use crate::optimizer_plan::MAX_PLAN_BYTES;
 use crate::planner_ipc::{
-    DescribePlanRelationResponse, MAX_PLANNER_REQUESTS_PER_CONNECTION, PlannerRequestError,
+    DescribePlanRelationRequest, DescribePlanRelationResponse, MAX_PLANNER_REQUESTS_PER_CONNECTION,
+    PlannerRequestError,
 };
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -156,20 +156,24 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             }
         };
         let mut relations = Vec::with_capacity(relation_names.len());
+        let mut proven_empty = Vec::with_capacity(relation_names.len());
         for (schema_name, relation_name) in relation_names {
             let planner_request_id = next_planner_request_id;
             next_planner_request_id = next_planner_request_id
                 .checked_add(1)
                 .ok_or(OptimizerProcessError::RequestLimitExceeded)?;
+            let include_empty_proof = operation == Operation::OptimizeSelect
+                && request.payload.get(2) == Some(&crate::query_abi::OPTIMIZER_SELECT_STATEMENT);
             let planner_request = IpcFrame {
                 operation: Operation::DescribePlanRelation as u16,
                 request_id: planner_request_id,
-                payload: ResolveRelationRequest {
+                payload: DescribePlanRelationRequest {
                     schema_name,
                     relation_name,
+                    include_empty_proof,
                 }
                 .encode()
-                .map_err(|error| OptimizerProcessError::PlannerPayload(error.into()))?,
+                .map_err(OptimizerProcessError::PlannerPayload)?,
             };
             authorize_operation(ServiceRole::Planner, Operation::DescribePlanRelation)
                 .map_err(OptimizerProcessError::Dispatch)?;
@@ -183,11 +187,10 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             {
                 return Err(OptimizerProcessError::PlannerResponseMismatch);
             }
-            relations.push(
-                DescribePlanRelationResponse::decode(&planner_response.payload)
-                    .map_err(OptimizerProcessError::PlannerPayload)?
-                    .relation,
-            );
+            let described = DescribePlanRelationResponse::decode(&planner_response.payload)
+                .map_err(OptimizerProcessError::PlannerPayload)?;
+            proven_empty.push(described.proven_empty);
+            relations.push(described.relation);
         }
         let optimized = match operation {
             Operation::OptimizeSelect => {
@@ -269,7 +272,25 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             _ => unreachable!("optimizer operation was checked above"),
         };
         let response = match optimized {
-            Ok(plan) if plan.len() <= MAX_PLAN_BYTES => OptimizerResponse::success(plan),
+            Ok(mut plan) if plan.len() <= MAX_PLAN_BYTES => {
+                if operation == Operation::OptimizeSelect
+                    && request.payload.get(2) == Some(&crate::query_abi::OPTIMIZER_SELECT_STATEMENT)
+                    && proven_empty.first() == Some(&true)
+                    && let Ok(mut decoded) = crate::optimizer_plan::decode_plan_v1(&plan)
+                {
+                    decoded.unique_probe = None;
+                    decoded.range_scan = None;
+                    decoded.empty_view_hint = true;
+                    if let Ok(encoded) = crate::optimizer_plan::encode_plan_v1(&decoded) {
+                        plan = encoded;
+                    }
+                }
+                if plan.len() <= MAX_PLAN_BYTES {
+                    OptimizerResponse::success(plan)
+                } else {
+                    OptimizerResponse::failure(OptimizerStatus::Internal)
+                }
+            }
             Ok(_) => OptimizerResponse::failure(OptimizerStatus::Internal),
             Err(error) => OptimizerResponse::failure(status_for_error(&error)),
         }
@@ -499,6 +520,7 @@ mod tests {
                         request_id: request.request_id,
                         payload: DescribePlanRelationResponse {
                             relation: Some(relation),
+                            proven_empty: false,
                         }
                         .encode()
                         .unwrap(),
@@ -603,6 +625,7 @@ mod tests {
                 request_id: first_planner_request.request_id,
                 payload: DescribePlanRelationResponse {
                     relation: Some(relation.clone()),
+                    proven_empty: false,
                 }
                 .encode()
                 .unwrap(),
@@ -631,6 +654,7 @@ mod tests {
                 request_id: second_planner_request.request_id,
                 payload: DescribePlanRelationResponse {
                     relation: Some(relation),
+                    proven_empty: false,
                 }
                 .encode()
                 .unwrap(),
@@ -685,6 +709,7 @@ mod tests {
                                 unique_access_paths: Vec::new(),
                                 range_access_paths: Vec::new(),
                             }),
+                            proven_empty: false,
                         }
                         .encode()
                         .unwrap(),
@@ -760,6 +785,7 @@ mod tests {
                         request_id: request.request_id,
                         payload: DescribePlanRelationResponse {
                             relation: Some(relation),
+                            proven_empty: false,
                         }
                         .encode()
                         .unwrap(),
@@ -843,6 +869,7 @@ mod tests {
                         request_id: request.request_id,
                         payload: DescribePlanRelationResponse {
                             relation: Some(relation),
+                            proven_empty: false,
                         }
                         .encode()
                         .unwrap(),
@@ -901,7 +928,7 @@ mod tests {
                     let request = crate::ipc::read_frame(&mut planner_server)
                         .unwrap()
                         .expect("optimizer must resolve each join relation");
-                    let decoded = ResolveRelationRequest::decode(&request.payload).unwrap();
+                    let decoded = DescribePlanRelationRequest::decode(&request.payload).unwrap();
                     assert_eq!(request.request_id, request_id);
                     assert_eq!(decoded.schema_name, "public");
                     assert_eq!(decoded.relation_name, name);
@@ -946,6 +973,7 @@ mod tests {
                             request_id: request.request_id,
                             payload: DescribePlanRelationResponse {
                                 relation: Some(relation),
+                                proven_empty: false,
                             }
                             .encode()
                             .unwrap(),
@@ -1059,6 +1087,7 @@ mod tests {
                         request_id: request.request_id,
                         payload: DescribePlanRelationResponse {
                             relation: Some(relation),
+                            proven_empty: false,
                         }
                         .encode()
                         .unwrap(),
@@ -1130,6 +1159,7 @@ mod tests {
                         request_id: request.request_id,
                         payload: DescribePlanRelationResponse {
                             relation: Some(relation),
+                            proven_empty: false,
                         }
                         .encode()
                         .unwrap(),
@@ -1210,6 +1240,7 @@ mod tests {
                         request_id: request.request_id,
                         payload: DescribePlanRelationResponse {
                             relation: Some(relation),
+                            proven_empty: false,
                         }
                         .encode()
                         .unwrap(),
@@ -1295,6 +1326,7 @@ mod tests {
                         request_id: request.request_id,
                         payload: DescribePlanRelationResponse {
                             relation: Some(relation),
+                            proven_empty: false,
                         }
                         .encode()
                         .unwrap(),

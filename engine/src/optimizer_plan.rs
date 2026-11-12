@@ -40,6 +40,8 @@ pub struct SingleTablePlanV1 {
     /// Optional bounded leading-key range hint. Storage revalidates the index
     /// and authorization, and the executor retains the full predicate filter.
     pub range_scan: Option<IndexRangeScanV1>,
+    /// Storage-proven empty authorized view, revalidated by the executor.
+    pub empty_view_hint: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -289,6 +291,12 @@ pub fn encode_plan_v1(plan: &SingleTablePlanV1) -> Result<Vec<u8>, PlanError> {
             }
         }
     }
+    if plan.empty_view_hint {
+        if plan.unique_probe.is_some() || plan.range_scan.is_some() {
+            return Err(PlanError::InvalidPredicate);
+        }
+        output.push(0xa3);
+    }
     if output.len() > MAX_PLAN_BYTES {
         return Err(PlanError::TooLarge);
     }
@@ -375,57 +383,66 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
         };
         nodes.push(node);
     }
-    let (unique_probe, range_scan) = if reader.is_empty() {
-        (None, None)
-    } else {
-        let hint_tag = reader.u8()?;
-        if hint_tag != 0xa1 && hint_tag != 0xa2 {
-            return Err(PlanError::TrailingBytes);
-        }
-        let index_id: [u8; 16] = reader
-            .take(16)?
-            .try_into()
-            .map_err(|_| PlanError::Truncated)?;
-        let key_column = reader.column()?;
-        match hint_tag {
-            0xa1 => {
-                let value = reader.predicate(&scan_columns)?;
-                (
-                    Some(UniquePointProbeV1 {
-                        index_id,
-                        key_column,
-                        value,
-                    }),
-                    None,
-                )
+    let mut empty_view_hint = false;
+    let (unique_probe, range_scan) =
+        if reader.is_empty() || reader.bytes.get(reader.offset) == Some(&0xa3) {
+            (None, None)
+        } else {
+            let hint_tag = reader.u8()?;
+            if hint_tag != 0xa1 && hint_tag != 0xa2 {
+                return Err(PlanError::TrailingBytes);
             }
-            0xa2 => {
-                let mut decode_bound = || -> Result<Option<IndexRangeBoundV1>, PlanError> {
-                    match reader.u8()? {
-                        0 => Ok(None),
-                        1 | 2 => {
-                            let inclusive = reader.bytes[reader.offset - 1] == 1;
-                            Ok(Some(IndexRangeBoundV1 {
-                                value: reader.predicate(&scan_columns)?,
-                                inclusive,
-                            }))
+            let index_id: [u8; 16] = reader
+                .take(16)?
+                .try_into()
+                .map_err(|_| PlanError::Truncated)?;
+            let key_column = reader.column()?;
+            match hint_tag {
+                0xa1 => {
+                    let value = reader.predicate(&scan_columns)?;
+                    (
+                        Some(UniquePointProbeV1 {
+                            index_id,
+                            key_column,
+                            value,
+                        }),
+                        None,
+                    )
+                }
+                0xa2 => {
+                    let mut decode_bound = || -> Result<Option<IndexRangeBoundV1>, PlanError> {
+                        match reader.u8()? {
+                            0 => Ok(None),
+                            1 | 2 => {
+                                let inclusive = reader.bytes[reader.offset - 1] == 1;
+                                Ok(Some(IndexRangeBoundV1 {
+                                    value: reader.predicate(&scan_columns)?,
+                                    inclusive,
+                                }))
+                            }
+                            _ => Err(PlanError::InvalidEncoding),
                         }
-                        _ => Err(PlanError::InvalidEncoding),
-                    }
-                };
-                (
-                    None,
-                    Some(IndexRangeScanV1 {
-                        index_id,
-                        key_column,
-                        lower: decode_bound()?,
-                        upper: decode_bound()?,
-                    }),
-                )
+                    };
+                    (
+                        None,
+                        Some(IndexRangeScanV1 {
+                            index_id,
+                            key_column,
+                            lower: decode_bound()?,
+                            upper: decode_bound()?,
+                        }),
+                    )
+                }
+                _ => return Err(PlanError::TrailingBytes),
             }
-            _ => return Err(PlanError::TrailingBytes),
+        };
+    if !reader.is_empty() && reader.bytes.get(reader.offset) == Some(&0xa3) {
+        if unique_probe.is_some() || range_scan.is_some() {
+            return Err(PlanError::InvalidEncoding);
         }
-    };
+        reader.offset += 1;
+        empty_view_hint = true;
+    }
     if !reader.is_empty() {
         return Err(PlanError::TrailingBytes);
     }
@@ -434,6 +451,7 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
         nodes,
         unique_probe,
         range_scan,
+        empty_view_hint,
     };
     validate_plan_v1(&plan)?;
     Ok(plan)
@@ -3143,6 +3161,7 @@ pub fn plan_select_v1(bound: BoundSelect) -> Result<SingleTablePlanV1, PlanError
         nodes,
         unique_probe,
         range_scan,
+        empty_view_hint: false,
     };
     validate_plan_v1(&plan)?;
     Ok(plan)

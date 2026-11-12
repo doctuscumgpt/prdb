@@ -8186,6 +8186,77 @@ impl PlannerMetadataConnection<'_, '_> {
         attach_plan_identity(self.transaction, schema_name, relation).map(Some)
     }
 
+    /// Prove that a resolved relation has no rows in this invocation's
+    /// authorized view using only constant SELECT policies. The proof does
+    /// not inspect table rows and shares the planner's estimate allowance.
+    pub fn prove_empty_population_for_plan(
+        &mut self,
+        table_id: [u8; 16],
+        visible_column_ids: &[[u8; 16]],
+    ) -> Result<bool, TransactionError> {
+        self.transaction.check_deadline()?;
+        if table_id == [0; 16]
+            || visible_column_ids.is_empty()
+            || visible_column_ids.len() > crate::tuple::MAX_COLUMNS
+            || visible_column_ids.contains(&[0; 16])
+            || visible_column_ids
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>()
+                .len()
+                != visible_column_ids.len()
+        {
+            return Ok(false);
+        }
+        if !consume_planner_estimate_budget(&mut self.estimate_requests) {
+            return Ok(false);
+        }
+        let state = match self.transaction.load_catalog_estimate_projection(table_id) {
+            Ok(state) => state,
+            Err(error) if estimate_error_is_terminal(&error) => return Err(error),
+            Err(_) => return Ok(false),
+        };
+        let ordinals = match visible_column_ids
+            .iter()
+            .map(|column_id| {
+                state
+                    .schema
+                    .column_ids
+                    .iter()
+                    .position(|candidate| candidate == column_id)
+                    .ok_or(TransactionError::InvalidMetadataRequest)
+            })
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(ordinals) => ordinals,
+            Err(_) => return Ok(false),
+        };
+        let columns = ordinals
+            .iter()
+            .map(|ordinal| state.schema.columns[*ordinal].clone())
+            .collect::<Vec<_>>();
+        let selected_column_ids = ordinals
+            .iter()
+            .map(|ordinal| state.schema.column_ids[*ordinal])
+            .collect::<Vec<_>>();
+        let projection = AuthorizedProjection {
+            columns: &columns,
+            column_ids: &selected_column_ids,
+            schema_version: state.schema.schema_version,
+            schema_id: state.schema.schema_id,
+            context: &state.context,
+            grants: &state.grants,
+            policies: &state.policies,
+            checks: &state.checks,
+            policy_driving_columns: &state.policy_driving_columns,
+            dependencies: &[],
+        };
+        Ok(matches!(
+            estimate_population(table_id, &projection),
+            Some(EstimatePopulation::NoRows)
+        ))
+    }
+
     /// Revalidate the qualified name before returning its authorized schema.
     pub fn describe_relation(
         &mut self,
