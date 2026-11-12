@@ -29951,3 +29951,229 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
     optimizer_metadata_transaction.abort()?;
     Ok(())
 }
+
+#[test]
+fn catalog_backed_executor_generates_uuid_identity_and_rejects_override_and_update()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::authorization::{Effect, Expr, Operation, Subject};
+    use prdb_engine::storage_manager::{
+        CreatePolicyRequest, CreateTableRequest, ObjectGrantPrivilege, ObjectGrantTarget,
+        PolicyKind, SetObjectGrantRequest, TableColumnDefinition,
+    };
+    use prdb_engine::transaction::{InsertInput, TransactionError};
+    use prdb_engine::tuple::FieldPatch;
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let admin_role = builtin_owner_id();
+    let actor = id(0x91);
+    let mut setup_audit = identity_audit_event(0x92, admin_role, actor);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage
+        .commit_catalog_and_audit(
+            id(0x92),
+            admin_role,
+            9_999,
+            &[
+                principal_write_with_name(actor, 1, 1, "generated_identity_owner"),
+                object_write_with_name(actor, 8, "generated_identity_owner"),
+                membership_write(actor, admin_role),
+                dependency_write(actor, admin_role, 5),
+            ],
+            &[setup_audit],
+        )
+        .map_err(|error| format!("generated identity actor setup: {error:?}"))?;
+
+    let schema_invocation = id(0x93);
+    let mut schema_audit = identity_audit_event(0x93, actor, actor);
+    schema_audit.correlation_id = schema_invocation;
+    let schema = storage
+        .create_schema(
+            schema_invocation,
+            actor,
+            "generated_identity",
+            actor,
+            9_999,
+            schema_audit,
+        )
+        .map_err(|error| format!("generated identity schema creation: {error:?}"))?;
+
+    let table_invocation = id(0x94);
+    let mut table_audit = identity_audit_event(0x94, actor, schema.schema_id);
+    table_audit.correlation_id = table_invocation;
+    let table = storage
+        .create_table(CreateTableRequest {
+            invocation_id: table_invocation,
+            authenticated_actor_id: actor,
+            schema_id: schema.schema_id,
+            name: "records".to_owned(),
+            columns: vec![TableColumnDefinition {
+                name: "record_id".to_owned(),
+                scalar_type: ScalarType::Uuid,
+                nullable: false,
+                generated_uuid_identity: true,
+                default: None,
+            }],
+            retention_deadline_us: 9_999,
+            audit_event: table_audit,
+        })
+        .map_err(|error| format!("generated identity table creation: {error:?}"))?;
+
+    for (ordinal, (object_id, privilege, target)) in [
+        (
+            schema.schema_id,
+            ObjectGrantPrivilege::Usage,
+            ObjectGrantTarget::Object,
+        ),
+        (
+            table.table_id,
+            ObjectGrantPrivilege::Select,
+            ObjectGrantTarget::Object,
+        ),
+        (
+            table.table_id,
+            ObjectGrantPrivilege::Insert,
+            ObjectGrantTarget::Object,
+        ),
+        (
+            table.table_id,
+            ObjectGrantPrivilege::Update,
+            ObjectGrantTarget::Object,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let invocation_id = id(0x95 + ordinal as u8);
+        let mut grant_audit = identity_audit_event(0x95 + ordinal as u8, actor, object_id);
+        grant_audit.correlation_id = invocation_id;
+        grant_audit.action = AuditAction::AuthorityChange;
+        storage
+            .set_object_grant(SetObjectGrantRequest {
+                invocation_id,
+                authenticated_actor_id: actor,
+                grantee_id: actor,
+                object_id,
+                privilege,
+                target,
+                grant: true,
+                retention_deadline_us: 9_999,
+                audit_event: grant_audit,
+            })
+            .map_err(|error| format!("generated identity grant creation: {error:?}"))?;
+    }
+
+    let policy_invocation = id(0x9a);
+    let mut policy_audit = identity_audit_event(0x9a, actor, table.table_id);
+    policy_audit.correlation_id = policy_invocation;
+    storage
+        .create_policy(CreatePolicyRequest {
+            invocation_id: policy_invocation,
+            authenticated_actor_id: actor,
+            table_id: table.table_id,
+            name: "generated_identity_insert".to_owned(),
+            kind: PolicyKind::Row,
+            operation: Operation::Insert,
+            effect: Effect::Allow,
+            recipients: vec![Subject::Principal(actor)],
+            target_column_ids: Vec::new(),
+            using_expression: None,
+            with_check_expression: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+            retention_deadline_us: 9_999,
+            audit_event: policy_audit,
+        })
+        .map_err(|error| format!("generated identity INSERT policy creation: {error:?}"))?;
+
+    let generated_column = ColumnSchema {
+        scalar_type: ScalarType::Uuid,
+        nullable: false,
+    };
+    let mut override_invocation = storage.begin_invocation(id(0x99), actor, 9_999, 8, 512)?;
+    {
+        let mut executor = override_invocation.open_executor_metadata_connection();
+        let (relation, _) = executor
+            .resolve_relation("generated_identity", "records")
+            .map_err(|error| format!("generated identity relation resolve: {error:?}"))?
+            .ok_or("generated identity relation was not visible")?;
+        assert!(matches!(
+            executor.stage_insert(
+                &relation,
+                &[InsertInput::Value(Some(ScalarValue::Uuid([0x9a; 16])))],
+            ),
+            Err(TransactionError::InvalidContext)
+        ));
+    }
+    assert_eq!(
+        lookup_outcome(&database, id(0x99), actor, 1)?
+            .ok_or("generated identity override has no durable outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+
+    let mut update_invocation = storage.begin_invocation(id(0x9b), actor, 9_999, 8, 512)?;
+    {
+        let mut executor = update_invocation.open_executor_metadata_connection();
+        let (relation, _) = executor
+            .resolve_relation("generated_identity", "records")
+            .map_err(|error| format!("generated identity relation resolve: {error:?}"))?
+            .ok_or("generated identity relation was not visible")?;
+        let row_handle = executor
+            .stage_insert(&relation, &[InsertInput::Default])
+            .map_err(|error| format!("generated identity default insert: {error:?}"))?;
+        assert!(matches!(
+            executor.stage_update(
+                &row_handle,
+                &[FieldPatch {
+                    ordinal: 0,
+                    value: Some(ScalarValue::Uuid([0x9c; 16])),
+                }],
+            ),
+            Err(TransactionError::InvalidContext)
+        ));
+    }
+    assert_eq!(
+        lookup_outcome(&database, id(0x9b), actor, 1)?
+            .ok_or("generated identity update has no durable outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+
+    let mut insert_invocation = storage.begin_invocation(id(0x9d), actor, 9_999, 8, 512)?;
+    let row_id = {
+        let mut executor = insert_invocation.open_executor_metadata_connection();
+        let (relation, _) = executor
+            .resolve_relation("generated_identity", "records")
+            .map_err(|error| format!("generated identity relation resolve: {error:?}"))?
+            .ok_or("generated identity relation was not visible")?;
+        let row_handle = executor
+            .stage_insert(&relation, &[InsertInput::Default])
+            .map_err(|error| format!("generated identity default insert: {error:?}"))?;
+        executor.revalidate_row_handle(&row_handle)?
+    };
+    let payload = insert_invocation
+        .read(row_id)?
+        .ok_or("generated identity row was not staged")?;
+    let tuple = decode_tuple(std::slice::from_ref(&generated_column), 1, &payload)?;
+    let generated_id = match tuple.values.first() {
+        Some(Some(ScalarValue::Uuid(value))) if *value != [0; 16] => *value,
+        _ => return Err("storage did not materialize a nonzero UUID identity".into()),
+    };
+    insert_invocation.commit()?;
+
+    let stored = row(&database, &table_row_key(table.table_id, row_id.row))?
+        .ok_or("committed generated identity row was not stored")?;
+    let committed_tuple =
+        decode_tuple(std::slice::from_ref(&generated_column), 1, &stored.payload)?;
+    assert_eq!(
+        committed_tuple.values,
+        [Some(ScalarValue::Uuid(generated_id))]
+    );
+    assert_eq!(
+        lookup_outcome(&database, id(0x9d), actor, 1)?
+            .ok_or("generated identity insert has no durable outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+    Ok(())
+}

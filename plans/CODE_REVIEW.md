@@ -40,4 +40,4 @@ This file tracks review and repair evidence separately from implementation miles
 
 ## Open review investigations
 
-- Storage-owned UUID generation and collision checks remain unimplemented. The catalog-default helper now fails closed, but the low-level materialized-row helper still requires trusted generated values; it must not be exposed as an executor boundary. Catalog-aware update enforcement for generated fields is also outstanding.
+- UUID identity generation is now storage-owned for DEFAULT inserts, explicit generated values and generated-column updates are rejected, and commit checks collisions against serialized final table contents. The catalog-backed executor regression is recorded in [`plans/storage-manager/PROGRESS.md`](storage-manager/PROGRESS.md). Deterministic collision-injection coverage remains open; trusted materialized-row helpers must remain behind the executor boundary.
