@@ -8,6 +8,14 @@
 - Verification: `nix develop --no-update-lock-file --no-write-lock-file -c cargo test -p prdb-engine --lib snapshot::tests:: --locked --offline -- --nocapture` passed (2 passed, 0 failed, 0 ignored).
 - Remaining: transaction-layer MVCC/overlay reconciliation, authorized row/cell projection, executor IPC, planner hinting, SDK execution, and optimized/reference result and redaction-error equivalence are not implemented by this storage primitive.
 
+## SM-2 follow-up: catalog-authorized range reconciliation — verified
+
+- Contract: [index-key encoding v1](../../specs/index-key-encoding.md). A leading-column range over a pinned catalog index must validate every key column's unconditional readability, verify snapshot locators and derived index keys, merge the private overlay, and return only row-authorized sanitized projections. A bounded path must return `Unavailable` instead of partial results.
+- Red/green: the maintained transaction integration regression initially failed to compile because the catalog range API and result records were absent. The regression now exercises a non-unique index, hidden and conditional key denial, staged key movement, staged deletion, and duplicate staged values through a separate non-unique index.
+- Implementation: `InvocationTransaction::scan_catalog_index_range` validates the pinned schema/index, scans bounded snapshot pages, checks row versions and full derived keys, reconciles inserts/updates/deletes, filters NULL leading keys, caps candidate count and accounted bytes, then applies the standard authorized row/cell path. It falls back when the selected path is unsafe or too broad.
+- Verification: the focused transaction integration regression passed (`1 passed, 0 failed, 0 ignored`). Locked workspace build, format check, warning-denied Clippy, and full serial workspace tests passed inside the delegated `systemd --user` service; the library target reported 192 passed, commit integration 148 passed, metadata process integration 2 passed, and transaction integration 74 passed, all with zero ignored. The maintained TinyCC suite and sandbox query fixture build also passed in this work session.
+- Remaining: executor IPC, planner hinting, SDK execution, and optimized/reference result and redaction-error equivalence remain open.
+
 ## SM-1 follow-up: retained-reader reclamation after release — verified
 
 - Contract: [redb storage](../../specs/redb-storage.md). redb's compactor must refuse while an old read snapshot is pinned; after the last reader closes, an explicit compaction must reclaim obsolete copy-on-write pages without losing live data.

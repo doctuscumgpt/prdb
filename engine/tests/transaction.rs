@@ -6070,6 +6070,7 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
     let column_id = [0x66; 16];
     let index_id = [0x55; 16];
     let constraint_id = [0x77; 16];
+    let range_index_id = [0x56; 16];
     let (index_key, index_value) = index_catalog_record_with_constraint(
         index_id,
         table_id,
@@ -6080,10 +6081,13 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
     )?;
     let (constraint_key, constraint_value) =
         unique_constraint_catalog_record(constraint_id, table_id, column_id, index_id)?;
+    let (range_index_key, range_index_value) =
+        index_catalog_record(range_index_id, table_id, column_id, 1)?;
     {
         let write = database.begin_write()?;
         let mut catalog = write.open_table(CATALOG)?;
         catalog.insert(index_key.as_slice(), index_value.as_slice())?;
+        catalog.insert(range_index_key.as_slice(), range_index_value.as_slice())?;
         catalog.insert(constraint_key.as_slice(), constraint_value.as_slice())?;
         drop(catalog);
         write.commit()?;
@@ -6292,6 +6296,46 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
             ))],
         },
     );
+    let range_bound = || prdb_engine::transaction::AuthorizedIndexRangeBound {
+        value: ScalarValue::Bytea(b"duplicate".to_vec()),
+        inclusive: true,
+    };
+    assert_eq!(
+        invocation.scan_catalog_index_range(
+            table_id,
+            range_index_id,
+            Some(range_bound()),
+            Some(range_bound()),
+            &conditional_projection,
+        )?,
+        prdb_engine::transaction::AuthorizedIndexRangeScan::Unavailable,
+        "conditional key permissions must use the reference scan"
+    );
+    assert_eq!(
+        invocation.scan_catalog_index_range(
+            table_id,
+            range_index_id,
+            Some(range_bound()),
+            Some(range_bound()),
+            &projection,
+        )?,
+        prdb_engine::transaction::AuthorizedIndexRangeScan::Rows(vec![(
+            id(243),
+            vec![SanitizedCell::Value(ScalarValue::Bytea(
+                b"duplicate".to_vec()
+            ))],
+        )]),
+    );
+    assert_eq!(
+        invocation.scan_catalog_index_range(
+            table_id,
+            range_index_id,
+            Some(range_bound()),
+            Some(range_bound()),
+            &hidden_projection,
+        )?,
+        prdb_engine::transaction::AuthorizedIndexRangeScan::Unavailable
+    );
     invocation.stage_put(
         id(243),
         &encode_tuple(
@@ -6300,6 +6344,32 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
             &[Some(ScalarValue::Bytea(b"moved-away".to_vec()))],
         )?,
     )?;
+    assert_eq!(
+        invocation.scan_catalog_index_range(
+            table_id,
+            range_index_id,
+            Some(range_bound()),
+            Some(range_bound()),
+            &projection,
+        )?,
+        prdb_engine::transaction::AuthorizedIndexRangeScan::Rows(Vec::new()),
+        "staged key changes must shadow the pinned index candidate"
+    );
+    let moved_bound = || prdb_engine::transaction::AuthorizedIndexRangeBound {
+        value: ScalarValue::Bytea(b"moved-away".to_vec()),
+        inclusive: true,
+    };
+    assert!(matches!(
+        invocation.scan_catalog_index_range(
+            table_id,
+            range_index_id,
+            Some(moved_bound()),
+            Some(moved_bound()),
+            &projection,
+        )?,
+        prdb_engine::transaction::AuthorizedIndexRangeScan::Rows(rows)
+            if rows.len() == 1 && rows[0].0 == id(243)
+    ));
     assert_eq!(
         invocation.probe_catalog_unique_index(
             table_id,
@@ -6321,6 +6391,17 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
     ));
     invocation.stage_delete(id(243))?;
     assert_eq!(
+        invocation.scan_catalog_index_range(
+            table_id,
+            range_index_id,
+            Some(range_bound()),
+            Some(range_bound()),
+            &projection,
+        )?,
+        prdb_engine::transaction::AuthorizedIndexRangeScan::Rows(Vec::new()),
+        "staged deletes must shadow pinned range candidates"
+    );
+    assert_eq!(
         invocation.probe_catalog_unique_index(
             table_id,
             index_id,
@@ -6331,6 +6412,17 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
     );
     invocation.stage_put(id(243), &payload)?;
     invocation.stage_put(id(244), &payload)?;
+    assert!(matches!(
+        invocation.scan_catalog_index_range(
+            table_id,
+            range_index_id,
+            Some(range_bound()),
+            Some(range_bound()),
+            &projection,
+        )?,
+        prdb_engine::transaction::AuthorizedIndexRangeScan::Rows(rows)
+            if rows.len() == 2
+    ));
     assert_eq!(
         invocation.probe_catalog_unique_index(
             table_id,
