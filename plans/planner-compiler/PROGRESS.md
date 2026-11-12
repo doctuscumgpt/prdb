@@ -17,7 +17,7 @@
 - Red evidence: the first delegated acceptance failed with `Planner(DuplicateRequestId)` after earlier direct planner calls. Optimizer metadata lookups had reused optimizer-channel IDs on the shared planner stream; a two-relation lookup also needed distinct IDs for each side.
 - Fix: optimizer planner requests now use a disjoint range above the direct planner request cap and allocate a unique ID per relation. The optimizer process regression asserts those IDs for SELECT, DELETE, UPDATE, and both join relations.
 - Verification: optimizer process tests passed (7/7); the maintained TinyCC SDK suite and sandbox query fixture build passed. The focused confined DML sequence passed with the optimizer-backed join. Locked workspace build, format check, warning-denied Clippy, and the full serial workspace test suite passed in the delegated `systemd --user` unit; commit integration reported 142 passed, zero ignored, including all cgroup tests, and metadata process integration reported 2 passed. `git diff --check` passed.
-- Remaining: add broader optimizer planning support for grouping and sorting, then gather analytical-load and mixed-workload measurements. Existing SDK grouping/sorting execution remains reference behavior outside the first COUNT subset.
+- Remaining: broaden grouped optimizer planning beyond COUNT and gather analytical-load and mixed-workload measurements. The optimizer-backed row ORDER BY path is verified below; grouped sorting remains in SDK reference execution.
 
 ## OP-7 dependency: bounded single-key COUNT(*) plan — Rust service implemented
 
@@ -34,7 +34,15 @@
 - Contract: statement 6 extends the existing grouped COUNT optimizer operation to two through eight keys in source order, plus optional post-group LIMIT. It carries no filters, HAVING, or ordering.
 - Implementation: the bounded Rust decoder, invocation-authorized binder, kind-6 plan codec, canonical ordinal-sorted scan shape, optimizer service, process dispatch, and response validation are implemented. TinyCC independently encodes the v13 AST, decodes and matches kind 6, and checks executor identity before the existing bounded composite grouping runner executes.
 - Confined acceptance: the ABI v5 SQL artifact submits `SELECT left_key, right_key, COUNT(*) FROM grouped_records GROUP BY left_key, right_key LIMIT 2` through statement 6 / operation `0x1208`. The existing exact SQLR assertions pass through result relay and durable commit.
-- Verification: focused Rust request bounds/trailing-byte, binding duplicate/order, plan codec/canonical scan, and optimizer process-channel tests passed (4 tests). TinyCC tests cover exact statement-6 request bytes, kind-6 scan/key validation, AST matching and LIMIT mismatch. `make -f engine/sdk/Makefile test sandbox-query-fixture` and the focused confined acceptance passed. Sorting plans and analytical workload measurements remain open.
+- Verification: focused Rust request bounds/trailing-byte, binding duplicate/order, plan codec/canonical scan, and optimizer process-channel tests passed (4 tests). TinyCC tests cover exact statement-6 request bytes, kind-6 scan/key validation, AST matching and LIMIT mismatch. `make -f engine/sdk/Makefile test sandbox-query-fixture` and the focused confined acceptance passed. Grouped ordering plans and analytical workload measurements remain open.
+
+## OP-7 dependency: bounded ordered SELECT plan — implemented
+
+- Contract: statement 7 sends explicit projections, one source-column ORDER BY key, direction, and optional LIMIT through the existing `OptimizeSelect` operation. The order key may be hidden from the output projection.
+- Implementation: Rust decodes and binds the request through invocation-authorized planner metadata and emits kind 7 with a canonical union scan shape, ordered projections, order-key metadata, direction, and LIMIT. TinyCC independently validates and matches the plan to the v3 SQL AST, re-resolves the relation through executor storage, then stable-sorts at most 128 authorized rows within 1 MiB before applying LIMIT.
+- Regression: Rust request, binding, plan codec, and optimizer process tests cover statement 7. TinyCC covers exact request bytes, hidden-key plan decoding/matching, zero LIMIT without a scan, materialization exhaustion without output, and cancellation after 32 published rows before the next callback. The confined SQL artifact verifies descending hidden-key output through durable result relay.
+- Verification: the full maintained SDK suite passed after the executor-bound regressions. The focused Rust optimizer regressions and delegated confined acceptance passed in the preceding ordered SELECT increment.
+- Remaining: grouped optimizer ordering and analytical/mixed-workload measurements remain open.
 
 ## OP-2 dependency: generated unknown estimate response — implemented
 
