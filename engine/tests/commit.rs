@@ -22052,6 +22052,36 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         Ok(paths)
     }
 
+    fn worker_cgroup_memory(pid: u32) -> std::io::Result<(u64, u64)> {
+        let membership = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))?;
+        let relative_path = membership
+            .lines()
+            .find_map(|line| line.strip_prefix("0::"))
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "missing cgroup v2 membership",
+                )
+            })?;
+        let relative_path = relative_path.strip_prefix('/').ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "cgroup path is not absolute",
+            )
+        })?;
+        let cgroup = PathBuf::from("/sys/fs/cgroup").join(relative_path);
+        let read_counter = |name: &str| -> std::io::Result<u64> {
+            std::fs::read_to_string(cgroup.join(name))?
+                .trim()
+                .parse()
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        };
+        Ok((
+            read_counter("memory.current")?,
+            read_counter("memory.peak")?,
+        ))
+    }
+
     let cgroup_parent = std::env::var_os("PRDB_TEST_CGROUP_PARENT")
         .map(PathBuf::from)
         .ok_or("PRDB_TEST_CGROUP_PARENT must name a delegated cgroup v2 parent")?;
@@ -23431,6 +23461,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         active_worker_commit_latencies,
         cancellation_request_latency,
         cancellation_observed_latency,
+        analytics_memory_current_bytes,
+        analytics_memory_peak_bytes,
         analytical_cap_rejected,
     ) = std::thread::scope(|scope| {
         let observer_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -23524,11 +23556,12 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         let cancellation_active_transactions = Arc::clone(&active_operational_transactions);
         let cancellation_worker_pid = worker_pid;
         let cancellation_observer = scope.spawn(move || {
-            let result = (|| -> Result<(Duration, Duration, bool), Box<dyn std::error::Error>> {
+            let result = (|| -> Result<_, Box<dyn std::error::Error>> {
                 cancellation_start.wait();
                 let mut cancellation_requested_at: Option<std::time::Instant> = None;
                 let mut cancellation_request_latency: Option<Duration> = None;
                 let mut cancellation_observed_latency: Option<Duration> = None;
+                let mut analytics_memory_sample = None;
                 let cancellation_observation = cancellation_executor
                     .observe_exit_with_results(&cancellation_invocation, |payload| {
                         if payload != b"CANCEL_READY"
@@ -23601,6 +23634,14 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                             return Err(std::io::Error::other(
                                 "cancellation did not overlap relayed analytical output and an operational transaction",
                             ));
+                        }
+                        let memory_sample = worker_cgroup_memory(cancellation_worker_pid)?;
+                        let (_, analytics_memory_peak_bytes) = memory_sample;
+                        analytics_memory_sample = Some(memory_sample);
+                        if analytics_memory_peak_bytes > 256 * 1024 * 1024 {
+                            return Err(std::io::Error::other(format!(
+                                "analytical worker cgroup peak {analytics_memory_peak_bytes} exceeded its 256 MiB limit"
+                            )));
                         }
                         let saturated_start = saturated_client.handle_start_request_with_executor(
                             saturated_storage,
@@ -23684,6 +23725,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 }
                 let cancellation_observed_latency = cancellation_observed_latency
                     .ok_or("query never observed cancellation through SDK poll")?;
+                let (analytics_memory_current_bytes, analytics_memory_peak_bytes) =
+                    analytics_memory_sample.ok_or("live SQL cgroup memory was not sampled")?;
                 let cancellation_request_latency =
                     cancellation_request_latency.ok_or("cancellation request was not timed")?;
                 if cancellation_observed_latency >= Duration::from_secs(2) {
@@ -23736,7 +23779,13 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 );
                 assert!(String::from_utf8(cancellation_terminal.payload)?
                     .contains("\"outcome\":\"aborted\""));
-                Ok((cancellation_request_latency, cancellation_observed_latency, true))
+                Ok((
+                    cancellation_request_latency,
+                    cancellation_observed_latency,
+                    analytics_memory_current_bytes,
+                    analytics_memory_peak_bytes,
+                    true,
+                ))
             })();
             result.map_err(|error| error.to_string())
         });
@@ -23747,11 +23796,16 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             analytics_result_relayed.store(true, std::sync::atomic::Ordering::Release);
             Ok(())
         });
-        let (cancellation_request_latency, cancellation_observed_latency, analytical_cap_rejected) =
-            cancellation_observer
-                .join()
-                .map_err(|_| std::io::Error::other("cancellation observer thread panicked"))?
-                .map_err(std::io::Error::other)?;
+        let (
+            cancellation_request_latency,
+            cancellation_observed_latency,
+            analytics_memory_current_bytes,
+            analytics_memory_peak_bytes,
+            analytical_cap_rejected,
+        ) = cancellation_observer
+            .join()
+            .map_err(|_| std::io::Error::other("cancellation observer thread panicked"))?
+            .map_err(std::io::Error::other)?;
         observer_done.store(true, std::sync::atomic::Ordering::Release);
         let mut operational_count = 0;
         let mut active_worker_point_read_latencies = Vec::new();
@@ -23772,10 +23826,17 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             active_worker_commit_latencies,
             cancellation_request_latency,
             cancellation_observed_latency,
+            analytics_memory_current_bytes,
+            analytics_memory_peak_bytes,
             analytical_cap_rejected,
         ))
     })?;
     assert!(analytical_cap_rejected);
+    eprintln!(
+        "analytical worker cgroup memory during live SQL: current={} KiB peak={} KiB",
+        analytics_memory_current_bytes / 1024,
+        analytics_memory_peak_bytes / 1024,
+    );
     assert!(concurrent_operational_invocations >= 64);
     assert!(
         !active_worker_point_read_latencies.is_empty()
