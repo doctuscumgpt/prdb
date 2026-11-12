@@ -1,5 +1,6 @@
 #include "prdb_sdk_optimizer_plan_v1.h"
 #include "prdb_sdk_optimizer_v2.h"
+#include "prdb_sdk_sql_exec_v3.h"
 #include "prdb_query_abi_payload_codecs.h"
 
 #include <assert.h>
@@ -219,7 +220,7 @@ static uint32_t build_ordered_select_plan(uint8_t *bytes,
     return offset;
 }
 
-static uint32_t build_ordered_limit_zero_plan(uint8_t *bytes) {
+static uint32_t build_ordered_c0_c3_plan(uint8_t *bytes, uint32_t limit) {
     uint32_t offset = 0;
     uint8_t identifier[16] = {0};
     uint32_t column;
@@ -253,7 +254,7 @@ static uint32_t build_ordered_limit_zero_plan(uint8_t *bytes) {
     set_column_ordinal(bytes, column, 3);
     bytes[offset++] = 1;
     bytes[offset++] = 1;
-    put_u32(bytes, &offset, 0);
+    put_u32(bytes, &offset, limit);
     return offset;
 }
 
@@ -443,7 +444,7 @@ typedef struct resolve_context {
     uint8_t executor_response[1024];
     uint32_t executor_response_len;
     uint8_t scan_response[18];
-    uint8_t batch_response[128];
+    uint8_t batch_response[4096];
     uint32_t batch_response_len;
     uint8_t cancellation_response[3];
     uint8_t close_response[3];
@@ -460,6 +461,8 @@ typedef struct resolve_context {
     uint32_t stage_delete_calls;
     uint32_t stage_update_calls;
     uint32_t fail_stage_update;
+    uint32_t cancel_on_check_call;
+    uint32_t cancellation_check_calls;
     uint32_t statement_failures;
     uint16_t events[32];
     uint32_t event_count;
@@ -573,6 +576,12 @@ static int32_t resolve_plan_relation(void *context, uint16_t operation,
         source_len = sizeof(resolved->scan_response);
     } else if (operation == PRDB_SDK_EXECUTOR_OP_CHECK_CANCELLATION) {
         assert(request_len == 0);
+        ++resolved->cancellation_check_calls;
+        if (resolved->cancel_on_check_call != 0) {
+            resolved->cancellation_response[2] =
+                resolved->cancellation_check_calls >=
+                resolved->cancel_on_check_call;
+        }
         source = resolved->cancellation_response;
         source_len = sizeof(resolved->cancellation_response);
     } else if (operation == PRDB_SDK_EXECUTOR_OP_NEXT_BATCH) {
@@ -755,6 +764,35 @@ static uint32_t build_two_row_batch(uint8_t *bytes) {
     bytes[4] = 2;
     bytes[length + 1] = 9;
     return length * 2 - 5;
+}
+
+static uint32_t build_repeated_row_batch(uint8_t *bytes, uint16_t row_count) {
+    uint32_t offset = 0;
+    put_u16(bytes, &offset, 1);
+    bytes[offset++] = 1;
+    put_u16(bytes, &offset, row_count);
+    for (uint16_t row = 0; row < row_count; ++row) {
+        bytes[offset++] = PRDB_SDK_BATCH_ROW_TOKEN_KIND;
+        memset(bytes + offset, 0, 15);
+        bytes[offset] = (uint8_t)(row + 1);
+        offset += 15;
+        put_u16(bytes, &offset, 4);
+        for (uint32_t ordinal = 0; ordinal < 4; ++ordinal) {
+            uint8_t type = ordinal == 3 ? PRDB_SDK_VALUE_TYPE_TEXT
+                                        : PRDB_SDK_VALUE_TYPE_INTEGER;
+            bytes[offset++] = PRDB_SDK_VALUE_STATE_VALUE;
+            bytes[offset++] = type;
+            put_u32(bytes, &offset, ordinal == 3 ? 1 : 4);
+            if (ordinal == 3) {
+                bytes[offset++] = 'x';
+            } else {
+                memset(bytes + offset, 0, 3);
+                bytes[offset + 3] = 1;
+                offset += 4;
+            }
+        }
+    }
+    return offset;
 }
 
 static uint32_t build_continuing_row_batch(uint8_t *bytes) {
@@ -1147,7 +1185,7 @@ int main(void) {
         static const uint8_t ordered_limit_zero_sql[] =
             "SELECT c0 FROM items ORDER BY c3 DESC LIMIT 0";
         uint32_t ordered_limit_zero_plan_len =
-            build_ordered_limit_zero_plan(ordered_select_malformed);
+            build_ordered_c0_c3_plan(ordered_select_malformed, 0);
         uint32_t ordered_limit_zero_delivered = 99;
         uint32_t rows_before = projected_rows_seen;
         assert(prdb_sdk_sql_parse_select_v3(
@@ -1191,12 +1229,11 @@ int main(void) {
         static const uint8_t ordered_materialization_sql[] =
             "SELECT c0 FROM items ORDER BY c3 DESC LIMIT 1";
         uint32_t ordered_plan_len =
-            build_ordered_limit_zero_plan(ordered_select_malformed);
+            build_ordered_c0_c3_plan(ordered_select_malformed, 1);
         uint32_t ordered_delivered = 99;
         uint32_t rows_before = projected_rows_seen;
         uint32_t saw_ordered_open = 0;
         uint32_t saw_ordered_batch = 0;
-        ordered_select_malformed[ordered_plan_len - 1] = 1;
         assert(prdb_sdk_sql_parse_select_v3(
                    ordered_materialization_sql,
                    sizeof(ordered_materialization_sql) - 1,
@@ -1213,7 +1250,8 @@ int main(void) {
         resolve.event_count = 0;
         resolve.statement_failures = 0;
         resolve.cancellation_response[2] = 0;
-        assert(prdb_sdk_optimizer_execute_ordered_select_ast_v1(
+        int32_t ordered_materialization_status =
+            prdb_sdk_optimizer_execute_ordered_select_ast_v1(
                    &host_v4, &ordered_select_statement,
                    (const uint8_t *)"public", 6, 2,
                    sizeof(batch_response), request, sizeof(request),
@@ -1222,7 +1260,8 @@ int main(void) {
                    batch_response, sizeof(batch_response), &acquired_relation,
                    sizeof(acquired_relation), acquired_columns, 4,
                    source_cells, 4, projected_values, 1, malformed, 8,
-                   on_projected_row, NULL, &ordered_delivered) ==
+                   on_projected_row, NULL, &ordered_delivered);
+        assert(ordered_materialization_status ==
                PRDB_SDK_OPTIMIZER_PLAN_RESPONSE_TOO_SMALL);
         assert(ordered_delivered == 0 && projected_rows_seen == rows_before &&
                resolve.optimizer_calls == 1 && resolve.statement_failures == 1);
@@ -1237,6 +1276,61 @@ int main(void) {
             resolve.optimizer_response, limit_one_plan, payload_len);
         resolve.batch_response_len = build_continuing_row_batch(
             resolve.batch_response);
+        resolve.statement_failures = 0;
+    }
+
+    {
+        static const uint8_t ordered_cancel_sql[] =
+            "SELECT c0 FROM items ORDER BY c3 DESC LIMIT 33";
+        static uint8_t ordered_materialized[
+            PRDB_SDK_SQL_EXEC_V3_MAX_MATERIALIZED_BYTES];
+        uint8_t ordered_executor_batch[4096];
+        uint32_t ordered_plan_len =
+            build_ordered_c0_c3_plan(ordered_select_malformed, 33);
+        uint32_t ordered_batch_len =
+            build_repeated_row_batch(ordered_executor_batch, 33);
+        uint32_t ordered_delivered = 99;
+        assert(prdb_sdk_sql_parse_select_v3(
+                   ordered_cancel_sql, sizeof(ordered_cancel_sql) - 1,
+                   &ordered_select_statement,
+                   sizeof(ordered_select_statement), NULL) ==
+               PRDB_SDK_SQL_OK);
+        resolve.optimizer_response_len = build_optimizer_response(
+            resolve.optimizer_response, ordered_select_malformed,
+            ordered_plan_len);
+        resolve.batch_response_len = ordered_batch_len;
+        memcpy(resolve.batch_response, ordered_executor_batch,
+               ordered_batch_len);
+        resolve.optimizer_calls = 0;
+        resolve.calls = 0;
+        resolve.event_count = 0;
+        resolve.statement_failures = 0;
+        resolve.cancellation_check_calls = 0;
+        resolve.cancel_on_check_call = 4;
+        resolve.cancellation_response[2] = 0;
+        projected_rows_seen = 0;
+        assert(prdb_sdk_optimizer_execute_ordered_select_ast_v1(
+                   &host_v4, &ordered_select_statement,
+                   (const uint8_t *)"public", 6, 33,
+                   sizeof(ordered_executor_batch), request, sizeof(request),
+                   optimizer_response, sizeof(optimizer_response), response,
+                   sizeof(response), scan_response, sizeof(scan_response),
+                   ordered_executor_batch, sizeof(ordered_executor_batch),
+                   &acquired_relation, sizeof(acquired_relation),
+                   acquired_columns, 4, source_cells, 4, projected_values, 1,
+                   ordered_materialized, sizeof(ordered_materialized),
+                   on_projected_row, NULL, &ordered_delivered) ==
+               PRDB_SDK_OPTIMIZER_PLAN_CANCELLED);
+        assert(ordered_delivered == 32 && projected_rows_seen == 32 &&
+               resolve.cancellation_check_calls == 4 &&
+               resolve.statement_failures == 1);
+        resolve.optimizer_response_len = build_optimizer_response(
+            resolve.optimizer_response, limit_one_plan, payload_len);
+        resolve.batch_response_len = build_continuing_row_batch(
+            resolve.batch_response);
+        resolve.cancel_on_check_call = 0;
+        resolve.cancellation_check_calls = 0;
+        resolve.cancellation_response[2] = 0;
         resolve.statement_failures = 0;
     }
 

@@ -20,7 +20,8 @@
 - Regression: the optimizer executor fixture submits a kind-7 plan for `SELECT c0 FROM items ORDER BY c3 DESC LIMIT 0`; it checks zero output, no callback or statement failure, and only planner plus executor relation resolution operations.
 - Verification: the focused `sdk-optimizer-plan-v1` fixture and the complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` suite passed.
 - Materialization regression: a valid one-row executor batch with a caller scratch capacity too small for its row returns `RESPONSE_TOO_SMALL`, latches statement failure, emits no projected callback, and confirms the scan reached `NEXT_BATCH`.
-- Remaining: cancellation during ordered result publication and wider analytical memory-pressure/spill/mixed-workload evidence remain open.
+- Cancellation regression: a 33-row ordered batch with cancellation on the fourth poll publishes 32 rows, returns `CANCELLED` before the 33rd callback, and latches statement failure.
+- Remaining: wider analytical memory-pressure/spill/mixed-workload evidence remains open.
 
 ## SQL-7: filtered aliased INNER JOIN runner and mandatory cgroup acceptance — implemented
 
