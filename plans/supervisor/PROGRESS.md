@@ -396,3 +396,9 @@
 - Regression: `authenticated_metadata_reads_cross_gateway_and_supervisor_processes` creates a token-owned invocation in a real READY redb instance, observes a successful worker exit, commits through the production terminal helper with the receiving socket closed, closes the storage instance, then launches the actual supervisor and gateway binaries. An authenticated `SubmissionClient` STATUS returns COMMITTED after the database is reopened by the service process.
 - Verification: `cargo fmt --all -- --check` and `cargo test -p prdb-engine --test metadata_process --locked` passed (1 passed, 1 delegated-cgroup test ignored).
 - Scope: proves durable COMMITTED outcome recovery through process startup and the authenticated network status path after terminal delivery fails. The sandboxed query boundary regression is now implemented in `sandboxed_v3_sql_dml_sequence_is_visible_and_commits`; its execution is pending a delegated cgroup with the required controllers.
+
+## SU-5 / GW-2: commit a confined query across the gateway and supervisor binaries — verified
+
+- Regression: [`supervisor_binary.rs`](../../engine/tests/supervisor_binary.rs) starts both production binaries against a READY instance, stages a TinyCC ABI-v3 query over loopback TCP, starts it through the supervisor's delegated-cgroup executor path, verifies the streamed terminal outcome is COMMITTED, then checks STATUS is COMMITTED.
+- Verification: the focused process test passed in the delegated `systemd --user` service with the pinned runtime allowlist. SDK tests, sandbox query fixture build, workspace format/build/warning-denied Clippy, and the full serial workspace suite passed with sandbox/process tests enabled.
+- Scope: this query has no database writes or result payload. It verifies successful confined worker execution and durable finalization across both process boundaries; broader SQL acceptance and generation/session binding remain separate work.

@@ -1,3 +1,4 @@
+use std::io::{Read, Write};
 use std::process::Command;
 
 #[cfg(unix)]
@@ -106,13 +107,51 @@ impl Drop for ChildGuard {
 }
 
 #[cfg(unix)]
+fn next_client_response(
+    client: &mut std::net::TcpStream,
+    decoder: &mut prdb_engine::client_protocol::ClientFrameDecoder,
+    buffered: &mut std::collections::VecDeque<prdb_engine::client_protocol::ClientFrame>,
+) -> prdb_engine::client_protocol::ClientFrame {
+    loop {
+        if let Some(frame) = buffered.pop_front() {
+            return frame;
+        }
+        let mut bytes = [0u8; 4096];
+        let count = client.read(&mut bytes).expect("read client response");
+        assert_ne!(count, 0, "connection closed before a response");
+        buffered.extend(decoder.push(&bytes[..count]).expect("decode client frame"));
+    }
+}
+
+#[cfg(unix)]
+fn exchange_client_request(
+    client: &mut std::net::TcpStream,
+    decoder: &mut prdb_engine::client_protocol::ClientFrameDecoder,
+    buffered: &mut std::collections::VecDeque<prdb_engine::client_protocol::ClientFrame>,
+    kind: u16,
+    request_id: u64,
+    payload: Vec<u8>,
+) -> prdb_engine::client_protocol::ClientFrame {
+    let encoded = prdb_engine::client_protocol::ClientFrame {
+        kind,
+        request_id,
+        response_sequence: 0,
+        payload,
+    }
+    .encode()
+    .expect("encode client frame");
+    client.write_all(&encoded).expect("write client frame");
+    next_client_response(client, decoder, buffered)
+}
+
+#[cfg(unix)]
 #[test]
-fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_preflight() {
+fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
     use prdb_engine::bootstrap::initialize;
-    use prdb_engine::client_protocol::{ClientFrame, ClientFrameDecoder};
+    use prdb_engine::client_protocol::{ClientFrameDecoder, ClientResponseSequences};
     use prdb_engine::submission_manifest::{encode_manifest_v1, manifest_v1_from_elf};
     use sha2::{Digest, Sha256};
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::io::{BufRead, BufReader};
     use std::net::TcpStream;
     use std::os::unix::fs::PermissionsExt;
     use std::process::{Command, Stdio};
@@ -131,6 +170,7 @@ fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_pref
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
         .expect("protect test root");
     let query_source = root.join("query.c");
+    let query_object = root.join("query.o");
     let query_artifact = root.join("query.so");
     std::fs::write(
         &query_source,
@@ -147,18 +187,36 @@ fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_pref
     .expect("write TinyCC query fixture");
     let include_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
     let compile = Command::new("tcc")
-        .arg("-shared")
+        .arg("-fPIC")
+        .arg("-c")
         .arg("-I")
         .arg(include_dir)
         .arg(&query_source)
         .arg("-o")
-        .arg(&query_artifact)
+        .arg(&query_object)
         .output()
-        .expect("run TinyCC for the TCP query fixture");
+        .expect("compile TCP query fixture with TinyCC");
     assert!(
         compile.status.success(),
         "TinyCC failed: {}",
         String::from_utf8_lossy(&compile.stderr)
+    );
+    let link = Command::new("env")
+        .arg("-u")
+        .arg("NIX_LDFLAGS")
+        .arg("NIX_DONT_SET_RPATH=1")
+        .arg("cc")
+        .arg("-shared")
+        .arg("-Wl,--no-eh-frame-hdr,-z,noexecstack")
+        .arg(&query_object)
+        .arg("-o")
+        .arg(&query_artifact)
+        .output()
+        .expect("link TCP query fixture with a non-executable stack");
+    assert!(
+        link.status.success(),
+        "query fixture link failed: {}",
+        String::from_utf8_lossy(&link.stderr)
     );
     let artifact = std::fs::read(&query_artifact).expect("read TinyCC query fixture");
     let manifest_value = manifest_v1_from_elf(
@@ -181,6 +239,17 @@ fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_pref
 
     let service_socket = root.join("supervisor.sock");
     let uid = unsafe { libc::geteuid() };
+    let cgroup_parent = std::env::var_os("PRDB_TEST_CGROUP_PARENT")
+        .map(std::path::PathBuf::from)
+        .expect("delegated cgroup parent for process integration test");
+    let runtime_read_execute = std::env::var_os("PRDB_TEST_RUNTIME_READ_EXECUTE")
+        .expect("sandbox runtime paths for process integration test");
+    let runtime_read_execute = std::env::split_paths(&runtime_read_execute).collect::<Vec<_>>();
+    assert!(!runtime_read_execute.is_empty());
+    let runtime_read_only = std::env::var_os("PRDB_TEST_RUNTIME_READ_ONLY")
+        .filter(|paths| !paths.is_empty())
+        .map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .unwrap_or_default();
     let mut supervisor_command = Command::new(env!("CARGO_BIN_EXE_prdb-supervisor"));
     supervisor_command.args([
         "--instance-dir",
@@ -190,17 +259,13 @@ fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_pref
         "--gateway-uid",
         &uid.to_string(),
         "--cgroup-parent",
-        root.to_str().expect("UTF-8 invalid cgroup path"),
+        cgroup_parent.to_str().expect("UTF-8 cgroup path"),
         "--executor",
         env!("CARGO_BIN_EXE_prdb-executor"),
         "--optimizer",
         env!("CARGO_BIN_EXE_prdb-optimizer"),
         "--scratch-parent",
         root.to_str().expect("UTF-8 scratch path"),
-        "--runtime-read-execute",
-        "/usr",
-        "--runtime-read-only",
-        "/etc/ld.so.cache",
         "--cpu-baseline",
         "x86_64-v1",
         "--runtime-profile",
@@ -224,6 +289,12 @@ fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_pref
         "--max-processes",
         "16",
     ]);
+    for path in &runtime_read_execute {
+        supervisor_command.arg("--runtime-read-execute").arg(path);
+    }
+    for path in &runtime_read_only {
+        supervisor_command.arg("--runtime-read-only").arg(path);
+    }
     if let Some(release_dir) = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR") {
         supervisor_command
             .arg("--sdk-release-dir")
@@ -291,30 +362,13 @@ fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_pref
     client
         .set_read_timeout(Some(Duration::from_secs(3)))
         .expect("set TCP client timeout");
+    let mut decoder = ClientFrameDecoder::default();
+    let mut buffered = std::collections::VecDeque::new();
     {
-        let mut exchange = |kind, request_id, payload: Vec<u8>| {
-            let frame = ClientFrame {
-                kind,
-                request_id,
-                response_sequence: 0,
-                payload,
-            }
-            .encode()
-            .expect("encode client frame");
-            client.write_all(&frame).expect("write client frame");
-            let mut decoder = ClientFrameDecoder::default();
-            let mut bytes = [0u8; 1024];
-            loop {
-                let count = client.read(&mut bytes).expect("read client response");
-                assert_ne!(count, 0, "connection closed before a response");
-                let mut frames = decoder.push(&bytes[..count]).expect("decode client frame");
-                if let Some(frame) = frames.pop() {
-                    assert!(frames.is_empty(), "unexpected coalesced extra response");
-                    return frame;
-                }
-            }
-        };
-        let hello = exchange(
+        let hello = exchange_client_request(
+            &mut client,
+            &mut decoder,
+            &mut buffered,
             1,
             1,
             br#"{"mode":"query","client_name":"supervisor-e2e"}"#.to_vec(),
@@ -336,7 +390,14 @@ fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_pref
         bootstrap_secret.zeroize();
         let mut auth_payload =
             format!("{{\"token_id\":\"{token_id_hex}\",\"token_secret\":\"{token_secret}\"}}");
-        let auth = exchange(2, 2, auth_payload.as_bytes().to_vec());
+        let auth = exchange_client_request(
+            &mut client,
+            &mut decoder,
+            &mut buffered,
+            2,
+            2,
+            auth_payload.as_bytes().to_vec(),
+        );
         auth_payload.zeroize();
         assert_eq!(auth.kind, 100);
         assert!(String::from_utf8_lossy(&auth.payload).contains("\"authenticated\":true"));
@@ -352,7 +413,14 @@ fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_pref
             encode_hex(&empty_sha256),
             encode_base64(&scope),
         );
-        let prepared = exchange(3, 3, prepare_payload.as_bytes().to_vec());
+        let prepared = exchange_client_request(
+            &mut client,
+            &mut decoder,
+            &mut buffered,
+            3,
+            3,
+            prepare_payload.as_bytes().to_vec(),
+        );
         assert_eq!(prepared.kind, 100);
         let prepared_json = String::from_utf8(prepared.payload).expect("prepared JSON");
         let invocation_id_hex = prepared_json
@@ -366,36 +434,79 @@ fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_pref
         chunk.extend(invocation_id);
         chunk.extend(0_u64.to_le_bytes());
         chunk.extend(&artifact);
-        let uploaded = exchange(4, 4, chunk);
+        let uploaded =
+            exchange_client_request(&mut client, &mut decoder, &mut buffered, 4, 4, chunk);
         assert_eq!(uploaded.kind, 100);
         assert_eq!(
             String::from_utf8_lossy(&uploaded.payload),
             format!("{{\"next_offset\":\"{}\"}}", artifact.len())
         );
         let seal_payload = format!("{{\"invocation_id\":\"{invocation_id_hex}\"}}");
-        let sealed = exchange(6, 5, seal_payload.into_bytes());
+        let sealed = exchange_client_request(
+            &mut client,
+            &mut decoder,
+            &mut buffered,
+            6,
+            5,
+            seal_payload.into_bytes(),
+        );
         assert_eq!(sealed.kind, 100);
         assert!(String::from_utf8_lossy(&sealed.payload).contains("\"state\":\"prepared\""));
 
         let status_payload = format!("{{\"invocation_id\":\"{invocation_id_hex}\"}}");
-        let status = exchange(8, 6, status_payload.as_bytes().to_vec());
+        let status = exchange_client_request(
+            &mut client,
+            &mut decoder,
+            &mut buffered,
+            8,
+            6,
+            status_payload.as_bytes().to_vec(),
+        );
         assert_eq!(status.kind, 100);
         assert_eq!(status.payload, br#"{"state":"prepared"}"#);
 
-        let cancel = exchange(9, 7, status_payload.as_bytes().to_vec());
+        let cancel = exchange_client_request(
+            &mut client,
+            &mut decoder,
+            &mut buffered,
+            9,
+            7,
+            status_payload.as_bytes().to_vec(),
+        );
         assert_eq!(cancel.kind, 100);
         assert_eq!(cancel.payload, br#"{"state":"accepted"}"#);
 
-        let cancelled_status = exchange(8, 8, status_payload.into_bytes());
+        let cancelled_status = exchange_client_request(
+            &mut client,
+            &mut decoder,
+            &mut buffered,
+            8,
+            8,
+            status_payload.into_bytes(),
+        );
         assert_eq!(cancelled_status.kind, 100);
         assert_eq!(cancelled_status.payload, br#"{"state":"unknown"}"#);
 
-        let ping = exchange(11, 9, b"{}".to_vec());
+        let ping = exchange_client_request(
+            &mut client,
+            &mut decoder,
+            &mut buffered,
+            11,
+            9,
+            b"{}".to_vec(),
+        );
         assert_eq!(ping.kind, 100);
         assert_eq!(ping.request_id, 9);
         assert_eq!(ping.payload, br#"{"alive":true}"#);
 
-        let second_prepared = exchange(3, 10, prepare_payload.into_bytes());
+        let second_prepared = exchange_client_request(
+            &mut client,
+            &mut decoder,
+            &mut buffered,
+            3,
+            10,
+            prepare_payload.into_bytes(),
+        );
         assert_eq!(second_prepared.kind, 100);
         let second_prepared_json =
             String::from_utf8(second_prepared.payload).expect("second prepared JSON");
@@ -409,71 +520,71 @@ fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_pref
         second_chunk.extend(second_invocation);
         second_chunk.extend(0_u64.to_le_bytes());
         second_chunk.extend(&artifact);
-        let second_upload = exchange(4, 11, second_chunk);
+        let second_upload = exchange_client_request(
+            &mut client,
+            &mut decoder,
+            &mut buffered,
+            4,
+            11,
+            second_chunk,
+        );
         assert_eq!(second_upload.kind, 100);
         let second_seal_payload = format!("{{\"invocation_id\":\"{second_invocation_hex}\"}}");
-        let second_sealed = exchange(6, 12, second_seal_payload.as_bytes().to_vec());
+        let second_sealed = exchange_client_request(
+            &mut client,
+            &mut decoder,
+            &mut buffered,
+            6,
+            12,
+            second_seal_payload.as_bytes().to_vec(),
+        );
         assert_eq!(second_sealed.kind, 100);
         assert_eq!(second_sealed.payload, br#"{"state":"prepared"}"#);
 
-        let start = exchange(7, 13, second_seal_payload.into_bytes());
-        assert_eq!(start.kind, prdb_engine::client_protocol::CLIENT_ERROR_KIND);
-        assert_eq!(start.request_id, 13);
-        assert_eq!(
-            start.payload,
-            br#"{"code":"unavailable","message":"Requested resource is unavailable."}"#
+        let start = exchange_client_request(
+            &mut client,
+            &mut decoder,
+            &mut buffered,
+            7,
+            13,
+            second_seal_payload.into_bytes(),
         );
-        let unknown = {
-            let mut verification_client =
-                TcpStream::connect(address).expect("reconnect after rejected START");
-            verification_client
-                .set_read_timeout(Some(Duration::from_secs(3)))
-                .expect("set reconnected TCP client timeout");
-            let mut exchange = |kind, request_id, payload: Vec<u8>| {
-                let frame = ClientFrame {
-                    kind,
-                    request_id,
-                    response_sequence: 0,
-                    payload,
-                }
-                .encode()
-                .expect("encode reconnect client frame");
-                verification_client
-                    .write_all(&frame)
-                    .expect("write reconnect client frame");
-                let mut decoder = ClientFrameDecoder::default();
-                let mut bytes = [0u8; 1024];
-                loop {
-                    let count = verification_client
-                        .read(&mut bytes)
-                        .expect("read reconnect response");
-                    assert_ne!(count, 0, "connection closed before reconnect response");
-                    let mut frames = decoder
-                        .push(&bytes[..count])
-                        .expect("decode reconnect response");
-                    if let Some(frame) = frames.pop() {
-                        assert!(frames.is_empty(), "unexpected extra reconnect response");
-                        return frame;
-                    }
-                }
-            };
-            let hello = exchange(
-                1,
-                1,
-                br#"{"mode":"query","client_name":"start-retry"}"#.to_vec(),
-            );
-            assert_eq!(hello.kind, 100);
-            let mut auth_payload =
-                format!("{{\"token_id\":\"{token_id_hex}\",\"token_secret\":\"{token_secret}\"}}");
-            let auth = exchange(2, 2, auth_payload.as_bytes().to_vec());
-            auth_payload.zeroize();
-            assert_eq!(auth.kind, 100);
-            let status_payload = format!("{{\"invocation_id\":\"{second_invocation_hex}\"}}");
-            exchange(8, 3, status_payload.into_bytes())
-        };
+        assert_eq!(start.kind, 100);
+        assert_eq!(start.request_id, 13);
+        assert_eq!(start.payload, br#"{"state":"accepted"}"#);
+        let mut stream_sequences = ClientResponseSequences::default();
+        stream_sequences
+            .begin_stream(13)
+            .expect("begin START stream");
+        loop {
+            let frame = next_client_response(&mut client, &mut decoder, &mut buffered);
+            let terminal = stream_sequences
+                .accept_stream_frame(&frame)
+                .expect("validate streamed response sequence");
+            assert_eq!(frame.request_id, 13);
+            if frame.kind == 103 {
+                assert!(terminal);
+                let terminal_payload = String::from_utf8(frame.payload).expect("terminal JSON");
+                assert!(
+                    terminal_payload.contains("\"outcome\":\"committed\""),
+                    "unexpected process START terminal: {terminal_payload}"
+                );
+                break;
+            }
+            assert_eq!(frame.kind, 102);
+        }
+        let committed_status_payload = format!("{{\"invocation_id\":\"{second_invocation_hex}\"}}");
+        let committed_status = exchange_client_request(
+            &mut client,
+            &mut decoder,
+            &mut buffered,
+            8,
+            14,
+            committed_status_payload.into_bytes(),
+        );
         token_secret.zeroize();
-        assert_eq!(unknown.kind, 100);
-        assert_eq!(unknown.payload, br#"{"state":"unknown"}"#);
+        assert_eq!(committed_status.kind, 100);
+        assert_eq!(committed_status.payload, br#"{"state":"committed"}"#);
     }
     client
         .shutdown(std::net::Shutdown::Write)
