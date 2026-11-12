@@ -8,6 +8,14 @@
 - Verification: focused TinyCC batch fixture and complete `make -f engine/sdk/Makefile test` passed, including 8 ABI generator tests and the SDK release metadata checks.
 - Remaining: submit the new executor operation from the SQL runner and match/fallback against the verified SELECT predicate; optimizer range selection remains open.
 
+## SQL-5 follow-up: direct executor range submission — verified
+
+- Contract: [client SDK](../../specs/client-sdk.md) and [IPC protocol](../../specs/ipc-protocol.md). A caller can submit typed bounds and selected columns through the checked relation handle; unavailable results preserve the caller's range output and require scan fallback.
+- Red/green: the TinyCC executor fixture first failed to compile because operation `0x1115` and its SDK call were missing. The fixture now checks exact request bytes, decoded empty-range results, unavailable/malformed responses, absent bounds, and undersized request buffers without unintended callbacks.
+- Implementation: `prdb_sdk_executor_scan_index_range_v1` encodes typed bounds, validates nonzero unique column IDs and the request budget, calls executor IPC, and publishes only a validated borrowed range view.
+- Verification: focused TinyCC executor fixture, full `make -f engine/sdk/Makefile test`, and `make -f engine/sdk/Makefile sandbox-query-fixture` passed.
+- Remaining: route validated SELECT range hints through this SDK operation; optimizer selection and confined optimized/reference equivalence remain open.
+
 ## SQL-8 follow-up: grouped ORDER BY limits and cancellation — verified
 
 - Contract: grouped sort stays within the existing 128 matching-row/group and 1 MiB materialization bounds. A bound violation fails before any group callback; cancellation is checked during output so a later group is not published after cancellation.

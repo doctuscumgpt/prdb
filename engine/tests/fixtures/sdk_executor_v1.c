@@ -12,6 +12,7 @@ _Static_assert(PRDB_SDK_EXECUTOR_OP_STAGE_INSERT == UINT16_C(0x1110), "insert op
 _Static_assert(PRDB_SDK_EXECUTOR_OP_STAGE_UPDATE == UINT16_C(0x1111), "update operation tag");
 _Static_assert(PRDB_SDK_EXECUTOR_OP_STAGE_DELETE == UINT16_C(0x1112), "delete operation tag");
 _Static_assert(PRDB_SDK_EXECUTOR_OP_CHECK_CANCELLATION == UINT16_C(0x1113), "cancellation operation tag");
+_Static_assert(PRDB_SDK_EXECUTOR_OP_SCAN_INDEX_RANGE == UINT16_C(0x1115), "index range operation tag");
 #endif
 
 typedef struct mock_host {
@@ -370,5 +371,91 @@ int main(void) {
     assert(prdb_sdk_executor_check_cancelled_v1(&host, &cancelled) ==
            PRDB_SDK_EXECUTOR_INVALID_PAYLOAD);
     assert(cancelled == 77 && mock.calls == 16);
+
+    {
+        const uint8_t integer_42[] = {0, 0, 0, 42};
+        uint8_t key_id[16];
+        uint8_t expected_range_request[63] = {0};
+        uint8_t range_request[63] = {0};
+        uint8_t range_reply[] = {1, 1, 0, 0};
+        uint8_t unavailable_reply[] = {1, 0};
+        uint8_t malformed_reply[] = {1, 1, 0, 0, 0};
+        uint32_t offset = 0;
+        uint8_t selected_columns[16];
+        prdb_sdk_value_v1 lower = {0};
+        prdb_sdk_index_range_v1 range = {0};
+        prdb_sdk_index_range_v1 unchanged_range;
+
+        memset(key_id, 0x99, sizeof(key_id));
+        memset(selected_columns, 0x33, sizeof(selected_columns));
+        put_u16(expected_range_request, &offset, 1);
+        memcpy(expected_range_request + offset, resolved.executor_handle, 16);
+        offset += 16;
+        memcpy(expected_range_request + offset, key_id, 16);
+        offset += 16;
+        expected_range_request[offset++] = 1;
+        expected_range_request[offset++] = PRDB_SDK_VALUE_TYPE_INTEGER;
+        put_u32(expected_range_request, &offset, 4);
+        memcpy(expected_range_request + offset, integer_42, sizeof(integer_42));
+        offset += sizeof(integer_42);
+        expected_range_request[offset++] = 0;
+        put_u16(expected_range_request, &offset, 1);
+        memcpy(expected_range_request + offset, selected_columns, 16);
+        offset += 16;
+        assert(offset == sizeof(expected_range_request));
+
+        lower.struct_size = sizeof(lower);
+        lower.abi_version = PRDB_SDK_VALUE_ABI_V1_VERSION;
+        lower.state = PRDB_SDK_VALUE_STATE_VALUE;
+        lower.type_code = PRDB_SDK_VALUE_TYPE_INTEGER;
+        lower.data = integer_42;
+        lower.data_len = sizeof(integer_42);
+        mock.expected_operation = PRDB_SDK_EXECUTOR_OP_SCAN_INDEX_RANGE;
+        mock.expected_request = expected_range_request;
+        mock.expected_request_len = sizeof(expected_range_request);
+        mock.reply = range_reply;
+        mock.reply_len = sizeof(range_reply);
+        assert(prdb_sdk_executor_scan_index_range_v1(
+                   &host, resolved.executor_handle, key_id, &lower, 1, NULL,
+                   0, selected_columns, 1,
+                   range_request, sizeof(range_request), response,
+                   sizeof(response), &response_len, &range, sizeof(range)) ==
+               PRDB_SDK_EXECUTOR_OK);
+        assert(range.row_count == 0 && mock.calls == 17);
+        memcpy(&unchanged_range, &range, sizeof(range));
+        mock.reply = unavailable_reply;
+        mock.reply_len = sizeof(unavailable_reply);
+        assert(prdb_sdk_executor_scan_index_range_v1(
+                   &host, resolved.executor_handle, key_id, &lower, 1, NULL,
+                   0, selected_columns, 1,
+                   range_request, sizeof(range_request), response,
+                   sizeof(response), &response_len, &range, sizeof(range)) ==
+               PRDB_SDK_EXECUTOR_UNAVAILABLE);
+        assert(memcmp(&range, &unchanged_range, sizeof(range)) == 0 &&
+               mock.calls == 18);
+        mock.reply = malformed_reply;
+        mock.reply_len = sizeof(malformed_reply);
+        assert(prdb_sdk_executor_scan_index_range_v1(
+                   &host, resolved.executor_handle, key_id, &lower, 1, NULL,
+                   0, selected_columns, 1, range_request,
+                   sizeof(range_request), response, sizeof(response),
+                   &response_len, &range, sizeof(range)) ==
+               PRDB_SDK_EXECUTOR_INVALID_PAYLOAD);
+        assert(memcmp(&range, &unchanged_range, sizeof(range)) == 0 &&
+               mock.calls == 19);
+        assert(prdb_sdk_executor_scan_index_range_v1(
+                   &host, resolved.executor_handle, key_id, NULL, 0, NULL, 0,
+                   selected_columns, 1, range_request, sizeof(range_request),
+                   response, sizeof(response), &response_len, &range,
+                   sizeof(range)) == PRDB_SDK_EXECUTOR_INVALID_ARGUMENT);
+        assert(mock.calls == 19);
+        assert(prdb_sdk_executor_scan_index_range_v1(
+                   &host, resolved.executor_handle, key_id, &lower, 1, NULL,
+                   0, selected_columns, 1, range_request,
+                   sizeof(expected_range_request) - 1, response,
+                   sizeof(response), &response_len, &range, sizeof(range)) ==
+               PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL);
+        assert(mock.calls == 19);
+    }
     return 0;
 }

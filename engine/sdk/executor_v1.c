@@ -121,6 +121,129 @@ int32_t prdb_sdk_executor_open_full_scan_v1(
     return PRDB_SDK_EXECUTOR_OK;
 }
 
+static void write_u16(uint8_t *payload, uint64_t *offset, uint16_t value) {
+    payload[(*offset)++] = (uint8_t)(value >> 8);
+    payload[(*offset)++] = (uint8_t)value;
+}
+
+static void write_u32(uint8_t *payload, uint64_t *offset, uint32_t value) {
+    payload[(*offset)++] = (uint8_t)(value >> 24);
+    payload[(*offset)++] = (uint8_t)(value >> 16);
+    payload[(*offset)++] = (uint8_t)(value >> 8);
+    payload[(*offset)++] = (uint8_t)value;
+}
+
+static int valid_range_bound(const prdb_sdk_value_v1 *bound) {
+    return bound != NULL && bound->struct_size >= sizeof(*bound) &&
+           bound->abi_version == PRDB_SDK_VALUE_ABI_V1_VERSION &&
+           bound->state == PRDB_SDK_VALUE_STATE_VALUE &&
+           prdb_sdk_value_validate_v1(bound) == PRDB_SDK_VALUE_VALID;
+}
+
+int32_t prdb_sdk_executor_scan_index_range_v1(
+    const prdb_host_api_v2 *host, const uint8_t executor_handle[16],
+    const uint8_t index_id[16], const prdb_sdk_value_v1 *lower_bound,
+    uint8_t lower_inclusive, const prdb_sdk_value_v1 *upper_bound,
+    uint8_t upper_inclusive, const uint8_t *column_ids,
+    uint16_t column_count, uint8_t *request, uint64_t request_capacity,
+    uint8_t *response, uint64_t response_capacity, uint64_t *response_len,
+    prdb_sdk_index_range_v1 *range_out, uint32_t range_out_capacity) {
+    uint64_t request_len = 38;
+    uint64_t offset = 35;
+    uint8_t decoded_request_bound_flags[2] = {0, 0};
+    int32_t status;
+
+    if (executor_handle == NULL || executor_handle[0] != 6 || index_id == NULL ||
+        request == NULL || response == NULL || response_len == NULL ||
+        range_out == NULL || range_out_capacity < sizeof(*range_out) ||
+        lower_inclusive > 1 || upper_inclusive > 1 ||
+        (lower_bound == NULL && upper_bound == NULL) ||
+        (column_count != 0 && column_ids == NULL) ||
+        column_count > PRDB_SDK_EXECUTOR_MAX_COLUMN_IDS) {
+        return PRDB_SDK_EXECUTOR_INVALID_ARGUMENT;
+    }
+    {
+        uint8_t nonzero = 0;
+        for (uint32_t i = 0; i < 16; ++i) nonzero |= index_id[i];
+        if (nonzero == 0) return PRDB_SDK_EXECUTOR_INVALID_ARGUMENT;
+    }
+    for (uint16_t i = 0; i < column_count; ++i) {
+        const uint8_t *column_id = column_ids + (uint64_t)i * 16;
+        uint8_t nonzero = 0;
+        for (uint32_t j = 0; j < 16; ++j) nonzero |= column_id[j];
+        if (nonzero == 0) return PRDB_SDK_EXECUTOR_INVALID_ARGUMENT;
+        for (uint16_t previous = 0; previous < i; ++previous) {
+            if (memcmp(column_id, column_ids + (uint64_t)previous * 16, 16) == 0) {
+                return PRDB_SDK_EXECUTOR_INVALID_ARGUMENT;
+            }
+        }
+    }
+    if (lower_bound != NULL) {
+        if (!valid_range_bound(lower_bound) || lower_bound->data_len > UINT32_MAX ||
+            request_len > PRDB_QUERY_MAX_IPC_REQUEST_BYTES - 5 ||
+            lower_bound->data_len > PRDB_QUERY_MAX_IPC_REQUEST_BYTES - request_len - 5) {
+            return PRDB_SDK_EXECUTOR_INVALID_ARGUMENT;
+        }
+        request_len += 5 + lower_bound->data_len;
+        decoded_request_bound_flags[0] = (uint8_t)(lower_inclusive ? 1 : 2);
+    }
+    if (upper_bound != NULL) {
+        if (!valid_range_bound(upper_bound) || upper_bound->data_len > UINT32_MAX ||
+            request_len > PRDB_QUERY_MAX_IPC_REQUEST_BYTES - 5 ||
+            upper_bound->data_len > PRDB_QUERY_MAX_IPC_REQUEST_BYTES - request_len - 5) {
+            return PRDB_SDK_EXECUTOR_INVALID_ARGUMENT;
+        }
+        request_len += 5 + upper_bound->data_len;
+        decoded_request_bound_flags[1] = (uint8_t)(upper_inclusive ? 1 : 2);
+    }
+    request_len += (uint64_t)column_count * 16;
+    if (request_len > PRDB_QUERY_MAX_IPC_REQUEST_BYTES) {
+        return PRDB_SDK_EXECUTOR_INVALID_ARGUMENT;
+    }
+    if (request_capacity < request_len) {
+        return PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL;
+    }
+
+    request[0] = 0;
+    request[1] = 1;
+    memcpy(request + 2, executor_handle, 16);
+    memcpy(request + 18, index_id, 16);
+    request[34] = decoded_request_bound_flags[0];
+    if (lower_bound != NULL) {
+        request[offset++] = lower_bound->type_code;
+        write_u32(request, &offset, (uint32_t)lower_bound->data_len);
+        if (lower_bound->data_len != 0) {
+            memcpy(request + offset, lower_bound->data,
+                   (size_t)lower_bound->data_len);
+            offset += lower_bound->data_len;
+        }
+    }
+    request[offset++] = decoded_request_bound_flags[1];
+    if (upper_bound != NULL) {
+        request[offset++] = upper_bound->type_code;
+        write_u32(request, &offset, (uint32_t)upper_bound->data_len);
+        if (upper_bound->data_len != 0) {
+            memcpy(request + offset, upper_bound->data,
+                   (size_t)upper_bound->data_len);
+            offset += upper_bound->data_len;
+        }
+    }
+    write_u16(request, &offset, column_count);
+    if (column_count != 0) {
+        memcpy(request + offset, column_ids, (size_t)column_count * 16);
+        offset += (uint64_t)column_count * 16;
+    }
+    if (offset != request_len) return PRDB_SDK_EXECUTOR_INVALID_ARGUMENT;
+    status = invoke(host, PRDB_SDK_EXECUTOR_OP_SCAN_INDEX_RANGE, request,
+                    request_len, response, response_capacity, response_len);
+    if (status != PRDB_SDK_EXECUTOR_OK) return status;
+    status = prdb_sdk_index_range_open_v1(range_out, range_out_capacity,
+                                          response, *response_len);
+    if (status == PRDB_SDK_BATCH_UNAVAILABLE) return PRDB_SDK_EXECUTOR_UNAVAILABLE;
+    if (status != PRDB_SDK_BATCH_OK) return PRDB_SDK_EXECUTOR_INVALID_PAYLOAD;
+    return PRDB_SDK_EXECUTOR_OK;
+}
+
 int32_t prdb_sdk_executor_next_batch_v1(
     const prdb_host_api_v2 *host, const uint8_t cursor[16],
     uint16_t max_candidates, uint32_t max_bytes, uint8_t *response,

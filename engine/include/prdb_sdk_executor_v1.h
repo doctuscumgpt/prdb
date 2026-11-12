@@ -16,7 +16,9 @@
 #define PRDB_SDK_EXECUTOR_OP_STAGE_UPDATE PRDB_IPC_OP_STAGE_UPDATE
 #define PRDB_SDK_EXECUTOR_OP_STAGE_DELETE PRDB_IPC_OP_STAGE_DELETE
 #define PRDB_SDK_EXECUTOR_OP_PROBE_UNIQUE_INDEX PRDB_IPC_OP_PROBE_UNIQUE_INDEX
+#define PRDB_SDK_EXECUTOR_OP_SCAN_INDEX_RANGE PRDB_IPC_OP_SCAN_INDEX_RANGE
 #define PRDB_SDK_EXECUTOR_OP_CHECK_CANCELLATION PRDB_IPC_OP_EXECUTOR_CHECK_CANCELLATION
+#define PRDB_SDK_EXECUTOR_MAX_COLUMN_IDS UINT16_C(256)
 
 #define PRDB_SDK_EXECUTOR_OK INT32_C(0)
 #define PRDB_SDK_EXECUTOR_UNAVAILABLE INT32_C(1)
@@ -68,6 +70,18 @@ int32_t prdb_sdk_executor_open_full_scan_v1(
     const prdb_host_api_v2 *host, const uint8_t executor_handle[16],
     uint8_t *response, uint64_t response_capacity, uint64_t *response_len,
     uint8_t cursor_out[16]);
+
+/* Executes a typed leading-key range request. A bound is either a non-NULL
+ * VALUE or absent; result column IDs are packed 16-byte identifiers. The
+ * decoded rows borrow response and intentionally contain no row handles. */
+int32_t prdb_sdk_executor_scan_index_range_v1(
+    const prdb_host_api_v2 *host, const uint8_t executor_handle[16],
+    const uint8_t index_id[16], const prdb_sdk_value_v1 *lower_bound,
+    uint8_t lower_inclusive, const prdb_sdk_value_v1 *upper_bound,
+    uint8_t upper_inclusive, const uint8_t *column_ids,
+    uint16_t column_count, uint8_t *request, uint64_t request_capacity,
+    uint8_t *response, uint64_t response_capacity, uint64_t *response_len,
+    prdb_sdk_index_range_v1 *range_out, uint32_t range_out_capacity);
 
 int32_t prdb_sdk_executor_next_batch_v1(
     const prdb_host_api_v2 *host, const uint8_t cursor[16],
