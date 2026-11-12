@@ -151,7 +151,7 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
     use prdb_engine::client_protocol::{ClientFrameDecoder, ClientResponseSequences};
     use prdb_engine::client_submit::{
         AdminClient, AdminColumnDefinition, AdminObjectGrantTarget, AdminObjectPrivilege,
-        InvocationStatus,
+        AdminSystemPrivilege, InvocationStatus,
     };
     use prdb_engine::submission_manifest::{encode_manifest_v1, manifest_v1_from_elf};
     use sha2::{Digest, Sha256};
@@ -644,6 +644,7 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
             .issue_token(limited_user.identity_id, "process-test", i64::MAX)
             .expect("issue regular-user token through process ADMIN path");
         let mut limited_secret = *limited_token.token_secret();
+        let mut limited_secret_after_grant = *limited_token.token_secret();
         let mut limited = AdminClient::connect_authenticated(
             control_address,
             limited_token.token_id,
@@ -658,6 +659,25 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
             )
         ));
         drop(limited);
+        control
+            .grant_system_privilege(limited_user.identity_id, AdminSystemPrivilege::CreateSchema)
+            .expect("grant CREATE_SCHEMA through process ADMIN path");
+        let mut limited = AdminClient::connect_authenticated(
+            control_address,
+            limited_token.token_id,
+            &mut limited_secret_after_grant,
+        )
+        .expect("re-authenticate regular user after CREATE_SCHEMA grant");
+        let user_schema = limited
+            .create_schema("process_user_owned", limited_user.identity_id)
+            .expect("CREATE_SCHEMA grant permits schema creation across processes");
+        limited
+            .drop_schema(user_schema.identity_id)
+            .expect("schema owner can drop its empty schema across processes");
+        drop(limited);
+        control
+            .revoke_system_privilege(limited_user.identity_id, AdminSystemPrivilege::CreateSchema)
+            .expect("revoke CREATE_SCHEMA before dropping its grantee");
         control
             .drop_user(limited_user.identity_id)
             .expect("drop regular user and revoke its token through process ADMIN path");
