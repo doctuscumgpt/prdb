@@ -6,7 +6,8 @@ use crate::executor_ipc::{
 };
 use crate::ipc::{DispatchError, IpcFrame, Operation, ServiceRole, authorize_operation};
 use crate::metadata_discovery::{
-    AuthorizedPlanRelation, AuthorizedRelationDescription, PlanningTableHandle,
+    AuthorizedPlanRelation, AuthorizedRelationDescription, AuthorizedUniqueAccessPath,
+    PlanningTableHandle,
 };
 pub use crate::query_abi::{
     PLANNER_DESCRIBE_PLAN_RELATION_AVAILABLE_RESPONSE_HEADER_BYTES,
@@ -101,7 +102,19 @@ pub struct DescribePlanRelationResponse {
     pub relation: Option<AuthorizedPlanRelation>,
 }
 
+const MAX_PLAN_UNIQUE_ACCESS_PATHS: usize = 256;
+
 impl DescribePlanRelationResponse {
+    /// Preserve the executor's established identity-only response for C SDK
+    /// consumers. Approved paths are returned on the planner channel only.
+    pub fn encode_executor_identity(&self) -> Result<Vec<u8>, PlannerRequestError> {
+        let relation = self.relation.clone().map(|mut relation| {
+            relation.unique_access_paths.clear();
+            relation
+        });
+        Self { relation }.encode()
+    }
+
     pub fn encode(&self) -> Result<Vec<u8>, PlannerRequestError> {
         match &self.relation {
             None => {
@@ -119,6 +132,7 @@ impl DescribePlanRelationResponse {
                     || relation.relation.name.is_empty()
                     || relation.relation.columns.is_empty()
                     || relation.relation.columns.len() > crate::tuple::MAX_COLUMNS
+                    || relation.unique_access_paths.len() > MAX_PLAN_UNIQUE_ACCESS_PATHS
                 {
                     return Err(PlannerRequestError::InvalidPayload);
                 }
@@ -145,6 +159,47 @@ impl DescribePlanRelationResponse {
                 );
                 for column in &relation.relation.columns {
                     encode_visible_column(&mut payload, column)?;
+                }
+                if !relation.unique_access_paths.is_empty() {
+                    payload.extend_from_slice(
+                        &u16::try_from(relation.unique_access_paths.len())
+                            .map_err(|_| PlannerRequestError::ResponseTooLarge)?
+                            .to_be_bytes(),
+                    );
+                }
+                let mut seen_indexes = std::collections::HashSet::new();
+                for path in &relation.unique_access_paths {
+                    if path.index_id == [0; 16]
+                        || !seen_indexes.insert(path.index_id)
+                        || path.column_ids.is_empty()
+                        || path.column_ids.len() > crate::tuple::MAX_COLUMNS
+                        || path.column_ids.contains(&[0; 16])
+                        || path
+                            .column_ids
+                            .iter()
+                            .copied()
+                            .collect::<std::collections::HashSet<_>>()
+                            .len()
+                            != path.column_ids.len()
+                        || path.column_ids.iter().any(|column_id| {
+                            !relation
+                                .relation
+                                .columns
+                                .iter()
+                                .any(|column| column.column_id == *column_id)
+                        })
+                    {
+                        return Err(PlannerRequestError::InvalidPayload);
+                    }
+                    payload.extend_from_slice(&path.index_id);
+                    payload.extend_from_slice(
+                        &u16::try_from(path.column_ids.len())
+                            .map_err(|_| PlannerRequestError::ResponseTooLarge)?
+                            .to_be_bytes(),
+                    );
+                    for column_id in &path.column_ids {
+                        payload.extend_from_slice(column_id);
+                    }
                 }
                 ensure_response_size(&payload)?;
                 Ok(payload)
@@ -209,6 +264,67 @@ impl DescribePlanRelationResponse {
             for _ in 0..count {
                 columns.push(decode_visible_column(payload, &mut offset)?);
             }
+            let path_count = if offset == payload.len() {
+                0
+            } else {
+                let count = usize::from(u16::from_be_bytes(
+                    payload
+                        .get(offset..offset + 2)
+                        .ok_or(PlannerRequestError::InvalidPayload)?
+                        .try_into()
+                        .map_err(|_| PlannerRequestError::InvalidPayload)?,
+                ));
+                offset += 2;
+                count
+            };
+            if path_count > MAX_PLAN_UNIQUE_ACCESS_PATHS {
+                return Err(PlannerRequestError::InvalidPayload);
+            }
+            let mut unique_access_paths = Vec::with_capacity(path_count);
+            let mut seen_indexes = std::collections::HashSet::with_capacity(path_count);
+            for _ in 0..path_count {
+                let index_id: [u8; 16] = payload
+                    .get(offset..offset + 16)
+                    .ok_or(PlannerRequestError::InvalidPayload)?
+                    .try_into()
+                    .map_err(|_| PlannerRequestError::InvalidPayload)?;
+                offset += 16;
+                let key_count = usize::from(u16::from_be_bytes(
+                    payload
+                        .get(offset..offset + 2)
+                        .ok_or(PlannerRequestError::InvalidPayload)?
+                        .try_into()
+                        .map_err(|_| PlannerRequestError::InvalidPayload)?,
+                ));
+                offset += 2;
+                if index_id == [0; 16]
+                    || !seen_indexes.insert(index_id)
+                    || key_count == 0
+                    || key_count > crate::tuple::MAX_COLUMNS
+                {
+                    return Err(PlannerRequestError::InvalidPayload);
+                }
+                let mut column_ids = Vec::with_capacity(key_count);
+                for _ in 0..key_count {
+                    let column_id: [u8; 16] = payload
+                        .get(offset..offset + 16)
+                        .ok_or(PlannerRequestError::InvalidPayload)?
+                        .try_into()
+                        .map_err(|_| PlannerRequestError::InvalidPayload)?;
+                    offset += 16;
+                    if column_id == [0; 16]
+                        || !columns.iter().any(|column| column.column_id == column_id)
+                        || column_ids.contains(&column_id)
+                    {
+                        return Err(PlannerRequestError::InvalidPayload);
+                    }
+                    column_ids.push(column_id);
+                }
+                unique_access_paths.push(AuthorizedUniqueAccessPath {
+                    index_id,
+                    column_ids,
+                });
+            }
             if offset != payload.len() {
                 return Err(PlannerRequestError::InvalidPayload);
             }
@@ -222,6 +338,7 @@ impl DescribePlanRelationResponse {
                         name,
                         columns,
                     },
+                    unique_access_paths,
                 }),
             })
         }

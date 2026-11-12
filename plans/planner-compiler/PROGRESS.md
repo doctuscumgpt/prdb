@@ -6,7 +6,15 @@
 - Implementation: executor operation `0x1114` and its v1 bounded codecs now route to `probe_catalog_unique_index_for_principal`. Raw row IDs remain in the trusted connection's handle map. Hidden or conditionally readable key cells retain the `unavailable` fallback semantics.
 - Regression: request/response codec round trips cover all three outcomes, sanitized values, malformed truncation, and opaque row handles. The token-authenticated two-user commit fixture now creates a backfilled unique index and exercises executor IPC: the authorized principal gets `Match` and `NoMatch`, while the restricted principal gets identical `Unavailable` responses for matching and absent keys.
 - Verification: focused catalog-backed executor IPC regression passed. Locked workspace build, rustfmt check, warning-denied Clippy, maintained TinyCC SDK tests, sandbox-query fixture build, and the full serial delegated-cgroup workspace suite passed. The suite reported 189 library tests, 148 commit tests, 74 transaction tests, and zero ignored tests across targets.
-- Remaining: connect approved optimizer access-path metadata and plan matching to this operation; add a real catalog-backed executor IPC regression and optimized-versus-reference result/error equivalence.
+- Remaining: connect optimizer plan matching and selection to this operation; optimized-versus-reference result/error equivalence remains open.
+
+## OP-5 follow-up: disclose only statically authorized unique paths — implemented
+
+- Contract: planning metadata contains only logical index IDs and ordered key-column IDs for unique paths whose every key cell is statically readable and unconditionally allowed under the pinned authorization projection.
+- Implementation: `AuthorizedPlanRelation` and planner/executor `describe_plan_relation` responses now carry bounded unique-access-path metadata. Storage filters paths using the same authorization predicate as the point probe; information-schema relations return no paths. The decoder validates path IDs, column membership, duplicates, and bounds.
+- Regression: the token-authenticated two-user catalog fixture confirms the authorized reader receives the unique path and the restricted principal receives none; the path list survives a planner IPC response round trip.
+- Verification: focused real-redb planner metadata and executor IPC regression passed. Full delegated-cgroup tests, including executor cancellation, passed with 189 library tests, 148 commit tests, and 74 transaction tests; workspace formatting and warning-denied Clippy passed. The first full run caught the planner-only path suffix leaking into the C executor identity response; `resolve_plan_relation` now retains its prior identity-only bytes, while `describe_plan_relation` carries the optional path suffix.
+- Remaining: the optimizer does not yet select a path, match it to an exact equality filter, or execute the resulting plan through the C SDK.
 
 ## OP-7 follow-up: backpressure per-invocation planner submissions — verified
 

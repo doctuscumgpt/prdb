@@ -19680,6 +19680,34 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
         )?;
     assert!(first_roles.is_empty());
     assert!(restricted_roles.is_empty());
+    let first_plan_relation = first_invocation
+        .open_planner_metadata_connection()
+        .describe_relation_for_plan("cell_views", "records")?
+        .ok_or("authorized planner relation was unavailable")?;
+    assert_eq!(first_plan_relation.unique_access_paths.len(), 1);
+    assert_eq!(
+        first_plan_relation.unique_access_paths[0].index_id,
+        index_id
+    );
+    assert_eq!(
+        first_plan_relation.unique_access_paths[0].column_ids,
+        vec![column_id]
+    );
+    let plan_relation_payload = prdb_engine::planner_ipc::DescribePlanRelationResponse {
+        relation: Some(first_plan_relation.clone()),
+    }
+    .encode()?;
+    assert_eq!(
+        prdb_engine::planner_ipc::DescribePlanRelationResponse::decode(&plan_relation_payload)?,
+        prdb_engine::planner_ipc::DescribePlanRelationResponse {
+            relation: Some(first_plan_relation),
+        }
+    );
+    let restricted_plan_relation = restricted_invocation
+        .open_planner_metadata_connection()
+        .describe_relation_for_plan("cell_views", "records")?
+        .ok_or("authorized restricted planner relation was unavailable")?;
+    assert!(restricted_plan_relation.unique_access_paths.is_empty());
     let first_cells =
         executor_ipc_scan_cells(&mut first_invocation, "cell_views", "records", vec![])?;
     let restricted_cells =

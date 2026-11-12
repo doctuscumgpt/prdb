@@ -1286,7 +1286,7 @@ pub fn dispatch_executor_request(
             let relation = connection
                 .describe_relation_for_plan(&decoded.schema_name, &decoded.relation_name)?;
             crate::planner_ipc::DescribePlanRelationResponse { relation }
-                .encode()
+                .encode_executor_identity()
                 .map_err(|_| ExecutorRequestError::InvalidPayload)?
         }
         Operation::OpenScan => {

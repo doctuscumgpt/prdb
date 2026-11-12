@@ -489,6 +489,7 @@ mod tests {
                             nullable: false,
                         }],
                     },
+                    unique_access_paths: Vec::new(),
                 };
                 crate::ipc::write_frame(
                     &mut planner_server,
@@ -591,6 +592,7 @@ mod tests {
                     nullable: false,
                 }],
             },
+            unique_access_paths: Vec::new(),
         };
         crate::ipc::write_frame(
             &mut planner_server,
@@ -678,6 +680,7 @@ mod tests {
                                         nullable: false,
                                     }],
                                 },
+                                unique_access_paths: Vec::new(),
                             }),
                         }
                         .encode()
@@ -744,6 +747,7 @@ mod tests {
                             nullable: false,
                         }],
                     },
+                    unique_access_paths: Vec::new(),
                 };
                 crate::ipc::write_frame(
                     &mut planner_server,
@@ -825,6 +829,7 @@ mod tests {
                             },
                         ],
                     },
+                    unique_access_paths: Vec::new(),
                 };
                 crate::ipc::write_frame(
                     &mut planner_server,
@@ -926,6 +931,7 @@ mod tests {
                                 },
                             ],
                         },
+                        unique_access_paths: Vec::new(),
                     };
                     crate::ipc::write_frame(
                         &mut planner_server,
@@ -1037,6 +1043,7 @@ mod tests {
                             nullable: false,
                         }],
                     },
+                    unique_access_paths: Vec::new(),
                 };
                 crate::ipc::write_frame(
                     &mut planner_server,
@@ -1106,6 +1113,7 @@ mod tests {
                             nullable: false,
                         }],
                     },
+                    unique_access_paths: Vec::new(),
                 };
                 crate::ipc::write_frame(
                     &mut planner_server,
@@ -1184,6 +1192,7 @@ mod tests {
                             },
                         ],
                     },
+                    unique_access_paths: Vec::new(),
                 };
                 crate::ipc::write_frame(
                     &mut planner_server,
@@ -1267,6 +1276,7 @@ mod tests {
                             },
                         ],
                     },
+                    unique_access_paths: Vec::new(),
                 };
                 crate::ipc::write_frame(
                     &mut planner_server,

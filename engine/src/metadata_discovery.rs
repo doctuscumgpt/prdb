@@ -107,6 +107,15 @@ pub struct AuthorizedPlanRelation {
     pub schema_version: u64,
     pub table_epoch: u64,
     pub relation: AuthorizedRelationDescription,
+    /// Unique equality paths whose key cells are statically readable under
+    /// this invocation's pinned authorization projection.
+    pub unique_access_paths: Vec<AuthorizedUniqueAccessPath>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorizedUniqueAccessPath {
+    pub index_id: [u8; 16],
+    pub column_ids: Vec<[u8; 16]>,
 }
 
 /// Opaque relation reference owned by one executor metadata connection.
