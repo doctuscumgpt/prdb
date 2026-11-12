@@ -1,10 +1,17 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: commit latency beside confined SQL — measured
+
+- Harness: the enabled `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance measures `commit()` duration for authorized read-only operational invocations. It compares 64 baseline commits across four operational threads with commits completed while the confined SQL executor is still live; each phase uses the same fresh three-row table and authorization path.
+- Profile and result: five sequential fresh-database runs on Linux x86_64 with Rust 1.95.0 and redb 4.4.0. The median of the run-level p50/p95/p99 values was 12.507/17.560/18.367 ms for the baseline and 12.033/15.660/17.375 ms alongside SQL. Baseline run p95 ranged 13.885–25.573 ms; concurrent SQL p95 ranged 15.337–16.162 ms. Each concurrent phase produced 152–164 samples whose commit completed while the executor process remained live.
+- Verification: all five focused delegated-cgroup acceptance runs passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, and the full serial delegated workspace suite passed; the commit integration target reported 142 passed and 0 ignored.
+- Scope: timing covers durable `commit()` only, excluding admission and scan work. This is a small local comparison, not evidence of saturation capacity or a configured latency target; point-read measurements, larger analytics, maintenance, memory/copy accounting, and target-hardware repeats remain open.
+
 ## WI-7 follow-up: operational storage work during confined SQL — covered
 
 - Regression: the enabled `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance now runs four independent operational threads alongside the real sandboxed SQL worker. Each invocation performs an authorized grouped-table scan and durable read-only commit; the bounded loops complete at least 64 invocations in total while worker-channel service/result relay runs, and the test requires a live executor-process sample.
 - Verification: the focused acceptance passed through the delegated cgroup launcher. The cgroup probe reported writable `cpu`, `memory`, and `pids` delegation. The full locked workspace suite passed serially with the sandbox tests enabled; the commit integration target reported 142 passed, 0 failed, and 0 ignored. Workspace build, formatting, and warning-denied Clippy passed.
-- Scope: this verifies concurrent correctness and admission on one small local dataset. It does not provide latency percentiles or establish behavior under sustained saturation; benchmarked point-read/commit latency, larger concurrent analytics, maintenance pressure, memory/copy accounting, and target-hardware repeats remain open.
+- Scope: this verifies concurrent correctness and admission on one small local dataset. Commit percentiles are recorded in the measurement below; sustained saturation, point-read latency, larger concurrent analytics, maintenance pressure, memory/copy accounting, and target-hardware repeats remain open.
 
 ## WI-7 dependency: authorized-estimate baseline cost — measured
 

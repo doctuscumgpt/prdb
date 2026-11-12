@@ -158,6 +158,68 @@ fn id(n: u8) -> [u8; 16] {
     [n; 16]
 }
 
+fn run_operational_commit_samples(
+    storage: &StorageManager<'_>,
+    table_id: [u8; 16],
+    token_id: [u8; 16],
+    secret: [u8; 32],
+    retention_deadline_us: i64,
+    invocation_namespace: u8,
+) -> Result<Vec<Duration>, Box<dyn std::error::Error>> {
+    std::thread::scope(|scope| {
+        let start = Arc::new(Barrier::new(5));
+        let mut workers = Vec::with_capacity(4);
+        for worker_index in 0..4u8 {
+            let start = Arc::clone(&start);
+            workers.push(scope.spawn(move || -> Result<Vec<Duration>, String> {
+                start.wait();
+                let mut samples = Vec::with_capacity(16);
+                for index in 0..16u8 {
+                    let mut invocation_id = [invocation_namespace; 16];
+                    invocation_id[14] = worker_index;
+                    invocation_id[15] = index;
+                    let (mut transaction, _) = storage
+                        .begin_token_authenticated_invocation(
+                            invocation_id,
+                            token_id,
+                            &secret,
+                            retention_deadline_us,
+                            16,
+                            4096,
+                        )
+                        .map_err(|error| format!("operational admission: {error:?}"))?;
+                    let page = transaction
+                        .scan_catalog_authorized_rows(table_id, None, 128)
+                        .map_err(|error| format!("operational authorized scan: {error:?}"))?;
+                    if page.rows.len() != 3 {
+                        return Err(format!(
+                            "operational authorized scan returned {} rows, expected 3",
+                            page.rows.len()
+                        ));
+                    }
+                    let commit_started = std::time::Instant::now();
+                    transaction
+                        .commit()
+                        .map_err(|error| format!("operational durable commit: {error:?}"))?;
+                    samples.push(commit_started.elapsed());
+                }
+                Ok(samples)
+            }));
+        }
+        start.wait();
+        let mut samples = Vec::with_capacity(64);
+        for worker in workers {
+            samples.extend(
+                worker
+                    .join()
+                    .map_err(|_| std::io::Error::other("operational workload thread panicked"))?
+                    .map_err(std::io::Error::other)?,
+            );
+        }
+        Ok(samples)
+    })
+}
+
 fn requested_scope_fixture() -> Vec<u8> {
     let mut bytes = b"PSC1\0\x01\x02\x02".to_vec();
     bytes.extend([1; 16]);
@@ -22866,6 +22928,15 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             .map_err(|error| format!("SQL artifact chunk upload: {error:?}"))?;
     }
     staging.seal(owner, reservation.invocation_id)?;
+    let mut operational_only_latencies = run_operational_commit_samples(
+        &storage,
+        composite_table.table_id,
+        token_id,
+        secret,
+        now + 3_600_000_000,
+        0xd0,
+    )?;
+    operational_only_latencies.sort_unstable();
 
     let invocation_hex = reservation
         .invocation_id
@@ -23027,7 +23098,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     let worker_pid = executor.id();
     let operational_storage = &storage;
     let operational_table_id = composite_table.table_id;
-    let (worker_status_result, concurrent_operational_invocations, active_worker_samples) =
+    let (worker_status_result, concurrent_operational_invocations, active_worker_latencies) =
         std::thread::scope(|scope| {
             let observer_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let start = Arc::new(std::sync::Barrier::new(5));
@@ -23035,58 +23106,67 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             for worker_index in 0..4u8 {
                 let task_done = Arc::clone(&observer_done);
                 let task_start = Arc::clone(&start);
-                operational_workers.push(scope.spawn(move || -> Result<(usize, usize), String> {
-                    task_start.wait();
-                    let mut active_worker_samples = 0;
-                    let mut completed = 0;
-                    for index in 0..64u8 {
-                        let mut invocation_id = [0xe0; 16];
-                        invocation_id[14] = worker_index;
-                        invocation_id[15] = index;
-                        let (mut transaction, _) = operational_storage
-                            .begin_token_authenticated_invocation(
-                                invocation_id,
-                                token_id,
-                                &secret,
-                                now + 3_600_000_000,
-                                16,
-                                4096,
-                            )
-                            .map_err(|error| format!("operational admission: {error:?}"))?;
-                        let page = transaction
-                            .scan_catalog_authorized_rows(operational_table_id, None, 128)
-                            .map_err(|error| format!("operational authorized scan: {error:?}"))?;
-                        if page.rows.len() != 3 {
-                            return Err(format!(
-                                "operational authorized scan returned {} rows, expected 3",
-                                page.rows.len()
-                            ));
+                operational_workers.push(scope.spawn(
+                    move || -> Result<(usize, Vec<Duration>), String> {
+                        task_start.wait();
+                        let mut active_worker_latencies = Vec::new();
+                        let mut completed = 0;
+                        for index in 0..64u8 {
+                            let mut invocation_id = [0xe0; 16];
+                            invocation_id[14] = worker_index;
+                            invocation_id[15] = index;
+                            let (mut transaction, _) = operational_storage
+                                .begin_token_authenticated_invocation(
+                                    invocation_id,
+                                    token_id,
+                                    &secret,
+                                    now + 3_600_000_000,
+                                    16,
+                                    4096,
+                                )
+                                .map_err(|error| format!("operational admission: {error:?}"))?;
+                            let page = transaction
+                                .scan_catalog_authorized_rows(operational_table_id, None, 128)
+                                .map_err(|error| {
+                                    format!("operational authorized scan: {error:?}")
+                                })?;
+                            if page.rows.len() != 3 {
+                                return Err(format!(
+                                    "operational authorized scan returned {} rows, expected 3",
+                                    page.rows.len()
+                                ));
+                            }
+                            let commit_started = std::time::Instant::now();
+                            transaction.commit().map_err(|error| {
+                                format!("operational durable commit: {error:?}")
+                            })?;
+                            let worker_state =
+                                std::fs::read_to_string(format!("/proc/{worker_pid}/stat"))
+                                    .ok()
+                                    .and_then(|stat| {
+                                        stat.rsplit_once(") ")
+                                            .and_then(|(_, fields)| {
+                                                fields.split_whitespace().next()
+                                            })
+                                            .map(str::to_owned)
+                                    });
+                            if worker_state
+                                .as_deref()
+                                .is_some_and(|state| state != "Z" && state != "X")
+                            {
+                                active_worker_latencies.push(commit_started.elapsed());
+                            }
+                            completed += 1;
+                            if completed >= 16
+                                && task_done.load(std::sync::atomic::Ordering::Acquire)
+                            {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(5));
                         }
-                        transaction
-                            .commit()
-                            .map_err(|error| format!("operational durable commit: {error:?}"))?;
-                        let worker_state =
-                            std::fs::read_to_string(format!("/proc/{worker_pid}/stat"))
-                                .ok()
-                                .and_then(|stat| {
-                                    stat.rsplit_once(") ")
-                                        .and_then(|(_, fields)| fields.split_whitespace().next())
-                                        .map(str::to_owned)
-                                });
-                        if worker_state
-                            .as_deref()
-                            .is_some_and(|state| state != "Z" && state != "X")
-                        {
-                            active_worker_samples += 1;
-                        }
-                        completed += 1;
-                        if completed >= 16 && task_done.load(std::sync::atomic::Ordering::Acquire) {
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    Ok((completed, active_worker_samples))
-                }));
+                        Ok((completed, active_worker_latencies))
+                    },
+                ));
             }
             start.wait();
             let worker_status_result = observe_executor_and_relay_results(
@@ -23097,25 +23177,42 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             );
             observer_done.store(true, std::sync::atomic::Ordering::Release);
             let mut operational_count = 0;
-            let mut active_worker_samples = 0;
+            let mut active_worker_latencies = Vec::new();
             for operational in operational_workers {
-                let (completed, active_samples) = operational
+                let (completed, active_latencies) = operational
                     .join()
                     .map_err(|_| std::io::Error::other("operational workload thread panicked"))?
                     .map_err(std::io::Error::other)?;
                 operational_count += completed;
-                active_worker_samples += active_samples;
+                active_worker_latencies.extend(active_latencies);
             }
             Ok::<_, Box<dyn std::error::Error>>((
                 worker_status_result,
                 operational_count,
-                active_worker_samples,
+                active_worker_latencies,
             ))
         })?;
     assert!(concurrent_operational_invocations >= 64);
     assert!(
-        active_worker_samples > 0,
+        !active_worker_latencies.is_empty(),
         "operational scans and durable commits did not overlap the live SQL worker"
+    );
+    let mut active_worker_latencies = active_worker_latencies;
+    active_worker_latencies.sort_unstable();
+    let percentile_us = |samples: &[Duration], percentile: usize| {
+        let rank = samples.len().saturating_mul(percentile).div_ceil(100);
+        samples[rank.saturating_sub(1)].as_micros()
+    };
+    eprintln!(
+        "operational durable commit latency (us): baseline n={} p50={} p95={} p99={}; confined SQL n={} p50={} p95={} p99={}",
+        operational_only_latencies.len(),
+        percentile_us(&operational_only_latencies, 50),
+        percentile_us(&operational_only_latencies, 95),
+        percentile_us(&operational_only_latencies, 99),
+        active_worker_latencies.len(),
+        percentile_us(&active_worker_latencies, 50),
+        percentile_us(&active_worker_latencies, 95),
+        percentile_us(&active_worker_latencies, 99),
     );
     let worker_status = match worker_status_result {
         Ok(status) => status,
