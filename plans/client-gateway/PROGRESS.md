@@ -134,3 +134,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Regression: `gateway_forwards_admin_request_and_correlated_response_over_tcp` sends an ADMIN frame through a loopback TCP socket, verifies the private Unix service receives `SubmitAdministrativeOperation` with the same request ID and payload, and checks the correlated response returns as a sequence-zero client RESPONSE.
 - Verification: the focused test passed (`1 passed, 0 ignored`); all 21 gateway integration tests passed; format, workspace build, warning-denied Clippy, and diff checks passed. The serial full workspace suite passed in the delegated `systemd --user` service with all sandbox/process tests enabled. The bridge forwards the operation; authorization and audit remain supervisor/storage responsibilities. Separate-process deployment and reserved control-path progress during result saturation are still open.
+
+## GW-4 follow-up: another connection can use spare gateway capacity — covered
+
+- Regression: `status_on_another_gateway_connection_progresses_while_result_worker_is_blocked` starts an 8-MiB result stream over one TCP/Unix worker pair and leaves its client unread until the supervisor writer blocks. A second TCP connection sends STATUS through the second worker and receives its correlated response before the first client begins draining.
+- Scope: this proves progress with one of two workers occupied. It does not reserve worker or queue capacity when all regular workers are saturated; dedicated control-path capacity remains open.
+- Verification: all 22 gateway integration tests passed; workspace formatting, build, warning-denied Clippy, and diff checks passed; the full serial workspace suite passed in the delegated `systemd --user` service with all sandbox and process tests enabled.
