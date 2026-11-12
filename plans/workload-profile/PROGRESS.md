@@ -7,6 +7,12 @@
 - Verification: the focused locked/offline optimizer process regression passed (`1 passed, 0 ignored`). Existing two-client analytical admission acceptance confirms that the configured cap rejects a third START while both analytics and operational workers are active.
 - Scope: this verifies per-process backpressure and two-client admission, not saturation at the configured global optimizer limits (64 operational / 8 analytical) or target-hardware behavior.
 
+## WI-7 follow-up: configured global START cap boundaries — covered
+
+- Regression: `configured_global_active_start_caps_allow_64_operational_and_8_analytical` fills the default active START reservations with distinct principals, proves the 65th operational and 9th analytical START are rejected while remaining prepared, then verifies both can start after their class capacity is released.
+- Verification: the focused locked/offline supervisor unit test passed (`1 passed, 0 ignored`); `cargo fmt --all -- --check`, warning-denied workspace Clippy, and the full serial workspace suite in delegated `systemd --user` cgroups all passed. The suite reported 187 library unit tests and 145 commit integration tests passed, with zero ignored in those targets.
+- Scope: this verifies the supervisor's configured admission boundaries and prepared-work retry behavior. It does not run 72 real optimizer/executor processes simultaneously or measure cgroup/process resource saturation; those checks and target-hardware behavior remain open.
+
 ## WI-7 follow-up: bounded executor output under a slow gateway — covered
 
 - Harness: the confined TinyCC write/read artifact adds an output-only parameter branch that writes 256 maximum-sized 16-KiB chunks (4 MiB). The acceptance drains them through the real executor result stream and supervisor gateway relay while the gateway reader sleeps 2 ms after each chunk; four operational workers concurrently perform 64 authorized point reads and durable commits, and outcome maintenance prunes eight expired outcomes in a bounded batch. A second output invocation receives owner cancellation 30 ms into the same slow relay and must end with an aborted terminal.

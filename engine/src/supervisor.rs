@@ -1483,6 +1483,116 @@ mod tests {
     }
 
     #[test]
+    fn configured_global_active_start_caps_allow_64_operational_and_8_analytical() {
+        let store = store(Arc::new(AcceptMetadata));
+        let mut operational = Vec::new();
+        let mut analytical = Vec::new();
+
+        for connection in 1..=64u8 {
+            let owner = make_owner(connection, connection);
+            let invocation_id = upload_and_seal(&store, owner, b"op", b"");
+            store
+                .start_with(owner, invocation_id, |_| Ok::<_, ()>(()))
+                .unwrap();
+            operational.push((owner, invocation_id));
+        }
+        for connection in 101..=108u8 {
+            let owner = make_owner(connection, connection);
+            let reservation = store
+                .prepare(
+                    owner,
+                    request_for_class(b"an", b"", WorkloadClass::Analytical),
+                )
+                .unwrap();
+            store
+                .upload_chunk(
+                    owner,
+                    reservation.invocation_id,
+                    ChunkKind::Artifact,
+                    0,
+                    b"an",
+                )
+                .unwrap();
+            store.seal(owner, reservation.invocation_id).unwrap();
+            store
+                .start_with(owner, reservation.invocation_id, |_| Ok::<_, ()>(()))
+                .unwrap();
+            analytical.push((owner, reservation.invocation_id));
+        }
+
+        let operational_overflow_owner = make_owner(250, 250);
+        let operational_overflow_id =
+            upload_and_seal(&store, operational_overflow_owner, b"op-overflow", b"");
+        assert!(matches!(
+            store.start_with(operational_overflow_owner, operational_overflow_id, |_| {
+                Ok::<_, ()>(())
+            }),
+            Err(StartError::Staging(StagingError::ResourceLimit))
+        ));
+        assert_eq!(
+            store.status(operational_overflow_owner, operational_overflow_id),
+            Ok(SubmissionState::Prepared)
+        );
+
+        let analytical_overflow_owner = make_owner(251, 251);
+        let analytical_overflow = store
+            .prepare(
+                analytical_overflow_owner,
+                request_for_class(b"an-overflow", b"", WorkloadClass::Analytical),
+            )
+            .unwrap();
+        store
+            .upload_chunk(
+                analytical_overflow_owner,
+                analytical_overflow.invocation_id,
+                ChunkKind::Artifact,
+                0,
+                b"an-overflow",
+            )
+            .unwrap();
+        store
+            .seal(analytical_overflow_owner, analytical_overflow.invocation_id)
+            .unwrap();
+        assert!(matches!(
+            store.start_with(
+                analytical_overflow_owner,
+                analytical_overflow.invocation_id,
+                |_| Ok::<_, ()>(())
+            ),
+            Err(StartError::Staging(StagingError::ResourceLimit))
+        ));
+        assert_eq!(
+            store.status(analytical_overflow_owner, analytical_overflow.invocation_id),
+            Ok(SubmissionState::Prepared)
+        );
+
+        for (owner, invocation_id) in operational {
+            store.finish_started(owner, invocation_id).unwrap();
+        }
+        for (owner, invocation_id) in analytical {
+            store.finish_started(owner, invocation_id).unwrap();
+        }
+        store
+            .start_with(operational_overflow_owner, operational_overflow_id, |_| {
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        store
+            .finish_started(operational_overflow_owner, operational_overflow_id)
+            .unwrap();
+        store
+            .start_with(
+                analytical_overflow_owner,
+                analytical_overflow.invocation_id,
+                |_| Ok::<_, ()>(()),
+            )
+            .unwrap();
+        store
+            .finish_started(analytical_overflow_owner, analytical_overflow.invocation_id)
+            .unwrap();
+    }
+
+    #[test]
     fn start_retries_preserve_fifo_order_within_eligible_capacity() {
         let store = StagingStore::new(
             StagingLimits {
