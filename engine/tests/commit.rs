@@ -218,7 +218,7 @@ fn executor_ipc_scan_cells(
     .map_err(|error| format!("executor IPC next batch failed: {error:?}"))?;
     let page = NextBatchResponse::decode(&page.payload)?;
     if page.continuation.is_some() {
-        return Err("single row fixture unexpectedly required a continuation".into());
+        return Err("bounded cell-view fixture unexpectedly required a continuation".into());
     }
     Ok(page.rows.into_iter().map(|row| row.cells).collect())
 }
@@ -19567,26 +19567,39 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
         ))?;
     }
 
-    let row_id = id(0x7f);
-    let row_key = table_row_key(table_id, row_id);
-    let row_payload = encode_tuple(
+    let short_row_payload = encode_tuple(
         &[ColumnSchema {
             scalar_type: ScalarType::Bytea,
             nullable: false,
         }],
         1,
-        &[Some(ScalarValue::Bytea(b"variable length secret".to_vec()))],
+        &[Some(ScalarValue::Bytea(vec![0x53]))],
+    )?;
+    let long_row_payload = encode_tuple(
+        &[ColumnSchema {
+            scalar_type: ScalarType::Bytea,
+            nullable: false,
+        }],
+        1,
+        &[Some(ScalarValue::Bytea(vec![0x54; 2048]))],
     )?;
     commit_rows(
         &database,
         id(0x80),
         admin_id,
         retention_deadline_us,
-        &[RowWrite {
-            key: row_key,
-            expected_version: None,
-            payload: Some(row_payload),
-        }],
+        &[
+            RowWrite {
+                key: table_row_key(table_id, id(0x7e)),
+                expected_version: None,
+                payload: Some(short_row_payload),
+            },
+            RowWrite {
+                key: table_row_key(table_id, id(0x7f)),
+                expected_version: None,
+                payload: Some(long_row_payload),
+            },
+        ],
     )?;
 
     let (mut first_invocation, first_roles) = storage.begin_token_authenticated_invocation(
@@ -19612,13 +19625,17 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
         executor_ipc_scan_cells(&mut first_invocation, "cell_views", "records", vec![])?;
     let restricted_cells =
         executor_ipc_scan_cells(&mut restricted_invocation, "cell_views", "records", vec![])?;
-    assert_eq!(
-        first_cells,
-        vec![vec![SanitizedCell::Value(ScalarValue::Bytea(
-            b"variable length secret".to_vec()
-        ))]]
-    );
-    assert_eq!(restricted_cells, vec![vec![SanitizedCell::Redacted]]);
+    assert_eq!(first_cells.len(), 2);
+    let mut visible_lengths = first_cells
+        .iter()
+        .map(|row| match &row[0] {
+            SanitizedCell::Value(ScalarValue::Bytea(bytes)) => bytes.len(),
+            _ => panic!("reader must see both authorized values"),
+        })
+        .collect::<Vec<_>>();
+    visible_lengths.sort_unstable();
+    assert_eq!(visible_lengths, [1, 2048]);
+    assert_eq!(restricted_cells, vec![vec![SanitizedCell::Redacted]; 2]);
     first_invocation.abort()?;
     restricted_invocation.abort()?;
     assert!(prdb_engine::startup::validate_persisted_records(&database).is_ok());
