@@ -181,7 +181,12 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
          };\n\
          int32_t prdb_query_main_v3(const prdb_host_api_v3 *host,\n\
              const prdb_invocation_v3 *invocation) {\n\
-             (void)host; (void)invocation; return 0;\n\
+             static const uint8_t output[16384] = {0};\n\
+             (void)invocation;\n\
+             for (uint32_t frame = 0; frame < 1024; ++frame) {\n\
+                 if (host->write_result(host->context, output, sizeof(output)) != 0) return 1;\n\
+             }\n\
+             return 0;\n\
          }\n",
     )
     .expect("write TinyCC query fixture");
@@ -330,6 +335,14 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
         .args([
             "--bind",
             "127.0.0.1:0",
+            "--workers",
+            "1",
+            "--queue-capacity",
+            "1",
+            "--control-workers",
+            "1",
+            "--control-queue-capacity",
+            "1",
             "--service-socket",
             service_socket.to_str().expect("UTF-8 socket path"),
             "--service-uid",
@@ -343,11 +356,17 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
     let stderr = gateway.child().stderr.take().expect("gateway stderr");
     let (address_sender, address_receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut line = String::new();
-        let result = BufReader::new(stderr).read_line(&mut line).map(|_| line);
+        let mut stderr = BufReader::new(stderr);
+        let result = (|| -> std::io::Result<_> {
+            let mut ordinary = String::new();
+            let mut control = String::new();
+            stderr.read_line(&mut ordinary)?;
+            stderr.read_line(&mut control)?;
+            Ok((ordinary, control))
+        })();
         let _ = address_sender.send(result);
     });
-    let address_line = address_receiver
+    let (address_line, control_address_line) = address_receiver
         .recv_timeout(Duration::from_secs(5))
         .expect("gateway listen line")
         .expect("read gateway listen line");
@@ -357,6 +376,12 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
         .expect("gateway listen address prefix")
         .parse()
         .expect("gateway listen address");
+    let control_address: std::net::SocketAddr = control_address_line
+        .trim()
+        .strip_prefix("prdb-gateway control listening on ")
+        .expect("gateway control listen address prefix")
+        .parse()
+        .expect("gateway control listen address");
 
     let mut client = TcpStream::connect(address).expect("connect external TCP client");
     client
@@ -556,6 +581,54 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
         stream_sequences
             .begin_stream(13)
             .expect("begin START stream");
+
+        let mut control_client =
+            TcpStream::connect(control_address).expect("connect reserved control TCP client");
+        control_client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("set control client timeout");
+        let mut control_decoder = ClientFrameDecoder::default();
+        let mut control_buffered = std::collections::VecDeque::new();
+        let control_hello = exchange_client_request(
+            &mut control_client,
+            &mut control_decoder,
+            &mut control_buffered,
+            1,
+            1,
+            br#"{"mode":"query","client_name":"control-status"}"#.to_vec(),
+        );
+        assert_eq!(control_hello.kind, 100);
+        let mut control_auth_payload =
+            format!("{{\"token_id\":\"{token_id_hex}\",\"token_secret\":\"{token_secret}\"}}");
+        let control_auth = exchange_client_request(
+            &mut control_client,
+            &mut control_decoder,
+            &mut control_buffered,
+            2,
+            2,
+            control_auth_payload.as_bytes().to_vec(),
+        );
+        control_auth_payload.zeroize();
+        assert_eq!(control_auth.kind, 100);
+        assert!(String::from_utf8_lossy(&control_auth.payload).contains("\"authenticated\":true"));
+        let active_status_payload = format!("{{\"invocation_id\":\"{second_invocation_hex}\"}}");
+        let active_status = exchange_client_request(
+            &mut control_client,
+            &mut control_decoder,
+            &mut control_buffered,
+            8,
+            3,
+            active_status_payload.as_bytes().to_vec(),
+        );
+        assert_eq!(active_status.kind, 100);
+        assert_eq!(active_status.request_id, 3);
+        assert!(
+            String::from_utf8_lossy(&active_status.payload).contains("\"state\":\"active\""),
+            "status while result client is unread: {}",
+            String::from_utf8_lossy(&active_status.payload)
+        );
+
+        let mut data_frames = 0;
         loop {
             let frame = next_client_response(&mut client, &mut decoder, &mut buffered);
             let terminal = stream_sequences
@@ -572,19 +645,26 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
                 break;
             }
             assert_eq!(frame.kind, 102);
+            assert_eq!(frame.payload.len(), 16384);
+            assert!(frame.payload.iter().all(|byte| *byte == 0));
+            data_frames += 1;
         }
+        assert_eq!(data_frames, 1024);
         let committed_status_payload = format!("{{\"invocation_id\":\"{second_invocation_hex}\"}}");
         let committed_status = exchange_client_request(
-            &mut client,
-            &mut decoder,
-            &mut buffered,
+            &mut control_client,
+            &mut control_decoder,
+            &mut control_buffered,
             8,
-            14,
+            4,
             committed_status_payload.into_bytes(),
         );
         token_secret.zeroize();
         assert_eq!(committed_status.kind, 100);
         assert_eq!(committed_status.payload, br#"{"state":"committed"}"#);
+        control_client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("close control TCP client write side");
     }
     client
         .shutdown(std::net::Shutdown::Write)

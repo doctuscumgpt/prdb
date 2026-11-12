@@ -399,6 +399,6 @@
 
 ## SU-5 / GW-2: commit a confined query across the gateway and supervisor binaries — verified
 
-- Regression: [`supervisor_binary.rs`](../../engine/tests/supervisor_binary.rs) starts both production binaries against a READY instance, stages a TinyCC ABI-v3 query over loopback TCP, starts it through the supervisor's delegated-cgroup executor path, verifies the streamed terminal outcome is COMMITTED, then checks STATUS is COMMITTED.
-- Verification: the focused process test passed in the delegated `systemd --user` service with the pinned runtime allowlist. SDK tests, sandbox query fixture build, workspace format/build/warning-denied Clippy, and the full serial workspace suite passed with sandbox/process tests enabled.
-- Scope: this query has no database writes or result payload. It verifies successful confined worker execution and durable finalization across both process boundaries; broader SQL acceptance and generation/session binding remain separate work.
+- Regression: [`supervisor_binary.rs`](../../engine/tests/supervisor_binary.rs) starts both production binaries against a READY instance, stages a TinyCC ABI-v3 query over loopback TCP, emits 16 MiB while its client is unread, and uses an authenticated control-lane connection to observe ACTIVE and then COMMITTED after the streamed terminal response.
+- Verification: the focused process test passed three sequential times in the delegated `systemd --user` service with the pinned runtime allowlist. Workspace format/build/warning-denied Clippy and the full serial workspace suite passed with sandbox/process tests enabled.
+- Scope: verifies successful confined worker execution, result backpressure isolation, and durable finalization across both process boundaries. Broader SQL acceptance remains separate work.

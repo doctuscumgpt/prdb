@@ -148,9 +148,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 ## GW-2 / GW-3 / GW-5 follow-up: confined query commits across gateway and supervisor processes — covered
 
-- Regression: `supervisor_and_gateway_binaries_commit_a_confined_submission` starts the actual `prdb-supervisor` and `prdb-gateway` binaries against a READY instance, submits a TinyCC ABI-v3 artifact over loopback TCP, then checks the accepted START stream ends in COMMITTED and STATUS returns COMMITTED. The worker fixture is compiled with TinyCC and linked with the system linker using a non-executable stack, matching the maintained query fixture profile.
-- Verification: focused process test passed inside the delegated `systemd --user` service with the pinned runtime paths and writable cgroup parent. `make -f engine/sdk/Makefile test`, `make -f engine/sdk/Makefile sandbox-query-fixture`, `cargo fmt --all -- --check`, `cargo build --workspace --locked`, and workspace warning-denied Clippy passed. The full serial workspace suite passed in the delegated service with sandbox and process tests enabled; no tests were ignored.
-- Scope: proves the successful confined worker path across the two binaries for an empty query. Generation/session binding and broader SQL acceptance remain open.
+- Regression: `supervisor_and_gateway_binaries_commit_a_confined_submission` starts the actual `prdb-supervisor` and `prdb-gateway` binaries against a READY instance, submits a TinyCC ABI-v3 artifact over loopback TCP, and streams 16 MiB while the ordinary client is unread. A second authenticated client uses the dedicated control endpoint to observe ACTIVE before draining and COMMITTED afterward. The worker fixture is compiled with TinyCC and linked with the system linker using a non-executable stack.
+- Verification: the focused process test passed three sequential delegated-service runs with pinned runtime paths and a writable cgroup parent. Workspace formatting/build/warning-denied Clippy and the full serial workspace suite passed in the delegated service with sandbox/process tests enabled; no tests were ignored.
+- Scope: proves confined result backpressure does not consume reserved control capacity across the actual gateway and supervisor binaries. Broader SQL acceptance remains open.
 
 ## GW-4 follow-up: status progresses through reserved control capacity — covered
 
@@ -159,7 +159,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: `status_on_another_gateway_connection_progresses_while_result_worker_is_blocked` now uses a single ordinary worker occupied by an 8-MiB result stream and verifies STATUS returns on the control listener before the client drains. `gateway_binary_relays_tcp_hello_to_its_private_unix_service` verifies CLI startup exposes both listeners and the control listener rejects START.
 - Observed red: the updated saturation regression first failed to compile because the control-pool API and configuration did not exist.
 - Verification: all 23 gateway tests passed; workspace formatting, build, warning-denied Clippy, and the serial full workspace suite passed. The full suite ran inside the delegated `systemd --user` service with sandbox and process tests enabled.
-- Scope: clients must use the configured control address for reserved progress. Status under saturation in a full authenticated client process remains open.
+- Scope: clients must use the configured control address for reserved progress. Full authenticated process coverage is recorded above.
 
 ## GW-2 follow-up: client sessions are bound to one gateway channel — specified
 
