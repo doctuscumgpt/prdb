@@ -171,6 +171,17 @@ pub struct ExecutorAuthorizedRowScanPage {
     pub continuation: Option<ExecutorScanCursor>,
 }
 
+/// One authorized unique-index probe result with an opaque executor row handle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExecutorUniqueIndexProbe {
+    Unavailable,
+    NoMatch,
+    Match {
+        handle: ExecutorRowHandle,
+        cells: Vec<SanitizedCell>,
+    },
+}
+
 #[derive(Clone)]
 struct ActiveRowScan {
     table_id: [u8; 16],
@@ -7028,6 +7039,88 @@ impl ExecutorMetadataConnection<'_, '_> {
             },
         );
         Ok(ExecutorScanCursor { token })
+    }
+
+    /// Probe one catalog-loaded unique index through the invocation's pinned
+    /// authorization projection. The raw storage row ID is retained only in
+    /// this connection's opaque handle map.
+    pub fn probe_relation_unique_index(
+        &mut self,
+        handle: &ResolvedRelationHandle,
+        index_id: [u8; 16],
+        values: &[Option<ScalarValue>],
+        requested_column_ids: &[[u8; 16]],
+    ) -> Result<ExecutorUniqueIndexProbe, TransactionError> {
+        let description = self.revalidate_relation_handle(handle)?;
+        if values.is_empty()
+            || values.len() > crate::tuple::MAX_COLUMNS
+            || requested_column_ids.len() > crate::tuple::MAX_COLUMNS
+            || requested_column_ids.contains(&[0; 16])
+            || requested_column_ids
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>()
+                .len()
+                != requested_column_ids.len()
+        {
+            return Err(TransactionError::InvalidMetadataRequest);
+        }
+        let selected_ordinals = if requested_column_ids.is_empty() {
+            (0..description.columns.len()).collect::<Vec<_>>()
+        } else {
+            let selected = description
+                .columns
+                .iter()
+                .enumerate()
+                .filter_map(|(ordinal, column)| {
+                    requested_column_ids
+                        .contains(&column.column_id)
+                        .then_some(ordinal)
+                })
+                .collect::<Vec<_>>();
+            if selected.len() != requested_column_ids.len() {
+                return Err(TransactionError::InvalidMetadataRequest);
+            }
+            selected
+        };
+        match self.transaction.probe_catalog_unique_index_for_principal(
+            description.relation_id,
+            index_id,
+            values,
+        )? {
+            AuthorizedUniqueIndexProbe::Unavailable => Ok(ExecutorUniqueIndexProbe::Unavailable),
+            AuthorizedUniqueIndexProbe::NoMatch => Ok(ExecutorUniqueIndexProbe::NoMatch),
+            AuthorizedUniqueIndexProbe::Match { id, cells } => {
+                if self.used_row_tokens.len() >= MAX_EXECUTOR_ROW_HANDLES {
+                    self.transaction.abort()?;
+                    return Err(TransactionError::RelationHandleLimitExceeded);
+                }
+                let selected_cells = selected_ordinals
+                    .iter()
+                    .map(|ordinal| {
+                        cells
+                            .get(*ordinal)
+                            .cloned()
+                            .ok_or(TransactionError::InvalidMetadataRequest)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let token = match new_metadata_cursor_token(
+                    &mut self.used_row_tokens,
+                    EXECUTOR_ROW_HANDLE_TOKEN_KIND,
+                ) {
+                    Ok(token) => token,
+                    Err(error) => {
+                        self.transaction.abort()?;
+                        return Err(error);
+                    }
+                };
+                self.row_handles.insert(token, id);
+                Ok(ExecutorUniqueIndexProbe::Match {
+                    handle: ExecutorRowHandle { token },
+                    cells: selected_cells,
+                })
+            }
+        }
     }
 
     fn next_information_schema_page(

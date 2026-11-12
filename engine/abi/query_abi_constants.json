@@ -885,6 +885,13 @@
       "c_type": "UINT16_C"
     },
     {
+      "rust_name": "IPC_OP_PROBE_UNIQUE_INDEX",
+      "rust_type": "u16",
+      "value": 4372,
+      "c_name": "PRDB_IPC_OP_PROBE_UNIQUE_INDEX",
+      "c_type": "UINT16_C"
+    },
+    {
       "rust_name": "IPC_OP_DESCRIBE_RELATION",
       "rust_type": "u16",
       "value": 4609,

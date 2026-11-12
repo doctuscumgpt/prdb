@@ -1,5 +1,13 @@
 # Optimizer Progress
 
+## OP-5 follow-up: expose the authorized unique point probe over executor IPC — implemented
+
+- Contract: the executor accepts a resolved relation handle, logical index ID, non-NULL key values, and selected columns. Storage revalidates the pinned index and authorization; responses distinguish `unavailable`, `no_match`, and a sanitized row with a connection-local opaque handle.
+- Implementation: executor operation `0x1114` and its v1 bounded codecs now route to `probe_catalog_unique_index_for_principal`. Raw row IDs remain in the trusted connection's handle map. Hidden or conditionally readable key cells retain the `unavailable` fallback semantics.
+- Regression: request/response codec round trips cover all three outcomes, sanitized values, malformed truncation, and opaque row handles. The token-authenticated two-user commit fixture now creates a backfilled unique index and exercises executor IPC: the authorized principal gets `Match` and `NoMatch`, while the restricted principal gets identical `Unavailable` responses for matching and absent keys.
+- Verification: focused catalog-backed executor IPC regression passed. Locked workspace build, rustfmt check, warning-denied Clippy, maintained TinyCC SDK tests, sandbox-query fixture build, and the full serial delegated-cgroup workspace suite passed. The suite reported 189 library tests, 148 commit tests, 74 transaction tests, and zero ignored tests across targets.
+- Remaining: connect approved optimizer access-path metadata and plan matching to this operation; add a real catalog-backed executor IPC regression and optimized-versus-reference result/error equivalence.
+
 ## OP-7 follow-up: backpressure per-invocation planner submissions — verified
 
 - Contract: [optimizer specification](../../specs/planner-compiler.md). The isolated optimizer handles one submission at a time and waits for the matching invocation-scoped metadata response before planning the next request; request and estimate counts are bounded per connection.

@@ -223,6 +223,59 @@ fn executor_ipc_scan_cells(
     Ok(page.rows.into_iter().map(|row| row.cells).collect())
 }
 
+fn executor_ipc_probe_unique(
+    invocation: &mut prdb_engine::transaction::InvocationTransaction<'_>,
+    schema_name: &str,
+    table_name: &str,
+    index_id: [u8; 16],
+    key: prdb_engine::tuple::ScalarValue,
+    column_ids: Vec<[u8; 16]>,
+) -> Result<prdb_engine::executor_ipc::ProbeUniqueIndexResponse, Box<dyn std::error::Error>> {
+    use prdb_engine::executor_ipc::{
+        ProbeUniqueIndexRequest, ProbeUniqueIndexResponse, ResolveRelationRequest,
+        ResolveRelationResponse, dispatch_executor_request,
+    };
+    use prdb_engine::ipc::{IpcFrame, Operation, ServiceRole};
+
+    let mut connection = invocation.open_executor_metadata_connection();
+    let resolved = dispatch_executor_request(
+        ServiceRole::Executor,
+        &mut connection,
+        &IpcFrame {
+            operation: Operation::ResolveRelation as u16,
+            request_id: 1,
+            payload: ResolveRelationRequest {
+                schema_name: schema_name.to_owned(),
+                relation_name: table_name.to_owned(),
+            }
+            .encode()?,
+        },
+    )
+    .map_err(|error| format!("executor IPC resolve failed: {error:?}"))?;
+    let ResolveRelationResponse::Resolved { handle, .. } =
+        ResolveRelationResponse::decode(&resolved.payload)?
+    else {
+        return Err("authorized relation did not resolve".into());
+    };
+    let response = dispatch_executor_request(
+        ServiceRole::Executor,
+        &mut connection,
+        &IpcFrame {
+            operation: Operation::ProbeUniqueIndex as u16,
+            request_id: 2,
+            payload: ProbeUniqueIndexRequest {
+                relation: handle,
+                index_id,
+                values: vec![key],
+                column_ids,
+            }
+            .encode()?,
+        },
+    )
+    .map_err(|error| format!("executor IPC unique probe failed: {error:?}"))?;
+    Ok(ProbeUniqueIndexResponse::decode(&response.payload)?)
+}
+
 fn id(n: u8) -> [u8; 16] {
     [n; 16]
 }
@@ -19601,6 +19654,12 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
             },
         ],
     )?;
+    let index_response = admin_execute(&format!(
+        "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"indexes.create\",\"arguments\":{{\"table_id\":\"{}\",\"name\":\"records_secret_unique\",\"column_ids\":[\"{}\"],\"unique\":true}}}}",
+        id_wire(table_id),
+        id_wire(column_id)
+    ))?;
+    let index_id = response_id(&index_response, "index_id")?;
 
     let (mut first_invocation, first_roles) = storage.begin_token_authenticated_invocation(
         id(0x81),
@@ -19636,6 +19695,50 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
     visible_lengths.sort_unstable();
     assert_eq!(visible_lengths, [1, 2048]);
     assert_eq!(restricted_cells, vec![vec![SanitizedCell::Redacted]; 2]);
+    let reader_match = executor_ipc_probe_unique(
+        &mut first_invocation,
+        "cell_views",
+        "records",
+        index_id,
+        ScalarValue::Bytea(vec![0x53]),
+        vec![column_id],
+    )?;
+    let prdb_engine::executor_ipc::ProbeUniqueIndexResponse::Match(row) = reader_match else {
+        return Err(format!("authorized unique probe returned {reader_match:?}").into());
+    };
+    assert_eq!(
+        row.handle.to_bytes()[0],
+        prdb_engine::metadata_discovery::EXECUTOR_ROW_HANDLE_TOKEN_KIND
+    );
+    assert_eq!(
+        row.cells,
+        vec![SanitizedCell::Value(ScalarValue::Bytea(vec![0x53]))]
+    );
+    assert_eq!(
+        executor_ipc_probe_unique(
+            &mut first_invocation,
+            "cell_views",
+            "records",
+            index_id,
+            ScalarValue::Bytea(vec![0x55; 9]),
+            vec![column_id],
+        )?,
+        prdb_engine::executor_ipc::ProbeUniqueIndexResponse::NoMatch
+    );
+    for value in [vec![0x53], vec![0x55; 9]] {
+        assert_eq!(
+            executor_ipc_probe_unique(
+                &mut restricted_invocation,
+                "cell_views",
+                "records",
+                index_id,
+                ScalarValue::Bytea(value),
+                vec![column_id],
+            )?,
+            prdb_engine::executor_ipc::ProbeUniqueIndexResponse::Unavailable,
+            "hidden unique keys must fall back identically for matching and absent values"
+        );
+    }
     first_invocation.abort()?;
     restricted_invocation.abort()?;
     assert!(prdb_engine::startup::validate_persisted_records(&database).is_ok());

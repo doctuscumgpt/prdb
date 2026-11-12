@@ -37,6 +37,7 @@ pub enum Operation {
     StageUpdate = crate::query_abi::IPC_OP_STAGE_UPDATE,
     StageDelete = crate::query_abi::IPC_OP_STAGE_DELETE,
     ExecutorCheckCancellation = crate::query_abi::IPC_OP_EXECUTOR_CHECK_CANCELLATION,
+    ProbeUniqueIndex = crate::query_abi::IPC_OP_PROBE_UNIQUE_INDEX,
     DescribeRelation = crate::query_abi::IPC_OP_DESCRIBE_RELATION,
     EstimateScan = crate::query_abi::IPC_OP_ESTIMATE_SCAN,
     OptimizeSelect = crate::query_abi::IPC_OP_OPTIMIZE_SELECT,
@@ -90,6 +91,7 @@ impl Operation {
             crate::query_abi::IPC_OP_EXECUTOR_CHECK_CANCELLATION => {
                 Ok(Self::ExecutorCheckCancellation)
             }
+            crate::query_abi::IPC_OP_PROBE_UNIQUE_INDEX => Ok(Self::ProbeUniqueIndex),
             crate::query_abi::IPC_OP_DESCRIBE_RELATION => Ok(Self::DescribeRelation),
             crate::query_abi::IPC_OP_ESTIMATE_SCAN => Ok(Self::EstimateScan),
             crate::query_abi::IPC_OP_OPTIMIZE_SELECT => Ok(Self::OptimizeSelect),
@@ -170,6 +172,7 @@ pub fn authorize_operation(role: ServiceRole, operation: Operation) -> Result<()
                 | Operation::StageUpdate
                 | Operation::StageDelete
                 | Operation::ExecutorCheckCancellation
+                | Operation::ProbeUniqueIndex
         ),
         ServiceRole::Planner => matches!(
             operation,

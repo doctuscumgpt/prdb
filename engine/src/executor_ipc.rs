@@ -31,7 +31,8 @@ pub use crate::query_abi::{
     EXECUTOR_STAGE_UPDATE_REQUEST_ROW_HANDLE_OFFSET, EXECUTOR_STAGE_UPDATE_REQUEST_VERSION_OFFSET,
 };
 use crate::transaction::{
-    ExecutorMetadataConnection, InsertInput, InvocationTransaction, TransactionError,
+    ExecutorMetadataConnection, ExecutorUniqueIndexProbe, InsertInput, InvocationTransaction,
+    TransactionError,
 };
 use crate::tuple::{FieldPatch, ScalarType, ScalarValue};
 use std::io::{Read, Write};
@@ -291,6 +292,209 @@ impl OpenScanRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpenScanResponse {
     pub cursor: ExecutorScanCursor,
+}
+
+/// Bounded request for a catalog-validated unique equality probe.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProbeUniqueIndexRequest {
+    pub relation: ResolvedRelationHandle,
+    pub index_id: [u8; 16],
+    pub values: Vec<ScalarValue>,
+    pub column_ids: Vec<[u8; 16]>,
+}
+
+impl ProbeUniqueIndexRequest {
+    const HEADER_BYTES: usize = 38;
+
+    pub fn encode(&self) -> Result<Vec<u8>, ExecutorRequestError> {
+        if self.index_id == [0; 16]
+            || self.values.is_empty()
+            || self.values.len() > crate::tuple::MAX_COLUMNS
+            || self.column_ids.len() > crate::tuple::MAX_COLUMNS
+            || self.column_ids.contains(&[0; 16])
+            || self
+                .column_ids
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != self.column_ids.len()
+        {
+            return Err(ExecutorRequestError::InvalidPayload);
+        }
+        let key_count =
+            u16::try_from(self.values.len()).map_err(|_| ExecutorRequestError::InvalidPayload)?;
+        let column_count = u16::try_from(self.column_ids.len())
+            .map_err(|_| ExecutorRequestError::InvalidPayload)?;
+        let mut payload = Vec::with_capacity(Self::HEADER_BYTES + self.values.len() * 16);
+        payload.extend_from_slice(&1u16.to_be_bytes());
+        payload.extend_from_slice(&self.relation.to_bytes());
+        payload.extend_from_slice(&self.index_id);
+        payload.extend_from_slice(&key_count.to_be_bytes());
+        payload.extend_from_slice(&column_count.to_be_bytes());
+        for value in &self.values {
+            let (type_code, bytes) = encode_scalar_value(value)?;
+            append_scalar_value_record(&mut payload, type_code, &bytes)?;
+        }
+        for column_id in &self.column_ids {
+            payload.extend_from_slice(column_id);
+        }
+        ensure_response_size(&payload)?;
+        Ok(payload)
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<Self, ExecutorRequestError> {
+        if payload.len() < Self::HEADER_BYTES || payload.len() > crate::ipc::MAX_PAYLOAD_BYTES {
+            return Err(ExecutorRequestError::InvalidPayload);
+        }
+        let version = u16::from_be_bytes(
+            payload[..2]
+                .try_into()
+                .map_err(|_| ExecutorRequestError::InvalidPayload)?,
+        );
+        let relation = ResolvedRelationHandle::from_bytes(&payload[2..18])
+            .ok_or(ExecutorRequestError::InvalidPayload)?;
+        let index_id: [u8; 16] = payload[18..34]
+            .try_into()
+            .map_err(|_| ExecutorRequestError::InvalidPayload)?;
+        let key_count = usize::from(u16::from_be_bytes(
+            payload[34..36]
+                .try_into()
+                .map_err(|_| ExecutorRequestError::InvalidPayload)?,
+        ));
+        let column_count = if payload.len() >= 38 {
+            usize::from(u16::from_be_bytes(
+                payload[36..38]
+                    .try_into()
+                    .map_err(|_| ExecutorRequestError::InvalidPayload)?,
+            ))
+        } else {
+            return Err(ExecutorRequestError::InvalidPayload);
+        };
+        if version != 1
+            || index_id == [0; 16]
+            || key_count == 0
+            || key_count > crate::tuple::MAX_COLUMNS
+            || column_count > crate::tuple::MAX_COLUMNS
+        {
+            return Err(ExecutorRequestError::InvalidPayload);
+        }
+        let mut offset = 38;
+        let mut values = Vec::with_capacity(key_count);
+        for _ in 0..key_count {
+            values.push(decode_scalar_value_record(payload, &mut offset)?);
+        }
+        let bytes_len = column_count
+            .checked_mul(16)
+            .ok_or(ExecutorRequestError::InvalidPayload)?;
+        if offset.checked_add(bytes_len) != Some(payload.len()) {
+            return Err(ExecutorRequestError::InvalidPayload);
+        }
+        let mut column_ids = Vec::with_capacity(column_count);
+        for chunk in payload[offset..].chunks_exact(16) {
+            column_ids.push(
+                chunk
+                    .try_into()
+                    .map_err(|_| ExecutorRequestError::InvalidPayload)?,
+            );
+        }
+        if column_ids.contains(&[0; 16])
+            || column_ids
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != column_ids.len()
+        {
+            return Err(ExecutorRequestError::InvalidPayload);
+        }
+        Ok(Self {
+            relation,
+            index_id,
+            values,
+            column_ids,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProbeUniqueIndexResponse {
+    Unavailable,
+    NoMatch,
+    Match(ExecutorBatchRow),
+}
+
+impl ProbeUniqueIndexResponse {
+    pub fn encode(&self) -> Result<Vec<u8>, ExecutorRequestError> {
+        let mut payload = vec![
+            1,
+            match self {
+                Self::Unavailable => 0,
+                Self::NoMatch => 1,
+                Self::Match(_) => 2,
+            },
+        ];
+        if let Self::Match(row) = self {
+            let count =
+                u16::try_from(row.cells.len()).map_err(|_| ExecutorRequestError::InvalidPayload)?;
+            payload.extend_from_slice(&generated::encode_executor_batch_row_record(
+                row.handle.to_bytes(),
+                count,
+            ));
+            for cell in &row.cells {
+                encode_sanitized_cell(&mut payload, cell, crate::ipc::MAX_PAYLOAD_BYTES)?;
+            }
+        }
+        ensure_response_size(&payload)?;
+        Ok(payload)
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<Self, ExecutorRequestError> {
+        if payload.len() < 2 || payload.len() > crate::ipc::MAX_PAYLOAD_BYTES || payload[0] != 1 {
+            return Err(ExecutorRequestError::InvalidPayload);
+        }
+        if payload[1] == 0 && payload.len() == 2 {
+            return Ok(Self::Unavailable);
+        }
+        if payload[1] == 1 && payload.len() == 2 {
+            return Ok(Self::NoMatch);
+        }
+        if payload[1] != 2 {
+            return Err(ExecutorRequestError::InvalidPayload);
+        }
+        let body = &payload[2..];
+        let (handle_bytes, encoded_count) = generated::decode_executor_batch_row_record(body)
+            .ok_or(ExecutorRequestError::InvalidPayload)?;
+        let handle = ExecutorRowHandle::from_bytes(&handle_bytes)
+            .ok_or(ExecutorRequestError::InvalidPayload)?;
+        let count = usize::from(encoded_count);
+        if count > crate::tuple::MAX_COLUMNS {
+            return Err(ExecutorRequestError::InvalidPayload);
+        }
+        let mut offset = generated::EXECUTOR_BATCH_ROW_RECORD_HEADER_BYTES as usize;
+        let mut cells = Vec::with_capacity(count);
+        for _ in 0..count {
+            let header = body
+                .get(offset..)
+                .and_then(|bytes| {
+                    bytes.get(..generated::SANITIZED_CELL_TAG_RECORD_HEADER_BYTES as usize)
+                })
+                .ok_or(ExecutorRequestError::InvalidPayload)?;
+            let state = generated::decode_sanitized_cell_tag_record(header)
+                .ok_or(ExecutorRequestError::InvalidPayload)?;
+            offset += generated::SANITIZED_CELL_TAG_RECORD_HEADER_BYTES as usize;
+            cells.push(match state {
+                0 => SanitizedCell::Value(decode_scalar_value_record(body, &mut offset)?),
+                1 => SanitizedCell::Null,
+                2 => SanitizedCell::Redacted,
+                _ => return Err(ExecutorRequestError::InvalidPayload),
+            });
+        }
+        if offset != body.len() {
+            return Err(ExecutorRequestError::InvalidPayload);
+        }
+        Ok(Self::Match(ExecutorBatchRow { handle, cells }))
+    }
 }
 
 impl OpenScanResponse {
@@ -1092,6 +1296,23 @@ pub fn dispatch_executor_request(
             }
             .encode()
         }
+        Operation::ProbeUniqueIndex => {
+            let decoded = ProbeUniqueIndexRequest::decode(&request.payload)?;
+            let values = decoded.values.iter().cloned().map(Some).collect::<Vec<_>>();
+            let response = match connection.probe_relation_unique_index(
+                &decoded.relation,
+                decoded.index_id,
+                &values,
+                &decoded.column_ids,
+            )? {
+                ExecutorUniqueIndexProbe::Unavailable => ProbeUniqueIndexResponse::Unavailable,
+                ExecutorUniqueIndexProbe::NoMatch => ProbeUniqueIndexResponse::NoMatch,
+                ExecutorUniqueIndexProbe::Match { handle, cells } => {
+                    ProbeUniqueIndexResponse::Match(ExecutorBatchRow { handle, cells })
+                }
+            };
+            response.encode()?
+        }
         Operation::NextBatch => {
             let decoded = NextBatchRequest::decode(&request.payload)?;
             let page = connection.next_relation_scan_batch(
@@ -1313,11 +1534,51 @@ pub fn serve_executor_resolve_relation<S: Read + Write>(
 
 #[cfg(test)]
 mod cancellation_response_tests {
-    use super::encode_cancellation_check_response;
+    use super::{
+        ExecutorBatchRow, ProbeUniqueIndexRequest, ProbeUniqueIndexResponse,
+        encode_cancellation_check_response,
+    };
+    use crate::authorization::SanitizedCell;
+    use crate::metadata_discovery::{ExecutorRowHandle, ResolvedRelationHandle};
+    use crate::tuple::ScalarValue;
 
     #[test]
     fn cancellation_check_response_matches_wire_bytes() {
         assert_eq!(encode_cancellation_check_response(false), [0, 1, 0]);
         assert_eq!(encode_cancellation_check_response(true), [0, 1, 1]);
+    }
+
+    #[test]
+    fn unique_probe_request_and_response_round_trip_without_raw_row_ids() {
+        let mut relation_bytes = [0u8; 16];
+        relation_bytes[0] = 6;
+        relation_bytes[1] = 1;
+        let request = ProbeUniqueIndexRequest {
+            relation: ResolvedRelationHandle::from_bytes(&relation_bytes).unwrap(),
+            index_id: [9; 16],
+            values: vec![ScalarValue::Integer(-17)],
+            column_ids: vec![[7; 16]],
+        };
+        let encoded = request.encode().unwrap();
+        assert_eq!(ProbeUniqueIndexRequest::decode(&encoded).unwrap(), request);
+
+        for response in [
+            ProbeUniqueIndexResponse::Unavailable,
+            ProbeUniqueIndexResponse::NoMatch,
+            ProbeUniqueIndexResponse::Match(ExecutorBatchRow {
+                handle: {
+                    let mut bytes = [0; 16];
+                    bytes[0] = 8;
+                    bytes[1] = 3;
+                    ExecutorRowHandle::from_bytes(&bytes).unwrap()
+                },
+                cells: vec![SanitizedCell::Value(ScalarValue::Integer(-17))],
+            }),
+        ] {
+            let bytes = response.encode().unwrap();
+            assert_eq!(ProbeUniqueIndexResponse::decode(&bytes).unwrap(), response);
+        }
+        assert!(ProbeUniqueIndexRequest::decode(&encoded[..37]).is_err());
+        assert!(ProbeUniqueIndexResponse::decode(&[1, 2]).is_err());
     }
 }
