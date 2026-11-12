@@ -6,6 +6,12 @@
 - Profile: five sequential fresh-database runs on Linux x86_64 with Rust 1.95.0 and redb 4.4.0. The median of run-level p50 values was 0.171 ms for point probes, 0.134 ms for bounded ranges, and 55.192 ms for authorized scan-plus-filter; the median of run-level p95 values was 0.272, 0.207, and 63.876 ms respectively. The per-run median ranges were 0.160–0.173, 0.123–0.142, and 54.993–61.966 ms.
 - Scope: storage API result latency with invocation, schema, index setup, and query argument construction outside the timed region; OS cache and host load were uncontrolled. The corresponding optimizer SQL compile/link sample is in [planner progress](../planner-compiler/PROGRESS.md). This does not measure SQL parser/planner setup, confined executor startup, result relay, durable commit, or target hardware.
 
+## WI-7 follow-up: scan/range costs at small cardinalities — measured
+
+- Harness: set `PRDB_BENCH_INDEX_ROWS` to the number of additional indexed rows and retain `PRDB_BENCH_INDEX_ACCESS=1`; each run creates a fresh database and times 11 exact-key ranges and authorized scan-plus-filter calls alongside point probes.
+- One local 11-iteration run measured scan/range p50 (ms) at total table populations 1/2/4/8/16/32/4,097: 0.020/0.092, 0.030/0.093, 0.049/0.093, 0.104/0.102, 0.169/0.097, 0.346/0.097, and 56.514/0.124. The 8-row scan p95 reached 1.027 ms, consistent with unstable host load.
+- Scope: local direct storage API result timings only; they do not represent end-to-end SQL latency, and require repeat profiles before target-specific conclusions.
+
 ## WI-7 follow-up: per-invocation planner backpressure — covered
 
 - Contract: each admitted invocation owns one isolated optimizer process; it handles one planner submission at a time and waits for invocation-scoped metadata before reading the next request. Per-connection request/estimate caps and active START limits bound request count and concurrent optimizer processes without a shared in-memory planner queue.

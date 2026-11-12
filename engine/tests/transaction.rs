@@ -6185,14 +6185,20 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         write.commit()?;
     }
 
-    const INDEX_PROFILE_ROWS: u64 = 4_096;
+    let index_profile_rows = std::env::var("PRDB_BENCH_INDEX_ROWS")
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .expect("PRDB_BENCH_INDEX_ROWS must be a u64")
+        })
+        .unwrap_or(4_096);
     let mut seed = InvocationTransaction::begin(
         &database,
         [241; 16],
         [9; 16],
         9_999,
-        INDEX_PROFILE_ROWS as usize + 1,
-        (INDEX_PROFILE_ROWS as usize + 1) * 2_048,
+        index_profile_rows as usize + 1,
+        (index_profile_rows as usize + 1) * 2_048,
     )?;
     let seed_schema = seed.load_catalog_table_schema(table_id)?;
     seed.load_catalog_indexes(&seed_schema)?;
@@ -6202,7 +6208,7 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         &[Some(ScalarValue::Bytea(b"duplicate".to_vec()))],
     )?;
     seed.stage_put(id(243), &payload)?;
-    for number in 0..INDEX_PROFILE_ROWS {
+    for number in 0..index_profile_rows {
         let value = format!("key-{number:05}");
         let payload = encode_tuple(
             &seed_schema.columns,
@@ -6415,8 +6421,14 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         let range = median_and_p95_ms(&mut range_times);
         let reference_scan = median_and_p95_ms(&mut reference_scan_times);
         eprintln!(
-            "index access benchmark: rows={INDEX_PROFILE_ROWS}, runs={RUNS}, point probe median/p95={:.3}/{:.3} ms, range median/p95={:.3}/{:.3} ms, authorized scan+filter median/p95={:.3}/{:.3} ms",
-            point_probe.0, point_probe.1, range.0, range.1, reference_scan.0, reference_scan.1,
+            "index access benchmark: numbered_rows={index_profile_rows}, total_rows={}, runs={RUNS}, point probe median/p95={:.3}/{:.3} ms, range median/p95={:.3}/{:.3} ms, authorized scan+filter median/p95={:.3}/{:.3} ms",
+            index_profile_rows + 1,
+            point_probe.0,
+            point_probe.1,
+            range.0,
+            range.1,
+            reference_scan.0,
+            reference_scan.1,
         );
     }
     let hidden_context = AuthorizationContext {

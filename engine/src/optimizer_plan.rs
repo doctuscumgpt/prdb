@@ -46,7 +46,8 @@ pub struct SingleTablePlanV1 {
 
 /// Prefer a sequential scan over a non-unique range path for very small exact
 /// authorized populations. Unknown estimates and point probes keep their
-/// existing choices. This fixed cutoff is a conservative first heuristic.
+/// existing choices. The cutoff is conservative and based on a local storage
+/// API profile; it is not an end-to-end SQL cost estimate.
 pub const SMALL_POPULATION_SCAN_ROWS: u64 = 4;
 
 pub fn apply_population_scan_heuristic(
