@@ -119,6 +119,24 @@ pub struct AdminTokenResult {
     pub commit_sequence: u64,
 }
 
+/// Non-secret metadata for one credential returned by the ADMIN token inventory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTokenMetadata {
+    pub token_id: [u8; 16],
+    pub label: String,
+    pub issued_at_us: i64,
+    pub expires_at_us: i64,
+    pub revoked: bool,
+    pub revoked_at_us: Option<i64>,
+}
+
+/// One bounded token inventory page, ordered by token ID.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTokenPage {
+    pub tokens: Vec<AdminTokenMetadata>,
+    pub next_after_token_id: Option<[u8; 16]>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdminColumnDefinition {
     pub name: String,
@@ -1209,6 +1227,99 @@ impl AdminClient {
             None,
         )
         .map(|(result, _)| result)
+    }
+
+    /// List non-secret metadata for one user's tokens. The server enforces
+    /// self-inventory or current MANAGE_USERS/database-administrator authority.
+    pub fn list_tokens_page(
+        &mut self,
+        user_id: [u8; 16],
+        after_token_id: Option<[u8; 16]>,
+    ) -> Result<AdminTokenPage, ClientSubmitError> {
+        validate_admin_id(user_id)?;
+        if after_token_id == Some([0; 16]) {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let after = after_token_id
+            .map(|id| format!(",\"after_token_id\":\"{}\"", lower_hex(&id)))
+            .unwrap_or_default();
+        let request = format!(
+            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"tokens.list\",\"arguments\":{{\"user_id\":\"{}\"{after}}}}}",
+            lower_hex(&user_id)
+        );
+        let response = self.transport.exchange(10, request.into_bytes())?;
+        let mut fields = parse_flat_response(&response.payload)?;
+        if fields.len() != 2 {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        let records = fields
+            .remove("tokens")
+            .and_then(|value| value.as_array().map(<[ResponseValue]>::to_vec))
+            .ok_or(ClientSubmitError::InvalidResponse)?;
+        let next_after_token_id = match fields.remove("next_after_token_id") {
+            Some(ResponseValue::Null) => None,
+            Some(ResponseValue::String(value)) => {
+                let mut wrapper = HashMap::new();
+                wrapper.insert("token_id".to_owned(), ResponseValue::String(value));
+                Some(response_id(&wrapper, "token_id")?)
+            }
+            _ => return Err(ClientSubmitError::InvalidResponse),
+        };
+        let mut tokens = Vec::with_capacity(records.len());
+        let mut previous = after_token_id;
+        for record in records {
+            let ResponseValue::Object(mut record) = record else {
+                return Err(ClientSubmitError::InvalidResponse);
+            };
+            if record.len() != 6 {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let token_id = response_id(&record, "token_id")?;
+            record.remove("token_id");
+            let label = response_string(&mut record, "label")?;
+            let issued_at_us = response_timestamp(&mut record, "issued_at_us")?;
+            let expires_at_us = response_timestamp(&mut record, "expires_at_us")?;
+            let revoked = match record.remove("revoked") {
+                Some(ResponseValue::Boolean(value)) => value,
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let revoked_at_us = match record.remove("revoked_at_us") {
+                Some(ResponseValue::Null) => None,
+                Some(ResponseValue::Number(value)) => {
+                    Some(i64::try_from(value).map_err(|_| ClientSubmitError::InvalidResponse)?)
+                }
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            if !record.is_empty()
+                || token_id == [0; 16]
+                || label.is_empty()
+                || previous.is_some_and(|id| id >= token_id)
+                || expires_at_us <= issued_at_us
+                || revoked != revoked_at_us.is_some()
+            {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            previous = Some(token_id);
+            tokens.push(AdminTokenMetadata {
+                token_id,
+                label,
+                issued_at_us,
+                expires_at_us,
+                revoked,
+                revoked_at_us,
+            });
+        }
+        if tokens.len() > 64
+            || (next_after_token_id.is_some()
+                && (tokens.len() != 64
+                    || next_after_token_id != tokens.last().map(|token| token.token_id)))
+        {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        Ok(AdminTokenPage {
+            tokens,
+            next_after_token_id,
+        })
     }
 
     pub fn grant_system_privilege(
@@ -2731,6 +2842,18 @@ fn response_id(
         .filter(|id| *id != [0; 16])
         .ok_or(ClientSubmitError::InvalidResponse)?;
     Ok(id)
+}
+
+fn response_timestamp(
+    fields: &mut HashMap<String, ResponseValue>,
+    key: &str,
+) -> Result<i64, ClientSubmitError> {
+    match fields.remove(key) {
+        Some(ResponseValue::Number(value)) => {
+            i64::try_from(value).map_err(|_| ClientSubmitError::InvalidResponse)
+        }
+        _ => Err(ClientSubmitError::InvalidResponse),
+    }
 }
 
 impl StartedInvocation<'_> {

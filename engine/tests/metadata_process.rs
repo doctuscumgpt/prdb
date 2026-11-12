@@ -1825,8 +1825,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         .is_err()
     );
     remove_client_credentials(&transfer_credential_path)?;
-    remove_client_credentials(&admin_cancel_credentials_path)?;
-
     let created_user = admin.create_user("process_token_user")?;
     let now_us = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?;
     let issued = admin.issue_token(
@@ -1843,6 +1841,28 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     write_client_credentials(&credential_path, &issued_credentials)?;
     drop(issued_credentials);
     drop(issued);
+
+    let issued_user_id_text = encode_id_hex(&created_user.identity_id);
+    let list_tokens_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "token-list",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--user-id",
+            &issued_user_id_text,
+        ])
+        .output()?;
+    assert!(
+        list_tokens_cli.status.success(),
+        "token-list CLI failed: {}",
+        String::from_utf8_lossy(&list_tokens_cli.stderr)
+    );
+    let token_inventory = String::from_utf8_lossy(&list_tokens_cli.stdout);
+    assert!(token_inventory.contains(&encode_id_hex(&issued_token_id)));
+    assert!(token_inventory.contains("multi-process token"));
+    assert!(!token_inventory.contains("token_secret"));
 
     let saved_credentials = read_client_credentials(&credential_path)?;
     let mut issued_secret = saved_credentials.token_secret;
@@ -1862,6 +1882,24 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     drop(saved_credentials);
 
     admin.revoke_token(issued_token_id)?;
+    let revoked_inventory_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "token-list",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--user-id",
+            &issued_user_id_text,
+        ])
+        .output()?;
+    assert!(
+        revoked_inventory_cli.status.success(),
+        "token-list after revoke failed: {}",
+        String::from_utf8_lossy(&revoked_inventory_cli.stderr)
+    );
+    let revoked_inventory = String::from_utf8_lossy(&revoked_inventory_cli.stdout);
+    assert!(revoked_inventory.contains("\"revoked\":true"));
     let revoked_credentials = read_client_credentials(&credential_path)?;
     let mut revoked_secret = revoked_credentials.token_secret;
     assert!(
@@ -1889,6 +1927,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             .contains("removed credential file")
     );
     assert!(!credential_path.exists());
+    remove_client_credentials(&admin_cancel_credentials_path)?;
     drop(admin);
 
     let mut outcome_status_client =

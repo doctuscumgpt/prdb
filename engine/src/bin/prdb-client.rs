@@ -36,6 +36,8 @@ Token secrets are saved only to mode-0600 credential files and are never printed
   prdb-client token-issue --address IP:PORT --credentials ADMIN_FILE --user-id HEX\n\
     --label TEXT --ttl-seconds N --output-credentials FILE\n\
   prdb-client token-revoke --address IP:PORT --credentials ADMIN_FILE --token-id HEX\n\n\
+  prdb-client token-list --address IP:PORT --credentials ADMIN_FILE --user-id HEX\n\
+    [--after-token-id HEX]\n\n\
   prdb-client user-create|role-create --address IP:PORT --credentials ADMIN_FILE --name NAME\n\
   prdb-client user-rename|role-rename --address IP:PORT --credentials ADMIN_FILE --id HEX --name NAME\n\
   prdb-client user-drop|role-drop --address IP:PORT --credentials ADMIN_FILE --id HEX\n\
@@ -143,6 +145,7 @@ fn run() -> Result<(), String> {
         "discover" => discover(address, credentials_path, &mut fields),
         "token-issue" => token_issue(address, credentials_path, &mut fields),
         "token-revoke" => token_revoke(address, credentials_path, &mut fields),
+        "token-list" => token_list(address, credentials_path, &mut fields),
         "schema-create" | "schema-rename" | "schema-drop" | "schema-owner-set" | "table-create"
         | "table-rename" | "table-drop" | "table-owner-set" => {
             schema_table_admin(&command, address, credentials_path, &mut fields)
@@ -1607,6 +1610,76 @@ fn token_revoke(
     Ok(())
 }
 
+fn token_list(
+    address: SocketAddr,
+    credentials_path: PathBuf,
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<(), String> {
+    let user_id = parse_id(&take_text(fields, "--user-id")?)?;
+    let after_token_id = fields
+        .remove("--after-token-id")
+        .map(|value| parse_id(&value.to_string_lossy()))
+        .transpose()?;
+    reject_unknown(fields)?;
+    let mut administrator =
+        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
+    let mut client = AdminClient::connect_authenticated(
+        address,
+        administrator.token_id,
+        &mut administrator.token_secret,
+    )
+    .map_err(|error| error.to_string())?;
+    let page = client
+        .list_tokens_page(user_id, after_token_id)
+        .map_err(|error| error.to_string())?;
+    print!("{{\"tokens\":[");
+    for (index, token) in page.tokens.iter().enumerate() {
+        if index != 0 {
+            print!(",");
+        }
+        print!(
+            "{{\"token_id\":{},\"label\":{},\"issued_at_us\":{},\"expires_at_us\":{},\"revoked\":{},\"revoked_at_us\":{}}}",
+            json_string(&lower_hex(&token.token_id)),
+            json_string(&token.label),
+            token.issued_at_us,
+            token.expires_at_us,
+            token.revoked,
+            token
+                .revoked_at_us
+                .map_or_else(|| "null".to_owned(), |value| value.to_string())
+        );
+    }
+    match page.next_after_token_id {
+        Some(cursor) => println!(
+            "],\"next_after_token_id\":{}}}",
+            json_string(&lower_hex(&cursor))
+        ),
+        None => println!("],\"next_after_token_id\":null}}"),
+    }
+    Ok(())
+}
+
+fn json_string(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len() + 2);
+    encoded.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => encoded.push_str("\\\""),
+            '\\' => encoded.push_str("\\\\"),
+            '\n' => encoded.push_str("\\n"),
+            '\r' => encoded.push_str("\\r"),
+            '\t' => encoded.push_str("\\t"),
+            character if character < ' ' => {
+                use std::fmt::Write as _;
+                write!(&mut encoded, "\\u{:04x}", character as u32).unwrap();
+            }
+            character => encoded.push(character),
+        }
+    }
+    encoded.push('"');
+    encoded
+}
+
 fn identity_admin(
     command: &str,
     address: SocketAddr,
@@ -1860,6 +1933,14 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn token_inventory_json_escapes_untrusted_labels() {
+        assert_eq!(
+            json_string("laptop \"one\"\\work\n"),
+            "\"laptop \\\"one\\\"\\\\work\\n\""
+        );
+    }
 
     #[test]
     fn credential_remove_uses_the_private_file_validator_and_removes_file() {

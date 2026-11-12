@@ -81,6 +81,67 @@ fn establish_query_session(stream: &mut TcpStream, decoder: &mut ClientFrameDeco
 }
 
 #[test]
+fn admin_client_lists_bounded_secret_free_token_pages() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(request.kind, 10);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            r#"{"phase":"read","operation_version":1,"operation":"tokens.list","arguments":{"user_id":"02020202020202020202020202020202","after_token_id":"03030303030303030303030303030303"}}"#
+        );
+        let mut first_page = String::from("{\"tokens\":[");
+        for value in 4u8..=67 {
+            if value != 4 {
+                first_page.push(',');
+            }
+            let token_id = format!("{value:02x}").repeat(16);
+            first_page.push_str(&format!(
+                "{{\"token_id\":\"{token_id}\",\"label\":\"work laptop\",\"issued_at_us\":100,\"expires_at_us\":200,\"revoked\":false,\"revoked_at_us\":null}}"
+            ));
+        }
+        first_page.push_str("],\"next_after_token_id\":\"43434343434343434343434343434343\"}");
+        respond(&mut stream, &request, first_page.as_bytes());
+
+        let next_request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(
+            std::str::from_utf8(&next_request.payload).unwrap(),
+            r#"{"phase":"read","operation_version":1,"operation":"tokens.list","arguments":{"user_id":"02020202020202020202020202020202","after_token_id":"43434343434343434343434343434343"}}"#
+        );
+        respond(
+            &mut stream,
+            &next_request,
+            br#"{"tokens":[{"token_id":"44444444444444444444444444444444","label":"renewed","issued_at_us":300,"expires_at_us":400,"revoked":false,"revoked_at_us":null}],"next_after_token_id":null}"#,
+        );
+    });
+    let mut secret = [7; 32];
+    let mut client = AdminClient::connect_authenticated(address, [1; 16], &mut secret).unwrap();
+    let page = client.list_tokens_page([2; 16], Some([3; 16])).unwrap();
+    assert_eq!(page.next_after_token_id, Some([0x43; 16]));
+    assert_eq!(page.tokens.len(), 64);
+    assert_eq!(page.tokens[0].token_id, [4; 16]);
+    assert_eq!(page.tokens[0].label, "work laptop");
+    assert_eq!(page.tokens[0].issued_at_us, 100);
+    assert_eq!(page.tokens[0].expires_at_us, 200);
+    assert!(!page.tokens[0].revoked);
+    assert_eq!(page.tokens[0].revoked_at_us, None);
+    let next = client
+        .list_tokens_page([2; 16], page.next_after_token_id)
+        .unwrap();
+    assert_eq!(next.tokens.len(), 1);
+    assert_eq!(next.tokens[0].token_id, [0x44; 16]);
+    assert_eq!(next.next_after_token_id, None);
+    server.join().unwrap();
+}
+
+#[test]
 fn submission_client_decodes_cancellation_acknowledgements() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
