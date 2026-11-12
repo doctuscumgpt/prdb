@@ -1,5 +1,13 @@
 # Storage Manager Progress
 
+## SM-2 follow-up: bounded ordered index range pages — storage primitive verified
+
+- Contract: [index-key encoding v1](../../specs/index-key-encoding.md). A pinned redb snapshot accepts inclusive/exclusive tuple bounds for one nonzero index ID, returns ordered validated locators in pages capped at 1,024, and resumes strictly after an in-range continuation key. The row UUID suffix is included or excluded with the complete tuple boundary.
+- Red/green: the first focused test failed to compile because the range-bound type and snapshot API were absent. Two real-redb regressions now cover inclusive bounds across pages, exclusive boundaries, an empty inverted range, and rejection of a continuation key from another index.
+- Implementation: `RowSnapshot::scan_index_range` constructs prefix-aware lower/upper search bounds, caps candidate count, validates persisted locator/key agreement, and rejects cursors outside the index/range. It returns candidate locators only; it grants no authorization or executor capability.
+- Verification: `nix develop --no-update-lock-file --no-write-lock-file -c cargo test -p prdb-engine --lib snapshot::tests:: --locked --offline -- --nocapture` passed (2 passed, 0 failed, 0 ignored).
+- Remaining: transaction-layer MVCC/overlay reconciliation, authorized row/cell projection, executor IPC, planner hinting, SDK execution, and optimized/reference result and redaction-error equivalence are not implemented by this storage primitive.
+
 ## SM-1 follow-up: retained-reader reclamation after release — verified
 
 - Contract: [redb storage](../../specs/redb-storage.md). redb's compactor must refuse while an old read snapshot is pinned; after the last reader closes, an explicit compaction must reclaim obsolete copy-on-write pages without losing live data.

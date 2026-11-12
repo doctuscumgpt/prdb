@@ -52,6 +52,14 @@ pub struct IndexScanPage {
     pub continuation: Option<Vec<u8>>,
 }
 
+/// One inclusive or exclusive bound expressed as the ordered SQL tuple bytes
+/// following an index ID in a persisted index key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexRangeBound {
+    pub tuple: Vec<u8>,
+    pub inclusive: bool,
+}
+
 impl RowSnapshot {
     pub fn new(transaction: ReadTransaction) -> Self {
         Self { transaction }
@@ -321,6 +329,128 @@ impl RowSnapshot {
                     .map_err(Into::into)
             })
             .transpose()
+    }
+
+    /// Return a bounded page from one ordered logical index range. Bounds are
+    /// encoded SQL tuples, not complete keys; all row-ID suffixes for an
+    /// inclusive tuple are included. The caller must resolve every candidate
+    /// against the same snapshot/overlay and apply authorization.
+    pub fn scan_index_range(
+        &self,
+        index_id: &[u8; 16],
+        lower: Option<IndexRangeBound>,
+        upper: Option<IndexRangeBound>,
+        after_key: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<IndexScanPage, Box<dyn std::error::Error>> {
+        if *index_id == [0; 16] {
+            return Err(Box::new(SnapshotError::InvalidIndexPrefix));
+        }
+        if limit == 0 || limit > MAX_ROW_SCAN_PAGE {
+            return Err(Box::new(SnapshotError::InvalidScanLimit));
+        }
+        let validate_bound = |bound: &IndexRangeBound| {
+            !bound.tuple.is_empty()
+                && 16usize.saturating_add(bound.tuple.len()).saturating_add(16)
+                    <= crate::index_key::MAX_INDEX_KEY_BYTES
+        };
+        if lower.as_ref().is_some_and(|bound| !validate_bound(bound))
+            || upper.as_ref().is_some_and(|bound| !validate_bound(bound))
+        {
+            return Err(Box::new(SnapshotError::InvalidIndexPrefix));
+        }
+
+        let mut start = match &lower {
+            Some(bound) => {
+                let mut key = Vec::with_capacity(16 + bound.tuple.len());
+                key.extend_from_slice(index_id);
+                key.extend_from_slice(&bound.tuple);
+                if bound.inclusive {
+                    key
+                } else if let Some(successor) = crate::index_key::prefix_successor(&key) {
+                    successor
+                } else {
+                    return Ok(IndexScanPage {
+                        candidates: Vec::new(),
+                        continuation: None,
+                    });
+                }
+            }
+            None => index_id.to_vec(),
+        };
+        let stop = match &upper {
+            Some(bound) => {
+                let mut key = Vec::with_capacity(16 + bound.tuple.len());
+                key.extend_from_slice(index_id);
+                key.extend_from_slice(&bound.tuple);
+                if bound.inclusive {
+                    crate::index_key::prefix_successor(&key)
+                } else {
+                    Some(key)
+                }
+            }
+            None => crate::index_key::prefix_successor(index_id),
+        };
+        if stop.as_ref().is_some_and(|stop| start >= *stop) {
+            return Ok(IndexScanPage {
+                candidates: Vec::new(),
+                continuation: None,
+            });
+        }
+        if after_key.is_some_and(|key| {
+            key.len() < 32
+                || key.len() > crate::index_key::MAX_INDEX_KEY_BYTES
+                || key[..16] != index_id[..]
+                || key < start.as_slice()
+                || stop.as_ref().is_some_and(|stop| key >= stop.as_slice())
+        }) {
+            return Err(Box::new(SnapshotError::InvalidIndexCursor));
+        }
+        if let Some(after_key) = after_key {
+            start = after_key.to_vec();
+        }
+
+        let table = self.transaction.open_table(INDEXES)?;
+        let mut candidates = Vec::with_capacity(limit);
+        let mut page_bytes = 0usize;
+        let mut has_more = false;
+        for entry in table.range::<&[u8]>(start.as_slice()..)? {
+            let (key, value) = entry?;
+            let key = key.value();
+            if key[..16] != index_id[..] || stop.as_ref().is_some_and(|stop| key >= stop.as_slice())
+            {
+                break;
+            }
+            if after_key.is_some_and(|after| key <= after) {
+                continue;
+            }
+            if candidates.len() == limit
+                || page_bytes.saturating_add(key.len()) > MAX_INDEX_SCAN_PAGE_BYTES
+            {
+                has_more = true;
+                break;
+            }
+            if key.len() < 32 || key.len() > crate::index_key::MAX_INDEX_KEY_BYTES {
+                return Err(Box::new(SnapshotError::InvalidIndexKey));
+            }
+            let locator = IndexLocator::decode_for_key(key, value.value())
+                .map_err(|_: LocatorError| SnapshotError::InvalidIndexLocator)?;
+            if locator.row_id == [0; 16] {
+                return Err(Box::new(SnapshotError::InvalidIndexLocator));
+            }
+            candidates.push(IndexCandidate {
+                key: key.to_vec(),
+                locator,
+            });
+            page_bytes += key.len();
+        }
+        let continuation = has_more
+            .then(|| candidates.last().map(|candidate| candidate.key.clone()))
+            .flatten();
+        Ok(IndexScanPage {
+            candidates,
+            continuation,
+        })
     }
 
     /// Return a bounded page of validated locators whose complete keys share
@@ -608,5 +738,173 @@ impl RowSnapshot {
             records.push(record);
         }
         Ok(records)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index_key::compose_key;
+    use crate::index_locator::IndexLocator;
+    use redb::{Database, ReadableDatabase};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn ordered_index_range_honors_inclusive_bounds_and_pages() {
+        let fixture_id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "prdb-index-range-{}-{fixture_id}.redb",
+            std::process::id()
+        ));
+        let database = Database::create(&path).unwrap();
+        let index_id = [0x31; 16];
+        let write = database.begin_write().unwrap();
+        {
+            let mut indexes = write.open_table(INDEXES).unwrap();
+            for (value, row_byte) in [(1u8, 0x41), (2, 0x42), (3, 0x43), (4, 0x44)] {
+                let row_id = [row_byte; 16];
+                let key = compose_key(index_id, &[value], row_id);
+                let locator = IndexLocator {
+                    row_id,
+                    row_version: 1,
+                };
+                indexes
+                    .insert(key.as_slice(), locator.encode().as_slice())
+                    .unwrap();
+            }
+        }
+        write.commit().unwrap();
+        let read = database.begin_read().unwrap();
+        let snapshot = RowSnapshot::new(read);
+
+        let first = snapshot
+            .scan_index_range(
+                &index_id,
+                Some(IndexRangeBound {
+                    tuple: vec![2],
+                    inclusive: true,
+                }),
+                Some(IndexRangeBound {
+                    tuple: vec![3],
+                    inclusive: true,
+                }),
+                None,
+                1,
+            )
+            .unwrap();
+        assert_eq!(first.candidates.len(), 1);
+        assert_eq!(first.candidates[0].key[16], 2);
+        let continuation = first.continuation.as_deref().expect("second bound row");
+
+        let second = snapshot
+            .scan_index_range(
+                &index_id,
+                Some(IndexRangeBound {
+                    tuple: vec![2],
+                    inclusive: true,
+                }),
+                Some(IndexRangeBound {
+                    tuple: vec![3],
+                    inclusive: true,
+                }),
+                Some(continuation),
+                1,
+            )
+            .unwrap();
+        assert_eq!(second.candidates.len(), 1);
+        assert_eq!(second.candidates[0].key[16], 3);
+        assert!(second.continuation.is_none());
+
+        drop(snapshot);
+        drop(database);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn ordered_index_range_excludes_boundary_tuples_and_rejects_foreign_cursors() {
+        let fixture_id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "prdb-index-range-exclusive-{}-{fixture_id}.redb",
+            std::process::id()
+        ));
+        let database = Database::create(&path).unwrap();
+        let index_id = [0x51; 16];
+        let foreign_index_id = [0x52; 16];
+        let write = database.begin_write().unwrap();
+        {
+            let mut indexes = write.open_table(INDEXES).unwrap();
+            for (value, row_byte) in [(1u8, 0x61), (2, 0x62), (3, 0x63)] {
+                let row_id = [row_byte; 16];
+                let key = compose_key(index_id, &[value], row_id);
+                let locator = IndexLocator {
+                    row_id,
+                    row_version: 1,
+                };
+                indexes
+                    .insert(key.as_slice(), locator.encode().as_slice())
+                    .unwrap();
+            }
+            let foreign_row_id = [0x64; 16];
+            let foreign_key = compose_key(foreign_index_id, &[2], foreign_row_id);
+            let foreign_locator = IndexLocator {
+                row_id: foreign_row_id,
+                row_version: 1,
+            };
+            indexes
+                .insert(foreign_key.as_slice(), foreign_locator.encode().as_slice())
+                .unwrap();
+        }
+        write.commit().unwrap();
+        let read = database.begin_read().unwrap();
+        let snapshot = RowSnapshot::new(read);
+
+        let page = snapshot
+            .scan_index_range(
+                &index_id,
+                Some(IndexRangeBound {
+                    tuple: vec![1],
+                    inclusive: false,
+                }),
+                Some(IndexRangeBound {
+                    tuple: vec![3],
+                    inclusive: false,
+                }),
+                None,
+                10,
+            )
+            .unwrap();
+        assert_eq!(page.candidates.len(), 1);
+        assert_eq!(page.candidates[0].key[16], 2);
+
+        let empty = snapshot
+            .scan_index_range(
+                &index_id,
+                Some(IndexRangeBound {
+                    tuple: vec![3],
+                    inclusive: false,
+                }),
+                Some(IndexRangeBound {
+                    tuple: vec![2],
+                    inclusive: false,
+                }),
+                None,
+                10,
+            )
+            .unwrap();
+        assert!(empty.candidates.is_empty());
+        assert!(empty.continuation.is_none());
+
+        let foreign_key = compose_key(foreign_index_id, &[2], [0x64; 16]);
+        assert!(
+            snapshot
+                .scan_index_range(&index_id, None, None, Some(&foreign_key), 10)
+                .is_err()
+        );
+
+        drop(snapshot);
+        drop(database);
+        std::fs::remove_file(path).unwrap();
     }
 }

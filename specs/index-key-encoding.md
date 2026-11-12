@@ -53,6 +53,8 @@ Uniqueness compares the decoded user tuple, excluding the suffix, against releva
 
 Range bounds are search objects, not persisted keys. For a complete non-null/null tuple prefix P, equality probes cover all keys beginning with the index ID followed by P, including their row UUID suffixes. Use a prefix-aware comparator or `[P, successor(P))` for that full prefix, where successor increments the last non-`ff` byte and drops following bytes. If no such byte exists, the upper bound is unbounded. Never decode the successor as a stored key. Composite-prefix ranges must end at a component boundary; SQL range/null semantics are applied separately.
 
+`RowSnapshot::scan_index_range` accepts one index ID and optional lower/upper encoded tuple bounds, each independently inclusive or exclusive. It maps inclusive lower bounds to the tuple prefix and exclusive lower bounds to its successor; exclusive upper bounds stop at the tuple prefix and inclusive upper bounds stop at its successor. This accounts for the row UUID suffix without treating it as part of the SQL value. Each call returns at most 1,024 validated locator candidates and a last-complete-key continuation. Continuations must belong to the same index and remain within the requested range. The snapshot layer validates key bounds and locators only; transaction code must still resolve MVCC rows, reconcile private writes, enforce authorization, and preserve SQL predicate/error semantics before exposing results.
+
 ## Normative Encoding Examples
 
 Spaces separate bytes; these are component/tuple bytes before the secondary suffix unless noted.
