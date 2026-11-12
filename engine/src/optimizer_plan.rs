@@ -44,6 +44,26 @@ pub struct SingleTablePlanV1 {
     pub empty_view_hint: bool,
 }
 
+/// Prefer a sequential scan over a non-unique range path for very small exact
+/// authorized populations. Unknown estimates and point probes keep their
+/// existing choices. This fixed cutoff is a conservative first heuristic.
+pub const SMALL_POPULATION_SCAN_ROWS: u64 = 4;
+
+pub fn apply_population_scan_heuristic(
+    plan: &mut SingleTablePlanV1,
+    visible_rows: Option<u64>,
+) -> Result<bool, PlanError> {
+    if visible_rows.is_some_and(|rows| rows > 0 && rows <= SMALL_POPULATION_SCAN_ROWS)
+        && plan.unique_probe.is_none()
+        && plan.range_scan.is_some()
+    {
+        plan.range_scan = None;
+        validate_plan_v1(plan)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UniquePointProbeV1 {
     pub index_id: [u8; 16],
@@ -3900,6 +3920,16 @@ mod tests {
                 upper: None,
             })
         );
+        let mut small_population = plan.clone();
+        assert!(apply_population_scan_heuristic(&mut small_population, Some(4)).unwrap());
+        assert!(small_population.range_scan.is_none());
+        assert!(!apply_population_scan_heuristic(&mut small_population, Some(4)).unwrap());
+        let mut unknown_population = plan.clone();
+        assert!(!apply_population_scan_heuristic(&mut unknown_population, None).unwrap());
+        assert!(unknown_population.range_scan.is_some());
+        let mut larger_population = plan.clone();
+        assert!(!apply_population_scan_heuristic(&mut larger_population, Some(5)).unwrap());
+        assert!(larger_population.range_scan.is_some());
         let encoded = encode_plan_v1(&plan).unwrap();
         assert_eq!(decode_plan_v1(&encoded).unwrap(), plan);
 

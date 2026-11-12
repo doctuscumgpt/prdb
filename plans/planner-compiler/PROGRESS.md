@@ -622,3 +622,11 @@
 - Regression: the real-redb planner-stream test consumes the estimate allowance, observes `Unknown`, and asks for the opt-in empty-view proof again; storage returns the authorized relation without a proof. The optimizer-process test verifies a relation response without a proof yields an ordinary `Scan` plan with no empty-view hint. Separate admitted invocations are cancelled or allowed to expire after relation-handle creation and before `EstimateScan`; each gets no fallback response and ends durably ABORTED.
 - Verification: focused `planner_stream_estimate_allowance_falls_back_without_aborting_invocation` and `optimizer_process::tests::process_protocol_uses_planner_metadata_and_returns_a_validated_plan` tests passed.
 - Remaining: general cardinality estimates, candidate comparison, and broader estimate-driven choices.
+
+## OP-4 dependency: exact visible cardinality informs a bounded access choice — implemented
+
+- Behavior: ordinary single-table SELECT can request an exact authorized-view row count through the planner relation response. Exact zero retains the empty-view hint; exact populations of one through four suppress a non-unique range hint in favor of a sequential scan. Unique point probes, larger counts, and unknown estimates keep their prior choices.
+- Contract: the count is an advisory result of the invocation-bound storage estimator, consumes the existing 16-request allowance, and is omitted when authorization-aware estimation cannot return an exact result. The executor continues to independently validate relation identity and access-path authorization.
+- Regression: the real-redb planner-stream test checks exact zero and exhausted `Unknown`; the range-plan regression checks that four rows suppress the range path while unknown and five rows preserve it.
+- Limitation: the 1–4 cutoff is a fixed initial heuristic, not a benchmark-derived break-even point. Predicate selectivity, measured candidate costs, and broader estimate-driven planning remain open.
+- Verification: full delegated workspace tests, workspace build, formatting, Clippy, TinyCC SDK tests, and the sandbox fixture build passed. The cgroup probe reported writable `cpu memory pids` delegation.

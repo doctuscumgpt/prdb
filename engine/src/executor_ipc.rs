@@ -1526,6 +1526,7 @@ pub fn dispatch_executor_request(
             crate::planner_ipc::DescribePlanRelationResponse {
                 relation,
                 proven_empty: false,
+                visible_rows_estimate: None,
             }
             .encode_executor_identity()
             .map_err(|_| ExecutorRequestError::InvalidPayload)?

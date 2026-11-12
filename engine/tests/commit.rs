@@ -19711,6 +19711,7 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
     let plan_relation_payload = prdb_engine::planner_ipc::DescribePlanRelationResponse {
         relation: Some(first_plan_relation.clone()),
         proven_empty: true,
+        visible_rows_estimate: Some(0),
     }
     .encode()?;
     assert_eq!(
@@ -19718,6 +19719,7 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
         prdb_engine::planner_ipc::DescribePlanRelationResponse {
             relation: Some(first_plan_relation.clone()),
             proven_empty: true,
+            visible_rows_estimate: Some(0),
         }
     );
     let mut executor_identity_expected = first_plan_relation.clone();
@@ -19726,6 +19728,7 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
     let executor_identity_payload = prdb_engine::planner_ipc::DescribePlanRelationResponse {
         relation: Some(first_plan_relation.clone()),
         proven_empty: true,
+        visible_rows_estimate: Some(0),
     }
     .encode_executor_identity()?;
     assert_eq!(
@@ -19733,6 +19736,7 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
         prdb_engine::planner_ipc::DescribePlanRelationResponse {
             relation: Some(executor_identity_expected),
             proven_empty: false,
+            visible_rows_estimate: None,
         }
     );
     let marker_offset = plan_relation_payload
@@ -29762,7 +29766,7 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
                 payload: DescribePlanRelationRequest {
                     schema_name: "planner_stats".to_owned(),
                     relation_name: "observations".to_owned(),
-                    include_empty_proof: true,
+                    include_scan_estimate: true,
                 }
                 .encode()?,
             },
@@ -29771,6 +29775,7 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
             .ok_or("planner stream closed before plan relation description")?;
         let plan_relation_response = DescribePlanRelationResponse::decode(&plan_relation.payload)?;
         assert!(plan_relation_response.proven_empty);
+        assert_eq!(plan_relation_response.visible_rows_estimate, Some(0));
         let plan_relation = plan_relation_response
             .relation
             .ok_or("authorized plan relation was not described")?;
@@ -29833,7 +29838,7 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
                 payload: DescribePlanRelationRequest {
                     schema_name: "planner_stats".to_owned(),
                     relation_name: "observations".to_owned(),
-                    include_empty_proof: true,
+                    include_scan_estimate: true,
                 }
                 .encode()?,
             },
@@ -29842,6 +29847,7 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
             .ok_or("planner stream closed after estimate fallback")?;
         let fallback = DescribePlanRelationResponse::decode(&fallback.payload)?;
         assert!(!fallback.proven_empty);
+        assert_eq!(fallback.visible_rows_estimate, None);
         assert!(fallback.relation.is_some());
         client.shutdown(Shutdown::Write)?;
         drop(client);

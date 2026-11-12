@@ -103,20 +103,23 @@ pub struct DescribePlanRelationResponse {
     /// Storage-proven empty authorized population, omitted from executor
     /// identity responses and valid only for optimizer planning.
     pub proven_empty: bool,
+    /// Exact authorized-view row count when a bounded estimate was requested.
+    pub visible_rows_estimate: Option<u64>,
 }
 
 const MAX_PLAN_UNIQUE_ACCESS_PATHS: usize = 256;
 const RANGE_ACCESS_PATHS_MARKER: [u8; 2] = [0x52, 0x01];
 const EMPTY_POPULATION_MARKER: [u8; 2] = [0x52, 0x02];
-const EMPTY_PROOF_REQUEST_MARKER: [u8; 2] = [0x52, 0x03];
+const SCAN_ESTIMATE_REQUEST_MARKER: [u8; 2] = [0x52, 0x03];
+const CARDINALITY_ESTIMATE_MARKER: [u8; 2] = [0x52, 0x04];
 
-/// Relation lookup request with an explicit opt-in for the bounded empty-view
-/// proof. Ordinary metadata requests never spend estimate allowance.
+/// Relation lookup request with an explicit opt-in for a bounded authorized
+/// scan estimate. Ordinary metadata requests never spend estimate allowance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DescribePlanRelationRequest {
     pub schema_name: String,
     pub relation_name: String,
-    pub include_empty_proof: bool,
+    pub include_scan_estimate: bool,
 }
 
 impl DescribePlanRelationRequest {
@@ -126,8 +129,8 @@ impl DescribePlanRelationRequest {
             relation_name: self.relation_name.clone(),
         }
         .encode()?;
-        if self.include_empty_proof {
-            payload.extend_from_slice(&EMPTY_PROOF_REQUEST_MARKER);
+        if self.include_scan_estimate {
+            payload.extend_from_slice(&SCAN_ESTIMATE_REQUEST_MARKER);
             payload.push(1);
         }
         ensure_response_size(&payload)?;
@@ -135,8 +138,8 @@ impl DescribePlanRelationRequest {
     }
 
     pub fn decode(payload: &[u8]) -> Result<Self, PlannerRequestError> {
-        let (base, include_empty_proof) = if payload.len() >= 3
-            && payload[payload.len() - 3..payload.len() - 1] == EMPTY_PROOF_REQUEST_MARKER
+        let (base, include_scan_estimate) = if payload.len() >= 3
+            && payload[payload.len() - 3..payload.len() - 1] == SCAN_ESTIMATE_REQUEST_MARKER
         {
             if payload[payload.len() - 1] != 1 {
                 return Err(PlannerRequestError::InvalidPayload);
@@ -149,7 +152,7 @@ impl DescribePlanRelationRequest {
         Ok(Self {
             schema_name: decoded.schema_name,
             relation_name: decoded.relation_name,
-            include_empty_proof,
+            include_scan_estimate,
         })
     }
 }
@@ -166,6 +169,7 @@ impl DescribePlanRelationResponse {
         Self {
             relation,
             proven_empty: false,
+            visible_rows_estimate: None,
         }
         .encode()
     }
@@ -173,7 +177,7 @@ impl DescribePlanRelationResponse {
     pub fn encode(&self) -> Result<Vec<u8>, PlannerRequestError> {
         match &self.relation {
             None => {
-                if self.proven_empty {
+                if self.proven_empty || self.visible_rows_estimate.is_some() {
                     return Err(PlannerRequestError::InvalidPayload);
                 }
                 let payload =
@@ -306,6 +310,10 @@ impl DescribePlanRelationResponse {
                         payload.extend_from_slice(column_id);
                     }
                 }
+                if let Some(visible_rows) = self.visible_rows_estimate {
+                    payload.extend_from_slice(&CARDINALITY_ESTIMATE_MARKER);
+                    payload.extend_from_slice(&visible_rows.to_be_bytes());
+                }
                 if self.proven_empty {
                     payload.extend_from_slice(&EMPTY_POPULATION_MARKER);
                     payload.push(1);
@@ -324,6 +332,7 @@ impl DescribePlanRelationResponse {
                 Some(1) => Ok(Self {
                     relation: None,
                     proven_empty: false,
+                    visible_rows_estimate: None,
                 }),
                 _ => Err(PlannerRequestError::InvalidPayload),
             };
@@ -380,7 +389,13 @@ impl DescribePlanRelationResponse {
                 payload.get(offset..offset + 2) == Some(RANGE_ACCESS_PATHS_MARKER.as_slice());
             let has_empty_marker =
                 payload.get(offset..offset + 2) == Some(EMPTY_POPULATION_MARKER.as_slice());
-            let path_count = if offset == payload.len() || has_range_marker || has_empty_marker {
+            let has_cardinality_marker =
+                payload.get(offset..offset + 2) == Some(CARDINALITY_ESTIMATE_MARKER.as_slice());
+            let path_count = if offset == payload.len()
+                || has_range_marker
+                || has_empty_marker
+                || has_cardinality_marker
+            {
                 0
             } else {
                 let count = usize::from(u16::from_be_bytes(
@@ -503,6 +518,22 @@ impl DescribePlanRelationResponse {
                     });
                 }
             }
+            let visible_rows_estimate = if payload.get(offset..offset + 2)
+                == Some(CARDINALITY_ESTIMATE_MARKER.as_slice())
+            {
+                offset += CARDINALITY_ESTIMATE_MARKER.len();
+                let visible_rows = u64::from_be_bytes(
+                    payload
+                        .get(offset..offset + 8)
+                        .ok_or(PlannerRequestError::InvalidPayload)?
+                        .try_into()
+                        .map_err(|_| PlannerRequestError::InvalidPayload)?,
+                );
+                offset += 8;
+                Some(visible_rows)
+            } else {
+                None
+            };
             let proven_empty =
                 if payload.get(offset..offset + 2) == Some(EMPTY_POPULATION_MARKER.as_slice()) {
                     offset += EMPTY_POPULATION_MARKER.len();
@@ -534,6 +565,7 @@ impl DescribePlanRelationResponse {
                     range_access_paths,
                 }),
                 proven_empty,
+                visible_rows_estimate,
             })
         }
     }
@@ -826,29 +858,27 @@ pub fn dispatch_planner_request(
         }
         Operation::DescribePlanRelation => {
             let decoded = DescribePlanRelationRequest::decode(&request.payload)?;
-            let relation = connection
-                .describe_relation_for_plan(&decoded.schema_name, &decoded.relation_name)?;
-            let proven_empty = if decoded.include_empty_proof {
-                if let Some(relation) = &relation {
-                    let visible_column_ids = relation
-                        .relation
-                        .columns
-                        .iter()
-                        .map(|column| column.column_id)
-                        .collect::<Vec<_>>();
-                    connection.prove_empty_population_for_plan(
-                        relation.relation.relation_id,
-                        &visible_column_ids,
-                    )?
+            let resolved = connection
+                .resolve_relation_for_plan(&decoded.schema_name, &decoded.relation_name)?;
+            let (relation, visible_rows_estimate) = if decoded.include_scan_estimate {
+                if let Some((handle, relation)) = resolved {
+                    let estimate = connection.estimate_scan(&handle, &[])?;
+                    let visible_rows = match estimate {
+                        AuthorizedScanEstimate::Exact(summary) => Some(summary.visible_rows),
+                        AuthorizedScanEstimate::Unknown => None,
+                    };
+                    (Some(relation), visible_rows)
                 } else {
-                    false
+                    (None, None)
                 }
             } else {
-                false
+                (resolved.map(|(_, relation)| relation), None)
             };
+            let proven_empty = visible_rows_estimate == Some(0);
             DescribePlanRelationResponse {
                 relation,
                 proven_empty,
+                visible_rows_estimate,
             }
             .encode()?
         }
@@ -1003,22 +1033,22 @@ fn abort_shared_planner_invocation(
 }
 
 #[cfg(test)]
-mod empty_proof_request_tests {
+mod scan_estimate_request_tests {
     use super::DescribePlanRelationRequest;
 
     #[test]
-    fn empty_proof_request_is_opt_in_and_canonical() {
+    fn scan_estimate_request_is_opt_in_and_canonical() {
         let request = DescribePlanRelationRequest {
             schema_name: "public".to_owned(),
             relation_name: "items".to_owned(),
-            include_empty_proof: false,
+            include_scan_estimate: false,
         };
         assert_eq!(
             DescribePlanRelationRequest::decode(&request.encode().unwrap()).unwrap(),
             request
         );
         let opted_in = DescribePlanRelationRequest {
-            include_empty_proof: true,
+            include_scan_estimate: true,
             ..request
         };
         let encoded = opted_in.encode().unwrap();

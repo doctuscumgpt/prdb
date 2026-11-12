@@ -157,12 +157,13 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
         };
         let mut relations = Vec::with_capacity(relation_names.len());
         let mut proven_empty = Vec::with_capacity(relation_names.len());
+        let mut visible_rows_estimates = Vec::with_capacity(relation_names.len());
         for (schema_name, relation_name) in relation_names {
             let planner_request_id = next_planner_request_id;
             next_planner_request_id = next_planner_request_id
                 .checked_add(1)
                 .ok_or(OptimizerProcessError::RequestLimitExceeded)?;
-            let include_empty_proof = operation == Operation::OptimizeSelect
+            let include_scan_estimate = operation == Operation::OptimizeSelect
                 && request.payload.get(2) == Some(&crate::query_abi::OPTIMIZER_SELECT_STATEMENT);
             let planner_request = IpcFrame {
                 operation: Operation::DescribePlanRelation as u16,
@@ -170,7 +171,7 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
                 payload: DescribePlanRelationRequest {
                     schema_name,
                     relation_name,
-                    include_empty_proof,
+                    include_scan_estimate,
                 }
                 .encode()
                 .map_err(OptimizerProcessError::PlannerPayload)?,
@@ -190,6 +191,7 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             let described = DescribePlanRelationResponse::decode(&planner_response.payload)
                 .map_err(OptimizerProcessError::PlannerPayload)?;
             proven_empty.push(described.proven_empty);
+            visible_rows_estimates.push(described.visible_rows_estimate);
             relations.push(described.relation);
         }
         let optimized = match operation {
@@ -273,6 +275,17 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
         };
         let response = match optimized {
             Ok(mut plan) if plan.len() <= MAX_PLAN_BYTES => {
+                if operation == Operation::OptimizeSelect
+                    && request.payload.get(2) == Some(&crate::query_abi::OPTIMIZER_SELECT_STATEMENT)
+                    && let Ok(mut decoded) = crate::optimizer_plan::decode_plan_v1(&plan)
+                    && let Ok(true) = crate::optimizer_plan::apply_population_scan_heuristic(
+                        &mut decoded,
+                        visible_rows_estimates.first().copied().flatten(),
+                    )
+                    && let Ok(encoded) = crate::optimizer_plan::encode_plan_v1(&decoded)
+                {
+                    plan = encoded;
+                }
                 if operation == Operation::OptimizeSelect
                     && request.payload.get(2) == Some(&crate::query_abi::OPTIMIZER_SELECT_STATEMENT)
                     && proven_empty.first() == Some(&true)
@@ -521,6 +534,7 @@ mod tests {
                         payload: DescribePlanRelationResponse {
                             relation: Some(relation),
                             proven_empty: false,
+                            visible_rows_estimate: None,
                         }
                         .encode()
                         .unwrap(),
@@ -630,6 +644,7 @@ mod tests {
                 payload: DescribePlanRelationResponse {
                     relation: Some(relation.clone()),
                     proven_empty: false,
+                    visible_rows_estimate: None,
                 }
                 .encode()
                 .unwrap(),
@@ -659,6 +674,7 @@ mod tests {
                 payload: DescribePlanRelationResponse {
                     relation: Some(relation),
                     proven_empty: false,
+                    visible_rows_estimate: None,
                 }
                 .encode()
                 .unwrap(),
@@ -714,6 +730,7 @@ mod tests {
                                 range_access_paths: Vec::new(),
                             }),
                             proven_empty: false,
+                            visible_rows_estimate: None,
                         }
                         .encode()
                         .unwrap(),
@@ -790,6 +807,7 @@ mod tests {
                         payload: DescribePlanRelationResponse {
                             relation: Some(relation),
                             proven_empty: false,
+                            visible_rows_estimate: None,
                         }
                         .encode()
                         .unwrap(),
@@ -874,6 +892,7 @@ mod tests {
                         payload: DescribePlanRelationResponse {
                             relation: Some(relation),
                             proven_empty: false,
+                            visible_rows_estimate: None,
                         }
                         .encode()
                         .unwrap(),
@@ -978,6 +997,7 @@ mod tests {
                             payload: DescribePlanRelationResponse {
                                 relation: Some(relation),
                                 proven_empty: false,
+                                visible_rows_estimate: None,
                             }
                             .encode()
                             .unwrap(),
@@ -1092,6 +1112,7 @@ mod tests {
                         payload: DescribePlanRelationResponse {
                             relation: Some(relation),
                             proven_empty: false,
+                            visible_rows_estimate: None,
                         }
                         .encode()
                         .unwrap(),
@@ -1164,6 +1185,7 @@ mod tests {
                         payload: DescribePlanRelationResponse {
                             relation: Some(relation),
                             proven_empty: false,
+                            visible_rows_estimate: None,
                         }
                         .encode()
                         .unwrap(),
@@ -1245,6 +1267,7 @@ mod tests {
                         payload: DescribePlanRelationResponse {
                             relation: Some(relation),
                             proven_empty: false,
+                            visible_rows_estimate: None,
                         }
                         .encode()
                         .unwrap(),
@@ -1331,6 +1354,7 @@ mod tests {
                         payload: DescribePlanRelationResponse {
                             relation: Some(relation),
                             proven_empty: false,
+                            visible_rows_estimate: None,
                         }
                         .encode()
                         .unwrap(),
