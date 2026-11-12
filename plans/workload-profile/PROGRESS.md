@@ -1,5 +1,11 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: sandboxed cancellation beside operational commits — covered
+
+- Regression: the enabled `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance starts a second confined cancellation fixture alongside four independent operational invocations. Each performs an authorized point read and full scan, then waits at a commit gate; the test releases all four commits as it submits cancellation and requires the SDK cancellation poll to be relayed within two seconds, followed by a durable ABORTED outcome.
+- Verification: the focused delegated-cgroup acceptance passed (1 passed, 0 ignored). The final focused run measured the owner cancellation request at 30 µs and the SDK poll relay at 11.619 ms, with all four operational transactions held at the commit gate as cancellation was launched; no commit completed before the query process exited. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, maintained TinyCC SDK tests, and the full serial delegated-cgroup workspace suite passed; commit integration reported 142 passed/0 ignored and transaction integration 74 passed/0 ignored.
+- Scope: this covers the real cgroup/Landlock query path and cancellation competing with operational reads/commits on the same local redb database. The observation is one local sample, not a latency target; it does not yet exercise cancellation during an active analytical query or a saturated multi-client analytics workload.
+
 ## WI-7 follow-up: physical page reclamation after snapshot release — verified
 
 - Regression: [`retained_reader_blocks_compaction_until_release_then_reclaims_deleted_pages`](../../engine/tests/redb_foundation.rs) holds a 64-row, 100-KiB-per-row snapshot while deleting 58 rows. It verifies compaction is rejected with `TransactionInProgress`, the old snapshot still reads deleted values, and after release compaction reduces file size and allocated pages while preserving the six current rows.
