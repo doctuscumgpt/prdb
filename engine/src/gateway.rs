@@ -95,6 +95,8 @@ impl GatewayClientStream for std::os::unix::net::UnixStream {
 pub struct GatewayRuntimeConfig {
     pub worker_count: usize,
     pub queue_capacity: usize,
+    pub control_worker_count: usize,
+    pub control_queue_capacity: usize,
     pub connections_per_ip_per_minute: usize,
     pub auth_failures_per_ip_per_minute: usize,
     pub idle_timeout: Duration,
@@ -107,6 +109,8 @@ impl Default for GatewayRuntimeConfig {
         Self {
             worker_count: 32,
             queue_capacity: 64,
+            control_worker_count: 2,
+            control_queue_capacity: 8,
             connections_per_ip_per_minute: 60,
             auth_failures_per_ip_per_minute: 10,
             idle_timeout: Duration::from_secs(30),
@@ -508,7 +512,7 @@ pub fn serve_tcp_client_connection<C: GatewayClientStream, S: Read + Write>(
     client: &mut C,
     service: &mut S,
 ) -> Result<(), GatewayConnectionError> {
-    serve_tcp_client_connection_inner(client, service, None, None, None, None)
+    serve_tcp_client_connection_inner(client, service, None, None, None, None, false)
 }
 
 fn serve_tcp_client_connection_inner<C: GatewayClientStream, S: Read + Write>(
@@ -518,6 +522,7 @@ fn serve_tcp_client_connection_inner<C: GatewayClientStream, S: Read + Write>(
     pre_auth_timeout: Option<Duration>,
     auth_failure_limiter: Option<&GatewayAuthFailureLimiter>,
     source_ip: Option<IpAddr>,
+    control_only: bool,
 ) -> Result<(), GatewayConnectionError> {
     let mut decoder = crate::client_protocol::ClientFrameDecoder::default();
     let mut input = [0u8; 8192];
@@ -541,6 +546,10 @@ fn serve_tcp_client_connection_inner<C: GatewayClientStream, S: Read + Write>(
             return Ok(());
         };
         let client_kind = request.kind;
+        if control_only && !matches!(client_kind, 1 | 2 | 8 | 9 | 10 | 11) {
+            write_client_error(client, request.request_id, "invalid_request")?;
+            return Ok(());
+        }
         let auth_attempt = if client_kind == 2 {
             match auth_failure_limiter
                 .zip(source_ip)
@@ -768,6 +777,7 @@ pub fn serve_tcp_client_connection_with_timeouts(
         Some(pre_auth_timeout),
         None,
         None,
+        false,
     )
 }
 
@@ -778,6 +788,7 @@ fn serve_tcp_client_connection_with_limits(
     pre_auth_timeout: Duration,
     auth_failure_limiter: &GatewayAuthFailureLimiter,
     source_ip: IpAddr,
+    control_only: bool,
 ) -> Result<(), GatewayConnectionError> {
     if idle_timeout.is_zero() || pre_auth_timeout.is_zero() {
         return Err(GatewayConnectionError::Io(io::Error::new(
@@ -804,6 +815,7 @@ fn serve_tcp_client_connection_with_limits(
         Some(pre_auth_timeout),
         Some(auth_failure_limiter),
         Some(source_ip),
+        control_only,
     )
 }
 
@@ -819,8 +831,101 @@ pub fn run_gateway<F>(
 where
     F: Fn() -> io::Result<std::os::unix::net::UnixStream> + Send + Sync + 'static,
 {
+    validate_gateway_runtime_config(&config)?;
+    let rate_limiter = new_gateway_rate_limiter(&config)?;
+    let auth_failure_limiter = new_gateway_auth_failure_limiter(&config)?;
+    run_gateway_worker_pool(
+        gateway,
+        config,
+        false,
+        Arc::new(connect_service),
+        rate_limiter,
+        auth_failure_limiter,
+        shutdown,
+    )
+}
+
+/// Run the ordinary gateway endpoint and an independent bounded endpoint for
+/// session setup, status, cancellation, administration, and PING. Result and
+/// submission traffic is rejected on the control endpoint. Both pools share
+/// peer and failed-auth limits, but cannot consume one another's workers or
+/// pending queue slots.
+pub fn run_gateway_with_control<F>(
+    gateway: TcpGatewayListener,
+    control_gateway: TcpGatewayListener,
+    config: GatewayRuntimeConfig,
+    connect_service: F,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), GatewayRuntimeError>
+where
+    F: Fn() -> io::Result<std::os::unix::net::UnixStream> + Send + Sync + 'static,
+{
+    validate_gateway_runtime_config(&config)?;
+    let rate_limiter = new_gateway_rate_limiter(&config)?;
+    let auth_failure_limiter = new_gateway_auth_failure_limiter(&config)?;
+    let connector = Arc::new(connect_service);
+    let ordinary_shutdown = Arc::clone(&shutdown);
+    let ordinary_connector = Arc::clone(&connector);
+    let ordinary_rate_limiter = rate_limiter.clone();
+    let ordinary_auth_limiter = auth_failure_limiter.clone();
+    let ordinary_config = config;
+    let ordinary = std::thread::Builder::new()
+        .name("prdb-gateway-ordinary-pool".to_owned())
+        .spawn(move || {
+            let result = run_gateway_worker_pool(
+                gateway,
+                ordinary_config,
+                false,
+                ordinary_connector,
+                ordinary_rate_limiter,
+                ordinary_auth_limiter,
+                Arc::clone(&ordinary_shutdown),
+            );
+            ordinary_shutdown.store(true, Ordering::Release);
+            result
+        })
+        .map_err(GatewayRuntimeError::Io)?;
+    let control_shutdown = Arc::clone(&shutdown);
+    let control_config = config;
+    let control = match std::thread::Builder::new()
+        .name("prdb-gateway-control-pool".to_owned())
+        .spawn(move || {
+            let result = run_gateway_worker_pool(
+                control_gateway,
+                control_config,
+                true,
+                connector,
+                rate_limiter,
+                auth_failure_limiter,
+                Arc::clone(&control_shutdown),
+            );
+            control_shutdown.store(true, Ordering::Release);
+            result
+        }) {
+        Ok(control) => control,
+        Err(error) => {
+            shutdown.store(true, Ordering::Release);
+            let _ = ordinary.join();
+            return Err(GatewayRuntimeError::Io(error));
+        }
+    };
+    let ordinary_result = ordinary
+        .join()
+        .map_err(|_| GatewayRuntimeError::WorkerPanicked)?;
+    let control_result = control
+        .join()
+        .map_err(|_| GatewayRuntimeError::WorkerPanicked)?;
+    ordinary_result?;
+    control_result
+}
+
+fn validate_gateway_runtime_config(
+    config: &GatewayRuntimeConfig,
+) -> Result<(), GatewayRuntimeError> {
     if config.worker_count == 0
         || config.queue_capacity == 0
+        || config.control_worker_count == 0
+        || config.control_queue_capacity == 0
         || config.connections_per_ip_per_minute == 0
         || config.auth_failures_per_ip_per_minute == 0
         || config.idle_timeout.is_zero()
@@ -829,29 +934,56 @@ where
     {
         return Err(GatewayRuntimeError::InvalidConfig);
     }
-    gateway
-        .listener
-        .set_nonblocking(true)
-        .map_err(GatewayRuntimeError::Io)?;
+    Ok(())
+}
 
-    let (sender, receiver) =
-        std::sync::mpsc::sync_channel::<(TcpStream, IpAddr)>(config.queue_capacity);
-    let receiver = Arc::new(std::sync::Mutex::new(receiver));
-    let connector = Arc::new(connect_service);
-    let rate_limiter = GatewayPeerRateLimiter::new(
+fn new_gateway_rate_limiter(
+    config: &GatewayRuntimeConfig,
+) -> Result<GatewayPeerRateLimiter, GatewayRuntimeError> {
+    GatewayPeerRateLimiter::new(
         config.connections_per_ip_per_minute,
         4096,
         Duration::from_secs(60),
     )
-    .map_err(|_| GatewayRuntimeError::InvalidConfig)?;
-    let auth_failure_limiter = GatewayAuthFailureLimiter::new(
+    .map_err(|_| GatewayRuntimeError::InvalidConfig)
+}
+
+fn new_gateway_auth_failure_limiter(
+    config: &GatewayRuntimeConfig,
+) -> Result<GatewayAuthFailureLimiter, GatewayRuntimeError> {
+    GatewayAuthFailureLimiter::new(
         config.auth_failures_per_ip_per_minute,
         4096,
         Duration::from_secs(60),
     )
-    .map_err(|_| GatewayRuntimeError::InvalidConfig)?;
-    let mut workers = Vec::with_capacity(config.worker_count);
-    for _ in 0..config.worker_count {
+    .map_err(|_| GatewayRuntimeError::InvalidConfig)
+}
+
+fn run_gateway_worker_pool<F>(
+    gateway: TcpGatewayListener,
+    config: GatewayRuntimeConfig,
+    control_only: bool,
+    connector: Arc<F>,
+    rate_limiter: GatewayPeerRateLimiter,
+    auth_failure_limiter: GatewayAuthFailureLimiter,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), GatewayRuntimeError>
+where
+    F: Fn() -> io::Result<std::os::unix::net::UnixStream> + Send + Sync + 'static,
+{
+    let (worker_count, queue_capacity) = if control_only {
+        (config.control_worker_count, config.control_queue_capacity)
+    } else {
+        (config.worker_count, config.queue_capacity)
+    };
+    gateway
+        .listener
+        .set_nonblocking(true)
+        .map_err(GatewayRuntimeError::Io)?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<(TcpStream, IpAddr)>(queue_capacity);
+    let receiver = Arc::new(std::sync::Mutex::new(receiver));
+    let mut workers = Vec::with_capacity(worker_count);
+    for _ in 0..worker_count {
         let receiver = Arc::clone(&receiver);
         let connector = Arc::clone(&connector);
         let auth_failure_limiter = auth_failure_limiter.clone();
@@ -859,7 +991,11 @@ where
         let pre_auth_timeout = config.pre_auth_timeout;
         workers.push(
             std::thread::Builder::new()
-                .name("prdb-gateway-worker".to_owned())
+                .name(if control_only {
+                    "prdb-gateway-control-worker".to_owned()
+                } else {
+                    "prdb-gateway-worker".to_owned()
+                })
                 .spawn(move || {
                     loop {
                         let client = receiver
@@ -879,13 +1015,13 @@ where
                             pre_auth_timeout,
                             &auth_failure_limiter,
                             source_ip,
+                            control_only,
                         );
                     }
                 })
                 .map_err(GatewayRuntimeError::Io)?,
         );
     }
-
     let accept_result = loop {
         if shutdown.load(Ordering::Acquire) {
             break Ok(());
@@ -910,7 +1046,6 @@ where
         }
     };
     drop(sender);
-
     let mut worker_panicked = false;
     for worker in workers {
         worker_panicked |= worker.join().is_err();

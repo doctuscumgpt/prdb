@@ -311,6 +311,8 @@ fn gateway_worker_pool_opens_one_service_stream_per_client() {
         let config = GatewayRuntimeConfig {
             worker_count: 1,
             queue_capacity: 1,
+            control_worker_count: 1,
+            control_queue_capacity: 1,
             connections_per_ip_per_minute: 60,
             auth_failures_per_ip_per_minute: 10,
             idle_timeout: std::time::Duration::from_secs(5),
@@ -406,6 +408,8 @@ fn gateway_binary_relays_tcp_hello_to_its_private_unix_service() {
             .args([
                 "--bind",
                 "127.0.0.1:0",
+                "--control-bind",
+                "127.0.0.1:0",
                 "--service-socket",
                 socket_path.to_str().unwrap(),
                 "--service-uid",
@@ -414,6 +418,10 @@ fn gateway_binary_relays_tcp_hello_to_its_private_unix_service() {
                 "2",
                 "--queue-capacity",
                 "2",
+                "--control-workers",
+                "1",
+                "--control-queue-capacity",
+                "1",
                 "--idle-timeout-ms",
                 "2000",
             ])
@@ -428,6 +436,14 @@ fn gateway_binary_relays_tcp_hello_to_its_private_unix_service() {
     assert_ne!(stderr.read_line(&mut startup).unwrap(), 0);
     let address = startup
         .strip_prefix("prdb-gateway listening on ")
+        .unwrap()
+        .trim()
+        .parse::<SocketAddr>()
+        .unwrap();
+    let mut control_startup = String::new();
+    assert_ne!(stderr.read_line(&mut control_startup).unwrap(), 0);
+    let control_address = control_startup
+        .strip_prefix("prdb-gateway control listening on ")
         .unwrap()
         .trim()
         .parse::<SocketAddr>()
@@ -487,7 +503,40 @@ fn gateway_binary_relays_tcp_hello_to_its_private_unix_service() {
     assert_eq!(response.payload, br#"{"mode":"query"}"#);
     client.shutdown(std::net::Shutdown::Write).unwrap();
     assert_eq!(client.read(&mut buffer).unwrap(), 0);
+
+    let mut control_client = std::net::TcpStream::connect(control_address).unwrap();
+    control_client
+        .write_all(
+            &ClientFrame {
+                kind: 7,
+                request_id: 2,
+                response_sequence: 0,
+                payload: b"{}".to_vec(),
+            }
+            .encode()
+            .unwrap(),
+        )
+        .unwrap();
+    let mut control_decoder = ClientFrameDecoder::default();
+    let control_response = loop {
+        let count = control_client.read(&mut buffer).unwrap();
+        assert_ne!(count, 0, "control listener closed before rejecting START");
+        if let Some(frame) = control_decoder.push(&buffer[..count]).unwrap().pop() {
+            break frame;
+        }
+    };
+    assert_eq!(
+        control_response.kind,
+        prdb_engine::client_protocol::CLIENT_ERROR_KIND
+    );
+    assert_eq!(control_response.request_id, 2);
+    assert_eq!(
+        control_response.payload,
+        br#"{"code":"invalid_request","message":"Request is invalid."}"#
+    );
+    control_client.shutdown(std::net::Shutdown::Write).unwrap();
     drop(client);
+    drop(control_client);
     drop(service);
 
     // SAFETY: the PID belongs to the child process above and SIGTERM is valid.
@@ -547,6 +596,8 @@ fn gateway_binary_exposes_its_explicit_listener_and_service_options() {
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout).unwrap();
     assert!(help.contains("--bind"));
+    assert!(help.contains("--control-bind"));
+    assert!(help.contains("--control-workers"));
     assert!(help.contains("--service-socket"));
     assert!(help.contains("--service-uid"));
     assert!(help.contains("--auth-failures-per-ip"));
@@ -645,6 +696,8 @@ fn gateway_stops_forwarding_auth_after_failed_attempt_budget() {
             GatewayRuntimeConfig {
                 worker_count: 1,
                 queue_capacity: 1,
+                control_worker_count: 1,
+                control_queue_capacity: 1,
                 connections_per_ip_per_minute: 60,
                 auth_failures_per_ip_per_minute: 1,
                 idle_timeout: Duration::from_secs(3),
@@ -985,6 +1038,8 @@ fn status_on_another_gateway_connection_progresses_while_result_worker_is_blocke
 
     let listener = TcpGatewayListener::bind(GatewayListenerConfig::default()).unwrap();
     let address = listener.local_addr().unwrap();
+    let control_listener = TcpGatewayListener::bind(GatewayListenerConfig::default()).unwrap();
+    let control_address = control_listener.local_addr().unwrap();
     let (service_streams_tx, service_streams_rx) = std::sync::mpsc::channel();
     let connector = move || {
         let (gateway, supervisor) = std::os::unix::net::UnixStream::pair()?;
@@ -996,11 +1051,14 @@ fn status_on_another_gateway_connection_progresses_while_result_worker_is_blocke
     let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let gateway_shutdown = std::sync::Arc::clone(&shutdown);
     let gateway = std::thread::spawn(move || {
-        run_gateway(
+        prdb_engine::gateway::run_gateway_with_control(
             listener,
+            control_listener,
             GatewayRuntimeConfig {
-                worker_count: 2,
-                queue_capacity: 2,
+                worker_count: 1,
+                queue_capacity: 1,
+                control_worker_count: 1,
+                control_queue_capacity: 1,
                 connections_per_ip_per_minute: 60,
                 auth_failures_per_ip_per_minute: 10,
                 idle_timeout: std::time::Duration::from_secs(2),
@@ -1068,7 +1126,7 @@ fn status_on_another_gateway_connection_progresses_while_result_worker_is_blocke
         Err(std::sync::mpsc::RecvTimeoutError::Timeout)
     ));
 
-    let mut status_client = std::net::TcpStream::connect(address).unwrap();
+    let mut status_client = std::net::TcpStream::connect(control_address).unwrap();
     status_client
         .write_all(
             &ClientFrame {

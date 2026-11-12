@@ -1,6 +1,6 @@
 use prdb_engine::gateway::{
     GatewayListenerConfig, GatewayRuntimeConfig, TcpGatewayListener, UnixGatewayServiceConnector,
-    run_gateway,
+    run_gateway_with_control,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -19,10 +19,13 @@ fn main() {
         println!(
             "prdb-gateway [options]\n\
              --bind ADDRESS:PORT                 default 127.0.0.1:0\n\
+             --control-bind ADDRESS:PORT         default 127.0.0.1:0; status/cancel/admin lane\n\
              --service-socket PATH               required\n\
              --service-uid UID                   required\n\
              --workers COUNT                     default 32\n\
              --queue-capacity COUNT              default 64\n\
+             --control-workers COUNT             default 2\n\
+             --control-queue-capacity COUNT       default 8\n\
              --connections-per-ip COUNT           default 60 per minute\n\
              --auth-failures-per-ip COUNT         default 10 per minute\n\
              --idle-timeout-ms DURATION          default 30000\n\
@@ -39,10 +42,13 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut bind_address: SocketAddr = "127.0.0.1:0".parse()?;
+    let mut control_bind_address: SocketAddr = "127.0.0.1:0".parse()?;
     let mut service_socket = None::<PathBuf>;
     let mut service_uid = None::<u32>;
     let mut worker_count = 32usize;
     let mut queue_capacity = 64usize;
+    let mut control_worker_count = 2usize;
+    let mut control_queue_capacity = 8usize;
     let mut connections_per_ip_per_minute = 60usize;
     let mut auth_failures_per_ip_per_minute = 10usize;
     let mut idle_timeout = Duration::from_secs(30);
@@ -57,6 +63,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         match argument.as_str() {
             "--bind" => bind_address = value(&mut arguments, "--bind")?.parse()?,
+            "--control-bind" => {
+                control_bind_address = value(&mut arguments, "--control-bind")?.parse()?;
+            }
             "--service-socket" => {
                 service_socket = Some(value(&mut arguments, "--service-socket")?.into());
             }
@@ -66,6 +75,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--workers" => worker_count = value(&mut arguments, "--workers")?.parse()?,
             "--queue-capacity" => {
                 queue_capacity = value(&mut arguments, "--queue-capacity")?.parse()?;
+            }
+            "--control-workers" => {
+                control_worker_count = value(&mut arguments, "--control-workers")?.parse()?;
+            }
+            "--control-queue-capacity" => {
+                control_queue_capacity =
+                    value(&mut arguments, "--control-queue-capacity")?.parse()?;
             }
             "--connections-per-ip" => {
                 connections_per_ip_per_minute =
@@ -94,7 +110,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         bind_address,
         allow_non_loopback_plaintext,
     })?;
+    let control_listener = TcpGatewayListener::bind(GatewayListenerConfig {
+        bind_address: control_bind_address,
+        allow_non_loopback_plaintext,
+    })?;
     eprintln!("prdb-gateway listening on {}", listener.local_addr()?);
+    eprintln!(
+        "prdb-gateway control listening on {}",
+        control_listener.local_addr()?
+    );
     let connector = UnixGatewayServiceConnector::new(service_socket, service_uid);
 
     install_signal_handlers()?;
@@ -107,11 +131,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         signal_shutdown.store(true, Ordering::Release);
     });
-    let result = run_gateway(
+    let result = run_gateway_with_control(
         listener,
+        control_listener,
         GatewayRuntimeConfig {
             worker_count,
             queue_capacity,
+            control_worker_count,
+            control_queue_capacity,
             connections_per_ip_per_minute,
             auth_failures_per_ip_per_minute,
             idle_timeout,
