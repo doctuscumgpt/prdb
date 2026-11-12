@@ -24646,6 +24646,141 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         cancellation_to_terminal.as_millis(),
     );
 
+    let timed_out_output_parameter = [b'O'];
+    let timed_out_output_reservation = staging.prepare(
+        owner,
+        PrepareSubmission {
+            manifest_version: 1,
+            manifest: b"m".to_vec(),
+            artifact_bytes: u64::try_from(artifact.len())?,
+            artifact_sha256: Sha256::digest(&artifact).into(),
+            sql_library_bytes: 0,
+            sql_library_sha256: Sha256::digest([]).into(),
+            parameter_bytes: 1,
+            parameter_sha256: Sha256::digest(timed_out_output_parameter).into(),
+            scope_version: 1,
+            requested_scope: requested_scope.clone(),
+            deadline_ms: 30_000,
+            workload_class: WorkloadClass::Analytical,
+        },
+    )?;
+    let mut timed_out_artifact_offset = 0;
+    for chunk in artifact.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
+        timed_out_artifact_offset = staging.upload_chunk(
+            owner,
+            timed_out_output_reservation.invocation_id,
+            ChunkKind::Artifact,
+            timed_out_artifact_offset,
+            chunk,
+        )?;
+    }
+    staging.upload_chunk(
+        owner,
+        timed_out_output_reservation.invocation_id,
+        ChunkKind::Parameters,
+        0,
+        &timed_out_output_parameter,
+    )?;
+    staging.seal(owner, timed_out_output_reservation.invocation_id)?;
+    let timed_out_output_invocation_hex = timed_out_output_reservation
+        .invocation_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let (timed_out_output_accepted, mut timed_out_output_invocation, mut timed_out_output_executor) =
+        client.handle_start_request_with_executor(
+            &storage,
+            &staging,
+            ClientFrame {
+                kind: 7,
+                request_id: 6,
+                response_sequence: 0,
+                payload: format!("{{\"invocation_id\":\"{timed_out_output_invocation_hex}\"}}")
+                    .into_bytes(),
+            },
+            GatewayAdmissionConfig {
+                retention_period_us: 3_600_000_000,
+                max_rows: 8,
+                max_bytes: 4096,
+            },
+            &runtime,
+        )?;
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    let address = listener.local_addr()?;
+    let (mut gateway_service, mut supervisor_service) = UnixStream::pair()?;
+    let gateway = std::thread::spawn(move || {
+        let (mut tcp_client, _) = listener.accept().unwrap();
+        // SAFETY: the accepted stream owns a live socket descriptor and the option is an integer.
+        let send_buffer_size: libc::c_int = 16 * 1024;
+        let result = unsafe {
+            libc::setsockopt(
+                std::os::fd::AsRawFd::as_raw_fd(&tcp_client),
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
+                (&send_buffer_size as *const libc::c_int).cast(),
+                std::mem::size_of_val(&send_buffer_size) as libc::socklen_t,
+            )
+        };
+        assert_eq!(result, 0);
+        prdb_engine::gateway::serve_tcp_client_connection_with_timeouts(
+            &mut tcp_client,
+            &mut gateway_service,
+            Duration::from_millis(150),
+            Duration::from_secs(1),
+        )
+    });
+    let mut stalled_client = std::net::TcpStream::connect(address)?;
+    let start_request = ClientFrame {
+        kind: 7,
+        request_id: timed_out_output_accepted.request_id,
+        response_sequence: 0,
+        payload: format!("{{\"invocation_id\":\"{timed_out_output_invocation_hex}\"}}")
+            .into_bytes(),
+    }
+    .encode()?;
+    std::io::Write::write_all(&mut stalled_client, &start_request)?;
+    let start = read_frame(&mut supervisor_service)?.ok_or("missing timed-output START")?;
+    assert_eq!(start.operation, Operation::StartSubmission as u16);
+    assert_eq!(start.request_id, timed_out_output_accepted.request_id);
+    prdb_engine::ipc::write_frame(
+        &mut supervisor_service,
+        &prdb_engine::ipc::IpcFrame {
+            operation: start.operation,
+            request_id: start.request_id,
+            payload: b"{\"state\":\"accepted\"}".to_vec(),
+        },
+    )?;
+    let relay_result = observe_executor_relay_and_finalize_gateway(
+        &storage,
+        &mut timed_out_output_invocation,
+        &mut timed_out_output_executor,
+        &mut supervisor_service,
+        timed_out_output_accepted.request_id,
+    );
+    assert!(
+        relay_result.is_err(),
+        "timed-out client result relay succeeded"
+    );
+    assert!(matches!(
+        gateway.join().map_err(|_| "timed-out gateway panicked")?,
+        Err(prdb_engine::gateway::GatewayConnectionError::Io(ref error))
+            if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)
+    ));
+    staging.finish_started(owner, timed_out_output_reservation.invocation_id)?;
+    assert_eq!(
+        storage
+            .lookup_invocation_outcome(
+                timed_out_output_reservation.invocation_id,
+                user_id,
+                now + 5,
+            )?
+            .ok_or("missing timed-output durable outcome")?
+            .status,
+        OutcomeStatus::Aborted,
+        "a stalled TCP result writer must abort the real confined invocation"
+    );
+    drop(stalled_client);
+
     eprintln!(
         "cancellation alongside live analytics: request={} us; SDK poll relay={} us",
         cancellation_request_latency.as_micros(),
