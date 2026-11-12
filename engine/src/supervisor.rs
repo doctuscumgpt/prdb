@@ -1363,6 +1363,59 @@ mod tests {
     }
 
     #[test]
+    fn start_queue_skips_principal_blocked_ticket_without_losing_its_turn() {
+        let store = StagingStore::new(
+            StagingLimits {
+                max_active_operational: 2,
+                max_active_operational_per_principal: 1,
+                ..StagingLimits::default()
+            },
+            Arc::new(AcceptMetadata),
+        )
+        .unwrap();
+        let first_owner = make_owner(57, 67);
+        let same_principal_owner = make_owner(58, 67);
+        let other_principal_owner = make_owner(59, 68);
+        let first_id = upload_and_seal(&store, first_owner, b"first", b"");
+        let same_principal_id =
+            upload_and_seal(&store, same_principal_owner, b"same-principal", b"");
+        let other_principal_id =
+            upload_and_seal(&store, other_principal_owner, b"other-principal", b"");
+
+        store
+            .start_with(first_owner, first_id, |_| Ok::<_, ()>(()))
+            .unwrap();
+        assert!(matches!(
+            store.start_with(same_principal_owner, same_principal_id, |_| Ok::<_, ()>(())),
+            Err(StartError::Staging(StagingError::ResourceLimit))
+        ));
+
+        // The earlier ticket is blocked only by its principal's quota. The
+        // later principal can use the second class slot without losing FIFO
+        // priority for when the earlier ticket becomes eligible again.
+        store
+            .start_with(other_principal_owner, other_principal_id, |_| {
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        store.finish_started(first_owner, first_id).unwrap();
+        store
+            .start_with(same_principal_owner, same_principal_id, |_| Ok::<_, ()>(()))
+            .unwrap();
+        assert_eq!(
+            store.status(same_principal_owner, same_principal_id),
+            Ok(SubmissionState::Started)
+        );
+
+        store
+            .finish_started(other_principal_owner, other_principal_id)
+            .unwrap();
+        store
+            .finish_started(same_principal_owner, same_principal_id)
+            .unwrap();
+    }
+
+    #[test]
     fn canceling_a_queued_start_releases_its_turn() {
         let store = StagingStore::new(
             StagingLimits {

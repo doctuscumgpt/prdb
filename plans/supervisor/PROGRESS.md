@@ -1,5 +1,12 @@
 # Supervisor Progress
 
+## SU-7 follow-up: preserve START progress across principal quota blocks — verified
+
+- Behavior: a sealed START retry keeps its original queue ticket when the caller's per-principal active quota is full. A later ticket from another principal may use independently available class capacity; when the earlier ticket becomes eligible, it retains priority over later retries.
+- Regression: `start_queue_skips_principal_blocked_ticket_without_losing_its_turn` holds one operational slot for a principal, queues that principal's second invocation, starts another principal in the remaining class slot, then releases the first invocation and verifies the queued retry starts before completion cleanup.
+- Verification: all 17 `supervisor::tests` passed with zero ignored; workspace formatting, warning-denied Clippy, and `git diff --check` passed.
+- Scope: this covers deterministic staging-level queue fairness. Cross-process saturation and end-to-end fairness under live multi-client analytics remain open.
+
 ## SU-9 follow-up: keep delegated sandbox acceptances in the normal test suite — verified
 
 - Correction: the four Linux x86_64 sandbox acceptances in `engine/tests/commit.rs` and the sandbox process acceptance in `engine/tests/metadata_process.rs` are active `#[test]` cases with no ignore attributes. Updated the supervisor specification to state that they run in the normal workspace suite when delegated cgroup and runtime prerequisites are configured.
