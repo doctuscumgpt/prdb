@@ -508,6 +508,20 @@ static uint32_t build_filter_plan(uint8_t *bytes,
     return offset;
 }
 
+static uint32_t append_integer_point_hint(uint8_t *bytes, uint32_t offset) {
+    bytes[offset++] = 0xa1;
+    memset(bytes + offset, 0x77, 16);
+    offset += 16;
+    uint32_t column_id_offset = put_column(bytes, &offset, 3, 0);
+    bytes[column_id_offset] = 10;
+    memset(bytes + column_id_offset + 16, 0, 4);
+    bytes[offset++] = 0x02;
+    memset(bytes + offset, 0, 7);
+    offset += 7;
+    bytes[offset++] = 1;
+    return offset;
+}
+
 static uint32_t build_unique_probe_plan(uint8_t *bytes,
                                         uint32_t *predicate_offset) {
     uint32_t offset = build_filter_plan(bytes, predicate_offset);
@@ -631,7 +645,10 @@ typedef struct resolve_context {
     uint32_t executor_response_len;
     uint8_t scan_response[18];
     uint8_t batch_response[4096];
+    uint8_t probe_response[4096];
     uint32_t batch_response_len;
+    uint32_t probe_response_len;
+    uint32_t probe_calls;
     uint8_t cancellation_response[3];
     uint8_t close_response[3];
     uint8_t emitted_result[256];
@@ -774,6 +791,20 @@ static int32_t resolve_plan_relation(void *context, uint16_t operation,
         assert(request_len == 24 && request[2] == 7);
         source = resolved->batch_response;
         source_len = resolved->batch_response_len;
+    } else if (operation == PRDB_SDK_EXECUTOR_OP_PROBE_UNIQUE_INDEX) {
+        assert(request_len == 38 + 9 + 4 * 16);
+        assert(request[0] == 0 && request[1] == 1 && request[2] == 6);
+        assert(request[18] == 0x77 && request[34] == 0 && request[35] == 1);
+        assert(request[36] == 0 && request[37] == 4);
+        assert(request[38] == PRDB_SDK_VALUE_TYPE_INTEGER &&
+               request[39] == 0 && request[40] == 0 && request[41] == 0 &&
+               request[42] == 4 && request[43] == 0 && request[44] == 0 &&
+               request[45] == 0 && request[46] == 1);
+        assert(request[47] == 10 && request[63] == 11 &&
+               request[79] == 12 && request[95] == 3);
+        ++resolved->probe_calls;
+        source = resolved->probe_response;
+        source_len = resolved->probe_response_len;
     } else if (operation == PRDB_SDK_EXECUTOR_OP_STAGE_DELETE) {
         static const uint8_t acknowledgement[] = {0, 1, 0};
         assert(request_len == 18 && request[0] == 0 && request[1] == 1);
@@ -1272,6 +1303,7 @@ int main(void) {
     host.context = &resolve;
     host.executor_request = resolve_plan_relation;
     uint8_t filtered_plan[512];
+    uint8_t probed_plan[512];
     uint32_t filtered_plan_len = build_filter_plan(filtered_plan,
                                                    &predicate_offset);
     uint8_t sql_filtered[] = "SELECT c0 FROM items WHERE c0 = $1 LIMIT 1";
@@ -1297,17 +1329,94 @@ int main(void) {
                filtered_plan_len, response, sizeof(response), &response_len) ==
            PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
     filter_parameter_bytes[3] = 1;
+    memcpy(probed_plan, filtered_plan, filtered_plan_len);
+    uint32_t probed_plan_len = append_integer_point_hint(
+        probed_plan, filtered_plan_len);
+    resolve.probe_response[0] = 1;
+    resolve.probe_response[1] = 2;
+    memcpy(resolve.probe_response + 2, row_batch_bytes + 5,
+           row_batch_len - 5);
+    resolve.probe_response_len = 2 + row_batch_len - 5;
+    resolve.calls = 0;
+    assert(prdb_sdk_optimizer_validate_select_plan_with_parameters_v1(
+               &host, &statement, filter_parameters, 1,
+               (const uint8_t *)"public", 6, probed_plan, probed_plan_len,
+               response, sizeof(response), &response_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(resolve.calls == 1);
     resolve.calls = 0;
     projected_rows_seen = 0;
+    int32_t unique_probe_status = prdb_sdk_optimizer_execute_unfiltered_plan_v1(
+               &host, probed_plan, probed_plan_len, 2,
+               sizeof(batch_response), response, sizeof(response),
+               scan_response, sizeof(scan_response), batch_response,
+               sizeof(batch_response), &acquired_relation,
+               sizeof(acquired_relation), acquired_columns, 4, source_cells, 4,
+               projected_values, 1, on_projected_row, NULL, &total_rows);
+    assert(unique_probe_status == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(total_rows == 1 && projected_rows_seen == 1 &&
+           resolve.calls == 4 && resolve.probe_calls == 1);
+    resolve.probe_response[1] = 1;
+    resolve.probe_response_len = 2;
+    resolve.calls = 0;
+    projected_rows_seen = 0;
+    total_rows = UINT32_MAX;
     assert(prdb_sdk_optimizer_execute_unfiltered_plan_v1(
-               &host, filtered_plan, filtered_plan_len, 2,
+               &host, probed_plan, probed_plan_len, 2,
                sizeof(batch_response), response, sizeof(response),
                scan_response, sizeof(scan_response), batch_response,
                sizeof(batch_response), &acquired_relation,
                sizeof(acquired_relation), acquired_columns, 4, source_cells, 4,
                projected_values, 1, on_projected_row, NULL, &total_rows) ==
            PRDB_SDK_OPTIMIZER_PLAN_OK);
-    assert(total_rows == 1 && projected_rows_seen == 1 && resolve.calls == 6);
+    assert(total_rows == 0 && projected_rows_seen == 0 &&
+           resolve.calls == 4 && resolve.probe_calls == 2);
+    resolve.probe_response[1] = 0;
+    resolve.calls = 0;
+    projected_rows_seen = 0;
+    assert(prdb_sdk_optimizer_execute_unfiltered_plan_v1(
+               &host, probed_plan, probed_plan_len, 2,
+               sizeof(batch_response), response, sizeof(response),
+               scan_response, sizeof(scan_response), batch_response,
+               sizeof(batch_response), &acquired_relation,
+               sizeof(acquired_relation), acquired_columns, 4, source_cells, 4,
+               projected_values, 1, on_projected_row, NULL, &total_rows) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(total_rows == 1 && projected_rows_seen == 1 &&
+           resolve.calls == 7 && resolve.probe_calls == 3);
+    resolve.probe_response[1] = 2;
+    resolve.probe_response_len = sizeof(resolve.probe_response);
+    resolve.calls = 0;
+    projected_rows_seen = 0;
+    assert(prdb_sdk_optimizer_execute_unfiltered_plan_v1(
+               &host, probed_plan, probed_plan_len, 2,
+               sizeof(batch_response), response, sizeof(response),
+               scan_response, sizeof(scan_response), batch_response,
+               sizeof(batch_response), &acquired_relation,
+               sizeof(acquired_relation), acquired_columns, 4, source_cells, 4,
+               projected_values, 1, on_projected_row, NULL, &total_rows) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(total_rows == 1 && projected_rows_seen == 1 &&
+           resolve.calls == 7 && resolve.probe_calls == 4);
+    resolve.probe_response_len = 2 + row_batch_len - 5;
+    resolve.calls = 0;
+    resolve.cancellation_check_calls = 0;
+    resolve.cancel_on_check_call = 1;
+    projected_rows_seen = 0;
+    total_rows = UINT32_MAX;
+    assert(prdb_sdk_optimizer_execute_unfiltered_plan_v1(
+               &host, probed_plan, probed_plan_len, 2,
+               sizeof(batch_response), response, sizeof(response),
+               scan_response, sizeof(scan_response), batch_response,
+               sizeof(batch_response), &acquired_relation,
+               sizeof(acquired_relation), acquired_columns, 4, source_cells, 4,
+               projected_values, 1, on_projected_row, NULL, &total_rows) ==
+           PRDB_SDK_OPTIMIZER_PLAN_CANCELLED);
+    assert(total_rows == 0 && projected_rows_seen == 0 &&
+           resolve.calls == 4 && resolve.probe_calls == 5);
+    resolve.cancel_on_check_call = 0;
+    resolve.cancellation_check_calls = 0;
+    resolve.cancellation_response[2] = 0;
     assert(prdb_sdk_optimizer_validate_executor_relation_v1(
                &host, payload, payload_len, response, sizeof(response),
                &response_len) == PRDB_SDK_OPTIMIZER_PLAN_OK);
@@ -2438,6 +2547,11 @@ int main(void) {
                probe_plan, probe_plan_len, &decoded, sizeof(decoded), &filter,
                sizeof(filter)) == PRDB_SDK_OPTIMIZER_PLAN_OK);
     assert(filter.present == 1 && filter.prefix_len != 0);
+    probe_plan[probe_plan_len - 1] = 2;
+    assert(prdb_sdk_optimizer_decode_plan_with_filter_v1(
+               probe_plan, probe_plan_len, &decoded, sizeof(decoded), &filter,
+               sizeof(filter)) == PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    probe_plan[probe_plan_len - 1] = 1;
     probe_plan[probe_plan_len - 9] = 0x01;
     assert(prdb_sdk_optimizer_decode_plan_with_filter_v1(
                probe_plan, probe_plan_len, &decoded, sizeof(decoded), &filter,

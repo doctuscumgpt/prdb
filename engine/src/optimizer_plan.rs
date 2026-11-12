@@ -3104,8 +3104,11 @@ fn is_point_probe_literal(column: &BoundColumn, value: &BoundPredicate) -> bool 
     matches!(
         (column.scalar_type, value),
         (ScalarType::Boolean, BoundPredicate::Boolean(_))
-            | (ScalarType::Integer, BoundPredicate::Integer(_))
             | (ScalarType::Text, BoundPredicate::Text(_))
+    ) || matches!(
+        (column.scalar_type, value),
+        (ScalarType::Integer, BoundPredicate::Integer(value))
+            if i32::try_from(*value).is_ok()
     )
 }
 
@@ -3608,6 +3611,20 @@ mod tests {
             column_ids: vec![key.column_id, [0x45; 16]],
         }];
         assert!(plan_select_v1(bound).unwrap().unique_probe.is_none());
+
+        let integer_key = column(2, 1, ScalarType::Integer);
+        let mut out_of_range = bound_select();
+        out_of_range.predicate = Some(BoundPredicate::Compare {
+            operator: crate::optimizer_request::Comparison::Equal,
+            left: Box::new(BoundPredicate::Column(integer_key.clone())),
+            right: Box::new(BoundPredicate::Integer(i64::MAX)),
+        });
+        out_of_range.unique_access_paths =
+            vec![crate::metadata_discovery::AuthorizedUniqueAccessPath {
+                index_id: [0x44; 16],
+                column_ids: vec![integer_key.column_id],
+            }];
+        assert!(plan_select_v1(out_of_range).unwrap().unique_probe.is_none());
     }
 
     #[test]
