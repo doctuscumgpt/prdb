@@ -6221,6 +6221,18 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         )?,
         prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable
     );
+    assert_eq!(
+        invocation.probe_catalog_unique_index(
+            table_id,
+            index_id,
+            &[Some(ScalarValue::Bytea(
+                b"absent key with another size".to_vec()
+            ))],
+            &hidden_projection,
+        )?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
+        "a hidden key must not distinguish a matching value from a missing value"
+    );
     let conditional_policies = [
         policies[0].clone(),
         Policy {
@@ -6253,6 +6265,18 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
             &conditional_projection,
         )?,
         prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable
+    );
+    assert_eq!(
+        invocation.probe_catalog_unique_index(
+            table_id,
+            index_id,
+            &[Some(ScalarValue::Bytea(
+                b"not the conditional key".to_vec()
+            ))],
+            &conditional_projection,
+        )?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
+        "a conditionally readable key must always fall back before inspecting the predicate value"
     );
     assert_eq!(
         invocation.probe_catalog_unique_index(
