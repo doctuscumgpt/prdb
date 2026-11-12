@@ -22,6 +22,7 @@
 #include "prdb_sdk_optimizer_v2.h"
 
 #include <string.h>
+#include <time.h>
 
 const prdb_query_descriptor_v3_record prdb_query_descriptor_v3 = {
     sizeof(prdb_query_descriptor_v3_record), PRDB_QUERY_ABI_V3_VERSION,
@@ -738,7 +739,12 @@ static int32_t run_write_read_fixture(
                                sizeof(cancellation_ready) - 1) != 0) {
             return 1;
         }
+        /* Stay below the executor IPC request budget while awaiting cancellation. */
+        const struct timespec poll_interval = {0, 1000000};
         while (cancelled == 0) {
+            if (nanosleep(&poll_interval, NULL) != 0) {
+                return 1;
+            }
             if (prdb_sdk_executor_check_cancelled_v1(&executor_host,
                                                      &cancelled) !=
                 PRDB_SDK_EXECUTOR_OK) {

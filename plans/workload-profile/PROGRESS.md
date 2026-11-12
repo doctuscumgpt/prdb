@@ -1,10 +1,16 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: sandbox cancellation while analytics is live — covered
+
+- Regression: the enabled `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance now starts a second confined cancellation invocation alongside the primary SQL worker. Both observers start behind a barrier with four operational workers. Before requesting cancellation, the cancellation observer requires the primary SQL executor process to remain live and at least one authorized operational transaction to be in flight. It then checks the cancellation poll relay, worker abort, durable ABORTED outcome, and terminal frame.
+- Verification: the focused delegated-cgroup acceptance passed five times, including the final workspace run (1 passed, 0 ignored each time). Across those runs, owner cancellation requests took 3–8 µs and the SDK poll relay took 8.850–17.900 ms while the analytics worker and an operational transaction were live. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, maintained TinyCC SDK tests, and the full serial delegated-cgroup workspace suite passed. The commit target reported 142 passed/0 ignored and transaction reported 74 passed/0 ignored; every other workspace test target also reported zero ignored tests. The cancellation fixture sleeps for 1 ms between polls so the wait does not exhaust its bounded executor IPC request budget.
+- Scope: this exercises the real confined analytics and cancellation paths together with operational reads/commits on the local Linux x86_64 redb profile. The timing is one sample, not a latency target; it does not represent saturated multi-client analytics or target-hardware behavior.
+
 ## WI-7 follow-up: sandboxed cancellation beside operational commits — covered
 
 - Regression: the enabled `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance starts a second confined cancellation fixture alongside four independent operational invocations. Each performs an authorized point read and full scan, then waits at a commit gate; the test releases all four commits as it submits cancellation and requires the SDK cancellation poll to be relayed within two seconds, followed by a durable ABORTED outcome.
 - Verification: the focused delegated-cgroup acceptance passed (1 passed, 0 ignored). The final focused run measured the owner cancellation request at 30 µs and the SDK poll relay at 11.619 ms, with all four operational transactions held at the commit gate as cancellation was launched; no commit completed before the query process exited. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, maintained TinyCC SDK tests, and the full serial delegated-cgroup workspace suite passed; commit integration reported 142 passed/0 ignored and transaction integration 74 passed/0 ignored.
-- Scope: this covers the real cgroup/Landlock query path and cancellation competing with operational reads/commits on the same local redb database. The observation is one local sample, not a latency target; it does not yet exercise cancellation during an active analytical query or a saturated multi-client analytics workload.
+- Scope: this earlier sample covered cancellation alongside operational reads/commits after the primary SQL query finished. The newer entry above adds cancellation during the live analytics worker; neither sample is a latency target or saturated multi-client analytics profile.
 
 ## WI-7 follow-up: physical page reclamation after snapshot release — verified
 

@@ -21829,9 +21829,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     };
     use prdb_engine::supervisor_ipc::{
         GatewayAbortReason, GatewayAdmissionConfig, GatewayExecutorConfig, GatewayTerminalDecision,
-        finalize_gateway_invocation_and_send_terminal, observe_executor_and_relay_results,
-        observe_executor_relay_and_finalize_gateway, send_gateway_result_data_event,
-        send_gateway_terminal_for_confirmed_outcome,
+        finalize_gateway_invocation_and_send_terminal, observe_executor_relay_and_finalize_gateway,
+        send_gateway_result_data_event, send_gateway_terminal_for_confirmed_outcome,
     };
     use prdb_engine::tuple::ScalarType;
     use sha2::{Digest, Sha256};
@@ -22997,6 +22996,75 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     )?;
     assert_eq!(accepted.payload, b"{\"state\":\"accepted\"}");
 
+    let mut cancellation_client = ClientConnectionSession::default();
+    cancellation_client.accept_hello(ClientMode::Query, "sandbox-sql-cancellation")?;
+    cancellation_client.authenticate(&storage, token_id, &secret)?;
+    let cancellation_owner = cancellation_client.staging_owner()?;
+    let cancellation_parameter = [b'C'];
+    let cancellation_reservation = staging.prepare(
+        cancellation_owner,
+        PrepareSubmission {
+            manifest_version: 1,
+            manifest: b"m".to_vec(),
+            artifact_bytes: u64::try_from(artifact.len())?,
+            artifact_sha256: Sha256::digest(&artifact).into(),
+            scope_version: 1,
+            requested_scope: requested_scope.clone(),
+            parameter_bytes: 1,
+            parameter_sha256: Sha256::digest(cancellation_parameter).into(),
+            deadline_ms: 30_000,
+            workload_class: WorkloadClass::Operational,
+        },
+    )?;
+    let mut cancellation_artifact_offset = 0;
+    for chunk in artifact.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
+        cancellation_artifact_offset = staging
+            .upload_chunk(
+                cancellation_owner,
+                cancellation_reservation.invocation_id,
+                ChunkKind::Artifact,
+                cancellation_artifact_offset,
+                chunk,
+            )
+            .map_err(|error| format!("cancellation SQL artifact chunk upload: {error:?}"))?;
+    }
+    staging
+        .upload_chunk(
+            cancellation_owner,
+            cancellation_reservation.invocation_id,
+            ChunkKind::Parameters,
+            0,
+            &cancellation_parameter,
+        )
+        .map_err(|error| format!("cancellation SQL parameter upload: {error:?}"))?;
+    staging.seal(cancellation_owner, cancellation_reservation.invocation_id)?;
+    let cancellation_invocation_hex = cancellation_reservation
+        .invocation_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let (cancellation_accepted, cancellation_invocation, mut cancellation_executor) =
+        cancellation_client.handle_start_request_with_executor(
+            &storage,
+            &staging,
+            ClientFrame {
+                kind: 7,
+                request_id: 2,
+                response_sequence: 0,
+                payload: format!("{{\"invocation_id\":\"{cancellation_invocation_hex}\"}}")
+                    .into_bytes(),
+            },
+            GatewayAdmissionConfig {
+                retention_period_us: 3_600_000_000,
+                max_rows: 8,
+                max_bytes: 4096,
+            },
+            &runtime,
+        )?;
+    assert_eq!(cancellation_accepted.payload, b"{\"state\":\"accepted\"}");
+    let (mut cancellation_service, mut cancellation_gateway) = UnixStream::pair()?;
+    cancellation_gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
+
     let schema_rows = invocation.scan_information_schema_schemata(128)?.rows;
     let mut table_rows = Vec::new();
     let mut table_cursor = None;
@@ -23115,18 +23183,24 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
     let worker_pid = executor.id();
     let operational_storage = &storage;
+    let cancellation_storage = &storage;
     let operational_table_id = composite_table.table_id;
     let (
         worker_status_result,
         concurrent_operational_invocations,
         active_worker_point_read_latencies,
         active_worker_commit_latencies,
+        cancellation_request_latency,
+        cancellation_observed_latency,
     ) = std::thread::scope(|scope| {
         let observer_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let start = Arc::new(std::sync::Barrier::new(5));
+        let analytics_result_relayed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let active_operational_transactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let start = Arc::new(std::sync::Barrier::new(6));
         let mut operational_workers = Vec::with_capacity(4);
         for worker_index in 0..4u8 {
             let task_done = Arc::clone(&observer_done);
+            let task_active_transactions = Arc::clone(&active_operational_transactions);
             let task_start = Arc::clone(&start);
             operational_workers.push(scope.spawn(move || -> Result<_, String> {
                 task_start.wait();
@@ -23147,29 +23221,37 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                             4096,
                         )
                         .map_err(|error| format!("operational admission: {error:?}"))?;
-                    let point_read_started = std::time::Instant::now();
-                    let point_read = transaction
-                        .read_catalog_authorized_row(operational_table_id, id(0xd3))
-                        .map_err(|error| format!("operational authorized point read: {error:?}"))?;
-                    if point_read.is_none_or(|cells| cells.len() != 2) {
-                        return Err(
-                            "operational point read returned an unexpected row shape".into()
-                        );
-                    }
-                    let point_read_latency = point_read_started.elapsed();
-                    let page = transaction
-                        .scan_catalog_authorized_rows(operational_table_id, None, 128)
-                        .map_err(|error| format!("operational authorized scan: {error:?}"))?;
-                    if page.rows.len() != 3 {
-                        return Err(format!(
-                            "operational authorized scan returned {} rows, expected 3",
-                            page.rows.len()
-                        ));
-                    }
-                    let commit_started = std::time::Instant::now();
-                    transaction
-                        .commit()
-                        .map_err(|error| format!("operational durable commit: {error:?}"))?;
+                    task_active_transactions.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                    let operation_result = (|| {
+                        let point_read_started = std::time::Instant::now();
+                        let point_read = transaction
+                            .read_catalog_authorized_row(operational_table_id, id(0xd3))
+                            .map_err(|error| {
+                                format!("operational authorized point read: {error:?}")
+                            })?;
+                        if point_read.is_none_or(|cells| cells.len() != 2) {
+                            return Err(
+                                "operational point read returned an unexpected row shape".into()
+                            );
+                        }
+                        let point_read_latency = point_read_started.elapsed();
+                        let page = transaction
+                            .scan_catalog_authorized_rows(operational_table_id, None, 128)
+                            .map_err(|error| format!("operational authorized scan: {error:?}"))?;
+                        if page.rows.len() != 3 {
+                            return Err(format!(
+                                "operational authorized scan returned {} rows, expected 3",
+                                page.rows.len()
+                            ));
+                        }
+                        let commit_started = std::time::Instant::now();
+                        transaction
+                            .commit()
+                            .map_err(|error| format!("operational durable commit: {error:?}"))?;
+                        Ok::<_, String>((point_read_latency, commit_started.elapsed()))
+                    })();
+                    task_active_transactions.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                    let (point_read_latency, commit_latency) = operation_result?;
                     let worker_state = std::fs::read_to_string(format!("/proc/{worker_pid}/stat"))
                         .ok()
                         .and_then(|stat| {
@@ -23182,7 +23264,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                         .is_some_and(|state| state != "Z" && state != "X")
                     {
                         active_worker_point_read_latencies.push(point_read_latency);
-                        active_worker_commit_latencies.push(commit_started.elapsed());
+                        active_worker_commit_latencies.push(commit_latency);
                     }
                     completed += 1;
                     if completed >= 16 && task_done.load(std::sync::atomic::Ordering::Acquire) {
@@ -23197,13 +23279,181 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 ))
             }));
         }
+        let cancellation_start = Arc::clone(&start);
+        let cancellation_analytics_result_relayed = Arc::clone(&analytics_result_relayed);
+        let cancellation_active_transactions = Arc::clone(&active_operational_transactions);
+        let cancellation_worker_pid = worker_pid;
+        let cancellation_observer = scope.spawn(move || {
+            let result = (|| -> Result<(Duration, Duration), Box<dyn std::error::Error>> {
+                cancellation_start.wait();
+                let mut cancellation_requested_at: Option<std::time::Instant> = None;
+                let mut cancellation_request_latency: Option<Duration> = None;
+                let mut cancellation_observed_latency: Option<Duration> = None;
+                let cancellation_observation = cancellation_executor
+                    .observe_exit_with_results(&cancellation_invocation, |payload| {
+                        if payload != b"CANCEL_READY" && payload != b"CANCEL_OBSERVED" {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "unexpected cancellation fixture result",
+                            ));
+                        }
+                        send_gateway_result_data_event(
+                            &mut cancellation_service,
+                            cancellation_accepted.request_id,
+                            payload.to_vec(),
+                        )
+                        .map_err(|error| {
+                            std::io::Error::other(format!("result relay: {error:?}"))
+                        })?;
+                        if payload == b"CANCEL_OBSERVED" {
+                            let requested_at = cancellation_requested_at.ok_or_else(|| {
+                                std::io::Error::other(
+                                    "query reported cancellation before it was requested",
+                                )
+                            })?;
+                            cancellation_observed_latency = Some(requested_at.elapsed());
+                            return Ok(());
+                        }
+                        let live_deadline = std::time::Instant::now() + Duration::from_secs(2);
+                        let mut analytics_worker_live = false;
+                        while std::time::Instant::now() < live_deadline {
+                            let state = std::fs::read_to_string(format!(
+                                "/proc/{cancellation_worker_pid}/stat"
+                            ))
+                            .ok()
+                            .and_then(|stat| {
+                                stat.rsplit_once(") ")
+                                    .and_then(|(_, fields)| fields.split_whitespace().next())
+                                    .map(str::to_owned)
+                            });
+                            analytics_worker_live = state
+                                .as_deref()
+                                .is_some_and(|state| state != "Z" && state != "X");
+                            if cancellation_analytics_result_relayed
+                                .load(std::sync::atomic::Ordering::Acquire)
+                                && analytics_worker_live
+                                && cancellation_active_transactions
+                                    .load(std::sync::atomic::Ordering::Acquire)
+                                    > 0
+                            {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        if !cancellation_analytics_result_relayed
+                            .load(std::sync::atomic::Ordering::Acquire)
+                            || !analytics_worker_live
+                            || cancellation_active_transactions
+                                .load(std::sync::atomic::Ordering::Acquire)
+                                == 0
+                        {
+                            return Err(std::io::Error::other(
+                                "cancellation did not overlap relayed analytical output and an operational transaction",
+                            ));
+                        }
+                        let request_started = std::time::Instant::now();
+                        match cancellation_storage
+                            .cancel_owned_invocation(
+                                user_id,
+                                cancellation_reservation.invocation_id,
+                                now + 2,
+                            )
+                            .map_err(|error| {
+                                std::io::Error::other(format!(
+                                    "cancellation request: {error:?}"
+                                ))
+                            })? {
+                            prdb_engine::storage_manager::OwnerCancellationResult::Accepted => {
+                                cancellation_request_latency = Some(request_started.elapsed());
+                                cancellation_requested_at = Some(std::time::Instant::now());
+                                Ok(())
+                            }
+                            result => Err(std::io::Error::other(format!(
+                                "unexpected cancellation result: {result:?}"
+                            ))),
+                        }
+                    });
+                match cancellation_observation {
+                    Ok(status) if !status.success() => {}
+                    Err(
+                        prdb_engine::storage_manager::SupervisorInvocationError::WorkerExited(
+                            status,
+                        ),
+                    ) if !status.success() => {}
+                    Err(prdb_engine::storage_manager::SupervisorInvocationError::Deadline(
+                        prdb_engine::transaction::TransactionError::CancellationRequested
+                        | prdb_engine::transaction::TransactionError::Aborted,
+                    )) => {}
+                    Ok(status) => {
+                        return Err(format!(
+                            "cancellation worker unexpectedly exited successfully: {status}"
+                        )
+                        .into());
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+                let cancellation_observed_latency = cancellation_observed_latency
+                    .ok_or("query never observed cancellation through SDK poll")?;
+                let cancellation_request_latency =
+                    cancellation_request_latency.ok_or("cancellation request was not timed")?;
+                if cancellation_observed_latency >= Duration::from_secs(2) {
+                    return Err(format!(
+                        "query cancellation poll was relayed after {cancellation_observed_latency:?}"
+                    )
+                    .into());
+                }
+                let ready_event = read_frame(&mut cancellation_gateway)?
+                    .ok_or("missing cancel ready event")?;
+                assert_eq!(ready_event.operation, Operation::GatewayResultData as u16);
+                assert_eq!(ready_event.payload, b"CANCEL_READY");
+                let observed_event = read_frame(&mut cancellation_gateway)?
+                    .ok_or("missing cancellation-observed result")?;
+                assert_eq!(observed_event.operation, Operation::GatewayResultData as u16);
+                assert_eq!(observed_event.payload, b"CANCEL_OBSERVED");
+                assert_eq!(
+                    cancellation_storage
+                        .lookup_invocation_outcome(
+                            cancellation_reservation.invocation_id,
+                            user_id,
+                            now + 3,
+                        )?
+                        .ok_or("missing durable cancellation outcome")?
+                        .status,
+                    OutcomeStatus::Aborted
+                );
+                assert_eq!(
+                    send_gateway_terminal_for_confirmed_outcome(
+                        cancellation_storage,
+                        &cancellation_invocation,
+                        &mut cancellation_service,
+                        cancellation_accepted.request_id,
+                        GatewayAbortReason::Cancelled,
+                    )?,
+                    GatewayTerminalDecision::Abort(GatewayAbortReason::Cancelled)
+                );
+                let cancellation_terminal = read_frame(&mut cancellation_gateway)?
+                    .ok_or("missing cancellation terminal event")?;
+                assert_eq!(
+                    cancellation_terminal.operation,
+                    Operation::GatewayTerminal as u16
+                );
+                assert!(String::from_utf8(cancellation_terminal.payload)?
+                    .contains("\"outcome\":\"aborted\""));
+                Ok((cancellation_request_latency, cancellation_observed_latency))
+            })();
+            result.map_err(|error| error.to_string())
+        });
         start.wait();
-        let worker_status_result = observe_executor_and_relay_results(
-            &mut executor,
-            &invocation,
-            &mut service,
-            accepted.request_id,
-        );
+        let worker_status_result = executor.observe_exit_with_results(&invocation, |payload| {
+            send_gateway_result_data_event(&mut service, accepted.request_id, payload.to_vec())
+                .map_err(|error| std::io::Error::other(format!("result relay: {error:?}")))?;
+            analytics_result_relayed.store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        });
+        let (cancellation_request_latency, cancellation_observed_latency) = cancellation_observer
+            .join()
+            .map_err(|_| std::io::Error::other("cancellation observer thread panicked"))?
+            .map_err(std::io::Error::other)?;
         observer_done.store(true, std::sync::atomic::Ordering::Release);
         let mut operational_count = 0;
         let mut active_worker_point_read_latencies = Vec::new();
@@ -23222,6 +23472,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             operational_count,
             active_worker_point_read_latencies,
             active_worker_commit_latencies,
+            cancellation_request_latency,
+            cancellation_observed_latency,
         ))
     })?;
     assert!(concurrent_operational_invocations >= 64);
@@ -23675,305 +23927,11 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         OutcomeStatus::Committed
     );
 
-    let cancellation_parameter = [b'C'];
-    let cancellation_reservation = staging.prepare(
-        owner,
-        PrepareSubmission {
-            manifest_version: 1,
-            manifest: b"m".to_vec(),
-            artifact_bytes: u64::try_from(artifact.len())?,
-            artifact_sha256: Sha256::digest(&artifact).into(),
-            scope_version: 1,
-            requested_scope: requested_scope.clone(),
-            parameter_bytes: 1,
-            parameter_sha256: Sha256::digest(cancellation_parameter).into(),
-            deadline_ms: 30_000,
-            workload_class: WorkloadClass::Operational,
-        },
-    )?;
-    let mut cancellation_artifact_offset = 0;
-    for chunk in artifact.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
-        cancellation_artifact_offset = staging
-            .upload_chunk(
-                owner,
-                cancellation_reservation.invocation_id,
-                ChunkKind::Artifact,
-                cancellation_artifact_offset,
-                chunk,
-            )
-            .map_err(|error| format!("cancellation SQL artifact chunk upload: {error:?}"))?;
-    }
-    staging
-        .upload_chunk(
-            owner,
-            cancellation_reservation.invocation_id,
-            ChunkKind::Parameters,
-            0,
-            &cancellation_parameter,
-        )
-        .map_err(|error| format!("cancellation SQL parameter upload: {error:?}"))?;
-    staging.seal(owner, cancellation_reservation.invocation_id)?;
-    let cancellation_invocation_hex = cancellation_reservation
-        .invocation_id
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let (cancellation_accepted, cancellation_invocation, mut cancellation_executor) = client
-        .handle_start_request_with_executor(
-            &storage,
-            &staging,
-            ClientFrame {
-                kind: 7,
-                request_id: 2,
-                response_sequence: 0,
-                payload: format!("{{\"invocation_id\":\"{cancellation_invocation_hex}\"}}")
-                    .into_bytes(),
-            },
-            GatewayAdmissionConfig {
-                retention_period_us: 3_600_000_000,
-                max_rows: 8,
-                max_bytes: 4096,
-            },
-            &runtime,
-        )?;
-    assert_eq!(cancellation_accepted.payload, b"{\"state\":\"accepted\"}");
-    let (mut cancellation_service, mut cancellation_gateway) = UnixStream::pair()?;
-    let mut cancellation_requested = false;
-    let mut cancellation_requested_at: Option<std::time::Instant> = None;
-    let mut cancellation_request_latency: Option<Duration> = None;
-    let mut cancellation_observed_latency: Option<Duration> = None;
-    let mut operational_transactions_at_commit_gate = 0;
-    let (cancellation_observation, concurrent_cancellation_operations) = std::thread::scope(
-        |scope| {
-            let operational_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let operational_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let operational_ready_to_commit = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let release_operational_commits = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let operational_start = Arc::new(std::sync::Barrier::new(5));
-            let operational_worker_pid = cancellation_executor.id();
-            let operational_storage = &storage;
-            let operational_table_id = composite_table.table_id;
-            let mut operational_workers = Vec::with_capacity(4);
-            for worker_index in 0..4u8 {
-                let task_stop = Arc::clone(&operational_stop);
-                let task_in_flight = Arc::clone(&operational_in_flight);
-                let task_ready_to_commit = Arc::clone(&operational_ready_to_commit);
-                let task_release_commits = Arc::clone(&release_operational_commits);
-                let task_start = Arc::clone(&operational_start);
-                operational_workers.push(scope.spawn(move || -> Result<u32, String> {
-                task_start.wait();
-                let mut attempt = 0u8;
-                let mut completed_while_worker_live = 0;
-                while attempt < 64 && !task_stop.load(std::sync::atomic::Ordering::Acquire) {
-                    let mut invocation_id = [0xe2; 16];
-                    invocation_id[14] = worker_index;
-                    invocation_id[15] = attempt;
-                    let (mut transaction, _) = operational_storage
-                        .begin_token_authenticated_invocation(
-                            invocation_id,
-                            token_id,
-                            &secret,
-                            now + 3_600_000_000,
-                            16,
-                            4096,
-                        )
-                        .map_err(|error| format!("cancellation-pressure admission: {error:?}"))?;
-                    task_in_flight.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                    let operation_result = (|| {
-                        let point_read = transaction
-                            .read_catalog_authorized_row(operational_table_id, id(0xd3))
-                            .map_err(|error| format!("cancellation-pressure point read: {error:?}"))?;
-                        if point_read.is_none_or(|cells| cells.len() != 2) {
-                            return Err("cancellation-pressure point read returned an unexpected row shape".to_owned());
-                        }
-                        let page = transaction
-                            .scan_catalog_authorized_rows(operational_table_id, None, 128)
-                            .map_err(|error| format!("cancellation-pressure scan: {error:?}"))?;
-                        if page.rows.len() != 3 {
-                            return Err(format!("cancellation-pressure scan returned {} rows, expected 3", page.rows.len()));
-                        }
-                        if attempt == 0 {
-                            task_ready_to_commit.fetch_add(
-                                1,
-                                std::sync::atomic::Ordering::AcqRel,
-                            );
-                            while !task_release_commits
-                                .load(std::sync::atomic::Ordering::Acquire)
-                            {
-                                std::thread::sleep(Duration::from_millis(1));
-                            }
-                        }
-                        transaction
-                            .commit()
-                            .map_err(|error| format!("cancellation-pressure commit: {error:?}"))
-                    })();
-                    task_in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                    operation_result?;
-                    let worker_state = std::fs::read_to_string(format!("/proc/{operational_worker_pid}/stat"))
-                        .ok()
-                        .and_then(|stat| {
-                            stat.rsplit_once(") ")
-                                .and_then(|(_, fields)| fields.split_whitespace().next())
-                                .map(str::to_owned)
-                        });
-                    if worker_state
-                        .as_deref()
-                        .is_some_and(|state| state != "Z" && state != "X")
-                    {
-                        completed_while_worker_live += 1;
-                    }
-                    attempt += 1;
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Ok(completed_while_worker_live)
-            }));
-            }
-            operational_start.wait();
-            let cancellation_observation = cancellation_executor
-            .observe_exit_with_results(&cancellation_invocation, |payload| {
-            if payload != b"CANCEL_READY" && payload != b"CANCEL_OBSERVED" {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "unexpected cancellation fixture result",
-                ));
-            }
-            send_gateway_result_data_event(
-                &mut cancellation_service,
-                cancellation_accepted.request_id,
-                payload.to_vec(),
-            )
-            .map_err(|error| std::io::Error::other(format!("result relay: {error:?}")))?;
-            if payload == b"CANCEL_OBSERVED" {
-                let requested_at = cancellation_requested_at.ok_or_else(|| {
-                    std::io::Error::other("query reported cancellation before it was requested")
-                })?;
-                cancellation_observed_latency = Some(requested_at.elapsed());
-                return Ok(());
-            }
-            let ready_deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while operational_ready_to_commit.load(std::sync::atomic::Ordering::Acquire) < 4
-                && std::time::Instant::now() < ready_deadline
-            {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            operational_transactions_at_commit_gate =
-                operational_in_flight.load(std::sync::atomic::Ordering::Acquire);
-            if operational_ready_to_commit.load(std::sync::atomic::Ordering::Acquire) < 4 {
-                release_operational_commits.store(
-                    true,
-                    std::sync::atomic::Ordering::Release,
-                );
-                return Err(std::io::Error::other(
-                    "cancellation-pressure workers did not prepare four operational commits",
-                ));
-            }
-            let cancellation_start = Arc::new(std::sync::Barrier::new(2));
-            let cancellation_worker_start = Arc::clone(&cancellation_start);
-            let cancellation_storage = &storage;
-            let cancellation_actor = user_id;
-            let cancellation_invocation_id = cancellation_reservation.invocation_id;
-            let cancellation_worker = scope.spawn(move || {
-                cancellation_worker_start.wait();
-                let request_started = std::time::Instant::now();
-                let result = cancellation_storage.cancel_owned_invocation(
-                    cancellation_actor,
-                    cancellation_invocation_id,
-                    now + 2,
-                );
-                (request_started, result)
-            });
-            release_operational_commits.store(true, std::sync::atomic::Ordering::Release);
-            cancellation_start.wait();
-            let (request_started, cancellation_result) = cancellation_worker
-                .join()
-                .map_err(|_| std::io::Error::other("cancellation request thread panicked"))?;
-            cancellation_request_latency = Some(request_started.elapsed());
-            match cancellation_result.map_err(|error| {
-                std::io::Error::other(format!("cancellation request: {error:?}"))
-            })? {
-                prdb_engine::storage_manager::OwnerCancellationResult::Accepted => {
-                    cancellation_requested = true;
-                    cancellation_requested_at = Some(std::time::Instant::now());
-                    Ok(())
-                }
-                result => Err(std::io::Error::other(format!(
-                    "unexpected cancellation result: {result:?}"
-                ))),
-            }
-        });
-            operational_stop.store(true, std::sync::atomic::Ordering::Release);
-            let mut operational_count = 0u32;
-            for operational in operational_workers {
-                operational_count += operational
-                    .join()
-                    .map_err(|_| std::io::Error::other("cancellation-pressure worker panicked"))?
-                    .map_err(std::io::Error::other)?;
-            }
-            Ok::<_, Box<dyn std::error::Error>>((cancellation_observation, operational_count))
-        },
-    )?;
-    assert_eq!(operational_transactions_at_commit_gate, 4);
-    assert!(cancellation_requested);
-    match cancellation_observation {
-        Ok(status) => assert!(!status.success()),
-        Err(prdb_engine::storage_manager::SupervisorInvocationError::WorkerExited(status)) => {
-            assert!(!status.success())
-        }
-        Err(prdb_engine::storage_manager::SupervisorInvocationError::Deadline(
-            prdb_engine::transaction::TransactionError::CancellationRequested
-            | prdb_engine::transaction::TransactionError::Aborted,
-        )) => {}
-        Err(error) => return Err(error.into()),
-    }
-    let cancellation_observed_latency = cancellation_observed_latency
-        .ok_or("query never observed cancellation through SDK poll")?;
-    assert!(
-        cancellation_observed_latency < Duration::from_secs(2),
-        "query cancellation poll was relayed after {cancellation_observed_latency:?}"
-    );
-    let cancellation_request_latency =
-        cancellation_request_latency.ok_or("cancellation request was not timed")?;
     eprintln!(
-        "cancellation under operational load: request took {} us; poll observed in {} us; transactions at commit gate={}; commits completed while worker live={concurrent_cancellation_operations}",
+        "cancellation alongside live analytics: request={} us; SDK poll relay={} us",
         cancellation_request_latency.as_micros(),
         cancellation_observed_latency.as_micros(),
-        operational_transactions_at_commit_gate,
     );
-    let ready_event = read_frame(&mut cancellation_gateway)?.ok_or("missing cancel ready event")?;
-    assert_eq!(ready_event.operation, Operation::GatewayResultData as u16);
-    assert_eq!(ready_event.payload, b"CANCEL_READY");
-    let observed_event =
-        read_frame(&mut cancellation_gateway)?.ok_or("missing cancellation-observed result")?;
-    assert_eq!(
-        observed_event.operation,
-        Operation::GatewayResultData as u16
-    );
-    assert_eq!(observed_event.payload, b"CANCEL_OBSERVED");
-    assert_eq!(
-        storage
-            .lookup_invocation_outcome(cancellation_reservation.invocation_id, user_id, now + 3,)?
-            .ok_or("missing durable cancellation outcome")?
-            .status,
-        OutcomeStatus::Aborted
-    );
-    assert_eq!(
-        send_gateway_terminal_for_confirmed_outcome(
-            &storage,
-            &cancellation_invocation,
-            &mut cancellation_service,
-            cancellation_accepted.request_id,
-            GatewayAbortReason::Cancelled,
-        )?,
-        GatewayTerminalDecision::Abort(GatewayAbortReason::Cancelled)
-    );
-    let cancellation_terminal =
-        read_frame(&mut cancellation_gateway)?.ok_or("missing cancellation terminal event")?;
-    assert_eq!(
-        cancellation_terminal.operation,
-        Operation::GatewayTerminal as u16
-    );
-    assert!(String::from_utf8(cancellation_terminal.payload)?.contains("\"outcome\":\"aborted\""));
-    drop(cancellation_gateway);
 
     let denied_update_row_key = table_row_key(joined_table.table_id, id(0xc5));
     let denied_update_row_before = row(&database, &denied_update_row_key)?
