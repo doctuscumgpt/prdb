@@ -110,10 +110,20 @@ pub struct AuthorizedPlanRelation {
     /// Unique equality paths whose key cells are statically readable under
     /// this invocation's pinned authorization projection.
     pub unique_access_paths: Vec<AuthorizedUniqueAccessPath>,
+    /// Non-unique index paths whose key cells are statically readable under
+    /// this invocation's pinned authorization projection. They can guide
+    /// range scans but never point probes.
+    pub range_access_paths: Vec<AuthorizedRangeAccessPath>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorizedUniqueAccessPath {
+    pub index_id: [u8; 16],
+    pub column_ids: Vec<[u8; 16]>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorizedRangeAccessPath {
     pub index_id: [u8; 16],
     pub column_ids: Vec<[u8; 16]>,
 }

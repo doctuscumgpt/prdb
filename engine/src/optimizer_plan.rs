@@ -3107,10 +3107,13 @@ pub fn plan_select_v1(bound: BoundSelect) -> Result<SingleTablePlanV1, PlanError
         .as_ref()
         .and_then(|predicate| select_unique_point_probe(predicate, &bound.unique_access_paths));
     let range_scan = if unique_probe.is_none() {
-        bound
-            .predicate
-            .as_ref()
-            .and_then(|predicate| select_index_range_scan(predicate, &bound.unique_access_paths))
+        bound.predicate.as_ref().and_then(|predicate| {
+            select_index_range_scan(
+                predicate,
+                &bound.unique_access_paths,
+                &bound.range_access_paths,
+            )
+        })
     } else {
         None
     };
@@ -3147,14 +3150,24 @@ pub fn plan_select_v1(bound: BoundSelect) -> Result<SingleTablePlanV1, PlanError
 
 fn select_index_range_scan(
     predicate: &BoundPredicate,
-    paths: &[crate::metadata_discovery::AuthorizedUniqueAccessPath],
+    unique_paths: &[crate::metadata_discovery::AuthorizedUniqueAccessPath],
+    range_paths: &[crate::metadata_discovery::AuthorizedRangeAccessPath],
 ) -> Option<IndexRangeScanV1> {
     let (key_column, lower, upper) = index_range_bounds(predicate)?;
-    let path = paths.iter().find(|path| {
-        path.index_id != [0; 16] && path.column_ids.first() == Some(&key_column.column_id)
-    })?;
+    let index_id = unique_paths
+        .iter()
+        .map(|path| (&path.index_id, &path.column_ids))
+        .chain(
+            range_paths
+                .iter()
+                .map(|path| (&path.index_id, &path.column_ids)),
+        )
+        .find(|(index_id, column_ids)| {
+            **index_id != [0; 16] && column_ids.first() == Some(&key_column.column_id)
+        })
+        .map(|(index_id, _)| *index_id)?;
     Some(IndexRangeScanV1 {
-        index_id: path.index_id,
+        index_id,
         key_column,
         lower,
         upper,
@@ -3682,6 +3695,7 @@ mod tests {
                 right: Box::new(BoundPredicate::Boolean(true)),
             }),
             unique_access_paths: Vec::new(),
+            range_access_paths: Vec::new(),
             limit: Some(5),
         }
     }
@@ -3781,6 +3795,16 @@ mod tests {
                 .unique_probe
                 .is_none()
         );
+        bound.range_access_paths = vec![crate::metadata_discovery::AuthorizedRangeAccessPath {
+            index_id: [0x46; 16],
+            column_ids: vec![key.column_id],
+        }];
+        assert!(
+            plan_select_v1(bound.clone())
+                .unwrap()
+                .unique_probe
+                .is_none()
+        );
         bound.unique_access_paths = vec![crate::metadata_discovery::AuthorizedUniqueAccessPath {
             index_id: [0x44; 16],
             column_ids: vec![key.column_id, [0x45; 16]],
@@ -3811,7 +3835,7 @@ mod tests {
             left: Box::new(BoundPredicate::Column(key.clone())),
             right: Box::new(BoundPredicate::Integer(42)),
         });
-        bound.unique_access_paths = vec![crate::metadata_discovery::AuthorizedUniqueAccessPath {
+        bound.range_access_paths = vec![crate::metadata_discovery::AuthorizedRangeAccessPath {
             index_id: [0x46; 16],
             column_ids: vec![key.column_id, [0x47; 16]],
         }];
@@ -3832,9 +3856,9 @@ mod tests {
         let encoded = encode_plan_v1(&plan).unwrap();
         assert_eq!(decode_plan_v1(&encoded).unwrap(), plan);
 
-        bound.unique_access_paths.clear();
+        bound.range_access_paths.clear();
         assert!(plan_select_v1(bound.clone()).unwrap().range_scan.is_none());
-        bound.unique_access_paths = vec![crate::metadata_discovery::AuthorizedUniqueAccessPath {
+        bound.range_access_paths = vec![crate::metadata_discovery::AuthorizedRangeAccessPath {
             index_id: [0x46; 16],
             column_ids: vec![[0x48; 16], key.column_id],
         }];

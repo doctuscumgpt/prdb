@@ -472,6 +472,7 @@ mod tests {
                 ],
             },
             unique_access_paths: Vec::new(),
+            range_access_paths: Vec::new(),
         }
     }
 
@@ -508,6 +509,7 @@ mod tests {
                 ],
             },
             unique_access_paths: Vec::new(),
+            range_access_paths: Vec::new(),
         }
     }
 

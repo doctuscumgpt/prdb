@@ -93,6 +93,7 @@ static int32_t cancel_update_executor_request(
 typedef struct optimizer_result_context {
     uint32_t row_count;
     uint32_t matched_expected_value;
+    uint32_t expected_value;
 } optimizer_result_context;
 
 typedef struct ordered_optimizer_result_context {
@@ -109,7 +110,7 @@ static int32_t verify_optimizer_row(
     void *opaque, const prdb_sdk_optimizer_plan_column_v1 *projections,
     const prdb_sdk_value_v1 *values, uint32_t projection_count) {
     optimizer_result_context *context = (optimizer_result_context *)opaque;
-    static const uint8_t expected_value[4] = {0, 0, 0, 42};
+    uint8_t expected_value[4] = {0, 0, 0, 42};
     if (context == NULL || projections == NULL || values == NULL ||
         projection_count != 1 ||
         projections[0].type_code != PRDB_SDK_VALUE_TYPE_INTEGER ||
@@ -117,6 +118,12 @@ static int32_t verify_optimizer_row(
         values[0].type_code != PRDB_SDK_VALUE_TYPE_INTEGER ||
         values[0].data == NULL || values[0].data_len != sizeof(expected_value)) {
         return 1;
+    }
+    if (context->expected_value != 0) {
+        expected_value[0] = (uint8_t)(context->expected_value >> 24);
+        expected_value[1] = (uint8_t)(context->expected_value >> 16);
+        expected_value[2] = (uint8_t)(context->expected_value >> 8);
+        expected_value[3] = (uint8_t)context->expected_value;
     }
     context->matched_expected_value =
         memcmp(values[0].data, expected_value, sizeof(expected_value)) == 0;
@@ -618,7 +625,7 @@ static int32_t run_write_read_fixture(
     static const uint8_t optimizer_select_sql[] =
         "SELECT id FROM records WHERE id = $1 LIMIT 1";
     static const uint8_t optimizer_range_select_sql[] =
-        "SELECT id FROM records WHERE id >= $1 LIMIT 1";
+        "SELECT left_key FROM grouped_records WHERE left_key >= $1 LIMIT 1";
     static const uint8_t optimizer_ordered_select_sql[] =
         "SELECT right_key FROM grouped_records "
         "ORDER BY left_key DESC LIMIT 2";
@@ -1925,12 +1932,13 @@ static int32_t run_write_read_fixture(
             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
             optimizer_parameter_bytes, sizeof(optimizer_parameter_bytes)};
         prdb_sdk_executor_relation_v1 optimizer_relation = {0};
-        prdb_sdk_sql_column_shape_v2 optimizer_columns[1] = {{0}};
-        prdb_sdk_value_v1 optimizer_source_cells[1] = {{0}};
-        prdb_sdk_value_v1 optimizer_projected_values[1] = {{0}};
+        prdb_sdk_sql_column_shape_v2 optimizer_columns[9] = {{0}};
+        prdb_sdk_value_v1 optimizer_source_cells[9] = {{0}};
+        prdb_sdk_value_v1 optimizer_projected_values[9] = {{0}};
         optimizer_result_context optimizer_results = {0};
         uint32_t optimizer_rows = 0;
         uint32_t parse_error_offset = 0;
+        int32_t optimizer_range_status = PRDB_SDK_OPTIMIZER_PLAN_OK;
         if (optimizer_host->optimizer_request == NULL ||
             prdb_sdk_sql_parse_select_v2(
                 optimizer_select_sql, sizeof(optimizer_select_sql) - 1,
@@ -1944,8 +1952,8 @@ static int32_t run_write_read_fixture(
                 relation_response, sizeof(relation_response), scan_response,
                 sizeof(scan_response), optimizer_batch,
                 sizeof(optimizer_batch), &optimizer_relation,
-                sizeof(optimizer_relation), optimizer_columns, 1,
-                optimizer_source_cells, 1, optimizer_projected_values, 1,
+                sizeof(optimizer_relation), optimizer_columns, 9,
+                optimizer_source_cells, 9, optimizer_projected_values, 9,
                 verify_optimizer_row, &optimizer_results, &optimizer_rows) !=
                 PRDB_SDK_OPTIMIZER_PLAN_OK ||
             optimizer_rows != 1 || optimizer_results.row_count != 1 ||
@@ -1956,12 +1964,18 @@ static int32_t run_write_read_fixture(
 
         memset(&optimizer_statement, 0, sizeof(optimizer_statement));
         memset(&optimizer_results, 0, sizeof(optimizer_results));
+        optimizer_results.expected_value = 1;
+        optimizer_parameter_bytes[3] = 1;
         optimizer_rows = 0;
         if (prdb_sdk_sql_parse_select_v2(
                 optimizer_range_select_sql,
                 sizeof(optimizer_range_select_sql) - 1,
                 &optimizer_statement, sizeof(optimizer_statement),
-                &parse_error_offset) != PRDB_SDK_SQL_OK ||
+                &parse_error_offset) != PRDB_SDK_SQL_OK) {
+            static const uint8_t message[] = "fixture-error-optimizer-range-parse";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+        optimizer_range_status =
             prdb_sdk_optimizer_execute_select_ast_with_parameters_v1(
                 optimizer_host, &optimizer_statement, &optimizer_parameter, 1,
                 schema, sizeof(schema) - 1, 16, sizeof(optimizer_batch),
@@ -1970,15 +1984,19 @@ static int32_t run_write_read_fixture(
                 relation_response, sizeof(relation_response), scan_response,
                 sizeof(scan_response), optimizer_batch,
                 sizeof(optimizer_batch), &optimizer_relation,
-                sizeof(optimizer_relation), optimizer_columns, 1,
-                optimizer_source_cells, 1, optimizer_projected_values, 1,
-                verify_optimizer_row, &optimizer_results, &optimizer_rows) !=
-                PRDB_SDK_OPTIMIZER_PLAN_OK ||
-            optimizer_rows != 1 || optimizer_results.row_count != 1 ||
-            !optimizer_results.matched_expected_value) {
-            static const uint8_t message[] = "fixture-error-optimizer-range";
+                sizeof(optimizer_relation), optimizer_columns, 9,
+                optimizer_source_cells, 9, optimizer_projected_values, 9,
+                verify_optimizer_row, &optimizer_results, &optimizer_rows);
+        if (optimizer_range_status != PRDB_SDK_OPTIMIZER_PLAN_OK) {
+            static const uint8_t message[] = "fixture-error-optimizer-range-execute";
             return report_failure(host, message, sizeof(message) - 1);
         }
+        if (optimizer_rows != 1 || optimizer_results.row_count != 1 ||
+            !optimizer_results.matched_expected_value) {
+            static const uint8_t message[] = "fixture-error-optimizer-range-result";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+        optimizer_parameter_bytes[3] = 42;
 
         {
             static uint8_t ordered_request[PRDB_SDK_OPTIMIZER_MAX_REQUEST_BYTES];

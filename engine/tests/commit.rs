@@ -19660,6 +19660,12 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
         id_wire(column_id)
     ))?;
     let index_id = response_id(&index_response, "index_id")?;
+    let range_index_response = admin_execute(&format!(
+        "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"indexes.create\",\"arguments\":{{\"table_id\":\"{}\",\"name\":\"records_secret_range\",\"column_ids\":[\"{}\"],\"unique\":false}}}}",
+        id_wire(table_id),
+        id_wire(column_id)
+    ))?;
+    let range_index_id = response_id(&range_index_response, "index_id")?;
 
     let (mut first_invocation, first_roles) = storage.begin_token_authenticated_invocation(
         id(0x81),
@@ -19693,6 +19699,15 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
         first_plan_relation.unique_access_paths[0].column_ids,
         vec![column_id]
     );
+    assert_eq!(first_plan_relation.range_access_paths.len(), 1);
+    assert_eq!(
+        first_plan_relation.range_access_paths[0].index_id,
+        range_index_id
+    );
+    assert_eq!(
+        first_plan_relation.range_access_paths[0].column_ids,
+        vec![column_id]
+    );
     let plan_relation_payload = prdb_engine::planner_ipc::DescribePlanRelationResponse {
         relation: Some(first_plan_relation.clone()),
     }
@@ -19700,14 +19715,42 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
     assert_eq!(
         prdb_engine::planner_ipc::DescribePlanRelationResponse::decode(&plan_relation_payload)?,
         prdb_engine::planner_ipc::DescribePlanRelationResponse {
-            relation: Some(first_plan_relation),
+            relation: Some(first_plan_relation.clone()),
         }
+    );
+    let mut executor_identity_expected = first_plan_relation.clone();
+    executor_identity_expected.unique_access_paths.clear();
+    executor_identity_expected.range_access_paths.clear();
+    let executor_identity_payload = prdb_engine::planner_ipc::DescribePlanRelationResponse {
+        relation: Some(first_plan_relation.clone()),
+    }
+    .encode_executor_identity()?;
+    assert_eq!(
+        prdb_engine::planner_ipc::DescribePlanRelationResponse::decode(&executor_identity_payload)?,
+        prdb_engine::planner_ipc::DescribePlanRelationResponse {
+            relation: Some(executor_identity_expected),
+        }
+    );
+    let marker_offset = plan_relation_payload
+        .windows(2)
+        .rposition(|window| window == [0x52, 0x01])
+        .ok_or("planner response omitted range-path marker")?;
+    let mut zero_range_count = plan_relation_payload.clone();
+    zero_range_count[marker_offset + 2..marker_offset + 4].copy_from_slice(&[0, 0]);
+    assert!(
+        prdb_engine::planner_ipc::DescribePlanRelationResponse::decode(&zero_range_count).is_err()
+    );
+    let mut duplicate_path_id = plan_relation_payload.clone();
+    duplicate_path_id[marker_offset + 4..marker_offset + 20].copy_from_slice(&index_id);
+    assert!(
+        prdb_engine::planner_ipc::DescribePlanRelationResponse::decode(&duplicate_path_id).is_err()
     );
     let restricted_plan_relation = restricted_invocation
         .open_planner_metadata_connection()
         .describe_relation_for_plan("cell_views", "records")?
         .ok_or("authorized restricted planner relation was unavailable")?;
     assert!(restricted_plan_relation.unique_access_paths.is_empty());
+    assert!(restricted_plan_relation.range_access_paths.is_empty());
     let first_cells =
         executor_ipc_scan_cells(&mut first_invocation, "cell_views", "records", vec![])?;
     let restricted_cells =
@@ -23922,6 +23965,19 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             &[policy_audit],
         )
         .map_err(|error| format!("metadata fixture policies failed: {error:?}"))?;
+    let range_index_invocation = id(0xd7);
+    let mut range_index_audit = identity_audit_event(0xd8, user_id, composite_table.table_id);
+    range_index_audit.correlation_id = range_index_invocation;
+    storage.create_index(prdb_engine::storage_manager::CreateIndexRequest {
+        invocation_id: range_index_invocation,
+        authenticated_actor_id: user_id,
+        table_id: composite_table.table_id,
+        name: "grouped_left_key_range".to_owned(),
+        column_ids: vec![composite_table.column_ids[0]],
+        unique: false,
+        retention_deadline_us: now + 3_600_000_000,
+        audit_event: range_index_audit,
+    })?;
     let mut requested_scope_records = Vec::<Vec<u8>>::new();
     for schema_id in [schema.schema_id, empty_schema.schema_id] {
         let mut record = vec![1, 1];

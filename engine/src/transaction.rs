@@ -21,20 +21,20 @@ use crate::expression::{
 use crate::index_key::{DeriveIndexKeyError, derive_index_key, encode_sql_tuple};
 use crate::metadata::{EngineMetadata, Lifecycle};
 use crate::metadata_discovery::{
-    AuthorizedPlanRelation, AuthorizedRelationDescription, AuthorizedUniqueAccessPath,
-    COLUMN_CURSOR_TOKEN_KIND, ColumnScanCursor, EXECUTOR_ROW_HANDLE_TOKEN_KIND,
-    EXECUTOR_SCAN_CURSOR_TOKEN_KIND, ExecutorRowHandle, ExecutorScanCursor,
-    INFORMATION_SCHEMA_COLUMNS_CURSOR_TOKEN_KIND, INFORMATION_SCHEMA_TABLES_CURSOR_TOKEN_KIND,
-    InformationSchemaColumnRow, InformationSchemaColumnsCursor, InformationSchemaColumnsPage,
-    InformationSchemaColumnsScanPage, InformationSchemaSchemataPage, InformationSchemaSchemataRow,
-    InformationSchemaTableRow, InformationSchemaTablesCursor, InformationSchemaTablesPage,
-    InformationSchemaTablesScanPage, MAX_COLUMNS_PER_PAGE, MAX_EXECUTOR_BATCH_CANDIDATES,
-    MAX_EXECUTOR_ROW_HANDLES, MAX_METADATA_PAGE_BYTES, MAX_RELATION_HANDLES,
-    MAX_RELATIONS_PER_PAGE, MAX_SCHEMAS_PER_PAGE, PLANNING_TABLE_HANDLE_TOKEN_KIND,
-    PlanningTableHandle, RELATION_CURSOR_TOKEN_KIND, RELATION_HANDLE_TOKEN_KIND,
-    RelationScanCursor, ResolvedRelationHandle, SCHEMA_CURSOR_TOKEN_KIND, SchemaScanCursor,
-    VisibleColumn, VisibleColumnPage, VisibleRelation, VisibleRelationPage, VisibleRelationSchema,
-    VisibleSchema, VisibleSchemaPage,
+    AuthorizedPlanRelation, AuthorizedRangeAccessPath, AuthorizedRelationDescription,
+    AuthorizedUniqueAccessPath, COLUMN_CURSOR_TOKEN_KIND, ColumnScanCursor,
+    EXECUTOR_ROW_HANDLE_TOKEN_KIND, EXECUTOR_SCAN_CURSOR_TOKEN_KIND, ExecutorRowHandle,
+    ExecutorScanCursor, INFORMATION_SCHEMA_COLUMNS_CURSOR_TOKEN_KIND,
+    INFORMATION_SCHEMA_TABLES_CURSOR_TOKEN_KIND, InformationSchemaColumnRow,
+    InformationSchemaColumnsCursor, InformationSchemaColumnsPage, InformationSchemaColumnsScanPage,
+    InformationSchemaSchemataPage, InformationSchemaSchemataRow, InformationSchemaTableRow,
+    InformationSchemaTablesCursor, InformationSchemaTablesPage, InformationSchemaTablesScanPage,
+    MAX_COLUMNS_PER_PAGE, MAX_EXECUTOR_BATCH_CANDIDATES, MAX_EXECUTOR_ROW_HANDLES,
+    MAX_METADATA_PAGE_BYTES, MAX_RELATION_HANDLES, MAX_RELATIONS_PER_PAGE, MAX_SCHEMAS_PER_PAGE,
+    PLANNING_TABLE_HANDLE_TOKEN_KIND, PlanningTableHandle, RELATION_CURSOR_TOKEN_KIND,
+    RELATION_HANDLE_TOKEN_KIND, RelationScanCursor, ResolvedRelationHandle,
+    SCHEMA_CURSOR_TOKEN_KIND, SchemaScanCursor, VisibleColumn, VisibleColumnPage, VisibleRelation,
+    VisibleRelationPage, VisibleRelationSchema, VisibleSchema, VisibleSchemaPage,
 };
 use crate::outcome::{InvocationOutcome, OutcomeStatus};
 use crate::overlay::{Overlay, OverlayError, ResolvedRow, RowId, StagedRow};
@@ -7112,6 +7112,7 @@ fn attach_plan_identity(
             table_epoch: 1,
             relation,
             unique_access_paths: Vec::new(),
+            range_access_paths: Vec::new(),
         });
     }
     let projection = transaction.load_catalog_estimate_projection(relation.relation_id)?;
@@ -7136,30 +7137,39 @@ fn attach_plan_identity(
     }
     let indexes = transaction.load_catalog_indexes(&projection.schema)?;
     let projection_view = projection.as_projection();
-    let unique_access_paths = indexes
-        .into_iter()
-        .filter(|index| {
-            index.unique
-                && !index.column_ids.is_empty()
-                && index.column_ids.iter().all(|column_id| {
-                    index_component_unconditionally_readable(
-                        &projection_view,
-                        relation.relation_id,
-                        *column_id,
-                    )
-                })
-        })
-        .map(|index| AuthorizedUniqueAccessPath {
-            index_id: index.index_id,
-            column_ids: index.column_ids,
-        })
-        .collect();
+    let mut unique_access_paths = Vec::new();
+    let mut range_access_paths = Vec::new();
+    for index in indexes {
+        if index.column_ids.is_empty()
+            || !index.column_ids.iter().all(|column_id| {
+                index_component_unconditionally_readable(
+                    &projection_view,
+                    relation.relation_id,
+                    *column_id,
+                )
+            })
+        {
+            continue;
+        }
+        if index.unique {
+            unique_access_paths.push(AuthorizedUniqueAccessPath {
+                index_id: index.index_id,
+                column_ids: index.column_ids,
+            });
+        } else {
+            range_access_paths.push(AuthorizedRangeAccessPath {
+                index_id: index.index_id,
+                column_ids: index.column_ids,
+            });
+        }
+    }
     Ok(AuthorizedPlanRelation {
         schema_id: schema.schema_id,
         schema_version: schema.schema_version,
         table_epoch: schema.write_epoch,
         relation,
         unique_access_paths,
+        range_access_paths,
     })
 }
 
