@@ -674,10 +674,23 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
         limited
             .drop_schema(user_schema.identity_id)
             .expect("schema owner can drop its empty schema across processes");
-        drop(limited);
         control
             .revoke_system_privilege(limited_user.identity_id, AdminSystemPrivilege::CreateSchema)
             .expect("revoke CREATE_SCHEMA before dropping its grantee");
+        let revoked_schema = limited.create_schema("process_revoked", limited_user.identity_id);
+        assert!(matches!(
+            revoked_schema,
+            Err(
+                prdb_engine::client_submit::ClientSubmitError::AdministrativeOperationRejected { .. }
+            )
+        ));
+        drop(limited);
+        let authorized_revoked_name = control
+            .create_schema("process_revoked", admin_user_id)
+            .expect("revoked control request left no schema state behind");
+        control
+            .drop_schema(authorized_revoked_name.identity_id)
+            .expect("remove schema created after the revoked user's denial");
         control
             .drop_user(limited_user.identity_id)
             .expect("drop regular user and revoke its token through process ADMIN path");
