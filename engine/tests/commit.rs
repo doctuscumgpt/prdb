@@ -20859,8 +20859,8 @@ fn gateway_control_socket_serves_bounded_status_requests() -> Result<(), Box<dyn
 }
 
 #[test]
-fn gateway_service_listener_binds_peer_and_serves_hello() -> Result<(), Box<dyn std::error::Error>>
-{
+fn gateway_service_listener_authenticates_control_admin_over_socket()
+-> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::ipc::{IpcFrame, Operation, read_frame, write_frame};
     use prdb_engine::supervisor::{
         StagingLimits, StagingStore, SubmissionMetadata, SubmissionMetadataValidator,
@@ -20887,6 +20887,38 @@ fn gateway_service_listener_binds_peer_and_serves_hello() -> Result<(), Box<dyn 
     let fixture = Fixture::new();
     let database = initialize(&fixture.path())?;
     let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let admin_id = id(0x91);
+    let admin_role = builtin_owner_id();
+    let admin_token_id = id(0x92);
+    let admin_secret = [0u8; 32];
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_micros() as i64;
+    let mut setup_audit = identity_audit_event(0x93, admin_role, admin_id);
+    setup_audit.correlation_id = id(0x93);
+    setup_audit.action = AuditAction::AuthorityChange;
+    commit_catalog_and_audit(
+        &database,
+        id(0x93),
+        admin_role,
+        now + 3_600_000_000,
+        &[
+            principal_write_with_name(admin_id, 1, 1, "gateway_socket_admin"),
+            object_write_with_name(admin_id, 8, "gateway_socket_admin"),
+            membership_write_with_grantor(admin_id, admin_role, admin_role),
+            dependency_write(admin_id, admin_role, 5),
+            credential_verifier_write(
+                admin_token_id,
+                admin_id,
+                &admin_secret,
+                now - 1_000_000,
+                now + 3_600_000_000,
+                None,
+                1,
+            ),
+        ],
+        &[setup_audit],
+    )?;
     let staging = StagingStore::new(StagingLimits::default(), Arc::new(AcceptUpload))?;
     let socket_path =
         std::path::PathBuf::from(format!("{}.gateway.sock", fixture.path().display()));
@@ -20948,13 +20980,73 @@ fn gateway_service_listener_binds_peer_and_serves_hello() -> Result<(), Box<dyn 
             &IpcFrame {
                 operation: Operation::OpenClientSession as u16,
                 request_id: 1,
-                payload: br#"{"mode":"query","client_name":"listener"}"#.to_vec(),
+                payload: br#"{"mode":"control","client_name":"listener"}"#.to_vec(),
             },
         )?;
         let response = read_frame(&mut gateway)?.ok_or("missing HELLO response")?;
         assert_eq!(response.operation, Operation::OpenClientSession as u16);
         assert_eq!(response.request_id, 1);
-        assert!(std::str::from_utf8(&response.payload)?.contains("\"mode\":\"query\""));
+        assert!(std::str::from_utf8(&response.payload)?.contains("\"mode\":\"control\""));
+        let token_id_hex = admin_token_id
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        write_frame(
+            &mut gateway,
+            &IpcFrame {
+                operation: Operation::AuthenticateSession as u16,
+                request_id: 2,
+                payload: format!(
+                    "{{\"token_id\":\"{token_id_hex}\",\"token_secret\":\"{}\"}}",
+                    "A".repeat(43) + "="
+                )
+                .into_bytes(),
+            },
+        )?;
+        let response = read_frame(&mut gateway)?.ok_or("missing AUTH response")?;
+        assert_eq!(response.operation, Operation::AuthenticateSession as u16);
+        assert_eq!(response.request_id, 2);
+        assert!(std::str::from_utf8(&response.payload)?.contains("\"authenticated\":true"));
+        write_frame(
+            &mut gateway,
+            &IpcFrame {
+                operation: Operation::SubmitAdministrativeOperation as u16,
+                request_id: 3,
+                payload: br#"{"phase":"prepare","operation_version":1,"operation":"users.create","arguments":{"name":"socket_created_user"}}"#.to_vec(),
+            },
+        )?;
+        let response = read_frame(&mut gateway)?.ok_or("missing ADMIN prepare response")?;
+        assert_eq!(
+            response.operation,
+            Operation::SubmitAdministrativeOperation as u16
+        );
+        assert_eq!(response.request_id, 3);
+        let prepared = std::str::from_utf8(&response.payload)?;
+        let operation_id = prepared
+            .split("\"operation_id\":\"")
+            .nth(1)
+            .ok_or("missing socket ADMIN operation ID")?
+            .get(..32)
+            .ok_or("invalid socket ADMIN operation ID")?;
+        assert!(prepared.ends_with("\",\"state\":\"prepared\"}"));
+        write_frame(
+            &mut gateway,
+            &IpcFrame {
+                operation: Operation::SubmitAdministrativeOperation as u16,
+                request_id: 4,
+                payload: format!("{{\"phase\":\"start\",\"operation_id\":\"{operation_id}\"}}")
+                    .into_bytes(),
+            },
+        )?;
+        let response = read_frame(&mut gateway)?.ok_or("missing ADMIN start response")?;
+        assert_eq!(
+            response.operation,
+            Operation::SubmitAdministrativeOperation as u16
+        );
+        assert_eq!(response.request_id, 4);
+        let started = std::str::from_utf8(&response.payload)?;
+        assert!(started.contains("\"outcome\":\"committed\""));
+        assert!(started.contains("\"user_id\":"));
         drop(gateway);
         shutdown.store(true, Ordering::Release);
         server
