@@ -345,6 +345,67 @@ fn admin_dispatch_json(
     }
 }
 
+fn gateway_service_admin_json(
+    storage: &StorageManager,
+    staging: &prdb_engine::supervisor::StagingStore,
+    session: &mut prdb_engine::client_protocol::ClientConnectionSession,
+    request_id: u64,
+    payload: &str,
+    retention_period_us: i64,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use prdb_engine::ipc::{IpcFrame, Operation, read_frame, write_frame};
+    use prdb_engine::supervisor_ipc::{
+        GatewayAdmissionConfig, GatewayClientServiceEvent, serve_gateway_client_session,
+    };
+    use std::os::unix::net::UnixStream;
+
+    let (mut service, mut client) = UnixStream::pair()?;
+    service.set_read_timeout(Some(Duration::from_secs(10)))?;
+    client.set_read_timeout(Some(Duration::from_secs(10)))?;
+    let admission = GatewayAdmissionConfig {
+        retention_period_us,
+        max_rows: 1,
+        max_bytes: 1,
+    };
+    std::thread::scope(|scope| {
+        let server = scope.spawn(|| {
+            serve_gateway_client_session(&mut service, storage, staging, session, admission)
+        });
+        write_frame(
+            &mut client,
+            &IpcFrame {
+                operation: Operation::SubmitAdministrativeOperation as u16,
+                request_id,
+                payload: payload.as_bytes().to_vec(),
+            },
+        )?;
+        client.shutdown(std::net::Shutdown::Write)?;
+        let response =
+            read_frame(&mut client)?.ok_or("gateway service closed before ADMIN response")?;
+        let service_result = server
+            .join()
+            .map_err(|_| std::io::Error::other("gateway service thread panicked"))?
+            .map_err(|error| std::io::Error::other(format!("gateway service failed: {error:?}")))?;
+        if !matches!(service_result, GatewayClientServiceEvent::Disconnected) {
+            return Err(
+                std::io::Error::other("ADMIN request unexpectedly started a worker").into(),
+            );
+        }
+        if response.operation != Operation::SubmitAdministrativeOperation as u16
+            || response.request_id != request_id
+        {
+            return Err(std::io::Error::other(format!(
+                "unexpected gateway ADMIN response: {} {} {}",
+                response.operation,
+                response.request_id,
+                String::from_utf8_lossy(&response.payload)
+            ))
+            .into());
+        }
+        Ok(String::from_utf8(response.payload)?)
+    })
+}
+
 fn id_catalog_key(family: u16, object_id: [u8; 16]) -> Vec<u8> {
     let mut key = family.to_be_bytes().to_vec();
     key.push(1);
@@ -19264,18 +19325,31 @@ fn catalog_commit_rejects_malformed_credential_verifier_profiles()
 #[test]
 fn token_authenticated_catalog_scans_redact_cells_per_principal()
 -> Result<(), Box<dyn std::error::Error>> {
-    use prdb_engine::authorization::{Effect, Expr, Operation, SanitizedCell, Subject};
-    use prdb_engine::storage_manager::{
-        CreatePolicyRequest, CreateTableRequest, ObjectGrantPrivilege, ObjectGrantTarget,
-        PolicyKind, SetObjectGrantRequest, TableColumnDefinition, TokenIssueRequest,
+    use prdb_engine::authorization::{Expr, SanitizedCell};
+    use prdb_engine::client_protocol::{ClientConnectionSession, ClientMode};
+    use prdb_engine::supervisor::{
+        StagingLimits, StagingStore, SubmissionMetadata, SubmissionMetadataValidator,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct AcceptUpload;
+    impl SubmissionMetadataValidator for AcceptUpload {
+        fn supports_versions(&self, manifest_version: u32, scope_version: u32) -> bool {
+            manifest_version == 1 && scope_version == 1
+        }
+
+        fn validate(&self, _metadata: &SubmissionMetadata) -> bool {
+            true
+        }
+    }
 
     let fixture = Fixture::new();
     let database = initialize(&fixture.path())?;
     let storage = StorageManager::new(&database, Duration::from_millis(100))?;
     let admin_id = id(0x51);
     let admin_role = builtin_owner_id();
+    let admin_token_id = id(0x50);
+    let admin_secret = [0x4f; 32];
     let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?;
     let retention_deadline_us = now + 3_600_000_000;
 
@@ -19290,182 +19364,211 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
             object_write_with_name(admin_id, 8, "cell_view_admin"),
             membership_write_with_grantor(admin_id, admin_role, admin_role),
             dependency_write(admin_id, admin_role, 5),
+            credential_verifier_write(
+                admin_token_id,
+                admin_id,
+                &admin_secret,
+                now - 1_000_000,
+                retention_deadline_us,
+                None,
+                1,
+            ),
         ],
         &[setup_audit],
     )?;
 
-    let audit = |event_id: u8, invocation_id: [u8; 16], target_id: [u8; 16], action| {
-        let mut event = identity_audit_event(event_id, admin_id, target_id);
-        event.correlation_id = invocation_id;
-        event.action = action;
-        event
+    let staging = StagingStore::new(StagingLimits::default(), Arc::new(AcceptUpload))?;
+    let mut admin_session = ClientConnectionSession::default();
+    admin_session.accept_hello(ClientMode::Control, "cell-view-setup")?;
+    admin_session.authenticate(&storage, admin_token_id, &admin_secret)?;
+    let mut next_admin_request_id = 1u64;
+    let mut admin_execute = |prepare_payload: &str| -> Result<String, Box<dyn std::error::Error>> {
+        let prepared = gateway_service_admin_json(
+            &storage,
+            &staging,
+            &mut admin_session,
+            next_admin_request_id,
+            prepare_payload,
+            retention_deadline_us,
+        )?;
+        next_admin_request_id += 1;
+        let operation_id = prepared
+            .split("\"operation_id\":\"")
+            .nth(1)
+            .ok_or("missing ADMIN operation ID")?
+            .get(..32)
+            .ok_or("invalid ADMIN operation ID")?;
+        if !prepared.ends_with("\",\"state\":\"prepared\"}") {
+            return Err(std::io::Error::other(format!(
+                "ADMIN operation was not prepared: {prepared}"
+            ))
+            .into());
+        }
+        let started = gateway_service_admin_json(
+            &storage,
+            &staging,
+            &mut admin_session,
+            next_admin_request_id,
+            &format!("{{\"phase\":\"start\",\"operation_id\":\"{operation_id}\"}}"),
+            retention_deadline_us,
+        )?;
+        next_admin_request_id += 1;
+        if !started.contains("\"outcome\":\"committed\"") {
+            return Err(std::io::Error::other(format!(
+                "ADMIN operation did not commit: {started}"
+            ))
+            .into());
+        }
+        Ok(started)
     };
-    let first_user = storage.create_user(
-        id(0x53),
-        admin_id,
-        "cell_view_reader",
-        retention_deadline_us,
-        audit(0x54, id(0x53), admin_id, AuditAction::Ddl),
+    let response_id = |response: &str, key: &str| -> Result<[u8; 16], Box<dyn std::error::Error>> {
+        let wire = response
+            .split(&format!("\"{key}\":\""))
+            .nth(1)
+            .ok_or_else(|| std::io::Error::other(format!("missing ADMIN {key}")))?
+            .get(..32)
+            .ok_or_else(|| std::io::Error::other(format!("invalid ADMIN {key}")))?;
+        let mut id = [0; 16];
+        for (index, byte) in id.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&wire[index * 2..index * 2 + 2], 16)?;
+        }
+        Ok(id)
+    };
+    let first_user_response = admin_execute(
+        r#"{"phase":"prepare","operation_version":1,"operation":"users.create","arguments":{"name":"cell_view_reader"}}"#,
     )?;
-    let restricted_user = storage.create_user(
-        id(0x55),
-        admin_id,
-        "cell_view_restricted",
-        retention_deadline_us,
-        audit(0x56, id(0x55), admin_id, AuditAction::Ddl),
+    let first_user_id = response_id(&first_user_response, "user_id")?;
+    let restricted_user_response = admin_execute(
+        r#"{"phase":"prepare","operation_version":1,"operation":"users.create","arguments":{"name":"cell_view_restricted"}}"#,
     )?;
-    let mut first_token = storage.issue_token(TokenIssueRequest {
-        invocation_id: id(0x57),
-        authenticated_actor_id: admin_id,
-        user_id: first_user.user_id,
-        label: "cell view reader",
-        expires_at_us: retention_deadline_us,
-        retention_deadline_us,
-        audit_event: audit(
-            0x58,
-            id(0x57),
-            first_user.user_id,
-            AuditAction::TokenLifecycle,
-        ),
-    })?;
-    let first_token_id = first_token.token_id;
-    let first_secret = first_token
-        .take_secret()
-        .ok_or("first token secret missing")?;
-    let mut restricted_token = storage.issue_token(TokenIssueRequest {
-        invocation_id: id(0x59),
-        authenticated_actor_id: admin_id,
-        user_id: restricted_user.user_id,
-        label: "cell view restricted",
-        expires_at_us: retention_deadline_us,
-        retention_deadline_us,
-        audit_event: audit(
-            0x5a,
-            id(0x59),
-            restricted_user.user_id,
-            AuditAction::TokenLifecycle,
-        ),
-    })?;
-    let restricted_token_id = restricted_token.token_id;
-    let restricted_secret = restricted_token
-        .take_secret()
-        .ok_or("restricted token secret missing")?;
+    let restricted_user_id = response_id(&restricted_user_response, "user_id")?;
+    let first_token_response = admin_execute(&format!(
+        "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tokens.issue\",\"arguments\":{{\"user_id\":\"{}\",\"label\":\"cell view reader\",\"expires_at_us\":\"{retention_deadline_us}\"}}}}",
+        first_user_id
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    ))?;
+    let first_token_id = response_id(&first_token_response, "token_id")?;
+    let first_token_secret = first_token_response
+        .split("\"token_secret\":\"")
+        .nth(1)
+        .ok_or("missing issued first token secret")?
+        .get(..44)
+        .ok_or("invalid issued first token secret")?;
+    let first_credentials_payload = format!(
+        "{{\"token_id\":\"{}\",\"token_secret\":\"{first_token_secret}\"}}",
+        first_token_id
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    let first_credentials = prdb_engine::client_protocol::decode_client_credentials(
+        first_credentials_payload.as_bytes(),
+    )?;
+    let first_secret = first_credentials.token_secret;
+    drop(first_credentials);
+    let restricted_token_response = admin_execute(&format!(
+        "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tokens.issue\",\"arguments\":{{\"user_id\":\"{}\",\"label\":\"cell view restricted\",\"expires_at_us\":\"{retention_deadline_us}\"}}}}",
+        restricted_user_id
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    ))?;
+    let restricted_token_id = response_id(&restricted_token_response, "token_id")?;
+    let restricted_token_secret = restricted_token_response
+        .split("\"token_secret\":\"")
+        .nth(1)
+        .ok_or("missing issued restricted token secret")?
+        .get(..44)
+        .ok_or("invalid issued restricted token secret")?;
+    let restricted_credentials_payload = format!(
+        "{{\"token_id\":\"{}\",\"token_secret\":\"{restricted_token_secret}\"}}",
+        restricted_token_id
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    let restricted_credentials = prdb_engine::client_protocol::decode_client_credentials(
+        restricted_credentials_payload.as_bytes(),
+    )?;
+    let restricted_secret = restricted_credentials.token_secret;
+    drop(restricted_credentials);
 
-    let schema = storage.create_schema(
-        id(0x5b),
-        admin_id,
-        "cell_views",
-        admin_id,
-        retention_deadline_us,
-        audit(0x5c, id(0x5b), admin_id, AuditAction::Ddl),
-    )?;
-    let table = storage.create_table(CreateTableRequest {
-        invocation_id: id(0x5d),
-        authenticated_actor_id: admin_id,
-        schema_id: schema.schema_id,
-        name: "records".to_owned(),
-        columns: vec![TableColumnDefinition {
-            name: "secret".to_owned(),
-            scalar_type: ScalarType::Bytea,
-            nullable: false,
-            generated_uuid_identity: false,
-            default: None,
-        }],
-        retention_deadline_us,
-        audit_event: audit(0x5e, id(0x5d), schema.schema_id, AuditAction::Ddl),
-    })?;
-
-    let mut next_audit_id = 0x60u8;
-    let mut next_invocation_id = 0x61u8;
-    for principal_id in [first_user.user_id, restricted_user.user_id] {
-        for (object_id, privilege, target) in [
-            (
-                schema.schema_id,
-                ObjectGrantPrivilege::Usage,
-                ObjectGrantTarget::Object,
-            ),
-            (
-                table.table_id,
-                ObjectGrantPrivilege::Select,
-                ObjectGrantTarget::Object,
-            ),
-            (
-                table.table_id,
-                ObjectGrantPrivilege::Select,
-                ObjectGrantTarget::Column(table.column_ids[0]),
-            ),
+    let schema_response = admin_execute(&format!(
+        "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"schemas.create\",\"arguments\":{{\"name\":\"cell_views\",\"owner_id\":\"{}\"}}}}",
+        admin_id
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    ))?;
+    let schema_id = response_id(&schema_response, "schema_id")?;
+    let schema_id_wire = schema_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let table_response = admin_execute(&format!(
+        "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tables.create\",\"arguments\":{{\"schema_id\":\"{schema_id_wire}\",\"name\":\"records\",\"columns\":[{{\"name\":\"secret\",\"type\":\"bytea\",\"nullable\":false,\"generated_uuid_identity\":false}}]}}}}"
+    ))?;
+    let table_id = response_id(&table_response, "table_id")?;
+    let column_id_wire = table_response
+        .split("\"column_ids\":[\"")
+        .nth(1)
+        .ok_or("missing table column ID")?
+        .get(..32)
+        .ok_or("invalid table column ID")?;
+    let column_id = {
+        let mut parsed = [0; 16];
+        for (index, byte) in parsed.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&column_id_wire[index * 2..index * 2 + 2], 16)?;
+        }
+        parsed
+    };
+    let id_wire = |value: [u8; 16]| {
+        value
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    for principal_id in [first_user_id, restricted_user_id] {
+        for (object_id, privilege, target_scope, target_id) in [
+            (schema_id, "usage", "object", schema_id),
+            (table_id, "select", "object", table_id),
+            (table_id, "select", "column", column_id),
         ] {
-            let invocation_id = id(next_invocation_id);
-            let mut event = audit(
-                next_audit_id,
-                invocation_id,
-                object_id,
-                AuditAction::AuthorityChange,
-            );
-            event.target_ids.push(principal_id);
-            storage.set_object_grant(SetObjectGrantRequest {
-                invocation_id,
-                authenticated_actor_id: admin_id,
-                grantee_id: principal_id,
-                object_id,
-                privilege,
-                target,
-                grant: true,
-                retention_deadline_us,
-                audit_event: event,
-            })?;
-            next_audit_id = next_audit_id.wrapping_add(1);
-            next_invocation_id = next_invocation_id.wrapping_add(1);
+            admin_execute(&format!(
+                "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"objects.grant\",\"arguments\":{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",\"privilege\":\"{privilege}\",\"target_scope\":\"{target_scope}\",\"target_id\":\"{}\"}}}}",
+                id_wire(principal_id),
+                id_wire(object_id),
+                id_wire(target_id)
+            ))?;
         }
     }
-
-    let mut policy_invocation_id = 0x70u8;
-    for (recipient, kind, column_targets, name) in [
+    let expression = prdb_engine::expression::encode_expression(&Expr::Literal(Some(
+        ScalarValue::Boolean(true),
+    )))?
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect::<String>();
+    for (recipient, kind, target_columns, name) in [
+        (first_user_id, "row", String::new(), "reader_row"),
+        (restricted_user_id, "row", String::new(), "restricted_row"),
         (
-            first_user.user_id,
-            PolicyKind::Row,
-            Vec::new(),
-            "reader_row",
-        ),
-        (
-            restricted_user.user_id,
-            PolicyKind::Row,
-            Vec::new(),
-            "restricted_row",
-        ),
-        (
-            first_user.user_id,
-            PolicyKind::Cell,
-            vec![table.column_ids[0]],
+            first_user_id,
+            "cell",
+            format!("\"{}\"", id_wire(column_id)),
             "reader_cell",
         ),
     ] {
-        let invocation_id = id(policy_invocation_id);
-        storage.create_policy(CreatePolicyRequest {
-            invocation_id,
-            authenticated_actor_id: admin_id,
-            table_id: table.table_id,
-            name: name.to_owned(),
-            kind,
-            operation: Operation::Select,
-            effect: Effect::Allow,
-            recipients: vec![Subject::Principal(recipient)],
-            target_column_ids: column_targets,
-            using_expression: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
-            with_check_expression: None,
-            retention_deadline_us,
-            audit_event: audit(
-                policy_invocation_id.wrapping_add(1),
-                invocation_id,
-                table.table_id,
-                AuditAction::Ddl,
-            ),
-        })?;
-        policy_invocation_id = policy_invocation_id.wrapping_add(2);
+        admin_execute(&format!(
+            "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"policies.create\",\"arguments\":{{\"table_id\":\"{}\",\"name\":\"{name}\",\"kind\":\"{kind}\",\"policy_operation\":\"select\",\"effect\":\"allow\",\"recipients\":[\"user:{}\"],\"target_column_ids\":[{target_columns}],\"using_expression_eir1\":\"{expression}\",\"with_check_expression_eir1\":null}}}}",
+            id_wire(table_id),
+            id_wire(recipient)
+        ))?;
     }
 
     let row_id = id(0x7f);
-    let row_key = table_row_key(table.table_id, row_id);
+    let row_key = table_row_key(table_id, row_id);
     let row_payload = encode_tuple(
         &[ColumnSchema {
             scalar_type: ScalarType::Bytea,
