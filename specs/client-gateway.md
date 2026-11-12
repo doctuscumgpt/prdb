@@ -27,7 +27,7 @@ Keep initialization, first-token delivery, and offline recovery on the permissio
 
 ## Gateway–Supervisor Service
 
-Provision a private local Unix-socket channel with authenticated service identity and a distinct gateway role. Use bounded framed messages and immutable, copied bytes initially; no generic descriptor forwarding or paths from clients. Associate each logical session with `(gateway generation, connection ID, session ID)`. Session IDs are minted by the trusted admission service and scoped to that gateway connection; gateway claims of a principal ID are never authoritative.
+Provision a private local Unix-socket channel with authenticated service identity and a distinct gateway role. Use bounded framed messages and immutable, copied bytes initially; no generic descriptor forwarding or paths from clients. In protocol v1, bind each logical session to one TCP connection and its dedicated Unix service stream; the supervisor owns one `ClientConnectionSession` for that stream. This channel pair represents `(gateway generation, connection ID, session ID)` and is the only session reference; v1 does not serialize reusable session IDs. A disconnect or gateway restart closes the pair and destroys its session, and reconnect requires HELLO and AUTH again. If a future version multiplexes sessions or reuses service streams, it must add trusted generation/connection/session identifiers and reject cross-session replies. Gateway claims of a principal ID are never authoritative.
 
 Expose these semantic operations:
 

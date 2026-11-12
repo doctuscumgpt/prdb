@@ -19,7 +19,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - End-to-end regression: [real-redb gateway submission lifecycle](../../engine/tests/commit.rs) now drives HELLO, AUTH, PREPARE, upload, SEAL, STATUS, START, and CANCEL from a loopback TCP client through the frame bridge and per-client Unix service loop, then verifies disconnect cleanup and durable ABORTED.
 - Observed red: the initial focused test failed to compile because the TCP bridge and `PingClientSession` IPC operation were absent.
 - Commands actually run in the configured Nix shell: `cargo fmt --all`; focused `cargo test -p prdb-engine --test gateway --locked tcp_client_hello_and_ping_bridge_over_the_gateway_service_channel` passed; and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
-- Remaining: exercise the gateway and supervisor binaries together as separate processes; bind sessions to gateway generation/connection IDs; and verify reserved control-path progress during saturated output.
+- Remaining: exercise the gateway and supervisor binaries together as separate processes and verify reserved control-path progress during saturated output; later channel-scoped session behavior replaces serialized generation/connection IDs.
 
 ## GW-1 dependency: bounded gateway connection admission
 
@@ -159,4 +159,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: `status_on_another_gateway_connection_progresses_while_result_worker_is_blocked` now uses a single ordinary worker occupied by an 8-MiB result stream and verifies STATUS returns on the control listener before the client drains. `gateway_binary_relays_tcp_hello_to_its_private_unix_service` verifies CLI startup exposes both listeners and the control listener rejects START.
 - Observed red: the updated saturation regression first failed to compile because the control-pool API and configuration did not exist.
 - Verification: all 23 gateway tests passed; workspace formatting, build, warning-denied Clippy, and the serial full workspace suite passed. The full suite ran inside the delegated `systemd --user` service with sandbox and process tests enabled.
-- Scope: clients must use the configured control address for reserved progress. Generation/session binding and status under saturation in a full authenticated client process remain open.
+- Scope: clients must use the configured control address for reserved progress. Status under saturation in a full authenticated client process remains open.
+
+## GW-2 follow-up: client sessions are bound to one gateway channel — specified
+
+- Contract: [gateway session scope](../../specs/client-gateway.md) and [gateway service channel](../../specs/ipc-protocol.md). Each TCP connection owns one private Unix service stream and one supervisor-local `ClientConnectionSession`; EOF/restart drops that context and requires a fresh HELLO/AUTH.
+- Regression: `gateway_worker_pool_opens_one_service_stream_per_client` now opens two simultaneous TCP clients that both use request ID 1, verifies each gets a distinct service stream, and checks their HELLO responses return only to the matching client.
+- Decision: the one-to-one stream pair is the v1 generation/connection/session capability. The service protocol does not serialize reusable IDs because no session state can move between streams. A version that multiplexes/reuses channels must introduce explicit trusted IDs and cross-session rejection.
+- Verification: focused connection-isolation test passed; all 23 gateway tests passed; workspace format/build/warning-denied Clippy passed; and the full serial workspace suite passed in the delegated `systemd --user` service with sandbox/process tests enabled.
