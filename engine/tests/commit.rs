@@ -21046,7 +21046,130 @@ fn gateway_service_listener_authenticates_control_admin_over_socket()
         assert_eq!(response.request_id, 4);
         let started = std::str::from_utf8(&response.payload)?;
         assert!(started.contains("\"outcome\":\"committed\""));
-        assert!(started.contains("\"user_id\":"));
+        let user_id = started
+            .split("\"user_id\":\"")
+            .nth(1)
+            .ok_or("missing socket-created user ID")?
+            .get(..32)
+            .ok_or("invalid socket-created user ID")?
+            .to_owned();
+        let mut next_request_id = 5u64;
+        let mut admin_execute =
+            |prepare_payload: Vec<u8>| -> Result<String, Box<dyn std::error::Error>> {
+                let prepare_id = next_request_id;
+                next_request_id += 1;
+                write_frame(
+                    &mut gateway,
+                    &IpcFrame {
+                        operation: Operation::SubmitAdministrativeOperation as u16,
+                        request_id: prepare_id,
+                        payload: prepare_payload,
+                    },
+                )?;
+                let response = read_frame(&mut gateway)?.ok_or("missing ADMIN prepare response")?;
+                if response.operation != Operation::SubmitAdministrativeOperation as u16
+                    || response.request_id != prepare_id
+                {
+                    return Err(std::io::Error::other(format!(
+                        "unexpected ADMIN prepare response: {} {} {}",
+                        response.operation,
+                        response.request_id,
+                        String::from_utf8_lossy(&response.payload)
+                    ))
+                    .into());
+                }
+                let prepared = String::from_utf8(response.payload)?;
+                let operation_id = prepared
+                    .split("\"operation_id\":\"")
+                    .nth(1)
+                    .ok_or("missing ADMIN operation ID")?
+                    .get(..32)
+                    .ok_or("invalid ADMIN operation ID")?
+                    .to_owned();
+                if !prepared.ends_with("\",\"state\":\"prepared\"}") {
+                    return Err(std::io::Error::other(format!(
+                        "ADMIN operation was not prepared: {prepared}"
+                    ))
+                    .into());
+                }
+                let start_id = next_request_id;
+                next_request_id += 1;
+                write_frame(
+                    &mut gateway,
+                    &IpcFrame {
+                        operation: Operation::SubmitAdministrativeOperation as u16,
+                        request_id: start_id,
+                        payload: format!(
+                            "{{\"phase\":\"start\",\"operation_id\":\"{operation_id}\"}}"
+                        )
+                        .into_bytes(),
+                    },
+                )?;
+                let response = read_frame(&mut gateway)?.ok_or("missing ADMIN start response")?;
+                if response.operation != Operation::SubmitAdministrativeOperation as u16
+                    || response.request_id != start_id
+                {
+                    return Err(std::io::Error::other(format!(
+                        "unexpected ADMIN start response: {} {} {}",
+                        response.operation,
+                        response.request_id,
+                        String::from_utf8_lossy(&response.payload)
+                    ))
+                    .into());
+                }
+                Ok(String::from_utf8(response.payload)?)
+            };
+        let schema_result = admin_execute(
+            format!(
+                "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"schemas.create\",\"arguments\":{{\"name\":\"socket_policy_schema\",\"owner_id\":\"{user_id}\"}}}}"
+            )
+            .into_bytes(),
+        )?;
+        let schema_id = schema_result
+            .split("\"schema_id\":\"")
+            .nth(1)
+            .ok_or("missing socket-created schema ID")?
+            .get(..32)
+            .ok_or("invalid socket-created schema ID")?
+            .to_owned();
+        assert!(schema_result.contains("\"outcome\":\"committed\""));
+        let table_result = admin_execute(
+            format!(
+                "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tables.create\",\"arguments\":{{\"schema_id\":\"{schema_id}\",\"name\":\"socket_policy_table\",\"columns\":[{{\"name\":\"secret\",\"type\":\"bytea\",\"nullable\":false,\"generated_uuid_identity\":false}}]}}}}"
+            )
+            .into_bytes(),
+        )?;
+        let table_id = table_result
+            .split("\"table_id\":\"")
+            .nth(1)
+            .ok_or("missing socket-created table ID")?
+            .get(..32)
+            .ok_or("invalid socket-created table ID")?
+            .to_owned();
+        let column_id = table_result
+            .split("\"column_ids\":[\"")
+            .nth(1)
+            .ok_or("missing socket-created column ID")?
+            .get(..32)
+            .ok_or("invalid socket-created column ID")?
+            .to_owned();
+        assert!(table_result.contains("\"outcome\":\"committed\""));
+        let expression = prdb_engine::expression::encode_expression(
+            &prdb_engine::authorization::Expr::Literal(Some(
+                prdb_engine::tuple::ScalarValue::Boolean(true),
+            )),
+        )?
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+        let policy_result = admin_execute(
+            format!(
+                "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"policies.create\",\"arguments\":{{\"table_id\":\"{table_id}\",\"name\":\"socket_cell_policy\",\"kind\":\"cell\",\"policy_operation\":\"select\",\"effect\":\"allow\",\"recipients\":[\"user:{user_id}\"],\"target_column_ids\":[\"{column_id}\"],\"using_expression_eir1\":\"{expression}\",\"with_check_expression_eir1\":null}}}}"
+            )
+            .into_bytes(),
+        )?;
+        assert!(policy_result.contains("\"outcome\":\"committed\""));
+        assert!(policy_result.contains("\"policy_id\":"));
         drop(gateway);
         shutdown.store(true, Ordering::Release);
         server
