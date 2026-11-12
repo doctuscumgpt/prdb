@@ -346,7 +346,7 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
             "--queue-capacity",
             "1",
             "--control-workers",
-            "2",
+            "3",
             "--control-queue-capacity",
             "1",
             "--service-socket",
@@ -643,6 +643,13 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
         let limited_token = control
             .issue_token(limited_user.identity_id, "process-test", i64::MAX)
             .expect("issue regular-user token through process ADMIN path");
+        let grant_observer = control
+            .create_user("process_grant_observer")
+            .expect("create object-grant recipient through process ADMIN path");
+        let grant_observer_token = control
+            .issue_token(grant_observer.identity_id, "process-grant-test", i64::MAX)
+            .expect("issue object-grant recipient token through process ADMIN path");
+        let mut grant_observer_secret = *grant_observer_token.token_secret();
         let mut limited_secret = *limited_token.token_secret();
         let mut limited_secret_after_grant = *limited_token.token_secret();
         let mut limited = AdminClient::connect_authenticated(
@@ -671,9 +678,56 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
         let user_schema = limited
             .create_schema("process_user_owned", limited_user.identity_id)
             .expect("CREATE_SCHEMA grant permits schema creation across processes");
+        let grant_table = limited
+            .create_table(
+                user_schema.identity_id,
+                "grant_target",
+                &[AdminColumnDefinition {
+                    name: "payload".to_owned(),
+                    scalar_type: prdb_engine::tuple::ScalarType::Text,
+                    nullable: true,
+                    generated_uuid_identity: false,
+                    default: None,
+                }],
+            )
+            .expect("schema owner creates an owned table through process ADMIN");
+        let mut grant_observer_client = AdminClient::connect_authenticated(
+            control_address,
+            grant_observer_token.token_id,
+            &mut grant_observer_secret,
+        )
+        .expect("authenticate object-grant observer through process control listener");
+        let unauthorized_grant = grant_observer_client.grant_object_privilege(
+            grant_observer.identity_id,
+            grant_table.table_id,
+            AdminObjectPrivilege::Select,
+            AdminObjectGrantTarget::Column(grant_table.column_ids[0]),
+        );
+        assert!(matches!(
+            unauthorized_grant,
+            Err(
+                prdb_engine::client_submit::ClientSubmitError::AdministrativeOperationRejected { .. }
+            )
+        ));
+        let object_grant = limited
+            .grant_object_privilege(
+                grant_observer.identity_id,
+                grant_table.table_id,
+                AdminObjectPrivilege::Select,
+                AdminObjectGrantTarget::Column(grant_table.column_ids[0]),
+            )
+            .expect("table owner grants SELECT on one column through process ADMIN");
+        assert!(object_grant.commit_sequence > 0);
+        drop(grant_observer_client);
+        limited
+            .drop_table(grant_table.table_id)
+            .expect("drop table and its direct grant through process ADMIN");
         limited
             .drop_schema(user_schema.identity_id)
             .expect("schema owner can drop its empty schema across processes");
+        control
+            .drop_user(grant_observer.identity_id)
+            .expect("drop object-grant recipient after its table was removed");
         control
             .revoke_system_privilege(limited_user.identity_id, AdminSystemPrivilege::CreateSchema)
             .expect("revoke CREATE_SCHEMA before dropping its grantee");
