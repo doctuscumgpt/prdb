@@ -1374,10 +1374,24 @@ mod tests {
 
     #[test]
     fn decodes_ordered_single_key_aggregate_and_rejects_invalid_sorts() {
+        for kind in 1..=5 {
+            let request =
+                decode_ordered_group_aggregate_request(&ordered_group_aggregate_request(kind))
+                    .unwrap();
+            assert_eq!(request.aggregate_kind, kind);
+            assert_eq!(request.aggregate_column_name.is_some(), kind != 1);
+            assert_eq!(request.order_items.len(), 2);
+            assert_eq!(request.order_items[0].source, 1);
+            assert!(request.order_items[0].descending);
+            assert!(!request.order_items[0].nulls_first);
+            assert_eq!(request.order_items[1].source, 0);
+            assert!(!request.order_items[1].descending);
+            assert!(request.order_items[1].nulls_first);
+            assert_eq!(request.limit, Some(5));
+        }
+
         let bytes = ordered_group_aggregate_request(5);
         let request = decode_ordered_group_aggregate_request(&bytes).unwrap();
-        assert_eq!(request.aggregate_kind, 5);
-        assert_eq!(request.aggregate_column_name.as_deref(), Some("amount"));
         assert_eq!(request.order_items.len(), 2);
         assert_eq!(request.order_items[0].source, 1);
         assert!(request.order_items[0].descending);

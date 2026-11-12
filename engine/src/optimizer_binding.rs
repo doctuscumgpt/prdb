@@ -1315,16 +1315,22 @@ mod tests {
 
     #[test]
     fn binds_ordered_group_aggregate_to_authorized_columns_and_types() {
-        let bound = bind_ordered_group_aggregate_request(
-            &ordered_group_aggregate_request(5, Some("amount")),
-            Some(relation()),
-        )
-        .unwrap();
-        assert_eq!(bound.group_key.ordinal, 0);
-        assert_eq!(bound.aggregate_column.as_ref().unwrap().ordinal, 2);
-        assert_eq!(bound.order_items[0].source, 1);
-        assert_eq!(bound.order_items[1].source, 0);
-        assert_eq!(bound.limit, Some(3));
+        for kind in 1..=5 {
+            let bound = bind_ordered_group_aggregate_request(
+                &ordered_group_aggregate_request(kind, (kind != 1).then_some("amount")),
+                Some(relation()),
+            )
+            .unwrap();
+            assert_eq!(bound.aggregate_kind, kind);
+            assert_eq!(bound.group_key.ordinal, 0);
+            assert_eq!(
+                bound.aggregate_column.as_ref().map(|column| column.ordinal),
+                (kind != 1).then_some(2)
+            );
+            assert_eq!(bound.order_items[0].source, 1);
+            assert_eq!(bound.order_items[1].source, 0);
+            assert_eq!(bound.limit, Some(3));
+        }
         assert_eq!(
             bind_ordered_group_aggregate_request(
                 &ordered_group_aggregate_request(4, Some("active")),

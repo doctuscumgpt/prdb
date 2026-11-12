@@ -3884,39 +3884,45 @@ mod tests {
 
     #[test]
     fn ordered_group_aggregate_plan_roundtrips_and_rejects_bad_order_sources() {
-        let plan = plan_ordered_group_aggregate_v1(BoundOrderedGroupAggregate {
-            schema_name: "public".into(),
-            schema_id: [1; 16],
-            schema_version: 1,
-            table_epoch: 1,
-            relation_id: [2; 16],
-            relation_name: "items".into(),
-            group_key: column(1, 0, ScalarType::Integer),
-            aggregate_kind: 5,
-            aggregate_column: Some(column(2, 1, ScalarType::BigInt)),
-            order_items: vec![
-                GroupCountOrderItem {
-                    source: 1,
-                    descending: true,
-                    nulls_first: false,
-                },
-                GroupCountOrderItem {
-                    source: 0,
-                    descending: false,
-                    nulls_first: true,
-                },
-            ],
-            limit: Some(5),
-        })
-        .unwrap();
-        let bytes = encode_ordered_group_aggregate_plan_v1(&plan).unwrap();
-        assert_eq!(&bytes[..4], &[0, 1, 11, 0]);
-        assert_eq!(
-            decode_ordered_group_aggregate_plan_v1(&bytes).unwrap(),
-            plan
-        );
+        let mut avg_plan = None;
+        for aggregate_kind in 1..=5 {
+            let plan = plan_ordered_group_aggregate_v1(BoundOrderedGroupAggregate {
+                schema_name: "public".into(),
+                schema_id: [1; 16],
+                schema_version: 1,
+                table_epoch: 1,
+                relation_id: [2; 16],
+                relation_name: "items".into(),
+                group_key: column(1, 0, ScalarType::Integer),
+                aggregate_kind,
+                aggregate_column: (aggregate_kind != 1).then(|| column(2, 1, ScalarType::BigInt)),
+                order_items: vec![
+                    GroupCountOrderItem {
+                        source: 1,
+                        descending: true,
+                        nulls_first: false,
+                    },
+                    GroupCountOrderItem {
+                        source: 0,
+                        descending: false,
+                        nulls_first: true,
+                    },
+                ],
+                limit: Some(5),
+            })
+            .unwrap();
+            let bytes = encode_ordered_group_aggregate_plan_v1(&plan).unwrap();
+            assert_eq!(&bytes[..4], &[0, 1, 11, 0]);
+            assert_eq!(
+                decode_ordered_group_aggregate_plan_v1(&bytes).unwrap(),
+                plan
+            );
+            if aggregate_kind == 5 {
+                avg_plan = Some(plan);
+            }
+        }
 
-        let mut invalid = plan;
+        let mut invalid = avg_plan.unwrap();
         invalid.order_items[1].source = 1;
         assert_eq!(
             validate_ordered_group_aggregate_plan_v1(&invalid),
