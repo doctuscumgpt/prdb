@@ -4,8 +4,15 @@
 
 - Contract: [redb storage](../../specs/redb-storage.md). redb's compactor must refuse while an old read snapshot is pinned; after the last reader closes, an explicit compaction must reclaim obsolete copy-on-write pages without losing live data.
 - Regression: [`retained_reader_blocks_compaction_until_release_then_reclaims_deleted_pages`](../../engine/tests/redb_foundation.rs) retains 64 100-KiB rows, deletes 58 while the snapshot is live, verifies the old snapshot still reads deleted rows, and confirms compaction returns `TransactionInProgress`. After dropping the reader, compaction reduces both the file size and `DatabaseStats::allocated_pages`; all six surviving rows remain intact.
-- Verification: all four `redb_foundation` integration tests passed with redb 4.4.0 on x86_64 Linux using Immediate durability and two-phase commit. Workspace build, format check, warning-denied Clippy, and full serial delegated-cgroup workspace tests passed; commit integration reported 142 passed/0 ignored and transaction integration 74 passed/0 ignored. This is an upstream storage API acceptance, not evidence that the service currently schedules compaction.
-- Remaining: measure compaction latency and operational contention through a managed maintenance entry point; test larger database shapes and target filesystems.
+- Verification: all four `redb_foundation` integration tests passed with redb 4.4.0 on x86_64 Linux using Immediate durability and two-phase commit. Workspace build, format check, warning-denied Clippy, and full serial delegated-cgroup workspace tests passed; commit integration reported 142 passed/0 ignored and transaction integration 74 passed/0 ignored.
+- Remaining: measure compaction latency and operational contention through the managed maintenance entry point; test larger database shapes and target filesystems.
+
+## SM-1 follow-up: managed compaction entry point — covered
+
+- Contract: `StorageInstance::compact` makes one explicit redb compaction attempt while the caller holds the exclusive instance handle. The trusted caller owns scheduling and retry policy; compaction does not alter logical commit state.
+- Regression: `ready_storage_instance_can_run_explicit_compaction` constructs a validated READY instance, creates and drops its storage manager, then invokes compaction through the still-locked instance. The redb foundation test continues to verify that active snapshots block compaction and released snapshots permit physical page reclamation.
+- Verification: the focused locked/offline bootstrap target passed (`12 passed, 0 failed, 0 ignored`). The full serial workspace suite also passed inside the delegated `systemd --user` service; `cargo build --workspace --locked --offline`, `cargo fmt --all -- --check`, and warning-denied workspace Clippy passed.
+- Scope: managed compaction scheduling, latency, operational contention, larger database shapes, and other target filesystems remain open.
 
 ## SM-3 follow-up: catalog-derived authorized point reads — verified
 

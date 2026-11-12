@@ -395,6 +395,13 @@ impl StorageInstance {
         &self.database
     }
 
+    /// Make one explicit attempt to reclaim redb pages while this handle is
+    /// exclusively borrowed. Storage managers and transactions borrowing the
+    /// instance must be dropped before maintenance can run.
+    pub fn compact(&mut self) -> Result<bool, redb::CompactionError> {
+        self.database.compact()
+    }
+
     /// Close and reopen the redb handle while retaining the instance lock,
     /// then validate the recovered READY image before returning it. Callers
     /// must drop every `StorageManager` borrowing this instance first.

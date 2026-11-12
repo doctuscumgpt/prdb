@@ -154,6 +154,21 @@ fn bootstrap_handoff_stays_initializing_and_resume_rotates_secret() {
 }
 
 #[test]
+fn ready_storage_instance_can_run_explicit_compaction() {
+    let fixture = Fixture::new();
+    let mut bootstrap = initialize(&fixture.0, "compact_admin", expiry()).unwrap();
+    let mut secret = bootstrap.take_secret().unwrap();
+    secret.zeroize();
+    let mut ready = bootstrap.acknowledge().unwrap();
+
+    let manager = ready
+        .storage_manager(StorageManagerConfig::default())
+        .unwrap();
+    drop(manager);
+    let _ = ready.compact().unwrap();
+}
+
+#[test]
 fn storage_open_rejects_a_truncated_redb_image_and_releases_the_instance_lock() {
     let fixture = Fixture::new();
     let mut session = initialize(&fixture.0, "corruption_admin", expiry()).unwrap();
