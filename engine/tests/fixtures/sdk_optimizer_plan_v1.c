@@ -2244,6 +2244,20 @@ int main(void) {
            PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
     assert(resolve.calls == 2);
     resolve.fail_join_identity = 0;
+    resolve.calls = 0;
+    assert(prdb_sdk_optimizer_validate_executor_filtered_join_relations_v1(
+               &host, filtered_join_payload, filtered_join_payload_len,
+               response, sizeof(response), &response_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(resolve.calls == 2);
+    resolve.calls = 0;
+    resolve.fail_join_identity = 1;
+    assert(prdb_sdk_optimizer_validate_executor_filtered_join_relations_v1(
+               &host, filtered_join_payload, filtered_join_payload_len,
+               response, sizeof(response), &response_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
+    assert(resolve.calls == 2);
+    resolve.fail_join_identity = 0;
     memcpy(join_malformed, join_payload, join_payload_len);
     join_malformed[join_projection_side_offset] = 2;
     assert(prdb_sdk_optimizer_decode_join_plan_v1(

@@ -468,6 +468,13 @@ int32_t prdb_sdk_optimizer_validate_executor_join_relations_v1(
     uint64_t plan_payload_len, uint8_t *response,
     uint64_t response_capacity, uint64_t *response_len);
 
+/* Re-resolve both relations in a validated kind-12 join plan through executor
+ * storage and require each stable identity and filtered scan shape to match. */
+int32_t prdb_sdk_optimizer_validate_executor_filtered_join_relations_v1(
+    const prdb_host_api_v2 *host, const uint8_t *plan_payload,
+    uint64_t plan_payload_len, uint8_t *response,
+    uint64_t response_capacity, uint64_t *response_len);
+
 /* Re-resolve the single relation in a validated kind-5 plan and compare the
  * stable identity plus the exact grouping-key column definition. */
 int32_t prdb_sdk_optimizer_validate_executor_group_count_relation_v1(

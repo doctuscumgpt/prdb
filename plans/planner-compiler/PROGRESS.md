@@ -31,6 +31,14 @@
 - Verification: `make -f engine/sdk/Makefile test` passed with the maintained TinyCC suite, all eight ABI generator tests, and generated ABI consistency. `git diff --check` passed.
 - Remaining: re-resolve both filtered join relation identities and scan shapes through executor metadata, then add the optimizer-backed v20 execution path and delegated-cgroup acceptance.
 
+## OP-7 follow-up: validate filtered join executor identity — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). Before scanning, kind 12's two relation IDs, epochs, and complete authorized column shapes must still match executor storage.
+- Implementation: `prdb_sdk_optimizer_validate_executor_filtered_join_relations_v1` independently decodes kind 12 and reuses the existing stable-identity and complete scan-shape checks for both relation sides. Decoder validation requires the filter column to be present in the selected side's scan shape, so it is included in the executor comparison.
+- Regression: the TinyCC fixture accepts both executor resolutions and rejects an injected relation identity mismatch; the existing kind-4 validator remains covered.
+- Verification: full maintained `make -f engine/sdk/Makefile test` passed with TinyCC `-Wall -Wextra -Werror`, all eight ABI generator tests, and generated ABI consistency. `git diff --check` passed.
+- Remaining: connect statement-12 submission, AST matching, and executor identity checks to the v20 optimized runner, then exercise it through delegated-cgroup confined acceptance.
+
 ## OP-7 follow-up: ordered single-key grouped aggregates — verified
 
 - Contract: request statement 11 / plan kind 11 extends the statement-10 single-key COUNT/MIN/MAX/SUM/AVG shape with up to two distinct ORDER BY expressions drawn from the group key or selected aggregate, preserving direction, NULL placement, and optional LIMIT. WHERE, HAVING, extra projections, and unsupported argument types remain rejected.

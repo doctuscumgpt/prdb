@@ -3185,6 +3185,36 @@ int32_t prdb_sdk_optimizer_validate_executor_join_relations_v1(
         response_capacity, response_len);
 }
 
+int32_t prdb_sdk_optimizer_validate_executor_filtered_join_relations_v1(
+    const prdb_host_api_v2 *host, const uint8_t *plan_payload,
+    uint64_t plan_payload_len, uint8_t *response,
+    uint64_t response_capacity, uint64_t *response_len) {
+    prdb_sdk_optimizer_filtered_join_plan_v1 plan = {0};
+    int32_t status;
+    if (host == NULL || host->struct_size < sizeof(*host) ||
+        host->abi_version != PRDB_QUERY_ABI_V2_VERSION ||
+        host->executor_request == NULL || plan_payload == NULL ||
+        response == NULL || response_len == NULL ||
+        response_capacity > PRDB_QUERY_MAX_IPC_RESPONSE_BYTES ||
+        response_capacity < 3 ||
+        plan_payload_len > PRDB_SDK_OPTIMIZER_MAX_PLAN_BYTES ||
+        ranges_overlap(plan_payload, plan_payload_len, response,
+                       response_capacity))
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
+    status = prdb_sdk_optimizer_decode_filtered_join_plan_v1(
+        plan_payload, plan_payload_len, &plan, sizeof(plan));
+    if (status != PRDB_SDK_OPTIMIZER_PLAN_OK) return status;
+    status = validate_join_relation_identity(
+        host, plan.join.schema_name, plan.join.schema_name_len,
+        plan.join.schema_id, plan.join.schema_version,
+        &plan.join.left_relation, response, response_capacity, response_len);
+    if (status != PRDB_SDK_OPTIMIZER_PLAN_OK) return status;
+    return validate_join_relation_identity(
+        host, plan.join.schema_name, plan.join.schema_name_len,
+        plan.join.schema_id, plan.join.schema_version,
+        &plan.join.right_relation, response, response_capacity, response_len);
+}
+
 int32_t prdb_sdk_optimizer_acquire_plan_relation_v1(
     const prdb_host_api_v2 *host, const uint8_t *plan_payload,
     uint64_t plan_payload_len, uint8_t *response,
