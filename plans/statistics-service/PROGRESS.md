@@ -41,6 +41,15 @@
 - Verification: the focused real-redb transaction test passed (`1 passed, 0 failed`).
 - Scope: checks normalized estimate results and reference rows, not timing or resource-use noninterference. Planner task draining, cache validity, and bounded maintenance collection remain open.
 
+## ST-2 / ST-3 follow-up: resolve statically empty policy populations — implemented
+
+- Contract: exact estimates are safe when row inclusion is independent of stored values. Literal Boolean policies can establish either the full row population or an empty one; unsupported policy expressions remain `Unknown`.
+- Red evidence: a real-redb estimate for an applicable literal-FALSE table ALLOW returned `Unknown`, despite storage being able to prove the authorized population was empty. After adding constant-policy recognition, a false RESTRICT followed by a value-dependent policy incorrectly returned an exact empty estimate; the implementation now checks every applicable policy and falls back to `Unknown` if any policy is unsupported.
+- Implementation: estimates return zero visible rows and zero cell populations without scanning when no applicable literal-TRUE ALLOW exists or a literal-FALSE RESTRICT applies. The full scan path remains limited to the all-rows case.
+- Regression: the shared estimate fixture compares the exact empty summary with two independent authorized reference scans over different hidden candidate counts. It also confirms a constant denial cannot mask a later value-dependent policy.
+- Verification: focused real-redb transaction test passed (`1 passed, 0 failed`).
+- Scope: all other row-value-dependent or unsupported policies still return `Unknown`; timing/resource noninterference, planner task draining, cache validity, and bounded maintenance collection remain open.
+
 ## ST-1 / ST-2 dependency: planner metadata and estimate dispatch
 
 - Behavior: planner-only connection handles resolve and revalidate authorized relation descriptions, and estimate requests return bounded visible/readable/null/redacted summaries or UNKNOWN. Planner projections derive read grants and policies without loading write constraints or indexes; executor handles cannot be decoded as planner handles.

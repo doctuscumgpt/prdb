@@ -2092,8 +2092,17 @@ impl<'db> InvocationTransaction<'db> {
                 self.finish_estimate(AuthorizedScanEstimate::Unknown)
             };
         }
-        if !estimate_population_is_unfiltered(table_id, projection) {
-            return self.finish_estimate(AuthorizedScanEstimate::Unknown);
+        match estimate_population(table_id, projection) {
+            Some(EstimatePopulation::AllRows) => {}
+            Some(EstimatePopulation::NoRows) => {
+                return self.finish_estimate(AuthorizedScanEstimate::Exact(
+                    AuthorizedScanSummary {
+                        visible_rows: 0,
+                        columns: vec![ColumnPopulation::default(); projection.columns.len()],
+                    },
+                ));
+            }
+            None => return self.finish_estimate(AuthorizedScanEstimate::Unknown),
         }
         let overlay_row_ids = match self
             .overlay
@@ -8406,13 +8415,20 @@ fn collect_expression_fields(expression: &Expr, ordinals: &mut HashSet<usize>) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EstimatePopulation {
+    AllRows,
+    NoRows,
+}
+
 /// Exact counts are released only when row inclusion is independent of row
-/// values. Otherwise a work-limit result could reveal the number of invisible
-/// candidates through whether the scan completed.
-fn estimate_population_is_unfiltered(
+/// values. Constant policy outcomes can prove either the full or empty view;
+/// value-dependent policies remain unknown so a work-limit result cannot
+/// reveal how many candidates failed visibility.
+fn estimate_population(
     table_id: [u8; 16],
     projection: &AuthorizedProjection<'_>,
-) -> bool {
+) -> Option<EstimatePopulation> {
     let context = projection.context;
     if !has_permission(
         context,
@@ -8434,11 +8450,12 @@ fn estimate_population_is_unfiltered(
             )
         })
     {
-        return false;
+        return None;
     }
 
     let mut has_allow = false;
     let mut has_applicable_policy = false;
+    let mut denied_all_rows = false;
     for policy in projection.policies.iter().filter(|policy| {
         policy.operation == Operation::Select
             && policy.target == AccessTarget::Table(table_id)
@@ -8448,16 +8465,31 @@ fn estimate_population_is_unfiltered(
             })
     }) {
         has_applicable_policy = true;
-        if !matches!(
-            policy.using.as_ref(),
-            Some(Expr::Literal(Some(ScalarValue::Boolean(true))))
-        ) || policy.with_check.is_some()
-        {
-            return false;
+        if policy.with_check.is_some() {
+            return None;
         }
-        has_allow |= policy.effect == Effect::Allow;
+        match policy.using.as_ref() {
+            Some(Expr::Literal(Some(ScalarValue::Boolean(true)))) => {
+                has_allow |= policy.effect == Effect::Allow;
+            }
+            Some(Expr::Literal(Some(ScalarValue::Boolean(false)))) => {
+                if policy.effect == Effect::Restrict {
+                    denied_all_rows = true;
+                }
+            }
+            _ => return None,
+        }
     }
-    has_applicable_policy && has_allow
+    if !has_applicable_policy {
+        return None;
+    }
+    if denied_all_rows {
+        Some(EstimatePopulation::NoRows)
+    } else if has_allow {
+        Some(EstimatePopulation::AllRows)
+    } else {
+        Some(EstimatePopulation::NoRows)
+    }
 }
 
 fn estimate_error_is_terminal(error: &TransactionError) -> bool {

@@ -5804,6 +5804,74 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
             ],
         )]
     );
+
+    let deny_all_policy = Policy {
+        using: Some(Expr::Literal(Some(ScalarValue::Boolean(false)))),
+        ..policies[0].clone()
+    };
+    let deny_all_policies = [deny_all_policy, policies[1].clone()];
+    let deny_all_projection = AuthorizedProjection {
+        policies: &deny_all_policies,
+        ..projection
+    };
+    let expected_empty_estimate = prdb_engine::statistics::AuthorizedScanEstimate::Exact(
+        prdb_engine::statistics::AuthorizedScanSummary {
+            visible_rows: 0,
+            columns: vec![prdb_engine::statistics::ColumnPopulation::default(); 2],
+        },
+    );
+    assert_eq!(
+        fewer_candidates.estimate_authorized_scan(table_id, &deny_all_projection)?,
+        expected_empty_estimate
+    );
+    assert_eq!(
+        more_candidates.estimate_authorized_scan(table_id, &deny_all_projection)?,
+        expected_empty_estimate
+    );
+    let fewer_denied_rows =
+        fewer_candidates.scan_authorized(table_id, None, 32, &deny_all_projection)?;
+    let more_denied_rows =
+        more_candidates.scan_authorized(table_id, None, 32, &deny_all_projection)?;
+    assert!(fewer_denied_rows.rows.is_empty());
+    assert!(more_denied_rows.rows.is_empty());
+
+    let deny_restrict_policy = Policy {
+        effect: Effect::Restrict,
+        using: Some(Expr::Literal(Some(ScalarValue::Boolean(false)))),
+        ..policies[0].clone()
+    };
+    let allow_and_deny_policies = [
+        policies[0].clone(),
+        deny_restrict_policy.clone(),
+        policies[1].clone(),
+    ];
+    let allow_and_deny_projection = AuthorizedProjection {
+        policies: &allow_and_deny_policies,
+        ..projection
+    };
+    assert_eq!(
+        fewer_candidates.estimate_authorized_scan(table_id, &allow_and_deny_projection)?,
+        expected_empty_estimate
+    );
+    assert!(
+        fewer_candidates
+            .scan_authorized(table_id, None, 32, &allow_and_deny_projection)?
+            .rows
+            .is_empty()
+    );
+    let deny_and_dynamic_policies = [
+        deny_restrict_policy,
+        filtered_policies[0].clone(),
+        policies[1].clone(),
+    ];
+    let deny_and_dynamic_projection = AuthorizedProjection {
+        policies: &deny_and_dynamic_policies,
+        ..projection
+    };
+    assert_eq!(
+        more_candidates.estimate_authorized_scan(table_id, &deny_and_dynamic_projection)?,
+        prdb_engine::statistics::AuthorizedScanEstimate::Unknown
+    );
     assert!(fewer_candidates.check_deadline().is_ok());
     assert!(more_candidates.check_deadline().is_ok());
     Ok(())
