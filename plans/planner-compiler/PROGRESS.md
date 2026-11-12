@@ -1,5 +1,12 @@
 # Optimizer Progress
 
+## OP-7 follow-up: backpressure per-invocation planner submissions — verified
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). The isolated optimizer handles one submission at a time and waits for the matching invocation-scoped metadata response before planning the next request; request and estimate counts are bounded per connection.
+- Regression: `process_protocol_backpressures_submissions_while_metadata_is_pending` pipelines two SELECT submissions, holds the first metadata response, and verifies the optimizer emits no second planner request until the first plan completes. It then verifies both responses and request IDs.
+- Verification: `cargo test -p prdb-engine --lib optimizer_process::tests::process_protocol_backpressures_submissions_while_metadata_is_pending --locked --offline -- --exact --nocapture` passed (`1 passed, 0 ignored`).
+- Scope: process-per-invocation plus START caps bounds active optimizer concurrency without a shared user-space planner queue. Higher-concurrency saturation at the configured limits and target-hardware measurements remain open.
+
 ## OP-7 follow-up: authorized filtered aliased-join plan backend — implemented
 
 - Contract: [optimizer specification](../../specs/planner-compiler.md). Statement 12 preserves the frozen statement-4 join request and adds one side-qualified parameter comparison or NULL test; kind 12 preserves kind-4 join metadata and appends the authorized filter column and expression.
@@ -47,7 +54,7 @@
 - Confined acceptance: the ABI v5 `sql_v3_write_read.c` artifact now runs the parameterized statement-12/kind-12 join through optimizer submission, AST matching, executor identity re-resolution, bounded execution, and SQLR relay. The acceptance verifies both direct and optimizer-backed v20 result frames as `(1, 42)`.
 - Verification: forced TinyCC rebuild of the targeted executor fixture, full maintained SDK suite, ABI generator consistency and all eight generator tests passed. The focused delegated-cgroup commit acceptance passed (`1 passed, 0 ignored`). The complete serial delegated-cgroup workspace suite passed, including 179 library tests, 142 commit tests, 74 transaction tests, and all remaining targets with zero ignored tests. `cargo fmt --all -- --check`, warning-denied workspace Clippy, and `git diff --check` passed.
 - Measurement: five sequential fresh-database delegated-cgroup acceptance runs exercised the direct and optimizer-backed filtered joins plus grouped/sorted SQL alongside operational reads/commits. Median run-level point-read p50/p95/p99 was 1.407/2.180/3.054 ms at baseline and 1.762/2.836/4.150 ms during analytics; durable-commit medians were 11.583/14.767/18.034 ms at baseline and 11.535/15.890/17.239 ms with analytics. The repeated sample is recorded in [workload progress](../workload-profile/PROGRESS.md); it is not a saturation target.
-- Remaining: broader multi-client analytical saturation beyond the repeated two-client capped acceptance, planner queue pressure, larger SQL memory-pressure tests and allocator-level copy accounting, and target-hardware measurements remain open. The slow-gateway bounded-output acceptance is recorded in [workload progress](../workload-profile/PROGRESS.md).
+- Remaining: broader multi-client analytical saturation beyond the repeated two-client capped acceptance, higher-concurrency optimizer saturation, larger SQL memory-pressure tests and allocator-level copy accounting, and target-hardware measurements remain open. The slow-gateway bounded-output acceptance is recorded in [workload progress](../workload-profile/PROGRESS.md).
 
 ## OP-7 follow-up: ordered single-key grouped aggregates — verified
 

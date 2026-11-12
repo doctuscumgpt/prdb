@@ -536,6 +536,118 @@ mod tests {
     }
 
     #[test]
+    fn process_protocol_backpressures_submissions_while_metadata_is_pending() {
+        use std::io::Read;
+        use std::time::Duration;
+
+        let (mut submission_client, mut submission_server) = UnixStream::pair().unwrap();
+        let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
+        let optimizer_thread = std::thread::spawn(move || {
+            serve_optimizer_process(&mut submission_server, &mut planner_client)
+        });
+
+        for request_id in [9, 10] {
+            crate::ipc::write_frame(
+                &mut submission_client,
+                &IpcFrame {
+                    operation: Operation::OptimizeSelect as u16,
+                    request_id,
+                    payload: select_request(),
+                },
+            )
+            .unwrap();
+        }
+
+        let first_planner_request = crate::ipc::read_frame(&mut planner_server)
+            .unwrap()
+            .expect("first submission must request planner metadata");
+        assert_eq!(first_planner_request.request_id, 257);
+        planner_server
+            .set_read_timeout(Some(Duration::from_millis(25)))
+            .unwrap();
+        let mut unexpected = [0; 1];
+        let error = planner_server.read(&mut unexpected).unwrap_err();
+        assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ),
+            "optimizer issued another planner request before resolving the first: {error}"
+        );
+        planner_server.set_read_timeout(None).unwrap();
+
+        let relation = AuthorizedPlanRelation {
+            schema_id: [1; 16],
+            schema_version: 3,
+            table_epoch: 7,
+            relation: AuthorizedRelationDescription {
+                relation_id: [2; 16],
+                name: "items".to_owned(),
+                columns: vec![VisibleColumn {
+                    column_id: [3; 16],
+                    name: "name".to_owned(),
+                    ordinal: 0,
+                    scalar_type: ScalarType::Text,
+                    nullable: false,
+                }],
+            },
+        };
+        crate::ipc::write_frame(
+            &mut planner_server,
+            &IpcFrame {
+                operation: first_planner_request.operation,
+                request_id: first_planner_request.request_id,
+                payload: DescribePlanRelationResponse {
+                    relation: Some(relation.clone()),
+                }
+                .encode()
+                .unwrap(),
+            },
+        )
+        .unwrap();
+        let first_response = crate::ipc::read_frame(&mut submission_client)
+            .unwrap()
+            .expect("first submission must finish after metadata arrives");
+        assert_eq!(first_response.request_id, 9);
+        assert_eq!(
+            OptimizerResponse::decode(&first_response.payload)
+                .unwrap()
+                .status,
+            OptimizerStatus::Success
+        );
+
+        let second_planner_request = crate::ipc::read_frame(&mut planner_server)
+            .unwrap()
+            .expect("second submission must run after the first completes");
+        assert_eq!(second_planner_request.request_id, 258);
+        crate::ipc::write_frame(
+            &mut planner_server,
+            &IpcFrame {
+                operation: second_planner_request.operation,
+                request_id: second_planner_request.request_id,
+                payload: DescribePlanRelationResponse {
+                    relation: Some(relation),
+                }
+                .encode()
+                .unwrap(),
+            },
+        )
+        .unwrap();
+        let second_response = crate::ipc::read_frame(&mut submission_client)
+            .unwrap()
+            .expect("second submission must finish after metadata arrives");
+        assert_eq!(second_response.request_id, 10);
+        assert_eq!(
+            OptimizerResponse::decode(&second_response.payload)
+                .unwrap()
+                .status,
+            OptimizerStatus::Success
+        );
+        submission_client.shutdown(Shutdown::Write).unwrap();
+        optimizer_thread.join().unwrap().unwrap();
+    }
+
+    #[test]
     fn process_protocol_dispatches_ordered_select_through_one_authorized_relation() {
         let (mut submission_client, mut submission_server) = UnixStream::pair().unwrap();
         let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
