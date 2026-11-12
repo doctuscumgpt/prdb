@@ -217,6 +217,35 @@ static uint32_t build_composite_group_count_plan(
     return offset;
 }
 
+static uint32_t build_ordered_composite_group_count_plan(uint8_t *bytes) {
+    uint32_t offset = 0;
+    uint8_t identifier[16];
+    uint32_t column;
+    prdb_encode_optimizer_plan_header_record(bytes + offset, 1, 9, 0);
+    offset += PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "public");
+    memset(identifier, 1, sizeof(identifier));
+    prdb_encode_optimizer_plan_schema_reference_record(bytes + offset, identifier, 3);
+    offset += PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "items");
+    memset(identifier, 2, sizeof(identifier));
+    prdb_encode_optimizer_plan_relation_reference_record(bytes + offset, identifier, 4);
+    offset += PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES;
+    put_u16(bytes, &offset, 2);
+    column = put_column(bytes, &offset, 3, 0); bytes[column] = 3; bytes[column + 20] = PRDB_SDK_VALUE_TYPE_INTEGER; set_column_ordinal(bytes, column, 0);
+    column = put_column(bytes, &offset, 3, 0); bytes[column] = 3; bytes[column + 20] = PRDB_SDK_VALUE_TYPE_BOOLEAN; set_column_ordinal(bytes, column, 1);
+    bytes[offset++] = 10;
+    bytes[offset++] = 2;
+    column = put_column(bytes, &offset, 3, 0); bytes[column] = 3; bytes[column + 20] = PRDB_SDK_VALUE_TYPE_BOOLEAN; set_column_ordinal(bytes, column, 1);
+    column = put_column(bytes, &offset, 3, 0); bytes[column] = 3; bytes[column + 20] = PRDB_SDK_VALUE_TYPE_INTEGER; set_column_ordinal(bytes, column, 0);
+    bytes[offset++] = 3;
+    bytes[offset++] = 0; bytes[offset++] = 0; bytes[offset++] = 1; bytes[offset++] = 0;
+    bytes[offset++] = 1; bytes[offset++] = UINT8_MAX; bytes[offset++] = 1; bytes[offset++] = 1;
+    bytes[offset++] = 0; bytes[offset++] = 1; bytes[offset++] = 0; bytes[offset++] = 1;
+    bytes[offset++] = 1; put_u32(bytes, &offset, 5);
+    return offset;
+}
+
 static uint32_t build_ordered_select_plan(uint8_t *bytes,
                                           uint32_t *order_key_id_offset) {
     uint32_t offset = 0;
@@ -889,6 +918,7 @@ int main(void) {
     uint8_t group_count_malformed[sizeof(group_count_payload)];
     uint8_t ordered_group_count_payload[256] = {0};
     uint8_t composite_group_count_payload[512] = {0};
+    uint8_t ordered_composite_group_count_payload[512] = {0};
     uint8_t composite_group_count_malformed[
         sizeof(composite_group_count_payload)];
     uint8_t ordered_select_payload[512] = {0};
@@ -907,6 +937,8 @@ int main(void) {
         ordered_group_count_decoded;
     static prdb_sdk_optimizer_composite_group_count_plan_v1
         composite_group_count_decoded;
+    static prdb_sdk_optimizer_ordered_composite_group_count_plan_v1
+        ordered_composite_group_count_decoded;
     static prdb_sdk_optimizer_ordered_select_plan_v1 ordered_select_decoded;
     static prdb_sdk_select_v3 ordered_select_statement;
     static prdb_sdk_select_binding_v3 ordered_select_binding;
@@ -920,6 +952,9 @@ int main(void) {
     static prdb_sdk_sql_column_shape_v2 ordered_group_count_columns[1];
     static prdb_sdk_select_v13 composite_group_count_statement;
     static prdb_sdk_select_binding_v13 composite_group_count_binding;
+    static prdb_sdk_select_v15 ordered_composite_group_count_statement;
+    static prdb_sdk_select_binding_v15 ordered_composite_group_count_binding;
+    static prdb_sdk_sql_column_shape_v2 ordered_composite_group_count_columns[2];
     uint32_t ordered_select_order_key_offset;
     uint32_t ordered_select_payload_len = build_ordered_select_plan(
         ordered_select_payload, &ordered_select_order_key_offset);
@@ -1811,6 +1846,43 @@ int main(void) {
                &composite_group_count_decoded,
                sizeof(composite_group_count_decoded)) ==
            PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    uint32_t ordered_composite_group_count_payload_len =
+        build_ordered_composite_group_count_plan(ordered_composite_group_count_payload);
+    assert(prdb_sdk_optimizer_decode_ordered_composite_group_count_plan_v1(
+               ordered_composite_group_count_payload, ordered_composite_group_count_payload_len,
+               &ordered_composite_group_count_decoded, sizeof(ordered_composite_group_count_decoded)) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(ordered_composite_group_count_decoded.plan.plan_kind == 9 &&
+           ordered_composite_group_count_decoded.group_key_count == 2 &&
+           ordered_composite_group_count_decoded.order_count == 3 &&
+           ordered_composite_group_count_decoded.order_items[0].group_key_index == 0 &&
+           ordered_composite_group_count_decoded.order_items[1].source == 1 &&
+           ordered_composite_group_count_decoded.plan.limit == 5);
+    static const uint8_t ordered_composite_group_count_sql[] =
+        "SELECT active, id, COUNT(*) FROM items GROUP BY active, id "
+        "ORDER BY active DESC NULLS LAST, COUNT(*) DESC, "
+        "id ASC NULLS FIRST LIMIT 5";
+    ordered_composite_group_count_columns[0] = (prdb_sdk_sql_column_shape_v2){
+        (const uint8_t *)"id", 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0};
+    ordered_composite_group_count_columns[1] = (prdb_sdk_sql_column_shape_v2){
+        (const uint8_t *)"active", 6, 1, PRDB_SDK_VALUE_TYPE_BOOLEAN, 0, 0};
+    assert(prdb_sdk_sql_parse_select_v15(ordered_composite_group_count_sql,
+               sizeof(ordered_composite_group_count_sql) - 1,
+               &ordered_composite_group_count_statement,
+               sizeof(ordered_composite_group_count_statement), NULL) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_sql_bind_select_v15(&ordered_composite_group_count_statement,
+               (const uint8_t *)"items", 5, ordered_composite_group_count_columns, 2,
+               &ordered_composite_group_count_binding,
+               sizeof(ordered_composite_group_count_binding)) == PRDB_SDK_SQL_BIND_OK);
+    int32_t ordered_composite_match_status = prdb_sdk_optimizer_match_ordered_composite_group_count_plan_v1(
+               &ordered_composite_group_count_statement, &ordered_composite_group_count_binding,
+               (const uint8_t *)"public", 6, ordered_composite_group_count_payload,
+               ordered_composite_group_count_payload_len);
+    assert(ordered_composite_match_status == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    ordered_composite_group_count_statement.order_items[0].direction = PRDB_SDK_SQL_V10_ORDER_ASCENDING;
+    assert(prdb_sdk_optimizer_match_ordered_composite_group_count_plan_v1(
+               &ordered_composite_group_count_statement, &ordered_composite_group_count_binding,
+               (const uint8_t *)"public", 6, ordered_composite_group_count_payload,
+               ordered_composite_group_count_payload_len) == PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
     static const uint8_t join_sql[] =
         "SELECT l.value, r.value FROM lefts AS l INNER JOIN rights AS r "
         "ON l.id = r.id AND l.active = r.active LIMIT 5;";

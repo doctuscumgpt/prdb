@@ -102,6 +102,25 @@ pub struct OrderedGroupCountRequest {
     pub limit: Option<u32>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompositeGroupCountOrderItem {
+    /// 0 sorts by a group key; 1 sorts by COUNT(*).
+    pub source: u8,
+    /// Present only when `source == 0`; indexes group keys in SQL order.
+    pub group_key_index: Option<u8>,
+    pub descending: bool,
+    pub nulls_first: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderedCompositeGroupCountRequest {
+    pub schema_name: String,
+    pub relation_name: String,
+    pub group_key_names: Vec<String>,
+    pub order_items: Vec<CompositeGroupCountOrderItem>,
+    pub limit: Option<u32>,
+}
+
 /// Bounded two-to-eight-key COUNT(*) grouping request. Keys retain projection
 /// order; filters, HAVING, and ORDER BY are outside this request shape.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -518,6 +537,99 @@ pub fn decode_ordered_group_count_request(
         schema_name,
         relation_name,
         group_key_name,
+        order_items,
+        limit,
+    })
+}
+
+pub fn decode_ordered_composite_group_count_request(
+    bytes: &[u8],
+) -> Result<OrderedCompositeGroupCountRequest, RequestError> {
+    if bytes.len() > MAX_REQUEST_BYTES {
+        return Err(RequestError::TooLarge);
+    }
+    let header_bytes = OPTIMIZER_SELECT_REQUEST_HEADER_BYTES as usize;
+    if bytes.len() < header_bytes {
+        return Err(RequestError::Truncated);
+    }
+    let version_offset = OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET as usize;
+    let version = u16::from_be_bytes([bytes[version_offset], bytes[version_offset + 1]]);
+    if version != OPTIMIZER_REQUEST_VERSION {
+        return Err(RequestError::UnsupportedVersion(version));
+    }
+    let (statement, flags) =
+        decode_optimizer_select_request(bytes).ok_or(RequestError::Truncated)?;
+    if statement != crate::query_abi::OPTIMIZER_COMPOSITE_GROUP_COUNT_ORDERED_STATEMENT {
+        return Err(RequestError::UnsupportedStatement(statement));
+    }
+    if flags != 0 {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut cursor = Cursor {
+        bytes,
+        offset: header_bytes,
+    };
+    let schema_name = cursor.identifier()?;
+    let relation_name = cursor.identifier()?;
+    let key_count = usize::from(cursor.u8()?);
+    if !(MIN_GROUP_KEYS..=MAX_GROUP_KEYS).contains(&key_count) {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut group_key_names = Vec::with_capacity(key_count);
+    for _ in 0..key_count {
+        group_key_names.push(cursor.identifier()?);
+    }
+    let order_count = usize::from(cursor.u8()?);
+    if !(1..=MAX_GROUP_KEYS + 1).contains(&order_count) {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut order_items = Vec::with_capacity(order_count);
+    let mut seen_group_keys = 0u8;
+    let mut seen_count = false;
+    for _ in 0..order_count {
+        let source = cursor.u8()?;
+        let group_key_index = if source == 0 {
+            let key_index = cursor.u8()?;
+            if usize::from(key_index) >= key_count || seen_group_keys & (1 << key_index) != 0 {
+                return Err(RequestError::InvalidValue);
+            }
+            seen_group_keys |= 1 << key_index;
+            Some(key_index)
+        } else if source == 1 && !seen_count {
+            seen_count = true;
+            None
+        } else {
+            return Err(RequestError::InvalidValue);
+        };
+        let descending = match cursor.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(RequestError::InvalidValue),
+        };
+        let nulls_first = match cursor.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(RequestError::InvalidValue),
+        };
+        order_items.push(CompositeGroupCountOrderItem {
+            source,
+            group_key_index,
+            descending,
+            nulls_first,
+        });
+    }
+    let limit = match cursor.u8()? {
+        0 => None,
+        1 => Some(cursor.u32()?),
+        _ => return Err(RequestError::InvalidValue),
+    };
+    if !cursor.is_empty() {
+        return Err(RequestError::TrailingBytes);
+    }
+    Ok(OrderedCompositeGroupCountRequest {
+        schema_name,
+        relation_name,
+        group_key_names,
         order_items,
         limit,
     })
@@ -1000,6 +1112,25 @@ mod tests {
         bytes
     }
 
+    fn ordered_composite_group_count_request() -> Vec<u8> {
+        let mut bytes = vec![0, OPTIMIZER_REQUEST_VERSION as u8];
+        bytes.push(crate::query_abi::OPTIMIZER_COMPOSITE_GROUP_COUNT_ORDERED_STATEMENT);
+        bytes.push(0);
+        name("public", &mut bytes);
+        name("items", &mut bytes);
+        bytes.push(2);
+        name("id", &mut bytes);
+        name("active", &mut bytes);
+        bytes.extend_from_slice(&[
+            3, // order count
+            1, 1, 0, // COUNT(*) DESC NULLS LAST
+            0, 1, 0, 1, // group key 1 ASC NULLS FIRST
+            0, 0, 0, 0, // group key 0 ASC NULLS LAST
+            1, 0, 0, 0, 4, // LIMIT 4
+        ]);
+        bytes
+    }
+
     #[test]
     fn decodes_bounded_single_key_group_count_request() {
         let request = decode_group_count_request(&group_count_request()).unwrap();
@@ -1050,6 +1181,37 @@ mod tests {
         trailing.push(0);
         assert_eq!(
             decode_ordered_group_count_request(&trailing),
+            Err(RequestError::TrailingBytes)
+        );
+    }
+
+    #[test]
+    fn decodes_composite_group_order_sources_and_rejects_repeats() {
+        let bytes = ordered_composite_group_count_request();
+        let request = decode_ordered_composite_group_count_request(&bytes).unwrap();
+        assert_eq!(request.schema_name, "public");
+        assert_eq!(request.relation_name, "items");
+        assert_eq!(request.group_key_names, ["id", "active"]);
+        assert_eq!(request.order_items.len(), 3);
+        assert_eq!(request.order_items[0].source, 1);
+        assert_eq!(request.order_items[0].group_key_index, None);
+        assert!(request.order_items[0].descending);
+        assert_eq!(request.order_items[1].group_key_index, Some(1));
+        assert!(request.order_items[1].nulls_first);
+        assert_eq!(request.order_items[2].group_key_index, Some(0));
+        assert_eq!(request.limit, Some(4));
+
+        let mut duplicate_key = bytes.clone();
+        let duplicate_key_index = duplicate_key.len() - 8;
+        duplicate_key[duplicate_key_index] = 1;
+        assert_eq!(
+            decode_ordered_composite_group_count_request(&duplicate_key),
+            Err(RequestError::InvalidValue)
+        );
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert_eq!(
+            decode_ordered_composite_group_count_request(&trailing),
             Err(RequestError::TrailingBytes)
         );
     }

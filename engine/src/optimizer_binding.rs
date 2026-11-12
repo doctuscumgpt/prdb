@@ -4,10 +4,11 @@ use crate::metadata_discovery::{
     AuthorizedPlanRelation, AuthorizedRelationDescription, VisibleColumn,
 };
 use crate::optimizer_request::{
-    Comparison, CompositeGroupCountRequest, GroupCountOrderItem, GroupCountRequest,
-    JoinRelationSide, OrderedGroupCountRequest, OrderedSelectRequest, Predicate, RequestError,
-    UpdateValue, decode_composite_group_count_request, decode_delete_request,
-    decode_group_count_request, decode_join_select_request, decode_ordered_group_count_request,
+    Comparison, CompositeGroupCountOrderItem, CompositeGroupCountRequest, GroupCountOrderItem,
+    GroupCountRequest, JoinRelationSide, OrderedGroupCountRequest, OrderedSelectRequest, Predicate,
+    RequestError, UpdateValue, decode_composite_group_count_request, decode_delete_request,
+    decode_group_count_request, decode_join_select_request,
+    decode_ordered_composite_group_count_request, decode_ordered_group_count_request,
     decode_ordered_select_request, decode_select_request, decode_update_request,
 };
 use crate::transaction::{PlannerMetadataConnection, TransactionError};
@@ -86,6 +87,19 @@ pub struct BoundCompositeGroupCount {
     pub relation_id: [u8; 16],
     pub relation_name: String,
     pub group_keys: Vec<BoundColumn>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundOrderedCompositeGroupCount {
+    pub schema_name: String,
+    pub schema_id: [u8; 16],
+    pub schema_version: u64,
+    pub table_epoch: u64,
+    pub relation_id: [u8; 16],
+    pub relation_name: String,
+    pub group_keys: Vec<BoundColumn>,
+    pub order_items: Vec<CompositeGroupCountOrderItem>,
     pub limit: Option<u32>,
 }
 
@@ -341,6 +355,54 @@ pub fn bind_composite_group_count_request_via_metadata(
         .map_err(MetadataBindError::Transaction)?
         .map(|(_, relation)| relation);
     bind_decoded_composite_group_count(request, relation).map_err(MetadataBindError::Bind)
+}
+
+pub fn bind_ordered_composite_group_count_request(
+    request_bytes: &[u8],
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundOrderedCompositeGroupCount, BindError> {
+    let request = decode_ordered_composite_group_count_request(request_bytes)?;
+    bind_ordered_composite_group_count_decoded(request, relation)
+}
+
+pub fn bind_ordered_composite_group_count_request_via_metadata(
+    request_bytes: &[u8],
+    connection: &mut PlannerMetadataConnection<'_, '_>,
+) -> Result<BoundOrderedCompositeGroupCount, MetadataBindError> {
+    let request =
+        decode_ordered_composite_group_count_request(request_bytes).map_err(BindError::from)?;
+    let relation = connection
+        .resolve_relation_for_plan(&request.schema_name, &request.relation_name)
+        .map_err(MetadataBindError::Transaction)?
+        .map(|(_, relation)| relation);
+    bind_ordered_composite_group_count_decoded(request, relation).map_err(MetadataBindError::Bind)
+}
+
+fn bind_ordered_composite_group_count_decoded(
+    request: crate::optimizer_request::OrderedCompositeGroupCountRequest,
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundOrderedCompositeGroupCount, BindError> {
+    let relation = authorized_relation(&request.relation_name, relation)?;
+    let mut group_keys = Vec::with_capacity(request.group_key_names.len());
+    let mut seen = HashSet::with_capacity(request.group_key_names.len());
+    for name in &request.group_key_names {
+        let column = resolve_column(&relation.relation.columns, name)?;
+        if !seen.insert(column.ordinal) {
+            return Err(BindError::InvalidQuery);
+        }
+        group_keys.push(column.into());
+    }
+    Ok(BoundOrderedCompositeGroupCount {
+        schema_name: request.schema_name,
+        schema_id: relation.schema_id,
+        schema_version: relation.schema_version,
+        table_epoch: relation.table_epoch,
+        relation_id: relation.relation.relation_id,
+        relation_name: relation.relation.name,
+        group_keys,
+        order_items: request.order_items,
+        limit: request.limit,
+    })
 }
 
 pub fn bind_delete_request(

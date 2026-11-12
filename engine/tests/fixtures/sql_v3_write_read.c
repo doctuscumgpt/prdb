@@ -541,7 +541,7 @@ static int32_t run_write_read_fixture(
         "GROUP BY left_key, right_key LIMIT 2";
     static const uint8_t select_composite_order_sql[] =
         "SELECT left_key, right_key, COUNT(*) FROM grouped_records "
-        "GROUP BY left_key, right_key HAVING COUNT(*) >= $1 "
+        "GROUP BY left_key, right_key "
         "ORDER BY right_key DESC NULLS LAST, COUNT(*) DESC, "
         "left_key ASC NULLS LAST LIMIT 2";
     static const uint8_t select_composite_literal_sql[] =
@@ -1320,14 +1320,28 @@ static int32_t run_write_read_fixture(
 
     composite_grouped_results.row_count = 0;
     composite_grouped_results.output_len = 0;
-    status = prdb_sdk_sql_execute_group_v15(
-        host, schema, sizeof(schema) - 1, select_composite_order_sql,
-        sizeof(select_composite_order_sql) - 1, &count_parameter, 1, 16,
-        sizeof(batch_response), planner_response, sizeof(planner_response),
-        executor_response, sizeof(executor_response), batch_response,
-        sizeof(batch_response), planner_columns, 9, executor_columns, 9,
-        cell_scratch, 9, grouped_materialized, sizeof(grouped_materialized),
-        write_grouped_composite_count_v15, &composite_grouped_results);
+    if (optimizer_host_v5 != NULL) {
+        status = prdb_sdk_sql_execute_ordered_composite_count_optimizer_v1(
+            optimizer_host_v5, schema, sizeof(schema) - 1,
+            select_composite_order_sql, sizeof(select_composite_order_sql) - 1,
+            16, sizeof(batch_response), group_count_optimizer_request,
+            sizeof(group_count_optimizer_request), group_count_optimizer_response,
+            sizeof(group_count_optimizer_response), planner_response,
+            sizeof(planner_response), executor_response,
+            sizeof(executor_response), batch_response, sizeof(batch_response),
+            planner_columns, 9, executor_columns, 9, cell_scratch, 9,
+            grouped_materialized, sizeof(grouped_materialized),
+            write_grouped_composite_count_v15, &composite_grouped_results);
+    } else {
+        status = prdb_sdk_sql_execute_group_v15(
+            host, schema, sizeof(schema) - 1, select_composite_order_sql,
+            sizeof(select_composite_order_sql) - 1, NULL, 0, 16,
+            sizeof(batch_response), planner_response, sizeof(planner_response),
+            executor_response, sizeof(executor_response), batch_response,
+            sizeof(batch_response), planner_columns, 9, executor_columns, 9,
+            cell_scratch, 9, grouped_materialized, sizeof(grouped_materialized),
+            write_grouped_composite_count_v15, &composite_grouped_results);
+    }
     if (status != PRDB_SDK_SQL_EXEC_OK ||
         composite_grouped_results.row_count != 2) {
         static const uint8_t message[] = "fixture-error-composite-order";

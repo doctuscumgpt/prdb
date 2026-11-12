@@ -1,5 +1,12 @@
 # Optimizer Progress
 
+## OP-7 follow-up: composite grouped COUNT sort plan — verified
+
+- Contract: request statement 9 / plan kind 9 handles two to eight authorized group keys, up to nine distinct key/COUNT(*) sort items, and LIMIT. WHERE, HAVING, and non-COUNT aggregates remain unsupported.
+- Implementation: Rust decoding, authorized binding, ordinal-sorted scan planning, canonical kind-9 codec, optimizer process dispatch, and IPC plan validation are implemented. TinyCC encodes statement 9, decodes kind 9, matches sort sources/directions/NULL placement against v15 SQL, and offers an optimizer-gated v15 execution entry point that re-resolves relation identity before execution.
+- Confined acceptance: the maintained ABI v5 SQL fixture routes `SELECT left_key, right_key, COUNT(*) ... ORDER BY ... LIMIT 2` through statement 9, matches the v15 AST to kind 9, re-resolves executor relation identity, runs the bounded v15 sorter, and commits the expected SQLR output through result relay.
+- Verification: Rust kind-9 plan round-trip and invalid-sort-source regression passed; TinyCC exact request bytes, kind-9 decode, AST match, and mismatch rejection passed. `make -f engine/sdk/Makefile test sandbox-query-fixture` passed. The focused confined SQL DML sequence passed. Full locked workspace tests passed inside a delegated user service: 142 commit integration tests and all other test targets passed, every target reported zero ignored, including all cgroup-backed commit and metadata process tests. Build, format, warning-denied Clippy, ABI generation checks, and `git diff --check` passed.
+
 ## OP-7: bounded composite join request and authorized binding — in progress
 
 - Contract: [optimizer](../../specs/planner-compiler.md). Decode a two-relation SELECT with stable left/right projections, two to eight equality keys, and an optional limit; bind both relations through the invocation's authorized planner metadata before planning.

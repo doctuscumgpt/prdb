@@ -90,6 +90,10 @@ int main(void) {
     static const uint8_t ordered_group_count_sql[] =
         "SELECT id, COUNT(*) FROM items GROUP BY id "
         "ORDER BY COUNT(*) DESC NULLS LAST, id ASC NULLS FIRST LIMIT 5;";
+    static const uint8_t ordered_composite_group_count_sql[] =
+        "SELECT left_key, right_key, COUNT(*) FROM grouped_records "
+        "GROUP BY left_key, right_key ORDER BY right_key DESC NULLS LAST, "
+        "COUNT(*) DESC, left_key ASC NULLS FIRST LIMIT 2;";
     static const uint8_t ordered_select_sql[] =
         "SELECT id, label FROM items ORDER BY label DESC LIMIT 5;";
     static const uint8_t expected_group_count_request[] = {
@@ -101,6 +105,10 @@ int main(void) {
     static const uint8_t expected_ordered_group_count_request[] = {
         0, 1, 8, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'i', 't', 'e', 'm',
         's', 2, 'i', 'd', 2, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 5};
+    static const uint8_t expected_ordered_composite_group_count_request[] = {
+        0, 1, 9, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 15, 'g', 'r', 'o', 'u', 'p', 'e', 'd', '_', 'r', 'e', 'c', 'o', 'r', 'd', 's',
+        2, 8, 'l', 'e', 'f', 't', '_', 'k', 'e', 'y', 9, 'r', 'i', 'g', 'h', 't', '_', 'k', 'e', 'y', 3,
+        0, 1, 1, 0, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 2};
     static const uint8_t expected_ordered_select_request[] = {
         0, 1, 7, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'i', 't', 'e', 'm',
         's', 0, 2, 2, 'i', 'd', 5, 'l', 'a', 'b', 'e', 'l', 5, 'l', 'a',
@@ -133,6 +141,7 @@ int main(void) {
     prdb_sdk_select_v4 group_count_statement = {0};
     prdb_sdk_select_v12 ordered_group_count_statement = {0};
     prdb_sdk_select_v13 composite_group_count_statement = {0};
+    prdb_sdk_select_v15 ordered_composite_group_count_statement = {0};
     prdb_sdk_select_v3 ordered_select_statement = {0};
 
     assert(prdb_sdk_sql_parse_select_v2(
@@ -190,6 +199,17 @@ int main(void) {
                &response_len, &decoded, sizeof(decoded)) ==
            PRDB_SDK_OPTIMIZER_RESULT_OK);
     assert(decoded.status == PRDB_SDK_OPTIMIZER_STATUS_SUCCESS);
+
+    assert(prdb_sdk_sql_parse_select_v15(
+               ordered_composite_group_count_sql,
+               sizeof(ordered_composite_group_count_sql) - 1,
+               &ordered_composite_group_count_statement,
+               sizeof(ordered_composite_group_count_statement), &error_offset) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_optimizer_encode_ordered_composite_group_count_v1(
+               &ordered_composite_group_count_statement, schema, sizeof(schema) - 1,
+               encoded, sizeof(encoded), &encoded_len) == PRDB_SDK_OPTIMIZER_ENCODE_OK);
+    assert(encoded_len == sizeof(expected_ordered_composite_group_count_request));
+    assert(memcmp(encoded, expected_ordered_composite_group_count_request, encoded_len) == 0);
     assert(prdb_sdk_sql_parse_select_v13(
                composite_group_count_sql,
                sizeof(composite_group_count_sql) - 1,

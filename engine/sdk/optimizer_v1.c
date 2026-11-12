@@ -660,6 +660,84 @@ int32_t prdb_sdk_optimizer_encode_composite_group_count_v1(
     return PRDB_SDK_OPTIMIZER_ENCODE_OK;
 }
 
+int32_t prdb_sdk_optimizer_encode_ordered_composite_group_count_v1(
+    const prdb_sdk_select_v15 *statement, const uint8_t *schema,
+    uint32_t schema_len, uint8_t *request, uint64_t request_capacity,
+    uint64_t *request_len) {
+    const prdb_sdk_select_v2 *base;
+    const uint8_t *sql;
+    uint64_t offset = 0;
+    uint8_t header[4] = {0, 1, PRDB_OPTIMIZER_COMPOSITE_GROUP_COUNT_ORDERED_STATEMENT, 0};
+    uint16_t seen_keys = 0;
+    uint32_t seen_count = 0;
+    if (statement == NULL || schema == NULL || request == NULL || request_len == NULL ||
+        statement->struct_size != sizeof(*statement) || statement->abi_version != PRDB_SDK_SQL_ABI_V15_VERSION ||
+        statement->base.struct_size != sizeof(statement->base) || statement->base.abi_version != PRDB_SDK_SQL_ABI_V14_VERSION ||
+        statement->base.base.struct_size != sizeof(statement->base.base) || statement->base.base.abi_version != PRDB_SDK_SQL_ABI_V13_VERSION ||
+        statement->base.base.group_key_count < 2 || statement->base.base.group_key_count > 8 ||
+        statement->base.base.base.aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR ||
+        statement->base.base.base.base.projection_count != 1 ||
+        statement->base.base.base.base.projection_star != 0 ||
+        statement->base.base.base.base.predicate_count != 0 ||
+        statement->base.has_having != 0 || statement->base.base.base.base.has_limit > 1 ||
+        statement->order_count == 0 || statement->order_count > 9 || schema_len == 0 || schema_len > 63 ||
+        !valid_identifier(schema, schema_len) || request_capacity > OPTIMIZER_REQUEST_MAX_BYTES)
+        return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    base = &statement->base.base.base.base;
+    sql = base->sql;
+    if (sql == NULL || base->sql_len > PRDB_SDK_SQL_MAX_QUERY_BYTES ||
+        !span_is_identifier(base, base->relation)) return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    if (ranges_overlap(statement, sizeof(*statement), request, request_capacity) ||
+        ranges_overlap(schema, schema_len, request, request_capacity) ||
+        ranges_overlap(sql, base->sql_len, request, request_capacity) ||
+        ranges_overlap(request_len, sizeof(*request_len), request, request_capacity) ||
+        ranges_overlap(request_len, sizeof(*request_len), statement, sizeof(*statement)) ||
+        ranges_overlap(request_len, sizeof(*request_len), schema, schema_len) ||
+        ranges_overlap(request_len, sizeof(*request_len), sql, base->sql_len))
+        return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    uint64_t required = 4 + 1 + schema_len + 1 + base->relation.length + 1 + 1;
+    for (uint32_t i = 0; i < statement->base.base.group_key_count; ++i) {
+        if (!span_is_identifier(base, statement->base.base.group_keys[i]) ||
+            !span_is_identifier(base, statement->base.base.projection_keys[i])) return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+        for (uint32_t j = 0; j < i; ++j)
+            if (optimizer_spans_equal_folded(sql, base->sql_len, statement->base.base.group_keys[i], statement->base.base.group_keys[j])) return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+        if (!append_identifier_span(sql, base->sql_len, statement->base.base.group_keys[i], NULL, 0, &required)) return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+    }
+    required += 1 + (base->has_limit ? 4 : 0);
+    for (uint32_t i = 0; i < statement->order_count; ++i) {
+        const prdb_sdk_sql_order_item_v15 *item = &statement->order_items[i];
+        if (item->direction > PRDB_SDK_SQL_V10_ORDER_DESCENDING || item->null_order > PRDB_SDK_SQL_V11_NULLS_LAST) return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+        if (item->kind == PRDB_SDK_SQL_V10_ORDER_GROUP_KEY) {
+            if (item->group_key_index >= statement->base.base.group_key_count || (seen_keys & (1u << item->group_key_index))) return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+            seen_keys |= (uint16_t)(1u << item->group_key_index);
+            required += 4;
+        } else if (item->kind == PRDB_SDK_SQL_V10_ORDER_AGGREGATE && item->group_key_index == 0 && !seen_count) {
+            seen_count = 1; required += 3;
+        } else return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+    }
+    required += base->has_limit ? 0 : 0;
+    if (required > OPTIMIZER_REQUEST_MAX_BYTES) return PRDB_SDK_OPTIMIZER_ENCODE_LIMIT_EXCEEDED;
+    if (request_capacity < required) { *request_len = required; return PRDB_SDK_OPTIMIZER_ENCODE_BUFFER_TOO_SMALL; }
+    predicate_append(request, request_capacity, &offset, header, sizeof(header));
+    predicate_append_u8(request, request_capacity, &offset, (uint8_t)schema_len);
+    predicate_append(request, request_capacity, &offset, schema, schema_len);
+    append_identifier_span(sql, base->sql_len, base->relation, request, request_capacity, &offset);
+    predicate_append_u8(request, request_capacity, &offset, (uint8_t)statement->base.base.group_key_count);
+    for (uint32_t i = 0; i < statement->base.base.group_key_count; ++i) append_identifier_span(sql, base->sql_len, statement->base.base.group_keys[i], request, request_capacity, &offset);
+    predicate_append_u8(request, request_capacity, &offset, (uint8_t)statement->order_count);
+    for (uint32_t i = 0; i < statement->order_count; ++i) {
+        const prdb_sdk_sql_order_item_v15 *item = &statement->order_items[i];
+        predicate_append_u8(request, request_capacity, &offset, item->kind == PRDB_SDK_SQL_V10_ORDER_GROUP_KEY ? 0 : 1);
+        if (item->kind == PRDB_SDK_SQL_V10_ORDER_GROUP_KEY) predicate_append_u8(request, request_capacity, &offset, (uint8_t)item->group_key_index);
+        predicate_append_u8(request, request_capacity, &offset, (uint8_t)item->direction);
+        predicate_append_u8(request, request_capacity, &offset, (uint8_t)(item->null_order == PRDB_SDK_SQL_V11_NULL_ORDER_DEFAULT || item->null_order == PRDB_SDK_SQL_V11_NULLS_FIRST));
+    }
+    predicate_append_u8(request, request_capacity, &offset, (uint8_t)base->has_limit);
+    if (base->has_limit) { uint8_t limit[4]; write_u32(limit, base->limit); predicate_append(request, request_capacity, &offset, limit, 4); }
+    *request_len = offset;
+    return PRDB_SDK_OPTIMIZER_ENCODE_OK;
+}
+
 static int32_t optimizer_encode_join_select_internal(
     const prdb_sdk_select_v19 *statement, const uint8_t *schema,
     uint32_t schema_len, uint8_t *request, uint64_t request_capacity,

@@ -107,6 +107,13 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             }),
             Operation::OptimizeGroupCount => {
                 if request.payload.get(2)
+                    == Some(&crate::query_abi::OPTIMIZER_COMPOSITE_GROUP_COUNT_ORDERED_STATEMENT)
+                {
+                    crate::optimizer_request::decode_ordered_composite_group_count_request(
+                        &request.payload,
+                    )
+                    .map(|decoded| vec![(decoded.schema_name, decoded.relation_name)])
+                } else if request.payload.get(2)
                     == Some(&crate::query_abi::OPTIMIZER_COMPOSITE_GROUP_COUNT_STATEMENT)
                 {
                     crate::optimizer_request::decode_composite_group_count_request(&request.payload)
@@ -207,6 +214,12 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             }
             Operation::OptimizeGroupCount => {
                 if request.payload.get(2)
+                    == Some(&crate::query_abi::OPTIMIZER_COMPOSITE_GROUP_COUNT_ORDERED_STATEMENT)
+                {
+                    crate::optimizer_service::optimize_ordered_composite_group_count_v1_with_relation(
+                        &request.payload, relations.remove(0),
+                    )
+                } else if request.payload.get(2)
                     == Some(&crate::query_abi::OPTIMIZER_COMPOSITE_GROUP_COUNT_STATEMENT)
                 {
                     crate::optimizer_service::optimize_composite_group_count_v1_with_relation(
