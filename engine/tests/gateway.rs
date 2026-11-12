@@ -777,3 +777,140 @@ fn start_gateway_bridge_relays_provisional_data_then_terminal() {
     gateway.join().unwrap();
     supervisor.join().unwrap();
 }
+
+#[test]
+fn slow_tcp_result_consumer_backpressures_supervisor_service_writer() {
+    const RESULT_FRAME_BYTES: usize = 256 * 1024;
+    const RESULT_FRAME_COUNT: usize = 16;
+
+    fn set_socket_buffer_size(
+        stream: &std::net::TcpStream,
+        option: libc::c_int,
+        size: libc::c_int,
+    ) {
+        // SAFETY: the stream owns a live socket descriptor and `size` is an integer option value.
+        let result = unsafe {
+            libc::setsockopt(
+                std::os::fd::AsRawFd::as_raw_fd(stream),
+                libc::SOL_SOCKET,
+                option,
+                (&size as *const libc::c_int).cast(),
+                std::mem::size_of_val(&size) as libc::socklen_t,
+            )
+        };
+        assert_eq!(
+            result,
+            0,
+            "setsockopt failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let (mut gateway_service, mut supervisor_service) =
+        std::os::unix::net::UnixStream::pair().unwrap();
+    let (producer_finished_tx, producer_finished_rx) = std::sync::mpsc::channel();
+    let supervisor = std::thread::spawn(move || {
+        let start = read_frame(&mut supervisor_service).unwrap().unwrap();
+        assert_eq!(start.operation, Operation::StartSubmission as u16);
+        write_frame(
+            &mut supervisor_service,
+            &IpcFrame {
+                operation: start.operation,
+                request_id: start.request_id,
+                payload: br#"{"state":"accepted"}"#.to_vec(),
+            },
+        )
+        .unwrap();
+        let payload = vec![b'x'; RESULT_FRAME_BYTES];
+        for _ in 0..RESULT_FRAME_COUNT {
+            write_frame(
+                &mut supervisor_service,
+                &IpcFrame {
+                    operation: Operation::GatewayResultData as u16,
+                    request_id: start.request_id,
+                    payload: payload.clone(),
+                },
+            )
+            .unwrap();
+        }
+        write_frame(
+            &mut supervisor_service,
+            &IpcFrame {
+                operation: Operation::GatewayTerminal as u16,
+                request_id: start.request_id,
+                payload: br#"{"outcome":"committed"}"#.to_vec(),
+            },
+        )
+        .unwrap();
+        producer_finished_tx.send(()).unwrap();
+    });
+    let gateway = std::thread::spawn(move || {
+        let (mut client, _) = listener.accept().unwrap();
+        set_socket_buffer_size(&client, libc::SO_SNDBUF, 64 * 1024);
+        prdb_engine::gateway::serve_tcp_client_connection(&mut client, &mut gateway_service)
+            .unwrap();
+    });
+
+    let mut client = std::net::TcpStream::connect(address).unwrap();
+    set_socket_buffer_size(&client, libc::SO_RCVBUF, 256 * 1024);
+    client
+        .write_all(
+            &ClientFrame {
+                kind: 7,
+                request_id: 8,
+                response_sequence: 0,
+                payload: b"{}".to_vec(),
+            }
+            .encode()
+            .unwrap(),
+        )
+        .unwrap();
+
+    let mut decoder = ClientFrameDecoder::default();
+    let mut buffer = [0u8; 256 * 1024];
+    let mut responses = Vec::new();
+    while responses.is_empty() {
+        let count = client.read(&mut buffer).unwrap();
+        assert_ne!(
+            count, 0,
+            "gateway disconnected before START acknowledgement"
+        );
+        responses.extend(decoder.push(&buffer[..count]).unwrap());
+    }
+    assert_eq!(responses[0].kind, 100);
+    assert!(matches!(
+        producer_finished_rx.recv_timeout(std::time::Duration::from_millis(100)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+
+    let mut data_frames = 0usize;
+    let mut terminal_seen = false;
+    let mut pending = Vec::new();
+    while !terminal_seen {
+        let count = client.read(&mut buffer).unwrap();
+        assert_ne!(count, 0, "gateway disconnected before terminal result");
+        pending.extend(decoder.push(&buffer[..count]).unwrap());
+        for frame in pending.drain(..) {
+            assert_eq!(frame.request_id, 8);
+            if frame.kind == 102 {
+                data_frames += 1;
+                assert_eq!(frame.response_sequence, data_frames as u64);
+                assert_eq!(frame.payload.len(), RESULT_FRAME_BYTES);
+                assert!(frame.payload.iter().all(|byte| *byte == b'x'));
+            } else if frame.kind == 103 {
+                terminal_seen = true;
+                assert_eq!(frame.response_sequence, (RESULT_FRAME_COUNT + 1) as u64);
+                assert_eq!(frame.payload, br#"{"outcome":"committed"}"#);
+            } else {
+                panic!("unexpected response frame kind {}", frame.kind);
+            }
+        }
+    }
+    assert_eq!(data_frames, RESULT_FRAME_COUNT);
+    producer_finished_rx.recv().unwrap();
+    client.shutdown(std::net::Shutdown::Write).unwrap();
+    gateway.join().unwrap();
+    supervisor.join().unwrap();
+}
