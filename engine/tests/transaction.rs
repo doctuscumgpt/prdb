@@ -22,7 +22,7 @@ use prdb_engine::tuple::{
 use redb::{Database, ReadableDatabase};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -68,6 +68,13 @@ fn key(id: prdb_engine::overlay::RowId) -> [u8; 32] {
     key[..16].copy_from_slice(&id.table);
     key[16..].copy_from_slice(&id.row);
     key
+}
+
+fn numbered_row_id(table: [u8; 16], number: u64) -> prdb_engine::overlay::RowId {
+    prdb_engine::overlay::RowId {
+        table,
+        row: u128::from(number).to_be_bytes(),
+    }
 }
 
 fn expression_catalog_payload(
@@ -6093,7 +6100,15 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         write.commit()?;
     }
 
-    let mut seed = InvocationTransaction::begin(&database, [241; 16], [9; 16], 9_999, 1, 1_024)?;
+    const INDEX_PROFILE_ROWS: u64 = 4_096;
+    let mut seed = InvocationTransaction::begin(
+        &database,
+        [241; 16],
+        [9; 16],
+        9_999,
+        INDEX_PROFILE_ROWS as usize + 1,
+        (INDEX_PROFILE_ROWS as usize + 1) * 2_048,
+    )?;
     let seed_schema = seed.load_catalog_table_schema(table_id)?;
     seed.load_catalog_indexes(&seed_schema)?;
     let payload = encode_tuple(
@@ -6102,6 +6117,15 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         &[Some(ScalarValue::Bytea(b"duplicate".to_vec()))],
     )?;
     seed.stage_put(id(243), &payload)?;
+    for number in 0..INDEX_PROFILE_ROWS {
+        let value = format!("key-{number:05}");
+        let payload = encode_tuple(
+            &seed_schema.columns,
+            seed_schema.schema_version,
+            &[Some(ScalarValue::Bytea(value.into_bytes()))],
+        )?;
+        seed.stage_put(numbered_row_id(table_id, number + 1_000), &payload)?;
+    }
     assert_eq!(seed.commit()?, 1);
 
     let mut invocation =
@@ -6198,18 +6222,25 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         value: ScalarValue::Bytea(b"duplicate".to_vec()),
         inclusive: true,
     };
-    let reference_scan = invocation.scan_authorized(table_id, None, 16, &projection)?;
-    assert!(reference_scan.continuation.is_none());
-    let reference_matches = reference_scan
-        .rows
-        .iter()
-        .filter(|(_, cells)| {
-            cells.first()
-                == Some(&SanitizedCell::Value(ScalarValue::Bytea(
-                    b"duplicate".to_vec(),
-                )))
-        })
-        .collect::<Vec<_>>();
+    let target_cell = SanitizedCell::Value(ScalarValue::Bytea(b"duplicate".to_vec()));
+    let probe_values = [Some(ScalarValue::Bytea(b"duplicate".to_vec()))];
+    let mut reference_matches = Vec::new();
+    let mut reference_cursor = None;
+    loop {
+        let page = invocation.scan_authorized(
+            table_id,
+            reference_cursor.as_ref(),
+            128,
+            &projection,
+        )?;
+        reference_matches.extend(page.rows.into_iter().filter_map(|(row_id, cells)| {
+            (cells.first() == Some(&target_cell)).then_some((row_id, cells))
+        }));
+        let Some(cursor) = page.continuation else {
+            break;
+        };
+        reference_cursor = Some(cursor);
+    }
     let unique_probe = invocation.probe_catalog_unique_index(
         table_id,
         index_id,
@@ -6238,6 +6269,84 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
                     indexed.0 == reference.0 && indexed.1 == reference.1
                 })
     ));
+    if std::env::var_os("PRDB_BENCH_INDEX_ACCESS").is_some() {
+        const RUNS: usize = 11;
+        let mut point_probe_times = Vec::with_capacity(RUNS);
+        let mut range_times = Vec::with_capacity(RUNS);
+        let mut reference_scan_times = Vec::with_capacity(RUNS);
+        for _ in 0..RUNS {
+            let started = Instant::now();
+            let probe = invocation.probe_catalog_unique_index(
+                table_id,
+                index_id,
+                &probe_values,
+                &projection,
+            )?;
+            point_probe_times.push(started.elapsed());
+            assert!(matches!(
+                probe,
+                prdb_engine::transaction::AuthorizedUniqueIndexProbe::Match { id: found, .. }
+                    if found == id(243)
+            ));
+
+            let lower = Some(range_bound());
+            let upper = Some(range_bound());
+            let started = Instant::now();
+            let range = invocation.scan_catalog_index_range(
+                table_id,
+                range_index_id,
+                lower,
+                upper,
+                &projection,
+            )?;
+            range_times.push(started.elapsed());
+            assert!(matches!(
+                range,
+                prdb_engine::transaction::AuthorizedIndexRangeScan::Rows(rows)
+                    if rows.len() == 1 && rows[0].0 == id(243)
+            ));
+
+            let started = Instant::now();
+            let mut cursor = None;
+            let mut matches = Vec::new();
+            loop {
+                let page = invocation.scan_authorized(
+                    table_id,
+                    cursor.as_ref(),
+                    128,
+                    &projection,
+                )?;
+                matches.extend(page.rows.into_iter().filter_map(|(row_id, cells)| {
+                    (cells.first() == Some(&target_cell)).then_some(row_id)
+                }));
+                let Some(next) = page.continuation else {
+                    break;
+                };
+                cursor = Some(next);
+            }
+            reference_scan_times.push(started.elapsed());
+            assert_eq!(matches, [id(243)]);
+        }
+        let median_and_p95_ms = |samples: &mut [Duration]| {
+            samples.sort_unstable();
+            (
+                samples[samples.len() / 2].as_secs_f64() * 1_000.0,
+                samples[((samples.len() - 1) * 95).div_ceil(100)].as_secs_f64() * 1_000.0,
+            )
+        };
+        let point_probe = median_and_p95_ms(&mut point_probe_times);
+        let range = median_and_p95_ms(&mut range_times);
+        let reference_scan = median_and_p95_ms(&mut reference_scan_times);
+        eprintln!(
+            "index access benchmark: rows={INDEX_PROFILE_ROWS}, runs={RUNS}, point probe median/p95={:.3}/{:.3} ms, range median/p95={:.3}/{:.3} ms, authorized scan+filter median/p95={:.3}/{:.3} ms",
+            point_probe.0,
+            point_probe.1,
+            range.0,
+            range.1,
+            reference_scan.0,
+            reference_scan.1,
+        );
+    }
     let hidden_context = AuthorizationContext {
         principal_id,
         role_ids: std::collections::HashSet::new(),

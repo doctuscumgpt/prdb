@@ -1,5 +1,11 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: point/range index latency against an authorized scan — measured
+
+- Harness: `PRDB_BENCH_INDEX_ACCESS=1 nix develop --no-update-lock-file -c cargo test -p prdb-engine --test transaction unique_constraint_uses_its_backing_index_for_invocation_writes --locked -- --exact --nocapture` seeds a fresh redb database with 4,096 additional indexed BYTEA rows and one exact target, then measures 11 unique point probes, bounded exact-key ranges, and paged full authorized scan-plus-filter calls in the same invocation snapshot. Each measured result is checked for the expected target row.
+- Profile: five sequential fresh-database runs on Linux x86_64 with Rust 1.95.0 and redb 4.4.0. The median of run-level p50 values was 0.171 ms for point probes, 0.134 ms for bounded ranges, and 55.192 ms for authorized scan-plus-filter; the median of run-level p95 values was 0.272, 0.207, and 63.876 ms respectively. The per-run median ranges were 0.160–0.173, 0.123–0.142, and 54.993–61.966 ms.
+- Scope: storage API result latency with invocation, schema, index setup, and query argument construction outside the timed region; OS cache and host load were uncontrolled. The corresponding optimizer SQL compile/link sample is in [planner progress](../planner-compiler/PROGRESS.md). This does not measure SQL parser/planner setup, confined executor startup, result relay, durable commit, or target hardware.
+
 ## WI-7 follow-up: per-invocation planner backpressure — covered
 
 - Contract: each admitted invocation owns one isolated optimizer process; it handles one planner submission at a time and waits for invocation-scoped metadata before reading the next request. Per-connection request/estimate caps and active START limits bound request count and concurrent optimizer processes without a shared in-memory planner queue.

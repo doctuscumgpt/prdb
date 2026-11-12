@@ -53,6 +53,12 @@
 - Verification: the focused `unique_constraint_uses_its_backing_index_for_invocation_writes` regression passed. Locked workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed; the suite included 195 library tests, 148 commit tests, 74 transaction tests, 5 tuple tests, and zero ignored tests across all targets. `git diff --check` passed.
 - Scope: this proves storage result equivalence for the tested exact key and same authorization snapshot; end-to-end timing against forced SDK scan fallback and wider hidden-data/error equivalence cases remain open.
 
+## OP-5 follow-up: repeat point/range storage latency against reference scan — measured
+
+- The same catalog-backed regression has an opt-in `PRDB_BENCH_INDEX_ACCESS` profile. It seeds 4,096 additional indexed BYTEA rows plus one exact target, then measures 11 point probes, bounded exact-key ranges, and full authorized scan-plus-filter operations in one pinned invocation. Every measured result is checked against the same expected row.
+- Five sequential fresh-database runs on Linux x86_64, Rust 1.95.0, and redb 4.4.0 produced run-level median point-probe latency of 0.160–0.173 ms (median 0.171 ms), range latency of 0.123–0.142 ms (median 0.134 ms), and authorized scan-plus-filter latency of 54.993–61.966 ms (median 55.192 ms). The median of run-level p95 values was 0.272 ms, 0.207 ms, and 63.876 ms respectively.
+- Scope: this measures storage API result latency with catalog/schema/index metadata and query argument construction already outside the timed region; it excludes query compilation, SQL parsing/planning, executor startup, gateway relay, and durable commit. The OS cache and host load were uncontrolled. The maintained benchmark separately measures artifact compilation/linking; end-to-end SQL setup and result latency remain open.
+
 ## OP-5 follow-up: measure optimizer SQL compilation and linking — measured
 
 - The maintained [`benchmark_sdk_build.py`](../../engine/tools/benchmark_sdk_build.py) now defaults to compiling the real optimizer-backed SQL artifact and retains the caught-error fixture as an explicit alternate profile. It reports the selected fixture alongside SDK archive build, TinyCC compile, and GNU shared-link timings.
