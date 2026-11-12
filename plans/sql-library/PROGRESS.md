@@ -7,6 +7,13 @@
 - Verification: the focused `sdk-sql-execute-v10` fixture and complete TinyCC SDK suite passed. Locked workspace build, format, warning-denied Clippy, ABI drift check, and the serial workspace suite passed inside the delegated `systemd --user` service; commit integration reported 142 passed, zero ignored, metadata process integration reported 2 passed, and every test target reported zero ignored.
 - Remaining: byte-budget boundary coverage for grouped sorting, concurrent operational latency under real confined analytics, and wider workload/host measurements remain open.
 
+## SQL-8 follow-up: grouped ORDER BY byte budget — verified
+
+- Contract: the grouped runner retains no more than 1 MiB of copied group-key and aggregate operand bytes. Exactly 1 MiB is accepted; excess input fails before invoking the group callback.
+- Regression: the maintained v12 executor fixture streams 128 distinct 8,192-byte text keys across two cursor pages and verifies all 128 ordered COUNT results at exactly 1,048,576 copied bytes. It repeats with 8,193-byte keys (1,048,704 bytes total) and verifies `MATERIALIZATION_LIMIT`, zero callbacks, and a latched statement failure.
+- Verification: focused `sdk-sql-execute-v10` and the full TinyCC SDK suite passed. Locked workspace build, format, warning-denied Clippy, ABI drift check, and the serial workspace suite passed inside the delegated `systemd --user` service. Commit integration reported 142 passed/zero ignored; metadata process integration reported 2 passed; every test target reported zero ignored cases.
+- Remaining: concurrent operational latency under real confined analytics and broader workload/host measurements remain open.
+
 ## SQL-8: bounded ordered SELECT optimizer path — implemented
 
 - Contract: an explicit single-column `ORDER BY` key is resolved through the authorized relation description. Its source column may remain hidden from the SELECT projection; LIMIT is applied after stable ordering by the bounded SQL v3 runner or optimizer-backed ordered SELECT path.

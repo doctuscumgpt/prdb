@@ -15,9 +15,9 @@ typedef struct mock_state {
     uint32_t planner_len;
     uint8_t executor[256];
     uint32_t executor_len;
-    uint8_t batch[8192];
+    uint8_t batch[540000];
     uint32_t batch_len;
-    uint8_t continued_batch[8192];
+    uint8_t continued_batch[540000];
     uint32_t continued_batch_len;
     uint32_t batch_finished;
     uint32_t planner_calls;
@@ -31,6 +31,7 @@ typedef struct mock_state {
     uint32_t cancel_after_group_callbacks;
     uint32_t streamed_pages;
     uint32_t max_candidates;
+    uint32_t text_key_mode;
 } mock_state;
 
 typedef struct group_capture {
@@ -43,6 +44,7 @@ typedef struct group_capture {
     int32_t aggregates[128];
     uint32_t aggregate_states[128];
     uint64_t row_counts[128];
+    uint32_t text_key_bytes;
 } group_capture;
 
 static void put_u16(uint8_t *p, uint32_t *offset, uint16_t value) {
@@ -65,7 +67,7 @@ static void put_name(uint8_t *p, uint32_t *offset, const char *name) {
 }
 
 static uint32_t make_relation(uint8_t *p, uint8_t handle_kind,
-                              uint8_t handle_fill) {
+                              uint8_t handle_fill, uint32_t key_type) {
     static const char *names[] = {"id", "score"};
     uint32_t offset = 0;
     put_u16(p, &offset, 1);
@@ -79,7 +81,7 @@ static uint32_t make_relation(uint8_t *p, uint8_t handle_kind,
         memset(p + offset, (int)(0x33 + index), 16); offset += 16;
         put_u32(p, &offset, index);
         p[offset++] = 1;
-        p[offset++] = PRDB_SDK_VALUE_TYPE_INTEGER;
+        p[offset++] = index == 0 ? key_type : PRDB_SDK_VALUE_TYPE_INTEGER;
         p[offset++] = 0;
         p[offset++] = 0;
         p[offset++] = 0;
@@ -95,6 +97,42 @@ static void append_integer_cell(uint8_t *p, uint32_t *offset, int32_t value) {
     p[(*offset)++] = PRDB_SDK_VALUE_TYPE_INTEGER;
     put_u32(p, offset, 4);
     put_u32(p, offset, bits);
+}
+
+static void append_text_cell(uint8_t *p, uint32_t *offset,
+                             uint32_t key_index, uint32_t byte_count) {
+    p[(*offset)++] = PRDB_SDK_VALUE_STATE_VALUE;
+    p[(*offset)++] = PRDB_SDK_VALUE_TYPE_TEXT;
+    put_u32(p, offset, byte_count);
+    memset(p + *offset, 'a', byte_count);
+    p[*offset + byte_count - 3] = (uint8_t)('0' + key_index / 100);
+    p[*offset + byte_count - 2] =
+        (uint8_t)('0' + (key_index / 10) % 10);
+    p[*offset + byte_count - 1] = (uint8_t)('0' + key_index % 10);
+    *offset += byte_count;
+}
+
+static uint32_t make_text_rows(uint8_t *p, uint32_t finished,
+                               uint32_t first_key, uint16_t row_count,
+                               uint32_t key_bytes) {
+    uint32_t offset = 0;
+    put_u16(p, &offset, 1);
+    p[offset++] = (uint8_t)finished;
+    if (!finished) {
+        p[offset++] = 7;
+        memset(p + offset, 0x55, 15);
+        offset += 15;
+    }
+    put_u16(p, &offset, row_count);
+    for (uint32_t index = 0; index < row_count; ++index) {
+        p[offset++] = 8;
+        memset(p + offset, (int)(index + 1), 15);
+        offset += 15;
+        put_u16(p, &offset, 2);
+        append_text_cell(p, &offset, first_key + index, key_bytes);
+        append_integer_cell(p, &offset, 1);
+    }
+    return offset;
 }
 
 static uint32_t make_rows(uint8_t *p, uint32_t finished,
@@ -387,6 +425,7 @@ static int32_t on_group_v12(void *context,
                             const prdb_sdk_value_v1 *aggregate_value,
                             uint64_t matching_row_count,
                             const prdb_sdk_select_binding_v12 *binding) {
+    group_capture *capture = (group_capture *)context;
     assert(binding->abi_version == PRDB_SDK_SQL_ABI_V12_VERSION);
     assert(binding->order_count <= PRDB_SDK_SQL_V12_MAX_ORDER_KEYS);
     if (binding->order_count == 2) {
@@ -401,7 +440,33 @@ static int32_t on_group_v12(void *context,
             expected_aggregate_type = PRDB_SDK_VALUE_TYPE_DECIMAL;
         }
         assert(binding->order_items[0].type_code == expected_aggregate_type);
-        assert(binding->order_items[1].type_code == PRDB_SDK_VALUE_TYPE_INTEGER);
+        assert(binding->order_items[1].type_code ==
+               (capture->mock->text_key_mode ? PRDB_SDK_VALUE_TYPE_TEXT
+                                             : PRDB_SDK_VALUE_TYPE_INTEGER));
+    }
+    if (capture->mock->text_key_mode) {
+        uint32_t key_index = 0;
+        assert(group_key != NULL &&
+               group_key->state == PRDB_SDK_VALUE_STATE_VALUE &&
+               group_key->type_code == PRDB_SDK_VALUE_TYPE_TEXT &&
+               group_key->data_len == capture->text_key_bytes);
+        for (uint32_t index = group_key->data_len - 3;
+             index < group_key->data_len; ++index) {
+            assert(group_key->data[index] >= '0' &&
+                   group_key->data[index] <= '9');
+            key_index = key_index * 10 +
+                        (uint32_t)(group_key->data[index] - '0');
+        }
+        assert(capture->calls < 128 && key_index < 128 &&
+               matching_row_count == 1);
+        capture->keys[capture->calls] = (int32_t)key_index;
+        capture->aggregates[capture->calls] = 1;
+        capture->row_counts[capture->calls] = matching_row_count;
+        ++capture->calls;
+        if (capture->mock->cancel_after_group_callbacks == capture->calls) {
+            capture->mock->cancelled = 1;
+        }
+        return 0;
     }
     return on_group(context, group_key, aggregate_value, matching_row_count,
                     &binding->base.base);
@@ -413,15 +478,21 @@ static int32_t run_query_v12(mock_state *mock, const uint8_t *sql,
     static const uint8_t schema[] = "app";
     uint8_t planner_response[256] = {0};
     uint8_t executor_response[256] = {0};
-    uint8_t batch_response[8192] = {0};
-    uint8_t materialized_bytes[8192] = {0};
+    uint8_t batch_response[540000] = {0};
+    uint8_t materialized_bytes[1048576] = {0};
     static const uint8_t id_name[] = "id";
     static const uint8_t score_name[] = "score";
     prdb_sdk_sql_column_shape_v2 planner_columns[2] = {
-        {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
+        {id_name, 2, 0,
+         mock->text_key_mode ? PRDB_SDK_VALUE_TYPE_TEXT
+                             : PRDB_SDK_VALUE_TYPE_INTEGER,
+         0, 0},
         {score_name, 5, 1, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0}};
     prdb_sdk_sql_column_shape_v2 executor_columns[2] = {
-        {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
+        {id_name, 2, 0,
+         mock->text_key_mode ? PRDB_SDK_VALUE_TYPE_TEXT
+                             : PRDB_SDK_VALUE_TYPE_INTEGER,
+         0, 0},
         {score_name, 5, 1, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0}};
     prdb_sdk_value_v1 cell_scratch[2] = {{0}};
     prdb_host_api_v3 host = {sizeof(host), PRDB_QUERY_ABI_V3_VERSION,
@@ -793,6 +864,9 @@ int main(void) {
     static const uint8_t ordered_group_limit_sql[] =
         "SELECT id, COUNT(*) FROM widgets GROUP BY id "
         "ORDER BY COUNT(*) DESC, id ASC LIMIT 128";
+    static const uint8_t ordered_group_text_budget_sql[] =
+        "SELECT id, COUNT(*) FROM widgets GROUP BY id "
+        "ORDER BY COUNT(*) DESC, id ASC LIMIT 128";
     static const uint8_t *const ordered_aggregate_matrix_sql[] = {
         (const uint8_t *)"SELECT id, COUNT(*) FROM widgets GROUP BY id "
                          "ORDER BY COUNT(*) DESC NULLS LAST, id ASC NULLS FIRST",
@@ -888,9 +962,11 @@ int main(void) {
         sizeof(v18_having_parameter), PRDB_SDK_VALUE_ABI_V1_VERSION,
         PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_BIGINT,
         v18_having_parameter_bytes, sizeof(v18_having_parameter_bytes)};
-    mock.planner_len = make_relation(mock.planner,
-                                     PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99);
-    mock.executor_len = make_relation(mock.executor, 6, 0x22);
+    mock.planner_len = make_relation(
+        mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99,
+        PRDB_SDK_VALUE_TYPE_INTEGER);
+    mock.executor_len = make_relation(mock.executor, 6, 0x22,
+                                      PRDB_SDK_VALUE_TYPE_INTEGER);
     mock.batch_len = make_rows(mock.batch, 1, keys, scores, value_states, 3);
     mock.batch_finished = 1;
     capture.mock = &mock;
@@ -1058,6 +1134,55 @@ int main(void) {
         mock.max_candidates = 0;
         mock.streamed_pages = 0;
         mock.continued_batch_len = 0;
+        mock.batch_len = make_rows(mock.batch, 1, keys, scores,
+                                   value_states, 3);
+    }
+
+    {
+        mock.text_key_mode = 1;
+        mock.planner_len = make_relation(
+            mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99,
+            PRDB_SDK_VALUE_TYPE_TEXT);
+        mock.executor_len = make_relation(mock.executor, 6, 0x22,
+                                          PRDB_SDK_VALUE_TYPE_TEXT);
+        mock.batch_len = make_text_rows(mock.batch, 0, 0, 64, 8192);
+        mock.continued_batch_len = make_text_rows(
+            mock.continued_batch, 1, 64, 64, 8192);
+        mock.streamed_pages = 2;
+        mock.max_candidates = 64;
+        capture.text_key_bytes = 8192;
+        reset_scan(&mock, &capture, 1);
+        assert(run_query_v12(&mock, ordered_group_text_budget_sql,
+                             sizeof(ordered_group_text_budget_sql) - 1,
+                             PRDB_SDK_SQL_EXEC_V7_MAX_MATERIALIZED_BYTES,
+                             &capture) == PRDB_SDK_SQL_EXEC_OK);
+        assert(capture.calls == 128 && mock.statement_failed == 0);
+        for (uint32_t index = 0; index < 128; ++index) {
+            assert(capture.keys[index] == (int32_t)index);
+        }
+
+        mock.batch_len = make_text_rows(mock.batch, 0, 0, 64, 8193);
+        mock.continued_batch_len = make_text_rows(
+            mock.continued_batch, 1, 64, 64, 8193);
+        capture.text_key_bytes = 8193;
+        reset_scan(&mock, &capture, 1);
+        assert(run_query_v12(&mock, ordered_group_text_budget_sql,
+                             sizeof(ordered_group_text_budget_sql) - 1,
+                             PRDB_SDK_SQL_EXEC_V7_MAX_MATERIALIZED_BYTES,
+                             &capture) ==
+               PRDB_SDK_SQL_EXEC_MATERIALIZATION_LIMIT);
+        assert(capture.calls == 0 && mock.statement_failed == 1);
+
+        mock.text_key_mode = 0;
+        mock.max_candidates = 0;
+        mock.streamed_pages = 0;
+        mock.continued_batch_len = 0;
+        capture.text_key_bytes = 0;
+        mock.planner_len = make_relation(
+            mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99,
+            PRDB_SDK_VALUE_TYPE_INTEGER);
+        mock.executor_len = make_relation(mock.executor, 6, 0x22,
+                                          PRDB_SDK_VALUE_TYPE_INTEGER);
         mock.batch_len = make_rows(mock.batch, 1, keys, scores,
                                    value_states, 3);
     }
