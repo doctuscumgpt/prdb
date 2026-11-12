@@ -83,6 +83,15 @@ pub struct VisibleColumn {
     pub nullable: bool,
 }
 
+/// Logical index metadata returned only by an authenticated administrative
+/// control read. Physical locators, roots, and key samples are omitted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdministrativeIndex {
+    pub index_id: [u8; 16],
+    pub column_ids: Vec<[u8; 16]>,
+    pub unique: bool,
+}
+
 /// The declared column shape of one discoverable relation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VisibleRelationSchema {

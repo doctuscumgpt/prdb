@@ -347,6 +347,10 @@ enum MetadataPageQuery {
         schema_id: [u8; 16],
         relation_id: [u8; 16],
     },
+    Indexes {
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -354,6 +358,7 @@ enum MetadataPageRows {
     Schemas(Vec<crate::metadata_discovery::VisibleSchema>),
     Relations(Vec<crate::metadata_discovery::VisibleRelation>),
     Columns(Vec<crate::metadata_discovery::VisibleColumn>),
+    Indexes(Vec<crate::metadata_discovery::AdministrativeIndex>),
 }
 
 impl MetadataPageRows {
@@ -362,6 +367,7 @@ impl MetadataPageRows {
             Self::Schemas(rows) => rows.len(),
             Self::Relations(rows) => rows.len(),
             Self::Columns(rows) => rows.len(),
+            Self::Indexes(rows) => rows.len(),
         }
     }
 
@@ -379,6 +385,10 @@ impl MetadataPageRows {
                 .iter()
                 .map(|column| column.column_id)
                 .eq(right.iter().map(|column| column.column_id)),
+            (Self::Indexes(left), Self::Indexes(right)) => left
+                .iter()
+                .map(|index| index.index_id)
+                .eq(right.iter().map(|index| index.index_id)),
             _ => false,
         }
     }
@@ -425,6 +435,12 @@ pub enum ClientAdminRead {
         page_limit: usize,
         cursor: Option<[u8; 16]>,
     },
+    ListIndexesPage {
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<[u8; 16]>,
+    },
     ListTokens {
         user_id: [u8; 16],
         after_token_id: Option<[u8; 16]>,
@@ -451,6 +467,12 @@ pub enum ClientAdminCommand {
         relation_id: [u8; 16],
     },
     ListColumnsPage {
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<[u8; 16]>,
+    },
+    ListIndexesPage {
         schema_id: [u8; 16],
         relation_id: [u8; 16],
         page_limit: usize,
@@ -658,6 +680,17 @@ pub fn decode_client_admin_read(payload: &[u8]) -> Result<ClientAdminRead, Clien
             page_limit,
             cursor,
         } => Ok(ClientAdminRead::ListColumnsPage {
+            schema_id,
+            relation_id,
+            page_limit,
+            cursor,
+        }),
+        ClientAdminCommand::ListIndexesPage {
+            schema_id,
+            relation_id,
+            page_limit,
+            cursor,
+        } => Ok(ClientAdminRead::ListIndexesPage {
             schema_id,
             relation_id,
             page_limit,
@@ -884,6 +917,35 @@ pub fn decode_client_admin_command(
                     schema_id,
                     relation_id,
                 },
+            })
+        }
+        Some("read")
+            if version == Some(1) && operation.as_deref() == Some("metadata.indexes.list") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let schema_id = decode_lower_hex_id(
+                &args
+                    .remove("schema_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let relation_id = decode_lower_hex_id(
+                &args
+                    .remove("table_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let pagination =
+                decode_metadata_pagination(&mut args)?.ok_or(ClientControlError::MissingKey)?;
+            if !args.is_empty() {
+                return Err(ClientControlError::UnknownKey);
+            }
+            Ok(ClientAdminCommand::ListIndexesPage {
+                schema_id,
+                relation_id,
+                page_limit: pagination.page_limit,
+                cursor: pagination.cursor,
             })
         }
         Some("read") if version == Some(1) && operation.as_deref() == Some("tokens.list") => {
@@ -3547,6 +3609,21 @@ impl ClientConnectionSession {
                 page_limit,
                 cursor,
             ),
+            ClientAdminCommand::ListIndexesPage {
+                schema_id,
+                relation_id,
+                page_limit,
+                cursor,
+            } => self.handle_metadata_discovery_page(
+                storage,
+                request.request_id,
+                MetadataPageQuery::Indexes {
+                    schema_id,
+                    relation_id,
+                },
+                page_limit,
+                cursor,
+            ),
             ClientAdminCommand::ListTokens {
                 user_id,
                 after_token_id,
@@ -6112,6 +6189,20 @@ impl ClientConnectionSession {
                         .map_err(ClientSessionError::Storage)?
                         .unwrap_or_default(),
                 ),
+                MetadataPageQuery::Indexes {
+                    schema_id,
+                    relation_id,
+                } => MetadataPageRows::Indexes(
+                    storage
+                        .discover_token_administrative_indexes(
+                            token_id,
+                            &secret,
+                            *schema_id,
+                            *relation_id,
+                        )
+                        .map_err(ClientSessionError::Storage)?
+                        .unwrap_or_default(),
+                ),
             };
             if !current_snapshot
                 .is_some_and(|snapshot| snapshot.rows.has_same_object_ids(&current_rows))
@@ -6146,6 +6237,20 @@ impl ClientConnectionSession {
                 } => MetadataPageRows::Columns(
                     storage
                         .discover_token_authorized_columns(
+                            token_id,
+                            &secret,
+                            *schema_id,
+                            *relation_id,
+                        )
+                        .map_err(ClientSessionError::Storage)?
+                        .unwrap_or_default(),
+                ),
+                MetadataPageQuery::Indexes {
+                    schema_id,
+                    relation_id,
+                } => MetadataPageRows::Indexes(
+                    storage
+                        .discover_token_administrative_indexes(
                             token_id,
                             &secret,
                             *schema_id,
@@ -6642,6 +6747,7 @@ fn encode_metadata_page(
         MetadataPageQuery::Schemas => String::from("{\"schemas\":["),
         MetadataPageQuery::Relations(_) => String::from("{\"relations\":["),
         MetadataPageQuery::Columns { .. } => String::from("{\"columns\":["),
+        MetadataPageQuery::Indexes { .. } => String::from("{\"indexes\":["),
     };
     for index in start..end {
         if index != start {
@@ -6679,6 +6785,23 @@ fn encode_metadata_page(
                 );
                 output.push_str("\",\"nullable\":");
                 output.push_str(if row.nullable { "true" } else { "false" });
+                output.push('}');
+            }
+            (MetadataPageQuery::Indexes { .. }, MetadataPageRows::Indexes(rows)) => {
+                let row = rows.get(index).ok_or(ClientSessionError::ResourceLimit)?;
+                output.push_str("{\"index_id\":\"");
+                output.push_str(&encode_lower_hex_id(row.index_id));
+                output.push_str("\",\"column_ids\":[");
+                for (column_index, column_id) in row.column_ids.iter().enumerate() {
+                    if column_index != 0 {
+                        output.push(',');
+                    }
+                    output.push('"');
+                    output.push_str(&encode_lower_hex_id(*column_id));
+                    output.push('"');
+                }
+                output.push_str("],\"unique\":");
+                output.push_str(if row.unique { "true" } else { "false" });
                 output.push('}');
             }
             _ => return Err(ClientSessionError::ResourceLimit),

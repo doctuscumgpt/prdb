@@ -59,6 +59,8 @@ pub const MAX_DISCOVERED_RELATIONS: usize = 4096;
 const MAX_DISCOVERED_RELATION_BYTES: usize = 1024 * 1024;
 pub const MAX_DISCOVERED_COLUMNS: usize = 4096;
 const MAX_DISCOVERED_COLUMN_BYTES: usize = 1024 * 1024;
+pub const MAX_DISCOVERED_INDEXES: usize = 4096;
+const MAX_DISCOVERED_INDEX_BYTES: usize = 1024 * 1024;
 static TOKEN_REQUEST_LIMITERS: OnceLock<Mutex<HashMap<usize, Weak<TokenRequestLimiter>>>> =
     OnceLock::new();
 static ADMIN_CANCELLATION_LIMITERS: OnceLock<Mutex<HashMap<usize, Weak<TokenRequestLimiter>>>> =
@@ -2616,6 +2618,54 @@ impl<'db> StorageManager<'db> {
                 return Ok(Some(columns));
             }
         }
+    }
+
+    /// List logical index definitions for a relation only when the
+    /// authenticated control principal has administrative schema authority.
+    /// Hidden and absent relations return `None`.
+    pub fn discover_token_administrative_indexes(
+        &self,
+        token_id: [u8; 16],
+        token_secret: &[u8; TOKEN_SECRET_BYTES],
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+    ) -> Result<Option<Vec<crate::metadata_discovery::AdministrativeIndex>>, TransactionError> {
+        let principal_id = lookup_credential_principal(self.database, token_id)?;
+        let mut invocation_id = [0; 16];
+        getrandom::fill(&mut invocation_id)
+            .map_err(|_| TransactionError::Storage("randomness unavailable".into()))?;
+        if invocation_id == [0; 16] {
+            return Err(TransactionError::Storage("randomness unavailable".into()));
+        }
+        let mut transaction = InvocationTransaction::begin_inner(
+            self.database,
+            InvocationCoordination::uncoordinated(),
+            invocation_id,
+            principal_id,
+            i64::MAX,
+            1,
+            1,
+        )?;
+        let now_us = now_unix_micros().ok_or(TransactionError::ClockUnavailable)?;
+        transaction.authenticate_credential_token(token_id, token_secret, now_us)?;
+        let Some(indexes) =
+            transaction.list_catalog_administrative_indexes(schema_id, relation_id)?
+        else {
+            return Ok(None);
+        };
+        let mut encoded_bytes = 0usize;
+        for index in &indexes {
+            encoded_bytes = encoded_bytes
+                .saturating_add(17)
+                .saturating_add(index.column_ids.len().saturating_mul(16));
+            if encoded_bytes > MAX_DISCOVERED_INDEX_BYTES {
+                return Err(TransactionError::InvalidMetadataRequest);
+            }
+        }
+        if indexes.len() > MAX_DISCOVERED_INDEXES {
+            return Err(TransactionError::InvalidMetadataRequest);
+        }
+        Ok(Some(indexes))
     }
 
     /// Refresh the current login and role closure before a new execution or

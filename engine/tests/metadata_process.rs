@@ -91,6 +91,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let mut owner_secret;
     let restricted_schema_id;
     let restricted_table_id;
+    let restricted_index_id;
     let sql_visible_schema_id;
     {
         let instance = setup.acknowledge()?;
@@ -244,6 +245,29 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             },
         })?;
         restricted_table_id = private_table.table_id;
+        let index_invocation = [0x8a; 16];
+        let mut index_audit = AuditEvent {
+            event_id: [0x8b; 16],
+            actor_id: Some(admin_user_id),
+            correlation_id: index_invocation,
+            occurred_at_us: now_us,
+            action: AuditAction::Ddl,
+            result: AuditResult::Succeeded,
+            target_ids: Vec::new(),
+        };
+        index_audit.target_ids = vec![private_table.table_id];
+        restricted_index_id = storage
+            .create_index(prdb_engine::storage_manager::CreateIndexRequest {
+                invocation_id: index_invocation,
+                authenticated_actor_id: admin_user_id,
+                table_id: private_table.table_id,
+                name: "private_payload_key".to_owned(),
+                column_ids: vec![private_table.column_ids[0]],
+                unique: false,
+                retention_deadline_us,
+                audit_event: index_audit,
+            })?
+            .index_id;
         let mut issued = storage.issue_token(TokenIssueRequest {
             invocation_id: [0xa8; 16],
             authenticated_actor_id: admin_user_id,
@@ -713,6 +737,19 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             .records
             .is_empty()
     );
+    let owner_indexes =
+        owner_metadata.list_indexes_page(restricted_schema_id, restricted_table_id, 128, None)?;
+    let owner_column_id = owner_metadata
+        .list_columns_page(restricted_schema_id, restricted_table_id, 128, None)?
+        .records
+        .first()
+        .ok_or("schema owner returned no declared columns")?
+        .column_id;
+    assert!(owner_indexes.records.iter().any(|index| {
+        index.index_id == restricted_index_id
+            && index.column_ids == vec![owner_column_id]
+            && !index.unique
+    }));
     let owner_schema_cursor = owner_metadata
         .list_schemas_page(1, None)?
         .next_cursor
@@ -730,6 +767,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     drop(owner_metadata);
     drop(administrator);
 
+    let mut restricted_admin_secret = restricted_secret;
     let mut restricted_metadata =
         MetadataClient::connect_authenticated(address, restricted_token, &mut restricted_secret)?;
     let restricted_schemas = restricted_metadata.list_schemas()?;
@@ -758,6 +796,18 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             .is_empty()
     );
     drop(restricted_metadata);
+    let mut restricted_admin = AdminClient::connect_authenticated(
+        address,
+        restricted_token,
+        &mut restricted_admin_secret,
+    )?;
+    assert!(
+        restricted_admin
+            .list_indexes_page(restricted_schema_id, restricted_table_id, 128, None)?
+            .records
+            .is_empty()
+    );
+    drop(restricted_admin);
 
     let admin_cancel_credentials_path = root.join("admin-cancel.cred");
     let admin_cancel_credentials = ClientCredentials {
@@ -1854,6 +1904,63 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let rebuilt_index = admin
         .rebuild_index(created_index.index_id, &created_table.column_ids, true)
         .map_err(|error| format!("process ADMIN rebuild_index failed: {error}"))?;
+    let second_index = admin
+        .create_index(
+            created_table.table_id,
+            "process_admin_index_second",
+            &created_table.column_ids,
+            false,
+        )
+        .map_err(|error| format!("create second metadata index: {error:?}"))?;
+    let cursor_credentials = read_client_credentials(&admin_cancel_credentials_path)?;
+    let mut cursor_secret = cursor_credentials.token_secret;
+    let mut cursor_admin = AdminClient::connect_authenticated(
+        address,
+        cursor_credentials.token_id,
+        &mut cursor_secret,
+    )?;
+    drop(cursor_credentials);
+    let first_index_page = cursor_admin
+        .list_indexes_page(created_schema.identity_id, created_table.table_id, 1, None)
+        .map_err(|error| format!("first index page: {error:?}"))?;
+    let stale_index_cursor = first_index_page
+        .next_cursor
+        .ok_or("expected another index page before dropping an index")?;
+    admin
+        .drop_index(second_index.index_id)
+        .map_err(|error| format!("drop second metadata index: {error:?}"))?;
+    let stale_page = cursor_admin.list_indexes_page(
+        created_schema.identity_id,
+        created_table.table_id,
+        1,
+        Some(&stale_index_cursor),
+    );
+    assert!(matches!(
+        stale_page,
+        Err(prdb_engine::client_submit::ClientSubmitError::ServerRejected(_))
+    ));
+    drop(cursor_admin);
+    let listed_indexes = admin
+        .list_indexes_page(
+            created_schema.identity_id,
+            created_table.table_id,
+            128,
+            None,
+        )
+        .map_err(|error| format!("complete index page after stale cursor: {error:?}"))?;
+    let listed_index = listed_indexes
+        .records
+        .iter()
+        .find(|index| index.index_id == created_index.index_id)
+        .ok_or_else(|| {
+            format!(
+                "administrative index page omitted {} from {:?}",
+                encode_id_hex(&created_index.index_id),
+                listed_indexes.records
+            )
+        })?;
+    assert_eq!(listed_index.column_ids, created_table.column_ids);
+    assert!(listed_index.unique);
     let repeated_rebuild = admin
         .rebuild_index(created_index.index_id, &created_table.column_ids, true)
         .map_err(|error| format!("process ADMIN repeated rebuild failed: {error}"))?;

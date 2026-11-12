@@ -3443,6 +3443,47 @@ impl<'db> InvocationTransaction<'db> {
         Ok(Some(columns))
     }
 
+    /// List logical indexes for a relation when this control principal has
+    /// current administrative authority over its schema. Physical storage
+    /// identifiers and membership records are never returned.
+    pub(crate) fn list_catalog_administrative_indexes(
+        &mut self,
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+    ) -> Result<Option<Vec<crate::metadata_discovery::AdministrativeIndex>>, TransactionError> {
+        let roles = self.load_catalog_role_closure(self.principal_id)?;
+        if !self.has_schema_metadata_authority(schema_id, &roles)? {
+            return Ok(None);
+        }
+        let table_key = catalog_id_key(5, relation_id);
+        let Some(table) = self.read_catalog_record(&table_key)? else {
+            return Ok(None);
+        };
+        if table.family_code != 5 || catalog_id(&table, 1)? != schema_id {
+            return Ok(None);
+        }
+        self.read_discovery_relation(schema_id, relation_id)?;
+        let schema = self.load_catalog_table_schema(relation_id)?;
+        let indexes = self.load_catalog_indexes(&schema)?;
+        let mut descriptions = Vec::with_capacity(indexes.len());
+        let mut encoded_bytes = 0usize;
+        for index in indexes {
+            encoded_bytes = encoded_bytes
+                .saturating_add(17)
+                .saturating_add(index.column_ids.len().saturating_mul(16));
+            if descriptions.len() >= 4096 || encoded_bytes > 1024 * 1024 {
+                return Err(TransactionError::InvalidMetadataRequest);
+            }
+            descriptions.push(crate::metadata_discovery::AdministrativeIndex {
+                index_id: index.index_id,
+                column_ids: index.column_ids,
+                unique: index.unique,
+            });
+        }
+        descriptions.sort_unstable_by_key(|index| index.index_id);
+        Ok(Some(descriptions))
+    }
+
     fn has_schema_metadata_authority(
         &mut self,
         schema_id: [u8; 16],

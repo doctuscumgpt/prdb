@@ -24,6 +24,8 @@ resolve_relation(relation_ref) -> connection_local_handle, authorized_schema
 admin_describe_object(object_ref, section, page_limit, continuation?) -> admin_page
 ```
 
+The first privileged object section is `indexes` for a table reference. It returns the stable index ID, ordered logical column IDs, and uniqueness flag, sorted by index ID. The section is available only to the database administrator or the schema owner (including an inherited owner role). Hidden and absent table references produce the same empty result. Pages are capped at 128 records and 1 MiB; physical storage-object IDs, roots, memberships, counts, and key samples are never returned.
+
 The Rust storage slice `InvocationTransaction::list_authorized_relations` returns relation IDs and names from the invocation's pinned catalog. It requires schema USAGE and admits a relation when the invocation has an effective table-level SELECT, INSERT, UPDATE, or DELETE grant, or a column-level SELECT, INSERT, or UPDATE grant. It filters from catalog grants and scope without reading relation rows or evaluating row policies. It does not return defaults, policy text, ownership, grant provenance, schema versions, or hidden relation totals.
 
 `InvocationTransaction::describe_authorized_columns` applies the same schema-usage and data-grant checks, then returns all declared columns for an admitted relation: stable column IDs, names, ordinals, scalar types, and nullability. Its single response is capped at 1 MiB; a shape that does not fit returns a response-size error rather than partial columns. The paginated column-description operation is exposed through the bounded control protocol, and `MetadataClient` follows its one-use connection-local pages automatically.

@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SDK-7: administrative index description — verified
+
+- Contract: [client protocol](../../specs/client-protocol.md), [client SDK](../../specs/client-sdk.md), and [metadata discovery](../../specs/metadata-discovery.md). Only logical index IDs, ordered column IDs, and uniqueness are exposed to a current schema owner or database administrator.
+- Implementation: `metadata.indexes.list` captures a bounded request-snapshot result after revalidating the bearer token and administrative schema authority. Session cursors compare the currently visible index IDs before serving the next retained page. `AdminClient::list_indexes_page` validates IDs, key order, uniqueness shape, and page cursor syntax.
+- Regression: fake protocol coverage checks the typed response and exact request; the real gateway/supervisor process test verifies database-admin and schema-owner visibility, empty results for a non-admin hidden table, and cursor invalidation after an index is dropped between pages.
+- Verification: focused client and process tests passed. The full serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored. Workspace build, formatting, warning-denied Clippy, and diff checks passed.
+- Remaining: other privileged catalog sections remain open under MD-6.
+
 ## SDK-6: administrative metadata page API — verified
 
 - Contract: [client SDK](../../specs/client-sdk.md) and [metadata discovery](../../specs/metadata-discovery.md). Administrative visibility remains a read-only control-channel capability and does not grant query access.

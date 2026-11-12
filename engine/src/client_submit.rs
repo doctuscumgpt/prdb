@@ -1197,6 +1197,74 @@ impl AdminClient {
         })
     }
 
+    /// Return one page of logical index definitions for an administratively
+    /// visible table. Physical storage identifiers and memberships are not
+    /// included in the response.
+    pub fn list_indexes_page(
+        &mut self,
+        schema_id: [u8; 16],
+        table_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<MetadataPage<crate::metadata_discovery::AdministrativeIndex>, ClientSubmitError>
+    {
+        validate_metadata_page_request(page_limit, cursor)?;
+        let arguments = format!(
+            "{{\"schema_id\":\"{}\",\"table_id\":\"{}\",{}}}",
+            lower_hex(&schema_id),
+            lower_hex(&table_id),
+            metadata_page_arguments_fields(page_limit, cursor)
+        );
+        let (records, next_cursor) =
+            request_metadata_page(&mut self.transport, "metadata.indexes.list", arguments)?;
+        let records = discovery_records(records)?;
+        let mut indexes = Vec::with_capacity(records.len());
+        let mut previous_id = None;
+        for mut record in records {
+            if record.len() != 3 {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let index_id = response_id(&record, "index_id")?;
+            let column_ids = match record.remove("column_ids") {
+                Some(ResponseValue::Array(values)) if !values.is_empty() => values
+                    .into_iter()
+                    .map(|value| {
+                        value
+                            .as_string()
+                            .and_then(decode_hex_array::<16>)
+                            .filter(|id| *id != [0; 16])
+                            .ok_or(ClientSubmitError::InvalidResponse)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let mut seen_columns = HashSet::new();
+            if column_ids
+                .iter()
+                .any(|column_id| !seen_columns.insert(*column_id))
+            {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let unique = match record.remove("unique") {
+                Some(ResponseValue::Boolean(value)) => value,
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            if previous_id.is_some_and(|previous| previous >= index_id) {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            previous_id = Some(index_id);
+            indexes.push(crate::metadata_discovery::AdministrativeIndex {
+                index_id,
+                column_ids,
+                unique,
+            });
+        }
+        Ok(MetadataPage {
+            records: indexes,
+            next_cursor,
+        })
+    }
+
     /// Create a login identity. New users have no credential until a token is issued.
     pub fn create_user(&mut self, name: &str) -> Result<AdminIdentityResult, ClientSubmitError> {
         self.create_identity("users.create", name, "user_id")
@@ -2941,6 +3009,7 @@ fn discovery_page_value(
         "metadata.schemas.list" => "schemas",
         "metadata.relations.list" => "relations",
         "metadata.columns.list" => "columns",
+        "metadata.indexes.list" => "indexes",
         _ => return Err(ClientSubmitError::InvalidResponse),
     };
     let mut fields = parse_flat_response(payload)?;

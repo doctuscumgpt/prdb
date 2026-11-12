@@ -188,6 +188,40 @@ fn admin_client_lists_administratively_visible_schema_pages() {
 }
 
 #[test]
+fn admin_client_lists_logical_index_definitions_without_physical_details() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(request.kind, 10);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            r#"{"phase":"read","operation_version":1,"operation":"metadata.indexes.list","arguments":{"schema_id":"11111111111111111111111111111111","table_id":"22222222222222222222222222222222","limit":"1"}}"#
+        );
+        respond(
+            &mut stream,
+            &request,
+            br#"{"indexes":[{"index_id":"33333333333333333333333333333333","column_ids":["44444444444444444444444444444444"],"unique":true}],"next_cursor":null}"#,
+        );
+    });
+
+    let mut secret = [7; 32];
+    let mut client = AdminClient::connect_authenticated(address, [1; 16], &mut secret).unwrap();
+    let page = client
+        .list_indexes_page([0x11; 16], [0x22; 16], 1, None)
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+    assert_eq!(page.records[0].index_id, [0x33; 16]);
+    assert_eq!(page.records[0].column_ids, vec![[0x44; 16]]);
+    assert!(page.records[0].unique);
+    assert_eq!(page.next_cursor, None);
+    server.join().unwrap();
+}
+
+#[test]
 fn submission_client_decodes_cancellation_acknowledgements() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
