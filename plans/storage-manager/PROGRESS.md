@@ -678,8 +678,8 @@
 
 - Behavior: executor INSERT now uses DEFAULT markers independently from NULL, allocates UUID identities only for DEFAULT, rejects explicit generated values and updates to identity columns, and validates collisions against the serialized final table contents.
 - Changed code and contract: [transaction and commit validation](../../engine/src/transaction.rs), [executor INSERT codec](../../engine/src/executor_ipc.rs), [IPC protocol](../../specs/ipc-protocol.md), and [schema DDL contract](../../specs/ddl-schema.md).
-- Verification: `catalog_backed_executor_generates_uuid_identity_and_rejects_override_and_update` uses a real redb catalog and executor metadata connection to verify DEFAULT materialization and commit, and durable aborts for explicit UUID override and generated-column update. The focused test passed. Locked workspace build, format check, warning-denied Clippy, and the full serial workspace suite passed; the latter ran in the delegated `systemd --user` cgroup service with the sandbox fixture environment.
-- Remaining: add deterministic collision-injection coverage for the final-state UUID collision guard; broader SQL runtime acceptance remains part of executor/supervisor integration work.
+- Verification: `catalog_backed_executor_generates_uuid_identity_and_rejects_override_and_update` uses a real redb catalog and executor metadata connection to verify DEFAULT materialization and commit, durable aborts for explicit UUID override and generated-column update, and a deterministic duplicate UUID through the trusted staging path. The collision is rejected as `UniqueViolation` with a durable ABORTED outcome. The focused test, locked workspace build, format check, warning-denied Clippy, and full serial workspace suite passed; the latter ran in the delegated `systemd --user` cgroup service with the sandbox fixture environment.
+- Remaining: broader SQL runtime acceptance remains part of executor/supervisor integration work.
 
 ## SM-6: periodic bounded submission expiry — implemented
 

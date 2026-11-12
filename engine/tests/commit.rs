@@ -30175,5 +30175,81 @@ fn catalog_backed_executor_generates_uuid_identity_and_rejects_override_and_upda
             .status,
         OutcomeStatus::Committed
     );
+
+    // Exercise the commit-time collision guard with a deterministic UUID. This
+    // low-level staging entry point is trusted-only; the executor path above
+    // remains the only caller-facing path that materializes generated values.
+    let schema_target = prdb_engine::authorization::AccessTarget::Schema(schema.schema_id);
+    let table_target = prdb_engine::authorization::AccessTarget::Table(table.table_id);
+    let context = prdb_engine::authorization::AuthorizationContext {
+        principal_id: actor,
+        role_ids: Default::default(),
+        scope: [
+            (Operation::Usage, schema_target),
+            (Operation::Insert, table_target),
+        ]
+        .into(),
+    };
+    let grants = [
+        prdb_engine::authorization::Grant {
+            subject: Subject::Principal(actor),
+            operation: Operation::Usage,
+            target: schema_target,
+        },
+        prdb_engine::authorization::Grant {
+            subject: Subject::Principal(actor),
+            operation: Operation::Insert,
+            target: table_target,
+        },
+    ];
+    let policies = [prdb_engine::authorization::Policy {
+        subjects: vec![Subject::Principal(actor)],
+        operation: Operation::Insert,
+        target: table_target,
+        effect: Effect::Allow,
+        using: None,
+        with_check: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+    }];
+    let projection = prdb_engine::authorization::AuthorizedProjection {
+        columns: std::slice::from_ref(&generated_column),
+        column_ids: &table.column_ids,
+        schema_version: 1,
+        schema_id: schema.schema_id,
+        context: &context,
+        grants: &grants,
+        policies: &policies,
+        checks: &[],
+        policy_driving_columns: &[],
+        dependencies: &[],
+    };
+    let mut duplicate = prdb_engine::transaction::InvocationTransaction::begin(
+        &database,
+        id(0x9e),
+        actor,
+        9_999,
+        8,
+        512,
+    )?;
+    duplicate.stage_insert_authorized(
+        prdb_engine::overlay::RowId {
+            table: table.table_id,
+            row: id(0x9f),
+        },
+        &projection,
+        &[Some(ScalarValue::Uuid(generated_id))],
+        &table.column_ids,
+    )?;
+    assert!(matches!(
+        duplicate.commit(),
+        Err(prdb_engine::transaction::TransactionError::Commit(
+            prdb_engine::commit::CommitError::UniqueViolation
+        ))
+    ));
+    assert_eq!(
+        lookup_outcome(&database, id(0x9e), actor, 1)?
+            .ok_or("generated identity collision has no durable outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
     Ok(())
 }

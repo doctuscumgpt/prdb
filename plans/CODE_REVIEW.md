@@ -40,4 +40,4 @@ This file tracks review and repair evidence separately from implementation miles
 
 ## Open review investigations
 
-- UUID identity generation is now storage-owned for DEFAULT inserts, explicit generated values and generated-column updates are rejected, and commit checks collisions against serialized final table contents. The catalog-backed executor regression is recorded in [`plans/storage-manager/PROGRESS.md`](storage-manager/PROGRESS.md). Deterministic collision-injection coverage remains open; trusted materialized-row helpers must remain behind the executor boundary.
+- UUID identity generation is now storage-owned for DEFAULT inserts, explicit generated values and generated-column updates are rejected, and commit checks collisions against serialized final table contents. The catalog-backed regression verifies generation, override/update rejection, and durable collision abort behavior; evidence is recorded in [`plans/storage-manager/PROGRESS.md`](storage-manager/PROGRESS.md). Trusted materialized-row helpers must remain behind the executor boundary.
