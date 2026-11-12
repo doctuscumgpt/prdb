@@ -29578,6 +29578,146 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
     }
     binding_transaction.abort()?;
 
+    let cancelled_invocation_id = id(0x8d);
+    let mut cancelled_estimate =
+        storage.begin_invocation(cancelled_invocation_id, actor, 9_999, 8, 512)?;
+    let (mut cancelled_planner_client, mut cancelled_planner_server) =
+        std::os::unix::net::UnixStream::pair()?;
+    cancelled_planner_client.set_read_timeout(Some(Duration::from_secs(2)))?;
+    std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+        let planner = scope.spawn(|| {
+            let result = serve_planner(&mut cancelled_planner_server, &mut cancelled_estimate);
+            let _ = cancelled_planner_server.shutdown(Shutdown::Both);
+            result
+        });
+        prdb_engine::ipc::write_frame(
+            &mut cancelled_planner_client,
+            &IpcFrame {
+                operation: IpcOperation::DescribeRelation as u16,
+                request_id: 1,
+                payload: ResolveRelationRequest {
+                    schema_name: "planner_stats".to_owned(),
+                    relation_name: "observations".to_owned(),
+                }
+                .encode()?,
+            },
+        )?;
+        let description = prdb_engine::ipc::read_frame(&mut cancelled_planner_client)?
+            .ok_or("planner stream closed before cancellation test relation")?;
+        let handle = DescribeRelationResponse::decode(&description.payload)?
+            .table
+            .ok_or("authorized relation was not described for cancellation test")?
+            .0;
+        assert_eq!(
+            storage.cancel_owned_invocation(actor, cancelled_invocation_id, 9_998)?,
+            prdb_engine::storage_manager::OwnerCancellationResult::Accepted
+        );
+        prdb_engine::ipc::write_frame(
+            &mut cancelled_planner_client,
+            &IpcFrame {
+                operation: IpcOperation::EstimateScan as u16,
+                request_id: 2,
+                payload: EstimateScanRequest {
+                    handle,
+                    column_ids: Vec::new(),
+                }
+                .encode()?,
+            },
+        )?;
+        let cancelled_response = prdb_engine::ipc::read_frame(&mut cancelled_planner_client)?;
+        cancelled_planner_client.shutdown(Shutdown::Write)?;
+        drop(cancelled_planner_client);
+        let planner_result = planner.join().expect("planner thread panicked");
+        assert!(
+            cancelled_response.is_none(),
+            "cancelled estimation must terminate the planner stream instead of returning a fallback response: {cancelled_response:?}"
+        );
+        assert!(
+            planner_result.is_err(),
+            "cancelled planning must abort the worker stream"
+        );
+        Ok(())
+    })?;
+    assert_eq!(
+        storage
+            .lookup_invocation_outcome(cancelled_invocation_id, actor, 9_998)?
+            .ok_or("cancelled estimate outcome missing")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+
+    let expired_storage = StorageManager::with_config(
+        &database,
+        prdb_engine::storage_manager::StorageManagerConfig {
+            max_invocation_age: Duration::from_secs(1),
+            ..Default::default()
+        },
+    )?;
+    let expired_invocation_id = id(0x8e);
+    let mut expired_estimate =
+        expired_storage.begin_invocation(expired_invocation_id, actor, 9_999, 8, 512)?;
+    let (mut expired_planner_client, mut expired_planner_server) =
+        std::os::unix::net::UnixStream::pair()?;
+    expired_planner_client.set_read_timeout(Some(Duration::from_secs(2)))?;
+    std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+        let planner = scope.spawn(|| {
+            let result = serve_planner(&mut expired_planner_server, &mut expired_estimate);
+            let _ = expired_planner_server.shutdown(Shutdown::Both);
+            result
+        });
+        prdb_engine::ipc::write_frame(
+            &mut expired_planner_client,
+            &IpcFrame {
+                operation: IpcOperation::DescribeRelation as u16,
+                request_id: 1,
+                payload: ResolveRelationRequest {
+                    schema_name: "planner_stats".to_owned(),
+                    relation_name: "observations".to_owned(),
+                }
+                .encode()?,
+            },
+        )?;
+        let description = prdb_engine::ipc::read_frame(&mut expired_planner_client)?
+            .ok_or("planner stream closed before expiry test relation")?;
+        let handle = DescribeRelationResponse::decode(&description.payload)?
+            .table
+            .ok_or("authorized relation was not described for expiry test")?
+            .0;
+        std::thread::sleep(Duration::from_millis(1_100));
+        prdb_engine::ipc::write_frame(
+            &mut expired_planner_client,
+            &IpcFrame {
+                operation: IpcOperation::EstimateScan as u16,
+                request_id: 2,
+                payload: EstimateScanRequest {
+                    handle,
+                    column_ids: Vec::new(),
+                }
+                .encode()?,
+            },
+        )?;
+        let expired_response = prdb_engine::ipc::read_frame(&mut expired_planner_client)?;
+        expired_planner_client.shutdown(Shutdown::Write)?;
+        drop(expired_planner_client);
+        let planner_result = planner.join().expect("planner thread panicked");
+        assert!(
+            expired_response.is_none(),
+            "expired estimation must terminate the planner stream instead of returning a fallback response: {expired_response:?}"
+        );
+        assert!(
+            planner_result.is_err(),
+            "expired planning must abort the worker stream"
+        );
+        Ok(())
+    })?;
+    assert_eq!(
+        expired_storage
+            .lookup_invocation_outcome(expired_invocation_id, actor, 9_998)?
+            .ok_or("expired estimate outcome missing")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+
     let mut transaction = storage.begin_invocation(id(0x88), actor, 9_999, 8, 512)?;
     transaction.stage_put(
         prdb_engine::overlay::RowId {

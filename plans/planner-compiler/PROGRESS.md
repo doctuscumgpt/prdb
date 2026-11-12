@@ -618,7 +618,7 @@
 
 ## OP-4 dependency: unknown estimate falls back to a bounded scan plan — verified
 
-- Behavior: exhausting the estimate allowance returns `Unknown`, omits the optional empty-view proof, and keeps the planner stream usable. The optimizer then emits its bounded full-scan plan when storage provides no empty-population proof.
-- Regression: the real-redb planner-stream test consumes the estimate allowance, observes `Unknown`, and asks for the opt-in empty-view proof again; storage returns the authorized relation without a proof. The optimizer-process test verifies a relation response without a proof yields an ordinary `Scan` plan with no empty-view hint.
+- Behavior: exhausting the estimate allowance returns `Unknown`, omits the optional empty-view proof, and keeps the planner stream usable. The optimizer then emits its bounded full-scan plan when storage provides no empty-population proof. Cancellation and invocation expiry during an estimate terminate planning and durably abort rather than becoming `Unknown`.
+- Regression: the real-redb planner-stream test consumes the estimate allowance, observes `Unknown`, and asks for the opt-in empty-view proof again; storage returns the authorized relation without a proof. The optimizer-process test verifies a relation response without a proof yields an ordinary `Scan` plan with no empty-view hint. Separate admitted invocations are cancelled or allowed to expire after relation-handle creation and before `EstimateScan`; each gets no fallback response and ends durably ABORTED.
 - Verification: focused `planner_stream_estimate_allowance_falls_back_without_aborting_invocation` and `optimizer_process::tests::process_protocol_uses_planner_metadata_and_returns_a_validated_plan` tests passed.
 - Remaining: general cardinality estimates, candidate comparison, and broader estimate-driven choices.
