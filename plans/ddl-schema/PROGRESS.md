@@ -178,10 +178,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: the focused real-redb lifecycle test passed in the configured Nix shell.
 - Remaining: separate supervisor/gateway process integration and broader DDL acceptance evidence remain open.
 
-## DS-5 / NP-6: schema and table DDL through separate service processes — verified
+## DS-5 / NP-6: schema, table, and primary-key DDL through separate service processes — verified
 
 - Contract: [schema DDL](../../specs/ddl-schema.md) and [client protocol](../../specs/client-protocol.md). Authenticated control operations create and drop schema/table definitions through the deployed TCP gateway and supervisor, with storage validating and committing each operation.
-- Regression: `supervisor_and_gateway_binaries_commit_a_confined_submission` now uses the public `AdminClient` against both production binaries to create a schema and UUID identity table, then drop the table and empty schema. The same connection first checks active query status while the ordinary client is backpressured on a 16 MiB result stream, then checks COMMITTED and lists token metadata before exercising DDL.
+- Regression: `supervisor_and_gateway_binaries_commit_a_confined_submission` now uses the public `AdminClient` against both production binaries to create a schema, UUID identity table, and PRIMARY KEY with its backing index, then drop the table and empty schema. The same connection first checks active query status while the ordinary client is backpressured on a 16 MiB result stream, then checks COMMITTED and lists token metadata before exercising DDL.
 - Verification: the focused test passed in the delegated `systemd --user` service with the pinned runtime paths and writable cgroup parent. `cargo fmt --all -- --check`, `cargo build --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `make -f engine/sdk/Makefile test`, `make -f engine/sdk/Makefile sandbox-query-fixture`, and the full serial workspace suite all passed. The suite ran with all sandbox fixtures enabled and reported no ignored tests.
 - Scope: exercises the schema/table ADMIN lifecycle across process boundaries on a real READY instance. DDL crash recovery, wider operation families, and the complete DS-5 ALTER matrix remain open.
 

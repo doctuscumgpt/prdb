@@ -651,6 +651,9 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
             )
             .expect("create table through process ADMIN path");
         control
+            .create_primary_key(table.table_id, &[table.column_ids[0]])
+            .expect("create primary key through process ADMIN path");
+        control
             .drop_table(table.table_id)
             .expect("drop table through process ADMIN path");
         control
