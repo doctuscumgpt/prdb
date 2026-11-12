@@ -1,5 +1,13 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: repeatable operational latency beside optimizer-backed filtered joins — measured
+
+- Harness: the enabled `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance ran the real ABI v5 SQL artifact through direct and optimizer-backed v20 filtered joins, grouped/sorted SQL, result relay, and concurrent operational reads/commits. The cancellation observer also ran while analytics and an operational transaction were active.
+- Profile and method: five sequential fresh-database runs on Linux x86_64, Rust 1.95.0, redb 4.4.0, inside delegated `systemd --user` cgroups with `cpu`, `memory`, and `pids`. Each run recorded 64 baseline operational reads/commits and 163–178 reads/commits completed while the confined analytics worker remained live.
+- Result: median of run-level point-read p50/p95/p99 was 1.407/2.180/3.054 ms at baseline and 1.762/2.836/4.150 ms alongside analytics. Durable-commit medians were 11.583/14.767/18.034 ms at baseline and 11.535/15.890/17.239 ms with analytics active. Across runs, median cancellation request latency was 6 µs and median SDK cancellation-poll relay was 14.276 ms.
+- Verification: all five focused delegated-cgroup acceptance runs passed (`1 passed, 0 ignored` each); the full serial delegated workspace suite also passed with zero ignored tests.
+- Scope: this is a repeated local comparison of one small-dataset confined workload, not a saturation profile, configured service-level target, or target-hardware result. Multi-client analytical saturation, memory/copy accounting, maintenance overlap, and additional hosts/filesystems remain open.
+
 ## WI-7 follow-up: sandbox cancellation while analytics is live — covered
 
 - Regression: the enabled `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance now starts a second confined cancellation invocation alongside the primary SQL worker. Both observers start behind a barrier with four operational workers. Before requesting cancellation, the cancellation observer requires the primary SQL executor process to remain live and at least one authorized operational transaction to be in flight. It then checks the cancellation poll relay, worker abort, durable ABORTED outcome, and terminal frame.
