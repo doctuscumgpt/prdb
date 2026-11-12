@@ -1,6 +1,7 @@
 #include "prdb_sdk_sql_exec_v4.h"
 #include "prdb_sdk_optimizer_plan_v1.h"
 #include "prdb_sdk_planner_v1.h"
+#include "prdb_sdk_sql_exec_v12.h"
 
 #include <string.h>
 
@@ -412,4 +413,138 @@ int32_t prdb_sdk_sql_execute_group_count_optimizer_v1(
         executor_columns, executor_column_capacity, cell_scratch,
         cell_scratch_capacity, group_key_bytes, group_key_bytes_capacity,
         on_group, result_context);
+}
+
+int32_t prdb_sdk_sql_execute_group_count_ordered_optimizer_v1(
+    const prdb_host_api_v5 *host,
+    const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *sql, uint64_t sql_len,
+    const prdb_sdk_value_v1 *parameters, uint32_t parameter_count,
+    uint16_t max_candidates, uint32_t max_batch_bytes,
+    uint8_t *optimizer_request, uint64_t optimizer_request_capacity,
+    uint8_t *optimizer_response, uint64_t optimizer_response_capacity,
+    uint8_t *planner_response, uint64_t planner_response_capacity,
+    uint8_t *executor_response, uint64_t executor_response_capacity,
+    uint8_t *batch_response, uint64_t batch_response_capacity,
+    prdb_sdk_sql_column_shape_v2 *planner_columns,
+    uint32_t planner_column_capacity,
+    prdb_sdk_sql_column_shape_v2 *executor_columns,
+    uint32_t executor_column_capacity,
+    prdb_sdk_value_v1 *cell_scratch, uint32_t cell_scratch_capacity,
+    uint8_t *materialized_bytes, uint64_t materialized_bytes_capacity,
+    prdb_sdk_sql_group_row_v12_fn on_group, void *result_context) {
+    prdb_sdk_select_v12 statement = {0};
+    prdb_sdk_select_binding_v12 binding = {0};
+    prdb_sdk_select_v4 count_statement = {0};
+    prdb_sdk_select_binding_v4 count_binding = {0};
+    prdb_sdk_planner_relation_v1 planned = {0};
+    prdb_sdk_optimizer_response_v1 optimizer = {0};
+    prdb_host_api_v2 host_v2;
+    uint64_t planner_response_len = 0;
+    uint64_t optimizer_request_len = 0;
+    uint64_t optimizer_response_len = 0;
+    uint64_t executor_response_len = 0;
+    int32_t status;
+
+    if (host == NULL || host->v4.v3.struct_size < sizeof(host->v4.v3) ||
+        host->v4.v3.abi_version != PRDB_QUERY_ABI_V3_VERSION ||
+        host->v4.v3.statement_failure == NULL ||
+        host->v4.v3.planner_request == NULL ||
+        host->v4.v3.executor_request == NULL ||
+        host->optimizer_request == NULL || schema == NULL || sql == NULL ||
+        optimizer_request == NULL || optimizer_response == NULL ||
+        planner_response == NULL || executor_response == NULL ||
+        planner_columns == NULL || optimizer_request_capacity == 0 ||
+        optimizer_response_capacity == 0 || planner_response_capacity == 0 ||
+        executor_response_capacity == 0) {
+        if (host != NULL && host->v4.v3.statement_failure != NULL)
+            (void)host->v4.v3.statement_failure(
+                host->v4.v3.context, PRDB_QUERY_STATEMENT_FAILURE_SQL);
+        return PRDB_SDK_SQL_EXEC_INVALID_ARGUMENT;
+    }
+    host_v2 = (prdb_host_api_v2){
+        sizeof(prdb_host_api_v2), PRDB_QUERY_ABI_V2_VERSION,
+        host->v4.v3.context, host->v4.v3.executor_request,
+        host->v4.v3.planner_request, host->v4.v3.write_result};
+    status = prdb_sdk_sql_parse_select_v12(
+        sql, sql_len, &statement, sizeof(statement), NULL);
+    if (status != PRDB_SDK_SQL_OK || statement.order_count == 0 ||
+        statement.base.base.base.has_having != 0 ||
+        statement.base.base.base.base.aggregate_kind !=
+            PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR ||
+        statement.base.base.base.base.has_group_by == 0 ||
+        statement.base.base.base.base.base.predicate_count != 0) {
+        return fail_statement(&host->v4.v3,
+                              PRDB_SDK_SQL_EXEC_BIND_ERROR);
+    }
+    status = prdb_sdk_planner_describe_relation_v1(
+        &host_v2, schema, schema_len,
+        statement.base.base.base.base.base.sql +
+            statement.base.base.base.base.base.relation.offset,
+        statement.base.base.base.base.base.relation.length,
+        planner_response, planner_response_capacity, &planner_response_len,
+        &planned, sizeof(planned), planner_columns,
+        planner_column_capacity);
+    if (status != PRDB_SDK_PLANNER_REQUEST_OK)
+        return fail_statement(&host->v4.v3,
+                              PRDB_SDK_SQL_EXEC_PLANNER_ERROR);
+    status = prdb_sdk_sql_bind_select_v12(
+        &statement, planned.name, planned.name_len, planner_columns,
+        planned.column_count, &binding, sizeof(binding));
+    if (status != PRDB_SDK_SQL_BIND_OK)
+        return fail_statement(&host->v4.v3,
+                              PRDB_SDK_SQL_EXEC_BIND_ERROR);
+
+    count_statement.struct_size = sizeof(count_statement);
+    count_statement.abi_version = PRDB_SDK_SQL_ABI_V4_VERSION;
+    count_statement.base = statement.base.base.base.base.base;
+    count_statement.has_group_by =
+        statement.base.base.base.base.has_group_by;
+    count_statement.group_by_column =
+        statement.base.base.base.base.group_by_column;
+    count_statement.aggregate_kind =
+        statement.base.base.base.base.aggregate_kind;
+    count_binding.struct_size = sizeof(count_binding);
+    count_binding.abi_version = PRDB_SDK_SQL_ABI_V4_VERSION;
+    count_binding.base = binding.base.base.base.base.base;
+    count_binding.has_group_by =
+        binding.base.base.base.base.has_group_by;
+    count_binding.group_by_column =
+        binding.base.base.base.base.group_by_column;
+    count_binding.aggregate_kind =
+        binding.base.base.base.base.aggregate_kind;
+    status = prdb_sdk_optimizer_encode_group_count_v1(
+        &count_statement, schema, schema_len, optimizer_request,
+        optimizer_request_capacity, &optimizer_request_len);
+    if (status != PRDB_SDK_OPTIMIZER_ENCODE_OK)
+        return fail_statement(&host->v4.v3,
+                              PRDB_SDK_SQL_EXEC_BIND_ERROR);
+    status = prdb_sdk_optimizer_submit_group_count_v1(
+        host, optimizer_request, optimizer_request_len, optimizer_response,
+        optimizer_response_capacity, &optimizer_response_len, &optimizer,
+        sizeof(optimizer));
+    if (status != PRDB_SDK_OPTIMIZER_RESULT_OK)
+        return fail_statement(&host->v4.v3,
+                              PRDB_SDK_SQL_EXEC_PLANNER_ERROR);
+    status = prdb_sdk_optimizer_match_group_count_plan_v1(
+        &count_statement, &count_binding, schema, schema_len, optimizer.plan,
+        optimizer.plan_len);
+    if (status != PRDB_SDK_OPTIMIZER_PLAN_OK)
+        return fail_statement(&host->v4.v3,
+                              PRDB_SDK_SQL_EXEC_SHAPE_MISMATCH);
+    status = prdb_sdk_optimizer_validate_executor_group_count_relation_v1(
+        &host_v2, optimizer.plan, optimizer.plan_len, executor_response,
+        executor_response_capacity, &executor_response_len);
+    if (status != PRDB_SDK_OPTIMIZER_PLAN_OK)
+        return fail_statement(&host->v4.v3,
+                              PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+    return prdb_sdk_sql_execute_group_v12(
+        &host->v4.v3, schema, schema_len, sql, sql_len, parameters,
+        parameter_count, max_candidates, max_batch_bytes, planner_response,
+        planner_response_capacity, executor_response,
+        executor_response_capacity, batch_response,
+        batch_response_capacity, planner_columns, planner_column_capacity,
+        executor_columns, executor_column_capacity, cell_scratch,
+        cell_scratch_capacity, materialized_bytes,
+        materialized_bytes_capacity, on_group, result_context);
 }

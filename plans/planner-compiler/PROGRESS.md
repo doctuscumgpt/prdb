@@ -17,7 +17,7 @@
 - Red evidence: the first delegated acceptance failed with `Planner(DuplicateRequestId)` after earlier direct planner calls. Optimizer metadata lookups had reused optimizer-channel IDs on the shared planner stream; a two-relation lookup also needed distinct IDs for each side.
 - Fix: optimizer planner requests now use a disjoint range above the direct planner request cap and allocate a unique ID per relation. The optimizer process regression asserts those IDs for SELECT, DELETE, UPDATE, and both join relations.
 - Verification: optimizer process tests passed (7/7); the maintained TinyCC SDK suite and sandbox query fixture build passed. The focused confined DML sequence passed with the optimizer-backed join. Locked workspace build, format check, warning-denied Clippy, and the full serial workspace test suite passed in the delegated `systemd --user` unit; commit integration reported 142 passed, zero ignored, including all cgroup tests, and metadata process integration reported 2 passed. `git diff --check` passed.
-- Remaining: broaden grouped optimizer planning beyond COUNT and gather analytical-load and mixed-workload measurements. The optimizer-backed row ORDER BY path is verified below; grouped sorting remains in SDK reference execution.
+- Remaining: broaden grouped optimizer planning beyond COUNT and gather analytical-load and mixed-workload measurements. The optimizer-gated single-key COUNT plus v12 ORDER BY composition is verified below; its sort remains in SDK execution.
 
 ## OP-7 dependency: bounded single-key COUNT(*) plan — Rust service implemented
 
@@ -43,6 +43,14 @@
 - Regression: Rust request, binding, plan codec, and optimizer process tests cover statement 7. TinyCC covers exact request bytes, hidden-key plan decoding/matching, zero LIMIT without a scan, materialization exhaustion without output, and cancellation after 32 published rows before the next callback. The confined SQL artifact verifies descending hidden-key output through durable result relay.
 - Verification: the full maintained SDK suite passed after the executor-bound regressions. The focused Rust optimizer regressions and delegated confined acceptance passed in the preceding ordered SELECT increment.
 - Remaining: grouped optimizer ordering and analytical/mixed-workload measurements remain open.
+
+## OP-7 follow-up: optimizer-gated grouped COUNT ORDER BY — verified
+
+- Contract: a one-key `COUNT(*)` query with v12's one- or two-output ORDER BY remains bounded and must validate the optimizer's group scan identity before emitting sorted SQLR results. The request does not carry WHERE or HAVING.
+- Implementation: `prdb_sdk_sql_execute_group_count_ordered_optimizer_v1` parses and binds the full v12 query, derives its frozen v4 COUNT/group-key view for statement-5 request encoding, matches the kind-5 plan and LIMIT, re-resolves executor identity, then delegates to the bounded v12 grouped runner for HAVING-free aggregation, NULL ordering, stable ties, and LIMIT-after-sort behavior.
+- Confined acceptance: the maintained ABI v5 query artifact now routes `SELECT id, COUNT(*) ... ORDER BY COUNT(*) DESC NULLS LAST, id ASC NULLS LAST LIMIT 1` through this optimizer gate. The end-to-end test checks the exact relayed SQLR result and durable commit.
+- Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile sandbox-query-fixture` and the full maintained SDK suite passed. The focused delegated `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance passed with the cgroup probe confirming writable `cpu memory pids` delegation; the run verified the exact ordered SQLR frame through durable commit. The full Rust workspace suite was not rerun for this C-only increment.
+- Remaining: optimizer plan kinds that encode grouped sort items, composite-group optimizer ordering, and analytical/mixed-workload measurements remain open.
 
 ## OP-2 dependency: generated unknown estimate response — implemented
 

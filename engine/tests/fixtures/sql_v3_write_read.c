@@ -1398,14 +1398,32 @@ static int32_t run_write_read_fixture(
 
     grouped_results.row_count = 0;
     grouped_results.output_len = 0;
-    status = prdb_sdk_sql_execute_group_v12(
-        host, schema, sizeof(schema) - 1, select_grouped_order_sql,
-        sizeof(select_grouped_order_sql) - 1, NULL, 0, 16,
-        sizeof(batch_response), planner_response, sizeof(planner_response),
-        executor_response, sizeof(executor_response), batch_response,
-        sizeof(batch_response), planner_columns, 1, executor_columns, 1,
-        cell_scratch, 1, grouped_materialized, sizeof(grouped_materialized),
-        write_grouped_ordered_count, &grouped_results);
+    if (optimizer_host_v5 != NULL) {
+        status = prdb_sdk_sql_execute_group_count_ordered_optimizer_v1(
+            optimizer_host_v5, schema, sizeof(schema) - 1,
+            select_grouped_order_sql, sizeof(select_grouped_order_sql) - 1,
+            NULL, 0, 16, sizeof(batch_response),
+            group_count_optimizer_request, sizeof(group_count_optimizer_request),
+            group_count_optimizer_response,
+            sizeof(group_count_optimizer_response), planner_response,
+            sizeof(planner_response), executor_response,
+            sizeof(executor_response), batch_response,
+            sizeof(batch_response), planner_columns, 1, executor_columns, 1,
+            cell_scratch, 1, grouped_materialized,
+            sizeof(grouped_materialized), write_grouped_ordered_count,
+            &grouped_results);
+    } else {
+        status = prdb_sdk_sql_execute_group_v12(
+            host, schema, sizeof(schema) - 1, select_grouped_order_sql,
+            sizeof(select_grouped_order_sql) - 1, NULL, 0, 16,
+            sizeof(batch_response), planner_response,
+            sizeof(planner_response), executor_response,
+            sizeof(executor_response), batch_response,
+            sizeof(batch_response), planner_columns, 1, executor_columns, 1,
+            cell_scratch, 1, grouped_materialized,
+            sizeof(grouped_materialized), write_grouped_ordered_count,
+            &grouped_results);
+    }
     if (status != PRDB_SDK_SQL_EXEC_OK || grouped_results.row_count != 1) {
         static const uint8_t message[] = "fixture-error-grouped-order";
         return report_failure(host, message, sizeof(message) - 1);

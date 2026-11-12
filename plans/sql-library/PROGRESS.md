@@ -5,14 +5,14 @@
 - Contract: an explicit single-column `ORDER BY` key is resolved through the authorized relation description. Its source column may remain hidden from the SELECT projection; LIMIT is applied after stable ordering by the bounded SQL v3 runner or optimizer-backed ordered SELECT path.
 - Implementation: ordered SELECT statement 7 is decoded, bound to stable column IDs, and dispatched through the optimizer submission process. The canonical kind-7 plan includes the sorted union of projected columns and the hidden order key, direction, and optional LIMIT. Rust optimizer responses and the maintained C SDK independently validate the plan. The SDK encodes SQL v3 ordered SELECT ASTs, matches plans against their parsed relation/projections/order/LIMIT, independently re-resolves executor metadata, scans with a 124-page request budget, materializes up to 128 rows/1 MiB, stable-sorts by the authorized typed key, applies LIMIT after sorting, and polls cancellation before sorting and every 32 output rows. Errors latch statement failure.
 - Evidence: focused Rust request, binding, plan round-trip/rejection, and optimizer-process dispatch tests passed. The TinyCC SDK suite passed exact ordered request-byte, hidden order-key decoding, AST match, and mutation rejection checks. The maintained optimizer fixture now also executes `LIMIT 0`, verifies that planner and executor relation identities are still resolved, and asserts that no scan opens and no row callback runs. `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` passed inside the delegated user service after checking exact relayed SQLR rows for `SELECT right_key FROM grouped_records ORDER BY left_key DESC LIMIT 2` (`9`, then `7`). Cgroup tests remain enabled and the test targets report zero ignored tests.
-- Remaining: broaden ordered SELECT parity and stress/error coverage, including composite keys, adversarial executor bounds, and cancellation during publication. SQL-8's wider memory-budget, spill, and analytical workload acceptance remains open.
+- Remaining: the v3 row ORDER BY grammar remains single-key; broader analytical memory-budget, spill, and mixed-workload acceptance remains open.
 
 ## SQL-8 dependency: maximum-cardinality stable sort regression — verified
 
 - Contract: the single-key sorter accepts exactly 128 authorized values in either direction, preserves input order for ties, and returns a complete permutation; 129 values fail with `LIMIT_EXCEEDED`.
 - Regression: the maintained TinyCC sorter fixture now feeds 128 typed INTEGER keys with repeated values through ascending and descending sorts. An independent property check verifies monotonic order, stable tie ordering, and that each source row appears exactly once. The adjacent 129-row rejection remains covered.
 - Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed, including the full maintained SDK fixture suite with TinyCC 0.9.27-unstable-2025-01-06.
-- Remaining: optimizer-backed ordered execution still needs executor-level stress/error coverage for materialization overflow and cancellation during publication; broader analytical memory-pressure, spill, and mixed-workload evidence remain open.
+- Remaining: broader analytical memory-pressure, spill, and mixed-workload evidence remain open.
 
 ## SQL-8 dependency: optimizer-backed ordered SELECT bounds — verified
 
@@ -38,7 +38,7 @@
 - Regression: the maintained `sql_v3_write_read.c` artifact runs a two-key aliased join with `WHERE l.id >= $1 LIMIT 1`, forces multiple join candidates, and encodes only the selected `g.left_key` and `l.id` outputs. The confined commit test checks the exact SQLR frame `(1, 42)` after relay.
 - Implementation: V20 is now exercised by the maintained ABI v3 query artifact; `make -f engine/sdk/Makefile sandbox-query-fixture` rebuilds it when either V20 header changes. The regression uses existing authorized relation resolution and two-scan callbacks, with no new result or authority path.
 - Verification: `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` passed inside a delegated `systemd --user` service with the configured NixOS loader/libc/`libgcc_s` allowlist. The full workspace suite passed with all cgroup tests enabled; the focused acceptance was rerun after adding the v20 SQLR frame and again after routing the two-key v19 join through optimizer submission.
-- Remaining: optimizer grouping/sorting plans are the next SQL-7 implementation dependency; wider pressure and mixed-workload evidence remains open.
+- Remaining: optimizer-gated single-key COUNT plus grouped ORDER BY now passes confined acceptance; optimizer kinds for grouped sort expressions and wider pressure/mixed-workload evidence remain open.
 
 ## SQL-4 / IPC: sequential SQL request budget — implemented
 
