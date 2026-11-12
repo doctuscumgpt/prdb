@@ -751,6 +751,57 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let mut admin =
         AdminClient::connect_authenticated(address, token_id, &mut admin_control_secret)?;
     assert_eq!(admin_control_secret, [0; 32]);
+    let ddl_schema = admin.create_schema("process_ddl", admin_user_id)?;
+    let ddl_table = admin.create_table(
+        ddl_schema.identity_id,
+        "records",
+        &[AdminColumnDefinition {
+            name: "key".to_owned(),
+            scalar_type: ScalarType::Integer,
+            nullable: true,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+    )?;
+    let ddl_constraint =
+        admin.create_unique_constraint(ddl_table.table_id, &[ddl_table.column_ids[0]])?;
+    assert!(ddl_schema.commit_sequence < ddl_table.commit_sequence);
+    assert!(ddl_table.commit_sequence < ddl_constraint.commit_sequence);
+    let mut verify_credentials = read_client_credentials(&admin_cancel_credentials_path)?;
+    let mut ddl_metadata = MetadataClient::connect_authenticated(
+        address,
+        verify_credentials.token_id,
+        &mut verify_credentials.token_secret,
+    )?;
+    assert!(
+        ddl_metadata
+            .list_schemas()?
+            .iter()
+            .any(
+                |schema| schema.schema_id == ddl_schema.identity_id && schema.name == "process_ddl"
+            )
+    );
+    assert!(
+        ddl_metadata
+            .list_relations(ddl_schema.identity_id)?
+            .iter()
+            .any(
+                |relation| relation.relation_id == ddl_table.table_id && relation.name == "records"
+            )
+    );
+    assert_eq!(
+        ddl_metadata
+            .list_columns(ddl_schema.identity_id, ddl_table.table_id)?
+            .first()
+            .map(|column| column.column_id),
+        Some(ddl_table.column_ids[0])
+    );
+    drop(ddl_metadata);
+    let dropped_table = admin.drop_table(ddl_table.table_id)?;
+    assert!(dropped_table.commit_sequence > ddl_constraint.commit_sequence);
+    assert!(
+        admin.drop_schema(ddl_schema.identity_id)?.commit_sequence > dropped_table.commit_sequence
+    );
     assert_eq!(
         admin.cancel_invocation(committed_invocation_id)?,
         CancellationResult::Terminal(TerminalOutcome::Committed)
