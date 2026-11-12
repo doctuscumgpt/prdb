@@ -49,7 +49,7 @@ Proposed baseline: an engine-managed operation requiring a redacted input fails 
 
 This semantic rule governs engine execution and APIs; a malicious worker cannot be forced to report an error or compute honestly from the authorized data it already has. It must still never receive hidden values.
 
-Do not expose diagnostics identifying hidden values or invisible rows. Define precise expression evaluation and error behavior before supporting complex SQL, including short-circuiting and partial results.
+Do not expose diagnostics identifying hidden values or invisible rows. Relation discovery returns the same unavailable response for a hidden relation and an absent name. Define precise expression evaluation and error behavior before supporting complex SQL, including short-circuiting and partial results. Sanitized output does not claim to eliminate timing inference.
 
 ## Planning Statistics
 

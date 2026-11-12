@@ -2773,6 +2773,31 @@ fn executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle()
     let fixture = Fixture::new();
     let database = initialize(&fixture.path())?;
     install_relation_discovery_catalog(&database)?;
+    install_second_relation_column(&database)?;
+    let app_schema_id = [0x91; 16];
+    let write = database.begin_write()?;
+    {
+        let mut catalog = write.open_table(CATALOG)?;
+        let mut grants = write.open_table(prdb_engine::schema::GRANTS)?;
+        let (grant_key, grant_value) = grant_catalog_record(
+            [10; 16],
+            app_schema_id,
+            1,
+            1,
+            app_schema_id,
+            builtin_owner_id(),
+            1,
+        );
+        catalog.insert(&grant_key[..], &grant_value[..])?;
+        for (direction, indexed_id) in [(1u8, [10; 16]), (2u8, app_schema_id)] {
+            let mut index_key = Vec::with_capacity(76);
+            index_key.push(direction);
+            index_key.extend_from_slice(&indexed_id);
+            index_key.extend_from_slice(&grant_key);
+            grants.insert(&index_key[..], &[][..])?;
+        }
+    }
+    write.commit()?;
     let mut invocation = InvocationTransaction::begin(&database, [217; 16], [9; 16], 9_999, 1, 64)?;
     let mut connection = invocation.open_executor_metadata_connection();
 
@@ -2846,6 +2871,35 @@ fn executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle()
     assert_eq!(
         ResolveRelationResponse::decode(&hidden_response.payload)?,
         ResolveRelationResponse::Unavailable
+    );
+    let hidden_table_request = IpcFrame {
+        payload: encode_request("app", "secret"),
+        ..request.clone()
+    };
+    let absent_table_request = IpcFrame {
+        payload: encode_request("app", "missing"),
+        ..request.clone()
+    };
+    let mut restricted_invocation =
+        InvocationTransaction::begin(&database, [218; 16], [10; 16], 9_999, 1, 64)?;
+    let mut restricted_connection = restricted_invocation.open_executor_metadata_connection();
+    let hidden_table_response = dispatch_executor_resolve_relation(
+        ServiceRole::Executor,
+        &mut restricted_connection,
+        &hidden_table_request,
+    )?;
+    let absent_table_response = dispatch_executor_resolve_relation(
+        ServiceRole::Executor,
+        &mut restricted_connection,
+        &absent_table_request,
+    )?;
+    assert_eq!(
+        ResolveRelationResponse::decode(&hidden_table_response.payload)?,
+        ResolveRelationResponse::Unavailable
+    );
+    assert_eq!(
+        hidden_table_response.payload, absent_table_response.payload,
+        "a hidden relation and an absent name must have identical executor IPC diagnostics"
     );
 
     assert!(matches!(
