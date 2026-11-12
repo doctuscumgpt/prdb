@@ -1,5 +1,12 @@
 # Transactions and MVCC Progress
 
+## MV-8 follow-up: managed cancellation during retained-reader write pressure — verified
+
+- Contract: [concurrency and MVCC](../../specs/concurrency-mvcc.md). An accepted cancellation is observed at the executor storage checkpoint, durably aborts the invocation, discards its private write, releases its pinned snapshot and admission slot, and leaves other readers on their original snapshots.
+- Regression: [`managed_cancellation_releases_snapshot_admission_during_write_pressure`](../../engine/tests/transaction.rs) fills a three-snapshot cap with a retained reader, a cancellation target, and a staged writer. A fourth admission is rejected; after the cancellation poll, it is admitted while the other two snapshots remain live. The test then runs 32 durable writes while the retained reader repeatedly observes its original value, and verifies the cancelled write never publishes.
+- Verification: focused real-redb test passed (1 passed, 0 ignored). `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, and the full serial delegated-cgroup workspace suite passed. The commit target reported 142 passed/0 ignored; the transaction target reported 74 passed/0 ignored.
+- Remaining: this verifies snapshot-slot release and logical visibility, not physical redb history bytes reclaimed after the last old snapshot closes. Cancellation while actual worker-channel storage is in flight and commit-boundary arbitration remain separate cases.
+
 ## MV-1: stable read snapshots and private-write isolation — verified
 
 - Contract: [concurrency and MVCC](../../specs/concurrency-mvcc.md). An invocation reads from its retained redb snapshot plus only its own overlay. Other transactions' staged writes remain invisible, and a concurrent commit does not advance an admitted reader's snapshot.

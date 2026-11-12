@@ -1,5 +1,11 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: cancellation releases snapshot admission during writer load — covered
+
+- Regression: [`managed_cancellation_releases_snapshot_admission_during_write_pressure`](../../engine/tests/transaction.rs) fills the configured managed-snapshot cap, verifies new work is rejected, accepts cancellation and observes it through the executor metadata checkpoint, then proves a new admission succeeds while an unrelated staged writer and retained reader remain active. The cancelled overlay is durably ABORTED and unpublished; the retained reader preserves its original value during 32 concurrent durable writes.
+- Verification: focused real-redb regression passed (1 passed, 0 ignored). Workspace build, formatting, warning-denied Clippy, and the full serial delegated-cgroup suite passed; commit integration reported 142 passed/0 ignored and transaction integration reported 74 passed/0 ignored.
+- Scope: this exercises local storage admission and concurrent commits. It does not measure physical redb history reclamation, cancellation relay through the external gateway, or cancellation during saturated sandbox SQL.
+
 ## WI-7 follow-up: bounded outcome maintenance during retained reads and commits — measured
 
 - Harness: [`storage_pressure.rs`](../../engine/examples/storage_pressure.rs) seeds 256 expired terminal outcomes, then runs four operational writers (256 durable commits), a retained authorized reader, and repeated outcome-prune transactions together. Each maintenance transaction scans at most 16 outcomes; a 5 ms pause between batches deliberately yields CPU and writer admission. The production supervisor currently schedules outcome maintenance every 60 seconds, so this is a synthetic saturation profile rather than its normal cadence.

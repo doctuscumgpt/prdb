@@ -20,9 +20,9 @@ use prdb_engine::tuple::{
     ColumnSchema, FieldPatch, ScalarType, ScalarValue, decode_tuple, encode_tuple,
 };
 use redb::{Database, ReadableDatabase};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -4862,6 +4862,144 @@ fn retained_invocation_snapshot_survives_concurrent_writer_pressure()
         assert_eq!(observer.read(row_id)?, Some(expected));
     }
     observer.abort()?;
+    Ok(())
+}
+
+#[test]
+fn managed_cancellation_releases_snapshot_admission_during_write_pressure()
+-> Result<(), Box<dyn std::error::Error>> {
+    const WRITE_COUNT: u8 = 32;
+    const VALUE_BYTES: usize = 32 * 1024;
+
+    let fixture = Fixture::new();
+    let data_directory = fixture.0.join("managed-cancellation");
+    let mut bootstrap =
+        prdb_engine::bootstrap::initialize(&data_directory, "cancel_admin", i64::MAX)?;
+    let admin_user_id = bootstrap.admin_user_id();
+    let mut secret = bootstrap.take_secret().ok_or("bootstrap secret missing")?;
+    use zeroize::Zeroize;
+    secret.zeroize();
+    let instance = bootstrap.acknowledge()?;
+    let database = instance.database();
+    let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?;
+    let retention_deadline_us = now + 60_000_000;
+    let storage = prdb_engine::storage_manager::StorageManager::with_config(
+        database,
+        prdb_engine::storage_manager::StorageManagerConfig {
+            max_active_invocations: 3,
+            max_active_analytical_invocations: 1,
+            ..Default::default()
+        },
+    )?;
+    stage_initial_row(database)?;
+    let mut retained =
+        storage.begin_invocation([0x30; 16], admin_user_id, retention_deadline_us, 4, 64)?;
+    let original_value = retained.read(id(1))?;
+    let mut cancelled =
+        storage.begin_invocation([0x31; 16], admin_user_id, retention_deadline_us, 4, 64)?;
+    cancelled.stage_put(id(2), b"cancelled private write")?;
+    let mut staged_writer =
+        storage.begin_invocation([0x32; 16], admin_user_id, retention_deadline_us, 4, 64)?;
+    staged_writer.stage_put(id(1), b"staged writer value")?;
+    assert!(matches!(
+        storage.begin_invocation([0x33; 16], admin_user_id, retention_deadline_us, 4, 64),
+        Err(TransactionError::AdmissionLimitExceeded)
+    ));
+
+    let mut executor = cancelled.open_executor_metadata_connection();
+    assert!(!executor.check_cancellation()?);
+    assert_eq!(
+        storage.cancel_owned_invocation(admin_user_id, [0x31; 16], now + 1)?,
+        prdb_engine::storage_manager::OwnerCancellationResult::Accepted
+    );
+    assert!(executor.check_cancellation()?);
+    drop(executor);
+
+    // The cancellation poll durably aborts and drops its snapshot permit. The
+    // other reader and a staged writer still occupy two of the three slots.
+    let mut replacement =
+        storage.begin_invocation([0x33; 16], admin_user_id, retention_deadline_us, 4, 64)?;
+    replacement.abort()?;
+    assert_eq!(
+        storage
+            .lookup_invocation_outcome([0x31; 16], admin_user_id, now + 2)?
+            .ok_or("cancelled outcome missing")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    staged_writer.commit()?;
+
+    let completed = AtomicBool::new(false);
+    let start = Arc::new(Barrier::new(2));
+    let first_commit = Arc::new(Barrier::new(2));
+    let samples = std::thread::scope(|scope| {
+        let start_writer = Arc::clone(&start);
+        let first_commit_writer = Arc::clone(&first_commit);
+        let storage = &storage;
+        let completed = &completed;
+        let writer = scope.spawn(move || {
+            start_writer.wait();
+            for sequence in 0..WRITE_COUNT {
+                let value = vec![0x40u8.wrapping_add(sequence); VALUE_BYTES];
+                let mut invocation_id = [0; 16];
+                invocation_id[0] = 0x70;
+                invocation_id[1] = sequence;
+                let mut transaction = storage
+                    .begin_invocation(
+                        invocation_id,
+                        admin_user_id,
+                        retention_deadline_us,
+                        4,
+                        VALUE_BYTES * 2,
+                    )
+                    .expect("admit pressure writer");
+                transaction
+                    .stage_put(id(1), &value)
+                    .expect("stage pressure write");
+                if sequence == 0 {
+                    first_commit_writer.wait();
+                }
+                transaction.commit().expect("commit pressure write");
+            }
+            completed.store(true, Ordering::Release);
+        });
+        start.wait();
+        assert_eq!(
+            retained.read(id(1))?,
+            original_value.clone(),
+            "the retained snapshot changed before the first pressure commit"
+        );
+        let mut samples = 1;
+        first_commit.wait();
+        while !completed.load(Ordering::Acquire) && !writer.is_finished() {
+            assert_eq!(
+                retained.read(id(1))?,
+                original_value.clone(),
+                "cancellation or concurrent commits changed the retained snapshot"
+            );
+            samples += 1;
+            std::thread::yield_now();
+        }
+        writer.join().expect("pressure writer thread");
+        Ok::<_, Box<dyn std::error::Error>>(samples)
+    })?;
+    assert!(
+        samples > 0,
+        "the retained reader did no work during the writes"
+    );
+
+    assert_eq!(retained.read(id(1))?, original_value);
+    retained.abort()?;
+    let mut observer =
+        storage.begin_invocation([0x34; 16], admin_user_id, retention_deadline_us, 4, 64)?;
+    assert_eq!(
+        observer.read(id(1))?,
+        Some(vec![0x40u8.wrapping_add(WRITE_COUNT - 1); VALUE_BYTES])
+    );
+    assert_eq!(observer.read(id(2))?, None);
+    observer.abort()?;
+    drop(storage);
+    drop(instance);
     Ok(())
 }
 
