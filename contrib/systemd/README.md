@@ -64,9 +64,10 @@ PRDB_SUPERVISOR_LANDLOCK_PATHS=/home/USER/.local/libexec/prdb/prdb-executor\ /ho
 `EnvironmentFile` does not process shell quoting; systemd expands the unquoted
 `$PRDB_SUPERVISOR_ARGS` as whitespace-separated arguments. Keep configured
 paths free of whitespace. Add any runtime libraries required by the selected
-profile using repeated `--runtime-read-execute` values. Install each trusted
-SDK release directory through the deployment path and add it with repeatable
-`--sdk-release-dir`; set a writable `--sdk-cache-dir` and a cache byte limit.
+profile using repeated `--runtime-read-execute` values. Client packages normally
+upload their compatible `sql.so`; install trusted SDK release directories and
+configure repeatable `--sdk-release-dir` plus a writable bounded
+`--sdk-cache-dir` only when accepting older submissions without uploaded bytes.
 Add the SDK's non-SDK dependencies to `--allowed-dependency`. Do not enable
 `--allow-legacy-static-sdk-release 1` for new installations; it exists only for
 the SDK 1 transition and will be removed at the SDK 2 cutoff. Set the gateway UID to
@@ -179,7 +180,7 @@ PRDB_SUPERVISOR_LANDLOCK_PATHS=/usr/libexec/prdb/prdb-executor\ /usr/libexec/prd
 
 The supervisor executable and `/dev` traversal are granted directly by its
 unit. The environment-backed traversal list provides ancestors for its state,
-runtime, delegated cgroup, executable, SDK release, and runtime-library paths. Install the selected release directory as /usr/lib/prdb/sql-sdk; the SDK cache is written under the supervisor state directory. On systems
+runtime, delegated cgroup, executable, optional legacy SDK release, and runtime-library paths. Install the selected release directory as /usr/lib/prdb/sql-sdk when legacy registry resolution is enabled; the SDK cache is written under the supervisor state directory. On systems
 without Nix, omit `/nix` and add the actual loader/library directories used by
 the validated runtime profile.
 

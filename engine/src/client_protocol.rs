@@ -4,6 +4,7 @@ use crate::credentials::TOKEN_SECRET_BYTES;
 use crate::storage_manager::{AuthenticatedQuerySession, StorageManager};
 use crate::supervisor::StagingOwner;
 use crate::transaction::TransactionError;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -166,6 +167,8 @@ pub struct ClientPrepare {
     pub manifest: Vec<u8>,
     pub artifact_bytes: u64,
     pub artifact_sha256: [u8; 32],
+    pub sql_library_bytes: u64,
+    pub sql_library_sha256: [u8; 32],
     pub parameter_bytes: u64,
     pub parameter_sha256: [u8; 32],
     pub scope_version: u32,
@@ -2068,6 +2071,18 @@ pub fn decode_client_prepare(payload: &[u8]) -> Result<ClientPrepare, ClientCont
     let manifest_text = take_string(&mut fields, "manifest")?;
     let artifact_bytes = take_decimal_string(&mut fields, "artifact_bytes")?;
     let artifact_sha256 = decode_lower_hex_hash(&take_string(&mut fields, "artifact_sha256")?)?;
+    let has_sql_library = fields.contains_key("sql_library_bytes");
+    let (sql_library_bytes, sql_library_sha256) = match (
+        fields.contains_key("sql_library_bytes"),
+        fields.contains_key("sql_library_sha256"),
+    ) {
+        (true, true) => (
+            take_decimal_string(&mut fields, "sql_library_bytes")?,
+            decode_lower_hex_hash(&take_string(&mut fields, "sql_library_sha256")?)?,
+        ),
+        (false, false) => (0, Sha256::digest([]).into()),
+        _ => return Err(ClientControlError::InvalidPrepare),
+    };
     let parameter_bytes = take_decimal_string(&mut fields, "parameter_bytes")?;
     let parameter_sha256 = decode_lower_hex_hash(&take_string(&mut fields, "parameter_sha256")?)?;
     let scope_version = take_number(&mut fields, "scope_version")?
@@ -2083,6 +2098,8 @@ pub fn decode_client_prepare(payload: &[u8]) -> Result<ClientPrepare, ClientCont
     reject_unknown_scalars(fields)?;
     if artifact_bytes == 0
         || artifact_bytes > crate::supervisor::MAX_ARTIFACT_BYTES
+        || has_sql_library && sql_library_bytes == 0
+        || sql_library_bytes > crate::supervisor::MAX_SQL_LIBRARY_BYTES
         || parameter_bytes > crate::supervisor::MAX_PARAMETER_BYTES
         || deadline_ms == 0
         || manifest_text.len() > crate::supervisor::MAX_MANIFEST_BYTES.div_ceil(3) * 4
@@ -2101,6 +2118,8 @@ pub fn decode_client_prepare(payload: &[u8]) -> Result<ClientPrepare, ClientCont
         manifest,
         artifact_bytes,
         artifact_sha256,
+        sql_library_bytes,
+        sql_library_sha256,
         parameter_bytes,
         parameter_sha256,
         scope_version,
@@ -3010,7 +3029,7 @@ impl ClientConnectionSession {
         })
     }
 
-    /// Route one artifact/parameter chunk frame to the staging store using
+    /// Route one artifact/parameter/SQL-library chunk using
     /// this connection's storage-authenticated owner, and acknowledge only
     /// the contiguous next offset.
     pub fn handle_upload_request(
@@ -3019,7 +3038,7 @@ impl ClientConnectionSession {
         staging: &crate::supervisor::StagingStore,
         request: ClientFrame,
     ) -> Result<ClientFrame, ClientSessionError> {
-        if request.response_sequence != 0 || !matches!(request.kind, 4 | 5) {
+        if request.response_sequence != 0 || !matches!(request.kind, 4 | 5 | 12) {
             return Err(ClientSessionError::UnsupportedRequest);
         }
         self.request_ids
@@ -3035,10 +3054,11 @@ impl ClientConnectionSession {
         self.revalidate_storage(storage)?;
         let chunk = decode_client_chunk(&request.payload)
             .map_err(ClientSessionError::InvalidControlPayload)?;
-        let kind = if request.kind == 4 {
-            crate::supervisor::ChunkKind::Artifact
-        } else {
-            crate::supervisor::ChunkKind::Parameters
+        let kind = match request.kind {
+            4 => crate::supervisor::ChunkKind::Artifact,
+            5 => crate::supervisor::ChunkKind::Parameters,
+            12 => crate::supervisor::ChunkKind::SqlLibrary,
+            _ => unreachable!("chunk kind was checked"),
         };
         let next_offset = staging
             .upload_chunk(
@@ -3089,6 +3109,8 @@ impl ClientConnectionSession {
                     manifest: prepare.manifest,
                     artifact_bytes: prepare.artifact_bytes,
                     artifact_sha256: prepare.artifact_sha256,
+                    sql_library_bytes: prepare.sql_library_bytes,
+                    sql_library_sha256: prepare.sql_library_sha256,
                     scope_version: prepare.scope_version,
                     requested_scope: prepare.requested_scope,
                     parameter_bytes: prepare.parameter_bytes,
@@ -3099,14 +3121,20 @@ impl ClientConnectionSession {
             )
             .map_err(ClientSessionError::Staging)?;
         let invocation_id = encode_lower_hex_id(reservation.invocation_id);
+        let payload = if prepare.sql_library_bytes == 0 {
+            format!(
+                "{{\"invocation_id\":\"{invocation_id}\",\"artifact_chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES},\"parameter_chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES}}}"
+            )
+        } else {
+            format!(
+                "{{\"invocation_id\":\"{invocation_id}\",\"artifact_chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES},\"parameter_chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES},\"sql_library_chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES}}}"
+            )
+        };
         Ok(ClientFrame {
             kind: 100,
             request_id: request.request_id,
             response_sequence: 0,
-            payload: format!(
-                "{{\"invocation_id\":\"{invocation_id}\",\"artifact_chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES},\"parameter_chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES}}}"
-            )
-            .into_bytes(),
+            payload: payload.into_bytes(),
         })
     }
 
@@ -6561,7 +6589,7 @@ impl ClientConnectionSession {
             return kind == 2 || kind == 11;
         };
         match mode {
-            ClientMode::Query => (3..=9).contains(&kind) || kind == 11,
+            ClientMode::Query => (3..=9).contains(&kind) || matches!(kind, 11 | 12),
             ClientMode::Control => (8..=10).contains(&kind) || kind == 11,
         }
     }
@@ -6824,7 +6852,7 @@ fn decode_header(bytes: &[u8; CLIENT_FRAME_HEADER_BYTES]) -> Result<Header, Clie
 fn validate_header_fields(header: Header) -> Result<(), ClientFrameError> {
     let maximum = match header.kind {
         1..=3 | 6..=11 | 100 | 101 | 103 => CLIENT_MAX_CONTROL_BYTES,
-        4 | 5 => CLIENT_MAX_CHUNK_BYTES + 24,
+        4 | 5 | 12 => CLIENT_MAX_CHUNK_BYTES + 24,
         102 => CLIENT_MAX_PAYLOAD_BYTES,
         kind => return Err(ClientFrameError::InvalidKind(kind)),
     };
@@ -6835,8 +6863,8 @@ fn validate_header_fields(header: Header) -> Result<(), ClientFrameError> {
         return Err(ClientFrameError::ZeroRequestId);
     }
     match header.kind {
-        4 | 5 if header.payload_bytes <= 24 => Err(ClientFrameError::InvalidChunkLength),
-        1..=11 if header.response_sequence != 0 => Err(ClientFrameError::InvalidSequence),
+        4 | 5 | 12 if header.payload_bytes <= 24 => Err(ClientFrameError::InvalidChunkLength),
+        1..=12 if header.response_sequence != 0 => Err(ClientFrameError::InvalidSequence),
         100 | 101 if header.response_sequence != 0 => Err(ClientFrameError::InvalidSequence),
         102 | 103 if header.response_sequence == 0 => Err(ClientFrameError::InvalidSequence),
         _ => Ok(()),
@@ -6851,7 +6879,7 @@ pub struct ClientRequestIds {
 impl ClientRequestIds {
     /// Enforce strictly increasing nonzero IDs on a single client connection.
     pub fn accept(&mut self, frame: &ClientFrame) -> Result<(), ClientFrameError> {
-        if !(1..=11).contains(&frame.kind)
+        if !(1..=12).contains(&frame.kind)
             || frame.request_id == 0
             || frame.request_id <= self.last_request_id
         {

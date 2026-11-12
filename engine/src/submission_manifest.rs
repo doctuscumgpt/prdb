@@ -180,11 +180,10 @@ impl ArtifactCompatibilityProfile {
         {
             return Err(ManifestError::IncompatibleProfile);
         }
-        if manifest
-            .dependencies
-            .iter()
-            .any(|dependency| !self.allowed_dependencies.contains(dependency))
-        {
+        if manifest.dependencies.iter().any(|dependency| {
+            dependency != &format!("libprdb_sql.so.{}", manifest.sdk_release)
+                && !self.allowed_dependencies.contains(dependency)
+        }) {
             return Err(ManifestError::UnavailableDependency);
         }
         Ok(())
@@ -269,6 +268,21 @@ impl SubmissionMetadataValidator for VersionedSubmissionMetadataValidator {
         })
     }
 
+    fn validate_sql_library(&self, metadata: &SubmissionMetadata, library: &[u8]) -> bool {
+        let Ok(manifest) = decode_manifest_v1(&metadata.manifest) else {
+            return false;
+        };
+        let Ok(info) = decode_elf_dynamic_info(library) else {
+            return false;
+        };
+        info.soname.as_deref() == Some(format!("libprdb_sql.so.{}", manifest.sdk_release).as_str())
+            && info.rpath.is_none()
+            && info.runpath.is_none()
+            && info.needed.iter().all(|dependency| {
+                self.profile.allowed_dependencies.contains(dependency) || dependency == "libc.so.6"
+            })
+    }
+
     fn resolve_sdk_release(
         &self,
         metadata: &SubmissionMetadata,
@@ -286,6 +300,10 @@ impl SubmissionMetadataValidator for VersionedSubmissionMetadataValidator {
                 Err(ManifestError::UnavailableDependency)
             };
         }
+        // A client-supplied library is validated at SEAL and staged directly
+        // from immutable submission bytes. The registry remains the explicit
+        // compatibility path for older packages without an uploaded library.
+        // The caller skips this resolver when uploaded bytes are present.
         let registry = self
             .sdk_registry
             .as_ref()
@@ -1379,6 +1397,8 @@ mod tests {
                     manifest: encode(manifest),
                     artifact_bytes: artifact.len() as u64,
                     artifact_sha256: Sha256::digest(artifact).into(),
+                    sql_library_bytes: 0,
+                    sql_library_sha256: Sha256::digest([]).into(),
                     scope_version: 1,
                     requested_scope: requested_scope(),
                     parameter_bytes: 0,

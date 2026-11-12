@@ -3,14 +3,14 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 const USAGE: &str = "Usage: prdb-packager \\
-  --source FILE --sdk-library FILE --sdk-metadata FILE --shared-linker FILE \\
+  --source FILE --sdk-library FILE --shared-linker FILE \\
   --include-dir DIR --scope FILE --output-dir DIR \\
   --abi 1|2|3|4 --sdk-release NUMBER --cpu-baseline NAME --runtime-profile NAME \\
   --compiler-identity TEXT [--tcc FILE]\n\n\
 Compiles one C source with TinyCC, links it to the selected SQL SDK shared release, \\
 validates the final ELF without loading it, \\
-and atomically publishes query.so, manifest.pmf1, requested_scope.psc1, and \\
-artifact.sha256. The compiler subprocess has a cleared environment, resource \\
+and atomically publishes query.so, sql.so, manifest.pmf1, requested_scope.psc1, and \\
+both SHA-256 sidecars. The compiler subprocess has a cleared environment, resource \\
 limits, and a 60-second wall-clock bound.";
 
 fn main() -> std::process::ExitCode {
@@ -58,7 +58,6 @@ fn run() -> Result<(), String> {
         .unwrap_or_else(|| PathBuf::from("patchelf"));
     let source = take_path(&mut fields, "--source")?;
     let sdk_library = take_path(&mut fields, "--sdk-library")?;
-    let sdk_release_metadata = take_path(&mut fields, "--sdk-metadata")?;
     let include_dir = take_path(&mut fields, "--include-dir")?;
     let requested_scope = take_path(&mut fields, "--scope")?;
     let output_dir = take_path(&mut fields, "--output-dir")?;
@@ -79,7 +78,6 @@ fn run() -> Result<(), String> {
         patchelf,
         source,
         sdk_library,
-        sdk_release_metadata,
         include_dir,
         requested_scope,
         output_dir,
@@ -91,10 +89,12 @@ fn run() -> Result<(), String> {
     })
     .map_err(|error| error.to_string())?;
     println!(
-        "package={} artifact_bytes={} sha256={}",
+        "package={} artifact_bytes={} sha256={} sql_library_bytes={} sql_library_sha256={}",
         summary.package_dir.display(),
         summary.artifact_bytes,
-        lower_hex(&summary.artifact_sha256)
+        lower_hex(&summary.artifact_sha256),
+        summary.sql_library_bytes,
+        lower_hex(&summary.sql_library_sha256)
     );
     Ok(())
 }

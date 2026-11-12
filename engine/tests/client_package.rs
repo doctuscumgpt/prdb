@@ -102,8 +102,6 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         .arg(&source)
         .arg("--sdk-library")
         .arg(&library)
-        .arg("--sdk-metadata")
-        .arg(release_dir.join("sdk-release.json"))
         .arg("--shared-linker")
         .arg("cc")
         .arg("--include-dir")
@@ -134,6 +132,7 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
     );
 
     let artifact = fs::read(package.join("query.so")).unwrap();
+    let supplied_sql_library = fs::read(package.join("sql.so")).unwrap();
     let manifest_bytes = fs::read(package.join("manifest.pmf1")).unwrap();
     let manifest = decode_manifest_v1(&manifest_bytes).unwrap();
     assert_eq!(manifest.native_abi_version, 4);
@@ -154,6 +153,14 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
     assert_eq!(
         fs::read_to_string(package.join("artifact.sha256")).unwrap(),
         digest
+    );
+    assert_eq!(
+        fs::read_to_string(package.join("sql-library.sha256")).unwrap(),
+        Sha256::digest(&supplied_sql_library)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+            + "\n"
     );
     let dynamic = decode_elf_dynamic_info(&artifact).unwrap();
     assert_eq!(dynamic.runpath.as_deref(), Some("$ORIGIN"));
@@ -187,90 +194,25 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
     .unwrap();
     let validator = VersionedSubmissionMetadataValidator::new(profile);
     assert!(!validator.validate_artifact(&metadata, &fs::read(&invalid_runpath_artifact).unwrap()));
+    assert!(validator.validate_sql_library(&metadata, &supplied_sql_library));
+    let invalid_library = temp.join("sql-invalid-runpath.so");
+    fs::write(&invalid_library, &supplied_sql_library).unwrap();
+    assert!(
+        Command::new("patchelf")
+            .arg("--set-rpath")
+            .arg("/tmp")
+            .arg(&invalid_library)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(!validator.validate_sql_library(&metadata, &fs::read(invalid_library).unwrap()));
 
-    let valid_metadata = fs::read_to_string(release_dir.join("sdk-release.json")).unwrap();
-    let bad_metadata = temp.join("wrong-soname.json");
-    fs::write(
-        &bad_metadata,
-        valid_metadata.replace("libprdb_sql.so.1", "libprdb_sql.so.2"),
-    )
-    .unwrap();
-    let rejected = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
-        .arg("--source")
-        .arg(&source)
-        .arg("--sdk-library")
-        .arg(&library)
-        .arg("--sdk-metadata")
-        .arg(&bad_metadata)
-        .arg("--shared-linker")
-        .arg("cc")
-        .arg("--include-dir")
-        .arg(root.join("engine/include"))
-        .arg("--scope")
-        .arg(&scope)
-        .arg("--output-dir")
-        .arg(temp.join("rejected-package"))
-        .args([
-            "--abi",
-            "4",
-            "--sdk-release",
-            "1",
-            "--cpu-baseline",
-            "x86_64-v1",
-            "--runtime-profile",
-            "test-runtime",
-            "--compiler-identity",
-            "TinyCC integration test",
-        ])
-        .output()
-        .unwrap();
-    assert!(!rejected.status.success());
-    assert!(!temp.join("rejected-package").exists());
-
-    let bad_abi_metadata = temp.join("wrong-abi.json");
-    fs::write(
-        &bad_abi_metadata,
-        valid_metadata.replace("\"native_abis\":[1,2,3,4,5]", "\"native_abis\":[1,2,3,5]"),
-    )
-    .unwrap();
-    let rejected_abi = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
-        .arg("--source")
-        .arg(&source)
-        .arg("--sdk-library")
-        .arg(&library)
-        .arg("--sdk-metadata")
-        .arg(&bad_abi_metadata)
-        .arg("--shared-linker")
-        .arg("cc")
-        .arg("--include-dir")
-        .arg(root.join("engine/include"))
-        .arg("--scope")
-        .arg(&scope)
-        .arg("--output-dir")
-        .arg(temp.join("rejected-abi-package"))
-        .args([
-            "--abi",
-            "4",
-            "--sdk-release",
-            "1",
-            "--cpu-baseline",
-            "x86_64-v1",
-            "--runtime-profile",
-            "test-runtime",
-            "--compiler-identity",
-            "TinyCC integration test",
-        ])
-        .output()
-        .unwrap();
-    assert!(!rejected_abi.status.success());
-    assert!(!temp.join("rejected-abi-package").exists());
     let rejected_release = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
         .arg("--source")
         .arg(&source)
         .arg("--sdk-library")
         .arg(&library)
-        .arg("--sdk-metadata")
-        .arg(release_dir.join("sdk-release.json"))
         .arg("--shared-linker")
         .arg("cc")
         .arg("--include-dir")
@@ -297,6 +239,7 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
     assert!(!temp.join("rejected-release-package").exists());
 
     let expected_artifact = artifact.clone();
+    let expected_sql_library = supplied_sql_library.clone();
     let expected_manifest = manifest_bytes.clone();
     let expected_scope = scope_bytes.clone();
     let parameters = vec![0x5a; 300_000];
@@ -330,12 +273,20 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         assert_eq!(prepare.kind, 3);
         let decoded = decode_client_prepare(&prepare.payload).unwrap();
         assert_eq!(decoded.artifact_bytes as usize, expected_artifact.len());
+        assert_eq!(
+            decoded.sql_library_bytes as usize,
+            expected_sql_library.len()
+        );
+        assert_eq!(
+            decoded.sql_library_sha256,
+            Sha256::digest(&expected_sql_library).as_slice()
+        );
         assert_eq!(decoded.manifest, expected_manifest);
         assert_eq!(decoded.requested_scope, expected_scope);
         assert_eq!(decoded.parameter_bytes as usize, expected_parameters.len());
         let expected_parameter_hash: [u8; 32] = Sha256::digest(&expected_parameters).into();
         assert_eq!(decoded.parameter_sha256, expected_parameter_hash);
-        write_server_response(&mut stream, &prepare, br#"{"invocation_id":"01010101010101010101010101010101","artifact_chunk_bytes":131072,"parameter_chunk_bytes":131072}"#);
+        write_server_response(&mut stream, &prepare, br#"{"invocation_id":"01010101010101010101010101010101","artifact_chunk_bytes":131072,"parameter_chunk_bytes":131072,"sql_library_chunk_bytes":131072}"#);
         let mut offset = 0usize;
         while offset < expected_artifact.len() {
             let frame = read_client_frame(&mut stream, &mut decoder);
@@ -369,6 +320,25 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
                 &mut stream,
                 &frame,
                 format!("{{\"next_offset\":\"{parameter_offset}\"}}").as_bytes(),
+            );
+        }
+        let mut sql_library_offset = 0usize;
+        while sql_library_offset < expected_sql_library.len() {
+            let frame = read_client_frame(&mut stream, &mut decoder);
+            assert_eq!(frame.kind, 12);
+            let chunk = decode_client_chunk(&frame.payload).unwrap();
+            assert_eq!(chunk.invocation_id, [1; 16]);
+            assert_eq!(chunk.offset, sql_library_offset as u64);
+            let next_offset = sql_library_offset + chunk.data.len();
+            assert_eq!(
+                chunk.data,
+                expected_sql_library[sql_library_offset..next_offset]
+            );
+            sql_library_offset = next_offset;
+            write_server_response(
+                &mut stream,
+                &frame,
+                format!("{{\"next_offset\":\"{sql_library_offset}\"}}").as_bytes(),
             );
         }
         let seal = read_client_frame(&mut stream, &mut decoder);
@@ -457,8 +427,6 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         .arg(&source)
         .arg("--sdk-library")
         .arg(&library)
-        .arg("--sdk-metadata")
-        .arg(release_dir.join("sdk-release.json"))
         .arg("--shared-linker")
         .arg("cc")
         .arg("--include-dir")
@@ -526,10 +494,6 @@ fn packager_validates_abi_v4_exports_on_the_maintained_optimizer_fixture() {
         .arg("--sdk-library")
         .arg(sdk_build.join(
             "releases/linux-x86_64/x86_64-v1/test-runtime/sdk-1-abis1,2,3,4,5/libprdb_sql.so.1",
-        ))
-        .arg("--sdk-metadata")
-        .arg(sdk_build.join(
-            "releases/linux-x86_64/x86_64-v1/test-runtime/sdk-1-abis1,2,3,4,5/sdk-release.json",
         ))
         .arg("--shared-linker")
         .arg("cc")

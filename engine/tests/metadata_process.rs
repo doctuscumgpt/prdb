@@ -374,6 +374,10 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         let dependencies = manifest.dependencies.clone();
         let manifest_bytes = encode_manifest_v1(&manifest)
             .map_err(|error| format!("encode network SQL fixture manifest: {error:?}"))?;
+        let sdk_release_dir = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR")
+            .map(std::path::PathBuf::from)
+            .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR is required for SQL package tests")?;
+        let sql_library = std::fs::read(sdk_release_dir.join("libprdb_sql.so.1"))?;
         let mut requested_scope = b"PSC1\0\x01\x01\x01".to_vec();
         requested_scope.extend_from_slice(&sql_visible_schema_id);
         let package = root.join("restricted-metadata-package");
@@ -381,6 +385,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         std::fs::set_permissions(&package, std::fs::Permissions::from_mode(0o700))?;
         for (name, bytes) in [
             ("query.so", artifact.as_slice()),
+            ("sql.so", sql_library.as_slice()),
             ("manifest.pmf1", manifest_bytes.as_slice()),
             ("requested_scope.psc1", requested_scope.as_slice()),
         ] {
@@ -394,6 +399,13 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             .collect::<String>();
         let hash_path = package.join("artifact.sha256");
         std::fs::write(&hash_path, format!("{artifact_hash}\n"))?;
+        std::fs::set_permissions(&hash_path, std::fs::Permissions::from_mode(0o600))?;
+        let sql_library_hash = Sha256::digest(&sql_library)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let hash_path = package.join("sql-library.sha256");
+        std::fs::write(&hash_path, format!("{sql_library_hash}\n"))?;
         std::fs::set_permissions(&hash_path, std::fs::Permissions::from_mode(0o600))?;
         Some((package, dependencies))
     } else {
@@ -2033,10 +2045,15 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
     let package = root.join("package");
     std::fs::create_dir(&package)?;
     std::fs::set_permissions(&package, std::fs::Permissions::from_mode(0o700))?;
+    let sdk_release_dir = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR")
+        .map(std::path::PathBuf::from)
+        .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR is required for SQL package tests")?;
+    let sql_library = std::fs::read(sdk_release_dir.join("libprdb_sql.so.1"))?;
     let mut requested_scope = b"PSC1\0\x01\x01\x01".to_vec();
     requested_scope.extend_from_slice(&[1; 16]);
     for (name, bytes) in [
         ("query.so", artifact.as_slice()),
+        ("sql.so", sql_library.as_slice()),
         ("manifest.pmf1", manifest.as_slice()),
         // One canonical schema-USAGE capability; the query performs no data access.
         ("requested_scope.psc1", requested_scope.as_slice()),
@@ -2055,6 +2072,19 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
     std::fs::write(package.join("artifact.sha256"), hash_sidecar)?;
     std::fs::set_permissions(
         package.join("artifact.sha256"),
+        std::fs::Permissions::from_mode(0o600),
+    )?;
+    let sql_library_hash = Sha256::digest(&sql_library);
+    let sql_library_sidecar = format!(
+        "{}\n",
+        sql_library_hash
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    std::fs::write(package.join("sql-library.sha256"), sql_library_sidecar)?;
+    std::fs::set_permissions(
+        package.join("sql-library.sha256"),
         std::fs::Permissions::from_mode(0o600),
     )?;
 

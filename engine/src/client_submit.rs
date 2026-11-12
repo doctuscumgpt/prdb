@@ -371,6 +371,7 @@ pub struct StartedInvocation<'a> {
 
 struct PackageBytes {
     artifact: Vec<u8>,
+    sql_library: Vec<u8>,
     manifest: Vec<u8>,
     scope: Vec<u8>,
 }
@@ -505,16 +506,19 @@ impl SubmissionClient {
         }
         let package = read_package(package_dir)?;
         let artifact_hash: [u8; 32] = Sha256::digest(&package.artifact).into();
+        let sql_library_hash: [u8; 32] = Sha256::digest(&package.sql_library).into();
         let parameter_hash: [u8; 32] = Sha256::digest(parameters).into();
         let workload = match workload_class {
             WorkloadClass::Operational => "operational",
             WorkloadClass::Analytical => "analytical",
         };
         let prepare = format!(
-            "{{\"manifest_version\":1,\"manifest\":\"{}\",\"artifact_bytes\":\"{}\",\"artifact_sha256\":\"{}\",\"parameter_bytes\":\"{}\",\"parameter_sha256\":\"{}\",\"scope_version\":1,\"requested_scope\":\"{}\",\"deadline_ms\":\"{deadline_ms}\",\"workload_class\":\"{workload}\"}}",
+            "{{\"manifest_version\":1,\"manifest\":\"{}\",\"artifact_bytes\":\"{}\",\"artifact_sha256\":\"{}\",\"sql_library_bytes\":\"{}\",\"sql_library_sha256\":\"{}\",\"parameter_bytes\":\"{}\",\"parameter_sha256\":\"{}\",\"scope_version\":1,\"requested_scope\":\"{}\",\"deadline_ms\":\"{deadline_ms}\",\"workload_class\":\"{workload}\"}}",
             encode_base64(&package.manifest),
             package.artifact.len(),
             lower_hex(&artifact_hash),
+            package.sql_library.len(),
+            lower_hex(&sql_library_hash),
             parameters.len(),
             lower_hex(&parameter_hash),
             encode_base64(&package.scope),
@@ -537,12 +541,24 @@ impl SubmissionClient {
             .filter(|bytes| (1..=self.max_chunk_bytes as u64).contains(bytes))
             .ok_or(ClientSubmitError::InvalidResponse)?
             as usize;
-        if fields.len() != 3 {
+        let sql_library_chunk_bytes = fields
+            .get("sql_library_chunk_bytes")
+            .and_then(ResponseValue::as_number)
+            .filter(|bytes| (1..=self.max_chunk_bytes as u64).contains(bytes))
+            .ok_or(ClientSubmitError::InvalidResponse)?
+            as usize;
+        if fields.len() != 4 {
             return Err(ClientSubmitError::InvalidResponse);
         }
 
         self.upload_chunks(4, invocation_id, &package.artifact, artifact_chunk_bytes)?;
         self.upload_chunks(5, invocation_id, parameters, parameter_chunk_bytes)?;
+        self.upload_chunks(
+            12,
+            invocation_id,
+            &package.sql_library,
+            sql_library_chunk_bytes,
+        )?;
         let seal_payload = format!("{{\"invocation_id\":\"{}\"}}", lower_hex(&invocation_id));
         let sealed = self.exchange(6, seal_payload.into_bytes())?;
         let fields = parse_flat_response(&sealed.payload)?;
@@ -678,7 +694,7 @@ impl SubmissionClient {
             response_sequence: 0,
             payload: std::mem::take(&mut payload),
         };
-        let request_limit = if matches!(kind, 4 | 5) {
+        let request_limit = if matches!(kind, 4 | 5 | 12) {
             self.max_chunk_bytes.saturating_add(24)
         } else {
             self.max_control_bytes
@@ -2776,6 +2792,10 @@ fn read_package(package_dir: &std::path::Path) -> Result<PackageBytes, ClientSub
         return Err(ClientSubmitError::InvalidPackage);
     }
     let artifact = read_private_file(&package_dir.join("query.so"), MAX_PACKAGE_ARCHIVE_BYTES)?;
+    let sql_library = read_private_file(
+        &package_dir.join("sql.so"),
+        crate::supervisor::MAX_SQL_LIBRARY_BYTES,
+    )?;
     let manifest = read_private_file(
         &package_dir.join("manifest.pmf1"),
         MAX_MANIFEST_BYTES as u64,
@@ -2786,6 +2806,8 @@ fn read_package(package_dir: &std::path::Path) -> Result<PackageBytes, ClientSub
     )?;
     let expected_hash = read_private_file(&package_dir.join("artifact.sha256"), 65)?;
     let calculated_hash: [u8; 32] = Sha256::digest(&artifact).into();
+    let library_hash = read_private_file(&package_dir.join("sql-library.sha256"), 65)?;
+    let calculated_library_hash: [u8; 32] = Sha256::digest(&sql_library).into();
     if artifact.is_empty()
         || decode_manifest_v1(&manifest).is_err()
         || decode_requested_scope_v1(&scope).is_err()
@@ -2794,11 +2816,17 @@ fn read_package(package_dir: &std::path::Path) -> Result<PackageBytes, ClientSub
         || !decode_lower_hex(std::str::from_utf8(&expected_hash[..64]).unwrap_or(""), 32)
         || decode_hex_array::<32>(std::str::from_utf8(&expected_hash[..64]).unwrap_or(""))
             != Some(calculated_hash)
+        || sql_library.is_empty()
+        || library_hash.len() != 65
+        || library_hash[64] != b'\n'
+        || decode_hex_array::<32>(std::str::from_utf8(&library_hash[..64]).unwrap_or(""))
+            != Some(calculated_library_hash)
     {
         return Err(ClientSubmitError::InvalidPackage);
     }
     Ok(PackageBytes {
         artifact,
+        sql_library,
         manifest,
         scope,
     })

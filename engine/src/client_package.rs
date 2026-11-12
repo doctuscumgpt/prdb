@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 
 pub const MAX_SOURCE_BYTES: u64 = 1024 * 1024;
 pub const MAX_SDK_LIBRARY_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_SDK_METADATA_BYTES: u64 = 64 * 1024;
 pub const COMPILER_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_COMPILER_DIAGNOSTIC_BYTES: usize = 8192;
 const COMPILER_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -30,7 +29,6 @@ pub struct PackageOptions {
     pub patchelf: PathBuf,
     pub source: PathBuf,
     pub sdk_library: PathBuf,
-    pub sdk_release_metadata: PathBuf,
     pub include_dir: PathBuf,
     pub requested_scope: PathBuf,
     pub output_dir: PathBuf,
@@ -46,6 +44,8 @@ pub struct PackageSummary {
     pub package_dir: PathBuf,
     pub artifact_bytes: u64,
     pub artifact_sha256: [u8; 32],
+    pub sql_library_bytes: u64,
+    pub sql_library_sha256: [u8; 32],
 }
 
 #[derive(Debug)]
@@ -83,15 +83,13 @@ impl From<ManifestError> for PackageError {
     }
 }
 
-/// Compile one source with TinyCC, link it to the verified shared SDK release,
+/// Compile one source with TinyCC, link it to the client-supplied SQL library,
 /// derive metadata from ELF data, and atomically publish query.so plus PMF1,
 /// PSC1 and a SHA-256 sidecar. Build tools get no inherited environment, and
 /// the query library is never loaded or executed here.
 pub fn package_query(options: &PackageOptions) -> Result<PackageSummary, PackageError> {
     let source = canonical_regular_file(&options.source, MAX_SOURCE_BYTES)?;
     let sdk_library = canonical_regular_file(&options.sdk_library, MAX_SDK_LIBRARY_BYTES)?;
-    let release_metadata =
-        canonical_regular_file(&options.sdk_release_metadata, MAX_SDK_METADATA_BYTES)?;
     let tcc = canonical_compiler(&options.tcc)?;
     let shared_linker = canonical_compiler(&options.shared_linker)?;
     let patchelf = canonical_compiler(&options.patchelf)?;
@@ -102,7 +100,7 @@ pub fn package_query(options: &PackageOptions) -> Result<PackageSummary, Package
     {
         return Err(PackageError::InvalidConfiguration);
     }
-    validate_release_metadata(&release_metadata, &sdk_library, options)?;
+    validate_client_sql_library(&sdk_library, options.sdk_release)?;
     let scope_path = canonical_regular_file(
         &options.requested_scope,
         crate::supervisor::MAX_SCOPE_BYTES as u64,
@@ -160,6 +158,8 @@ pub fn package_query(options: &PackageOptions) -> Result<PackageSummary, Package
     }
     let manifest_bytes = encode_manifest_v1(&manifest)?;
     let artifact_sha256: [u8; 32] = Sha256::digest(&artifact).into();
+    let sql_library = read_bounded_file(&sdk_library, MAX_SDK_LIBRARY_BYTES)?;
+    let sql_library_sha256: [u8; 32] = Sha256::digest(&sql_library).into();
     fs::set_permissions(
         staging.path.join("query.so"),
         fs::Permissions::from_mode(0o600),
@@ -171,6 +171,11 @@ pub fn package_query(options: &PackageOptions) -> Result<PackageSummary, Package
         &staging.path.join("artifact.sha256"),
         format!("{}\n", lower_hex(&artifact_sha256)).as_bytes(),
     )?;
+    write_private_file(&staging.path.join("sql.so"), &sql_library)?;
+    write_private_file(
+        &staging.path.join("sql-library.sha256"),
+        format!("{}\n", lower_hex(&sql_library_sha256)).as_bytes(),
+    )?;
     File::open(&staging.path)?.sync_all()?;
     staging.publish(&package_dir)?;
 
@@ -178,152 +183,22 @@ pub fn package_query(options: &PackageOptions) -> Result<PackageSummary, Package
         package_dir,
         artifact_bytes: artifact.len() as u64,
         artifact_sha256,
+        sql_library_bytes: sql_library.len() as u64,
+        sql_library_sha256,
     })
 }
 
-fn validate_release_metadata(
-    metadata_path: &Path,
-    library_path: &Path,
-    options: &PackageOptions,
-) -> Result<(), PackageError> {
-    let bytes = read_bounded_file(metadata_path, MAX_SDK_METADATA_BYTES)?;
-    let text = std::str::from_utf8(&bytes).map_err(|_| PackageError::InvalidConfiguration)?;
-    if !text.is_ascii() || !text.ends_with('\n') {
-        return Err(PackageError::InvalidConfiguration);
-    }
-    let digest = lower_hex(&Sha256::digest(read_bounded_file(
-        library_path,
-        MAX_SDK_LIBRARY_BYTES,
-    )?));
-    let library_name = library_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or(PackageError::InvalidConfiguration)?;
-    let expected_soname = format!("libprdb_sql.so.{}", options.sdk_release);
-    let dynamic =
-        decode_elf_dynamic_info(&read_bounded_file(library_path, MAX_SDK_LIBRARY_BYTES)?)?;
-    let abis = json_integer_array(text, "native_abis")?;
-    let needed = json_string_array(text, "needed")?;
-    let release_format = json_string(text, "format")?;
-    let metadata_library = json_string(text, "library")?;
-    let metadata_soname = json_string(text, "soname")?;
-    let metadata_digest = json_string(text, "sha256")?;
-    let target = json_string(text, "target")?;
-    let cpu_baseline = json_string(text, "cpu_baseline")?;
-    let runtime_profile = json_string(text, "runtime_profile")?;
-    let release = json_integer(text, "sdk_release")?;
-    let canonical_metadata = format!(
-        "{{\"cpu_baseline\":\"{cpu_baseline}\",\"format\":\"{release_format}\",\"library\":\"{metadata_library}\",\"native_abis\":[{}],\"needed\":[{}],\"runtime_profile\":\"{runtime_profile}\",\"sdk_release\":{release},\"sha256\":\"{metadata_digest}\",\"soname\":\"{metadata_soname}\",\"target\":\"{target}\"}}\n",
-        abis.iter()
-            .map(u64::to_string)
-            .collect::<Vec<_>>()
-            .join(","),
-        needed
-            .iter()
-            .map(|name| format!("\"{name}\""))
-            .collect::<Vec<_>>()
-            .join(","),
-    );
-    if canonical_metadata != text {
-        return Err(PackageError::InvalidConfiguration);
-    }
-    let checks = [
-        ("format", release_format == "PRDB-SDK-RELEASE-1"),
-        ("library", metadata_library == library_name),
-        ("soname", metadata_soname == expected_soname),
-        ("sha256", metadata_digest == digest),
-        ("target", target == "linux-x86_64"),
-        ("cpu", cpu_baseline == options.cpu_baseline),
-        ("runtime", runtime_profile == options.runtime_profile),
-        ("release", release == options.sdk_release),
-        ("abi", abis.contains(&(options.native_abi_version as u64))),
-        (
-            "elf-soname",
-            dynamic.soname.as_deref() == Some(expected_soname.as_str()),
-        ),
-        ("elf-rpath", dynamic.rpath.is_none()),
-        ("elf-runpath", dynamic.runpath.is_none()),
-        ("needed", dynamic.needed == needed),
-    ];
-    if checks.iter().any(|(_, success)| !success) {
+fn validate_client_sql_library(library_path: &Path, sdk_release: u32) -> Result<(), PackageError> {
+    let bytes = read_bounded_file(library_path, MAX_SDK_LIBRARY_BYTES)?;
+    let dynamic = decode_elf_dynamic_info(&bytes)?;
+    let expected_soname = format!("libprdb_sql.so.{sdk_release}");
+    if dynamic.soname.as_deref() != Some(expected_soname.as_str())
+        || dynamic.rpath.is_some()
+        || dynamic.runpath.is_some()
+    {
         return Err(PackageError::InvalidConfiguration);
     }
     Ok(())
-}
-
-fn json_value<'a>(text: &'a str, key: &str) -> Result<&'a str, PackageError> {
-    let needle = format!("\"{key}\":");
-    let start = text
-        .find(&needle)
-        .ok_or(PackageError::InvalidConfiguration)?
-        + needle.len();
-    let rest = &text[start..];
-    let end = if let Some(content) = rest.strip_prefix('"') {
-        let value_end = content
-            .find('"')
-            .ok_or(PackageError::InvalidConfiguration)?;
-        if content[..value_end].contains('\\') {
-            return Err(PackageError::InvalidConfiguration);
-        }
-        value_end + 2
-    } else if rest.starts_with('[') {
-        rest.find(']').ok_or(PackageError::InvalidConfiguration)? + 1
-    } else {
-        rest.find([',', '}'])
-            .ok_or(PackageError::InvalidConfiguration)?
-    };
-    Ok(&rest[..end])
-}
-
-fn json_string(text: &str, key: &str) -> Result<String, PackageError> {
-    let value = json_value(text, key)?;
-    value
-        .strip_prefix('"')
-        .and_then(|value| value.strip_suffix('"'))
-        .map(str::to_owned)
-        .ok_or(PackageError::InvalidConfiguration)
-}
-
-fn json_integer(text: &str, key: &str) -> Result<u32, PackageError> {
-    json_value(text, key)?
-        .parse()
-        .map_err(|_| PackageError::InvalidConfiguration)
-}
-
-fn json_integer_array(text: &str, key: &str) -> Result<Vec<u64>, PackageError> {
-    let value = json_value(text, key)?;
-    let inner = value
-        .strip_prefix('[')
-        .and_then(|value| value.strip_suffix(']'))
-        .ok_or(PackageError::InvalidConfiguration)?;
-    if inner.is_empty() {
-        return Ok(Vec::new());
-    }
-    inner
-        .split(',')
-        .map(|item| item.parse().map_err(|_| PackageError::InvalidConfiguration))
-        .collect()
-}
-
-fn json_string_array(text: &str, key: &str) -> Result<Vec<String>, PackageError> {
-    let value = json_value(text, key)?;
-    let inner = value
-        .strip_prefix('[')
-        .and_then(|value| value.strip_suffix(']'))
-        .ok_or(PackageError::InvalidConfiguration)?;
-    if inner.is_empty() {
-        return Ok(Vec::new());
-    }
-    inner
-        .split(',')
-        .map(|item| {
-            item.strip_prefix('"')
-                .and_then(|item| item.strip_suffix('"'))
-                .filter(|item| !item.contains('\\'))
-                .map(str::to_owned)
-                .ok_or(PackageError::InvalidConfiguration)
-        })
-        .collect()
 }
 
 fn canonical_regular_file(path: &Path, maximum_bytes: u64) -> Result<PathBuf, PackageError> {

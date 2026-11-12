@@ -888,7 +888,7 @@ fn dispatch_gateway_client_request_inner<'db>(
                 .payload
                 .split_first()
                 .ok_or(GatewayRequestError::InvalidPayload)?;
-            if !matches!(kind, 4 | 5) {
+            if !matches!(kind, 4 | 5 | 12) {
                 return Err(GatewayRequestError::InvalidPayload);
             }
             session
@@ -1943,6 +1943,8 @@ mod worker_result_event_tests {
                     manifest: b"manifest".to_vec(),
                     artifact_bytes: artifact.len() as u64,
                     artifact_sha256: Sha256::digest(artifact).into(),
+                    sql_library_bytes: 0,
+                    sql_library_sha256: Sha256::digest([]).into(),
                     scope_version: 1,
                     requested_scope: {
                         let mut scope = b"PSC1\0\x01\x02\x02".to_vec();
@@ -1982,6 +1984,8 @@ mod worker_result_event_tests {
                     manifest: b"manifest".to_vec(),
                     artifact_bytes: artifact.len() as u64,
                     artifact_sha256: Sha256::digest(artifact).into(),
+                    sql_library_bytes: 0,
+                    sql_library_sha256: Sha256::digest([]).into(),
                     scope_version: 1,
                     requested_scope: {
                         let mut scope = b"PSC1\0\x01\x02\x02".to_vec();
@@ -2167,6 +2171,8 @@ mod worker_result_event_tests {
                     manifest: b"manifest".to_vec(),
                     artifact_bytes: artifact.len() as u64,
                     artifact_sha256: Sha256::digest(artifact).into(),
+                    sql_library_bytes: 0,
+                    sql_library_sha256: Sha256::digest([]).into(),
                     scope_version: 1,
                     requested_scope,
                     parameter_bytes: 0,

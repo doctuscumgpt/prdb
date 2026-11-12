@@ -1018,7 +1018,7 @@ fn client_request_to_ipc(
         1 => Operation::OpenClientSession,
         2 => Operation::AuthenticateSession,
         3 => Operation::PrepareSubmission,
-        4 | 5 => {
+        4 | 5 | 12 => {
             payload.insert(0, kind as u8);
             Operation::UploadSubmissionChunk
         }
@@ -1035,7 +1035,7 @@ fn client_request_to_ipc(
 
 #[cfg(test)]
 mod gateway_error_payload_tests {
-    use super::GatewayClientErrorCode as ErrorCode;
+    use super::{GatewayClientErrorCode as ErrorCode, client_request_to_ipc};
 
     #[test]
     fn gateway_error_payloads_have_one_canonical_v1_encoding() {
@@ -1073,6 +1073,13 @@ mod gateway_error_payload_tests {
             ErrorCode::from_payload(br#"{"code":"invalid_request","message":"secret detail"}"#),
             None
         );
+    }
+
+    #[test]
+    fn sql_library_chunk_routes_to_submission_upload_operation() {
+        let (operation, payload) = client_request_to_ipc(12, vec![0xaa, 0xbb]).unwrap();
+        assert_eq!(operation, crate::ipc::Operation::UploadSubmissionChunk);
+        assert_eq!(payload, [12, 0xaa, 0xbb]);
     }
 }
 

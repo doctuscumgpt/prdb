@@ -98,15 +98,46 @@ fn binary_chunks_validate_id_offset_and_data_bounds() {
 }
 
 #[test]
+fn sql_library_chunk_kind_is_a_valid_monotonic_client_request() {
+    let mut ids = prdb_engine::client_protocol::ClientRequestIds::default();
+    assert!(
+        ids.accept(&prdb_engine::client_protocol::ClientFrame {
+            kind: 12,
+            request_id: 1,
+            response_sequence: 0,
+            payload: vec![1; 25],
+        })
+        .is_ok()
+    );
+}
+
+#[test]
 fn prepare_decoder_enforces_exact_canonical_schema_and_limits() {
     let hash = "00".repeat(32);
     let payload = format!(
-        "{{\"manifest_version\":1,\"manifest\":\"bQ==\",\"artifact_bytes\":\"3\",\"artifact_sha256\":\"{hash}\",\"parameter_bytes\":\"0\",\"parameter_sha256\":\"{hash}\",\"scope_version\":1,\"requested_scope\":\"cw==\",\"deadline_ms\":\"30000\",\"workload_class\":\"analytical\"}}"
+        "{{\"manifest_version\":1,\"manifest\":\"bQ==\",\"artifact_bytes\":\"3\",\"artifact_sha256\":\"{hash}\",\"sql_library_bytes\":\"1\",\"sql_library_sha256\":\"{hash}\",\"parameter_bytes\":\"0\",\"parameter_sha256\":\"{hash}\",\"scope_version\":1,\"requested_scope\":\"cw==\",\"deadline_ms\":\"30000\",\"workload_class\":\"analytical\"}}"
     );
     let prepare = decode_client_prepare(payload.as_bytes()).unwrap();
     assert_eq!(prepare.manifest, b"m");
     assert_eq!(prepare.requested_scope, b"s");
     assert_eq!(prepare.artifact_bytes, 3);
+    assert_eq!(prepare.sql_library_bytes, 1);
+    let registry_mode = payload.replace(
+        &format!(",\"sql_library_bytes\":\"1\",\"sql_library_sha256\":\"{hash}\""),
+        "",
+    );
+    assert_eq!(
+        decode_client_prepare(registry_mode.as_bytes())
+            .unwrap()
+            .sql_library_bytes,
+        0
+    );
+    let empty_sql_library =
+        payload.replace("\"sql_library_bytes\":\"1\"", "\"sql_library_bytes\":\"0\"");
+    assert_eq!(
+        decode_client_prepare(empty_sql_library.as_bytes()),
+        Err(ClientControlError::InvalidPrepare)
+    );
     assert_eq!(prepare.parameter_bytes, 0);
     assert_eq!(
         prepare.workload_class,

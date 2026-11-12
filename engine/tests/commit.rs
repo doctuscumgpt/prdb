@@ -21145,6 +21145,7 @@ fn run_sandboxed_v3_sql_error_fixture(
     expect_network_denial: bool,
     shared_sdk_release_dir_env: Option<&str>,
     expect_load_failure: bool,
+    upload_client_sdk: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::client_protocol::{ClientConnectionSession, ClientFrame, ClientMode};
     use prdb_engine::ipc::{Operation, read_frame};
@@ -21261,18 +21262,28 @@ fn run_sandboxed_v3_sql_error_fixture(
     client.authenticate(&storage, token_id, &secret)?;
     let owner = client.staging_owner()?;
     let mut registry_for_assertion = None;
-    let (manifest, validator): (Vec<u8>, Arc<dyn SubmissionMetadataValidator>) =
-        if let Some(release_dir_env) = shared_sdk_release_dir_env {
-            let release_dir = std::env::var_os(release_dir_env)
-                .map(PathBuf::from)
-                .ok_or_else(|| format!("{release_dir_env} must name the installed SDK release"))?;
+    let (manifest, validator, sql_library): (
+        Vec<u8>,
+        Arc<dyn SubmissionMetadataValidator>,
+        Option<Vec<u8>>,
+    ) = if let Some(release_dir_env) = shared_sdk_release_dir_env {
+        let release_dir = std::env::var_os(release_dir_env)
+            .map(PathBuf::from)
+            .ok_or_else(|| format!("{release_dir_env} must name the installed SDK release"))?;
+        if !release_dir.is_absolute() {
+            return Err("SDK release and cache paths must be absolute".into());
+        }
+        let runtime_profile = "nixos-x86_64-glibc-2.42";
+        let sql_library = std::fs::read(release_dir.join("libprdb_sql.so.1"))?;
+        let registry = if upload_client_sdk {
+            None
+        } else {
             let cache_dir = std::env::var_os("PRDB_TEST_SDK_CACHE_DIR")
                 .map(PathBuf::from)
                 .ok_or("PRDB_TEST_SDK_CACHE_DIR must name the SDK cache directory")?;
-            if !release_dir.is_absolute() || !cache_dir.is_absolute() {
-                return Err("SDK release and cache paths must be absolute".into());
+            if !cache_dir.is_absolute() {
+                return Err("SDK cache path must be absolute".into());
             }
-            let runtime_profile = "nixos-x86_64-glibc-2.42";
             let registry = prdb_engine::sdk_registry::SdkReleaseRegistry::load(
                 &[release_dir],
                 &cache_dir,
@@ -21282,38 +21293,48 @@ fn run_sandboxed_v3_sql_error_fixture(
                 128 * 1024 * 1024,
             )
             .map_err(|error| format!("load shared SDK release: {error:?}"))?;
-            let registry = Arc::new(registry);
-            registry_for_assertion = Some(Arc::clone(&registry));
-            let derived = manifest_v1_from_elf(
-                &artifact,
-                3,
-                1,
-                "x86_64-v1".to_owned(),
-                runtime_profile.to_owned(),
-                "shared SQL sandbox fixture".to_owned(),
-            )
-            .map_err(|error| format!("derive shared fixture manifest: {error:?}"))?;
-            let manifest = encode_manifest_v1(&derived)
-                .map_err(|error| format!("encode shared fixture manifest: {error:?}"))?;
-            let mut allowed_dependencies =
-                ["libc.so.6".to_owned()].into_iter().collect::<HashSet<_>>();
-            if let Some(extra) = std::env::var_os("PRDB_TEST_EXTRA_ALLOWED_DEPENDENCY") {
-                allowed_dependencies.insert(extra.to_string_lossy().into_owned());
-            }
-            let profile = ArtifactCompatibilityProfile::new(
-                "x86_64-v1".to_owned(),
-                runtime_profile.to_owned(),
-                1,
-                allowed_dependencies,
-            )
-            .map_err(|error| format!("build shared fixture profile: {error:?}"))?;
-            let validator = VersionedSubmissionMetadataValidator::new(profile)
-                .with_sdk_registry(registry)
-                .map_err(|error| format!("configure shared SDK registry: {error:?}"))?;
-            (manifest, Arc::new(validator))
-        } else {
-            (b"m".to_vec(), Arc::new(AcceptFixture))
+            Some(Arc::new(registry))
         };
+        let derived = manifest_v1_from_elf(
+            &artifact,
+            3,
+            1,
+            "x86_64-v1".to_owned(),
+            runtime_profile.to_owned(),
+            "shared SQL sandbox fixture".to_owned(),
+        )
+        .map_err(|error| format!("derive shared fixture manifest: {error:?}"))?;
+        let manifest = encode_manifest_v1(&derived)
+            .map_err(|error| format!("encode shared fixture manifest: {error:?}"))?;
+        let mut allowed_dependencies = ["libc.so.6".to_owned()].into_iter().collect::<HashSet<_>>();
+        if let Some(extra) = std::env::var_os("PRDB_TEST_EXTRA_ALLOWED_DEPENDENCY") {
+            allowed_dependencies.insert(extra.to_string_lossy().into_owned());
+        }
+        let profile = ArtifactCompatibilityProfile::new(
+            "x86_64-v1".to_owned(),
+            runtime_profile.to_owned(),
+            1,
+            allowed_dependencies,
+        )
+        .map_err(|error| format!("build shared fixture profile: {error:?}"))?;
+        let validator = VersionedSubmissionMetadataValidator::new(profile);
+        let validator = if upload_client_sdk {
+            validator
+        } else {
+            let registry = registry.ok_or("expected registry mode")?;
+            registry_for_assertion = Some(Arc::clone(&registry));
+            validator
+                .with_sdk_registry(registry)
+                .map_err(|error| format!("configure shared SDK registry: {error:?}"))?
+        };
+        (
+            manifest,
+            Arc::new(validator),
+            upload_client_sdk.then_some(sql_library),
+        )
+    } else {
+        (b"m".to_vec(), Arc::new(AcceptFixture), None)
+    };
     let staging = StagingStore::new(StagingLimits::default(), validator)?;
     let reservation = staging.prepare(
         owner,
@@ -21322,6 +21343,13 @@ fn run_sandboxed_v3_sql_error_fixture(
             manifest,
             artifact_bytes: u64::try_from(artifact.len())?,
             artifact_sha256: Sha256::digest(&artifact).into(),
+            sql_library_bytes: sql_library
+                .as_ref()
+                .map_or(0, |library| library.len() as u64),
+            sql_library_sha256: sql_library.as_ref().map_or_else(
+                || Sha256::digest([]).into(),
+                |library| Sha256::digest(library).into(),
+            ),
             scope_version: 1,
             requested_scope: requested_scope_fixture(),
             parameter_bytes: 0,
@@ -21341,6 +21369,20 @@ fn run_sandboxed_v3_sql_error_fixture(
                 chunk,
             )
             .map_err(|error| format!("SQL artifact chunk upload: {error:?}"))?;
+    }
+    if let Some(sql_library) = &sql_library {
+        let mut sql_library_offset = 0;
+        for chunk in sql_library.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
+            sql_library_offset = staging
+                .upload_chunk(
+                    owner,
+                    reservation.invocation_id,
+                    ChunkKind::SqlLibrary,
+                    sql_library_offset,
+                    chunk,
+                )
+                .map_err(|error| format!("SQL library chunk upload: {error:?}"))?;
+        }
     }
     staging
         .seal(owner, reservation.invocation_id)
@@ -21471,7 +21513,7 @@ fn run_sandboxed_v3_sql_error_fixture(
 #[test]
 fn sandboxed_v3_sql_error_latches_failure_and_durably_aborts_after_partial_output()
 -> Result<(), Box<dyn std::error::Error>> {
-    run_sandboxed_v3_sql_error_fixture("PRDB_TEST_QUERY_ARTIFACT", false, None, false)
+    run_sandboxed_v3_sql_error_fixture("PRDB_TEST_QUERY_ARTIFACT", false, None, false, false)
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -21482,6 +21524,7 @@ fn sandboxed_v3_shared_sql_library_resolves_loads_and_durably_aborts_on_sql_erro
         "PRDB_TEST_SHARED_SQL_QUERY_ARTIFACT",
         false,
         Some("PRDB_TEST_SDK_RELEASE_DIR"),
+        false,
         false,
     )
 }
@@ -21495,6 +21538,7 @@ fn sandboxed_shared_sql_missing_dependency_aborts_inside_executor()
         false,
         Some("PRDB_TEST_SDK_RELEASE_DIR"),
         true,
+        false,
     )
 }
 
@@ -21502,7 +21546,26 @@ fn sandboxed_shared_sql_missing_dependency_aborts_inside_executor()
 #[test]
 fn sandboxed_v3_constructor_cannot_connect_to_host_loopback()
 -> Result<(), Box<dyn std::error::Error>> {
-    run_sandboxed_v3_sql_error_fixture("PRDB_TEST_NETWORK_CONSTRUCTOR_ARTIFACT", true, None, false)
+    run_sandboxed_v3_sql_error_fixture(
+        "PRDB_TEST_NETWORK_CONSTRUCTOR_ARTIFACT",
+        true,
+        None,
+        false,
+        false,
+    )
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn sandboxed_client_supplied_sql_library_loads_and_durably_aborts_on_sql_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    run_sandboxed_v3_sql_error_fixture(
+        "PRDB_TEST_SHARED_SQL_QUERY_ARTIFACT",
+        false,
+        Some("PRDB_TEST_SDK_RELEASE_DIR"),
+        false,
+        true,
+    )
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -21728,7 +21791,12 @@ fn sandboxed_v3_metadata_submission_commits_over_tcp() -> Result<(), Box<dyn std
     let package = fixture.0.join("package");
     std::fs::create_dir(&package)?;
     std::fs::set_permissions(&package, std::fs::Permissions::from_mode(0o700))?;
+    let sdk_release_dir = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR")
+        .map(PathBuf::from)
+        .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR must name the compatible SDK")?;
+    let sql_library = std::fs::read(sdk_release_dir.join("libprdb_sql.so.1"))?;
     std::fs::write(package.join("query.so"), &artifact)?;
+    std::fs::write(package.join("sql.so"), &sql_library)?;
     std::fs::write(package.join("manifest.pmf1"), &manifest_bytes)?;
     std::fs::write(package.join("requested_scope.psc1"), &requested_scope)?;
     let artifact_digest = Sha256::digest(&artifact)
@@ -21737,11 +21805,19 @@ fn sandboxed_v3_metadata_submission_commits_over_tcp() -> Result<(), Box<dyn std
         .collect::<String>()
         + "\n";
     std::fs::write(package.join("artifact.sha256"), artifact_digest)?;
+    let sql_library_digest = Sha256::digest(&sql_library)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+        + "\n";
+    std::fs::write(package.join("sql-library.sha256"), sql_library_digest)?;
     for name in [
         "query.so",
         "manifest.pmf1",
         "requested_scope.psc1",
         "artifact.sha256",
+        "sql.so",
+        "sql-library.sha256",
     ] {
         std::fs::set_permissions(package.join(name), std::fs::Permissions::from_mode(0o600))?;
     }
@@ -23031,6 +23107,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             manifest: b"m".to_vec(),
             artifact_bytes: u64::try_from(artifact.len())?,
             artifact_sha256: Sha256::digest(&artifact).into(),
+            sql_library_bytes: 0,
+            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: requested_scope.clone(),
             parameter_bytes: 0,
@@ -23117,6 +23195,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             manifest: b"m".to_vec(),
             artifact_bytes: u64::try_from(artifact.len())?,
             artifact_sha256: Sha256::digest(&artifact).into(),
+            sql_library_bytes: 0,
+            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: requested_scope.clone(),
             parameter_bytes: 1,
@@ -24100,6 +24180,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 manifest: b"m".to_vec(),
                 artifact_bytes: u64::try_from(artifact.len())?,
                 artifact_sha256: Sha256::digest(&artifact).into(),
+                sql_library_bytes: 0,
+                sql_library_sha256: Sha256::digest([]).into(),
                 scope_version: 1,
                 requested_scope: requested_scope.clone(),
                 parameter_bytes: 1,
@@ -24225,6 +24307,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 manifest: b"m".to_vec(),
                 artifact_bytes: u64::try_from(artifact.len())?,
                 artifact_sha256: Sha256::digest(&artifact).into(),
+                sql_library_bytes: 0,
+                sql_library_sha256: Sha256::digest([]).into(),
                 scope_version: 1,
                 requested_scope: requested_scope.clone(),
                 parameter_bytes: 1,
@@ -24354,6 +24438,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             manifest: b"m".to_vec(),
             artifact_bytes: u64::try_from(artifact.len())?,
             artifact_sha256: Sha256::digest(&artifact).into(),
+            sql_library_bytes: 0,
+            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: requested_scope.clone(),
             parameter_bytes: 1,
@@ -24483,6 +24569,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             manifest: b"m".to_vec(),
             artifact_bytes: u64::try_from(restricted_artifact.len())?,
             artifact_sha256: Sha256::digest(&restricted_artifact).into(),
+            sql_library_bytes: 0,
+            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: restricted_scope,
             parameter_bytes: 0,
@@ -24816,6 +24904,8 @@ fn sealed_start_admits_only_current_credentials_and_enforces_request_deadline()
             manifest: b"m".to_vec(),
             artifact_bytes: artifact.len() as u64,
             artifact_sha256: Sha256::digest(artifact).into(),
+            sql_library_bytes: 0,
+            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: requested_scope_fixture(),
             parameter_bytes: 0,
@@ -24902,6 +24992,8 @@ fn sealed_start_admits_only_current_credentials_and_enforces_request_deadline()
             manifest: b"m".to_vec(),
             artifact_bytes: artifact.len() as u64,
             artifact_sha256: Sha256::digest(artifact).into(),
+            sql_library_bytes: 0,
+            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: requested_scope_fixture(),
             parameter_bytes: 0,
