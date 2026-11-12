@@ -15,7 +15,7 @@ limitations.
 ## Per-login user service
 
 Install the supervisor, gateway, executor, optimizer, `prdb-init`,
-`prdb-landlock-run`, and `with_delegated_cgroup.sh` executables under
+`prdb-maintain`, `prdb-landlock-run`, and `with_delegated_cgroup.sh` executables under
 `~/.local/libexec/prdb/`, and copy both unit files to
 `~/.config/systemd/user/`. For a release build from this checkout:
 
@@ -25,6 +25,7 @@ install -Dm755 target/release/prdb-gateway ~/.local/libexec/prdb/prdb-gateway
 install -Dm755 target/release/prdb-executor ~/.local/libexec/prdb/prdb-executor
 install -Dm755 target/release/prdb-optimizer ~/.local/libexec/prdb/prdb-optimizer
 install -Dm755 target/release/prdb-init ~/.local/libexec/prdb/prdb-init
+install -Dm755 target/release/prdb-maintain ~/.local/libexec/prdb/prdb-maintain
 install -Dm755 target/release/prdb-landlock-run ~/.local/libexec/prdb/prdb-landlock-run
 install -Dm755 engine/tools/with_delegated_cgroup.sh ~/.local/libexec/prdb/with_delegated_cgroup.sh
 install -d ~/.local/lib/prdb
@@ -110,7 +111,7 @@ owned by that account and its state under the user's systemd state directory.
 
 ## System manager installation
 
-Install all six executables root-owned under `/usr/libexec/prdb/`, then create
+Install all seven executables root-owned under `/usr/libexec/prdb/`, then create
 a dedicated `prdb-gateway` system group plus `prdb` and `prdb-gateway` system
 accounts. On systems with `groupadd` and `useradd`, the account setup is:
 
@@ -127,6 +128,7 @@ Install executables and units, then create `/etc/prdb/supervisor.env` and
 install -d -o root -g root -m 0755 /usr/libexec/prdb /etc/prdb
 install -m 0755 target/release/prdb-supervisor target/release/prdb-gateway target/release/prdb-executor target/release/prdb-optimizer /usr/libexec/prdb/
 install -m 0755 target/release/prdb-init target/release/prdb-landlock-run /usr/libexec/prdb/
+install -m 0755 target/release/prdb-maintain /usr/libexec/prdb/
 install -m 0755 engine/tools/with_delegated_cgroup.sh /usr/libexec/prdb/
 install -m 0644 contrib/systemd/system/prdb-supervisor.service contrib/systemd/system/prdb-gateway.service /etc/systemd/system/
 ```
@@ -153,6 +155,25 @@ runuser -u prdb -- /usr/libexec/prdb/prdb-init \
 
 For an interrupted attempt, remove its credential file as the service owner,
 then repeat with `--resume` so a replacement token is issued.
+
+## Offline storage maintenance
+
+`prdb-maintain compact` makes one quiescent redb compaction attempt. The
+instance lock prevents it from running while the supervisor owns the database;
+stop both services before maintenance, then run it as the instance owner:
+
+```sh
+systemctl --user stop prdb-gateway.service prdb-supervisor.service
+~/.local/libexec/prdb/prdb-maintain compact \
+  --instance-dir ~/.local/state/prdb/instance
+systemctl --user start prdb-supervisor.service prdb-gateway.service
+```
+
+For the system services, stop the gateway and supervisor, run the command as
+`prdb` with `--instance-dir /var/lib/prdb/instance`, then start both services.
+The command validates the READY image while holding the instance lock and
+prints whether compaction ran and how long it took. It does not wait for active
+transactions or compact online.
 
 Configure `PRDB_SUPERVISOR_ARGS` in `/etc/prdb/supervisor.env` with the same
 required supervisor options as above, using these paths and values:

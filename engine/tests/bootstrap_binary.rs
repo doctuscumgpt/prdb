@@ -114,6 +114,40 @@ fn init_resumes_interrupted_bootstrap_and_rotates_the_credential() {
 }
 
 #[test]
+fn maintenance_compaction_requires_exclusive_instance_lock() {
+    let fixture = Fixture::new();
+    let mut session =
+        prdb_engine::bootstrap::initialize(fixture.instance_dir(), "maint_admin", i64::MAX)
+            .expect("initialize maintenance fixture");
+    let mut secret = session.take_secret().expect("bootstrap secret");
+    use zeroize::Zeroize;
+    secret.zeroize();
+    let ready = session.acknowledge().expect("publish READY instance");
+
+    let blocked = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["compact", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .output()
+        .expect("run maintenance while instance is held");
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("InstanceLocked"));
+    drop(ready);
+
+    let compacted = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["compact", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .output()
+        .expect("run offline maintenance");
+    assert!(
+        compacted.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&compacted.stderr)
+    );
+    assert!(String::from_utf8_lossy(&compacted.stdout).contains("compaction performed="));
+    drop(StorageInstance::open(fixture.instance_dir()).expect("reopen READY instance"));
+}
+
+#[test]
 fn init_refuses_to_overwrite_credential_files_before_creating_database() {
     let fixture = Fixture::new();
     std::fs::write(fixture.credential_file(), b"existing").expect("write sentinel");

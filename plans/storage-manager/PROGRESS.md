@@ -14,6 +14,14 @@
 - Verification: the focused locked/offline bootstrap target passed (`12 passed, 0 failed, 0 ignored`). The full serial workspace suite also passed inside the delegated `systemd --user` service; `cargo build --workspace --locked --offline`, `cargo fmt --all -- --check`, and warning-denied workspace Clippy passed.
 - Scope: managed compaction scheduling, latency, operational contention, larger database shapes, and other target filesystems remain open.
 
+## SM-1 follow-up: operator-facing offline compaction — implemented
+
+- Behavior: `prdb-maintain compact --instance-dir PATH` opens the validated READY instance, holds its exclusive lock through one compaction attempt, and reports whether redb compacted plus elapsed time. If a supervisor or another owner holds the instance lock, the command fails before touching the database.
+- Regression: `maintenance_compaction_requires_exclusive_instance_lock` invokes the real binary, verifies it fails while the fixture's READY `StorageInstance` owns the lock, then succeeds after that instance is dropped and confirms the database can reopen.
+- Operational guidance: the systemd README lists the binary for user/system installations and gives the stop-maintain-start sequence.
+- Verification: focused locked/offline CLI test passed; the `bootstrap_binary` target passed (`5 passed, 0 failed, 0 ignored`). Workspace build, format check, warning-denied Clippy, and full serial delegated workspace suite passed; the suite reported 188 library tests and 145 commit tests, with zero ignored in those targets.
+- Scope: this is offline maintenance. The supervisor does not schedule compaction while serving traffic; online contention, larger profiles, and target filesystems remain open.
+
 ## SM-1 follow-up: compaction after mixed storage pressure — measured
 
 - Harness: [`storage_pressure.rs`](../../engine/examples/storage_pressure.rs) now measures `StorageInstance::compact` after the bounded workload completes, its retained reader aborts, and the `StorageManager` is dropped. It records compaction duration and database file size before and after reclaiming redb history.
