@@ -115,6 +115,11 @@ int32_t prdb_sdk_optimizer_encode_group_aggregate_v1(
     const uint8_t *schema, uint32_t schema_len,
     uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
 
+int32_t prdb_sdk_optimizer_encode_ordered_group_aggregate_v1(
+    const prdb_sdk_select_v12 *statement,
+    const uint8_t *schema, uint32_t schema_len,
+    uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
+
 int32_t prdb_sdk_optimizer_decode_response_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_response_v1 *out, uint32_t out_capacity);

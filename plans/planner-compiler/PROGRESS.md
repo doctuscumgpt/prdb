@@ -1,5 +1,12 @@
 # Optimizer Progress
 
+## OP-7 follow-up: ordered single-key grouped aggregates — verified
+
+- Contract: request statement 11 / plan kind 11 extends the statement-10 single-key COUNT/MIN/MAX/SUM/AVG shape with up to two distinct ORDER BY expressions drawn from the group key or selected aggregate, preserving direction, NULL placement, and optional LIMIT. WHERE, HAVING, extra projections, and unsupported argument types remain rejected.
+- Implementation: Rust request decoding, authorized metadata binding, numeric checks, canonical kind-11 plan codec, optimizer process dispatch, and IPC response validation are implemented. TinyCC encodes statement 11, decodes kind 11, validates the exact ordinal-sorted scan shape, matches v12 AST sort fields and LIMIT, re-resolves executor relation identity, and invokes the bounded grouped sorter.
+- Confined acceptance: the v12 SQL fixture runs an AVG grouped query ordered by AVG descending NULLS LAST and the group key ascending NULLS FIRST, with LIMIT 2. The acceptance verifies both exact SQLR records in returned order through the delegated executor path.
+- Verification: focused Rust request/binding/plan/process tests passed; the TinyCC SDK suite and sandbox fixture build passed; the focused delegated SQL DML sequence passed (1 passed, 0 ignored). Full locked workspace build, format, warning-denied Clippy, ABI generation, and workspace tests passed. The delegated workspace run included all four cgroup-backed commit tests and both metadata process tests; every target reported zero ignored cases. `git diff --check` passed.
+
 ## OP-7 follow-up: single-key grouped aggregate plans — verified
 
 - Contract: request statement 10 / plan kind 10 plans one group key with COUNT(*), MIN, MAX, SUM, or AVG and optional LIMIT. It rejects WHERE, HAVING, ORDER BY, extra projections, invalid arguments, and trailing bytes; SUM/AVG require numeric arguments.

@@ -382,6 +382,44 @@ static int32_t write_grouped_avg(void *opaque,
     return 0;
 }
 
+static int32_t write_ordered_grouped_avg(
+    void *opaque, const prdb_sdk_value_v1 *group_key,
+    const prdb_sdk_value_v1 *aggregate_value, uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v12 *binding) {
+    grouped_result_context *context = (grouped_result_context *)opaque;
+    static const int32_t expected_keys[] = {9, 7};
+    static const uint64_t expected_counts[] = {1, 2};
+    int32_t key;
+    if (context == NULL || binding == NULL || group_key == NULL ||
+        context->row_count >= 2 || binding->order_count != 2 ||
+        binding->base.base.base.base.aggregate_kind !=
+            PRDB_SDK_SQL_V7_AGGREGATE_AVG ||
+        binding->order_items[0].item.kind !=
+            PRDB_SDK_SQL_V10_ORDER_AGGREGATE ||
+        binding->order_items[0].item.direction !=
+            PRDB_SDK_SQL_V10_ORDER_DESCENDING ||
+        binding->order_items[0].item.null_order !=
+            PRDB_SDK_SQL_V11_NULLS_LAST ||
+        binding->order_items[1].item.kind !=
+            PRDB_SDK_SQL_V10_ORDER_GROUP_KEY ||
+        binding->order_items[1].item.direction !=
+            PRDB_SDK_SQL_V10_ORDER_ASCENDING ||
+        binding->order_items[1].item.null_order !=
+            PRDB_SDK_SQL_V11_NULLS_FIRST ||
+        prdb_sdk_value_get_integer_v1(group_key, &key) !=
+            PRDB_SDK_VALUE_ACCESS_OK ||
+        key != expected_keys[context->row_count] ||
+        matching_row_count != expected_counts[context->row_count])
+        return 1;
+    int32_t status = prdb_sdk_sql_write_group_avg_result_v1(
+        context->host, context->group_column, group_key,
+        context->aggregate_column, aggregate_value, context->output,
+        context->output_capacity, &context->output_len);
+    if (status != PRDB_SDK_SQL_RESULT_OK) return 1;
+    ++context->row_count;
+    return 0;
+}
+
 static int32_t write_grouped_ordered_count(
     void *opaque, const prdb_sdk_value_v1 *group_key,
     const prdb_sdk_value_v1 *aggregate_value, uint64_t matching_row_count,
@@ -531,6 +569,10 @@ static int32_t run_write_read_fixture(
         "SELECT id, SUM(id) FROM records GROUP BY id";
     static const uint8_t select_grouped_avg_sql[] =
         "SELECT id, AVG(id) FROM records GROUP BY id";
+    static const uint8_t select_ordered_grouped_avg_sql[] =
+        "SELECT right_key, AVG(left_key) FROM grouped_records "
+        "GROUP BY right_key ORDER BY AVG(left_key) DESC NULLS LAST, "
+        "right_key ASC NULLS FIRST LIMIT 2";
     static const uint8_t select_optimizer_group_count_sql[] =
         "SELECT id, COUNT(*) FROM records GROUP BY id";
     static const uint8_t select_grouped_order_sql[] =
@@ -1427,6 +1469,44 @@ static int32_t run_write_read_fixture(
         static const uint8_t message[] = "fixture-error-grouped-avg";
         return report_failure(host, message, sizeof(message) - 1);
     }
+
+    grouped_results.row_count = 0;
+    grouped_results.output_len = 0;
+    grouped_results.group_column = &planner_columns[1];
+    grouped_results.aggregate_column = &planner_columns[0];
+    if (optimizer_host_v5 != NULL) {
+        status = prdb_sdk_sql_execute_group_aggregate_ordered_optimizer_v1(
+            optimizer_host_v5, schema, sizeof(schema) - 1,
+            select_ordered_grouped_avg_sql,
+            sizeof(select_ordered_grouped_avg_sql) - 1, 16,
+            sizeof(batch_response), group_count_optimizer_request,
+            sizeof(group_count_optimizer_request),
+            group_count_optimizer_response,
+            sizeof(group_count_optimizer_response), planner_response,
+            sizeof(planner_response), executor_response,
+            sizeof(executor_response), batch_response,
+            sizeof(batch_response), planner_columns, 9, executor_columns, 9,
+            cell_scratch, 9, grouped_materialized,
+            sizeof(grouped_materialized), write_ordered_grouped_avg,
+            &grouped_results);
+    } else {
+        status = prdb_sdk_sql_execute_group_v12(
+            host, schema, sizeof(schema) - 1, select_ordered_grouped_avg_sql,
+            sizeof(select_ordered_grouped_avg_sql) - 1, NULL, 0, 16,
+            sizeof(batch_response), planner_response,
+            sizeof(planner_response), executor_response,
+            sizeof(executor_response), batch_response,
+            sizeof(batch_response), planner_columns, 9, executor_columns, 9,
+            cell_scratch, 9, grouped_materialized,
+            sizeof(grouped_materialized), write_ordered_grouped_avg,
+            &grouped_results);
+    }
+    if (status != PRDB_SDK_SQL_EXEC_OK || grouped_results.row_count != 2) {
+        static const uint8_t message[] = "fixture-error-optimizer-ordered-avg";
+        return report_failure(host, message, sizeof(message) - 1);
+    }
+    grouped_results.group_column = &grouped_column;
+    grouped_results.aggregate_column = &grouped_column;
 
     grouped_results.row_count = 0;
     grouped_results.output_len = 0;

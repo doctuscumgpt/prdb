@@ -23261,6 +23261,44 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         ]
         .concat()
     );
+    let ordered_grouped_avg =
+        read_frame(&mut gateway)?.ok_or("missing ordered grouped AVG SQLR result")?;
+    assert_eq!(
+        ordered_grouped_avg.operation,
+        Operation::GatewayResultData as u16
+    );
+    assert_eq!(ordered_grouped_avg.request_id, accepted.request_id);
+    assert_eq!(
+        ordered_grouped_avg.payload,
+        [
+            b"SQLR".as_slice(),
+            &[
+                0, 1, 0, 2, 0, 9, b'r', b'i', b'g', b'h', b't', b'_', b'k', b'e', b'y', 0, 0, 0, 3,
+                0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 9, 0, 3, b'a', b'v', b'g', 0, 0, 0, 5, 38, 6, 0, 0,
+                0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 30, 132, 128,
+            ][..],
+        ]
+        .concat()
+    );
+    let ordered_grouped_avg_second =
+        read_frame(&mut gateway)?.ok_or("missing second ordered grouped AVG SQLR result")?;
+    assert_eq!(
+        ordered_grouped_avg_second.operation,
+        Operation::GatewayResultData as u16
+    );
+    assert_eq!(ordered_grouped_avg_second.request_id, accepted.request_id);
+    assert_eq!(
+        ordered_grouped_avg_second.payload,
+        [
+            b"SQLR".as_slice(),
+            &[
+                0, 1, 0, 2, 0, 9, b'r', b'i', b'g', b'h', b't', b'_', b'k', b'e', b'y', 0, 0, 0, 3,
+                0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 7, 0, 3, b'a', b'v', b'g', 0, 0, 0, 5, 38, 6, 0, 0,
+                0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 66, 64,
+            ][..],
+        ]
+        .concat()
+    );
     let grouped_order = read_frame(&mut gateway)?.ok_or("missing grouped ORDER BY SQLR result")?;
     assert_eq!(grouped_order.operation, Operation::GatewayResultData as u16);
     assert_eq!(grouped_order.request_id, accepted.request_id);

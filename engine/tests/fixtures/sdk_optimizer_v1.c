@@ -45,7 +45,10 @@ static int32_t mock_request_v5(void *opaque, uint16_t operation,
              request[2] ==
                  PRDB_OPTIMIZER_COMPOSITE_GROUP_COUNT_STATEMENT ||
              request[2] ==
-                 PRDB_OPTIMIZER_GROUP_COUNT_ORDERED_STATEMENT)));
+                 PRDB_OPTIMIZER_GROUP_COUNT_ORDERED_STATEMENT ||
+             request[2] == PRDB_OPTIMIZER_GROUP_AGGREGATE_STATEMENT ||
+             request[2] ==
+                 PRDB_OPTIMIZER_ORDERED_GROUP_AGGREGATE_STATEMENT)));
     assert(request_len >= 4 && request[0] == 0 && request[1] == 1 &&
            request[3] == 0);
     if (mock->callback_status != PRDB_QUERY_CALLBACK_OK) {
@@ -96,6 +99,10 @@ int main(void) {
         "COUNT(*) DESC, left_key ASC NULLS FIRST LIMIT 2;";
     static const uint8_t group_average_sql[] =
         "SELECT category, AVG(amount) FROM items GROUP BY category LIMIT 5;";
+    static const uint8_t ordered_group_average_sql[] =
+        "SELECT left_key, AVG(right_key) FROM grouped_records "
+        "GROUP BY left_key ORDER BY AVG(right_key) DESC NULLS LAST, "
+        "left_key ASC NULLS FIRST LIMIT 2;";
     static const uint8_t ordered_select_sql[] =
         "SELECT id, label FROM items ORDER BY label DESC LIMIT 5;";
     static const uint8_t expected_group_count_request[] = {
@@ -114,6 +121,11 @@ int main(void) {
     static const uint8_t expected_group_average_request[] = {
         0, 1, 10, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'i', 't', 'e', 'm', 's',
         8, 'c', 'a', 't', 'e', 'g', 'o', 'r', 'y', 5, 6, 'a', 'm', 'o', 'u', 'n', 't', 1, 0, 0, 0, 5};
+    static const uint8_t expected_ordered_group_average_request[] = {
+        0, 1, 11, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 15, 'g', 'r', 'o', 'u', 'p',
+        'e', 'd', '_', 'r', 'e', 'c', 'o', 'r', 'd', 's', 8, 'l', 'e', 'f', 't',
+        '_', 'k', 'e', 'y', 5, 9, 'r', 'i', 'g', 'h', 't', '_', 'k', 'e', 'y',
+        2, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 2};
     static const uint8_t expected_ordered_select_request[] = {
         0, 1, 7, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'i', 't', 'e', 'm',
         's', 0, 2, 2, 'i', 'd', 5, 'l', 'a', 'b', 'e', 'l', 5, 'l', 'a',
@@ -148,6 +160,7 @@ int main(void) {
     prdb_sdk_select_v13 composite_group_count_statement = {0};
     prdb_sdk_select_v15 ordered_composite_group_count_statement = {0};
     prdb_sdk_select_v7 group_average_statement = {0};
+    prdb_sdk_select_v12 ordered_group_average_statement = {0};
     prdb_sdk_select_v3 ordered_select_statement = {0};
 
     assert(prdb_sdk_sql_parse_select_v2(
@@ -222,6 +235,19 @@ int main(void) {
                encoded, sizeof(encoded), &encoded_len) == PRDB_SDK_OPTIMIZER_ENCODE_OK);
     assert(encoded_len == sizeof(expected_group_average_request));
     assert(memcmp(encoded, expected_group_average_request, encoded_len) == 0);
+    assert(prdb_sdk_sql_parse_select_v12(
+               ordered_group_average_sql,
+               sizeof(ordered_group_average_sql) - 1,
+               &ordered_group_average_statement,
+               sizeof(ordered_group_average_statement), &error_offset) ==
+           PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_optimizer_encode_ordered_group_aggregate_v1(
+               &ordered_group_average_statement, schema, sizeof(schema) - 1,
+               encoded, sizeof(encoded), &encoded_len) ==
+           PRDB_SDK_OPTIMIZER_ENCODE_OK);
+    assert(encoded_len == sizeof(expected_ordered_group_average_request));
+    assert(memcmp(encoded, expected_ordered_group_average_request,
+                  sizeof(expected_ordered_group_average_request)) == 0);
     assert(prdb_sdk_sql_parse_select_v13(
                composite_group_count_sql,
                sizeof(composite_group_count_sql) - 1,
