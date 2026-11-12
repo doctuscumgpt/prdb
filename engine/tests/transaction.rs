@@ -3757,7 +3757,7 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
             operation: IpcOperation::StageInsert as u16,
             request_id: 67,
             payload: StageInsertRequest {
-                relation: relation_handle,
+                relation: relation_handle.clone(),
                 values: vec![InsertInput::Value(Some(ScalarValue::Bytea(vec![4, 5])))],
             }
             .encode()?,
@@ -3804,6 +3804,20 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
     assert_eq!(delete_response.payload, [0, 1, 0]);
     assert!(matches!(
         connection.revalidate_row_handle(&deleted_row_handle),
+        Err(TransactionError::InvalidMetadataRequest)
+    ));
+    let relation_close_cursor = connection.open_relation_scan(&relation_handle, &[[0x66; 16]])?;
+    connection.close_relation_handle(&relation_handle)?;
+    assert!(matches!(
+        connection.revalidate_relation_handle(&relation_handle),
+        Err(TransactionError::InvalidMetadataRequest)
+    ));
+    assert!(matches!(
+        connection.revalidate_row_handle(&inserted_handle),
+        Err(TransactionError::InvalidMetadataRequest)
+    ));
+    assert!(matches!(
+        connection.next_relation_scan_page(&relation_close_cursor, 1),
         Err(TransactionError::InvalidMetadataRequest)
     ));
     drop(connection);

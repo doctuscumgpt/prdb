@@ -39,7 +39,7 @@ Permission DDL also defines authorized schema visibility, metadata exposure, def
 - Unreadable cells carry `REDACTED`, distinct from `NULL`.
 - Redacted payloads contain no original value bytes, lengths, or storage offsets.
 
-Redaction deliberately reveals that a field exists but is unavailable. Row handles are scoped references, not physical addresses or proof of authority.
+Redaction deliberately reveals that a field exists but is unavailable. Row handles are scoped references, not physical addresses or proof of authority. Relation, scan, and row handles are connection-local capabilities: a new executor metadata connection or invocation cannot reuse them. Closing a relation invalidates its scan and row handles; a successful update or delete invalidates every row handle for that row. Each mutation still revalidates the referenced row and applies operation-specific authorization at storage.
 
 ## Computation Semantics
 
@@ -71,7 +71,7 @@ Constraint/conflict errors omit protected values and identities, but their succe
 
 Proposed baseline: pin a consistent data/schema snapshot and policy context, including memberships and other policy inputs, for a bounded invocation lifetime. Sequential SQL statements and direct storage calls share this context and see successful prior private writes; finishing a statement does not refresh the committed snapshot or grant. MVCC selects visible versions before evaluating row and cell permissions. The mechanism for pinning external policy inputs remains open and must be defined before supporting them. Immediate read revocation is deferred; it would require invalidating access and terminating affected workers. Write commits separately validate that their policy dependencies have not changed, preventing stale permissions from authorizing new committed writes. Already delivered data cannot be revoked.
 
-Cache authorization only with sufficient identity, grant, policy, and snapshot information to prevent stale or cross-principal reuse.
+The current executor keeps relation, scan, and row references in connection-local maps; it does not cache authorization decisions across invocations or principals. Preserve that boundary unless a future cache key includes the admitted principal, invocation scope, complete grant/policy/schema dependency versions, and pinned data snapshot. A catalog authority change that races a write must still be caught by the recorded dependency guards at publication. Do not treat opaque handle presence as an authorization cache hit.
 
 ## Validation and Open Questions
 

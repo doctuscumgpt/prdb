@@ -22226,6 +22226,20 @@ fn sandboxed_direct_executor_ipc_rejects_forged_relation_handle()
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
+fn sandboxed_direct_executor_ipc_rejects_forged_row_handle_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
+    run_sandboxed_v3_sql_error_fixture(
+        "PRDB_TEST_FORGED_ROW_HANDLE_QUERY_ARTIFACT",
+        false,
+        None,
+        true,
+        true,
+        false,
+    )
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
 fn sandboxed_client_supplied_sql_library_loads_and_durably_aborts_on_sql_error()
 -> Result<(), Box<dyn std::error::Error>> {
     run_sandboxed_v3_sql_error_fixture(
