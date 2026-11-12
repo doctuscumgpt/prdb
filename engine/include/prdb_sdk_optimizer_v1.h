@@ -9,6 +9,7 @@
 #include "prdb_sdk_sql_v3.h"
 #include "prdb_sdk_sql_v19.h"
 #include "prdb_sdk_sql_v13.h"
+#include "prdb_sdk_sql_v12.h"
 
 #define PRDB_SDK_OPTIMIZER_ABI_V1_VERSION UINT32_C(1)
 #define PRDB_SDK_OPTIMIZER_RESPONSE_V1_VERSION UINT16_C(1)
@@ -88,6 +89,11 @@ int32_t prdb_sdk_optimizer_encode_join_select_v1(
  * request subset rejects WHERE, HAVING, ORDER BY, and composite keys. */
 int32_t prdb_sdk_optimizer_encode_group_count_v1(
     const prdb_sdk_select_v4 *statement,
+    const uint8_t *schema, uint32_t schema_len,
+    uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
+
+int32_t prdb_sdk_optimizer_encode_ordered_group_count_v1(
+    const prdb_sdk_select_v12 *statement,
     const uint8_t *schema, uint32_t schema_len,
     uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
 

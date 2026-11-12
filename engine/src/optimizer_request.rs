@@ -84,6 +84,24 @@ pub struct GroupCountRequest {
     pub limit: Option<u32>,
 }
 
+/// One stable sort key for the bounded single-key COUNT(*) grouping shape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GroupCountOrderItem {
+    /// 0 sorts by the group key; 1 sorts by COUNT(*).
+    pub source: u8,
+    pub descending: bool,
+    pub nulls_first: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderedGroupCountRequest {
+    pub schema_name: String,
+    pub relation_name: String,
+    pub group_key_name: String,
+    pub order_items: Vec<GroupCountOrderItem>,
+    pub limit: Option<u32>,
+}
+
 /// Bounded two-to-eight-key COUNT(*) grouping request. Keys retain projection
 /// order; filters, HAVING, and ORDER BY are outside this request shape.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -424,6 +442,83 @@ pub fn decode_group_count_request(bytes: &[u8]) -> Result<GroupCountRequest, Req
         schema_name,
         relation_name,
         group_key_name,
+        limit,
+    })
+}
+
+/// Decode a single-key COUNT(*) grouping request with one or two ordered
+/// output expressions. Sort sources are unique and flags are canonical 0/1.
+pub fn decode_ordered_group_count_request(
+    bytes: &[u8],
+) -> Result<OrderedGroupCountRequest, RequestError> {
+    if bytes.len() > MAX_REQUEST_BYTES {
+        return Err(RequestError::TooLarge);
+    }
+    let header_bytes = OPTIMIZER_SELECT_REQUEST_HEADER_BYTES as usize;
+    if bytes.len() < header_bytes {
+        return Err(RequestError::Truncated);
+    }
+    let version_offset = OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET as usize;
+    let version = u16::from_be_bytes([bytes[version_offset], bytes[version_offset + 1]]);
+    if version != OPTIMIZER_REQUEST_VERSION {
+        return Err(RequestError::UnsupportedVersion(version));
+    }
+    let (statement, flags) =
+        decode_optimizer_select_request(bytes).ok_or(RequestError::Truncated)?;
+    if statement != crate::query_abi::OPTIMIZER_GROUP_COUNT_ORDERED_STATEMENT {
+        return Err(RequestError::UnsupportedStatement(statement));
+    }
+    if flags != 0 {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut cursor = Cursor {
+        bytes,
+        offset: header_bytes,
+    };
+    let schema_name = cursor.identifier()?;
+    let relation_name = cursor.identifier()?;
+    let group_key_name = cursor.identifier()?;
+    let order_count = usize::from(cursor.u8()?);
+    if !(1..=2).contains(&order_count) {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut order_items = Vec::with_capacity(order_count);
+    let mut seen = 0u8;
+    for _ in 0..order_count {
+        let source = cursor.u8()?;
+        if source > 1 || seen & (1 << source) != 0 {
+            return Err(RequestError::InvalidValue);
+        }
+        seen |= 1 << source;
+        let descending = match cursor.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(RequestError::InvalidValue),
+        };
+        let nulls_first = match cursor.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(RequestError::InvalidValue),
+        };
+        order_items.push(GroupCountOrderItem {
+            source,
+            descending,
+            nulls_first,
+        });
+    }
+    let limit = match cursor.u8()? {
+        0 => None,
+        1 => Some(cursor.u32()?),
+        _ => return Err(RequestError::InvalidValue),
+    };
+    if !cursor.is_empty() {
+        return Err(RequestError::TrailingBytes);
+    }
+    Ok(OrderedGroupCountRequest {
+        schema_name,
+        relation_name,
+        group_key_name,
+        order_items,
         limit,
     })
 }
@@ -880,6 +975,17 @@ mod tests {
         bytes
     }
 
+    fn ordered_group_count_request() -> Vec<u8> {
+        let mut bytes = vec![0, OPTIMIZER_REQUEST_VERSION as u8];
+        bytes.push(crate::query_abi::OPTIMIZER_GROUP_COUNT_ORDERED_STATEMENT);
+        bytes.push(0);
+        name("public", &mut bytes);
+        name("items", &mut bytes);
+        name("category", &mut bytes);
+        bytes.extend_from_slice(&[2, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 5]);
+        bytes
+    }
+
     fn composite_group_count_request(keys: &[&str]) -> Vec<u8> {
         let mut bytes = vec![0, OPTIMIZER_REQUEST_VERSION as u8];
         bytes.push(OPTIMIZER_COMPOSITE_GROUP_COUNT_STATEMENT);
@@ -906,6 +1012,44 @@ mod tests {
         trailing.push(0);
         assert_eq!(
             decode_group_count_request(&trailing),
+            Err(RequestError::TrailingBytes)
+        );
+    }
+
+    #[test]
+    fn decodes_and_rejects_ordered_group_count_requests() {
+        let request = decode_ordered_group_count_request(&ordered_group_count_request()).unwrap();
+        assert_eq!(request.schema_name, "public");
+        assert_eq!(request.relation_name, "items");
+        assert_eq!(request.group_key_name, "category");
+        assert_eq!(
+            request.order_items,
+            [
+                GroupCountOrderItem {
+                    source: 1,
+                    descending: true,
+                    nulls_first: false,
+                },
+                GroupCountOrderItem {
+                    source: 0,
+                    descending: false,
+                    nulls_first: true,
+                },
+            ]
+        );
+        assert_eq!(request.limit, Some(5));
+
+        let mut duplicate = ordered_group_count_request();
+        let key_name_end = 4 + 1 + 6 + 1 + 5 + 1 + 8;
+        duplicate[key_name_end + 4] = 1;
+        assert_eq!(
+            decode_ordered_group_count_request(&duplicate),
+            Err(RequestError::InvalidValue)
+        );
+        let mut trailing = ordered_group_count_request();
+        trailing.push(0);
+        assert_eq!(
+            decode_ordered_group_count_request(&trailing),
             Err(RequestError::TrailingBytes)
         );
     }

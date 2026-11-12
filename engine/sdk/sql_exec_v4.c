@@ -435,8 +435,6 @@ int32_t prdb_sdk_sql_execute_group_count_ordered_optimizer_v1(
     prdb_sdk_sql_group_row_v12_fn on_group, void *result_context) {
     prdb_sdk_select_v12 statement = {0};
     prdb_sdk_select_binding_v12 binding = {0};
-    prdb_sdk_select_v4 count_statement = {0};
-    prdb_sdk_select_binding_v4 count_binding = {0};
     prdb_sdk_planner_relation_v1 planned = {0};
     prdb_sdk_optimizer_response_v1 optimizer = {0};
     prdb_host_api_v2 host_v2;
@@ -495,26 +493,8 @@ int32_t prdb_sdk_sql_execute_group_count_ordered_optimizer_v1(
         return fail_statement(&host->v4.v3,
                               PRDB_SDK_SQL_EXEC_BIND_ERROR);
 
-    count_statement.struct_size = sizeof(count_statement);
-    count_statement.abi_version = PRDB_SDK_SQL_ABI_V4_VERSION;
-    count_statement.base = statement.base.base.base.base.base;
-    count_statement.has_group_by =
-        statement.base.base.base.base.has_group_by;
-    count_statement.group_by_column =
-        statement.base.base.base.base.group_by_column;
-    count_statement.aggregate_kind =
-        statement.base.base.base.base.aggregate_kind;
-    count_binding.struct_size = sizeof(count_binding);
-    count_binding.abi_version = PRDB_SDK_SQL_ABI_V4_VERSION;
-    count_binding.base = binding.base.base.base.base.base;
-    count_binding.has_group_by =
-        binding.base.base.base.base.has_group_by;
-    count_binding.group_by_column =
-        binding.base.base.base.base.group_by_column;
-    count_binding.aggregate_kind =
-        binding.base.base.base.base.aggregate_kind;
-    status = prdb_sdk_optimizer_encode_group_count_v1(
-        &count_statement, schema, schema_len, optimizer_request,
+    status = prdb_sdk_optimizer_encode_ordered_group_count_v1(
+        &statement, schema, schema_len, optimizer_request,
         optimizer_request_capacity, &optimizer_request_len);
     if (status != PRDB_SDK_OPTIMIZER_ENCODE_OK)
         return fail_statement(&host->v4.v3,
@@ -526,13 +506,13 @@ int32_t prdb_sdk_sql_execute_group_count_ordered_optimizer_v1(
     if (status != PRDB_SDK_OPTIMIZER_RESULT_OK)
         return fail_statement(&host->v4.v3,
                               PRDB_SDK_SQL_EXEC_PLANNER_ERROR);
-    status = prdb_sdk_optimizer_match_group_count_plan_v1(
-        &count_statement, &count_binding, schema, schema_len, optimizer.plan,
+    status = prdb_sdk_optimizer_match_ordered_group_count_plan_v1(
+        &statement, &binding, schema, schema_len, optimizer.plan,
         optimizer.plan_len);
     if (status != PRDB_SDK_OPTIMIZER_PLAN_OK)
         return fail_statement(&host->v4.v3,
                               PRDB_SDK_SQL_EXEC_SHAPE_MISMATCH);
-    status = prdb_sdk_optimizer_validate_executor_group_count_relation_v1(
+    status = prdb_sdk_optimizer_validate_executor_relation_v1(
         &host_v2, optimizer.plan, optimizer.plan_len, executor_response,
         executor_response_capacity, &executor_response_len);
     if (status != PRDB_SDK_OPTIMIZER_PLAN_OK)

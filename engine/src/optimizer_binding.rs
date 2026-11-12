@@ -4,11 +4,11 @@ use crate::metadata_discovery::{
     AuthorizedPlanRelation, AuthorizedRelationDescription, VisibleColumn,
 };
 use crate::optimizer_request::{
-    Comparison, CompositeGroupCountRequest, GroupCountRequest, JoinRelationSide,
-    OrderedSelectRequest, Predicate, RequestError, UpdateValue,
-    decode_composite_group_count_request, decode_delete_request, decode_group_count_request,
-    decode_join_select_request, decode_ordered_select_request, decode_select_request,
-    decode_update_request,
+    Comparison, CompositeGroupCountRequest, GroupCountOrderItem, GroupCountRequest,
+    JoinRelationSide, OrderedGroupCountRequest, OrderedSelectRequest, Predicate, RequestError,
+    UpdateValue, decode_composite_group_count_request, decode_delete_request,
+    decode_group_count_request, decode_join_select_request, decode_ordered_group_count_request,
+    decode_ordered_select_request, decode_select_request, decode_update_request,
 };
 use crate::transaction::{PlannerMetadataConnection, TransactionError};
 use crate::tuple::ScalarType;
@@ -61,6 +61,19 @@ pub struct BoundGroupCount {
     pub relation_id: [u8; 16],
     pub relation_name: String,
     pub group_key: BoundColumn,
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundOrderedGroupCount {
+    pub schema_name: String,
+    pub schema_id: [u8; 16],
+    pub schema_version: u64,
+    pub table_epoch: u64,
+    pub relation_id: [u8; 16],
+    pub relation_name: String,
+    pub group_key: BoundColumn,
+    pub order_items: Vec<GroupCountOrderItem>,
     pub limit: Option<u32>,
 }
 
@@ -290,6 +303,26 @@ pub fn bind_group_count_request_via_metadata(
     bind_decoded_group_count(request, relation).map_err(MetadataBindError::Bind)
 }
 
+pub fn bind_ordered_group_count_request(
+    request_bytes: &[u8],
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundOrderedGroupCount, BindError> {
+    let request = decode_ordered_group_count_request(request_bytes)?;
+    bind_decoded_ordered_group_count(request, relation)
+}
+
+pub fn bind_ordered_group_count_request_via_metadata(
+    request_bytes: &[u8],
+    connection: &mut PlannerMetadataConnection<'_, '_>,
+) -> Result<BoundOrderedGroupCount, MetadataBindError> {
+    let request = decode_ordered_group_count_request(request_bytes).map_err(BindError::from)?;
+    let relation = connection
+        .resolve_relation_for_plan(&request.schema_name, &request.relation_name)
+        .map_err(MetadataBindError::Transaction)?
+        .map(|(_, relation)| relation);
+    bind_decoded_ordered_group_count(request, relation).map_err(MetadataBindError::Bind)
+}
+
 pub fn bind_composite_group_count_request(
     request_bytes: &[u8],
     relation: Option<AuthorizedPlanRelation>,
@@ -489,6 +522,25 @@ fn bind_decoded_group_count(
         relation_id: relation.relation.relation_id,
         relation_name: relation.relation.name,
         group_key: group_key.into(),
+        limit: request.limit,
+    })
+}
+
+fn bind_decoded_ordered_group_count(
+    request: OrderedGroupCountRequest,
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundOrderedGroupCount, BindError> {
+    let relation = authorized_relation(&request.relation_name, relation)?;
+    let group_key = resolve_column(&relation.relation.columns, &request.group_key_name)?;
+    Ok(BoundOrderedGroupCount {
+        schema_name: request.schema_name,
+        schema_id: relation.schema_id,
+        schema_version: relation.schema_version,
+        table_epoch: relation.table_epoch,
+        relation_id: relation.relation.relation_id,
+        relation_name: relation.relation.name,
+        group_key: group_key.into(),
+        order_items: request.order_items,
         limit: request.limit,
     })
 }

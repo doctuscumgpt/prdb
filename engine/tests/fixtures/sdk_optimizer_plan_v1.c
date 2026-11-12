@@ -143,6 +143,42 @@ static uint32_t build_group_count_plan(uint8_t *bytes,
     return offset;
 }
 
+static uint32_t build_ordered_group_count_plan(uint8_t *bytes) {
+    uint32_t offset = 0;
+    uint8_t identifier[16];
+    uint32_t column;
+    prdb_encode_optimizer_plan_header_record(bytes + offset, 1, 8, 0);
+    offset += PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "public");
+    memset(identifier, 1, sizeof(identifier));
+    prdb_encode_optimizer_plan_schema_reference_record(bytes + offset,
+                                                       identifier, 3);
+    offset += PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "items");
+    memset(identifier, 2, sizeof(identifier));
+    prdb_encode_optimizer_plan_relation_reference_record(bytes + offset,
+                                                         identifier, 4);
+    offset += PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES;
+    put_u16(bytes, &offset, 1);
+    column = put_column(bytes, &offset, 3, 0);
+    bytes[column] = 4;
+    set_column_ordinal(bytes, column, 0);
+    bytes[offset++] = 7;
+    column = put_column(bytes, &offset, 3, 0);
+    bytes[column] = 4;
+    set_column_ordinal(bytes, column, 0);
+    bytes[offset++] = 2;
+    bytes[offset++] = 1;
+    bytes[offset++] = 1;
+    bytes[offset++] = 0;
+    bytes[offset++] = 0;
+    bytes[offset++] = 0;
+    bytes[offset++] = 1;
+    bytes[offset++] = 1;
+    put_u32(bytes, &offset, 5);
+    return offset;
+}
+
 static uint32_t build_composite_group_count_plan(
     uint8_t *bytes, uint32_t *second_key_offset) {
     uint32_t offset = 0;
@@ -851,6 +887,7 @@ int main(void) {
     uint8_t join_malformed[sizeof(join_payload)];
     uint8_t group_count_payload[256] = {0};
     uint8_t group_count_malformed[sizeof(group_count_payload)];
+    uint8_t ordered_group_count_payload[256] = {0};
     uint8_t composite_group_count_payload[512] = {0};
     uint8_t composite_group_count_malformed[
         sizeof(composite_group_count_payload)];
@@ -866,6 +903,8 @@ int main(void) {
     static prdb_sdk_optimizer_update_plan_v1 update_decoded;
     static prdb_sdk_optimizer_join_plan_v1 join_decoded;
     static prdb_sdk_optimizer_group_count_plan_v1 group_count_decoded;
+    static prdb_sdk_optimizer_ordered_group_count_plan_v1
+        ordered_group_count_decoded;
     static prdb_sdk_optimizer_composite_group_count_plan_v1
         composite_group_count_decoded;
     static prdb_sdk_optimizer_ordered_select_plan_v1 ordered_select_decoded;
@@ -876,6 +915,9 @@ int main(void) {
     static prdb_sdk_select_binding_v19 join_binding;
     static prdb_sdk_select_v4 group_count_statement;
     static prdb_sdk_select_binding_v4 group_count_binding;
+    static prdb_sdk_select_v12 ordered_group_count_statement;
+    static prdb_sdk_select_binding_v12 ordered_group_count_binding;
+    static prdb_sdk_sql_column_shape_v2 ordered_group_count_columns[1];
     static prdb_sdk_select_v13 composite_group_count_statement;
     static prdb_sdk_select_binding_v13 composite_group_count_binding;
     uint32_t ordered_select_order_key_offset;
@@ -1656,6 +1698,52 @@ int main(void) {
                group_count_malformed, group_count_payload_len,
                &group_count_decoded, sizeof(group_count_decoded)) ==
            PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+
+    uint32_t ordered_group_count_payload_len =
+        build_ordered_group_count_plan(ordered_group_count_payload);
+    assert(prdb_sdk_optimizer_decode_ordered_group_count_plan_v1(
+               ordered_group_count_payload, ordered_group_count_payload_len,
+               &ordered_group_count_decoded,
+               sizeof(ordered_group_count_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(ordered_group_count_decoded.plan.plan_kind == 8 &&
+           ordered_group_count_decoded.plan.has_limit == 1 &&
+           ordered_group_count_decoded.plan.limit == 5 &&
+           ordered_group_count_decoded.order_count == 2 &&
+           ordered_group_count_decoded.order_items[0].source == 1 &&
+           ordered_group_count_decoded.order_items[0].descending == 1 &&
+           ordered_group_count_decoded.order_items[1].source == 0 &&
+           ordered_group_count_decoded.order_items[1].nulls_first == 1);
+    static const uint8_t ordered_group_count_sql[] =
+        "SELECT id, COUNT(*) FROM items GROUP BY id "
+        "ORDER BY COUNT(*) DESC NULLS LAST, id ASC NULLS FIRST LIMIT 5";
+    ordered_group_count_columns[0].name = (const uint8_t *)"id";
+    ordered_group_count_columns[0].name_len = 2;
+    ordered_group_count_columns[0].ordinal = 0;
+    ordered_group_count_columns[0].type_code = PRDB_SDK_VALUE_TYPE_INTEGER;
+    assert(prdb_sdk_sql_parse_select_v12(
+               ordered_group_count_sql, sizeof(ordered_group_count_sql) - 1,
+               &ordered_group_count_statement,
+               sizeof(ordered_group_count_statement), NULL) ==
+           PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_sql_bind_select_v12(
+               &ordered_group_count_statement, (const uint8_t *)"items", 5,
+               ordered_group_count_columns, 1,
+               &ordered_group_count_binding,
+               sizeof(ordered_group_count_binding)) == PRDB_SDK_SQL_BIND_OK);
+    int32_t ordered_match_status =
+        prdb_sdk_optimizer_match_ordered_group_count_plan_v1(
+               &ordered_group_count_statement, &ordered_group_count_binding,
+               (const uint8_t *)"public", 6, ordered_group_count_payload,
+               ordered_group_count_payload_len);
+    assert(ordered_match_status == PRDB_SDK_OPTIMIZER_PLAN_OK);
+    ordered_group_count_statement.order_items[0].direction =
+        PRDB_SDK_SQL_V10_ORDER_ASCENDING;
+    assert(prdb_sdk_optimizer_match_ordered_group_count_plan_v1(
+               &ordered_group_count_statement, &ordered_group_count_binding,
+               (const uint8_t *)"public", 6, ordered_group_count_payload,
+               ordered_group_count_payload_len) ==
+           PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
 
     uint32_t composite_group_key_offset;
     uint32_t composite_group_count_payload_len =

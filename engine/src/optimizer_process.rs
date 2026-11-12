@@ -111,6 +111,11 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
                 {
                     crate::optimizer_request::decode_composite_group_count_request(&request.payload)
                         .map(|decoded| vec![(decoded.schema_name, decoded.relation_name)])
+                } else if request.payload.get(2)
+                    == Some(&crate::query_abi::OPTIMIZER_GROUP_COUNT_ORDERED_STATEMENT)
+                {
+                    crate::optimizer_request::decode_ordered_group_count_request(&request.payload)
+                        .map(|decoded| vec![(decoded.schema_name, decoded.relation_name)])
                 } else {
                     crate::optimizer_request::decode_group_count_request(&request.payload)
                         .map(|decoded| vec![(decoded.schema_name, decoded.relation_name)])
@@ -205,6 +210,13 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
                     == Some(&crate::query_abi::OPTIMIZER_COMPOSITE_GROUP_COUNT_STATEMENT)
                 {
                     crate::optimizer_service::optimize_composite_group_count_v1_with_relation(
+                        &request.payload,
+                        relations.remove(0),
+                    )
+                } else if request.payload.get(2)
+                    == Some(&crate::query_abi::OPTIMIZER_GROUP_COUNT_ORDERED_STATEMENT)
+                {
+                    crate::optimizer_service::optimize_ordered_group_count_v1_with_relation(
                         &request.payload,
                         relations.remove(0),
                     )
@@ -345,6 +357,21 @@ mod tests {
             bytes.extend_from_slice(name.as_bytes());
         }
         bytes.extend_from_slice(&[1, 0, 0, 0, 5]);
+        bytes
+    }
+
+    fn ordered_group_count_request() -> Vec<u8> {
+        let mut bytes = vec![
+            0,
+            1,
+            crate::query_abi::OPTIMIZER_GROUP_COUNT_ORDERED_STATEMENT,
+            0,
+        ];
+        for name in ["public", "items", "active"] {
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.extend_from_slice(&[2, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 5]);
         bytes
     }
 
@@ -830,6 +857,75 @@ mod tests {
             .unwrap();
             assert_eq!(plan.relation.relation_name, "items");
             assert_eq!(plan.group_key.column_id, [4; 16]);
+            assert_eq!(plan.limit, Some(5));
+            submission_client.shutdown(Shutdown::Write).unwrap();
+            planner_thread.join().unwrap();
+            optimizer_thread.join().unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn process_protocol_dispatches_ordered_group_count_and_returns_kind_eight() {
+        let (mut submission_client, mut submission_server) = UnixStream::pair().unwrap();
+        let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
+        std::thread::scope(|scope| {
+            let planner_thread = scope.spawn(|| {
+                let request = crate::ipc::read_frame(&mut planner_server)
+                    .unwrap()
+                    .expect("optimizer must resolve grouped relation metadata");
+                let relation = AuthorizedPlanRelation {
+                    schema_id: [1; 16],
+                    schema_version: 3,
+                    table_epoch: 7,
+                    relation: AuthorizedRelationDescription {
+                        relation_id: [2; 16],
+                        name: "items".to_owned(),
+                        columns: vec![VisibleColumn {
+                            column_id: [4; 16],
+                            name: "active".to_owned(),
+                            ordinal: 0,
+                            scalar_type: ScalarType::Boolean,
+                            nullable: false,
+                        }],
+                    },
+                };
+                crate::ipc::write_frame(
+                    &mut planner_server,
+                    &IpcFrame {
+                        operation: request.operation,
+                        request_id: request.request_id,
+                        payload: DescribePlanRelationResponse {
+                            relation: Some(relation),
+                        }
+                        .encode()
+                        .unwrap(),
+                    },
+                )
+                .unwrap();
+            });
+            let optimizer_thread = scope
+                .spawn(|| serve_optimizer_process(&mut submission_server, &mut planner_client));
+            crate::ipc::write_frame(
+                &mut submission_client,
+                &IpcFrame {
+                    operation: Operation::OptimizeGroupCount as u16,
+                    request_id: 15,
+                    payload: ordered_group_count_request(),
+                },
+            )
+            .unwrap();
+            let response = crate::ipc::read_frame(&mut submission_client)
+                .unwrap()
+                .expect("optimizer must return an ordered group-count plan");
+            let response = OptimizerResponse::decode(&response.payload).unwrap();
+            assert_eq!(response.status, OptimizerStatus::Success);
+            let plan = crate::optimizer_plan::decode_ordered_group_count_plan_v1(
+                response.plan.as_deref().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(plan.relation.relation_name, "items");
+            assert_eq!(plan.group_key.column_id, [4; 16]);
+            assert_eq!(plan.order_items.len(), 2);
             assert_eq!(plan.limit, Some(5));
             submission_client.shutdown(Shutdown::Write).unwrap();
             planner_thread.join().unwrap();
