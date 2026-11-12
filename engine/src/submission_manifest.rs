@@ -9,6 +9,7 @@ pub const MAX_MANIFEST_DEPENDENCIES: usize = 32;
 pub const MAX_MANIFEST_DEPENDENCY_NAME_BYTES: usize = 128;
 pub const CLIENT_PROTOCOL_MAJOR: u16 = 1;
 pub const CLIENT_PROTOCOL_MINOR: u16 = 0;
+pub const LAST_LEGACY_STATIC_SDK_RELEASE: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArtifactManifestV1 {
@@ -193,6 +194,7 @@ impl ArtifactCompatibilityProfile {
 pub struct VersionedSubmissionMetadataValidator {
     profile: ArtifactCompatibilityProfile,
     sdk_registry: Option<std::sync::Arc<crate::sdk_registry::SdkReleaseRegistry>>,
+    legacy_static_sdk_release: Option<u32>,
 }
 
 impl VersionedSubmissionMetadataValidator {
@@ -200,7 +202,22 @@ impl VersionedSubmissionMetadataValidator {
         Self {
             profile,
             sdk_registry: None,
+            legacy_static_sdk_release: None,
         }
+    }
+
+    /// Temporarily admit archive-linked packages for exactly one explicitly
+    /// selected SDK release. The default accepts no static SDK fallback.
+    pub fn allow_legacy_static_sdk_release(
+        mut self,
+        sdk_release: u32,
+    ) -> Result<Self, ManifestError> {
+        if sdk_release != LAST_LEGACY_STATIC_SDK_RELEASE || sdk_release != self.profile.sdk_release
+        {
+            return Err(ManifestError::IncompatibleProfile);
+        }
+        self.legacy_static_sdk_release = Some(sdk_release);
+        Ok(self)
     }
 
     pub fn with_sdk_registry(
@@ -263,7 +280,11 @@ impl SubmissionMetadataValidator for VersionedSubmissionMetadataValidator {
             .iter()
             .any(|dependency| dependency.starts_with("libprdb_sql.so."));
         if !shared_sql_dependency {
-            return Ok(None);
+            return if self.legacy_static_sdk_release == Some(manifest.sdk_release) {
+                Ok(None)
+            } else {
+                Err(ManifestError::UnavailableDependency)
+            };
         }
         let registry = self
             .sdk_registry
@@ -1224,6 +1245,50 @@ mod tests {
         let mut malformed_scope = metadata(encode(&manifest()));
         malformed_scope.requested_scope = b"scope".to_vec();
         assert!(!validator.validate(&malformed_scope));
+    }
+
+    #[test]
+    fn static_sdk_packages_require_explicit_release_one_compatibility() {
+        let metadata = metadata(encode(&manifest()));
+        let validator = VersionedSubmissionMetadataValidator::new(profile());
+        assert!(matches!(
+            validator.resolve_sdk_release(&metadata, b"static query"),
+            Err(ManifestError::UnavailableDependency)
+        ));
+        let legacy = VersionedSubmissionMetadataValidator::new(profile())
+            .allow_legacy_static_sdk_release(1)
+            .unwrap();
+        assert!(matches!(
+            legacy.resolve_sdk_release(&metadata, b"static query"),
+            Ok(None)
+        ));
+        assert_eq!(
+            VersionedSubmissionMetadataValidator::new(profile())
+                .allow_legacy_static_sdk_release(2)
+                .err(),
+            Some(ManifestError::IncompatibleProfile)
+        );
+
+        let owner = StagingOwner::authenticated([0x31; 16], [0x32; 16]);
+        let store = StagingStore::new(
+            StagingLimits::default(),
+            Arc::new(VersionedSubmissionMetadataValidator::new(profile())),
+        )
+        .unwrap();
+        let artifact = elf_with_dependencies(&["libc.so.6", "libm.so.6"]);
+        let invocation_id = prepare_and_upload(&store, owner, &manifest(), &artifact);
+        store.seal(owner, invocation_id).unwrap();
+        let mut admitted = false;
+        assert!(matches!(
+            store.start_with(owner, invocation_id, |_| {
+                admitted = true;
+                Ok::<_, ()>(())
+            }),
+            Err(crate::supervisor::StartError::Staging(
+                StagingError::InvalidMetadata
+            ))
+        ));
+        assert!(!admitted);
     }
 
     #[test]

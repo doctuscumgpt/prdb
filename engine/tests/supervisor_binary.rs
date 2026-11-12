@@ -1,5 +1,24 @@
 use std::process::Command;
 
+#[cfg(unix)]
+fn remove_test_tree(path: &std::path::Path) -> std::io::Result<()> {
+    fn restore_directory_permissions(path: &std::path::Path) -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        if !path.is_dir() {
+            return Ok(());
+        }
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        for child in std::fs::read_dir(path)? {
+            restore_directory_permissions(&child?.path())?;
+        }
+        Ok(())
+    }
+
+    restore_directory_permissions(path)?;
+    std::fs::remove_dir_all(path)
+}
+
 #[test]
 fn supervisor_help_documents_explicit_runtime_and_compatibility_configuration() {
     let output = Command::new(env!("CARGO_BIN_EXE_prdb-supervisor"))
@@ -21,6 +40,7 @@ fn supervisor_help_documents_explicit_runtime_and_compatibility_configuration() 
         "--sdk-release-dir",
         "--sdk-cache-dir",
         "--sdk-cache-max-bytes",
+        "--allow-legacy-static-sdk-release",
         "--allowed-dependency",
         "--max-active-operational",
         "--max-active-analytical",
@@ -146,7 +166,7 @@ fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_pref
         3,
         1,
         "x86_64-v1".to_owned(),
-        "test-runtime".to_owned(),
+        "nixos-x86_64-glibc-2.42".to_owned(),
         "TinyCC integration fixture".to_owned(),
     )
     .expect("derive manifest from fixture ELF");
@@ -184,8 +204,10 @@ fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_pref
         "--cpu-baseline",
         "x86_64-v1",
         "--runtime-profile",
-        "test-runtime",
+        "nixos-x86_64-glibc-2.42",
         "--sdk-release",
+        "1",
+        "--allow-legacy-static-sdk-release",
         "1",
         "--retention-seconds",
         "3600",
@@ -202,6 +224,13 @@ fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_pref
         "--max-processes",
         "16",
     ]);
+    if let Some(release_dir) = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR") {
+        supervisor_command
+            .arg("--sdk-release-dir")
+            .arg(release_dir)
+            .arg("--sdk-cache-dir")
+            .arg(root.join("sdk-cache"));
+    }
     for dependency in &dependencies {
         supervisor_command
             .arg("--allowed-dependency")
@@ -462,7 +491,7 @@ fn supervisor_and_gateway_binaries_cover_submission_status_cancel_and_start_pref
         "supervisor exited with {supervisor_status}"
     );
     assert!(!service_socket.exists(), "supervisor left a stale socket");
-    std::fs::remove_dir_all(root).expect("remove test files");
+    remove_test_tree(&root).expect("remove test files");
 }
 
 #[cfg(unix)]

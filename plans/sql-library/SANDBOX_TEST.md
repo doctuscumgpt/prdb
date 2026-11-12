@@ -20,10 +20,10 @@ The same acceptance injects an executor callback error on the first `StageUpdate
 
 The `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` process test also runs in the normal suite. Set `PRDB_TEST_RESTRICTED_METADATA_QUERY_ARTIFACT` to the built `sql-v3-restricted-metadata.so` to exercise its restricted metadata branch; it packages the artifact for the test principal, uploads and starts it through `SubmissionClient`, and verifies filtered SQL results and committed STATUS through the external gateway and supervisor processes.
 
-First build the artifacts and SDK release library:
+Build the artifacts, SDK release, and installable release profile:
 
 ```sh
-nix-shell -p rustc cargo clippy rustfmt tinycc --run 'make -f engine/sdk/Makefile sandbox-query-fixture'
+nix develop --no-update-lock-file -c make -f engine/sdk/Makefile release-profile
 ```
 
 This builds `sql-v3-caught-error.so`, `sql-v3-shared-library.so`, `sql-v3-missing-dependency.so`, `sql-v3-network-constructor.so`, `sql-v3-write-read.so`, and `sql-v3-restricted-metadata.so`, plus the regular and hostile-constructor `libprdb_sql.so.1` releases and their metadata. These are untrusted native libraries and query artifacts and must only be loaded through the sandboxed executor tests.
@@ -38,6 +38,7 @@ Configure these environment variables in the shell command run by the unit:
 - `PRDB_TEST_SHARED_SQL_LOAD_FAILURE_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-missing-dependency.so`.
 - `PRDB_TEST_EXTRA_ALLOWED_DEPENDENCY`: set to `libprdb_missing.so.1` for the missing-dependency fixture so manifest admission succeeds and the confined loader observes the missing runtime file.
 - `PRDB_TEST_SDK_RELEASE_DIR`: absolute path to the test release directory containing the hostile SDK constructor, normally `target/sdk-v1/hostile-sdk/releases/linux-x86_64/x86_64-v1/nixos-x86_64-glibc-2.42/sdk-1-abis1,2,3,4,5` for the pinned release profile.
+- `PRDB_TEST_INSTALLED_SDK_RELEASE_DIR`: absolute path to the normal SDK release installed in `target/release-profile`; the supervisor binary integration test loads this directory during startup.
 - `PRDB_TEST_SDK_CACHE_DIR`: absolute path on a filesystem that supports `renameat2(RENAME_NOREPLACE)`, for example `/tmp/prdb-sdk-cache`. The repository workspace NFS mount does not support atomic cache publication.
 - `PRDB_TEST_WRITE_READ_QUERY_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-write-read.so`.
 - `PRDB_TEST_RESTRICTED_METADATA_QUERY_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-restricted-metadata.so`, used by the restricted-principal metadata acceptance.
@@ -57,6 +58,7 @@ systemd-run --user --wait --pipe --collect \
     export PRDB_TEST_SHARED_SQL_LOAD_FAILURE_ARTIFACT="$PWD/target/sdk-v1/sql-v3-missing-dependency.so"
     export PRDB_TEST_EXTRA_ALLOWED_DEPENDENCY=libprdb_missing.so.1
     export PRDB_TEST_SDK_RELEASE_DIR="$PWD/target/sdk-v1/hostile-sdk/releases/linux-x86_64/x86_64-v1/nixos-x86_64-glibc-2.42/sdk-1-abis1,2,3,4,5"
+    export PRDB_TEST_INSTALLED_SDK_RELEASE_DIR="$PWD/target/release-profile/sdk/releases/linux-x86_64/x86_64-v1/nixos-x86_64-glibc-2.42/sdk-1-abis1,2,3,4,5"
     export PRDB_TEST_SDK_CACHE_DIR="/tmp/prdb-sdk-cache"
     export PRDB_TEST_NETWORK_CONSTRUCTOR_ARTIFACT="$PWD/target/sdk-v1/sql-v3-network-constructor.so"
     export PRDB_TEST_WRITE_READ_QUERY_ARTIFACT="$PWD/target/sdk-v1/sql-v3-write-read.so"

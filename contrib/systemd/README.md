@@ -27,6 +27,8 @@ install -Dm755 target/release/prdb-optimizer ~/.local/libexec/prdb/prdb-optimize
 install -Dm755 target/release/prdb-init ~/.local/libexec/prdb/prdb-init
 install -Dm755 target/release/prdb-landlock-run ~/.local/libexec/prdb/prdb-landlock-run
 install -Dm755 engine/tools/with_delegated_cgroup.sh ~/.local/libexec/prdb/with_delegated_cgroup.sh
+install -d ~/.local/lib/prdb
+cp -R target/release-profile/sdk/releases/linux-x86_64/x86_64-v1/nixos-x86_64-glibc-2.42/sdk-1-abis1,2,3,4,5 ~/.local/lib/prdb/sql-sdk
 install -Dm644 contrib/systemd/user/prdb-supervisor.service ~/.config/systemd/user/prdb-supervisor.service
 install -Dm644 contrib/systemd/user/prdb-gateway.service ~/.config/systemd/user/prdb-gateway.service
 ```
@@ -54,15 +56,20 @@ rotates the unacknowledged bootstrap token.
 
 ```ini
 # ~/.config/prdb/supervisor.env
-PRDB_SUPERVISOR_ARGS=--instance-dir\ /home/USER/.local/state/prdb/instance\ --service-socket\ /run/user/1000/prdb/supervisor.sock\ --gateway-uid\ 1000\ --cgroup-parent\ systemd\ --executor\ /home/USER/.local/libexec/prdb/prdb-executor\ --optimizer\ /home/USER/.local/libexec/prdb/prdb-optimizer\ --scratch-parent\ /home/USER/.local/state/prdb/scratch\ --runtime-read-execute\ /usr/lib64/ld-linux-x86-64.so.2\ --runtime-read-execute\ /usr/lib64/libc.so.6\ --runtime-profile\ nixos-x86_64-glibc-2.42\ --cpu-baseline\ x86_64-v1\ --sdk-release\ 1\ --retention-seconds\ 86400\ --max-rows\ 100000\ --max-bytes\ 67108864\ --cpu-quota-us\ 100000\ --cpu-period-us\ 100000\ --memory-max-bytes\ 536870912\ --max-processes\ 32
-PRDB_LANDLOCK_TRAVERSE_PATHS=/home\ /run\ /run/user\ /run/user/1000\ /sys\ /sys/fs\ /sys/fs/cgroup\ /nix\ /nix/store
-PRDB_SUPERVISOR_LANDLOCK_PATHS=/home/USER/.local/libexec/prdb/prdb-executor\ /home/USER/.local/libexec/prdb/prdb-optimizer\ /nix/store/HASH-glibc\ /nix/store/HASH-gcc-lib
+PRDB_SUPERVISOR_ARGS=--instance-dir\ /home/USER/.local/state/prdb/instance\ --service-socket\ /run/user/1000/prdb/supervisor.sock\ --gateway-uid\ 1000\ --cgroup-parent\ systemd\ --executor\ /home/USER/.local/libexec/prdb/prdb-executor\ --optimizer\ /home/USER/.local/libexec/prdb/prdb-optimizer\ --scratch-parent\ /home/USER/.local/state/prdb/scratch\ --runtime-read-execute\ /usr/lib64/ld-linux-x86-64.so.2\ --runtime-read-execute\ /usr/lib64/libc.so.6\ --runtime-profile\ nixos-x86_64-glibc-2.42\ --cpu-baseline\ x86_64-v1\ --sdk-release\ 1\ --sdk-release-dir\ /home/USER/.local/lib/prdb/sql-sdk\ --sdk-cache-dir\ /home/USER/.local/state/prdb/sdk-cache\ --sdk-cache-max-bytes\ 1073741824\ --allowed-dependency\ libc.so.6\ --retention-seconds\ 86400\ --max-rows\ 100000\ --max-bytes\ 67108864\ --cpu-quota-us\ 100000\ --cpu-period-us\ 100000\ --memory-max-bytes\ 536870912\ --max-processes\ 32
+PRDB_LANDLOCK_TRAVERSE_PATHS=/home\ /home/USER\ /home/USER/.local\ /home/USER/.local/lib\ /home/USER/.local/lib/prdb\ /run\ /run/user\ /run/user/1000\ /sys\ /sys/fs\ /sys/fs/cgroup\ /nix\ /nix/store
+PRDB_SUPERVISOR_LANDLOCK_PATHS=/home/USER/.local/libexec/prdb/prdb-executor\ /home/USER/.local/libexec/prdb/prdb-optimizer\ /home/USER/.local/lib/prdb/sql-sdk\ /nix/store/HASH-glibc\ /nix/store/HASH-gcc-lib
 ```
 
 `EnvironmentFile` does not process shell quoting; systemd expands the unquoted
 `$PRDB_SUPERVISOR_ARGS` as whitespace-separated arguments. Keep configured
 paths free of whitespace. Add any runtime libraries required by the selected
-profile using repeated `--runtime-read-execute` values. Set the gateway UID to
+profile using repeated `--runtime-read-execute` values. Install each trusted
+SDK release directory through the deployment path and add it with repeatable
+`--sdk-release-dir`; set a writable `--sdk-cache-dir` and a cache byte limit.
+Add the SDK's non-SDK dependencies to `--allowed-dependency`. Do not enable
+`--allow-legacy-static-sdk-release 1` for new installations; it exists only for
+the SDK 1 transition and will be removed at the SDK 2 cutoff. Set the gateway UID to
 the login UID (use `id -u`). The user service uses the default 0600 local
 socket.
 
@@ -166,13 +173,13 @@ environment files, using systemd EnvironmentFile escaping for spaces:
 
 ```ini
 # /etc/prdb/supervisor.env
-PRDB_LANDLOCK_TRAVERSE_PATHS=/run\ /run/prdb\ /sys\ /sys/fs\ /sys/fs/cgroup\ /usr\ /usr/lib\ /usr/libexec\ /usr/libexec/prdb\ /var\ /var/lib\ /var/lib/prdb\ /nix\ /nix/store
-PRDB_SUPERVISOR_LANDLOCK_PATHS=/usr/libexec/prdb/prdb-executor\ /usr/libexec/prdb/prdb-optimizer\ /nix/store/HASH-glibc\ /nix/store/HASH-gcc-lib
+PRDB_LANDLOCK_TRAVERSE_PATHS=/run\ /run/prdb\ /sys\ /sys/fs\ /sys/fs/cgroup\ /usr\ /usr/lib\ /usr/libexec\ /usr/libexec/prdb\ /usr/lib/prdb\ /var\ /var/lib\ /var/lib/prdb\ /nix\ /nix/store
+PRDB_SUPERVISOR_LANDLOCK_PATHS=/usr/libexec/prdb/prdb-executor\ /usr/libexec/prdb/prdb-optimizer\ /usr/lib/prdb/sql-sdk\ /nix/store/HASH-glibc\ /nix/store/HASH-gcc-lib
 ```
 
 The supervisor executable and `/dev` traversal are granted directly by its
 unit. The environment-backed traversal list provides ancestors for its state,
-runtime, delegated cgroup, executable, and runtime-library paths. On systems
+runtime, delegated cgroup, executable, SDK release, and runtime-library paths. Install the selected release directory as /usr/lib/prdb/sql-sdk; the SDK cache is written under the supervisor state directory. On systems
 without Nix, omit `/nix` and add the actual loader/library directories used by
 the validated runtime profile.
 

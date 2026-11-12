@@ -4,7 +4,7 @@
 
 Replace the statically linked SQL/runtime SDK archive in submitted query artifacts with a versioned shared library that the supervisor resolves from a verified local cache. Keep query compilation in the bounded client packager, keep native library loading in the confined executor, and preserve storage authorization and transaction boundaries.
 
-Normative contracts are in [Client SDK](../../specs/client-sdk.md), [SQL library](../../specs/sql-library.md), [Toolchain](../../specs/toolchain.md), [Architecture](../../specs/architecture.md), and [Linux sandbox](../../specs/linux-sandbox.md). This plan defines implementation increments and evidence; it does not claim the feature exists yet.
+Normative contracts are in [Client SDK](../../specs/client-sdk.md), [SQL library](../../specs/sql-library.md), [Toolchain](../../specs/toolchain.md), [Architecture](../../specs/architecture.md), and [Linux sandbox](../../specs/linux-sandbox.md). The implementation status and verification evidence for each increment are recorded in [PROGRESS.md](PROGRESS.md).
 
 ## Design Decisions
 
@@ -15,7 +15,7 @@ Normative contracts are in [Client SDK](../../specs/client-sdk.md), [SQL library
 - Stage query.so and the selected cached SDK `.so` beside each other in the invocation's private artifact directory. The worker receives read/execute access to that directory only. Retain the cache entry until the invocation has exited and released staged resources.
 - Permit only the exact `$ORIGIN` RUNPATH needed to find the staged library; reject all other RPATH/RUNPATH values and loader override environment variables. Resolve other shared dependencies only through the configured runtime profile.
 - The supervisor never loads SDK or query code. Both are loaded by the clean executor after seccomp and the other sandbox restrictions are active. Constructors are untrusted execution. Each invocation has its own process and mutable state; only immutable file contents and kernel page-cache pages are shared.
-- Keep legacy static packages only behind an explicit, temporary compatibility policy tied to known SDK releases. Remove that policy after migration evidence; never silently fall back between static and shared SDK modes.
+- Reject static SDK packages by default. The only migration exception is explicit `--allow-legacy-static-sdk-release 1`; SDK release 2 is the cutoff and removes that option after release-1 packages have migrated. Never silently fall back between static and shared SDK modes.
 
 ## Incremental Implementation
 

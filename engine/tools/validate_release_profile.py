@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -24,12 +25,10 @@ ENGINE_BINARIES = (
     "prdb-supervisor",
 )
 QUERY_FIXTURES = (
-    "sql-v3-caught-error.so",
-    "sql-v3-write-read.so",
-    "sql-v3-restricted-metadata.so",
+    "sql-v3-shared-library.so",
 )
 ENGINE_NEEDED = {"libgcc_s.so.1", "libc.so.6", "ld-linux-x86-64.so.2"}
-QUERY_NEEDED = {"libc.so.6"}
+QUERY_NEEDED = {"libprdb_sql.so.1", "libc.so.6"}
 ENGINE_GLIBC_CEILING = (2, 39)
 QUERY_GLIBC_CEILING = (2, 14)
 
@@ -53,8 +52,13 @@ def validate_elf(path: Path, *, query: bool) -> tuple[str, ...]:
         fail(f"{path}: expected x86_64 ELF machine")
 
     dynamic = readelf("-d", str(path))
-    if "(RPATH)" in dynamic or "(RUNPATH)" in dynamic:
-        fail(f"{path}: embedded RPATH/RUNPATH is not allowed")
+    if "(RPATH)" in dynamic:
+        fail(f"{path}: DT_RPATH is not allowed")
+    runpaths = re.findall(r"\(RUNPATH\).*?\[([^]]*)\]", dynamic)
+    if query and runpaths != ["$ORIGIN"]:
+        fail(f"{path}: shared query must have exactly $ORIGIN RUNPATH")
+    if not query and runpaths:
+        fail(f"{path}: engine binary must not embed RUNPATH")
     needed = set(re.findall(r"Shared library: \[([^]]+)\]", dynamic))
     expected_needed = QUERY_NEEDED if query else ENGINE_NEEDED
     if needed != expected_needed:
@@ -70,6 +74,12 @@ def validate_elf(path: Path, *, query: bool) -> tuple[str, ...]:
         fail(f"{path}: requires GLIBC_{'.'.join(map(str, max(glibc_versions)))} above profile")
 
     if query:
+        dynamic_symbols = readelf("--dyn-syms", "-W", str(path))
+        if not any(
+            " UND " in line and "prdb_sdk_sql_execute_select_v2" in line
+            for line in dynamic_symbols.splitlines()
+        ):
+            fail(f"{path}: query does not import the SQL SDK from its shared library")
         program_headers = readelf("-l", str(path))
         lines = program_headers.splitlines()
         stack_index = next(
@@ -93,8 +103,19 @@ def main() -> None:
     root = Path(sys.argv[1])
     binary_paths = [root / "bin" / name for name in ENGINE_BINARIES]
     query_paths = [root / "queries" / name for name in QUERY_FIXTURES]
-    archive = root / "sdk" / "libprdb_sdk.a"
     include_dir = root / "sdk" / "include"
+    sdk_release_dir = (
+        root
+        / "sdk"
+        / "releases"
+        / "linux-x86_64"
+        / CPU_BASELINE
+        / PROFILE
+        / "sdk-1-abis1,2,3,4,5"
+    )
+    sdk_library = sdk_release_dir / "libprdb_sql.so.1"
+    sdk_metadata_path = sdk_release_dir / "sdk-release.json"
+    sdk_checksum_path = sdk_release_dir / "sdk-release.sha256"
     toolchain_dir = root / "toolchain"
     cache_dir = toolchain_dir / "tcc-cache"
     required_toolchain_files = (
@@ -106,8 +127,10 @@ def main() -> None:
     for path in [
         *binary_paths,
         *query_paths,
-        archive,
         include_dir / "prdb_sdk_executor_v1.h",
+        sdk_library,
+        sdk_metadata_path,
+        sdk_checksum_path,
         *required_toolchain_files,
     ]:
         if not path.exists():
@@ -154,6 +177,37 @@ def main() -> None:
     for path in binary_paths:
         needed = validate_elf(path, query=False)
         records.append(f"{path.relative_to(root)}: NEEDED={','.join(needed)}")
+    metadata = json.loads(sdk_metadata_path.read_text(encoding="ascii"))
+    if (
+        metadata.get("format") != "PRDB-SDK-RELEASE-1"
+        or metadata.get("target") != "linux-x86_64"
+        or metadata.get("cpu_baseline") != CPU_BASELINE
+        or metadata.get("runtime_profile") != PROFILE
+        or metadata.get("sdk_release") != 1
+        or metadata.get("soname") != "libprdb_sql.so.1"
+        or metadata.get("library") != "libprdb_sql.so.1"
+        or metadata.get("sha256") != hashlib.sha256(sdk_library.read_bytes()).hexdigest()
+        or metadata.get("needed") != ["libc.so.6"]
+    ):
+        fail("installed SQL SDK release metadata or digest is inconsistent")
+    checksum_fields = sdk_checksum_path.read_text(encoding="ascii").split()
+    if checksum_fields != [metadata["sha256"], "libprdb_sql.so.1"]:
+        fail("installed SQL SDK checksum sidecar is inconsistent")
+    sdk_dynamic = readelf("-d", str(sdk_library))
+    if (
+        "Library soname: [libprdb_sql.so.1]" not in sdk_dynamic
+        or "(RPATH)" in sdk_dynamic
+        or "(RUNPATH)" in sdk_dynamic
+        or set(re.findall(r"Shared library: \[([^]]+)\]", sdk_dynamic)) != {"libc.so.6"}
+    ):
+        fail("installed SQL SDK release ELF profile is inconsistent")
+    sdk_headers = readelf("-lW", str(sdk_library))
+    sdk_stack = next(
+        (line for line in sdk_headers.splitlines() if "GNU_STACK" in line), None
+    )
+    if sdk_stack is None or not re.search(r"\bRW\b", sdk_stack) or "RWE" in sdk_stack:
+        fail("installed SQL SDK release has an executable or missing GNU_STACK")
+
     for path in query_paths:
         needed = validate_elf(path, query=True)
         records.append(f"{path.relative_to(root)}: NEEDED={','.join(needed)}")
@@ -163,6 +217,8 @@ def main() -> None:
         + "cpu_baseline=" + CPU_BASELINE + "\n"
         + "glibc_runtime=2.42\n"
         + "rust_release_panic=abort\n"
+        + "sdk_library=libprdb_sql.so.1 (shared, verified SHA-256)\n"
+        + "static_sdk=disabled in release profile; release 1 compatibility is explicit and temporary\n"
         + "linker=GNU ld with -z noexecstack for query shared objects\n"
         + "\n".join(records)
         + "\n",

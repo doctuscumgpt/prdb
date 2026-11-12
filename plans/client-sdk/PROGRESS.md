@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SQLSO-5: shared-release packaging and migration cutoff — implemented
+
+- Contract: [separate SQL library plan](SEPARATE_SQL_LIBRARY.md), [client SDK](../../specs/client-sdk.md), [toolchain](../../specs/toolchain.md), and [systemd deployment guide](../../contrib/systemd/README.md). The validated deployment profile is Linux x86_64, `x86_64-v1`, NixOS glibc 2.42.
+- Implementation: release-profile packaging installs `libprdb_sql.so.1`, canonical compatibility metadata, checksum sidecar, headers, and a shared-linked query. The static archive and static fixtures are removed from the release tree. The validator checks release identity/digest, ELF SONAME/dependencies/stack flags, query SONAME dependency and exact `$ORIGIN` RUNPATH, plus the packaged supervisor. Deployment docs configure installed release directories, the bounded writable cache, dependency allowlists, and Landlock paths. Static packages now fail closed unless `--allow-legacy-static-sdk-release 1` is explicitly set; SDK 2 is the documented cutoff and removes that temporary option.
+- Regression: compatibility tests cover default static rejection and explicit release-1 acceptance. The supervisor process test starts with the SDK release directory from the install tree. Registry tests cover cache deduplication, concurrency, corruption, and pin-aware eviction; the shared sandbox test verifies active pin lifetime.
+- Verification: locked release build and `make -f engine/sdk/Makefile release-profile-package` passed; package SHA-256 verified and tar listing confirmed the shared library/metadata/query are present and `libprdb_sdk.a` is absent. The full delegated `systemd --user` workspace suite passed serially with zero ignored tests, including 144 commit tests, 74 transaction tests, both shared-SDK sandbox tests, metadata processes, and supervisor startup. `make -f engine/sdk/Makefile test sdk-shared-tests`, locked workspace build, warning-denied Clippy, rustfmt, and `git diff --check` passed. The release-profile validator and packaged supervisor `--help` check passed.
+- Scope: the release profile remains Linux x86_64 on the pinned NixOS glibc 2.42 toolchain; other targets/runtime profiles are not claimed. Atomic cache publication requires a filesystem supporting `renameat2(RENAME_NOREPLACE)`; the delegated acceptance used `/tmp` because the workspace NFS mount returns `EINVAL`.
+
 ## SQLSO-4: private SDK staging and confined loading — implemented
 
 - Contract: [separate SQL library plan](SEPARATE_SQL_LIBRARY.md) and [sandbox acceptance instructions](../sql-library/SANDBOX_TEST.md). The supervisor and storage process still inspect SDK/query bytes only; execution remains in the post-confinement executor.

@@ -50,6 +50,7 @@ mod service {
         sdk_release_dirs: Vec<PathBuf>,
         sdk_cache_dir: Option<PathBuf>,
         sdk_cache_max_bytes: Option<u64>,
+        legacy_static_sdk_release: Option<u32>,
         dependencies: HashSet<String>,
         retention_seconds: Option<u64>,
         max_rows: Option<usize>,
@@ -93,6 +94,7 @@ mod service {
              --runtime-read-execute PATH (repeatable) --runtime-profile NAME\n\
              --cpu-baseline NAME --sdk-release NUMBER --allowed-dependency NAME (repeatable)\n\
              [--sdk-release-dir DIR (repeatable) --sdk-cache-dir DIR --sdk-cache-max-bytes N]\n\
+             [--allow-legacy-static-sdk-release NUMBER (temporary compatibility)]\n\
              --retention-seconds N --max-rows N --max-bytes N\n\
              --max-principal-reservations N\n\
              [--max-pending-operational N --max-pending-analytical N]\n\
@@ -193,6 +195,11 @@ mod service {
         )
         .map_err(|error| format!("invalid compatibility profile: {error:?}"))?;
         let mut validator = VersionedSubmissionMetadataValidator::new(profile);
+        if let Some(legacy_release) = options.legacy_static_sdk_release {
+            validator = validator
+                .allow_legacy_static_sdk_release(legacy_release)
+                .map_err(|error| format!("invalid legacy static SDK release policy: {error:?}"))?;
+        }
         if !options.sdk_release_dirs.is_empty() {
             let cache_dir = required(options.sdk_cache_dir, "--sdk-cache-dir")?;
             let registry = prdb_engine::sdk_registry::SdkReleaseRegistry::load(
@@ -451,6 +458,9 @@ mod service {
                 "--sdk-release-dir" => options.sdk_release_dirs.push(value.into()),
                 "--sdk-cache-dir" => set!(sdk_cache_dir, PathBuf::from(value)),
                 "--sdk-cache-max-bytes" => set!(sdk_cache_max_bytes, value.parse::<u64>()?),
+                "--allow-legacy-static-sdk-release" => {
+                    set!(legacy_static_sdk_release, value.parse::<u32>()?)
+                }
                 "--allowed-dependency" => {
                     if !options.dependencies.insert(value) {
                         return Err("duplicate --allowed-dependency".into());

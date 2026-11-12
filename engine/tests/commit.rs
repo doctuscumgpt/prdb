@@ -21577,7 +21577,9 @@ fn sandboxed_v3_metadata_submission_commits_over_tcp() -> Result<(), Box<dyn std
                 .collect::<HashSet<_>>(),
         )
         .map_err(|error| format!("compatibility profile failed: {error:?}"))?,
-    );
+    )
+    .allow_legacy_static_sdk_release(1)
+    .map_err(|error| format!("legacy compatibility policy failed: {error:?}"))?;
 
     let fixture = Fixture::new();
     let database = initialize(&fixture.path())?;

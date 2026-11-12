@@ -500,11 +500,12 @@ release-profile: sandbox-query-fixture
 	test -n "$(TCC_STORE_PATH)" -a -e "$(TCC_STORE_PATH)"
 	NIX_DONT_SET_RPATH=1 cargo build --workspace --release --locked
 	rm -rf "$(RELEASE_PROFILE_DIR)/toolchain"
-	mkdir -p "$(RELEASE_PROFILE_DIR)/bin" "$(RELEASE_PROFILE_DIR)/sdk/include" "$(RELEASE_PROFILE_DIR)/queries" "$(RELEASE_PROFILE_DIR)/toolchain/tcc-cache"
+	mkdir -p "$(RELEASE_PROFILE_DIR)/bin" "$(RELEASE_PROFILE_DIR)/sdk/include" "$(RELEASE_PROFILE_DIR)/sdk/releases/$(SDK_TARGET)/$(SDK_CPU_BASELINE)/$(SDK_RUNTIME_PROFILE)" "$(RELEASE_PROFILE_DIR)/queries" "$(RELEASE_PROFILE_DIR)/toolchain/tcc-cache"
 	for binary in $(RELEASE_BINARIES); do cp "target/release/$$binary" "$(RELEASE_PROFILE_DIR)/bin/$$binary"; patchelf --remove-rpath "$(RELEASE_PROFILE_DIR)/bin/$$binary"; done
-	cp "$(SDK_ARCHIVE)" "$(RELEASE_PROFILE_DIR)/sdk/libprdb_sdk.a"
+	rm -f "$(RELEASE_PROFILE_DIR)/sdk/libprdb_sdk.a" "$(RELEASE_PROFILE_DIR)/queries/sql-v3-caught-error.so" "$(RELEASE_PROFILE_DIR)/queries/sql-v3-write-read.so" "$(RELEASE_PROFILE_DIR)/queries/sql-v3-restricted-metadata.so"
 	cp -R "$(INCLUDE_DIR)/." "$(RELEASE_PROFILE_DIR)/sdk/include/"
-	cp "$(SQL_V3_CAUGHT_ERROR_QUERY)" "$(SQL_V3_WRITE_READ_QUERY)" "$(SQL_V3_RESTRICTED_METADATA_QUERY)" "$(RELEASE_PROFILE_DIR)/queries/"
+	cp -R "$(SDK_RELEASE_DIR)" "$(RELEASE_PROFILE_DIR)/sdk/releases/$(SDK_TARGET)/$(SDK_CPU_BASELINE)/$(SDK_RUNTIME_PROFILE)/"
+	cp "$(SQL_V3_SHARED_LIBRARY_QUERY)" "$(RELEASE_PROFILE_DIR)/queries/"
 	$(NIX) copy --to "file://$(abspath $(RELEASE_PROFILE_DIR)/toolchain/tcc-cache)" "$(TCC_STORE_PATH)"
 	$(NIX_STORE_QUERY) -qR "$(TCC_STORE_PATH)" > "$(RELEASE_PROFILE_DIR)/toolchain/TCC_CLOSURE.txt"
 	printf '%s\n' "$(TCC_STORE_PATH)" > "$(RELEASE_PROFILE_DIR)/toolchain/TCC_ROOT.txt"
