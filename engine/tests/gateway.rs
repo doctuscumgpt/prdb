@@ -5,7 +5,7 @@ use prdb_engine::gateway::{
     run_gateway,
 };
 use prdb_engine::ipc::{IpcFrame, Operation, read_frame, write_frame};
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[test]
@@ -374,6 +374,129 @@ fn gateway_worker_pool_opens_one_service_stream_per_client() {
     drop(service);
     shutdown.store(true, std::sync::atomic::Ordering::Release);
     gateway.join().unwrap();
+}
+
+#[test]
+fn gateway_binary_relays_tcp_hello_to_its_private_unix_service() {
+    struct GatewayChild(std::process::Child);
+
+    impl Drop for GatewayChild {
+        fn drop(&mut self) {
+            if self.0.try_wait().ok().flatten().is_none() {
+                let _ = self.0.kill();
+            }
+            let _ = self.0.wait();
+        }
+    }
+
+    let socket_path = std::env::temp_dir().join(format!(
+        "prdb-gateway-process-{}-{}.sock",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let service_listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+    service_listener.set_nonblocking(true).unwrap();
+    // SAFETY: geteuid has no preconditions and only reads the current effective UID.
+    let service_uid = unsafe { libc::geteuid() }.to_string();
+    let mut child = GatewayChild(
+        std::process::Command::new(env!("CARGO_BIN_EXE_prdb-gateway"))
+            .args([
+                "--bind",
+                "127.0.0.1:0",
+                "--service-socket",
+                socket_path.to_str().unwrap(),
+                "--service-uid",
+                &service_uid,
+                "--workers",
+                "2",
+                "--queue-capacity",
+                "2",
+                "--idle-timeout-ms",
+                "2000",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let stderr = child.0.stderr.take().unwrap();
+    let mut stderr = std::io::BufReader::new(stderr);
+    let mut startup = String::new();
+    assert_ne!(stderr.read_line(&mut startup).unwrap(), 0);
+    let address = startup
+        .strip_prefix("prdb-gateway listening on ")
+        .unwrap()
+        .trim()
+        .parse::<SocketAddr>()
+        .unwrap();
+
+    let mut client = std::net::TcpStream::connect(address).unwrap();
+    client
+        .write_all(
+            &ClientFrame {
+                kind: 1,
+                request_id: 1,
+                response_sequence: 0,
+                payload: br#"{"mode":"query","client_name":"process-smoke"}"#.to_vec(),
+            }
+            .encode()
+            .unwrap(),
+        )
+        .unwrap();
+    let service_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let (mut service, _) = loop {
+        match service_listener.accept() {
+            Ok(accepted) => break accepted,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    && std::time::Instant::now() < service_deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(error) => panic!("gateway process did not connect to service socket: {error}"),
+        }
+    };
+    service
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let hello = read_frame(&mut service).unwrap().unwrap();
+    assert_eq!(hello.operation, Operation::OpenClientSession as u16);
+    write_frame(
+        &mut service,
+        &IpcFrame {
+            operation: hello.operation,
+            request_id: hello.request_id,
+            payload: br#"{"mode":"query"}"#.to_vec(),
+        },
+    )
+    .unwrap();
+    let mut decoder = ClientFrameDecoder::default();
+    let mut buffer = [0u8; 256];
+    let response = loop {
+        let count = client.read(&mut buffer).unwrap();
+        assert_ne!(count, 0, "gateway process closed before HELLO response");
+        if let Some(frame) = decoder.push(&buffer[..count]).unwrap().pop() {
+            break frame;
+        }
+    };
+    assert_eq!(response.kind, 100);
+    assert_eq!(response.request_id, 1);
+    assert_eq!(response.payload, br#"{"mode":"query"}"#);
+    client.shutdown(std::net::Shutdown::Write).unwrap();
+    assert_eq!(client.read(&mut buffer).unwrap(), 0);
+    drop(client);
+    drop(service);
+
+    // SAFETY: the PID belongs to the child process above and SIGTERM is valid.
+    assert_eq!(
+        unsafe { libc::kill(child.0.id() as libc::pid_t, libc::SIGTERM) },
+        0
+    );
+    assert!(child.0.wait().unwrap().success());
+    std::fs::remove_file(socket_path).unwrap();
 }
 
 #[cfg(target_os = "linux")]

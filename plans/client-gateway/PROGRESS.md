@@ -19,7 +19,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - End-to-end regression: [real-redb gateway submission lifecycle](../../engine/tests/commit.rs) now drives HELLO, AUTH, PREPARE, upload, SEAL, STATUS, START, and CANCEL from a loopback TCP client through the frame bridge and per-client Unix service loop, then verifies disconnect cleanup and durable ABORTED.
 - Observed red: the initial focused test failed to compile because the TCP bridge and `PingClientSession` IPC operation were absent.
 - Commands actually run in the configured Nix shell: `cargo fmt --all`; focused `cargo test -p prdb-engine --test gateway --locked tcp_client_hello_and_ping_bridge_over_the_gateway_service_channel` passed; and `cargo fmt --all -- --check && cargo build --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings && cargo test --workspace --locked && git diff --check`. All passed.
-- Remaining: exercise the gateway binary and authenticated supervisor service together as separate processes; bind sessions to gateway generation/connection IDs; and verify reserved control-path progress during saturated output.
+- Remaining: exercise the gateway and supervisor binaries together as separate processes; bind sessions to gateway generation/connection IDs; and verify reserved control-path progress during saturated output.
 
 ## GW-1 dependency: bounded gateway connection admission
 
@@ -140,3 +140,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: `status_on_another_gateway_connection_progresses_while_result_worker_is_blocked` starts an 8-MiB result stream over one TCP/Unix worker pair and leaves its client unread until the supervisor writer blocks. A second TCP connection sends STATUS through the second worker and receives its correlated response before the first client begins draining.
 - Scope: this proves progress with one of two workers occupied. It does not reserve worker or queue capacity when all regular workers are saturated; dedicated control-path capacity remains open.
 - Verification: all 22 gateway integration tests passed; workspace formatting, build, warning-denied Clippy, and diff checks passed; the full serial workspace suite passed in the delegated `systemd --user` service with all sandbox and process tests enabled.
+
+## GW-1 / GW-2 follow-up: gateway binary uses the private Unix service — covered
+
+- Regression: `gateway_binary_relays_tcp_hello_to_its_private_unix_service` starts the real `prdb-gateway` binary on an ephemeral loopback port, accepts its peer-UID-checked Unix connection, returns HELLO over that channel, and verifies the external TCP client receives the correlated response. It also sends SIGTERM and verifies graceful process exit.
+- Verification: the focused test passed (`1 passed, 0 ignored`); all 23 gateway integration tests passed; formatting, workspace build, warning-denied Clippy, and diff checks passed. The serial full workspace suite passed in the delegated `systemd --user` unit with sandbox/process tests enabled. This uses a test service endpoint; running the gateway and supervisor binaries together against real storage remains open.
