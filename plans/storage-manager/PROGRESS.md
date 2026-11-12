@@ -5,7 +5,7 @@
 - Contract: [redb storage](../../specs/redb-storage.md). redb's compactor must refuse while an old read snapshot is pinned; after the last reader closes, an explicit compaction must reclaim obsolete copy-on-write pages without losing live data.
 - Regression: [`retained_reader_blocks_compaction_until_release_then_reclaims_deleted_pages`](../../engine/tests/redb_foundation.rs) retains 64 100-KiB rows, deletes 58 while the snapshot is live, verifies the old snapshot still reads deleted rows, and confirms compaction returns `TransactionInProgress`. After dropping the reader, compaction reduces both the file size and `DatabaseStats::allocated_pages`; all six surviving rows remain intact.
 - Verification: all four `redb_foundation` integration tests passed with redb 4.4.0 on x86_64 Linux using Immediate durability and two-phase commit. Workspace build, format check, warning-denied Clippy, and full serial delegated-cgroup workspace tests passed; commit integration reported 142 passed/0 ignored and transaction integration 74 passed/0 ignored.
-- Remaining: measure compaction latency and operational contention through the managed maintenance entry point; test larger database shapes and target filesystems.
+- Remaining: measure operational contention during compaction, add service-level maintenance scheduling if the redb ownership model supports it, and test larger database shapes and target filesystems.
 
 ## SM-1 follow-up: managed compaction entry point — covered
 
@@ -13,6 +13,13 @@
 - Regression: `ready_storage_instance_can_run_explicit_compaction` constructs a validated READY instance, creates and drops its storage manager, then invokes compaction through the still-locked instance. The redb foundation test continues to verify that active snapshots block compaction and released snapshots permit physical page reclamation.
 - Verification: the focused locked/offline bootstrap target passed (`12 passed, 0 failed, 0 ignored`). The full serial workspace suite also passed inside the delegated `systemd --user` service; `cargo build --workspace --locked --offline`, `cargo fmt --all -- --check`, and warning-denied workspace Clippy passed.
 - Scope: managed compaction scheduling, latency, operational contention, larger database shapes, and other target filesystems remain open.
+
+## SM-1 follow-up: compaction after mixed storage pressure — measured
+
+- Harness: [`storage_pressure.rs`](../../engine/examples/storage_pressure.rs) now measures `StorageInstance::compact` after the bounded workload completes, its retained reader aborts, and the `StorageManager` is dropped. It records compaction duration and database file size before and after reclaiming redb history.
+- Result: five sequential fresh release runs on the local x86_64 Linux profile compacted 28.3–37.8 MB databases to 0.40–0.46 MB. Compaction latency ranged 12.937–17.152 ms (median 15.337 ms). These runs used four writers, 256 durable commits, retained authorized scans/point reads, and bounded outcome pruning before the quiescent compaction phase.
+- Verification: all five `cargo run --release --locked --offline --example storage_pressure` executions completed; locked workspace build, format check, warning-denied Clippy, and the full serial workspace suite passed inside the delegated service. The suite reported 188 library tests and 145 commit integration tests, with zero ignored in those targets.
+- Scope: compaction occurs after operational and analytical work is quiescent because redb 4.4 requires exclusive mutable access to the database handle. This does not measure contention during compaction or implement service scheduling; larger database shapes and other filesystems remain open.
 
 ## SM-3 follow-up: catalog-derived authorized point reads — verified
 

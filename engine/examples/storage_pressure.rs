@@ -142,7 +142,9 @@ fn run_in_directory(data_directory: &std::path::Path) -> Result<(), Box<dyn Erro
     let mut bootstrap = bootstrap::initialize(data_directory, "pressure_admin", i64::MAX)?;
     let mut secret = bootstrap.take_secret().ok_or("bootstrap secret missing")?;
     secret.zeroize();
-    let instance = bootstrap.acknowledge()?;
+    // The maintenance phase at the end needs exclusive access to the redb
+    // handle after all managers and retained snapshots have been released.
+    let mut instance = bootstrap.acknowledge()?;
     let database = instance.database();
     let storage = StorageManager::with_config(
         database,
@@ -448,6 +450,16 @@ fn run_in_directory(data_directory: &std::path::Path) -> Result<(), Box<dyn Erro
         "API-boundary data bytes: {scan_value_bytes} from full scans; {point_read_value_bytes} from point reads; {committed_tuple_bytes} encoded tuple bytes submitted by {WRITES_PER_WRITER} x {WRITERS} commits"
     );
     drop(storage);
+    let database_path = data_directory.join("storage.redb");
+    let database_bytes_before_compaction = fs::metadata(&database_path)?.len();
+    let compaction_started = Instant::now();
+    let compaction_performed = instance.compact()?;
+    let compaction_elapsed = compaction_started.elapsed();
+    let database_bytes_after_compaction = fs::metadata(&database_path)?.len();
+    println!(
+        "managed compaction: performed={compaction_performed}; elapsed={:.3} ms; file bytes {database_bytes_before_compaction} before / {database_bytes_after_compaction} after",
+        compaction_elapsed.as_secs_f64() * 1_000.0
+    );
     drop(instance);
     Ok(())
 }
