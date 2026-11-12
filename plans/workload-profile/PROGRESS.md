@@ -9,8 +9,8 @@
 ## WI-7 follow-up: scan/range costs at small cardinalities — measured
 
 - Harness: set `PRDB_BENCH_INDEX_ROWS` to the number of additional indexed rows and retain `PRDB_BENCH_INDEX_ACCESS=1`; each run creates a fresh database and times 11 exact-key ranges and authorized scan-plus-filter calls alongside point probes.
-- One local 11-iteration run measured point/range/scan p50 (ms) at total table populations 1/2/4/8/16/32/4,097: 0.086/0.092/0.020, 0.086/0.093/0.030, 0.085/0.093/0.049, 0.130/0.102/0.104, 0.089/0.097/0.169, 0.090/0.097/0.346, and 0.159/0.124/56.514. The 8-row scan p95 reached 1.027 ms, consistent with unstable host load.
-- Scope: local direct storage API result timings only; they do not represent end-to-end SQL latency, and require repeat profiles before target-specific conclusions.
+- Five fresh-database runs, each with 11 iterations, measured median-of-run p50 point/range/scan latency (ms) of 0.085/0.092/0.020 at 1 row, 0.085/0.093/0.049 at 4, 0.087/0.093/0.089 at 8, and 0.088/0.096/0.168 at 16. A one-run sweep at 2, 32, and 4,097 rows measured 0.030/0.093, 0.346/0.097, and 56.514/0.124 ms for scan/range.
+- Scope: local direct storage API result timings only; they do not represent end-to-end SQL latency. Host-specific conclusions need target-hardware profiles.
 
 ## WI-7 follow-up: per-invocation planner backpressure — covered
 
