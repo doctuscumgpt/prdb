@@ -30323,5 +30323,87 @@ fn catalog_backed_executor_generates_uuid_identity_and_rejects_override_and_upda
             .status,
         OutcomeStatus::Aborted
     );
+
+    let mut concurrent_identity = generated_id;
+    concurrent_identity[0] ^= 1;
+    let mut left = prdb_engine::transaction::InvocationTransaction::begin(
+        &database,
+        id(0xa2),
+        actor,
+        9_999,
+        8,
+        512,
+    )?;
+    let mut right = prdb_engine::transaction::InvocationTransaction::begin(
+        &database,
+        id(0xa3),
+        actor,
+        9_999,
+        8,
+        512,
+    )?;
+    left.stage_insert_authorized(
+        prdb_engine::overlay::RowId {
+            table: table.table_id,
+            row: id(0xa0),
+        },
+        &projection,
+        &[Some(ScalarValue::Uuid(concurrent_identity))],
+        &table.column_ids,
+    )?;
+    right.stage_insert_authorized(
+        prdb_engine::overlay::RowId {
+            table: table.table_id,
+            row: id(0xa1),
+        },
+        &projection,
+        &[Some(ScalarValue::Uuid(concurrent_identity))],
+        &table.column_ids,
+    )?;
+    let (left_result, right_result) = std::thread::scope(|scope| {
+        let barrier = Arc::new(Barrier::new(2));
+        let left_barrier = Arc::clone(&barrier);
+        let right_barrier = Arc::clone(&barrier);
+        let left_commit = scope.spawn(move || {
+            left_barrier.wait();
+            left.commit()
+        });
+        let right_commit = scope.spawn(move || {
+            right_barrier.wait();
+            right.commit()
+        });
+        (
+            left_commit
+                .join()
+                .expect("left UUID commit thread panicked"),
+            right_commit
+                .join()
+                .expect("right UUID commit thread panicked"),
+        )
+    });
+    assert!(matches!(
+        (&left_result, &right_result),
+        (
+            Ok(_),
+            Err(prdb_engine::transaction::TransactionError::Commit(
+                prdb_engine::commit::CommitError::UniqueViolation
+            ))
+        ) | (
+            Err(prdb_engine::transaction::TransactionError::Commit(
+                prdb_engine::commit::CommitError::UniqueViolation
+            )),
+            Ok(_)
+        )
+    ));
+    let left_outcome = lookup_outcome(&database, id(0xa2), actor, 1)?
+        .ok_or("left concurrent UUID commit has no durable outcome")?;
+    let right_outcome = lookup_outcome(&database, id(0xa3), actor, 1)?
+        .ok_or("right concurrent UUID commit has no durable outcome")?;
+    assert_ne!(left_outcome.status, right_outcome.status);
+    assert!(matches!(
+        (left_outcome.status, right_outcome.status),
+        (OutcomeStatus::Committed, OutcomeStatus::Aborted)
+            | (OutcomeStatus::Aborted, OutcomeStatus::Committed)
+    ));
     Ok(())
 }
