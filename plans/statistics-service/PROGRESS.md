@@ -1,5 +1,13 @@
 # Statistics Service Progress
 
+## ST-2 follow-up: bounded authorized predicate estimator — storage layer implemented
+
+- Contract: the trusted transaction API estimates exact matches only for an exact authorized population of at most four rows. It validates bound column identities and types, evaluates bounded comparison/Boolean predicates over sanitized cells, applies SQL three-valued NULL semantics, and returns `(visible_rows, matching_rows)` without row values.
+- Fallbacks: redacted predicate cells, unsupported scalar types or predicates, value-dependent row policies, invalid projections, oversized populations/overlays, and incomplete row sets return `Unknown` without partial counts. Private inserts, replacements, and deletes participate in the estimate. Predicate values are never read from redacted cells.
+- Regression: the real-redb transaction fixture verifies equality selectivity over visible text, NULL non-matching behavior, redacted-column fallback, the four-row work bound, and private overlay changes.
+- Verification: the focused transaction regression passed after an initial failing run confirmed the missing behavior. In the pinned Nix shell, `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, and the full serial delegated-cgroup workspace suite passed. The suite reported 149 commit tests and 75 transaction tests; sandbox and process acceptance ran inside the delegated service. `make -f engine/sdk/Makefile test sandbox-query-fixture release-profile` passed; the release profile validated nine engine binaries and one query fixture. The delegated cgroup probe reported writable `cpu memory pids` controllers.
+- Remaining: this bounded estimator is not yet exposed through planner IPC or consumed by optimizer heuristics; broader predicate support, cache validity, task draining, and maintenance collection remain open.
+
 ## ST-2 / OP-4: bounded population probe contract synchronized — documented
 
 - Contract: ordinary unordered single-table SELECT may use a separate estimate request to resolve only populations of 0–4 rows. The probe reads at most five row keys, does not decode row values, and returns `Unknown` for larger populations, data-dependent policies, oversized overlays, unsupported metadata, or exhausted allowance. It shares the cumulative planner estimate allowance with the scoped scan summary.

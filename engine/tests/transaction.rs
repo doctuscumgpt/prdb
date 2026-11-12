@@ -5649,11 +5649,53 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
         dependencies: &[],
     };
 
+    let predicate = prdb_engine::optimizer_binding::BoundPredicate::Compare {
+        operator: prdb_engine::optimizer_request::Comparison::Equal,
+        left: Box::new(prdb_engine::optimizer_binding::BoundPredicate::Column(
+            prdb_engine::optimizer_binding::BoundColumn {
+                column_id: column_ids[0],
+                ordinal: 0,
+                scalar_type: ScalarType::Text,
+                nullable: true,
+            },
+        )),
+        right: Box::new(prdb_engine::optimizer_binding::BoundPredicate::Text(
+            "first".to_owned(),
+        )),
+    };
+
     let mut observer = InvocationTransaction::begin(&database, [0x32; 16], [9; 16], 9_999, 8, 512)?;
     let mut writer = InvocationTransaction::begin(&database, [0x33; 16], [9; 16], 9_999, 8, 512)?;
     assert_eq!(
         observer.estimate_authorized_population_at_most(table_id, &projection, 4)?,
         Some(2)
+    );
+    assert_eq!(
+        observer.estimate_authorized_predicate_at_most(table_id, &projection, &predicate, 4,)?,
+        Some((2, 1))
+    );
+    let hidden_predicate = prdb_engine::optimizer_binding::BoundPredicate::Compare {
+        operator: prdb_engine::optimizer_request::Comparison::Equal,
+        left: Box::new(prdb_engine::optimizer_binding::BoundPredicate::Column(
+            prdb_engine::optimizer_binding::BoundColumn {
+                column_id: column_ids[1],
+                ordinal: 1,
+                scalar_type: ScalarType::Text,
+                nullable: false,
+            },
+        )),
+        right: Box::new(prdb_engine::optimizer_binding::BoundPredicate::Text(
+            "secret-one".to_owned(),
+        )),
+    };
+    assert_eq!(
+        observer.estimate_authorized_predicate_at_most(
+            table_id,
+            &projection,
+            &hidden_predicate,
+            4,
+        )?,
+        None
     );
     let mut boundary_probe =
         InvocationTransaction::begin(&database, [0x3a; 16], [9; 16], 9_999, 8, 512)?;
@@ -5666,6 +5708,15 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
     boundary_probe.stage_put(id(5), &row(Some("fifth"), "secret-five"))?;
     assert_eq!(
         boundary_probe.estimate_authorized_population_at_most(table_id, &projection, 4)?,
+        None
+    );
+    assert_eq!(
+        boundary_probe.estimate_authorized_predicate_at_most(
+            table_id,
+            &projection,
+            &predicate,
+            4,
+        )?,
         None
     );
     boundary_probe.abort()?;
@@ -5695,6 +5746,10 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
         writer.estimate_authorized_population_at_most(table_id, &projection, 4)?,
         Some(3)
     );
+    assert_eq!(
+        writer.estimate_authorized_predicate_at_most(table_id, &projection, &predicate, 4,)?,
+        Some((3, 1))
+    );
     let private_summary = writer.estimate_authorized_scan(table_id, &projection)?;
     assert_eq!(
         private_summary,
@@ -5716,7 +5771,7 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
             }
         )
     );
-    writer.stage_put(id(1), &row(Some("first"), "changed-secret"))?;
+    writer.stage_put(id(1), &row(Some("changed"), "changed-secret"))?;
     assert_eq!(
         writer.estimate_authorized_population_at_most(table_id, &projection, 4)?,
         Some(3)
@@ -5725,10 +5780,42 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
         writer.estimate_authorized_scan(table_id, &projection)?,
         private_summary
     );
+    let changed_predicate = prdb_engine::optimizer_binding::BoundPredicate::Compare {
+        operator: prdb_engine::optimizer_request::Comparison::Equal,
+        left: Box::new(prdb_engine::optimizer_binding::BoundPredicate::Column(
+            prdb_engine::optimizer_binding::BoundColumn {
+                column_id: column_ids[0],
+                ordinal: 0,
+                scalar_type: ScalarType::Text,
+                nullable: true,
+            },
+        )),
+        right: Box::new(prdb_engine::optimizer_binding::BoundPredicate::Text(
+            "changed".to_owned(),
+        )),
+    };
+    assert_eq!(
+        writer.estimate_authorized_predicate_at_most(
+            table_id,
+            &projection,
+            &changed_predicate,
+            4,
+        )?,
+        Some((3, 1))
+    );
     writer.stage_delete(id(2))?;
     assert_eq!(
         writer.estimate_authorized_population_at_most(table_id, &projection, 4)?,
         Some(2)
+    );
+    assert_eq!(
+        writer.estimate_authorized_predicate_at_most(
+            table_id,
+            &projection,
+            &changed_predicate,
+            4,
+        )?,
+        Some((2, 1))
     );
     assert_eq!(
         writer.estimate_authorized_scan(table_id, &projection)?,

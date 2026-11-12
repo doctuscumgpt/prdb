@@ -2158,6 +2158,105 @@ impl<'db> InvocationTransaction<'db> {
         self.finish_population_probe(Some(visible_rows.len() as u64))
     }
 
+    /// Estimate exact matches for a bounded predicate over an authorized
+    /// population. This intentionally returns unknown unless every referenced
+    /// cell is readable for every candidate row.
+    pub fn estimate_authorized_predicate_at_most(
+        &mut self,
+        table_id: [u8; 16],
+        projection: &AuthorizedProjection<'_>,
+        predicate: &crate::optimizer_binding::BoundPredicate,
+        maximum_rows: u64,
+    ) -> Result<Option<(u64, u64)>, TransactionError> {
+        self.check_deadline()?;
+        const MAX_PREDICATE_ROWS: u64 = 4;
+        if maximum_rows > MAX_PREDICATE_ROWS
+            || !valid_estimate_projection(table_id, projection)
+            || !valid_estimate_predicate(predicate, projection, 32, 256)
+        {
+            return Ok(None);
+        }
+        let Some(population) =
+            self.estimate_authorized_population_at_most(table_id, projection, maximum_rows)?
+        else {
+            return Ok(None);
+        };
+        if population == 0 {
+            return self.finish_predicate_estimate(Some((0, 0)));
+        }
+        let Ok(row_limit) = usize::try_from(maximum_rows + 1) else {
+            return self.finish_predicate_estimate(None);
+        };
+        let (mut row_ids, complete) = match self
+            .pinned_snapshot()?
+            .scan_row_ids_after(table_id, None, row_limit)
+        {
+            Ok(page) => page,
+            Err(_) => return self.finish_predicate_estimate(None),
+        };
+        if !complete {
+            return self.finish_predicate_estimate(None);
+        }
+        let overlay_limit = usize::try_from(maximum_rows).unwrap_or(0);
+        let overlay_ids = match self
+            .overlay
+            .bounded_row_ids_for_table(table_id, overlay_limit)
+        {
+            Ok(Some(ids)) => ids,
+            Ok(None) => return self.finish_predicate_estimate(None),
+            Err(OverlayError::Aborted) => return Err(TransactionError::Aborted),
+            Err(_) => return self.finish_predicate_estimate(None),
+        };
+        row_ids.extend(overlay_ids);
+        row_ids.sort_unstable();
+        row_ids.dedup();
+        if row_ids.len() as u64 > maximum_rows {
+            return self.finish_predicate_estimate(None);
+        }
+
+        let mut visible_rows = 0u64;
+        let mut matching_rows = 0u64;
+        for row_id in row_ids {
+            self.check_deadline()?;
+            let id = RowId {
+                table: table_id,
+                row: row_id,
+            };
+            match self.overlay.get(&id) {
+                Ok(Some(StagedRow::Delete)) => continue,
+                Ok(Some(StagedRow::Value(_))) | Ok(None) => {}
+                Err(OverlayError::Aborted) => return Err(TransactionError::Aborted),
+                Err(_) => return self.finish_predicate_estimate(None),
+            }
+            let cells = match self.project_row_for_estimate(id, projection) {
+                Ok(Some(cells)) => cells,
+                Ok(None) => return self.finish_predicate_estimate(None),
+                Err(error) if estimate_error_is_terminal(&error) => return Err(error),
+                Err(_) => return self.finish_predicate_estimate(None),
+            };
+            let Some(matches) = evaluate_estimate_predicate(predicate, &cells, projection, 0, 256)
+            else {
+                return self.finish_predicate_estimate(None);
+            };
+            visible_rows += 1;
+            if matches == EstimateTruth::True {
+                matching_rows += 1;
+            }
+        }
+        if visible_rows != population {
+            return self.finish_predicate_estimate(None);
+        }
+        self.finish_predicate_estimate(Some((visible_rows, matching_rows)))
+    }
+
+    fn finish_predicate_estimate(
+        &mut self,
+        estimate: Option<(u64, u64)>,
+    ) -> Result<Option<(u64, u64)>, TransactionError> {
+        self.check_deadline()?;
+        Ok(estimate)
+    }
+
     fn finish_population_probe(
         &mut self,
         visible_rows: Option<u64>,
@@ -8532,6 +8631,306 @@ fn index_component_unconditionally_readable(
         has_allow |= policy.effect == Effect::Allow;
     }
     has_allow
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EstimateTruth {
+    True,
+    False,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum EstimateValue {
+    Null,
+    Boolean(bool),
+    Integer(i64),
+    Text(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EstimateValueKind {
+    Null,
+    Boolean,
+    Integer,
+    Text,
+}
+
+fn valid_estimate_predicate(
+    predicate: &crate::optimizer_binding::BoundPredicate,
+    projection: &AuthorizedProjection<'_>,
+    maximum_depth: usize,
+    maximum_nodes: usize,
+) -> bool {
+    use crate::optimizer_binding::BoundPredicate;
+
+    fn visit(
+        predicate: &BoundPredicate,
+        projection: &AuthorizedProjection<'_>,
+        depth: usize,
+        remaining_nodes: &mut usize,
+        maximum_depth: usize,
+    ) -> bool {
+        if depth > maximum_depth || *remaining_nodes == 0 {
+            return false;
+        }
+        *remaining_nodes -= 1;
+        match predicate {
+            BoundPredicate::Null | BoundPredicate::Boolean(_) | BoundPredicate::Integer(_) => true,
+            BoundPredicate::Text(value) => value.len() <= 4096,
+            BoundPredicate::Column(column) => usize::try_from(column.ordinal)
+                .ok()
+                .and_then(|ordinal| {
+                    projection.column_ids.get(ordinal).map(|column_id| {
+                        *column_id == column.column_id
+                            && projection.columns[ordinal].scalar_type == column.scalar_type
+                            && projection.columns[ordinal].nullable == column.nullable
+                    })
+                })
+                .unwrap_or(false),
+            BoundPredicate::Compare { left, right, .. } => {
+                visit(left, projection, depth + 1, remaining_nodes, maximum_depth)
+                    && visit(right, projection, depth + 1, remaining_nodes, maximum_depth)
+            }
+            BoundPredicate::And(children) | BoundPredicate::Or(children) => {
+                !children.is_empty()
+                    && children.len() <= 16
+                    && children.iter().all(|child| {
+                        visit(child, projection, depth + 1, remaining_nodes, maximum_depth)
+                    })
+            }
+            BoundPredicate::Not(child) => {
+                visit(child, projection, depth + 1, remaining_nodes, maximum_depth)
+            }
+        }
+    }
+
+    let mut remaining_nodes = maximum_nodes;
+    visit(
+        predicate,
+        projection,
+        0,
+        &mut remaining_nodes,
+        maximum_depth,
+    ) && estimate_predicate_kind(predicate, projection)
+        .is_some_and(|kind| matches!(kind, EstimateValueKind::Boolean | EstimateValueKind::Null))
+}
+
+fn estimate_predicate_kind(
+    predicate: &crate::optimizer_binding::BoundPredicate,
+    projection: &AuthorizedProjection<'_>,
+) -> Option<EstimateValueKind> {
+    use crate::optimizer_binding::BoundPredicate;
+    use crate::tuple::ScalarType;
+    match predicate {
+        BoundPredicate::Null => Some(EstimateValueKind::Null),
+        BoundPredicate::Boolean(_) => Some(EstimateValueKind::Boolean),
+        BoundPredicate::Integer(_) => Some(EstimateValueKind::Integer),
+        BoundPredicate::Text(_) => Some(EstimateValueKind::Text),
+        BoundPredicate::Column(column) => {
+            let ordinal = usize::try_from(column.ordinal).ok()?;
+            let column = &projection.columns[ordinal];
+            match column.scalar_type {
+                ScalarType::Boolean => Some(EstimateValueKind::Boolean),
+                ScalarType::SmallInt | ScalarType::Integer | ScalarType::BigInt => {
+                    Some(EstimateValueKind::Integer)
+                }
+                ScalarType::Text | ScalarType::Varchar { .. } => Some(EstimateValueKind::Text),
+                ScalarType::Decimal { .. }
+                | ScalarType::Bytea
+                | ScalarType::Uuid
+                | ScalarType::Date
+                | ScalarType::TimestampTz => None,
+            }
+        }
+        BoundPredicate::Compare { left, right, .. } => {
+            let left = estimate_predicate_kind(left, projection)?;
+            let right = estimate_predicate_kind(right, projection)?;
+            (left == right || left == EstimateValueKind::Null || right == EstimateValueKind::Null)
+                .then_some(EstimateValueKind::Boolean)
+        }
+        BoundPredicate::And(children) | BoundPredicate::Or(children) => children
+            .iter()
+            .all(|child| {
+                estimate_predicate_kind(child, projection).is_some_and(|kind| {
+                    matches!(kind, EstimateValueKind::Boolean | EstimateValueKind::Null)
+                })
+            })
+            .then_some(EstimateValueKind::Boolean),
+        BoundPredicate::Not(child) => estimate_predicate_kind(child, projection)
+            .is_some_and(|kind| {
+                matches!(kind, EstimateValueKind::Boolean | EstimateValueKind::Null)
+            })
+            .then_some(EstimateValueKind::Boolean),
+    }
+}
+
+fn evaluate_estimate_predicate(
+    predicate: &crate::optimizer_binding::BoundPredicate,
+    cells: &[SanitizedCell],
+    projection: &AuthorizedProjection<'_>,
+    depth: usize,
+    remaining_nodes: usize,
+) -> Option<EstimateTruth> {
+    use crate::optimizer_binding::BoundPredicate;
+
+    fn value(
+        predicate: &BoundPredicate,
+        cells: &[SanitizedCell],
+        projection: &AuthorizedProjection<'_>,
+        depth: usize,
+        remaining_nodes: usize,
+    ) -> Option<EstimateValue> {
+        if depth > 32 || remaining_nodes == 0 {
+            return None;
+        }
+        let next_budget = remaining_nodes - 1;
+        match predicate {
+            BoundPredicate::Null => Some(EstimateValue::Null),
+            BoundPredicate::Boolean(value) => Some(EstimateValue::Boolean(*value)),
+            BoundPredicate::Integer(value) => Some(EstimateValue::Integer(*value)),
+            BoundPredicate::Text(value) if value.len() <= 4096 => {
+                Some(EstimateValue::Text(value.clone()))
+            }
+            BoundPredicate::Text(_) => None,
+            BoundPredicate::Column(column) => {
+                let ordinal = usize::try_from(column.ordinal).ok()?;
+                if projection.column_ids.get(ordinal) != Some(&column.column_id)
+                    || projection.columns.get(ordinal)?.scalar_type != column.scalar_type
+                    || projection.columns.get(ordinal)?.nullable != column.nullable
+                {
+                    return None;
+                }
+                match cells.get(ordinal)? {
+                    SanitizedCell::Value(value) => scalar_estimate_value(value),
+                    SanitizedCell::Null => Some(EstimateValue::Null),
+                    SanitizedCell::Redacted => None,
+                }
+            }
+            BoundPredicate::Compare {
+                operator,
+                left,
+                right,
+            } => {
+                let left = value(left, cells, projection, depth + 1, next_budget)?;
+                let right = value(right, cells, projection, depth + 1, next_budget)?;
+                match compare_estimate_values(&left, &right, *operator)? {
+                    Some(value) => Some(EstimateValue::Boolean(value)),
+                    None => Some(EstimateValue::Null),
+                }
+            }
+            BoundPredicate::And(children) | BoundPredicate::Or(children) => {
+                if children.is_empty() || children.len() > 16 {
+                    return None;
+                }
+                let is_and = matches!(predicate, BoundPredicate::And(_));
+                let mut truth = if is_and {
+                    EstimateTruth::True
+                } else {
+                    EstimateTruth::False
+                };
+                let mut budget = next_budget;
+                for child in children {
+                    budget = budget.checked_sub(1)?;
+                    let child_value = value(child, cells, projection, depth + 1, budget)?;
+                    let child_truth = match child_value {
+                        EstimateValue::Boolean(true) => EstimateTruth::True,
+                        EstimateValue::Boolean(false) => EstimateTruth::False,
+                        EstimateValue::Null => EstimateTruth::Unknown,
+                        EstimateValue::Integer(_) | EstimateValue::Text(_) => return None,
+                    };
+                    truth = if is_and {
+                        estimate_and(truth, child_truth)
+                    } else {
+                        estimate_or(truth, child_truth)
+                    };
+                }
+                match truth {
+                    EstimateTruth::True => Some(EstimateValue::Boolean(true)),
+                    EstimateTruth::False => Some(EstimateValue::Boolean(false)),
+                    EstimateTruth::Unknown => Some(EstimateValue::Null),
+                }
+            }
+            BoundPredicate::Not(child) => {
+                let child = value(child, cells, projection, depth + 1, next_budget)?;
+                match child {
+                    EstimateValue::Boolean(value) => Some(EstimateValue::Boolean(!value)),
+                    EstimateValue::Null => Some(EstimateValue::Null),
+                    EstimateValue::Integer(_) | EstimateValue::Text(_) => None,
+                }
+            }
+        }
+    }
+
+    if remaining_nodes == 0 || depth != 0 {
+        return None;
+    }
+    match value(predicate, cells, projection, depth, remaining_nodes)? {
+        EstimateValue::Boolean(true) => Some(EstimateTruth::True),
+        EstimateValue::Boolean(false) => Some(EstimateTruth::False),
+        EstimateValue::Null => Some(EstimateTruth::Unknown),
+        EstimateValue::Integer(_) | EstimateValue::Text(_) => None,
+    }
+}
+
+fn scalar_estimate_value(value: &crate::tuple::ScalarValue) -> Option<EstimateValue> {
+    use crate::tuple::ScalarValue;
+    match value {
+        ScalarValue::Boolean(value) => Some(EstimateValue::Boolean(*value)),
+        ScalarValue::SmallInt(value) => Some(EstimateValue::Integer(i64::from(*value))),
+        ScalarValue::Integer(value) => Some(EstimateValue::Integer(i64::from(*value))),
+        ScalarValue::BigInt(value) => Some(EstimateValue::Integer(*value)),
+        ScalarValue::Text(value) | ScalarValue::Varchar(value) if value.len() <= 4096 => {
+            Some(EstimateValue::Text(value.clone()))
+        }
+        ScalarValue::Decimal(_)
+        | ScalarValue::Text(_)
+        | ScalarValue::Varchar(_)
+        | ScalarValue::Bytea(_)
+        | ScalarValue::Uuid(_)
+        | ScalarValue::Date(_)
+        | ScalarValue::TimestampTz(_) => None,
+    }
+}
+
+fn compare_estimate_values(
+    left: &EstimateValue,
+    right: &EstimateValue,
+    operator: crate::optimizer_request::Comparison,
+) -> Option<Option<bool>> {
+    use crate::optimizer_request::Comparison;
+    let ordering = match (left, right) {
+        (EstimateValue::Null, _) | (_, EstimateValue::Null) => return Some(None),
+        (EstimateValue::Boolean(left), EstimateValue::Boolean(right)) => left.cmp(right),
+        (EstimateValue::Integer(left), EstimateValue::Integer(right)) => left.cmp(right),
+        (EstimateValue::Text(left), EstimateValue::Text(right)) => left.cmp(right),
+        _ => return None,
+    };
+    let result = match operator {
+        Comparison::Equal => ordering.is_eq(),
+        Comparison::NotEqual => !ordering.is_eq(),
+        Comparison::Less => ordering.is_lt(),
+        Comparison::LessOrEqual => !ordering.is_gt(),
+        Comparison::Greater => ordering.is_gt(),
+        Comparison::GreaterOrEqual => !ordering.is_lt(),
+    };
+    Some(Some(result))
+}
+
+fn estimate_and(left: EstimateTruth, right: EstimateTruth) -> EstimateTruth {
+    match (left, right) {
+        (EstimateTruth::False, _) | (_, EstimateTruth::False) => EstimateTruth::False,
+        (EstimateTruth::True, EstimateTruth::True) => EstimateTruth::True,
+        _ => EstimateTruth::Unknown,
+    }
+}
+
+fn estimate_or(left: EstimateTruth, right: EstimateTruth) -> EstimateTruth {
+    match (left, right) {
+        (EstimateTruth::True, _) | (_, EstimateTruth::True) => EstimateTruth::True,
+        (EstimateTruth::False, EstimateTruth::False) => EstimateTruth::False,
+        _ => EstimateTruth::Unknown,
+    }
 }
 
 fn valid_estimate_projection(table_id: [u8; 16], projection: &AuthorizedProjection<'_>) -> bool {
