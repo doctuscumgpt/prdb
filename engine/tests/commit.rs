@@ -21143,10 +21143,16 @@ fn supervisor_worker_exit_failure_is_reaped_and_durably_aborted()
 fn run_sandboxed_v3_sql_error_fixture(
     artifact_env: &str,
     expect_network_denial: bool,
+    shared_sdk_release_dir_env: Option<&str>,
+    expect_load_failure: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::client_protocol::{ClientConnectionSession, ClientFrame, ClientMode};
     use prdb_engine::ipc::{Operation, read_frame};
     use prdb_engine::outcome::OutcomeStatus;
+    use prdb_engine::submission_manifest::{
+        ArtifactCompatibilityProfile, VersionedSubmissionMetadataValidator, encode_manifest_v1,
+        manifest_v1_from_elf,
+    };
     use prdb_engine::supervisor::{
         ChunkKind, PrepareSubmission, StagingLimits, StagingStore, SubmissionMetadata,
         SubmissionMetadataValidator, WorkloadClass,
@@ -21156,6 +21162,7 @@ fn run_sandboxed_v3_sql_error_fixture(
         observe_executor_relay_and_finalize_gateway,
     };
     use sha2::{Digest, Sha256};
+    use std::collections::HashSet;
     use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -21204,10 +21211,13 @@ fn run_sandboxed_v3_sql_error_fixture(
     } else {
         "/tmp/prdb-sandbox-constructor-probe"
     });
-    match std::fs::remove_file(&constructor_marker) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+    let sdk_constructor_marker = PathBuf::from("/tmp/prdb-sandbox-sdk-constructor-probe");
+    for marker in [&constructor_marker, &sdk_constructor_marker] {
+        match std::fs::remove_file(marker) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
     }
     let mut artifact = std::fs::read(&artifact_path)?;
     if let Some(listener) = &network_probe_listener {
@@ -21250,12 +21260,66 @@ fn run_sandboxed_v3_sql_error_fixture(
     client.accept_hello(ClientMode::Query, "sandbox-sql-v3")?;
     client.authenticate(&storage, token_id, &secret)?;
     let owner = client.staging_owner()?;
-    let staging = StagingStore::new(StagingLimits::default(), Arc::new(AcceptFixture))?;
+    let mut registry_for_assertion = None;
+    let (manifest, validator): (Vec<u8>, Arc<dyn SubmissionMetadataValidator>) =
+        if let Some(release_dir_env) = shared_sdk_release_dir_env {
+            let release_dir = std::env::var_os(release_dir_env)
+                .map(PathBuf::from)
+                .ok_or_else(|| format!("{release_dir_env} must name the installed SDK release"))?;
+            let cache_dir = std::env::var_os("PRDB_TEST_SDK_CACHE_DIR")
+                .map(PathBuf::from)
+                .ok_or("PRDB_TEST_SDK_CACHE_DIR must name the SDK cache directory")?;
+            if !release_dir.is_absolute() || !cache_dir.is_absolute() {
+                return Err("SDK release and cache paths must be absolute".into());
+            }
+            let runtime_profile = "nixos-x86_64-glibc-2.42";
+            let registry = prdb_engine::sdk_registry::SdkReleaseRegistry::load(
+                &[release_dir],
+                &cache_dir,
+                "linux-x86_64".to_owned(),
+                "x86_64-v1".to_owned(),
+                runtime_profile.to_owned(),
+                128 * 1024 * 1024,
+            )
+            .map_err(|error| format!("load shared SDK release: {error:?}"))?;
+            let registry = Arc::new(registry);
+            registry_for_assertion = Some(Arc::clone(&registry));
+            let derived = manifest_v1_from_elf(
+                &artifact,
+                3,
+                1,
+                "x86_64-v1".to_owned(),
+                runtime_profile.to_owned(),
+                "shared SQL sandbox fixture".to_owned(),
+            )
+            .map_err(|error| format!("derive shared fixture manifest: {error:?}"))?;
+            let manifest = encode_manifest_v1(&derived)
+                .map_err(|error| format!("encode shared fixture manifest: {error:?}"))?;
+            let mut allowed_dependencies =
+                ["libc.so.6".to_owned()].into_iter().collect::<HashSet<_>>();
+            if let Some(extra) = std::env::var_os("PRDB_TEST_EXTRA_ALLOWED_DEPENDENCY") {
+                allowed_dependencies.insert(extra.to_string_lossy().into_owned());
+            }
+            let profile = ArtifactCompatibilityProfile::new(
+                "x86_64-v1".to_owned(),
+                runtime_profile.to_owned(),
+                1,
+                allowed_dependencies,
+            )
+            .map_err(|error| format!("build shared fixture profile: {error:?}"))?;
+            let validator = VersionedSubmissionMetadataValidator::new(profile)
+                .with_sdk_registry(registry)
+                .map_err(|error| format!("configure shared SDK registry: {error:?}"))?;
+            (manifest, Arc::new(validator))
+        } else {
+            (b"m".to_vec(), Arc::new(AcceptFixture))
+        };
+    let staging = StagingStore::new(StagingLimits::default(), validator)?;
     let reservation = staging.prepare(
         owner,
         PrepareSubmission {
             manifest_version: 1,
-            manifest: b"m".to_vec(),
+            manifest,
             artifact_bytes: u64::try_from(artifact.len())?,
             artifact_sha256: Sha256::digest(&artifact).into(),
             scope_version: 1,
@@ -21327,6 +21391,9 @@ fn run_sandboxed_v3_sql_error_fixture(
         &runtime,
     )?;
     assert_eq!(accepted.payload, b"{\"state\":\"accepted\"}");
+    if let Some(registry) = &registry_for_assertion {
+        assert_eq!(registry.evict_unpinned().unwrap(), 0);
+    }
 
     let (mut service, mut gateway) = UnixStream::pair()?;
     gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -21343,17 +21410,33 @@ fn run_sandboxed_v3_sql_error_fixture(
         )
     );
     staging.finish_started(owner, reservation.invocation_id)?;
+    drop(executor);
+    if let Some(registry) = &registry_for_assertion {
+        assert!(registry.evict_unpinned().unwrap() > 0);
+    }
 
     let first_frame = read_frame(&mut gateway)?.ok_or("missing worker result")?;
     let constructor_escaped = constructor_marker.exists();
+    let sdk_constructor_escaped =
+        shared_sdk_release_dir_env.is_some() && sdk_constructor_marker.exists();
     if constructor_escaped {
         std::fs::remove_file(&constructor_marker)?;
+    }
+    if sdk_constructor_escaped {
+        std::fs::remove_file(&sdk_constructor_marker)?;
     }
     assert!(
         !constructor_escaped,
         "native constructor created a file outside its invocation scratch"
     );
-    let terminal = if expect_network_denial {
+    assert!(
+        !sdk_constructor_escaped,
+        "SQL SDK constructor created a file outside its invocation scratch"
+    );
+    let terminal = if expect_load_failure {
+        assert_eq!(first_frame.operation, Operation::GatewayTerminal as u16);
+        first_frame
+    } else if expect_network_denial {
         if first_frame.operation == Operation::GatewayTerminal as u16 {
             first_frame
         } else {
@@ -21388,14 +21471,38 @@ fn run_sandboxed_v3_sql_error_fixture(
 #[test]
 fn sandboxed_v3_sql_error_latches_failure_and_durably_aborts_after_partial_output()
 -> Result<(), Box<dyn std::error::Error>> {
-    run_sandboxed_v3_sql_error_fixture("PRDB_TEST_QUERY_ARTIFACT", false)
+    run_sandboxed_v3_sql_error_fixture("PRDB_TEST_QUERY_ARTIFACT", false, None, false)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn sandboxed_v3_shared_sql_library_resolves_loads_and_durably_aborts_on_sql_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    run_sandboxed_v3_sql_error_fixture(
+        "PRDB_TEST_SHARED_SQL_QUERY_ARTIFACT",
+        false,
+        Some("PRDB_TEST_SDK_RELEASE_DIR"),
+        false,
+    )
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn sandboxed_shared_sql_missing_dependency_aborts_inside_executor()
+-> Result<(), Box<dyn std::error::Error>> {
+    run_sandboxed_v3_sql_error_fixture(
+        "PRDB_TEST_SHARED_SQL_LOAD_FAILURE_ARTIFACT",
+        false,
+        Some("PRDB_TEST_SDK_RELEASE_DIR"),
+        true,
+    )
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn sandboxed_v3_constructor_cannot_connect_to_host_loopback()
 -> Result<(), Box<dyn std::error::Error>> {
-    run_sandboxed_v3_sql_error_fixture("PRDB_TEST_NETWORK_CONSTRUCTOR_ARTIFACT", true)
+    run_sandboxed_v3_sql_error_fixture("PRDB_TEST_NETWORK_CONSTRUCTOR_ARTIFACT", true, None, false)
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

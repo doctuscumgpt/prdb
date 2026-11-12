@@ -664,6 +664,7 @@ fn build_command(
         &config.scratch_parent,
         submission.invocation_id(),
         submission.artifact(),
+        submission.sdk_library_pin(),
     )?;
     let parameters = create_sealed_parameters(submission.parameters())?;
     let optimizer_path = config.optimizer_path.canonicalize()?;
@@ -768,10 +769,16 @@ fn allow_runtime_paths(
 struct PrivateArtifactDirectory {
     path: PathBuf,
     artifact_path: PathBuf,
+    _sdk_library_pin: Option<crate::sdk_registry::SdkLibraryPin>,
 }
 
 impl PrivateArtifactDirectory {
-    fn create(parent: &Path, invocation_id: [u8; 16], artifact: &[u8]) -> io::Result<Self> {
+    fn create(
+        parent: &Path,
+        invocation_id: [u8; 16],
+        artifact: &[u8],
+        sdk_library_pin: Option<&crate::sdk_registry::SdkLibraryPin>,
+    ) -> io::Result<Self> {
         let parent = parent.canonicalize()?;
         if !parent.is_dir() {
             return Err(io::Error::new(
@@ -792,6 +799,7 @@ impl PrivateArtifactDirectory {
         let directory = Self {
             path,
             artifact_path,
+            _sdk_library_pin: sdk_library_pin.cloned(),
         };
         let mut file = OpenOptions::new()
             .write(true)
@@ -801,6 +809,18 @@ impl PrivateArtifactDirectory {
         file.write_all(artifact)?;
         file.sync_all()?;
         fs::set_permissions(&directory.artifact_path, fs::Permissions::from_mode(0o500))?;
+        if let Some(pin) = sdk_library_pin {
+            let staged_library_path = directory.path.join(pin.soname());
+            let mut source = File::open(pin.library_path())?;
+            let mut staged_library = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o500)
+                .open(&staged_library_path)?;
+            io::copy(&mut source, &mut staged_library)?;
+            staged_library.sync_all()?;
+            fs::set_permissions(&staged_library_path, fs::Permissions::from_mode(0o500))?;
+        }
         Ok(directory)
     }
 }
@@ -876,7 +896,8 @@ mod tests {
         let parent = std::env::temp_dir().join(format!("prdb-launch-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&parent);
         std::fs::create_dir(&parent).unwrap();
-        let directory = PrivateArtifactDirectory::create(&parent, [7; 16], b"artifact").unwrap();
+        let directory =
+            PrivateArtifactDirectory::create(&parent, [7; 16], b"artifact", None).unwrap();
         assert_eq!(
             std::fs::read(&directory.artifact_path).unwrap(),
             b"artifact"

@@ -3,7 +3,11 @@ use prdb_engine::client_protocol::{
     decode_client_credentials, decode_client_prepare,
 };
 use prdb_engine::client_submit::SubmissionClient;
-use prdb_engine::submission_manifest::{decode_elf_dynamic_info, decode_manifest_v1};
+use prdb_engine::submission_manifest::{
+    ArtifactCompatibilityProfile, VersionedSubmissionMetadataValidator, decode_elf_dynamic_info,
+    decode_manifest_v1,
+};
+use prdb_engine::supervisor::{SubmissionMetadata, SubmissionMetadataValidator, WorkloadClass};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
@@ -156,6 +160,33 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
     assert!(dynamic.rpath.is_none());
     assert!(dynamic.needed.iter().any(|name| name == "libprdb_sql.so.1"));
     assert!(!temp.join("constructor-ran").exists());
+
+    let invalid_runpath_artifact = temp.join("query-invalid-runpath.so");
+    fs::write(&invalid_runpath_artifact, &artifact).unwrap();
+    let invalid_runpath = Command::new("patchelf")
+        .arg("--set-rpath")
+        .arg("$ORIGIN:/tmp")
+        .arg(&invalid_runpath_artifact)
+        .status()
+        .unwrap();
+    assert!(invalid_runpath.success());
+    let metadata = SubmissionMetadata {
+        manifest_version: 1,
+        manifest: manifest_bytes.clone(),
+        scope_version: 1,
+        requested_scope: scope_bytes.clone(),
+        deadline_ms: 30_000,
+        workload_class: WorkloadClass::Operational,
+    };
+    let profile = ArtifactCompatibilityProfile::new(
+        manifest.cpu_baseline.clone(),
+        manifest.runtime_profile.clone(),
+        manifest.sdk_release,
+        manifest.dependencies.iter().cloned().collect(),
+    )
+    .unwrap();
+    let validator = VersionedSubmissionMetadataValidator::new(profile);
+    assert!(!validator.validate_artifact(&metadata, &fs::read(&invalid_runpath_artifact).unwrap()));
 
     let valid_metadata = fs::read_to_string(release_dir.join("sdk-release.json")).unwrap();
     let bad_metadata = temp.join("wrong-soname.json");

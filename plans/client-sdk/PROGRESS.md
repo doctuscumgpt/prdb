@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SQLSO-4: private SDK staging and confined loading — implemented
+
+- Contract: [separate SQL library plan](SEPARATE_SQL_LIBRARY.md) and [sandbox acceptance instructions](../sql-library/SANDBOX_TEST.md). The supervisor and storage process still inspect SDK/query bytes only; execution remains in the post-confinement executor.
+- Implementation: executor staging copies the pinned SDK library into the invocation's private artifact directory under its SONAME, read/execute-only, beside query.so. The private-directory owner retains the RAII cache pin through worker exit and drops both staged resources and pin on cleanup. The maintained fixture target now builds a shared-linked query, a test SDK release with a hostile constructor, and a missing-runtime-dependency query.
+- Regression: the enabled delegated-cgroup acceptance resolves PMF1, loads the separate SQL library, executes the SDK SQL callback, verifies query and SDK constructors cannot write outside scratch, checks the cache cannot evict while the executor is active, and confirms eviction after exit. A second confined acceptance proves missing dependency load failure produces a durable ABORTED outcome before constructors or query entry execute. The packager validator rejects a query whose RUNPATH is changed from exactly `$ORIGIN` to `$ORIGIN:/tmp`.
+- Verification: shared SDK and missing-dependency acceptances each passed inside delegated `systemd --user` services with enabled `cpu memory pids`; `make -f engine/sdk/Makefile sandbox-query-fixture`, all three client-package tests, warning-denied workspace Clippy, formatting, and `git diff --check` passed. The workspace NFS cache path returned `AtomicPublishUnsupported`; rerunning with the test cache on `/tmp` passed. Full serial cgroup workspace acceptance will be repeated after release/migration work.
+- Remaining: release packaging, supervisor deployment configuration, and an explicit static-to-shared compatibility cutoff.
+
 ## SQLSO-3: supervisor SDK registry and START resolution — implemented
 
 - Contract: [separate SQL library plan](SEPARATE_SQL_LIBRARY.md), [client SDK](../../specs/client-sdk.md), and [SQL library](../../specs/sql-library.md). Supervisor startup accepts explicit installed release directories and a bounded cache location; query uploads cannot supply or install SDK libraries.

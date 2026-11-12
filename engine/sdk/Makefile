@@ -60,6 +60,7 @@ SDK_TARGET ?= linux-x86_64
 SDK_CPU_BASELINE ?= x86_64-v1
 SDK_RUNTIME_PROFILE ?= nixos-x86_64-glibc-2.42
 SDK_NATIVE_ABIS ?= 1,2,3,4,5
+SDK_EXTRA_SHARED_OBJECTS ?=
 SDK_RELEASE_DIR := $(BUILD_DIR)/releases/$(SDK_TARGET)/$(SDK_CPU_BASELINE)/$(SDK_RUNTIME_PROFILE)/sdk-$(SDK_RELEASE)-abis$(SDK_NATIVE_ABIS)
 SDK_PIC_OBJECT_DIR := $(SDK_RELEASE_DIR)/pic
 SDK_PIC_OBJECTS := $(patsubst $(BUILD_DIR)/%,$(SDK_PIC_OBJECT_DIR)/%,$(SDK_OBJECTS))
@@ -118,6 +119,9 @@ SDK_SCOPE_TEST := $(BUILD_DIR)/sdk-scope-v1
 SDK_IPC_FRAME_TEST := $(BUILD_DIR)/ipc-frame-v1
 SDK_IPC_PAYLOAD_CODEC_TEST := $(BUILD_DIR)/ipc-payload-codec-v1
 SQL_V3_CAUGHT_ERROR_QUERY := $(BUILD_DIR)/sql-v3-caught-error.so
+SQL_V3_SHARED_LIBRARY_QUERY := $(BUILD_DIR)/sql-v3-shared-library.so
+SQL_V3_MISSING_DEPENDENCY_QUERY := $(BUILD_DIR)/sql-v3-missing-dependency.so
+SQL_V3_MISSING_DEPENDENCY_LIBRARY := $(BUILD_DIR)/libprdb_missing.so.1
 SQL_V3_NETWORK_CONSTRUCTOR_OBJECT := $(BUILD_DIR)/sql-v3-network-constructor.o
 SQL_V3_NETWORK_CONSTRUCTOR_QUERY := $(BUILD_DIR)/sql-v3-network-constructor.so
 SQL_V3_WRITE_READ_QUERY := $(BUILD_DIR)/sql-v3-write-read.so
@@ -230,8 +234,8 @@ $(SDK_PIC_OBJECT_DIR):
 $(SDK_PIC_OBJECT_DIR)/%.o: engine/sdk/%.c $(wildcard $(INCLUDE_DIR)/*.h) | $(SDK_PIC_OBJECT_DIR)
 	$(TCC) -Wall -Wextra -Werror -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
-$(SDK_SQL_SHARED_LIBRARY): $(SDK_PIC_OBJECTS) | $(SDK_RELEASE_DIR)
-	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs,-soname,$(SDK_SQL_SONAME) $(SDK_PIC_OBJECTS) -o "$@"
+$(SDK_SQL_SHARED_LIBRARY): $(SDK_PIC_OBJECTS) $(SDK_EXTRA_SHARED_OBJECTS) | $(SDK_RELEASE_DIR)
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs,-soname,$(SDK_SQL_SONAME) $(SDK_PIC_OBJECTS) $(SDK_EXTRA_SHARED_OBJECTS) -o "$@"
 
 $(SDK_RELEASE_DIR):
 	mkdir -p "$@"
@@ -245,6 +249,15 @@ $(SDK_RELEASE_DIR)/shared-test-%: engine/tests/fixtures/%.c $(SDK_SQL_SHARED_LIB
 
 .PHONY: sdk-shared-release sdk-shared-tests
 sdk-shared-release: $(SDK_SQL_SHARED_LIBRARY) $(SDK_RELEASE_METADATA) $(SDK_RELEASE_CHECKSUM)
+
+HOSTILE_SDK_BUILD_DIR := $(BUILD_DIR)/hostile-sdk
+HOSTILE_SDK_CONSTRUCTOR_OBJECT := $(BUILD_DIR)/hostile-sdk-constructor.o
+$(HOSTILE_SDK_CONSTRUCTOR_OBJECT): engine/tests/fixtures/hostile_sdk_constructor.c | $(BUILD_DIR)
+	$(TCC) -Wall -Wextra -Werror -fPIC -c "$<" -o "$@"
+
+.PHONY: sdk-hostile-constructor-release
+sdk-hostile-constructor-release: $(HOSTILE_SDK_CONSTRUCTOR_OBJECT)
+	$(MAKE) -f engine/sdk/Makefile BUILD_DIR="$(HOSTILE_SDK_BUILD_DIR)" SDK_EXTRA_SHARED_OBJECTS="$(abspath $(HOSTILE_SDK_CONSTRUCTOR_OBJECT))" sdk-shared-release
 
 sdk-shared-tests: $(SDK_SHARED_TESTS) $(SDK_RELEASE_METADATA) $(SDK_RELEASE_CHECKSUM)
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) engine/tools/test_sdk_release_metadata.py "$(SDK_SQL_SHARED_LIBRARY)"
@@ -446,6 +459,18 @@ $(SQL_V3_CAUGHT_ERROR_OBJECT): engine/tests/fixtures/sql_v3_caught_error.c $(INC
 $(SQL_V3_CAUGHT_ERROR_QUERY): $(SQL_V3_CAUGHT_ERROR_OBJECT) $(SDK_ARCHIVE) | $(BUILD_DIR)
 	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack "$<" "$(SDK_ARCHIVE)" -o "$@"
 
+$(SQL_V3_SHARED_LIBRARY_QUERY): engine/tests/fixtures/sql_v3_caught_error.c $(SDK_SQL_SHARED_LIBRARY) | $(BUILD_DIR)
+	$(TCC) -Wall -Wextra -Werror -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@.o"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs "$@.o" "$(SDK_SQL_SHARED_LIBRARY)" -Wl,-rpath,'$$ORIGIN' -o "$@"
+
+$(SQL_V3_MISSING_DEPENDENCY_LIBRARY): engine/tests/fixtures/missing_dependency.c | $(BUILD_DIR)
+	$(TCC) -Wall -Wextra -Werror -fPIC -c "$<" -o "$@.o"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs,-soname,libprdb_missing.so.1 "$@.o" -o "$@"
+
+$(SQL_V3_MISSING_DEPENDENCY_QUERY): engine/tests/fixtures/sql_missing_dependency.c $(SDK_SQL_SHARED_LIBRARY) $(SQL_V3_MISSING_DEPENDENCY_LIBRARY) | $(BUILD_DIR)
+	$(TCC) -Wall -Wextra -Werror -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@.o"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs "$@.o" "$(SDK_SQL_SHARED_LIBRARY)" "$(SQL_V3_MISSING_DEPENDENCY_LIBRARY)" -Wl,-rpath,'$$ORIGIN' -o "$@"
+
 $(SQL_V3_NETWORK_CONSTRUCTOR_OBJECT): engine/tests/fixtures/sql_v3_caught_error.c $(INCLUDE_DIR)/prdb_query_abi_v3.h $(INCLUDE_DIR)/prdb_query_abi_constants.h $(QUERY_ABI_GENERATED_HEADERS) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v2.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -DPRDB_PROBE_CONSTRUCTOR_NETWORK -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
@@ -467,7 +492,7 @@ $(SQL_V3_RESTRICTED_METADATA_QUERY): $(SQL_V3_RESTRICTED_METADATA_OBJECT) $(SDK_
 	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack "$<" "$(SDK_ARCHIVE)" -o "$@"
 
 .PHONY: sandbox-query-fixture
-sandbox-query-fixture: $(SQL_V3_CAUGHT_ERROR_QUERY) $(SQL_V3_NETWORK_CONSTRUCTOR_QUERY) $(SQL_V3_WRITE_READ_QUERY) $(SQL_V3_RESTRICTED_METADATA_QUERY)
+sandbox-query-fixture: $(SQL_V3_CAUGHT_ERROR_QUERY) $(SQL_V3_SHARED_LIBRARY_QUERY) $(SQL_V3_MISSING_DEPENDENCY_QUERY) $(SQL_V3_NETWORK_CONSTRUCTOR_QUERY) $(SQL_V3_WRITE_READ_QUERY) $(SQL_V3_RESTRICTED_METADATA_QUERY) sdk-hostile-constructor-release
 
 .PHONY: release-profile
 release-profile: sandbox-query-fixture
