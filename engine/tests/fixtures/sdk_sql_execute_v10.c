@@ -379,7 +379,17 @@ static int32_t on_group_v12(void *context,
     assert(binding->abi_version == PRDB_SDK_SQL_ABI_V12_VERSION);
     assert(binding->order_count <= PRDB_SDK_SQL_V12_MAX_ORDER_KEYS);
     if (binding->order_count == 2) {
-        assert(binding->order_items[0].type_code == PRDB_SDK_VALUE_TYPE_BIGINT);
+        uint32_t expected_aggregate_type = PRDB_SDK_VALUE_TYPE_INTEGER;
+        if (binding->base.base.base.base.aggregate_kind ==
+                PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR ||
+            binding->base.base.base.base.aggregate_kind ==
+                PRDB_SDK_SQL_V7_AGGREGATE_SUM) {
+            expected_aggregate_type = PRDB_SDK_VALUE_TYPE_BIGINT;
+        } else if (binding->base.base.base.base.aggregate_kind ==
+                   PRDB_SDK_SQL_V7_AGGREGATE_AVG) {
+            expected_aggregate_type = PRDB_SDK_VALUE_TYPE_DECIMAL;
+        }
+        assert(binding->order_items[0].type_code == expected_aggregate_type);
         assert(binding->order_items[1].type_code == PRDB_SDK_VALUE_TYPE_INTEGER);
     }
     return on_group(context, group_key, aggregate_value, matching_row_count,
@@ -767,6 +777,30 @@ int main(void) {
     static const uint8_t composite_order_sql[] =
         "SELECT id, COUNT(*) FROM widgets GROUP BY id "
         "ORDER BY COUNT(*) ASC, id DESC NULLS LAST LIMIT 2";
+    static const uint8_t *const ordered_aggregate_matrix_sql[] = {
+        (const uint8_t *)"SELECT id, COUNT(*) FROM widgets GROUP BY id "
+                         "ORDER BY COUNT(*) DESC NULLS LAST, id ASC NULLS FIRST",
+        (const uint8_t *)"SELECT id, MIN(score) FROM widgets GROUP BY id "
+                         "ORDER BY MIN(score) DESC NULLS LAST, id ASC NULLS FIRST",
+        (const uint8_t *)"SELECT id, MAX(score) FROM widgets GROUP BY id "
+                         "ORDER BY MAX(score) DESC NULLS LAST, id ASC NULLS FIRST",
+        (const uint8_t *)"SELECT id, SUM(score) FROM widgets GROUP BY id "
+                         "ORDER BY SUM(score) DESC NULLS LAST, id ASC NULLS FIRST",
+        (const uint8_t *)"SELECT id, AVG(score) FROM widgets GROUP BY id "
+                         "ORDER BY AVG(score) DESC NULLS LAST, id ASC NULLS FIRST",
+    };
+    static const uint32_t ordered_aggregate_matrix_sql_len[] = {
+        sizeof("SELECT id, COUNT(*) FROM widgets GROUP BY id "
+               "ORDER BY COUNT(*) DESC NULLS LAST, id ASC NULLS FIRST") - 1,
+        sizeof("SELECT id, MIN(score) FROM widgets GROUP BY id "
+               "ORDER BY MIN(score) DESC NULLS LAST, id ASC NULLS FIRST") - 1,
+        sizeof("SELECT id, MAX(score) FROM widgets GROUP BY id "
+               "ORDER BY MAX(score) DESC NULLS LAST, id ASC NULLS FIRST") - 1,
+        sizeof("SELECT id, SUM(score) FROM widgets GROUP BY id "
+               "ORDER BY SUM(score) DESC NULLS LAST, id ASC NULLS FIRST") - 1,
+        sizeof("SELECT id, AVG(score) FROM widgets GROUP BY id "
+               "ORDER BY AVG(score) DESC NULLS LAST, id ASC NULLS FIRST") - 1,
+    };
     static const uint8_t v12_no_order_sql[] =
         "SELECT id, COUNT(*) FROM widgets GROUP BY id";
     static const uint8_t v13_composite_sql[] =
@@ -935,6 +969,26 @@ int main(void) {
     assert(capture.calls == 2 && capture.keys[0] == 1 &&
            capture.keys[1] == 2 && capture.row_counts[0] == 2 &&
            capture.row_counts[1] == 1 && mock.statement_failed == 0);
+
+    {
+        const int32_t expected_keys[][2] = {
+            {1, 2}, {2, 1}, {1, 2}, {1, 2}, {1, 2}};
+        const int32_t expected_aggregates[][2] = {
+            {2, 1}, {5, 3}, {9, 5}, {12, 5}, {6000000, 5000000}};
+        for (uint32_t kind = 0; kind < 5; ++kind) {
+            reset_scan(&mock, &capture, 1);
+            assert(run_query_v12(
+                       &mock, ordered_aggregate_matrix_sql[kind],
+                       ordered_aggregate_matrix_sql_len[kind], 64,
+                       &capture) == PRDB_SDK_SQL_EXEC_OK);
+            assert(capture.calls == 2 &&
+                   capture.keys[0] == expected_keys[kind][0] &&
+                   capture.keys[1] == expected_keys[kind][1] &&
+                   capture.aggregates[0] == expected_aggregates[kind][0] &&
+                   capture.aggregates[1] == expected_aggregates[kind][1] &&
+                   mock.statement_failed == 0);
+        }
+    }
 
     {
         const int32_t tuple_ids[] = {1, 1, 2};
