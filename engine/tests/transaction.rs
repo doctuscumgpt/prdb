@@ -5798,6 +5798,14 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
         prdb_engine::statistics::AuthorizedScanEstimate::Unknown
     );
     assert_eq!(hidden_estimate_a, hidden_estimate_b);
+    assert_eq!(
+        hidden_value_a.estimate_authorized_population_at_most(table_id, &projection, 4)?,
+        Some(3)
+    );
+    assert_eq!(
+        hidden_value_b.estimate_authorized_population_at_most(table_id, &projection, 4)?,
+        Some(3)
+    );
 
     let mut fewer_candidates =
         InvocationTransaction::begin(&database, [0x34; 16], [9; 16], 9_999, 32, 2_048)?;
