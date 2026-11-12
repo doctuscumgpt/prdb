@@ -3118,6 +3118,7 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
     install_relation_discovery_catalog(&database)?;
 
     let principal_id = [9; 16];
+    let restricted_principal_id = [10; 16];
     let table_id = [0x10; 16];
     let boolean_type_id = [46; 16];
     let policy_id = [221; 16];
@@ -3191,6 +3192,44 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
         policy_target_catalog_record(cell_insert_policy_id, 1, principal_id);
     let (cell_insert_column_target_key, cell_insert_column_target_payload) =
         policy_target_catalog_record(cell_insert_policy_id, 3, [0x66; 16]);
+    let (restricted_schema_grant_key, restricted_schema_grant_payload) = grant_catalog_record(
+        restricted_principal_id,
+        [0x91; 16],
+        1,
+        1,
+        [0x91; 16],
+        builtin_owner_id(),
+        1,
+    );
+    let (restricted_table_grant_key, restricted_table_grant_payload) = grant_catalog_record(
+        restricted_principal_id,
+        table_id,
+        2,
+        1,
+        table_id,
+        builtin_owner_id(),
+        1,
+    );
+    let (restricted_column_grant_key, restricted_column_grant_payload) = grant_catalog_record(
+        restricted_principal_id,
+        table_id,
+        2,
+        2,
+        [0x66; 16],
+        builtin_owner_id(),
+        1,
+    );
+    let restricted_row_policy_id = [235; 16];
+    let (restricted_row_policy_key, restricted_row_policy_payload) = policy_catalog_record(
+        restricted_row_policy_id,
+        table_id,
+        1,
+        1,
+        Some(expression_id),
+        None,
+    );
+    let (restricted_row_target_key, restricted_row_target_payload) =
+        policy_target_catalog_record(restricted_row_policy_id, 1, restricted_principal_id);
     let write = database.begin_write()?;
     {
         let mut catalog = write.open_table(CATALOG)?;
@@ -3443,6 +3482,11 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
                 cell_insert_column_target_key,
                 cell_insert_column_target_payload,
             ),
+            (restricted_schema_grant_key, restricted_schema_grant_payload),
+            (restricted_table_grant_key, restricted_table_grant_payload),
+            (restricted_column_grant_key, restricted_column_grant_payload),
+            (restricted_row_policy_key, restricted_row_policy_payload),
+            (restricted_row_target_key, restricted_row_target_payload),
             (update_policy_target_key, update_policy_target_payload),
             (
                 cell_update_principal_target_key,
@@ -3779,6 +3823,67 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
         [Some(ScalarValue::Bytea(vec![4, 5]))]
     );
     verify.abort()?;
+
+    let mut restricted = InvocationTransaction::begin(
+        &database,
+        [238; 16],
+        restricted_principal_id,
+        9_999,
+        1,
+        1024,
+    )?;
+    let restricted_schema = restricted.load_catalog_table_schema(table_id)?;
+    let (_, restricted_grants) =
+        restricted.load_catalog_grants(restricted_principal_id, &restricted_schema)?;
+    let restricted_policies =
+        restricted.load_catalog_policies(restricted_principal_id, &restricted_schema)?;
+    assert_eq!(restricted_grants.len(), 3);
+    assert_eq!(restricted_policies.len(), 1);
+    assert_eq!(
+        restricted.read_catalog_authorized_row(table_id, row_id.row)?,
+        Some(vec![SanitizedCell::Redacted])
+    );
+    let mut restricted_connection = restricted.open_executor_metadata_connection();
+    let (restricted_relation, _) = restricted_connection
+        .resolve_relation("app", "metrics")?
+        .expect("the table grant should make the relation available");
+    let restricted_open = dispatch_executor_request(
+        ServiceRole::Executor,
+        &mut restricted_connection,
+        &IpcFrame {
+            operation: IpcOperation::OpenScan as u16,
+            request_id: 71,
+            payload: OpenScanRequest {
+                relation: restricted_relation,
+                column_ids: vec![[0x66; 16]],
+            }
+            .encode()?,
+        },
+    )?;
+    let restricted_cursor = OpenScanResponse::decode(&restricted_open.payload)?.cursor;
+    let restricted_batch = dispatch_executor_request(
+        ServiceRole::Executor,
+        &mut restricted_connection,
+        &IpcFrame {
+            operation: IpcOperation::NextBatch as u16,
+            request_id: 72,
+            payload: NextBatchRequest {
+                cursor: restricted_cursor,
+                max_scanned: 8,
+                max_bytes: 1024,
+            }
+            .encode()?,
+        },
+    )?;
+    let restricted_rows = NextBatchResponse::decode(&restricted_batch.payload)?.rows;
+    assert_eq!(restricted_rows.len(), 2);
+    assert!(
+        restricted_rows
+            .iter()
+            .all(|row| { row.cells == [SanitizedCell::Redacted] })
+    );
+    drop(restricted_connection);
+    restricted.abort()?;
 
     let oversized_invocation_id = [237; 16];
     let mut oversized = InvocationTransaction::begin(

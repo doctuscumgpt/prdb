@@ -144,3 +144,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Implementation: no production change was needed; token verifier guards and the serialized redb commit boundary preserve the allowed outcomes.
 - Verification: the focused race passed in twenty fresh processes; `cargo fmt --all -- --check`, warning-denied workspace Clippy, and the serial commit integration target passed under Rust/Cargo 1.95.0. The commit target reported 127 passed and 3 delegated-cgroup tests ignored.
 - Remaining: repeated race coverage for other authority-changing DDL routes and broader concurrent schedules remains open.
+
+## AU-2 / WI-2: catalog-backed principals receive different executor cell views — verified
+
+- Contract: [authorization](../../specs/authorization.md) requires row visibility and cell readability to be checked separately; an authorized row with a denied field carries `REDACTED`, without exposing the stored value.
+- Red evidence: the first fixture revision omitted the restricted principal's row SELECT ALLOW policy, and the executor scan returned zero rows instead of the expected visible rows. Adding row ALLOW still left the fixture incomplete until the restricted principal also received an explicit SELECT grant on the projected column.
+- Regression: `catalog_authorized_scan_builds_its_projection_from_pinned_records` scans the same committed Bytea rows as two catalog principals through executor IPC. The first principal has row and cell SELECT ALLOW policies and receives the stored bytes. The second has schema USAGE, table and column SELECT, and row SELECT ALLOW but no cell SELECT ALLOW; every returned cell is `REDACTED`.
+- Verification: the focused transaction integration test passed; workspace build, formatting check, warning-denied workspace Clippy, and the serial delegated-cgroup workspace test suite all passed in the pinned Rust/Cargo 1.95.0 Nix shell. The suite's syscall-kill fixture emitted its expected child-process core-dump record; the systemd test unit exited successfully.
+- Scope: proves different cell views through catalog-derived authorization and executor IPC using trusted identity fixtures. Token-authenticated process admission, hostile direct IPC bypass attempts, and the broader two-user sandbox acceptance remain open.
