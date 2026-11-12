@@ -39,7 +39,9 @@ static int32_t mock_request_v5(void *opaque, uint16_t operation,
     mock_optimizer *mock = (mock_optimizer *)opaque;
     assert(request_len >= 4);
     assert((operation == PRDB_IPC_OP_OPTIMIZE_JOIN_SELECT &&
-            request[2] == PRDB_OPTIMIZER_JOIN_SELECT_STATEMENT) ||
+            (request[2] == PRDB_OPTIMIZER_JOIN_SELECT_STATEMENT ||
+             request[2] ==
+                 PRDB_OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT)) ||
            (operation == PRDB_IPC_OP_OPTIMIZE_GROUP_COUNT &&
             (request[2] == PRDB_OPTIMIZER_GROUP_COUNT_STATEMENT ||
              request[2] ==
@@ -86,6 +88,13 @@ int main(void) {
     static const uint8_t join_sql[] =
         "SELECT l.value, r.value FROM lefts AS l INNER JOIN rights AS r "
         "ON l.id = r.id AND l.active = r.active LIMIT 5;";
+    static const uint8_t filtered_join_sql[] =
+        "SELECT l.value, r.value FROM lefts AS l INNER JOIN rights AS r "
+        "ON l.id = r.id AND l.active = r.active WHERE r.active > $3 LIMIT 5;";
+    static const uint8_t null_filtered_join_sql[] =
+        "SELECT l.value, r.value FROM lefts AS l INNER JOIN rights AS r "
+        "ON l.id = r.id AND l.active = r.active "
+        "WHERE l.active IS NOT NULL LIMIT 5;";
     static const uint8_t group_count_sql[] =
         "SELECT category, COUNT(*) FROM items GROUP BY category LIMIT 5;";
     static const uint8_t composite_group_count_sql[] =
@@ -136,6 +145,10 @@ int main(void) {
         'e', 1, 5, 'v', 'a', 'l', 'u', 'e', 2, 2, 'i', 'd', 2, 'i', 'd', 6,
         'a', 'c', 't', 'i', 'v', 'e', 6, 'a', 'c', 't', 'i', 'v', 'e', 1, 0,
         0, 0, 5};
+    static const uint8_t filtered_join_tail[] = {
+        1, 6, 'a', 'c', 't', 'i', 'v', 'e', 0, 4, 0, 0, 0, 3};
+    static const uint8_t null_filtered_join_tail[] = {
+        0, 6, 'a', 'c', 't', 'i', 'v', 'e', 2};
     static const uint8_t expected_encoded[] = {
         0, 1, 1, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'i', 't', 'e', 'm',
         's', 0, 1, 4, 'n', 'a', 'm', 'e', 0, 0, 0, 0, 1, 0, 0, 0, 7};
@@ -155,6 +168,7 @@ int main(void) {
     uint64_t encoded_len = 0;
     uint32_t error_offset = 0;
     prdb_sdk_select_v19 join_statement = {0};
+    prdb_sdk_select_v20 filtered_join_statement = {0};
     prdb_sdk_select_v4 group_count_statement = {0};
     prdb_sdk_select_v12 ordered_group_count_statement = {0};
     prdb_sdk_select_v13 composite_group_count_statement = {0};
@@ -218,6 +232,65 @@ int main(void) {
                &response_len, &decoded, sizeof(decoded)) ==
            PRDB_SDK_OPTIMIZER_RESULT_OK);
     assert(decoded.status == PRDB_SDK_OPTIMIZER_STATUS_SUCCESS);
+
+    uint8_t expected_filtered_join_request[
+        sizeof(expected_join_request) + sizeof(filtered_join_tail)];
+    memcpy(expected_filtered_join_request, expected_join_request,
+           sizeof(expected_join_request));
+    expected_filtered_join_request[2] =
+        PRDB_OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT;
+    memcpy(expected_filtered_join_request + sizeof(expected_join_request),
+           filtered_join_tail, sizeof(filtered_join_tail));
+    assert(prdb_sdk_sql_parse_select_v20(
+               filtered_join_sql, sizeof(filtered_join_sql) - 1,
+               &filtered_join_statement, sizeof(filtered_join_statement),
+               &error_offset) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_optimizer_encode_filtered_join_select_v1(
+               &filtered_join_statement, schema, sizeof(schema) - 1, encoded,
+               sizeof(encoded), &encoded_len) == PRDB_SDK_OPTIMIZER_ENCODE_OK);
+    assert(encoded_len == sizeof(expected_filtered_join_request));
+    assert(memcmp(encoded, expected_filtered_join_request,
+                  sizeof(expected_filtered_join_request)) == 0);
+    assert(prdb_sdk_optimizer_submit_join_select_v1(
+               &host_v5, encoded, encoded_len, response, sizeof(response),
+               &response_len, &decoded, sizeof(decoded)) ==
+           PRDB_SDK_OPTIMIZER_RESULT_OK);
+    assert(decoded.status == PRDB_SDK_OPTIMIZER_STATUS_SUCCESS);
+    uint8_t expected_null_filtered_join_request[
+        sizeof(expected_join_request) + sizeof(null_filtered_join_tail)];
+    memcpy(expected_null_filtered_join_request, expected_join_request,
+           sizeof(expected_join_request));
+    expected_null_filtered_join_request[2] =
+        PRDB_OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT;
+    memcpy(expected_null_filtered_join_request + sizeof(expected_join_request),
+           null_filtered_join_tail, sizeof(null_filtered_join_tail));
+    assert(prdb_sdk_sql_parse_select_v20(
+               null_filtered_join_sql, sizeof(null_filtered_join_sql) - 1,
+               &filtered_join_statement, sizeof(filtered_join_statement),
+               &error_offset) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_optimizer_encode_filtered_join_select_v1(
+               &filtered_join_statement, schema, sizeof(schema) - 1, encoded,
+               sizeof(encoded), &encoded_len) == PRDB_SDK_OPTIMIZER_ENCODE_OK);
+    assert(encoded_len == sizeof(expected_null_filtered_join_request));
+    assert(memcmp(encoded, expected_null_filtered_join_request,
+                  sizeof(expected_null_filtered_join_request)) == 0);
+    assert(prdb_sdk_sql_parse_select_v20(
+               filtered_join_sql, sizeof(filtered_join_sql) - 1,
+               &filtered_join_statement, sizeof(filtered_join_statement),
+               &error_offset) == PRDB_SDK_SQL_OK);
+    memset(encoded, 0xa5, sizeof(encoded));
+    encoded_len = 0;
+    assert(prdb_sdk_optimizer_encode_filtered_join_select_v1(
+               &filtered_join_statement, schema, sizeof(schema) - 1, encoded,
+               sizeof(expected_filtered_join_request) - 1, &encoded_len) ==
+           PRDB_SDK_OPTIMIZER_ENCODE_BUFFER_TOO_SMALL);
+    assert(encoded_len == sizeof(expected_filtered_join_request));
+    assert(encoded[0] == 0xa5);
+    filtered_join_statement.parameter_index = 0;
+    assert(prdb_sdk_optimizer_encode_filtered_join_select_v1(
+               &filtered_join_statement, schema, sizeof(schema) - 1, encoded,
+               sizeof(encoded), &encoded_len) ==
+           PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED);
 
     assert(prdb_sdk_sql_parse_select_v15(
                ordered_composite_group_count_sql,

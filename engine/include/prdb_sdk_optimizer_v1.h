@@ -8,6 +8,7 @@
 #include "prdb_sdk_sql_v2.h"
 #include "prdb_sdk_sql_v3.h"
 #include "prdb_sdk_sql_v19.h"
+#include "prdb_sdk_sql_v20.h"
 #include "prdb_sdk_sql_v13.h"
 #include "prdb_sdk_sql_v12.h"
 #include "prdb_sdk_sql_v15.h"
@@ -83,6 +84,13 @@ int32_t prdb_sdk_optimizer_encode_update_v1(
  * statement 4, preserving projection sides, composite keys, and LIMIT. */
 int32_t prdb_sdk_optimizer_encode_join_select_v1(
     const prdb_sdk_select_v19 *statement,
+    const uint8_t *schema, uint32_t schema_len,
+    uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
+
+/* Encode the filtered v20 INNER JOIN AST as statement 12. The request carries
+ * the side-qualified WHERE column and bounded parameter index or NULL test. */
+int32_t prdb_sdk_optimizer_encode_filtered_join_select_v1(
+    const prdb_sdk_select_v20 *statement,
     const uint8_t *schema, uint32_t schema_len,
     uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
 

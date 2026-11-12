@@ -15,6 +15,14 @@
 - Verification: maintained `make -f engine/sdk/Makefile test`, sandbox query fixture rebuild, and `git diff --check` passed. The full serial workspace suite passed in the delegated `systemd --user` service: 179 library tests, 142 commit tests, 74 transaction tests, and all other targets passed with zero ignored tests. Both cgroup-backed commit acceptance tests and both metadata process tests ran.
 - Remaining: encode statement 12, match the decoded filter against the v20 AST and invocation parameters, re-resolve the filtered column through executor metadata, and execute the optimizer-backed v20 join through confined acceptance.
 
+## OP-7 follow-up: encode filtered aliased-join requests in TinyCC — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). The v20 WHERE predicate is serialized as statement 12 with a side-qualified column, comparison and bounded parameter index, or a NULL test.
+- Implementation: `prdb_sdk_optimizer_encode_filtered_join_select_v1` reuses the frozen statement-4 join prefix and LIMIT encoding, switches to statement 12, resolves the parsed WHERE qualifier to the left/right alias, and appends the normalized filter record. It rejects unsupported qualifiers, operators, parameter indexes, and parameter metadata on NULL tests. Submission uses the existing ABI v5 `optimize_join_select` operation and now accepts statement 12.
+- Regression: the TinyCC fixture parses parameterized right-side and IS NOT NULL left-side v20 joins, compares both full requests to hand-checked bytes, submits the parameterized request on the join operation, checks undersized-buffer preservation, and rejects a zero parameter index.
+- Verification: forced rebuild and full maintained `make -B -f engine/sdk/Makefile test` passed with TinyCC `-Wall -Wextra -Werror`; ABI generator consistency and all eight generator tests passed. `git diff --check` passed.
+- Remaining: match the decoded filter against the v20 AST and invocation parameter types/values, re-resolve the filtered column through executor metadata, and execute the optimizer-backed v20 join through confined acceptance.
+
 ## OP-7 follow-up: ordered single-key grouped aggregates — verified
 
 - Contract: request statement 11 / plan kind 11 extends the statement-10 single-key COUNT/MIN/MAX/SUM/AVG shape with up to two distinct ORDER BY expressions drawn from the group key or selected aggregate, preserving direction, NULL placement, and optional LIMIT. WHERE, HAVING, extra projections, and unsupported argument types remain rejected.

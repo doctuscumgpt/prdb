@@ -1063,6 +1063,102 @@ int32_t prdb_sdk_optimizer_encode_join_select_v1(
         statement, schema, schema_len, request, request_capacity, request_len);
 }
 
+int32_t prdb_sdk_optimizer_encode_filtered_join_select_v1(
+    const prdb_sdk_select_v20 *statement, const uint8_t *schema,
+    uint32_t schema_len, uint8_t *request, uint64_t request_capacity,
+    uint64_t *request_len) {
+    const prdb_sdk_select_v19 *base;
+    const uint8_t *sql;
+    uint64_t sql_len;
+    prdb_sdk_sql_span_v1 left_relation, right_relation;
+    prdb_sdk_sql_span_v1 left_qualifier, right_qualifier;
+    prdb_sdk_sql_qualified_column_v8 filter;
+    uint32_t expression_kind, filter_side, comparison = 0;
+    uint64_t prefix_len = 0, extra_len;
+    int32_t status;
+
+    if (statement == NULL || request == NULL || request_len == NULL ||
+        statement->struct_size != sizeof(*statement) ||
+        statement->abi_version != PRDB_SDK_SQL_ABI_V20_VERSION ||
+        statement->has_where != 1)
+        return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    if (request_capacity > OPTIMIZER_REQUEST_MAX_BYTES)
+        return PRDB_SDK_OPTIMIZER_ENCODE_LIMIT_EXCEEDED;
+    if (ranges_overlap(statement, sizeof(*statement), request,
+                       request_capacity))
+        return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    base = &statement->base;
+    sql = base->base.base.sql;
+    sql_len = base->base.base.sql_len;
+    filter = statement->where_column;
+    left_relation = base->base.base.left_relation;
+    right_relation = base->base.base.right_relation;
+    left_qualifier = base->left_alias.length != 0
+                         ? base->left_alias : left_relation;
+    right_qualifier = base->right_alias.length != 0
+                          ? base->right_alias : right_relation;
+    if (sql == NULL || sql_len > PRDB_SDK_SQL_MAX_QUERY_BYTES ||
+        filter.relation.length == 0 || filter.column.length == 0 ||
+        !append_identifier_span(sql, sql_len, filter.column, NULL, 0,
+                                &prefix_len))
+        return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+    if (ranges_overlap(sql, sql_len, request, request_capacity) ||
+        ranges_overlap(schema, schema_len, request, request_capacity))
+        return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    if (span_equals(sql, sql_len, filter.relation, left_qualifier)) {
+        filter_side = 0;
+    } else if (span_equals(sql, sql_len, filter.relation, right_qualifier)) {
+        filter_side = 1;
+    } else {
+        return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+    }
+    if (statement->comparison >= PRDB_SDK_SQL_COMPARE_EQUAL &&
+        statement->comparison <= PRDB_SDK_SQL_COMPARE_GREATER_EQUAL) {
+        if (statement->parameter_index == 0 ||
+            statement->parameter_index > 256)
+            return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+        expression_kind = 0;
+        comparison = statement->comparison -
+                     PRDB_SDK_SQL_COMPARE_EQUAL;
+    } else if (statement->comparison == PRDB_SDK_SQL_COMPARE_IS_NULL) {
+        if (statement->parameter_index != 0)
+            return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+        expression_kind = 1;
+    } else if (statement->comparison ==
+               PRDB_SDK_SQL_COMPARE_IS_NOT_NULL) {
+        if (statement->parameter_index != 0)
+            return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+        expression_kind = 2;
+    } else {
+        return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+    }
+    extra_len = 1 + 1 + filter.column.length + 1 +
+                (expression_kind == 0 ? 5 : 0);
+    status = optimizer_encode_join_select_internal(
+        base, schema, schema_len, request,
+        request_capacity >= extra_len ? request_capacity - extra_len : 0,
+        &prefix_len);
+    if (status == PRDB_SDK_OPTIMIZER_ENCODE_BUFFER_TOO_SMALL) {
+        *request_len = prefix_len + extra_len;
+        return status;
+    }
+    if (status != PRDB_SDK_OPTIMIZER_ENCODE_OK) return status;
+    request[2] = PRDB_OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT;
+    uint64_t offset = prefix_len;
+    request[offset++] = (uint8_t)filter_side;
+    if (!append_identifier_span(sql, sql_len, filter.column, request,
+                                request_capacity, &offset))
+        return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+    request[offset++] = (uint8_t)expression_kind;
+    if (expression_kind == 0) {
+        request[offset++] = (uint8_t)comparison;
+        write_u32(request + offset, statement->parameter_index);
+        offset += 4;
+    }
+    *request_len = offset;
+    return PRDB_SDK_OPTIMIZER_ENCODE_OK;
+}
+
 int32_t prdb_sdk_optimizer_encode_select_v1(
     const prdb_sdk_select_v2 *statement, const uint8_t *schema,
     uint32_t schema_len, uint8_t *request, uint64_t request_capacity,
