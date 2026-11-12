@@ -112,6 +112,29 @@ static uint32_t build_join_plan(uint8_t *bytes, uint32_t *projection_side_offset
     return offset;
 }
 
+static uint32_t build_filtered_join_plan(uint8_t *bytes,
+                                         uint32_t *filter_side_offset,
+                                         uint32_t *filter_column_id_offset,
+                                         uint32_t *parameter_index_offset) {
+    uint32_t projection_side_offset;
+    uint32_t right_key_type_offset;
+    uint32_t offset = build_join_plan(bytes, &projection_side_offset,
+                                      &right_key_type_offset);
+    (void)projection_side_offset;
+    (void)right_key_type_offset;
+    bytes[2] = PRDB_SDK_OPTIMIZER_PLAN_KIND_FILTERED_JOIN_SELECT;
+    *filter_side_offset = offset;
+    bytes[offset++] = 1;
+    *filter_column_id_offset = put_column(bytes, &offset, 1, 0);
+    bytes[*filter_column_id_offset] = 0x52;
+    set_column_ordinal(bytes, *filter_column_id_offset, 1);
+    bytes[offset++] = 0; /* parameter comparison */
+    bytes[offset++] = 4; /* greater-than */
+    *parameter_index_offset = offset;
+    put_u32(bytes, &offset, 3);
+    return offset;
+}
+
 static uint32_t build_group_count_plan(uint8_t *bytes,
                                        uint32_t *group_key_id_offset) {
     uint32_t offset = 0;
@@ -993,6 +1016,8 @@ int main(void) {
     uint8_t malformed[sizeof(payload)];
     uint8_t join_payload[1024] = {0};
     uint8_t join_malformed[sizeof(join_payload)];
+    uint8_t filtered_join_payload[sizeof(join_payload)] = {0};
+    uint8_t filtered_join_malformed[sizeof(filtered_join_payload)];
     uint8_t group_count_payload[256] = {0};
     uint8_t group_count_malformed[sizeof(group_count_payload)];
     uint8_t ordered_group_count_payload[256] = {0};
@@ -1014,6 +1039,7 @@ int main(void) {
     static prdb_sdk_optimizer_filter_v1 filter;
     static prdb_sdk_optimizer_update_plan_v1 update_decoded;
     static prdb_sdk_optimizer_join_plan_v1 join_decoded;
+    static prdb_sdk_optimizer_filtered_join_plan_v1 filtered_join_decoded;
     static prdb_sdk_optimizer_group_count_plan_v1 group_count_decoded;
     static prdb_sdk_optimizer_ordered_group_count_plan_v1
         ordered_group_count_decoded;
@@ -1776,6 +1802,53 @@ int main(void) {
            join_decoded.projections[1].relation_side == 1 &&
            join_decoded.join_key_count == 2 && join_decoded.has_limit == 1 &&
            join_decoded.limit == 5);
+
+    uint32_t filtered_side_offset;
+    uint32_t filtered_column_offset;
+    uint32_t filtered_index_offset;
+    uint32_t filtered_join_payload_len = build_filtered_join_plan(
+        filtered_join_payload, &filtered_side_offset, &filtered_column_offset,
+        &filtered_index_offset);
+    assert(prdb_sdk_optimizer_decode_filtered_join_plan_v1(
+               filtered_join_payload, filtered_join_payload_len,
+               &filtered_join_decoded, sizeof(filtered_join_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(filtered_join_decoded.join.right_relation.scan_column_count == 3 &&
+           filtered_join_decoded.filter.relation_side == 1 &&
+           filtered_join_decoded.filter.column.ordinal == 1 &&
+           filtered_join_decoded.filter.column.type_code == 1 &&
+           filtered_join_decoded.filter.expression_kind == 0 &&
+           filtered_join_decoded.filter.comparison == 4 &&
+           filtered_join_decoded.filter.parameter_index == 3);
+    assert(prdb_sdk_optimizer_decode_join_plan_v1(
+               filtered_join_payload, filtered_join_payload_len,
+               &join_decoded, sizeof(join_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    memcpy(filtered_join_malformed, filtered_join_payload,
+           filtered_join_payload_len);
+    filtered_join_malformed[filtered_side_offset] = 2;
+    assert(prdb_sdk_optimizer_decode_filtered_join_plan_v1(
+               filtered_join_malformed, filtered_join_payload_len,
+               &filtered_join_decoded, sizeof(filtered_join_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    memcpy(filtered_join_malformed, filtered_join_payload,
+           filtered_join_payload_len);
+    filtered_join_malformed[filtered_column_offset] = 0x7f;
+    assert(prdb_sdk_optimizer_decode_filtered_join_plan_v1(
+               filtered_join_malformed, filtered_join_payload_len,
+               &filtered_join_decoded, sizeof(filtered_join_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    memcpy(filtered_join_malformed, filtered_join_payload,
+           filtered_join_payload_len);
+    filtered_join_malformed[filtered_index_offset + 3] = 0;
+    assert(prdb_sdk_optimizer_decode_filtered_join_plan_v1(
+               filtered_join_malformed, filtered_join_payload_len,
+               &filtered_join_decoded, sizeof(filtered_join_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    assert(prdb_sdk_optimizer_decode_filtered_join_plan_v1(
+               filtered_join_payload, filtered_join_payload_len + 1,
+               &filtered_join_decoded, sizeof(filtered_join_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
 
     uint32_t group_key_id_offset;
     uint32_t group_count_payload_len = build_group_count_plan(

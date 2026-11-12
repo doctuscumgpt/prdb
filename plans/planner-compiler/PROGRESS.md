@@ -5,7 +5,15 @@
 - Contract: [optimizer specification](../../specs/planner-compiler.md). Statement 12 preserves the frozen statement-4 join request and adds one side-qualified parameter comparison or NULL test; kind 12 preserves kind-4 join metadata and appends the authorized filter column and expression.
 - Implementation: the bounded decoder rejects invalid sides/operators, zero or over-limit parameter indexes, malformed identifiers, and trailing bytes. Binding resolves the filter against the selected authorized relation; plan lowering adds it to that side's ordinal-sorted scan shape. Rust kind-12 decoding validates the filter column is scanned on its declared side and preserves kind-4 behavior unchanged.
 - Verification: the filtered request/bounds, side-specific metadata binding, kind-12 round-trip/scan membership, authorized service plan, and optimizer-process dispatch regressions passed. Generated ABI checks, workspace build, format check, warning-denied Clippy, maintained TinyCC tests, sandbox fixture build, and the full serial delegated-cgroup workspace suite passed. The suite reported 179 library tests, 142 commit tests, and 74 transaction tests, with zero ignored tests across all targets. The TinyCC suite does not yet exercise kind 12.
-- Remaining: TinyCC statement encoding and kind-12 decoding/AST matching, executor identity validation for the filter column, optimizer-backed v20 runner integration, confined cgroup acceptance, and full workspace validation remain open.
+- Remaining: TinyCC statement encoding and AST matching, executor identity validation for the filter column, optimizer-backed v20 runner integration, and confined v20 acceptance remain open.
+
+## OP-7 follow-up: independently decode filtered aliased-join plans in TinyCC — implemented
+
+- Contract: [optimizer specification](../../specs/planner-compiler.md). The SDK independently validates optimizer kind 12 before it can trust a side-qualified filter column or acquire executor capabilities.
+- Implementation: `prdb_sdk_optimizer_decode_filtered_join_plan_v1` accepts only kind 12, decodes the existing kind-4 join body, then validates the filter side, full column record, membership in that side's authorized scan shape, expression kind, comparison operator, and one-based parameter index in the 1–256 range. The existing kind-4 decoder remains strict and rejects kind 12.
+- Regression: the TinyCC fixture accepts a parameterized right-side filter and rejects an invalid side, a filter column absent from the scan, parameter index zero, trailing bytes, and kind 12 through the kind-4 entry point.
+- Verification: maintained `make -f engine/sdk/Makefile test`, sandbox query fixture rebuild, and `git diff --check` passed. The full serial workspace suite passed in the delegated `systemd --user` service: 179 library tests, 142 commit tests, 74 transaction tests, and all other targets passed with zero ignored tests. Both cgroup-backed commit acceptance tests and both metadata process tests ran.
+- Remaining: encode statement 12, match the decoded filter against the v20 AST and invocation parameters, re-resolve the filtered column through executor metadata, and execute the optimizer-backed v20 join through confined acceptance.
 
 ## OP-7 follow-up: ordered single-key grouped aggregates — verified
 

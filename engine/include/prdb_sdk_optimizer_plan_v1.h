@@ -14,6 +14,9 @@
 #define PRDB_SDK_OPTIMIZER_PLAN_MAX_NEXT_REQUESTS UINT32_C(125)
 #define PRDB_SDK_OPTIMIZER_PLAN_MAX_DELETE_TARGETS UINT32_C(128)
 #define PRDB_SDK_OPTIMIZER_PLAN_MAX_UPDATE_ASSIGNMENTS UINT32_C(64)
+#define PRDB_SDK_OPTIMIZER_PLAN_KIND_JOIN_SELECT UINT32_C(4)
+#define PRDB_SDK_OPTIMIZER_PLAN_KIND_FILTERED_JOIN_SELECT UINT32_C(12)
+#define PRDB_SDK_OPTIMIZER_PLAN_MAX_PARAMETER_INDEX UINT32_C(256)
 
 #define PRDB_SDK_OPTIMIZER_PLAN_OK INT32_C(0)
 #define PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT INT32_C(1)
@@ -137,6 +140,23 @@ typedef struct prdb_sdk_optimizer_join_plan_v1 {
     uint32_t has_limit;
     uint32_t limit;
 } prdb_sdk_optimizer_join_plan_v1;
+
+typedef struct prdb_sdk_optimizer_join_filter_v1 {
+    uint32_t relation_side;
+    prdb_sdk_optimizer_plan_column_v1 column;
+    /* 0 parameter comparison, 1 IS NULL, 2 IS NOT NULL. */
+    uint32_t expression_kind;
+    /* 0 equals through 5 greater-or-equal, used for kind 0 only. */
+    uint32_t comparison;
+    uint32_t parameter_index;
+} prdb_sdk_optimizer_join_filter_v1;
+
+typedef struct prdb_sdk_optimizer_filtered_join_plan_v1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    prdb_sdk_optimizer_join_plan_v1 join;
+    prdb_sdk_optimizer_join_filter_v1 filter;
+} prdb_sdk_optimizer_filtered_join_plan_v1;
 
 /* Kind-5 single-key COUNT(*) plan. Its scan shape contains exactly the
  * grouping key; relation and column names borrow the encoded payload. */
@@ -277,6 +297,12 @@ int32_t prdb_sdk_optimizer_decode_update_plan_v1(
 int32_t prdb_sdk_optimizer_decode_join_plan_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_join_plan_v1 *out, uint32_t out_capacity);
+
+/* Independently decodes kind 12, including the authorized filter column and
+ * its bounded comparison or NULL-test metadata. */
+int32_t prdb_sdk_optimizer_decode_filtered_join_plan_v1(
+    const uint8_t *payload, uint64_t payload_len,
+    prdb_sdk_optimizer_filtered_join_plan_v1 *out, uint32_t out_capacity);
 
 /* Independently decode kind-5 single-key COUNT(*) plans, requiring an exact
  * one-column scan shape and canonical relation/limit records. */

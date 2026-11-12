@@ -752,10 +752,12 @@ static int join_scan_contains(
     return 0;
 }
 
-int32_t prdb_sdk_optimizer_decode_join_plan_v1(
+static int32_t decode_join_plan_internal(
     const uint8_t *payload, uint64_t payload_len,
-    prdb_sdk_optimizer_join_plan_v1 *out, uint32_t out_capacity) {
+    prdb_sdk_optimizer_join_plan_v1 *out, uint32_t out_capacity,
+    uint8_t expected_kind, prdb_sdk_optimizer_join_filter_v1 *filter_out) {
     prdb_sdk_optimizer_join_plan_v1 decoded;
+    prdb_sdk_optimizer_join_filter_v1 decoded_filter = {0};
     plan_reader reader;
     uint16_t version;
     uint8_t kind;
@@ -777,7 +779,8 @@ int32_t prdb_sdk_optimizer_decode_join_plan_v1(
     reader.offset = 0;
     if (!prdb_decode_optimizer_plan_header_record(
             payload, PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES,
-            &version, &kind, &reserved) || version != 1 || kind != 4 ||
+            &version, &kind, &reserved) || version != 1 ||
+        kind != expected_kind ||
         reserved != 0)
         return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
     reader.offset = PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
@@ -869,8 +872,66 @@ int32_t prdb_sdk_optimizer_decode_join_plan_v1(
                         ((uint32_t)bytes[1] << 16) |
                         ((uint32_t)bytes[2] << 8) | bytes[3];
     }
+    if (kind == PRDB_SDK_OPTIMIZER_PLAN_KIND_FILTERED_JOIN_SELECT) {
+        uint8_t expression_kind;
+        if (!read_u8(&reader, &flag) || flag > 1 ||
+            !read_column(&reader, &decoded_filter.column))
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        decoded_filter.relation_side = flag;
+        if (!join_scan_contains(flag == 0 ? &decoded.left_relation
+                                          : &decoded.right_relation,
+                                &decoded_filter.column) ||
+            !read_u8(&reader, &expression_kind) || expression_kind > 2)
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        decoded_filter.expression_kind = expression_kind;
+        if (expression_kind == 0) {
+            uint8_t comparison;
+            if (!read_u8(&reader, &comparison) || comparison > 5 ||
+                !take(&reader, 4, &bytes))
+                return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+            decoded_filter.comparison = comparison;
+            decoded_filter.parameter_index = ((uint32_t)bytes[0] << 24) |
+                                             ((uint32_t)bytes[1] << 16) |
+                                             ((uint32_t)bytes[2] << 8) |
+                                             (uint32_t)bytes[3];
+            if (decoded_filter.parameter_index == 0 ||
+                decoded_filter.parameter_index >
+                    PRDB_SDK_OPTIMIZER_PLAN_MAX_PARAMETER_INDEX)
+                return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        }
+        if (filter_out == NULL)
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
+    }
     if (reader.offset != reader.length)
         return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    decoded.struct_size = sizeof(decoded);
+    decoded.abi_version = PRDB_SDK_OPTIMIZER_PLAN_ABI_V1_VERSION;
+    *out = decoded;
+    if (filter_out != NULL) *filter_out = decoded_filter;
+    return PRDB_SDK_OPTIMIZER_PLAN_OK;
+}
+
+int32_t prdb_sdk_optimizer_decode_join_plan_v1(
+    const uint8_t *payload, uint64_t payload_len,
+    prdb_sdk_optimizer_join_plan_v1 *out, uint32_t out_capacity) {
+    return decode_join_plan_internal(payload, payload_len, out, out_capacity,
+                                     PRDB_SDK_OPTIMIZER_PLAN_KIND_JOIN_SELECT,
+                                     NULL);
+}
+
+int32_t prdb_sdk_optimizer_decode_filtered_join_plan_v1(
+    const uint8_t *payload, uint64_t payload_len,
+    prdb_sdk_optimizer_filtered_join_plan_v1 *out, uint32_t out_capacity) {
+    prdb_sdk_optimizer_filtered_join_plan_v1 decoded = {0};
+    int32_t status;
+    if (payload == NULL || out == NULL || out_capacity < sizeof(*out) ||
+        payload_len > PRDB_SDK_OPTIMIZER_MAX_PLAN_BYTES ||
+        ranges_overlap(payload, payload_len, out, sizeof(*out)))
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
+    status = decode_join_plan_internal(
+        payload, payload_len, &decoded.join, sizeof(decoded.join),
+        PRDB_SDK_OPTIMIZER_PLAN_KIND_FILTERED_JOIN_SELECT, &decoded.filter);
+    if (status != PRDB_SDK_OPTIMIZER_PLAN_OK) return status;
     decoded.struct_size = sizeof(decoded);
     decoded.abi_version = PRDB_SDK_OPTIMIZER_PLAN_ABI_V1_VERSION;
     *out = decoded;
