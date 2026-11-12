@@ -21,6 +21,9 @@ use zeroize::Zeroize;
 const WRITERS: usize = 4;
 const WRITES_PER_WRITER: usize = 64;
 const ANALYTIC_ROW_BYTES: usize = 32 * 1024;
+const EXPIRED_OUTCOMES: usize = 256;
+const OUTCOME_PRUNE_BATCH: usize = 16;
+const OUTCOME_MAINTENANCE_PAUSE: Duration = Duration::from_millis(5);
 const TABLE_ID: [u8; 16] = [0x71; 16];
 const SCHEMA_ID: [u8; 16] = [0x72; 16];
 const COLUMN_ID: [u8; 16] = [0x73; 16];
@@ -39,6 +42,18 @@ fn invocation_id(number: usize) -> [u8; 16] {
     let mut id = [0xa5; 16];
     id[8..].copy_from_slice(&(number as u64).to_be_bytes());
     id
+}
+
+fn expired_outcome_id(number: usize) -> [u8; 16] {
+    let mut id = [0x11; 16];
+    id[8..].copy_from_slice(&(number as u64).to_be_bytes());
+    id
+}
+
+fn now_us() -> Result<i64, Box<dyn Error>> {
+    Ok(i64::try_from(
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros(),
+    )?)
 }
 
 fn payload(columns: &[ColumnSchema], value: String) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -120,7 +135,7 @@ fn run_in_directory(data_directory: &std::path::Path) -> Result<(), Box<dyn Erro
     let storage = StorageManager::with_config(
         database,
         StorageManagerConfig {
-            max_invocation_scan_work: 2_000_000,
+            max_invocation_scan_work: 20_000_000,
             ..StorageManagerConfig::default()
         },
     )?;
@@ -129,6 +144,21 @@ fn run_in_directory(data_directory: &std::path::Path) -> Result<(), Box<dyn Erro
         nullable: false,
     }];
     let column_ids = [COLUMN_ID];
+
+    // Seed retained terminal records that are already expired. The measured
+    // maintenance thread will remove them through the same bounded API used
+    // by the service while operational commits are in flight.
+    for number in 0..EXPIRED_OUTCOMES {
+        let expired = InvocationTransaction::begin(
+            database,
+            expired_outcome_id(number + 1),
+            PRINCIPAL_ID,
+            1,
+            1,
+            1,
+        )?;
+        expired.commit()?;
+    }
 
     let initial_value = "s".repeat(ANALYTIC_ROW_BYTES);
     let mut seed = InvocationTransaction::begin(
@@ -244,82 +274,112 @@ fn run_in_directory(data_directory: &std::path::Path) -> Result<(), Box<dyn Erro
         return Err("initial authorized scan did not return the seeded rows".into());
     }
 
-    let barrier = Barrier::new(WRITERS + 1);
+    let barrier = Barrier::new(WRITERS + 2);
     let completed = AtomicUsize::new(0);
     let commit_latencies = Mutex::new(Vec::with_capacity(WRITERS * WRITES_PER_WRITER));
     let writers_started = Instant::now();
     let mut analytical_rounds = 0usize;
     let mut point_reads = 0usize;
 
-    thread::scope(|scope| -> Result<(), Box<dyn Error>> {
-        for writer in 0..WRITERS {
-            let barrier = &barrier;
-            let completed = &completed;
-            let commit_latencies = &commit_latencies;
-            let columns = &columns;
-            let storage = &storage;
-            scope.spawn(move || {
-                barrier.wait();
-                for sequence in 0..WRITES_PER_WRITER {
-                    let mut value = "x".repeat(ANALYTIC_ROW_BYTES);
-                    let prefix = format!("w{writer}-n{sequence}");
-                    value.replace_range(..prefix.len(), &prefix);
-                    let mut transaction = storage
-                        .begin_invocation(
-                            invocation_id(
-                                WRITERS * WRITES_PER_WRITER
-                                    + 2
-                                    + writer * WRITES_PER_WRITER
-                                    + sequence,
-                            ),
-                            PRINCIPAL_ID,
-                            i64::MAX,
-                            1,
-                            ANALYTIC_ROW_BYTES * 2,
-                        )
-                        .expect("begin writer transaction");
-                    transaction
-                        .stage_put(
-                            row_id(writer + 1),
-                            &payload(columns, value).expect("encode row"),
-                        )
-                        .expect("stage writer row");
-                    let commit_started = Instant::now();
-                    transaction.commit().expect("commit writer transaction");
-                    commit_latencies
-                        .lock()
-                        .expect("commit latency mutex")
-                        .push(commit_started.elapsed());
-                }
-                completed.fetch_add(1, Ordering::Release);
-            });
-        }
-        barrier.wait();
-        while completed.load(Ordering::Acquire) != WRITERS {
-            let page = reader.scan_authorized(TABLE_ID, None, 128, &projection)?;
-            if !scan_contains_original_rows(&page.rows, &initial_value)
-                || page.continuation.is_some()
-            {
-                return Err("retained snapshot changed during concurrent commits".into());
-            }
-            analytical_rounds += 1;
+    let (maintenance_removed, maintenance_scanned, mut maintenance_latencies) =
+        thread::scope(|scope| -> Result<_, Box<dyn Error>> {
             for writer in 0..WRITERS {
-                let row = reader
-                    .read_authorized(row_id(writer + 1), &projection)?
-                    .ok_or("retained point read lost a row")?;
-                if !matches!(
-                    row.as_slice(),
-                    [SanitizedCell::Value(ScalarValue::Text(value))]
-                        if value == &initial_value
-                ) {
-                    return Err("retained point read changed during concurrent commits".into());
-                }
-                black_box(row);
-                point_reads += 1;
+                let barrier = &barrier;
+                let completed = &completed;
+                let commit_latencies = &commit_latencies;
+                let columns = &columns;
+                let storage = &storage;
+                scope.spawn(move || {
+                    barrier.wait();
+                    for sequence in 0..WRITES_PER_WRITER {
+                        let mut value = "x".repeat(ANALYTIC_ROW_BYTES);
+                        let prefix = format!("w{writer}-n{sequence}");
+                        value.replace_range(..prefix.len(), &prefix);
+                        let mut transaction = storage
+                            .begin_invocation(
+                                invocation_id(
+                                    WRITERS * WRITES_PER_WRITER
+                                        + 2
+                                        + writer * WRITES_PER_WRITER
+                                        + sequence,
+                                ),
+                                PRINCIPAL_ID,
+                                i64::MAX,
+                                1,
+                                ANALYTIC_ROW_BYTES * 2,
+                            )
+                            .expect("begin writer transaction");
+                        transaction
+                            .stage_put(
+                                row_id(writer + 1),
+                                &payload(columns, value).expect("encode row"),
+                            )
+                            .expect("stage writer row");
+                        let commit_started = Instant::now();
+                        transaction.commit().expect("commit writer transaction");
+                        commit_latencies
+                            .lock()
+                            .expect("commit latency mutex")
+                            .push(commit_started.elapsed());
+                    }
+                    completed.fetch_add(1, Ordering::Release);
+                });
             }
-        }
-        Ok(())
-    })?;
+            let maintenance = scope.spawn(|| {
+                barrier.wait();
+                let maintenance_now = now_us().expect("read maintenance clock");
+                let mut removed = 0usize;
+                let mut scanned = 0usize;
+                let mut latencies = Vec::new();
+                while removed < EXPIRED_OUTCOMES || completed.load(Ordering::Acquire) != WRITERS {
+                    let started = Instant::now();
+                    let result = instance
+                        .prune_expired_outcomes(maintenance_now, OUTCOME_PRUNE_BATCH)
+                        .expect("bounded outcome maintenance");
+                    latencies.push(started.elapsed());
+                    removed += result.removed;
+                    scanned += result.scanned;
+                    thread::sleep(OUTCOME_MAINTENANCE_PAUSE);
+                }
+                (removed, scanned, latencies)
+            });
+            barrier.wait();
+            while completed.load(Ordering::Acquire) != WRITERS {
+                let page = reader.scan_authorized(TABLE_ID, None, 128, &projection)?;
+                if !scan_contains_original_rows(&page.rows, &initial_value)
+                    || page.continuation.is_some()
+                {
+                    return Err("retained snapshot changed during concurrent commits".into());
+                }
+                analytical_rounds += 1;
+                for writer in 0..WRITERS {
+                    let row = reader
+                        .read_authorized(row_id(writer + 1), &projection)?
+                        .ok_or("retained point read lost a row")?;
+                    if !matches!(
+                        row.as_slice(),
+                        [SanitizedCell::Value(ScalarValue::Text(value))]
+                            if value == &initial_value
+                    ) {
+                        return Err("retained point read changed during concurrent commits".into());
+                    }
+                    black_box(row);
+                    point_reads += 1;
+                }
+                thread::yield_now();
+            }
+            let maintenance = maintenance
+                .join()
+                .map_err(|_| "outcome maintenance thread panicked")?;
+            if maintenance.0 != EXPIRED_OUTCOMES {
+                return Err(format!(
+                    "outcome maintenance removed {} expired records, expected {EXPIRED_OUTCOMES}",
+                    maintenance.0
+                )
+                .into());
+            }
+            Ok(maintenance)
+        })?;
 
     let elapsed = writers_started.elapsed();
     let mut mixed_commit_latencies = commit_latencies.into_inner().expect("commit latency mutex");
@@ -352,6 +412,13 @@ fn run_in_directory(data_directory: &std::path::Path) -> Result<(), Box<dyn Erro
     println!(
         "concurrent analytics: {analytical_rounds} full authorized scans; {point_reads} point reads; {:.1} scans/s",
         analytical_rounds as f64 / elapsed.as_secs_f64()
+    );
+    println!(
+        "concurrent outcome maintenance: removed {maintenance_removed} expired outcomes; scanned {maintenance_scanned} records in {} bounded transactions; transaction latency p50/p95/p99: {:.3}/{:.3}/{:.3} ms",
+        maintenance_latencies.len(),
+        percentile(&mut maintenance_latencies, 50).as_secs_f64() * 1_000.0,
+        percentile(&mut maintenance_latencies, 95).as_secs_f64() * 1_000.0,
+        percentile(&mut maintenance_latencies, 99).as_secs_f64() * 1_000.0
     );
     println!("reader snapshot: retained original values through all writer commits");
     drop(storage);

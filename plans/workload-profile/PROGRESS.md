@@ -1,5 +1,13 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: bounded outcome maintenance during retained reads and commits — measured
+
+- Harness: [`storage_pressure.rs`](../../engine/examples/storage_pressure.rs) seeds 256 expired terminal outcomes, then runs four operational writers (256 durable commits), a retained authorized reader, and repeated outcome-prune transactions together. Each maintenance transaction scans at most 16 outcomes; a 5 ms pause between batches deliberately yields CPU and writer admission. The production supervisor currently schedules outcome maintenance every 60 seconds, so this is a synthetic saturation profile rather than its normal cadence.
+- Repeatability: five sequential fresh-database runs on Linux x86_64, Rust 1.95.0, redb 4.4.0. The median of run-level commit p50/p95/p99 was 5.730/15.595/21.117 ms operational-only and 10.383/14.495/21.385 ms under retained authorized reads plus pruning. Mixed phases completed in 0.650–0.677 s (378.1–393.7 commits/s), 9,693–10,495 full scans, 38,772–41,980 point reads, and removed all 256 expired outcomes in 43–45 bounded transactions.
+- Verification: the five release harness runs completed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, maintained TinyCC SDK tests, and the full serial delegated-cgroup workspace suite passed. The commit integration target reported 142 passed and 0 ignored.
+- Interpretation: a prior unpaced harness run let read and maintenance loops spin, producing up to 43,592 prune transactions and writer p99 values above 10 seconds. Adding cooperative reader yielding and a 5 ms inter-batch pause eliminated that artificial scheduler starvation. The final repeated sample shows higher median commit p50 under this local mixed workload; p95/p99 overlap with operational-only runs. These results are comparative evidence, not service-level targets or a model of the configured 60-second maintenance cadence.
+- Remaining: cross-process saturated SQL analytics, output/planning queue pressure, cancellation/reclamation during load, memory/copy accounting, and target-hardware repeats remain open.
+
 ## WI-7 follow-up: authorized point reads and commits during confined SQL — measured
 
 - Harness: the confined SQL acceptance compares authorized point reads and `commit()` durations across four operational threads. Baseline uses 64 reads and commits before START; the analytics phase records only operations that finish while the confined executor process is still live. Point-read time covers `read_catalog_authorized_row`, including pinned schema/grant/policy loading and projection; commit time covers `commit()` only.
