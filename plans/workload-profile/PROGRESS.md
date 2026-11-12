@@ -1,5 +1,11 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: operational storage work during confined SQL — covered
+
+- Regression: the enabled `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance now runs independently authenticated operational invocations alongside the real sandboxed SQL worker. Each invocation performs an authorized grouped-table scan and durable read-only commit; the test continues this loop through worker-channel service/result relay and requires at least one sample where the executor process is still live.
+- Verification: the focused acceptance passed through the delegated cgroup launcher. The cgroup probe reported writable `cpu`, `memory`, and `pids` delegation. The full locked workspace suite passed serially with the sandbox tests enabled; the commit integration target reported 142 passed, 0 failed, and 0 ignored. Workspace build, formatting, and warning-denied Clippy passed.
+- Scope: this verifies concurrent correctness and admission on one small local dataset. It does not provide latency percentiles or establish behavior under sustained saturation; benchmarked point-read/commit latency, larger concurrent analytics, maintenance pressure, memory/copy accounting, and target-hardware repeats remain open.
+
 ## WI-7 dependency: authorized-estimate baseline cost — measured
 
 - Harness: [`statistics_estimate.rs`](../../engine/examples/statistics_estimate.rs) builds a temporary READY redb database with 8,192 deterministic INTEGER rows, verifies an authorized exact summary, and reports repeated storage-estimate latency separately from setup.
