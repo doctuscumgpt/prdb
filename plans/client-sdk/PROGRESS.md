@@ -1,11 +1,11 @@
 # Client SDK Progress
 
-## SDK-5 / CP-1: schema, table, and unique-constraint DDL through real processes — verified
+## SDK-5 / CP-1: schema, table, key, and object-grant DDL through real processes — verified
 
-- Contract: [client SDK](../../specs/client-sdk.md), [client protocol](../../specs/client-protocol.md), and [schema DDL](../../specs/ddl-schema.md). Authenticated AdminClient DDL must cross the TCP gateway and supervisor service channel, return validated committed IDs, and publish catalog metadata visible to a fresh authorized metadata session.
-- Regression: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` now creates a schema, table, and unique constraint through AdminClient, checks increasing commit sequences, reconnects through MetadataClient to discover the schema/table/column IDs, then drops the table and schema through AdminClient. The test runs alongside the existing identity/token, SQL metadata, and role lifecycle process checks.
-- Verification: the focused real-process integration passed inside a delegated `systemd --user` service with `cpu`, `memory`, and `pids` enabled. It also ran the confined restricted-metadata SQL artifact and confirmed the durable COMMITTED result.
-- Remaining: broaden multi-process ADMIN DDL coverage to foreign keys, CHECK constraints, object grants, policies, and index lifecycle; add the same operation families to client CLI acceptance where needed.
+- Contract: [client SDK](../../specs/client-sdk.md), [client protocol](../../specs/client-protocol.md), and [schema DDL](../../specs/ddl-schema.md). Authenticated AdminClient DDL must cross the TCP gateway and supervisor service channel, return validated committed IDs, publish catalog metadata, and make grant/revocation changes visible to an authenticated member.
+- Regression: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` creates a schema, table, and unique constraint through AdminClient, then grants schema USAGE plus table and column SELECT to a member. The member's authenticated MetadataClient discovers the schema, table, and column; after all three grants are revoked, the same client can no longer discover the schema. The test checks commit-sequence ordering, cleans up the table/schema through ADMIN, and runs alongside identity/token, SQL metadata, and role lifecycle process checks.
+- Verification: the focused real-process integration passed inside a delegated `systemd --user` service with `cpu`, `memory`, and `pids` enabled. It also ran the confined restricted-metadata SQL artifact and confirmed the durable COMMITTED result. Workspace build, formatting, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed; all sandbox and process cases ran with zero ignored.
+- Remaining: broaden multi-process ADMIN DDL coverage to foreign keys, CHECK constraints, policies, and index lifecycle; add the same operation families to client CLI acceptance where needed.
 
 ## SQLSO-6: client-supplied SQL library uploads — implemented
 
@@ -60,7 +60,7 @@
 - Contract: [Client SDK](../../specs/client-sdk.md). `prdb-client discover` lists only authenticated visible schemas, relations, and declared columns, with optional exact-name schema/relation filters. Relation filtering requires a schema. Output is tab-separated, uses lowercase IDs, preserves ordinal order, and includes the declared scalar type and nullability.
 - Red/green evidence: a unit fixture checks every initial scalar type spelling and parameterized DECIMAL/VARCHAR metadata. The real gateway/supervisor process test runs the compiled CLI over the authenticated control path for `information_schema.schemata` and checks the schema, relation, and first ordered column records.
 - Verification: focused `prdb-client` unit tests and `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` passed. Locked workspace build, format check, warning-denied Clippy, serial workspace tests, and `make -f engine/sdk/Makefile test` also passed; the commit suite reported 129 passed and 3 cgroup-dependent tests ignored.
-- Remaining: separate-process ADMIN families for schema/table/constraint, privilege, policy, and index operations; SDK packaging/release gates; confined artifact execution remains governed by the Linux sandbox host requirements.
+- Remaining: separate-process ADMIN families for foreign keys, CHECK constraints, policies, and index operations; SDK packaging/release gates; confined artifact execution remains governed by the Linux sandbox host requirements.
 
 ## SDK-3 dependency: ABI v4 PMF1 and query packaging — implemented
 
@@ -256,7 +256,7 @@
 - Contract: the control-mode AdminClient must cross the dedicated gateway and supervisor process boundary; storage must independently enforce authority, token persistence, and revocation.
 - Regression: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` now creates/renames/drops a role through `AdminClient`, creates a user, issues a token, writes and reloads the private credential file, authenticates a fresh MetadataClient through the processes, revokes the token, then proves that token cannot authenticate again. The test also checks secret input buffers are zeroized.
 - Verification: the focused real-process test passed. Full workspace build, format check, warning-denied Clippy, and tests passed; the commit integration target reported 124 passed and 3 cgroup-dependent ignored. One separate sandbox-dependent process test remains ignored.
-- Remaining: extend multi-process ADMIN coverage to foreign keys, CHECK constraints, object grants, policies, and index lifecycle; add acceptance coverage for the related admin CLI commands.
+- Remaining: extend multi-process ADMIN coverage to foreign keys, CHECK constraints, policies, and index lifecycle; add acceptance coverage for the related admin CLI commands.
 
 ## SDK-5 dependency: typed schema rename AdminClient operation — implemented
 

@@ -797,11 +797,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         Some(ddl_table.column_ids[0])
     );
     drop(ddl_metadata);
-    let dropped_table = admin.drop_table(ddl_table.table_id)?;
-    assert!(dropped_table.commit_sequence > ddl_constraint.commit_sequence);
-    assert!(
-        admin.drop_schema(ddl_schema.identity_id)?.commit_sequence > dropped_table.commit_sequence
-    );
     assert_eq!(
         admin.cancel_invocation(committed_invocation_id)?,
         CancellationResult::Terminal(TerminalOutcome::Committed)
@@ -884,6 +879,86 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     write_client_credentials(&member_credentials_path, &member_credentials)?;
     drop(member_credentials);
     drop(member_token);
+    let usage_grant = admin.grant_object_privilege(
+        member_user.identity_id,
+        ddl_schema.identity_id,
+        AdminObjectPrivilege::Usage,
+        AdminObjectGrantTarget::Object,
+    )?;
+    let table_grant = admin.grant_object_privilege(
+        member_user.identity_id,
+        ddl_table.table_id,
+        AdminObjectPrivilege::Select,
+        AdminObjectGrantTarget::Object,
+    )?;
+    let column_grant = admin.grant_object_privilege(
+        member_user.identity_id,
+        ddl_table.table_id,
+        AdminObjectPrivilege::Select,
+        AdminObjectGrantTarget::Column(ddl_table.column_ids[0]),
+    )?;
+    assert!(usage_grant.commit_sequence < table_grant.commit_sequence);
+    assert!(table_grant.commit_sequence < column_grant.commit_sequence);
+    let mut member_metadata_credentials = read_client_credentials(&member_credentials_path)?;
+    let mut member_metadata = MetadataClient::connect_authenticated(
+        address,
+        member_metadata_credentials.token_id,
+        &mut member_metadata_credentials.token_secret,
+    )?;
+    assert!(
+        member_metadata
+            .list_schemas()?
+            .iter()
+            .any(|schema| schema.schema_id == ddl_schema.identity_id)
+    );
+    assert_eq!(
+        member_metadata
+            .list_relations(ddl_schema.identity_id)?
+            .iter()
+            .map(|relation| relation.relation_id)
+            .collect::<Vec<_>>(),
+        [ddl_table.table_id]
+    );
+    assert_eq!(
+        member_metadata
+            .list_columns(ddl_schema.identity_id, ddl_table.table_id)?
+            .iter()
+            .map(|column| column.column_id)
+            .collect::<Vec<_>>(),
+        ddl_table.column_ids
+    );
+    let revoked_column = admin.revoke_object_privilege(
+        member_user.identity_id,
+        ddl_table.table_id,
+        AdminObjectPrivilege::Select,
+        AdminObjectGrantTarget::Column(ddl_table.column_ids[0]),
+    )?;
+    let revoked_table = admin.revoke_object_privilege(
+        member_user.identity_id,
+        ddl_table.table_id,
+        AdminObjectPrivilege::Select,
+        AdminObjectGrantTarget::Object,
+    )?;
+    let revoked_usage = admin.revoke_object_privilege(
+        member_user.identity_id,
+        ddl_schema.identity_id,
+        AdminObjectPrivilege::Usage,
+        AdminObjectGrantTarget::Object,
+    )?;
+    assert!(revoked_column.commit_sequence < revoked_table.commit_sequence);
+    assert!(revoked_table.commit_sequence < revoked_usage.commit_sequence);
+    assert!(
+        !member_metadata
+            .list_schemas()?
+            .iter()
+            .any(|schema| schema.schema_id == ddl_schema.identity_id)
+    );
+    drop(member_metadata);
+    let dropped_table = admin.drop_table(ddl_table.table_id)?;
+    assert!(dropped_table.commit_sequence > ddl_constraint.commit_sequence);
+    assert!(
+        admin.drop_schema(ddl_schema.identity_id)?.commit_sequence > dropped_table.commit_sequence
+    );
     let role_membership_address = address.to_string();
     let role_membership_credentials = admin_cancel_credentials_path
         .to_str()
