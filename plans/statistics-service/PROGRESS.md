@@ -1,5 +1,13 @@
 # Statistics Service Progress
 
+## ST-2 / OP-4: bounded population probe contract synchronized — documented
+
+- Contract: ordinary unordered single-table SELECT may use a separate estimate request to resolve only populations of 0–4 rows. The probe reads at most five row keys, does not decode row values, and returns `Unknown` for larger populations, data-dependent policies, oversized overlays, unsupported metadata, or exhausted allowance. It shares the cumulative planner estimate allowance with the scoped scan summary.
+- Planner use: exact zero can drive the validated empty-view hint; counts 1–4 can choose a sequential scan over a point/range path under the locally measured heuristic. The planner estimate does not grant execution authority; SDK and storage checks remain definitive.
+- Changed contracts: [statistics service](../../specs/statistics-service.md), [storage manager](../../specs/storage-manager.md), and [statistics plan](README.md) now describe the implemented probe alongside the original bounded scan summary. [Planner/compiler](../planner-compiler/README.md) and its specification already record the implementation details and host-local timing evidence.
+- Verification evidence: the population-probe implementation had passed the serial delegated-cgroup workspace suite, formatting, warning-denied Clippy, and focused hidden-cell invariance regression in the preceding increments. This documentation-only synchronization was checked with `git diff --check` and link/wording review; runtime tests were not rerun.
+- Remaining: predicate selectivity, broader policy-filtered estimates, task draining, cache validity, and maintenance collection remain open.
+
 ## ST-2 / WI-7: repeatable authorized-estimate cost harness — measured
 
 - Artifact: [`statistics_estimate.rs`](../../engine/examples/statistics_estimate.rs) seeds a temporary READY redb database with a deterministic 8,192-row INTEGER relation, constructs an explicitly authorized projection, runs 11 estimates over fresh invocation snapshots, verifies each exact summary, and reports median/p95 call latency. Bootstrap and seed writes are outside the timed interval.
