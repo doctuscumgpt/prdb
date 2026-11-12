@@ -149,7 +149,10 @@ fn exchange_client_request(
 fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
     use prdb_engine::bootstrap::initialize;
     use prdb_engine::client_protocol::{ClientFrameDecoder, ClientResponseSequences};
-    use prdb_engine::client_submit::{AdminClient, AdminColumnDefinition, InvocationStatus};
+    use prdb_engine::client_submit::{
+        AdminClient, AdminColumnDefinition, AdminObjectGrantTarget, AdminObjectPrivilege,
+        InvocationStatus,
+    };
     use prdb_engine::submission_manifest::{encode_manifest_v1, manifest_v1_from_elf};
     use sha2::{Digest, Sha256};
     use std::io::{BufRead, BufReader};
@@ -681,9 +684,40 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
                 }],
             )
             .expect("create table through process ADMIN path");
-        control
+        let primary_key = control
             .create_primary_key(table.table_id, &[table.column_ids[0]])
             .expect("create primary key through process ADMIN path");
+        let child = control
+            .create_table(
+                schema.identity_id,
+                "event_links",
+                &[AdminColumnDefinition {
+                    name: "event_id".to_owned(),
+                    scalar_type: prdb_engine::tuple::ScalarType::Uuid,
+                    nullable: true,
+                    generated_uuid_identity: false,
+                    default: None,
+                }],
+            )
+            .expect("create referencing table through process ADMIN path");
+        control
+            .grant_object_privilege(
+                admin_user_id,
+                table.table_id,
+                AdminObjectPrivilege::References,
+                AdminObjectGrantTarget::Column(table.column_ids[0]),
+            )
+            .expect("grant REFERENCES on the target key through process ADMIN path");
+        control
+            .create_foreign_key(
+                child.table_id,
+                &[child.column_ids[0]],
+                primary_key.constraint_id,
+            )
+            .expect("create foreign key through process ADMIN path");
+        control
+            .drop_table(child.table_id)
+            .expect("drop referencing table and owned foreign key through process ADMIN path");
         control
             .drop_table(table.table_id)
             .expect("drop table through process ADMIN path");

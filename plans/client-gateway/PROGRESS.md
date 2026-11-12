@@ -152,9 +152,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: the focused process test passed with the typed `AdminClient` path in the delegated service. Workspace formatting/build/warning-denied Clippy and the full serial workspace suite passed in the delegated service with sandbox/process tests enabled; no tests were ignored.
 - Scope: proves confined result backpressure does not consume reserved control capacity across the actual gateway and supervisor binaries. Broader SQL acceptance remains open.
 
-## GW-2 / GW-3: process-level schema, table, and key ADMIN lifecycle — covered
+## GW-2 / GW-3: process-level schema, table, key, and foreign-key ADMIN lifecycle — covered
 
-- Regression: the production gateway and supervisor binary test uses `AdminClient` on the reserved control endpoint to create a regular user/token and confirm that token cannot create a schema; the administrator then creates that same name, creates a UUID identity table and PRIMARY KEY, and drops the objects. Before DDL, the same test verifies control STATUS progresses while another authenticated query client is blocked draining its result stream.
+- Regression: the production gateway and supervisor binary test uses `AdminClient` on the reserved control endpoint to create a regular user/token and confirm that token cannot create a schema; the administrator then creates that same name, creates a UUID identity table and PRIMARY KEY, grants `REFERENCES` on its key column, creates a FOREIGN KEY from a second table, and drops the referencing objects. Before DDL, the same test verifies control STATUS progresses while another authenticated query client is blocked draining its result stream.
 - Verification: the focused process regression passed inside the delegated user service. Full workspace and SDK validation are recorded in [schema DDL progress](../ddl-schema/PROGRESS.md).
 - Scope: confirms that the reserved control lane and process service carry authenticated DDL requests through to storage while query output is backpressured; it does not cover every administrative operation or crash recovery.
 
