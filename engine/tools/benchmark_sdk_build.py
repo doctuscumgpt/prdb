@@ -16,7 +16,10 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = ROOT / "engine/sdk/Makefile"
-QUERY_SOURCE = ROOT / "engine/tests/fixtures/sql_v3_caught_error.c"
+QUERY_SOURCES = {
+    "optimizer-sql": ROOT / "engine/tests/fixtures/sql_v3_write_read.c",
+    "caught-error": ROOT / "engine/tests/fixtures/sql_v3_caught_error.c",
+}
 
 
 def measure(command: list[str], cwd: Path) -> float:
@@ -65,9 +68,16 @@ def main() -> int:
         "--runs", type=int, default=5,
         help="clean archive and per-query samples (default: 5; minimum: 2)",
     )
+    parser.add_argument(
+        "--query-source",
+        choices=QUERY_SOURCES,
+        default="optimizer-sql",
+        help="TinyCC fixture to compile (default: optimizer-sql)",
+    )
     args = parser.parse_args()
     if args.runs < 2 or args.runs > 50:
         parser.error("--runs must be between 2 and 50")
+    query_source = QUERY_SOURCES[args.query_source]
 
     make = shutil.which("make")
     tcc = shutil.which("tcc")
@@ -118,7 +128,7 @@ def main() -> int:
                         "-I",
                         str(ROOT / "engine/include"),
                         "-c",
-                        str(QUERY_SOURCE),
+                        str(query_source),
                         "-o",
                         str(obj),
                     ],
@@ -148,7 +158,8 @@ def main() -> int:
                     "tcc": tool_version(tcc, "-version"),
                     "linker": tool_version(linker, "--version"),
                     "runs": args.runs,
-                    "query_source": QUERY_SOURCE.relative_to(ROOT).as_posix(),
+                    "query_source": query_source.relative_to(ROOT).as_posix(),
+                    "query_source_profile": args.query_source,
                     "os_cache_state": "uncontrolled; first sample is not guaranteed cold",
                 },
                 "sdk_archive_clean_build": summarize(clean_builds),

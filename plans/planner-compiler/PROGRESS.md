@@ -47,6 +47,12 @@
 - Confined regression: the maintained SQL artifact executes `SELECT left_key FROM grouped_records WHERE left_key >= $1 AND left_key < $2 LIMIT 1` through the optimizer and non-unique range path, with typed parameters 1 and 2; it returns the expected row.
 - Verification: focused Rust planner test, full maintained SDK tests, `sandbox-query-fixture` rebuild, and focused delegated-cgroup acceptance passed. Workspace build, format check, warning-denied Clippy, and release-profile validation passed. The full serial delegated-cgroup workspace suite passed with 195 library tests, 148 commit tests, 74 transaction tests, 5 tuple tests, and zero ignored across test targets.
 
+## OP-5 follow-up: measure optimizer SQL compilation and linking — measured
+
+- The maintained [`benchmark_sdk_build.py`](../../engine/tools/benchmark_sdk_build.py) now defaults to compiling the real optimizer-backed SQL artifact and retains the caught-error fixture as an explicit alternate profile. It reports the selected fixture alongside SDK archive build, TinyCC compile, and GNU shared-link timings.
+- Five local Linux x86_64 runs with the pinned TinyCC 0.9.27-unstable-2025-01-06 and GCC 15.3.0 measured optimizer SQL compile at 5.782 ms median after the first sample (7.278 ms); shared linking measured 43.232 ms median (44.972 ms first). SDK archive clean builds measured 135.891 ms median, with a 4.113 ms no-op rebuild. The filesystem cache state was uncontrolled.
+- Scope: this isolates compilation and linking only. It does not measure optimizer planning, executor setup, point/range result latency, or scan-fallback comparison; the end-to-end indexed-workload benchmark remains open.
+
 ## OP-7 follow-up: backpressure per-invocation planner submissions — verified
 
 - Contract: [optimizer specification](../../specs/planner-compiler.md). The isolated optimizer handles one submission at a time and waits for the matching invocation-scoped metadata response before planning the next request; request and estimate counts are bounded per connection.
