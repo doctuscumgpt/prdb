@@ -29683,27 +29683,26 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
             EstimateScanResponse::Unknown
         );
 
-        let follow_up_id = exhausted_id + 1;
-        assert!(follow_up_id < MAX_PLANNER_REQUESTS_PER_CONNECTION as u64);
+        let fallback_id = exhausted_id + 1;
+        assert!(fallback_id < MAX_PLANNER_REQUESTS_PER_CONNECTION as u64);
         prdb_engine::ipc::write_frame(
             &mut client,
             &IpcFrame {
-                operation: IpcOperation::DescribeRelation as u16,
-                request_id: follow_up_id,
-                payload: ResolveRelationRequest {
+                operation: IpcOperation::DescribePlanRelation as u16,
+                request_id: fallback_id,
+                payload: DescribePlanRelationRequest {
                     schema_name: "planner_stats".to_owned(),
                     relation_name: "observations".to_owned(),
+                    include_empty_proof: true,
                 }
                 .encode()?,
             },
         )?;
-        let follow_up = prdb_engine::ipc::read_frame(&mut client)?
+        let fallback = prdb_engine::ipc::read_frame(&mut client)?
             .ok_or("planner stream closed after estimate fallback")?;
-        assert!(
-            DescribeRelationResponse::decode(&follow_up.payload)?
-                .table
-                .is_some()
-        );
+        let fallback = DescribePlanRelationResponse::decode(&fallback.payload)?;
+        assert!(!fallback.proven_empty);
+        assert!(fallback.relation.is_some());
         client.shutdown(Shutdown::Write)?;
         drop(client);
 

@@ -551,6 +551,10 @@ mod tests {
             assert_eq!(plan.relation.schema_version, 3);
             assert_eq!(plan.relation.table_epoch, 7);
             assert!(
+                !plan.empty_view_hint,
+                "missing storage proof must keep the bounded scan plan"
+            );
+            assert!(
                 matches!(plan.nodes.first(), Some(PlanNode::Scan { columns }) if columns[0].column_id == [3; 16])
             );
             submission_client.shutdown(Shutdown::Write).unwrap();
