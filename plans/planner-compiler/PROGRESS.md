@@ -39,6 +39,15 @@
 - Verification: full maintained `make -f engine/sdk/Makefile test` passed with TinyCC `-Wall -Wextra -Werror`, all eight ABI generator tests, and generated ABI consistency. `git diff --check` passed.
 - Remaining: connect statement-12 submission, AST matching, and executor identity checks to the v20 optimized runner, then exercise it through delegated-cgroup confined acceptance.
 
+## OP-7 follow-up: optimizer-backed filtered join runner — verified
+
+- Contract: submit statement 12, match the returned kind-12 plan against the parsed v20 SQL and typed parameters, re-resolve both relations and complete scan shapes through executor storage, then execute the bounded filtered join.
+- Implementation: `prdb_sdk_sql_execute_inner_join_optimizer_v20` now performs those gates before invoking the v20 join kernel. The optimized path accounts for its four extra executor requests by limiting each scan to 117 pages (the direct v20 runner remains at 119).
+- Regression: the maintained TinyCC executor fixture returns a kind-12 optimizer plan for a parameterized right-side filter, validates the matching join, and checks one exact matching row plus the planner, identity-resolution, executor-request, and failure-latch counts.
+- Confined acceptance: the ABI v5 `sql_v3_write_read.c` artifact now runs the parameterized statement-12/kind-12 join through optimizer submission, AST matching, executor identity re-resolution, bounded execution, and SQLR relay. The acceptance verifies both direct and optimizer-backed v20 result frames as `(1, 42)`.
+- Verification: forced TinyCC rebuild of the targeted executor fixture, full maintained SDK suite, ABI generator consistency and all eight generator tests passed. The focused delegated-cgroup commit acceptance passed (`1 passed, 0 ignored`). The complete serial delegated-cgroup workspace suite passed, including 179 library tests, 142 commit tests, 74 transaction tests, and all remaining targets with zero ignored tests. `cargo fmt --all -- --check`, warning-denied workspace Clippy, and `git diff --check` passed.
+- Remaining: continue with the next open planner/compiler milestone in the component plan.
+
 ## OP-7 follow-up: ordered single-key grouped aggregates — verified
 
 - Contract: request statement 11 / plan kind 11 extends the statement-10 single-key COUNT/MIN/MAX/SUM/AVG shape with up to two distinct ORDER BY expressions drawn from the group key or selected aggregate, preserving direction, NULL placement, and optional LIMIT. WHERE, HAVING, extra projections, and unsupported argument types remain rejected.

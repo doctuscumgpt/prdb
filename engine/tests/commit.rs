@@ -23888,6 +23888,23 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         ]
         .concat()
     );
+    let optimizer_filtered_joined =
+        read_frame(&mut gateway)?.ok_or("missing optimizer filtered join SQLR result")?;
+    assert_eq!(
+        optimizer_filtered_joined.operation,
+        Operation::GatewayResultData as u16
+    );
+    assert_eq!(optimizer_filtered_joined.request_id, accepted.request_id);
+    assert_eq!(
+        optimizer_filtered_joined.payload,
+        [
+            b"SQLR".as_slice(),
+            &[0, 1, 0, 2],
+            &filtered_join_integer_field(b"left_key", 1),
+            &filtered_join_integer_field(b"id", 42),
+        ]
+        .concat()
+    );
     for expected_right_key in [9u32, 7u32] {
         let ordered_select =
             read_frame(&mut gateway)?.ok_or("missing ordered SELECT SQLR result")?;

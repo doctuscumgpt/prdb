@@ -5,6 +5,7 @@
 #include "prdb_sdk_optimizer_v1.h"
 
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
 
 #define JOIN_V16_STRESS_ROWS 47
@@ -119,6 +120,19 @@ static uint32_t build_optimizer_join_plan(uint8_t *bytes) {
     put_plan_column(bytes, &offset, 0x32, 1, 1);
     put_plan_column(bytes, &offset, 0x32, 1, 1);
     bytes[offset++] = 0;
+    return offset;
+}
+
+static uint32_t build_optimizer_filtered_join_plan(uint8_t *bytes) {
+    uint32_t offset = build_optimizer_join_plan(bytes);
+    bytes[2] = PRDB_OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT;
+    bytes[offset - 1] = 1;
+    put_u32(bytes, &offset, 1);
+    bytes[offset++] = 1;
+    put_plan_column(bytes, &offset, 0x32, 1, 1);
+    bytes[offset++] = 0;
+    bytes[offset++] = 5;
+    put_u32(bytes, &offset, 1);
     return offset;
 }
 
@@ -279,7 +293,8 @@ static int32_t optimizer_request_v5(void *context, uint16_t operation,
     mock_state *mock = (mock_state *)context;
     assert(operation == PRDB_IPC_OP_OPTIMIZE_JOIN_SELECT);
     assert(request_len >= 4 && request[0] == 0 && request[1] == 1 &&
-           request[2] == PRDB_OPTIMIZER_JOIN_SELECT_STATEMENT &&
+           (request[2] == PRDB_OPTIMIZER_JOIN_SELECT_STATEMENT ||
+            request[2] == PRDB_OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT) &&
            request[3] == 0);
     ++mock->optimizer_calls;
     if (mock->optimizer_response_len > capacity) {
@@ -625,6 +640,63 @@ static int32_t run_query_v20(mock_state *mock, row_capture *capture,
         materialized_capacity, on_row_v20, capture);
 }
 
+static int32_t run_query_optimizer_v20(
+    mock_state *mock, row_capture *capture, const uint8_t *sql,
+    uint64_t sql_len, const prdb_sdk_value_v1 *parameters,
+    uint32_t parameter_count) {
+    static const uint8_t schema[] = "app";
+    uint8_t optimizer_request[512] = {0};
+    uint8_t optimizer_response[2048] = {0};
+    uint8_t left_planner_response[256] = {0};
+    uint8_t right_planner_response[256] = {0};
+    uint8_t left_executor_response[512] = {0};
+    uint8_t right_executor_response[512] = {0};
+    uint8_t batch_response[8192] = {0};
+    uint8_t materialized_bytes[4096] = {0};
+    uint8_t integer_names[2][11] = {{0}};
+    prdb_sdk_sql_column_shape_v2 left_planner_columns[2] = {{0}};
+    prdb_sdk_sql_column_shape_v2 right_planner_columns[2] = {{0}};
+    prdb_sdk_sql_column_shape_v2 left_executor_columns[2] = {{0}};
+    prdb_sdk_sql_column_shape_v2 right_executor_columns[2] = {{0}};
+    prdb_sdk_value_v1 cell_scratch[2] = {{0}};
+    prdb_sdk_sql_join_materialized_row_v16 left_rows[
+        PRDB_SDK_SQL_EXEC_V8_MAX_ROWS] = {{{0}}};
+    prdb_sdk_sql_join_materialized_row_v16 right_rows[
+        PRDB_SDK_SQL_EXEC_V8_MAX_ROWS] = {{{0}}};
+    prdb_host_api_v3 host3 = {sizeof(host3), PRDB_QUERY_ABI_V3_VERSION,
+                              mock, executor_request, planner_request, NULL,
+                              statement_failure};
+    prdb_host_api_v4 host4 = {host3, optimizer_request_v4};
+    prdb_host_api_v5 host5 = {host4, optimizer_request_v5};
+    memcpy(integer_names[0], "account_id", sizeof("account_id") - 1);
+    memcpy(integer_names[1], "value", sizeof("value") - 1);
+    for (uint32_t index = 0; index < 2; ++index) {
+        const char *name = index == 0 ? "account_id" : "value";
+        uint32_t len = (uint32_t)strlen(name);
+        left_planner_columns[index] = (prdb_sdk_sql_column_shape_v2){
+            integer_names[index], len, index, PRDB_SDK_VALUE_TYPE_INTEGER,
+            0, 0};
+        right_planner_columns[index] = left_planner_columns[index];
+        left_executor_columns[index] = left_planner_columns[index];
+        right_executor_columns[index] = left_planner_columns[index];
+    }
+    return prdb_sdk_sql_execute_inner_join_optimizer_v20(
+        &host5, schema, sizeof(schema) - 1, sql, sql_len, parameters,
+        parameter_count, JOIN_V16_ROW_LIMIT, 8192, optimizer_request,
+        sizeof(optimizer_request), optimizer_response,
+        sizeof(optimizer_response), left_planner_response,
+        sizeof(left_planner_response), right_planner_response,
+        sizeof(right_planner_response), left_executor_response,
+        sizeof(left_executor_response), right_executor_response,
+        sizeof(right_executor_response), batch_response,
+        sizeof(batch_response), left_planner_columns, 2,
+        right_planner_columns, 2, left_executor_columns, 2,
+        right_executor_columns, 2, cell_scratch, 2, left_rows,
+        PRDB_SDK_SQL_EXEC_V8_MAX_ROWS, right_rows,
+        PRDB_SDK_SQL_EXEC_V8_MAX_ROWS, materialized_bytes,
+        sizeof(materialized_bytes), on_row_v20, capture);
+}
+
 static void reset(mock_state *mock, row_capture *capture) {
     mock->planner_calls = 0;
     mock->optimizer_calls = 0;
@@ -671,6 +743,10 @@ int main(void) {
         "SELECT a.value, o.value FROM accounts AS a INNER JOIN "
         "orders AS o ON a.account_id = o.account_id AND "
         "a.account_id = o.account_id WHERE o.value >= $1 LIMIT 1";
+    static const uint8_t optimizer_filtered_sql[] =
+        "SELECT a.value, o.value FROM accounts AS a INNER JOIN "
+        "orders AS o ON a.account_id = o.account_id AND "
+        "a.value = o.value WHERE o.value >= $1 LIMIT 1";
     static const uint8_t redacted_filter_sql[] =
         "SELECT a.value, o.value FROM accounts AS a INNER JOIN "
         "orders AS o ON a.account_id = o.account_id AND "
@@ -780,6 +856,55 @@ int main(void) {
            PRDB_SDK_SQL_EXEC_OK);
     assert(capture.calls == 1 && capture.left_values[0] == 102 &&
            capture.right_values[0] == 202 && mock.statement_failed == 0);
+
+    uint32_t filtered_optimizer_plan_len =
+        build_optimizer_filtered_join_plan(mock.optimizer_response + 7);
+    optimizer_offset = 0;
+    put_u16(mock.optimizer_response, &optimizer_offset, 1);
+    mock.optimizer_response[optimizer_offset++] =
+        PRDB_SDK_OPTIMIZER_STATUS_SUCCESS;
+    put_u32(mock.optimizer_response, &optimizer_offset,
+            filtered_optimizer_plan_len);
+    optimizer_offset += filtered_optimizer_plan_len;
+    mock.optimizer_response_len = optimizer_offset;
+    reset(&mock, &capture);
+    const int32_t optimizer_pair_key[] = {1};
+    const uint8_t optimizer_pair_state[] = {PRDB_SDK_VALUE_STATE_VALUE};
+    const int32_t optimizer_pair_value[] = {101};
+    static const uint8_t optimizer_threshold_bytes[] = {0, 0, 0, 100};
+    const prdb_sdk_value_v1 optimizer_threshold = {
+        sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+        PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+        optimizer_threshold_bytes, sizeof(optimizer_threshold_bytes)};
+    mock.batch_len[0] = make_batch(mock.batch[0], optimizer_pair_key,
+                                   optimizer_pair_state, optimizer_pair_value,
+                                   1);
+    mock.batch_len[1] = make_batch(mock.batch[1], optimizer_pair_key,
+                                   optimizer_pair_state, optimizer_pair_value,
+                                   1);
+    assert(run_query_optimizer_v20(
+               &mock, &capture, optimizer_filtered_sql,
+               sizeof(optimizer_filtered_sql) - 1, &optimizer_threshold, 1) ==
+           PRDB_SDK_SQL_EXEC_OK);
+    assert(mock.optimizer_calls == 1 && mock.planner_calls == 6 &&
+           mock.resolve_calls == 4 && mock.open_calls == 2 &&
+           mock.executor_requests <= 256 && capture.calls == 1 &&
+           capture.left_values[0] == 101 && capture.right_values[0] == 101 &&
+           mock.statement_failed == 0);
+    mock.batch_len[0] = make_batch(mock.batch[0], left_keys, left_states,
+                                   left_values, 3);
+    mock.batch_len[1] = make_batch(mock.batch[1], right_keys, right_states,
+                                   right_values, 3);
+    uint32_t restored_optimizer_plan_len =
+        build_optimizer_join_plan(mock.optimizer_response + 7);
+    optimizer_offset = 0;
+    put_u16(mock.optimizer_response, &optimizer_offset, 1);
+    mock.optimizer_response[optimizer_offset++] =
+        PRDB_SDK_OPTIMIZER_STATUS_SUCCESS;
+    put_u32(mock.optimizer_response, &optimizer_offset,
+            restored_optimizer_plan_len);
+    optimizer_offset += restored_optimizer_plan_len;
+    mock.optimizer_response_len = optimizer_offset;
 
     mock.batch_len[0] = make_batch(mock.batch[0], matching_key,
                                    matching_state, matching_left_value, 1);
