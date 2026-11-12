@@ -713,7 +713,22 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             .records
             .is_empty()
     );
+    let owner_schema_cursor = owner_metadata
+        .list_schemas_page(1, None)?
+        .next_cursor
+        .ok_or("expected a second schema visible through ownership")?;
+    let mut revocation_admin_secret = admin_control_secret;
+    let mut administrator =
+        AdminClient::connect_authenticated(address, token_id, &mut revocation_admin_secret)?;
+    administrator
+        .set_schema_owner(restricted_schema_id, admin_user_id)
+        .map_err(|error| format!("schema-owner transfer failed: {error:?}"))?;
+    assert!(matches!(
+        owner_metadata.list_schemas_page(1, Some(&owner_schema_cursor)),
+        Err(prdb_engine::client_submit::ClientSubmitError::ServerRejected(_))
+    ));
     drop(owner_metadata);
+    drop(administrator);
 
     let mut restricted_metadata =
         MetadataClient::connect_authenticated(address, restricted_token, &mut restricted_secret)?;
