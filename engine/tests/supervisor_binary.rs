@@ -149,7 +149,7 @@ fn exchange_client_request(
 fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
     use prdb_engine::bootstrap::initialize;
     use prdb_engine::client_protocol::{ClientFrameDecoder, ClientResponseSequences};
-    use prdb_engine::client_submit::{AdminClient, InvocationStatus};
+    use prdb_engine::client_submit::{AdminClient, AdminColumnDefinition, InvocationStatus};
     use prdb_engine::submission_manifest::{encode_manifest_v1, manifest_v1_from_elf};
     use sha2::{Digest, Sha256};
     use std::io::{BufRead, BufReader};
@@ -634,6 +634,28 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
                 .iter()
                 .any(|token| token.token_id == token_id)
         );
+        let schema = control
+            .create_schema("process_admin", admin_user_id)
+            .expect("create schema through process ADMIN path");
+        let table = control
+            .create_table(
+                schema.identity_id,
+                "events",
+                &[AdminColumnDefinition {
+                    name: "event_id".to_owned(),
+                    scalar_type: prdb_engine::tuple::ScalarType::Uuid,
+                    nullable: false,
+                    generated_uuid_identity: true,
+                    default: None,
+                }],
+            )
+            .expect("create table through process ADMIN path");
+        control
+            .drop_table(table.table_id)
+            .expect("drop table through process ADMIN path");
+        control
+            .drop_schema(schema.identity_id)
+            .expect("drop empty schema through process ADMIN path");
     }
     client
         .shutdown(std::net::Shutdown::Write)
