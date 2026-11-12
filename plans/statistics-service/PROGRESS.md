@@ -5,8 +5,8 @@
 - Contract: the trusted transaction API estimates exact matches only for an exact authorized population of at most four rows. It validates bound column identities and types, evaluates bounded comparison/Boolean predicates over sanitized cells, applies SQL three-valued NULL semantics, and returns `(visible_rows, matching_rows)` without row values. Planner IPC exposes the request through the planner-only EstimateScan operation's qualified-relation predicate extension.
 - Fallbacks: redacted predicate cells, unsupported scalar types or predicates, value-dependent row policies, invalid projections, oversized populations/overlays, and incomplete row sets return `Unknown` without partial counts. Private inserts, replacements, and deletes participate in the estimate. Predicate values are never read from redacted cells.
 - Regression: the real-redb transaction fixture verifies equality selectivity over visible text, NULL non-matching behavior, redacted-column fallback, the four-row work bound, and private overlay changes.
-- Regression: the focused transaction test verifies authorized selectivity, NULL, redacted-cell fallback, bounds, and private writes. The planner stream integration verifies predicate request encoding/dispatch, a versioned exact response, and shared allowance accounting. Codec tests cover malformed requests and exact/unknown response forms.
-- Verification: the focused codec and real planner-stream regression passed. The protocol regression verified exact `(0,0)` under the fixture's constant-deny policy and that exhausting the shared allowance still returns `Unknown` without ending the planner stream. In the pinned Nix shell, workspace build, formatting, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed; the suite reported 198 library tests, 149 commit tests, and 75 transaction tests, with sandbox/process acceptance active. `git diff --check` passed.
+- Regression: the focused transaction test verifies authorized selectivity, NULL, redacted-cell fallback, bounds, and private writes. The planner stream integration verifies predicate request encoding/dispatch, a versioned exact response, and shared allowance accounting. Its first nonempty case returned `Unknown` because the fixture omitted the SELECT cell policy; adding that policy produced the intended exact count. Codec tests cover malformed requests and exact/unknown response forms.
+- Verification: focused codec and real planner-stream regressions passed. Workspace build, formatting, warning-denied Clippy, and the full serial delegated-cgroup suite passed with 198 library tests, 149 commit tests, and 75 transaction tests; all sandbox and process tests ran with zero ignored.
 - Remaining: optimizer request scheduling and using predicate selectivity to alter a plan remain open; broader predicate support, cache validity, task draining, and maintenance collection also remain open.
 
 ## ST-2 / OP-4: bounded population probe contract synchronized — documented
@@ -15,7 +15,7 @@
 - Planner use: exact zero can drive the validated empty-view hint; counts 1–4 can choose a sequential scan over a point/range path under the locally measured heuristic. The planner estimate does not grant execution authority; SDK and storage checks remain definitive.
 - Changed contracts: [statistics service](../../specs/statistics-service.md), [storage manager](../../specs/storage-manager.md), and [statistics plan](README.md) now describe the implemented probe alongside the original bounded scan summary. [Planner/compiler](../planner-compiler/README.md) and its specification already record the implementation details and host-local timing evidence.
 - Verification evidence: the population-probe implementation had passed the serial delegated-cgroup workspace suite, formatting, warning-denied Clippy, and focused hidden-cell invariance regression in the preceding increments. This documentation-only synchronization was checked with `git diff --check` and link/wording review; runtime tests were not rerun.
-- Remaining: predicate selectivity, broader policy-filtered estimates, task draining, cache validity, and maintenance collection remain open.
+- Remaining: optimizer scheduling/use of predicate estimates, broader policy-filtered estimates, task draining, cache validity, and maintenance collection remain open.
 
 ## ST-2 / WI-7: repeatable authorized-estimate cost harness — measured
 
@@ -67,10 +67,10 @@
 - Verification: focused real-redb transaction test passed (`1 passed, 0 failed`).
 - Scope: all other row-value-dependent or unsupported policies still return `Unknown`; timing/resource noninterference, planner task draining, cache validity, and bounded maintenance collection remain open.
 
-## ST-2 follow-up: serialize exact empty estimates over the planner stream — verified
+## ST-2 follow-up: serialize exact predicate estimates over the planner stream — verified
 
-- Regression: `planner_stream_estimate_allowance_falls_back_without_aborting_invocation` stages a row in the invocation overlay, applies a constant-FALSE row ALLOW policy, and requests estimates over the real planner IPC stream. The decoded exact response reports zero visible rows and zero cell populations; request 17 still returns `Unknown` without aborting the invocation.
-- Verification: focused real-redb planner-stream integration test passed (`1 passed, 0 failed`).
+- Regression: `planner_stream_estimate_allowance_falls_back_without_aborting_invocation` stages a row in the invocation overlay, applies literal-TRUE row and cell SELECT policies, and requests estimates over the real planner IPC stream. The decoded predicate response reports one visible and one matching row; the shared estimate allowance still returns `Unknown` when exhausted without aborting the invocation. Constant-deny behavior remains covered by transaction-level regressions.
+- Verification: the focused real-redb planner-stream integration passed (`1 passed, 0 failed`). Workspace build, formatting, warning-denied Clippy, and the full serial delegated-cgroup workspace suite then passed; the commit, metadata-process, and transaction targets reported 149, 2, and 75 passing tests respectively, with no ignored tests.
 - Scope: verifies planner request/response encoding and the shared estimate allowance. Isolated optimizer consumption and heuristic use of estimates remain open.
 
 ## ST-1 / ST-2 dependency: planner metadata and estimate dispatch
@@ -78,7 +78,7 @@
 - Behavior: planner-only connection handles resolve and revalidate authorized relation descriptions, and estimate requests return bounded visible/readable/null/redacted summaries or UNKNOWN. Planner projections derive read grants and policies without loading write constraints or indexes; executor handles cannot be decoded as planner handles.
 - Changed code and contracts: [planner IPC](../../engine/src/planner_ipc.rs), [planner connection state](../../engine/src/transaction.rs), [planner handle](../../engine/src/metadata_discovery.rs), [IPC protocol](../../specs/ipc-protocol.md), and [statistics service](../../specs/storage-manager.md).
 - Verification: workspace build, format check, warning-denied Clippy, and `git diff --check` pass. Tests were not run in this increment.
-- Remaining: planner stream provisioning, planner task lifecycle/budget integration, and predicate/access-path estimates remain open.
+- Remaining: optimizer scheduling/use of planner predicate estimates, planner task lifecycle/budget integration, and broader access-path estimates remain open.
 
 ## ST-1 / ST-2 dependency: planner stream lifecycle
 

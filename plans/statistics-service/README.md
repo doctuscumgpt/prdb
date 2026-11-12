@@ -10,14 +10,14 @@ The internal `InvocationTransaction::estimate_authorized_scan` API returns exact
 
 ## Decisions Before Further Implementation
 
-Extend the bounded trusted predicate contract through planner IPC, including request accounting and unsupported responses, before optimizer use. Define cache validity across principal/grant/policy/data/schema/private-write generation. Start without cross-principal reuse. Fix which logical access-path information is public; never release physical counts, global epochs/costs or raw samples indirectly.
+The bounded trusted predicate contract now reaches planner IPC, including shared request accounting and `Unknown` fallbacks. Optimizer scheduling and use remain deferred until estimates cover populations large enough to inform measured candidate costs. Define cache validity across principal/grant/policy/data/schema/private-write generation before introducing reuse; start without cross-principal reuse. Fix which logical access-path information is public; never release physical counts, global epochs/costs or raw samples indirectly.
 
 ## Increments
 
 | ID | Observable test first | Minimum implementation and evidence |
 | --- | --- | --- |
 | ST-1 | Executor calling estimate/refresh and planner requesting unrestricted data are denied | The operation matrix covers the pure role check. Provisioned-channel dispatch and dedicated planning handles remain |
-| ST-2 | Scoped visible/readable/null/redacted populations match a reference authorized scan | The full summary, statically empty population, bounded exact population probe, and bounded trusted predicate-match estimator for 0–4 rows are implemented; planner-facing predicate estimates and broader policy-filtered estimates remain |
+| ST-2 | Scoped visible/readable/null/redacted populations match a reference authorized scan | The full summary, statically empty population, bounded exact population probe, and bounded trusted predicate-match estimator for 0–4 rows are implemented; planner IPC exposes predicate estimates, while optimizer-driven selectivity and broader policy-filtered estimates remain |
 | ST-3 | Changing hidden values or adding invisible rows leaves normalized released estimates unchanged | Paired authorized-view comparisons now verify unchanged visible rows and normalized `Unknown` estimates across differing hidden candidates; timing/resource noninterference and broader estimate fields remain |
 | ST-4 | Estimate-specific exhaustion returns unknown, but context cancellation/deadline drains and terminates | The transaction estimate returns no partial result on exhaustion and checks cancellation/deadline at row and response checkpoints; asynchronous planner-task draining and heuristic integration remain |
 | ST-5 | A private write or changed authorization context prevents stale summary reuse and cross-invocation leakage | Transaction-local write generation and complete validity keys; safe invalidation even when notifications are lost |

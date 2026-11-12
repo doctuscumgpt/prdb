@@ -29485,12 +29485,31 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
             effect: Effect::Allow,
             recipients: vec![Subject::Principal(actor)],
             target_column_ids: Vec::new(),
-            using_expression: Some(Expr::Literal(Some(ScalarValue::Boolean(false)))),
+            using_expression: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
             with_check_expression: None,
             retention_deadline_us: 9_999,
             audit_event: policy_audit,
         })
         .map_err(|error| format!("planner fixture policy creation: {error:?}"))?;
+    let mut column_policy_audit = identity_audit_event(0x90, actor, table.table_id);
+    column_policy_audit.correlation_id = id(0x90);
+    storage
+        .create_policy(CreatePolicyRequest {
+            invocation_id: id(0x90),
+            authenticated_actor_id: actor,
+            table_id: table.table_id,
+            name: "planner_stats_read_value".to_owned(),
+            kind: PolicyKind::Cell,
+            operation: Operation::Select,
+            effect: Effect::Allow,
+            recipients: vec![Subject::Principal(actor)],
+            target_column_ids: vec![table.column_ids[0]],
+            using_expression: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+            with_check_expression: None,
+            retention_deadline_us: 9_999,
+            audit_event: column_policy_audit,
+        })
+        .map_err(|error| format!("planner fixture column policy creation: {error:?}"))?;
 
     let encode_select = |schema_name: &str, relation_name: &str, column_name: &str| {
         let mut bytes = vec![0, 1, 1, 0];
@@ -29534,7 +29553,7 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
         assert_eq!(bound.schema_name, "planner_stats");
         assert_eq!(bound.schema_id, schema.schema_id);
         assert_eq!(bound.schema_version, 1);
-        assert_eq!(bound.table_epoch, 2);
+        assert_eq!(bound.table_epoch, 3);
         assert_eq!(bound.relation_id, table.table_id);
         assert_eq!(bound.relation_name, "observations");
         assert_eq!(
@@ -29554,7 +29573,7 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
         assert_eq!(plan.relation.schema_id, schema.schema_id);
         assert_eq!(plan.relation.schema_version, 1);
         assert_eq!(plan.relation.relation_id, table.table_id);
-        assert_eq!(plan.relation.table_epoch, 2);
+        assert_eq!(plan.relation.table_epoch, 3);
         assert!(
             matches!(plan.nodes.first(), Some(PlanNode::Scan { columns }) if columns == &[BoundColumn {
                 column_id: table.column_ids[0],
@@ -29774,14 +29793,14 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
         let plan_relation = prdb_engine::ipc::read_frame(&mut client)?
             .ok_or("planner stream closed before plan relation description")?;
         let plan_relation_response = DescribePlanRelationResponse::decode(&plan_relation.payload)?;
-        assert!(plan_relation_response.proven_empty);
-        assert_eq!(plan_relation_response.visible_rows_estimate, Some(0));
+        assert!(!plan_relation_response.proven_empty);
+        assert_eq!(plan_relation_response.visible_rows_estimate, Some(1));
         let plan_relation = plan_relation_response
             .relation
             .ok_or("authorized plan relation was not described")?;
         assert_eq!(plan_relation.schema_id, schema.schema_id);
         assert_eq!(plan_relation.schema_version, 1);
-        assert_eq!(plan_relation.table_epoch, 2);
+        assert_eq!(plan_relation.table_epoch, 3);
         assert_eq!(plan_relation.relation.relation_id, table.table_id);
 
         let estimate_predicate = prdb_engine::optimizer_binding::BoundPredicate::Compare {
@@ -29814,8 +29833,8 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
         assert_eq!(
             EstimatePredicateResponse::decode(&predicate_estimate.payload)?,
             EstimatePredicateResponse::Exact {
-                visible_rows: 0,
-                matching_rows: 0,
+                visible_rows: 1,
+                matching_rows: 1,
             }
         );
 
@@ -29837,8 +29856,12 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
             assert_eq!(
                 EstimateScanResponse::decode(&response.payload)?,
                 EstimateScanResponse::Exact(prdb_engine::statistics::AuthorizedScanSummary {
-                    visible_rows: 0,
-                    columns: vec![prdb_engine::statistics::ColumnPopulation::default()],
+                    visible_rows: 1,
+                    columns: vec![prdb_engine::statistics::ColumnPopulation {
+                        readable_values: 1,
+                        nulls: 0,
+                        redacted: 0,
+                    }],
                 })
             );
         }
@@ -29923,7 +29946,7 @@ fn planner_stream_estimate_allowance_falls_back_without_aborting_invocation()
                     relation.ok_or("executor did not re-resolve authorized plan relation")?;
                 assert_eq!(relation.schema_id, schema.schema_id);
                 assert_eq!(relation.schema_version, 1);
-                assert_eq!(relation.table_epoch, 2);
+                assert_eq!(relation.table_epoch, 3);
                 assert_eq!(relation.relation.relation_id, table.table_id);
                 assert_eq!(relation.relation.columns[0].column_id, table.column_ids[0]);
             } else {
