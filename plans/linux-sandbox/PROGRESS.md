@@ -1,5 +1,11 @@
 # Linux Sandbox Progress
 
+## Cgroup acceptance tests run by default — verified
+
+- The sandboxed commit acceptance tests and disconnected-submission metadata process test have no `#[ignore]` attributes. A repository-wide Rust-source search found no ignored tests.
+- Verification: `cargo test --workspace --locked -- --test-threads=1` passed on 2026-11-12 inside a delegated `systemd --user` unit using `engine/tools/with_delegated_cgroup.sh`. All four sandboxed commit tests and both metadata process tests passed; every test target reported zero ignored cases. The run completed successfully in 1m 27s.
+- Host requirement: the test service must have a writable delegated cgroup v2 parent with `cpu`, `memory`, and `pids` enabled, plus the documented fixture and runtime paths. See [`AGENTS.md`](../../AGENTS.md#confined-integration-test-host-setup) and [`SANDBOX_TEST.md`](../sql-library/SANDBOX_TEST.md).
+
 ## SB-5 dependency: delegated user-systemd test runner — verified
 
 - Host diagnosis: outside the Codex desktop sandbox, `/sys/fs/cgroup` is a writable cgroup v2 mount. The desktop scope lacks `cpu` even though the host user manager has it delegated; no host remount or sudo-created directory was needed.
