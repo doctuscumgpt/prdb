@@ -37,6 +37,9 @@ pub struct SingleTablePlanV1 {
     /// Optional unique equality access hint. The executor validates the index
     /// and authorization again; this never grants access by itself.
     pub unique_probe: Option<UniquePointProbeV1>,
+    /// Optional bounded leading-key range hint. Storage revalidates the index
+    /// and authorization, and the executor retains the full predicate filter.
+    pub range_scan: Option<IndexRangeScanV1>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,6 +47,20 @@ pub struct UniquePointProbeV1 {
     pub index_id: [u8; 16],
     pub key_column: BoundColumn,
     pub value: BoundPredicate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexRangeScanV1 {
+    pub index_id: [u8; 16],
+    pub key_column: BoundColumn,
+    pub lower: Option<IndexRangeBoundV1>,
+    pub upper: Option<IndexRangeBoundV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexRangeBoundV1 {
+    pub value: BoundPredicate,
+    pub inclusive: bool,
 }
 
 /// Bounded DELETE plan carrying only the authorized logical relation, the
@@ -250,11 +267,27 @@ pub fn encode_plan_v1(plan: &SingleTablePlanV1) -> Result<Vec<u8>, PlanError> {
             return Err(PlanError::TooLarge);
         }
     }
+    if plan.unique_probe.is_some() && plan.range_scan.is_some() {
+        return Err(PlanError::InvalidPredicate);
+    }
     if let Some(probe) = &plan.unique_probe {
         output.push(0xa1);
         output.extend_from_slice(&probe.index_id);
         put_column(&mut output, &probe.key_column);
         put_predicate(&mut output, &probe.value)?;
+    } else if let Some(range) = &plan.range_scan {
+        output.push(0xa2);
+        output.extend_from_slice(&range.index_id);
+        put_column(&mut output, &range.key_column);
+        for bound in [&range.lower, &range.upper] {
+            match bound {
+                None => output.push(0),
+                Some(bound) => {
+                    output.push(if bound.inclusive { 1 } else { 2 });
+                    put_predicate(&mut output, &bound.value)?;
+                }
+            }
+        }
     }
     if output.len() > MAX_PLAN_BYTES {
         return Err(PlanError::TooLarge);
@@ -342,10 +375,11 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
         };
         nodes.push(node);
     }
-    let unique_probe = if reader.is_empty() {
-        None
+    let (unique_probe, range_scan) = if reader.is_empty() {
+        (None, None)
     } else {
-        if reader.u8()? != 0xa1 {
+        let hint_tag = reader.u8()?;
+        if hint_tag != 0xa1 && hint_tag != 0xa2 {
             return Err(PlanError::TrailingBytes);
         }
         let index_id: [u8; 16] = reader
@@ -353,12 +387,44 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
             .try_into()
             .map_err(|_| PlanError::Truncated)?;
         let key_column = reader.column()?;
-        let value = reader.predicate(&scan_columns)?;
-        Some(UniquePointProbeV1 {
-            index_id,
-            key_column,
-            value,
-        })
+        match hint_tag {
+            0xa1 => {
+                let value = reader.predicate(&scan_columns)?;
+                (
+                    Some(UniquePointProbeV1 {
+                        index_id,
+                        key_column,
+                        value,
+                    }),
+                    None,
+                )
+            }
+            0xa2 => {
+                let mut decode_bound = || -> Result<Option<IndexRangeBoundV1>, PlanError> {
+                    match reader.u8()? {
+                        0 => Ok(None),
+                        1 | 2 => {
+                            let inclusive = reader.bytes[reader.offset - 1] == 1;
+                            Ok(Some(IndexRangeBoundV1 {
+                                value: reader.predicate(&scan_columns)?,
+                                inclusive,
+                            }))
+                        }
+                        _ => Err(PlanError::InvalidEncoding),
+                    }
+                };
+                (
+                    None,
+                    Some(IndexRangeScanV1 {
+                        index_id,
+                        key_column,
+                        lower: decode_bound()?,
+                        upper: decode_bound()?,
+                    }),
+                )
+            }
+            _ => return Err(PlanError::TrailingBytes),
+        }
     };
     if !reader.is_empty() {
         return Err(PlanError::TrailingBytes);
@@ -367,6 +433,7 @@ pub fn decode_plan_v1(bytes: &[u8]) -> Result<SingleTablePlanV1, PlanError> {
         relation,
         nodes,
         unique_probe,
+        range_scan,
     };
     validate_plan_v1(&plan)?;
     Ok(plan)
@@ -3039,6 +3106,14 @@ pub fn plan_select_v1(bound: BoundSelect) -> Result<SingleTablePlanV1, PlanError
         .predicate
         .as_ref()
         .and_then(|predicate| select_unique_point_probe(predicate, &bound.unique_access_paths));
+    let range_scan = if unique_probe.is_none() {
+        bound
+            .predicate
+            .as_ref()
+            .and_then(|predicate| select_index_range_scan(predicate, &bound.unique_access_paths))
+    } else {
+        None
+    };
 
     let mut scan_columns = Vec::with_capacity(bound.projections.len());
     for column in &bound.projections {
@@ -3064,9 +3139,81 @@ pub fn plan_select_v1(bound: BoundSelect) -> Result<SingleTablePlanV1, PlanError
         relation,
         nodes,
         unique_probe,
+        range_scan,
     };
     validate_plan_v1(&plan)?;
     Ok(plan)
+}
+
+fn select_index_range_scan(
+    predicate: &BoundPredicate,
+    paths: &[crate::metadata_discovery::AuthorizedUniqueAccessPath],
+) -> Option<IndexRangeScanV1> {
+    let (key_column, lower, upper) = index_range_bounds(predicate)?;
+    let path = paths.iter().find(|path| {
+        path.index_id != [0; 16] && path.column_ids.first() == Some(&key_column.column_id)
+    })?;
+    Some(IndexRangeScanV1 {
+        index_id: path.index_id,
+        key_column,
+        lower,
+        upper,
+    })
+}
+
+fn index_range_bounds(
+    predicate: &BoundPredicate,
+) -> Option<(
+    BoundColumn,
+    Option<IndexRangeBoundV1>,
+    Option<IndexRangeBoundV1>,
+)> {
+    let BoundPredicate::Compare {
+        operator,
+        left,
+        right,
+    } = predicate
+    else {
+        return None;
+    };
+    let (column, value, operator) = match (left.as_ref(), right.as_ref()) {
+        (BoundPredicate::Column(column), value) if is_point_probe_literal(column, value) => {
+            (column.clone(), value, *operator)
+        }
+        (value, BoundPredicate::Column(column)) if is_point_probe_literal(column, value) => {
+            let reverse = match operator {
+                crate::optimizer_request::Comparison::Less => {
+                    crate::optimizer_request::Comparison::Greater
+                }
+                crate::optimizer_request::Comparison::LessOrEqual => {
+                    crate::optimizer_request::Comparison::GreaterOrEqual
+                }
+                crate::optimizer_request::Comparison::Greater => {
+                    crate::optimizer_request::Comparison::Less
+                }
+                crate::optimizer_request::Comparison::GreaterOrEqual => {
+                    crate::optimizer_request::Comparison::LessOrEqual
+                }
+                _ => return None,
+            };
+            (column.clone(), value, reverse)
+        }
+        _ => return None,
+    };
+    let bound = |inclusive| {
+        Some(IndexRangeBoundV1 {
+            value: value.clone(),
+            inclusive,
+        })
+    };
+    let (lower, upper) = match operator {
+        crate::optimizer_request::Comparison::Less => (None, bound(false)),
+        crate::optimizer_request::Comparison::LessOrEqual => (None, bound(true)),
+        crate::optimizer_request::Comparison::Greater => (bound(false), None),
+        crate::optimizer_request::Comparison::GreaterOrEqual => (bound(true), None),
+        _ => return None,
+    };
+    Some((column, lower, upper))
 }
 
 fn select_unique_point_probe(
@@ -3252,7 +3399,35 @@ pub fn validate_plan_v1(plan: &SingleTablePlanV1) -> Result<(), PlanError> {
             return Err(PlanError::InvalidPredicate);
         }
     }
+    if let Some(range) = &plan.range_scan {
+        if range.index_id == [0; 16]
+            || !columns.iter().any(|column| column == &range.key_column)
+            || !is_supported_range_key(&range.key_column)
+        {
+            return Err(PlanError::InvalidPredicate);
+        }
+        let expected = match plan.nodes.get(1) {
+            Some(PlanNode::Filter(predicate)) => index_range_bounds(predicate),
+            _ => None,
+        };
+        if expected
+            != Some((
+                range.key_column.clone(),
+                range.lower.clone(),
+                range.upper.clone(),
+            ))
+        {
+            return Err(PlanError::InvalidPredicate);
+        }
+    }
     Ok(())
+}
+
+fn is_supported_range_key(column: &BoundColumn) -> bool {
+    matches!(
+        column.scalar_type,
+        ScalarType::Boolean | ScalarType::Integer | ScalarType::Text
+    )
 }
 
 fn validate_relation(relation: &RelationReference) -> Result<(), PlanError> {
@@ -3625,6 +3800,57 @@ mod tests {
                 column_ids: vec![integer_key.column_id],
             }];
         assert!(plan_select_v1(out_of_range).unwrap().unique_probe.is_none());
+    }
+
+    #[test]
+    fn bounded_range_hint_roundtrips_only_for_an_approved_leading_key() {
+        let key = column(3, 1, ScalarType::Integer);
+        let mut bound = bound_select();
+        bound.predicate = Some(BoundPredicate::Compare {
+            operator: Comparison::GreaterOrEqual,
+            left: Box::new(BoundPredicate::Column(key.clone())),
+            right: Box::new(BoundPredicate::Integer(42)),
+        });
+        bound.unique_access_paths = vec![crate::metadata_discovery::AuthorizedUniqueAccessPath {
+            index_id: [0x46; 16],
+            column_ids: vec![key.column_id, [0x47; 16]],
+        }];
+        let plan = plan_select_v1(bound.clone()).unwrap();
+        assert_eq!(plan.unique_probe, None);
+        assert_eq!(
+            plan.range_scan,
+            Some(IndexRangeScanV1 {
+                index_id: [0x46; 16],
+                key_column: key.clone(),
+                lower: Some(IndexRangeBoundV1 {
+                    value: BoundPredicate::Integer(42),
+                    inclusive: true,
+                }),
+                upper: None,
+            })
+        );
+        let encoded = encode_plan_v1(&plan).unwrap();
+        assert_eq!(decode_plan_v1(&encoded).unwrap(), plan);
+
+        bound.unique_access_paths.clear();
+        assert!(plan_select_v1(bound.clone()).unwrap().range_scan.is_none());
+        bound.unique_access_paths = vec![crate::metadata_discovery::AuthorizedUniqueAccessPath {
+            index_id: [0x46; 16],
+            column_ids: vec![[0x48; 16], key.column_id],
+        }];
+        assert!(plan_select_v1(bound.clone()).unwrap().range_scan.is_none());
+
+        let mut mismatched = plan;
+        let Some(PlanNode::Filter(BoundPredicate::Compare { right, .. })) =
+            mismatched.nodes.get_mut(1)
+        else {
+            panic!("range plan must retain its predicate");
+        };
+        **right = BoundPredicate::Integer(43);
+        assert_eq!(
+            validate_plan_v1(&mismatched),
+            Err(PlanError::InvalidPredicate)
+        );
     }
 
     #[test]

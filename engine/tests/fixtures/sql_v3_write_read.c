@@ -617,6 +617,8 @@ static int32_t run_write_read_fixture(
         "SELECT id FROM records WHERE id = $1";
     static const uint8_t optimizer_select_sql[] =
         "SELECT id FROM records WHERE id = $1 LIMIT 1";
+    static const uint8_t optimizer_range_select_sql[] =
+        "SELECT id FROM records WHERE id >= $1 LIMIT 1";
     static const uint8_t optimizer_ordered_select_sql[] =
         "SELECT right_key FROM grouped_records "
         "ORDER BY left_key DESC LIMIT 2";
@@ -1949,6 +1951,32 @@ static int32_t run_write_read_fixture(
             optimizer_rows != 1 || optimizer_results.row_count != 1 ||
             !optimizer_results.matched_expected_value) {
             static const uint8_t message[] = "fixture-error-optimizer-filter";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+
+        memset(&optimizer_statement, 0, sizeof(optimizer_statement));
+        memset(&optimizer_results, 0, sizeof(optimizer_results));
+        optimizer_rows = 0;
+        if (prdb_sdk_sql_parse_select_v2(
+                optimizer_range_select_sql,
+                sizeof(optimizer_range_select_sql) - 1,
+                &optimizer_statement, sizeof(optimizer_statement),
+                &parse_error_offset) != PRDB_SDK_SQL_OK ||
+            prdb_sdk_optimizer_execute_select_ast_with_parameters_v1(
+                optimizer_host, &optimizer_statement, &optimizer_parameter, 1,
+                schema, sizeof(schema) - 1, 16, sizeof(optimizer_batch),
+                optimizer_request, sizeof(optimizer_request),
+                optimizer_response, sizeof(optimizer_response),
+                relation_response, sizeof(relation_response), scan_response,
+                sizeof(scan_response), optimizer_batch,
+                sizeof(optimizer_batch), &optimizer_relation,
+                sizeof(optimizer_relation), optimizer_columns, 1,
+                optimizer_source_cells, 1, optimizer_projected_values, 1,
+                verify_optimizer_row, &optimizer_results, &optimizer_rows) !=
+                PRDB_SDK_OPTIMIZER_PLAN_OK ||
+            optimizer_rows != 1 || optimizer_results.row_count != 1 ||
+            !optimizer_results.matched_expected_value) {
+            static const uint8_t message[] = "fixture-error-optimizer-range";
             return report_failure(host, message, sizeof(message) - 1);
         }
 
