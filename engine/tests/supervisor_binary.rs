@@ -149,6 +149,7 @@ fn exchange_client_request(
 fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
     use prdb_engine::bootstrap::initialize;
     use prdb_engine::client_protocol::{ClientFrameDecoder, ClientResponseSequences};
+    use prdb_engine::client_submit::{AdminClient, InvocationStatus};
     use prdb_engine::submission_manifest::{encode_manifest_v1, manifest_v1_from_elf};
     use sha2::{Digest, Sha256};
     use std::io::{BufRead, BufReader};
@@ -239,7 +240,9 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
     let mut setup =
         initialize(&instance_dir, "tcp_test_admin", i64::MAX).expect("initialize test instance");
     let token_id = setup.token_id();
+    let admin_user_id = setup.admin_user_id();
     let mut bootstrap_secret = setup.take_secret().expect("take setup secret");
+    let mut control_secret = bootstrap_secret;
     drop(setup.acknowledge().expect("publish READY instance"));
 
     let service_socket = root.join("supervisor.sock");
@@ -426,6 +429,7 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
         auth_payload.zeroize();
         assert_eq!(auth.kind, 100);
         assert!(String::from_utf8_lossy(&auth.payload).contains("\"authenticated\":true"));
+        token_secret.zeroize();
 
         let scope = [b"PSC1\0\x01\x02\x02".as_slice(), &[1; 16]].concat();
         let artifact_sha256 = Sha256::digest(&artifact);
@@ -582,50 +586,15 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
             .begin_stream(13)
             .expect("begin START stream");
 
-        let mut control_client =
-            TcpStream::connect(control_address).expect("connect reserved control TCP client");
-        control_client
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .expect("set control client timeout");
-        let mut control_decoder = ClientFrameDecoder::default();
-        let mut control_buffered = std::collections::VecDeque::new();
-        let control_hello = exchange_client_request(
-            &mut control_client,
-            &mut control_decoder,
-            &mut control_buffered,
-            1,
-            1,
-            br#"{"mode":"query","client_name":"control-status"}"#.to_vec(),
-        );
-        assert_eq!(control_hello.kind, 100);
-        let mut control_auth_payload =
-            format!("{{\"token_id\":\"{token_id_hex}\",\"token_secret\":\"{token_secret}\"}}");
-        let control_auth = exchange_client_request(
-            &mut control_client,
-            &mut control_decoder,
-            &mut control_buffered,
-            2,
-            2,
-            control_auth_payload.as_bytes().to_vec(),
-        );
-        control_auth_payload.zeroize();
-        assert_eq!(control_auth.kind, 100);
-        assert!(String::from_utf8_lossy(&control_auth.payload).contains("\"authenticated\":true"));
-        let active_status_payload = format!("{{\"invocation_id\":\"{second_invocation_hex}\"}}");
-        let active_status = exchange_client_request(
-            &mut control_client,
-            &mut control_decoder,
-            &mut control_buffered,
-            8,
-            3,
-            active_status_payload.as_bytes().to_vec(),
-        );
-        assert_eq!(active_status.kind, 100);
-        assert_eq!(active_status.request_id, 3);
-        assert!(
-            String::from_utf8_lossy(&active_status.payload).contains("\"state\":\"active\""),
-            "status while result client is unread: {}",
-            String::from_utf8_lossy(&active_status.payload)
+        let mut control =
+            AdminClient::connect_authenticated(control_address, token_id, &mut control_secret)
+                .expect("authenticate typed control client through reserved listener");
+        assert_eq!(
+            control
+                .status(decode_hex_id(second_invocation_hex))
+                .expect("read active status through control client"),
+            InvocationStatus::Active,
+            "status while result client is unread"
         );
 
         let mut data_frames = 0;
@@ -650,21 +619,21 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
             data_frames += 1;
         }
         assert_eq!(data_frames, 1024);
-        let committed_status_payload = format!("{{\"invocation_id\":\"{second_invocation_hex}\"}}");
-        let committed_status = exchange_client_request(
-            &mut control_client,
-            &mut control_decoder,
-            &mut control_buffered,
-            8,
-            4,
-            committed_status_payload.into_bytes(),
+        assert_eq!(
+            control
+                .status(decode_hex_id(second_invocation_hex))
+                .expect("read committed status through control client"),
+            InvocationStatus::Committed
         );
-        token_secret.zeroize();
-        assert_eq!(committed_status.kind, 100);
-        assert_eq!(committed_status.payload, br#"{"state":"committed"}"#);
-        control_client
-            .shutdown(std::net::Shutdown::Write)
-            .expect("close control TCP client write side");
+        let token_page = control
+            .list_tokens_page(admin_user_id, None)
+            .expect("list bootstrap token through process ADMIN path");
+        assert!(
+            token_page
+                .tokens
+                .iter()
+                .any(|token| token.token_id == token_id)
+        );
     }
     client
         .shutdown(std::net::Shutdown::Write)

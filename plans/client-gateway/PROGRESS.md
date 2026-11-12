@@ -148,8 +148,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 ## GW-2 / GW-3 / GW-5 follow-up: confined query commits across gateway and supervisor processes — covered
 
-- Regression: `supervisor_and_gateway_binaries_commit_a_confined_submission` starts the actual `prdb-supervisor` and `prdb-gateway` binaries against a READY instance, submits a TinyCC ABI-v3 artifact over loopback TCP, and streams 16 MiB while the ordinary client is unread. A second authenticated client uses the dedicated control endpoint to observe ACTIVE before draining and COMMITTED afterward. The worker fixture is compiled with TinyCC and linked with the system linker using a non-executable stack.
-- Verification: the focused process test passed three sequential delegated-service runs with pinned runtime paths and a writable cgroup parent. Workspace formatting/build/warning-denied Clippy and the full serial workspace suite passed in the delegated service with sandbox/process tests enabled; no tests were ignored.
+- Regression: `supervisor_and_gateway_binaries_commit_a_confined_submission` starts the actual `prdb-supervisor` and `prdb-gateway` binaries against a READY instance, submits a TinyCC ABI-v3 artifact over loopback TCP, and streams 16 MiB while the ordinary client is unread. A second `AdminClient` authenticates on the dedicated control endpoint, observes ACTIVE before draining and COMMITTED afterward, then lists bootstrap-token metadata through ADMIN. The worker fixture is compiled with TinyCC and linked with the system linker using a non-executable stack.
+- Verification: the focused process test passed with the typed `AdminClient` path in the delegated service. Workspace formatting/build/warning-denied Clippy and the full serial workspace suite passed in the delegated service with sandbox/process tests enabled; no tests were ignored.
 - Scope: proves confined result backpressure does not consume reserved control capacity across the actual gateway and supervisor binaries. Broader SQL acceptance remains open.
 
 ## GW-4 follow-up: status progresses through reserved control capacity — covered
