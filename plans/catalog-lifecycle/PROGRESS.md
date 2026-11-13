@@ -94,8 +94,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 ## CL-5 source validation: read-only catalog-v1 validation — implemented
 
-- Added an offline-only source validator for catalog version 1. It uses the full READY integrity walk, expects the legacy 30 bootstrap mappings and families 1–16, and applies the legacy rule that revoked credentials may refer to deleted principals. It opens the redb image read-only and never rebuilds derived indexes.
+- Added an offline-only source validator for catalog version 1. It uses the full READY integrity walk, expects the legacy 30 bootstrap mappings and families 1–16, and applies the historical rule that every verifier, including a revoked one, must reference a live principal. It opens the redb image read-only and never rebuilds derived indexes.
 - `prdb-maintain migration-inspect` can now inspect a v1 active source while normal service startup continues to reject it. A regression converts an initialized fixture to the exact v1 metadata/descriptor shape, verifies the full source walk, checks current startup rejection, and confirms the CLI diagnostic.
+- The historical verifier rule is preserved: even revoked v1 verifiers must reference a live principal. A regression inserts a well-formed revoked orphan verifier and verifies the source validator rejects it.
 - This proves source integrity but does not resolve v1's missing tombstone history or perform the v1-to-v2 conversion.
 - Verification: pinned-shell format check, locked workspace build, warning-denied all-target Clippy, and full serial workspace suite inside the delegated `systemd --user` service passed. Sandbox integration ran with zero ignored tests; `git diff --check` passed.
 

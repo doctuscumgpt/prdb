@@ -1,6 +1,8 @@
 use prdb_engine::audit::{AuditAction, AuditEvent, AuditResult};
 use prdb_engine::bootstrap::{BootstrapError, StorageInstance};
-use prdb_engine::catalog::{decode_registered_envelope, encode_envelope, family_schema};
+use prdb_engine::catalog::{
+    CatalogField, WireType, decode_registered_envelope, encode_envelope, family_schema,
+};
 use prdb_engine::client_credentials::read_client_credentials;
 use prdb_engine::metadata::EngineMetadata;
 use prdb_engine::schema::{AUDIT, CATALOG, ENGINE_META, POLICIES};
@@ -635,6 +637,86 @@ fn v1_source_validator_checks_legacy_ready_images_without_admitting_them() {
         source_before_backup,
         "migration backup must not modify the legacy source"
     );
+    let orphan_user_id = [0x61; 16];
+    let token_id = [0x62; 16];
+    let mut token_key = 16u16.to_be_bytes().to_vec();
+    token_key.push(1);
+    token_key.extend_from_slice(&token_id);
+    let fields = [
+        CatalogField {
+            tag: 1,
+            wire_type: WireType::Id,
+            payload: orphan_user_id.to_vec(),
+        },
+        CatalogField {
+            tag: 2,
+            wire_type: WireType::U16,
+            payload: 1u16.to_le_bytes().to_vec(),
+        },
+        CatalogField {
+            tag: 3,
+            wire_type: WireType::U16,
+            payload: 1u16.to_le_bytes().to_vec(),
+        },
+        CatalogField {
+            tag: 4,
+            wire_type: WireType::Bytes,
+            payload: vec![0; 32],
+        },
+        CatalogField {
+            tag: 5,
+            wire_type: WireType::I64,
+            payload: 1i64.to_le_bytes().to_vec(),
+        },
+        CatalogField {
+            tag: 6,
+            wire_type: WireType::I64,
+            payload: 2i64.to_le_bytes().to_vec(),
+        },
+        CatalogField {
+            tag: 7,
+            wire_type: WireType::Bool,
+            payload: vec![1],
+        },
+        CatalogField {
+            tag: 8,
+            wire_type: WireType::I64,
+            payload: 2i64.to_le_bytes().to_vec(),
+        },
+        CatalogField {
+            tag: 9,
+            wire_type: WireType::Text,
+            payload: b"retired".to_vec(),
+        },
+        CatalogField {
+            tag: 10,
+            wire_type: WireType::U64,
+            payload: 2u64.to_le_bytes().to_vec(),
+        },
+    ];
+    let orphan_verifier = encode_envelope(
+        &family_schema(16).expect("verifier family schema"),
+        &token_key,
+        &fields,
+    )
+    .expect("encode revoked orphan verifier");
+    let database = Database::open(&database_path).expect("open v1 source to corrupt it");
+    {
+        let write = database.begin_write().expect("begin orphan verifier write");
+        write
+            .open_table(CATALOG)
+            .expect("open v1 catalog")
+            .insert(token_key.as_slice(), orphan_verifier.as_slice())
+            .expect("insert orphan verifier");
+        write.commit().expect("commit orphan verifier");
+    }
+    drop(database);
+    let invalid_source = ReadOnlyDatabase::open(&database_path).expect("open modified source");
+    assert!(matches!(
+        prdb_engine::startup::validate_v1_migration_source_read_only(&invalid_source),
+        Err(StartupError::InvalidCatalog)
+    ));
+    drop(invalid_source);
     assert!(matches!(
         StorageInstance::open(fixture.instance_dir()),
         Err(BootstrapError::Startup(StartupError::UnsupportedFormat))

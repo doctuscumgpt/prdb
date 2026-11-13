@@ -2008,11 +2008,9 @@ fn validate_catalog(
             }
             Some(_) => true,
             None => {
-                if metadata.catalog_version == 1 {
-                    !credential.revoked
-                } else {
-                    !credential.revoked || !identity_tombstones.contains(&credential.user_id)
-                }
+                metadata.catalog_version == 1
+                    || !credential.revoked
+                    || !identity_tombstones.contains(&credential.user_id)
             }
         }
     }) {
