@@ -72,6 +72,13 @@ fn jsonl_sink_delivers_durably_once_and_replays_after_sink_change()
     );
     assert_eq!(std::fs::read_to_string(&first_sink)?, first);
 
+    std::fs::remove_file(&first_sink)?;
+    assert_eq!(
+        prdb_engine::audit_sink::deliver_jsonl_batch(&database, &first_sink, 8)?,
+        1
+    );
+    assert_eq!(std::fs::read_to_string(&first_sink)?, first);
+
     let second_sink = fixture.0.join("second.jsonl");
     assert_eq!(
         prdb_engine::audit_sink::deliver_jsonl_batch(&database, &second_sink, 8)?,

@@ -64,21 +64,26 @@ pub fn deliver_jsonl_batch(
         .get_or_init(|| Mutex::new(()))
         .lock()
         .map_err(|_| AuditSinkError::Storage)?;
-    let (canonical_path, parent, sink_id) = canonical_sink_path(path)?;
-    install_sink_id(database, &sink_id)?;
-    let pending = pending_events(database)?;
-    if pending.is_empty() {
-        return Ok(0);
-    }
-
-    let existed = std::fs::symlink_metadata(&canonical_path).is_ok();
-    let mut file = OpenOptions::new()
+    let (canonical_path, parent, path_id) = canonical_sink_path(path)?;
+    let (mut file, created) = match OpenOptions::new()
         .read(true)
         .append(true)
-        .create(true)
+        .create_new(true)
         .mode(0o600)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(&canonical_path)?;
+        .open(&canonical_path)
+    {
+        Ok(file) => (file, true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (
+            OpenOptions::new()
+                .read(true)
+                .append(true)
+                .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+                .open(&canonical_path)?,
+            false,
+        ),
+        Err(error) => return Err(error.into()),
+    };
     let metadata = file.metadata()?;
     if !metadata.file_type().is_file()
         || metadata.permissions().mode() & 0o7777 != 0o600
@@ -90,10 +95,22 @@ pub fn deliver_jsonl_batch(
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err(AuditSinkError::Io(std::io::Error::last_os_error()));
     }
-    if !existed {
+    if created {
         File::open(&parent)?.sync_all()?;
     }
     repair_partial_tail(&mut file)?;
+    let birth_time = file_birth_time(&file)?;
+    let mut sink_id = [0; 60];
+    sink_id[..32].copy_from_slice(&path_id);
+    sink_id[32..40].copy_from_slice(&metadata.dev().to_le_bytes());
+    sink_id[40..48].copy_from_slice(&metadata.ino().to_le_bytes());
+    sink_id[48..56].copy_from_slice(&birth_time.0.to_le_bytes());
+    sink_id[56..].copy_from_slice(&birth_time.1.to_le_bytes());
+    install_sink_id(database, &sink_id)?;
+    let pending = pending_events(database)?;
+    if pending.is_empty() {
+        return Ok(0);
+    }
 
     let mut delivered = 0;
     for (event_id, event) in pending.into_iter().take(max_events) {
@@ -140,7 +157,30 @@ fn canonical_sink_path(path: &Path) -> Result<(PathBuf, PathBuf, [u8; 32]), Audi
     Ok((canonical, parent, sink_id))
 }
 
-fn install_sink_id(database: &Database, sink_id: &[u8; 32]) -> Result<(), AuditSinkError> {
+fn file_birth_time(file: &File) -> Result<(i64, u32), AuditSinkError> {
+    let empty_path = c"";
+    // SAFETY: statx writes to the initialized result structure and the fd is
+    // held open for the entire call. AT_EMPTY_PATH addresses that open file.
+    let mut result = unsafe { std::mem::zeroed::<libc::statx>() };
+    let status = unsafe {
+        libc::statx(
+            file.as_raw_fd(),
+            empty_path.as_ptr(),
+            libc::AT_EMPTY_PATH,
+            libc::STATX_BTIME,
+            &mut result,
+        )
+    };
+    if status != 0 {
+        return Err(AuditSinkError::Io(std::io::Error::last_os_error()));
+    }
+    if result.stx_mask & libc::STATX_BTIME == 0 {
+        return Err(AuditSinkError::InvalidSinkFile);
+    }
+    Ok((result.stx_btime.tv_sec, result.stx_btime.tv_nsec))
+}
+
+fn install_sink_id(database: &Database, sink_id: &[u8; 60]) -> Result<(), AuditSinkError> {
     {
         let read = database.begin_read().map_err(|_| AuditSinkError::Storage)?;
         let stats = read
