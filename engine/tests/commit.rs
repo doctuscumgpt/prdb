@@ -13303,6 +13303,74 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         storage.authenticate_query_session(id(254), &[0; 32]),
         Err(prdb_engine::transaction::TransactionError::AuditCapacityExceeded)
     ));
+
+    Ok(())
+}
+
+#[test]
+fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let admin_id = builtin_owner_id();
+    let ordinary_id = [0xd3; 16];
+    let cancel_id = [0xd1; 16];
+    let commit_id = [0xd2; 16];
+    let now_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_micros() as i64;
+    let retention_deadline_us = now_us + 60_000_000;
+    let mut cancellation =
+        storage.begin_invocation(cancel_id, ordinary_id, retention_deadline_us, 2, 64)?;
+    let stop_pressure = std::sync::atomic::AtomicBool::new(false);
+    let denied_requests = std::sync::atomic::AtomicUsize::new(0);
+
+    std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let pressure_storage = storage.clone();
+        let pressure_stop = &stop_pressure;
+        let pressure_count = &denied_requests;
+        let pressure = scope.spawn(move || {
+            started_tx.send(()).expect("signal denial pressure started");
+            loop {
+                assert!(matches!(
+                    pressure_storage.list_runtime_invocations(ordinary_id, now_us, 1, None),
+                    Err(prdb_engine::storage_manager::AdministrativeInvocationListError::Unauthorized)
+                ));
+                let count = pressure_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if pressure_stop.load(std::sync::atomic::Ordering::Acquire) && count >= 512 {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        });
+        started_rx.recv_timeout(std::time::Duration::from_secs(2))?;
+
+        storage
+            .begin_invocation(commit_id, admin_id, retention_deadline_us, 2, 64)?
+            .commit()?;
+        assert_eq!(
+            storage.cancel_owned_invocation(ordinary_id, cancel_id, now_us + 1)?,
+            prdb_engine::storage_manager::OwnerCancellationResult::Accepted
+        );
+        assert!(
+            cancellation
+                .open_executor_metadata_connection()
+                .check_cancellation()?
+        );
+        stop_pressure.store(true, std::sync::atomic::Ordering::Release);
+        pressure
+            .join()
+            .map_err(|_| std::io::Error::other("denial pressure thread panicked"))?;
+        Ok(())
+    })?;
+
+    assert!(denied_requests.load(std::sync::atomic::Ordering::Relaxed) >= 512);
+    assert!(matches!(
+        storage.lookup_invocation_outcome(cancel_id, ordinary_id, now_us + 2)?,
+        Some(outcome) if outcome.status == OutcomeStatus::Aborted
+    ));
     Ok(())
 }
 
