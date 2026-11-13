@@ -127,3 +127,11 @@
 - Regression: storage coverage submits five invalid-secret attempts for a real token and finds exactly four actor-free denied events, then checks the zero-token event has no target. The authenticated gateway/supervisor process test performs a failed AUTH and reads the event through the administrator audit API.
 - Verification: focused storage and delegated process tests; workspace build/fmt/Clippy; release build/profile validation; TinyCC SDK suite and sandbox fixture; full serial delegated-cgroup workspace suite (service exited successfully); and `git diff --check`.
 - Remaining: audit retention and sink delivery, job registries, retained-byte/cache telemetry, additional wait categories, and broader pressure testing remain open.
+
+## OM-5 bounded append-only audit capacity — implemented slice
+
+- Contract: the AUDIT table accepts at most 16,384 events (approximately 65 MiB of raw AUD1 payload at the maximum encoded event size, before redb overhead). Audit history remains append-only; once full, any operation that must persist an audit event fails closed with an explicit capacity error. Startup rejects stores already beyond the bound.
+- Implementation: the common commit path and bootstrap/credential rotation, authentication-failure, and managed-cancellation audit writers check capacity before insertion. No event is silently evicted; recovery of capacity awaits a separately specified retention/archive mechanism.
+- Regression: the audit capacity helper checks the exact boundary and integer overflow. The real-redb authorization test fills the table to the bound and verifies the next failed-authentication audit returns the capacity error without changing its authentication behavior before the bound.
+- Verification: workspace build, formatting, warning-denied Clippy, release build/profile validation, TinyCC SDK tests and sandbox fixture, and the full serial delegated-cgroup workspace suite passed (service exited successfully, zero ignored tests). `git diff --check` passed.
+- Remaining: retention/archive and sink delivery, job registries, retained-byte/cache telemetry, additional wait categories, and broader pressure testing remain open.

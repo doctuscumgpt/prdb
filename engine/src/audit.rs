@@ -3,6 +3,16 @@
 const HEADER_LENGTH: usize = 68;
 const MAX_TARGETS: usize = 256;
 const MAX_EVENT_LENGTH: usize = HEADER_LENGTH + MAX_TARGETS * 16;
+/// Hard bound for the append-only audit table until an audited retention/sink
+/// workflow is available. At the AUD1 maximum this limits raw payloads to
+/// roughly 65 MiB, excluding redb page and index overhead.
+pub const MAX_AUDIT_EVENTS: usize = 16_384;
+
+pub(crate) fn has_audit_capacity(current_events: usize, additional_events: usize) -> bool {
+    current_events
+        .checked_add(additional_events)
+        .is_some_and(|total| total <= MAX_AUDIT_EVENTS)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
@@ -157,5 +167,18 @@ impl AuditEvent {
             return Err(AuditError::InvalidTargetList);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::{MAX_AUDIT_EVENTS, has_audit_capacity};
+
+    #[test]
+    fn audit_capacity_checks_exact_boundary_and_overflow() {
+        assert!(has_audit_capacity(MAX_AUDIT_EVENTS - 1, 1));
+        assert!(!has_audit_capacity(MAX_AUDIT_EVENTS, 1));
+        assert!(has_audit_capacity(MAX_AUDIT_EVENTS, 0));
+        assert!(!has_audit_capacity(usize::MAX, 1));
     }
 }

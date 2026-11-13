@@ -19,7 +19,9 @@ use crate::schema::{
     ROWS, SCHEMA_NAMES, STATS, TABLE_CONSTRAINTS, TABLE_INDEXES,
 };
 use crate::tuple::{ColumnSchema, decode_tuple};
-use redb::{Database, ReadTransaction, ReadableDatabase, ReadableTable, TableHandle};
+use redb::{
+    Database, ReadTransaction, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableHandle,
+};
 use std::collections::{HashMap, HashSet};
 
 const METADATA_KEY: &[u8] = b"format";
@@ -92,6 +94,7 @@ pub enum StartupError {
     InvalidIndex,
     InvalidOutcome,
     InvalidAudit,
+    AuditCapacityExceeded,
     CountOverflow,
 }
 
@@ -2880,6 +2883,9 @@ fn validate_outcomes(read: &ReadTransaction, commit_sequence: u64) -> Result<usi
 
 fn validate_audit(read: &ReadTransaction) -> Result<usize, StartupError> {
     let table = read.open_table(AUDIT).map_err(storage_error)?;
+    if table.len().map_err(storage_error)? > crate::audit::MAX_AUDIT_EVENTS as u64 {
+        return Err(StartupError::AuditCapacityExceeded);
+    }
     let mut count = 0usize;
     for entry in table.iter().map_err(storage_error)? {
         let (key, value) = entry.map_err(storage_error)?;

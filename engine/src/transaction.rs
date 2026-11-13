@@ -78,6 +78,7 @@ pub enum TransactionError {
     UnsupportedFormat,
     DuplicateInvocation,
     AuthenticationFailed,
+    AuditCapacityExceeded,
     AdmissionLimitExceeded,
     Expired,
     CancellationRequested,

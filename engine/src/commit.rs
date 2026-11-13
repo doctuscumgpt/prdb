@@ -20,7 +20,10 @@ use crate::outcome::{InvocationOutcome, OutcomeStatus};
 use crate::row_record::RowRecord;
 use crate::schema::{AUDIT, CATALOG, ENGINE_META, INDEXES, OUTCOMES, ROW_INDEXES, ROWS};
 use crate::tuple::{ColumnSchema, ScalarType, ScalarValue, decode_tuple, encode_tuple};
-use redb::{Database, ReadOnlyTable, ReadableDatabase, ReadableTable, WriteTransaction};
+use redb::{
+    Database, ReadOnlyTable, ReadableDatabase, ReadableTable, ReadableTableMetadata,
+    WriteTransaction,
+};
 use std::collections::{HashMap, HashSet};
 
 type IndexTableMap = HashMap<[u8; 16], [u8; 16]>;
@@ -201,6 +204,7 @@ pub enum CommitError {
     InvalidCatalog,
     InvalidAudit,
     AuditAlreadyExists,
+    AuditCapacityExceeded,
     SequenceExhausted,
     Storage(String),
 }
@@ -6012,6 +6016,13 @@ fn commit_storage_changes_inner_unchecked(
     )?;
     {
         let table = transaction.open_table(AUDIT).map_err(storage_error)?;
+        let current_events = usize::try_from(table.len().map_err(storage_error)?)
+            .map_err(|_| CommitError::AuditCapacityExceeded)?;
+        if !encoded_audit.is_empty()
+            && !crate::audit::has_audit_capacity(current_events, encoded_audit.len())
+        {
+            return Err(CommitError::AuditCapacityExceeded);
+        }
         for (event_id, _) in &encoded_audit {
             if table.get(&event_id[..]).map_err(storage_error)?.is_some() {
                 return Err(CommitError::AuditAlreadyExists);

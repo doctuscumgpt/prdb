@@ -39,7 +39,7 @@ use crate::snapshot::{MAX_CATALOG_FAMILY_SCAN, RowSnapshot};
 use crate::startup::{StartupError, validate_persisted_records};
 use crate::transaction::{InvocationCoordination, InvocationTransaction, TransactionError};
 use crate::tuple::{ColumnSchema, ScalarType, encode_tuple};
-use redb::{Database, ReadableDatabase, ReadableTable};
+use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
@@ -429,6 +429,7 @@ pub enum AdministrativeCancellationError {
     InvalidAudit,
     Unauthorized,
     RateLimited,
+    AuditCapacityExceeded,
     Storage,
 }
 
@@ -10785,6 +10786,11 @@ fn persist_authentication_failure_audit(
         let mut audit = write
             .open_table(AUDIT)
             .map_err(|error| storage_error(&error))?;
+        let current_events = usize::try_from(audit.len().map_err(|error| storage_error(&error))?)
+            .map_err(|_| TransactionError::AuditCapacityExceeded)?;
+        if !crate::audit::has_audit_capacity(current_events, 1) {
+            return Err(TransactionError::AuditCapacityExceeded);
+        }
         audit
             .insert(event.event_id.as_slice(), encoded.as_slice())
             .map_err(|error| storage_error(&error))?;
@@ -10871,6 +10877,11 @@ fn persist_admin_cancellation_audit(
     }
     {
         let mut audit = write.open_table(AUDIT).map_err(|_| storage_error())?;
+        let current_events = usize::try_from(audit.len().map_err(|_| storage_error())?)
+            .map_err(|_| AdministrativeCancellationError::AuditCapacityExceeded)?;
+        if !crate::audit::has_audit_capacity(current_events, 1) {
+            return Err(AdministrativeCancellationError::AuditCapacityExceeded);
+        }
         if audit
             .get(event.event_id.as_slice())
             .map_err(|_| storage_error())?

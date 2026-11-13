@@ -13227,6 +13227,25 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         storage.list_audit_events(backup_admin_id, MAX_ADMIN_AUDIT_PAGE, None),
         Err(prdb_engine::storage_manager::AdministrativeAuditListError::Storage)
     ));
+    let write = database.begin_write()?;
+    {
+        let mut audit = write.open_table(AUDIT)?;
+        let mut sequence = 0u64;
+        while audit.len()? < prdb_engine::audit::MAX_AUDIT_EVENTS as u64 {
+            let mut key = [0; 16];
+            key[..8].copy_from_slice(b"CAPACITY");
+            key[8..].copy_from_slice(&sequence.to_be_bytes());
+            sequence = sequence.saturating_add(1);
+            if audit.get(key.as_slice())?.is_none() {
+                audit.insert(key.as_slice(), &b"bounded-capacity-fixture"[..])?;
+            }
+        }
+    }
+    write.commit()?;
+    assert!(matches!(
+        storage.authenticate_query_session(id(254), &[0; 32]),
+        Err(prdb_engine::transaction::TransactionError::AuditCapacityExceeded)
+    ));
     Ok(())
 }
 

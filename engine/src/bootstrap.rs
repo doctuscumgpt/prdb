@@ -17,7 +17,7 @@ use crate::metadata::{EngineMetadata, Lifecycle};
 use crate::schema::{AUDIT, CATALOG, ENGINE_META, PRINCIPAL_NAMES, SCHEMA_NAMES, create_tables};
 use crate::startup::{StartupError, validate_initializing_records, validate_persisted_records};
 use crate::storage_manager::{StorageManager, StorageManagerConfig, StorageManagerInitError};
-use redb::{Database, Durability, ReadableDatabase, ReadableTable};
+use redb::{Database, Durability, ReadableDatabase, ReadableTable, ReadableTableMetadata};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -67,6 +67,7 @@ pub enum BootstrapError {
     UnsupportedPlatform,
     RandomnessUnavailable,
     InvalidCatalog,
+    AuditCapacityExceeded,
     Storage,
     Io(std::io::Error),
     Startup(StartupError),
@@ -616,6 +617,11 @@ pub fn resume(
         let mut audit = write
             .open_table(AUDIT)
             .map_err(|_| BootstrapError::Storage)?;
+        let current_events = usize::try_from(audit.len().map_err(|_| BootstrapError::Storage)?)
+            .map_err(|_| BootstrapError::AuditCapacityExceeded)?;
+        if !crate::audit::has_audit_capacity(current_events, 1) {
+            return Err(BootstrapError::AuditCapacityExceeded);
+        }
         if audit
             .get(event_key.as_slice())
             .map_err(|_| BootstrapError::Storage)?
@@ -842,6 +848,11 @@ fn seed_database(
         let mut audit = write
             .open_table(AUDIT)
             .map_err(|_| BootstrapError::Storage)?;
+        let current_events = usize::try_from(audit.len().map_err(|_| BootstrapError::Storage)?)
+            .map_err(|_| BootstrapError::AuditCapacityExceeded)?;
+        if !crate::audit::has_audit_capacity(current_events, 1) {
+            return Err(BootstrapError::AuditCapacityExceeded);
+        }
         audit
             .insert(event_key.as_slice(), event_payload.as_slice())
             .map_err(|_| BootstrapError::Storage)?;
