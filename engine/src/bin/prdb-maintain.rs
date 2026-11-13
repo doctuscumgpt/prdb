@@ -33,7 +33,7 @@ fn print_help() {
          Copies a v1 migration source under its exclusive lock and verifies it.\n\
          prdb-maintain inspect --instance-dir PATH\n\
          Read-only READY validation and bounded engine metadata diagnostics.\n\
-         prdb-maintain migration-inspect --instance-dir PATH\n\
+         prdb-maintain migration-inspect --instance-dir PATH [--backup-dir PATH]\n\
          Validates the active READY image and any private staged image.\n\
          prdb-maintain migration-discard-stage --instance-dir PATH --backup-dir PATH\n\
          Discards staging only when active bytes match the verified backup.\n\
@@ -172,9 +172,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return Err("--instance-dir PATH is required".into());
         }
         let instance_dir = PathBuf::from(args.next().ok_or("instance directory is required")?);
+        let backup_dir = match args.next() {
+            None => None,
+            Some(flag) if flag == "--backup-dir" => Some(PathBuf::from(
+                args.next().ok_or("backup directory is required")?,
+            )),
+            Some(_) => return Err("unexpected trailing arguments".into()),
+        };
         if args.next().is_some() {
             return Err("unexpected trailing arguments".into());
         }
+        let verified_backup = backup_dir
+            .as_ref()
+            .map(prdb_engine::offline_backup::verify_backup)
+            .transpose()?;
 
         let active = ReadOnlyStorageInstance::open_for_migration_inspection(&instance_dir)?;
         let active_report =
@@ -196,6 +207,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let staging_path = instance_dir.join(".prdb-migration.next");
         if !staging_path.try_exists()? {
             println!("staging=absent");
+            if let Some(backup) = &verified_backup {
+                let active_matches = prdb_engine::offline_backup::database_image_matches_backup(
+                    instance_dir.join("storage.redb"),
+                    backup,
+                )?;
+                println!(
+                    "backup=VERIFIED active_matches={} staging_matches=false",
+                    active_matches,
+                );
+            }
             return Ok(());
         }
         let staging_metadata = std::fs::symlink_metadata(&staging_path)?;
@@ -232,6 +253,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             staged_meta.builtin_semantics_version,
             staged_meta.commit_sequence,
         );
+        if let Some(backup) = &verified_backup {
+            let active_matches = prdb_engine::offline_backup::database_image_matches_backup(
+                instance_dir.join("storage.redb"),
+                backup,
+            )?;
+            let staging_matches =
+                prdb_engine::offline_backup::database_image_matches_backup(&staging_path, backup)?;
+            println!(
+                "backup=VERIFIED active_matches={} staging_matches={}",
+                active_matches, staging_matches,
+            );
+        }
         return Ok(());
     }
 

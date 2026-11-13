@@ -168,6 +168,8 @@ fn migration_inspection_validates_active_and_staged_images_without_writing_them(
     let active_path = fixture.instance_dir().join("storage.redb");
     let staging_path = fixture.instance_dir().join(".prdb-migration.next");
     let backup_path = fixture.0.join("verified-backup");
+    prdb_engine::offline_backup::create_verified_backup(fixture.instance_dir(), &backup_path)
+        .expect("create source backup before inspection");
     std::fs::copy(&active_path, &staging_path).expect("prepare staged image");
     std::fs::set_permissions(&staging_path, std::fs::Permissions::from_mode(0o600))
         .expect("make staged image private");
@@ -177,6 +179,8 @@ fn migration_inspection_validates_active_and_staged_images_without_writing_them(
     let inspected = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
         .args(["migration-inspect", "--instance-dir"])
         .arg(fixture.instance_dir())
+        .args(["--backup-dir"])
+        .arg(&backup_path)
         .output()
         .expect("run migration inspection");
     assert!(
@@ -188,6 +192,10 @@ fn migration_inspection_validates_active_and_staged_images_without_writing_them(
     assert!(output.contains("active=READY"), "{output}");
     assert!(
         output.contains("staging=READY relationship=same_frontier"),
+        "{output}"
+    );
+    assert!(
+        output.contains("backup=VERIFIED active_matches=true staging_matches=true"),
         "{output}"
     );
     assert_eq!(
@@ -208,8 +216,12 @@ fn migration_inspection_validates_active_and_staged_images_without_writing_them(
     assert!(!rejected.status.success());
     drop(live);
 
-    prdb_engine::offline_backup::create_verified_backup(fixture.instance_dir(), &backup_path)
-        .expect("create source backup after closing writer");
+    let discard_backup_path = fixture.0.join("discard-verified-backup");
+    prdb_engine::offline_backup::create_verified_backup(
+        fixture.instance_dir(),
+        &discard_backup_path,
+    )
+    .expect("create source backup after closing competing writer");
     let active_before_discard =
         std::fs::read(&active_path).expect("read active source before discard");
 
@@ -217,7 +229,7 @@ fn migration_inspection_validates_active_and_staged_images_without_writing_them(
         .args(["migration-discard-stage", "--instance-dir"])
         .arg(fixture.instance_dir())
         .arg("--backup-dir")
-        .arg(&backup_path)
+        .arg(&discard_backup_path)
         .output()
         .expect("discard verified unpublished stage");
     assert!(

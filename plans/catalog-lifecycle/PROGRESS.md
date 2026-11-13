@@ -119,3 +119,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - The lifecycle specification now lists service admission, read-only source/backup support, and executable transition status for catalog/expression/built-in semantics tuples `1/1/1`, `2/1/1`, and unknown tuples.
 - It records that catalog v1 is fully inspectable and backup-capable for offline migration, while v1-to-v2 conversion remains unavailable until prior deleted identity IDs can be preserved safely.
 - Verification: documentation consistency and `git diff --check`; no code behavior changed.
+
+## CL-5 recovery diagnostic: compare generations with the verified backup — implemented slice
+
+- `prdb-maintain migration-inspect --instance-dir PATH --backup-dir PATH` now verifies the supplied backup and reports whether the exact active and staged database bytes match its preserved source image. An absent stage reports `staging_matches=false`.
+- This identifies which named file still holds the backup source after an interrupted generation exchange. It remains diagnostic only; matching bytes does not select a recovery action or prove the exchange was durably acknowledged.
+- Regression verifies the active and staged images both match the source backup, checks both database files remain byte-identical, and retains the lock-exclusion and unpublished-stage discard coverage.
+- Verification: focused maintenance CLI test passed. Pinned-shell format check, locked workspace build, warning-denied all-target Clippy, and full serial workspace suite inside the delegated `systemd --user` service passed. Sandbox tests ran with zero ignored; `git diff --check` passed.
