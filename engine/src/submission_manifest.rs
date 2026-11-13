@@ -764,9 +764,12 @@ fn dynamic_symbol_count(
             let bucket_bytes = bucket_count
                 .checked_mul(4)
                 .ok_or(ManifestError::InvalidArtifact)?;
-            let bucket_address = address
+            let bloom_address = address
                 .checked_add(16)
-                .and_then(|value| value.checked_add(bloom_bytes as u64))
+                .ok_or(ManifestError::InvalidArtifact)?;
+            map_virtual_address(bloom_address, bloom_bytes, load_segments)?;
+            let bucket_address = bloom_address
+                .checked_add(bloom_bytes as u64)
                 .ok_or(ManifestError::InvalidArtifact)?;
             map_virtual_address(bucket_address, bucket_bytes, load_segments)?;
             let chain_address = bucket_address
@@ -1063,6 +1066,34 @@ mod tests {
         artifact[32..36].copy_from_slice(&0x2344u32.to_le_bytes());
         assert_eq!(
             dynamic_symbol_count(&artifact, &segments, None, Some(0)),
+            Err(ManifestError::InvalidArtifact)
+        );
+    }
+
+    #[test]
+    fn gnu_hash_requires_file_backed_bloom_filter_bytes() {
+        let mut artifact = vec![0u8; 24];
+        artifact[0..4].copy_from_slice(&1u32.to_le_bytes()); // bucket count
+        artifact[4..8].copy_from_slice(&1u32.to_le_bytes()); // first hashed symbol
+        artifact[8..12].copy_from_slice(&1u32.to_le_bytes()); // bloom count
+        artifact[12..16].copy_from_slice(&5u32.to_le_bytes()); // bloom shift
+        artifact[16..20].copy_from_slice(&1u32.to_le_bytes()); // bucket head
+        artifact[20..24].copy_from_slice(&1u32.to_le_bytes()); // final chain bit
+        let segments = [
+            ElfSegment {
+                offset: 0,
+                virtual_address: 100,
+                file_size: 16,
+            },
+            ElfSegment {
+                offset: 16,
+                virtual_address: 124,
+                file_size: 8,
+            },
+        ];
+
+        assert_eq!(
+            dynamic_symbol_count(&artifact, &segments, None, Some(100)),
             Err(ManifestError::InvalidArtifact)
         );
     }

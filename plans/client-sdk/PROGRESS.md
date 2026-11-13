@@ -670,3 +670,9 @@
 
 - Regression: SQL parameter binding now checks both DATE endpoints and adjacent out-of-range values, plus both TIMESTAMPTZ endpoints and adjacent out-of-range values. This closes the binder-side coverage gap; direct value validation already had the full matrix.
 - Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed, including the TinyCC SQL parameter fixture and all maintained SDK executables.
+
+## SDK-3 manifest ELF inspection: GNU bloom mapping validation — implemented
+
+- Regression: a synthetic ELF split its GNU-hash header and bucket/chain bytes across load segments while leaving the advertised bloom-filter virtual range unmapped. The parser initially accepted it; the focused test reproduced `Ok(2)` instead of `InvalidArtifact`.
+- Behavior: GNU-hash inspection now requires the entire bloom-filter byte range to map to file-backed load-segment bytes before reading buckets and chains.
+- Verification: all 14 submission-manifest unit tests passed; workspace formatting, locked build, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed with zero ignored tests. `git diff --check` passed.
