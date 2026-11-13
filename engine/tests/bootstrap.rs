@@ -8,6 +8,7 @@ use prdb_engine::schema::CATALOG;
 use prdb_engine::startup::{StartupError, validate_persisted_records};
 use prdb_engine::storage_manager::{StorageManager, StorageManagerConfig, StorageManagerInitError};
 use redb::{Database, ReadableDatabase};
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -151,6 +152,50 @@ fn bootstrap_handoff_stays_initializing_and_resume_rotates_secret() {
         resume(&fixture.0, "first_admin", expiry()),
         Err(BootstrapError::NotInitializing)
     ));
+}
+
+#[test]
+fn bootstrap_child_exits_after_initialization_commit() {
+    let Some(marker_path) = std::env::var_os("PRDB_TEST_BOOTSTRAP_CRASH_MARKER") else {
+        return;
+    };
+    let directory = std::env::var_os("PRDB_TEST_BOOTSTRAP_CRASH_DIRECTORY")
+        .expect("child process receives the bootstrap directory");
+    let session = initialize(directory, "crash_admin", expiry()).unwrap();
+    let mut marker = std::fs::File::create(marker_path).unwrap();
+    marker.write_all(&session.token_id()).unwrap();
+    marker.sync_all().unwrap();
+    unsafe { libc::_exit(77) }
+}
+
+#[test]
+fn abrupt_process_exit_after_bootstrap_commit_recovers_before_ready() {
+    let fixture = Fixture::new();
+    let marker_path = fixture.0.with_extension("token-id");
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "bootstrap_child_exits_after_initialization_commit",
+        ])
+        .env("PRDB_TEST_BOOTSTRAP_CRASH_MARKER", &marker_path)
+        .env("PRDB_TEST_BOOTSTRAP_CRASH_DIRECTORY", &fixture.0)
+        .status()
+        .unwrap();
+    assert_eq!(child.code(), Some(77));
+
+    let token_id: [u8; 16] = std::fs::read(&marker_path)
+        .unwrap()
+        .try_into()
+        .expect("child recorded exactly one token ID");
+    let mut resumed = resume(&fixture.0, "crash_admin", expiry()).unwrap();
+    assert!(verifier_revoked(resumed.database(), token_id));
+    let mut secret = resumed.take_secret().unwrap();
+    secret.zeroize();
+    let ready = resumed.acknowledge().unwrap();
+    assert!(validate_persisted_records(ready.database()).is_ok());
+    drop(ready);
+    let reopened = StorageInstance::open(&fixture.0).unwrap();
+    assert!(validate_persisted_records(reopened.database()).is_ok());
 }
 
 #[test]

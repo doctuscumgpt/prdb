@@ -27,3 +27,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - The CLI rejects existing credential paths before changing the instance and never prints the token. `--resume` rotates the unacknowledged token; operators remove any credential left by an unconfirmed prior attempt before resuming.
 - Verification: binary integration tests cover first initialization, READY reopen, interrupted setup/token rotation, private credential readability, and no-overwrite behavior. The locked workspace build, formatting, warning-denied Clippy, workspace tests, and systemd unit verification passed. The release profile now includes and validates `prdb-init`.
 - Remaining: live service unit activation still depends on operator-supplied runtime allowlists/profile and real service account provisioning; backup/offline upgrade and recovery workflows remain open.
+
+## CL-2 follow-up: resume after abrupt process exit at the initial commit boundary — verified
+
+- Contract: a crash after durable creation of the INITIALIZING catalog but before secret handoff must leave the instance unavailable to ordinary startup; resume rotates the unclaimed token and only acknowledgement publishes READY. See [bootstrap interruption behavior](../../specs/catalog-lifecycle.md).
+- Regression: `abrupt_process_exit_after_bootstrap_commit_recovers_before_ready` starts a child test process, initializes the database, syncs a private token-ID marker, then calls `_exit` without running Rust destructors. The parent resumes the same directory, verifies the original verifier is revoked, acknowledges the replacement credential, and reopens the validated READY image.
+- Verification: the focused subprocess regression passed under the pinned Nix toolchain. This is abrupt process-exit evidence with the kernel and filesystem alive; it does not establish power-loss behavior.
+- Remaining: transaction-boundary fault injection for actual durability failures, additional handoff interruption points, and offline upgrade/recovery workflows remain open.
