@@ -287,8 +287,7 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
                     plan = encoded;
                 }
                 let predicate_proves_empty = if operation == Operation::OptimizeSelect
-                    && request.payload.get(2)
-                        == Some(&crate::query_abi::OPTIMIZER_SELECT_STATEMENT)
+                    && request.payload.get(2) == Some(&crate::query_abi::OPTIMIZER_SELECT_STATEMENT)
                     && proven_empty.first() != Some(&true)
                 {
                     let decoded_request =
@@ -744,7 +743,10 @@ mod tests {
             assert_eq!(response.status, OptimizerStatus::Success);
             let plan = decode_plan_v1(response.plan.as_deref().unwrap()).unwrap();
             assert!(plan.range_scan.is_none());
-            assert!(!plan.empty_view_hint, "unknown estimate must preserve normal execution");
+            assert!(
+                !plan.empty_view_hint,
+                "unknown estimate must preserve normal execution"
+            );
             assert!(matches!(plan.nodes.get(1), Some(PlanNode::Filter(_))));
             submission_client.shutdown(Shutdown::Write).unwrap();
             planner_thread.join().unwrap();
@@ -798,8 +800,9 @@ mod tests {
                     .unwrap()
                     .expect("filtered SELECT must request a bounded predicate estimate");
                 assert_eq!(estimate.operation, Operation::EstimateScan as u16);
-                let decoded = crate::planner_ipc::EstimatePredicateRequest::decode(&estimate.payload)
-                    .unwrap();
+                let decoded =
+                    crate::planner_ipc::EstimatePredicateRequest::decode(&estimate.payload)
+                        .unwrap();
                 assert_eq!(decoded.schema_name, "public");
                 assert_eq!(decoded.relation_name, "items");
                 crate::ipc::write_frame(
@@ -817,8 +820,8 @@ mod tests {
                 )
                 .unwrap();
             });
-            let optimizer_thread =
-                scope.spawn(|| serve_optimizer_process(&mut submission_server, &mut planner_client));
+            let optimizer_thread = scope
+                .spawn(|| serve_optimizer_process(&mut submission_server, &mut planner_client));
             crate::ipc::write_frame(
                 &mut submission_client,
                 &IpcFrame {

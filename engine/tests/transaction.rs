@@ -5855,6 +5855,17 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
             }
         )
     );
+    writer.stage_put(id(1), &row(Some("first"), "replacement-hidden-secret"))?;
+    assert_eq!(
+        writer.estimate_authorized_predicate_at_most(table_id, &projection, &predicate, 4)?,
+        Some((3, 1)),
+        "changing only a redacted cell must not change predicate estimate counts"
+    );
+    assert_eq!(
+        writer.estimate_authorized_scan(table_id, &projection)?,
+        private_summary,
+        "changing only a redacted cell must not change released column populations"
+    );
     writer.stage_put(id(1), &row(Some("changed"), "changed-secret"))?;
     assert_eq!(
         writer.estimate_authorized_population_at_most(table_id, &projection, 4)?,

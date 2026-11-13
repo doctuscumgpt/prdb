@@ -1,5 +1,12 @@
 # Statistics Service Progress
 
+## ST-3 follow-up: redacted-cell mutation preserves exact predicate counts — verified
+
+- Contract: changing a cell that remains redacted to the estimator must not change the visible-row count, authorized column populations, or exact predicate-match count.
+- Regression: `authorized_scan_estimate_counts_sanitized_cells_and_private_writes` now replaces only the hidden text cell of a row while retaining its readable predicate value. It asserts the `(visible_rows, matching_rows)` result and full sanitized summary remain byte-for-byte equivalent.
+- Verification: the focused real-redb transaction regression passed (`1 passed, 0 failed`). `cargo fmt --all -- --check` and `git diff --check` passed.
+- Scope: this checks content invariance for a private overlay and fixed authorized view, not timing/resource noninterference or adding invisible rows under unsupported value-dependent policies.
+
 ## ST-2 optimizer use of exact predicate estimates — implemented slice
 
 - Contract: filtered ordinary unordered single-table SELECT sends its bound predicate through the planner-only EstimateScan operation. The optimizer adds the existing empty-view hint only when storage returns an exact zero-match count; nonzero and `Unknown` responses preserve the normal predicate plan.
