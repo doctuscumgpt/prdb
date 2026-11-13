@@ -23514,7 +23514,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     let storage = StorageManager::with_config(
         &database,
         StorageManagerConfig {
-            max_active_analytical_invocations: 4,
+            max_active_analytical_invocations: 8,
             ..StorageManagerConfig::default()
         },
     )?;
@@ -24720,7 +24720,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     let owner = client.staging_owner()?;
     let staging = StagingStore::new(
         StagingLimits {
-            max_active_analytical_per_principal: 4,
+            max_active_analytical: 9,
+            max_active_analytical_per_principal: 8,
             ..StagingLimits::default()
         },
         Arc::new(AcceptFixture {
@@ -24879,7 +24880,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         )?;
     assert_eq!(cancellation_accepted.payload, b"{\"state\":\"accepted\"}");
     let mut additional_cancellation_workers = Vec::new();
-    for worker_index in 0..2u8 {
+    for worker_index in 0..6u8 {
         let mut worker_client = ClientConnectionSession::default();
         worker_client.accept_hello(
             ClientMode::Query,
@@ -25149,8 +25150,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         let active_operational_transactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let active_cancellation_workers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let additional_worker_memory_samples =
-            Arc::new(std::sync::Mutex::new(Vec::<(u64, u64)>::with_capacity(3)));
-        let start = Arc::new(std::sync::Barrier::new(8));
+            Arc::new(std::sync::Mutex::new(Vec::<(u64, u64)>::with_capacity(7)));
+        let start = Arc::new(std::sync::Barrier::new(12));
         let (index_build_start_tx, index_build_start_rx) = std::sync::mpsc::channel();
         let (index_build_started_tx, index_build_started_rx) = std::sync::mpsc::channel();
         let index_build_storage = &storage;
@@ -25485,7 +25486,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                                     > 0
                                 && cancellation_active_workers
                                     .load(std::sync::atomic::Ordering::Acquire)
-                                    == 3
+                                    == 7
                             {
                                 break;
                             }
@@ -25499,7 +25500,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                                 == 0
                             || cancellation_active_workers
                                 .load(std::sync::atomic::Ordering::Acquire)
-                                != 3
+                                != 7
                         {
                             return Err(std::io::Error::other(
                                 "three cancellation SQL workers did not overlap relayed analytics and an operational transaction",
@@ -25543,12 +25544,12 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                             )) => {}
                             Err(error) => {
                                 return Err(std::io::Error::other(format!(
-                                    "fifth analytical START failed for the wrong reason: {error:?}"
+                                    "ninth analytical START failed for the wrong reason: {error:?}"
                                 )));
                             }
                             Ok(_) => {
                                 return Err(std::io::Error::other(
-                                    "fifth analytical START was accepted above the configured cap",
+                                    "ninth analytical START was accepted above the configured cap",
                                 ));
                             }
                         }
@@ -25737,9 +25738,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         let mut additional_memory_samples = additional_worker_memory_samples
             .lock()
             .map_err(|_| std::io::Error::other("worker memory sample lock poisoned"))?;
-        if additional_memory_samples.len() != 3 {
+        if additional_memory_samples.len() != 7 {
             return Err(format!(
-                "sampled {} of 3 additional analytical worker cgroups",
+                "sampled {} of 7 additional analytical worker cgroups",
                 additional_memory_samples.len()
             )
             .into());
