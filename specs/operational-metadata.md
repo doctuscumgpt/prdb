@@ -13,11 +13,13 @@ An authenticated user may inspect status for their own invocations. Database adm
 | Invocations | Opaque ID, owner, workload class, ACTIVE/COMMITTING/terminal state, start/deadline, cancellation state, budget usage | Live registry plus durable final outcome; own or administrator |
 | Storage transactions | Internal transaction ID, state, write-set bytes, age, pin count | Administrator only; IDs/epochs never leaked through optimizer APIs |
 | Waits/fences | DDL fence wait category, duration, opaque wait/resource/blocker IDs | Administrator-only best-effort page snapshot; no raw addresses or object names to owners |
-| Jobs | Type, owner/controller, queued/running/completed/failed, bounded progress, failure category | DDL/index/checkpoint/reclamation work; runtime registry, with durable phase markers when required for recovery |
+| Jobs (future) | Type, owner/controller, queued/running/completed/failed, bounded progress, failure category | No asynchronous job API is implemented; add a runtime registry only with a supported background job |
 | Memory/history | Queue usage, pinned history, cache size, oldest-pin age | Global administrator summaries, not per-query private-data estimates |
 | Counters | Admissions, conflicts, policy denials, cancellations, bytes, latency buckets | Administrator aggregates; own-invocation usage is limited to that invocation |
 
 Do not include query text, SQL parameters, native source, row values, token secrets/verifiers, filesystem paths, or arbitrary exception dumps by default. Diagnostics containing object names require authority to see those objects. Even aggregate global metrics reveal workload and data-volume information, so ordinary users and the optimizer do not receive them.
+
+The current engine has no asynchronous maintenance-job API. DDL and index builds run synchronously as authenticated control operations. redb compaction runs through `prdb-maintain compact` after services stop and the exclusive instance lock is acquired; it is not a queued supervisor job. Do not expose an empty or synthetic job registry, and do not add engine checkpoint jobs because redb owns physical persistence and recovery. Define job states, progress, retention, and recovery markers when a supported asynchronous operation is introduced.
 
 ## APIs and Ordering
 

@@ -6,14 +6,14 @@ Implement [live monitoring and audit](../../specs/operational-metadata.md). Depe
 
 ## Decisions Before Implementation
 
-Define bounded registry schemas/status projections, observation times/consistency labels, pagination generations or explicit best-effort semantics, audit/outbox payloads, retention/expiry policy and sink retry budgets. Only database admins inspect global registries/audit initially; ordinary users get their own status/usage without global totals. Resolve obsolete checkpoint-job terminology to supported redb maintenance in specs before implementing job kinds. The first bounded audit retention mechanism is an offline PRA1 export under the exclusive instance lock. OM-6 adds an optional local JSONL sink with durable per-event delivery markers and at-least-once replay semantics.
+Define bounded registry schemas/status projections, observation times/consistency labels, pagination generations or explicit best-effort semantics, audit/outbox payloads, retention/expiry policy and sink retry budgets. Only database admins inspect global registries/audit initially; ordinary users get their own status/usage without global totals. There is no asynchronous job registry until a supported background operation exists: DDL/index builds are synchronous, and redb compaction is offline under the exclusive instance lock. The first bounded audit retention mechanism is an offline PRA1 export under the exclusive instance lock. OM-6 adds an optional local JSONL sink with durable per-event delivery markers and at-least-once replay semantics.
 
 ## Increments
 
 | ID | Observable test first | Minimum implementation and evidence |
 | --- | --- | --- |
 | OM-1 | Own status succeeds while another user's/unknown ID stays non-disclosing | Authenticate every control request, project bounded invocation fields and distinguish live activity from storage-confirmed terminal status |
-| OM-2 | Admin runtime pages carry observation/consistency labels and revocation stops later pages | Bounded invocation/transaction/wait/job/memory/counter registries with opaque IDs, no raw paths/pointers/query values and no SQL exposure |
+| OM-2 | Admin runtime pages carry observation/consistency labels and revocation stops later pages | Bounded invocation/transaction/wait/memory/counter registries; add a job registry only when supported asynchronous jobs exist |
 | OM-3 | Registry absence after restart or retention expiry cannot become ABORTED | Query durable outcomes after lost replies, return UNKNOWN/EXPIRED and preserve committed-but-undelivered results |
 | OM-4 | Both cancellation/commit orders return accepted or too-late/resolved outcome accurately | Route cancellation to synchronized storage state; an accepted control acknowledgement is not proof of rollback |
 | OM-5 | Admin change and required audit/outbox either both persist or neither does | Atomic audit records for DDL, membership/grants/policies and credentials; bounded/rate-limited auth failure and admin cancel events, no secrets |

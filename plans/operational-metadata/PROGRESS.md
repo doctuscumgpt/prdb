@@ -160,3 +160,10 @@
 - Regression: first observed the focused integration test fail because `audit_sink` did not exist; a file-removal test then exposed immediate inode reuse when identity used only device/inode. Real-redb tests cover durable delivery, repeat suppression, replay on path or file replacement, sink failure retention, partial-line recovery, private permissions and absolute-path validation. A real supervisor/gateway process test checks delivery of a failed-authentication event; archive coverage verifies pruning removes markers atomically.
 - Verification: pinned toolchain versions matched; workspace build, fmt, warning-denied Clippy, and release build passed. TinyCC SDK tests and the sandbox fixture passed; release profile validated 10 engine binaries and 1 query fixture. The delegated cgroup probe passed with writable `cpu memory pids`; the full serial delegated-cgroup workspace suite passed with zero ignored tests. Focused sink tests, archive marker test, release-profile validation, and `git diff --check` passed.
 - Remaining: remote sink integrations, job registries, retained-byte/cache telemetry, additional wait categories, and broader pressure testing remain open.
+
+## OM-2 asynchronous job boundary — clarified
+
+- Contract refinement: no asynchronous maintenance jobs are exposed today. DDL/index builds are synchronous control operations; redb compaction is an offline `prdb-maintain compact` operation under the exclusive instance lock. The registry remains deferred until a supported background operation can provide real queued/running/completed phases and recovery semantics.
+- Specification: replaced the obsolete checkpoint/reclamation job examples in [operational metadata](../../specs/operational-metadata.md) with the actual redb ownership and maintenance behavior. The plan now records why an empty or synthetic job registry would be misleading.
+- Verification: documentation diff and link/consistency checks only; no Rust behavior changed.
+- Remaining: define a job API and registry alongside the first supported asynchronous operation; job tracking itself is not implemented.
