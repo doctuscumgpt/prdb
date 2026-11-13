@@ -1,10 +1,16 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: two-second eight-worker saturation interval — covered
+
+- Harness: the SQL fixture keeps the primary confined analytics process alive for three seconds after its resumed-group marker. The acceptance measures a two-second interval while the primary worker plus seven cancellation workers remain admitted; it queries all eight storage invocation statuses and requires each to remain Active. The cancellation fixture polls at 50-ms intervals within a bounded executor request budget. Four operational threads continue read/scan/commit cycles during the interval.
+- Verification: five sequential fresh-database delegated-cgroup runs passed (`1 passed, 0 ignored` each). Each run kept all eight analytical statuses Active throughout the measured interval and completed 236–258 operational commits during those two seconds. Summed eight-worker cgroup `memory.current` ranged from 13,332–13,864 KiB and summed per-worker `memory.peak` from 17,048–17,576 KiB. Operational point-read p99 ranged from 85.284–108.212 ms and durable-commit p99 from 650.466–738.544 ms. These are local observations, not service targets.
+- Scope: this closes the brief saturation and progress gap in WI-7. Longer sustained workloads, target-hardware behavior, and reclamation after prolonged analytical snapshots remain open.
+
 ## WI-7 follow-up: 64 concurrent operational transactions — covered
 
 - Harness: `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` now starts 64 operational threads with the eight analytical workers. A dedicated barrier keeps all 64 token-authenticated invocation contexts admitted together before the first point read, scan, or durable commit; an atomic peak counter makes the concurrency requirement an assertion. Sixty threads complete one transaction each, while four keep reading and committing during the cancellation window.
 - Verification: five sequential fresh-database runs passed inside the delegated `systemd --user` service (`1 passed, 0 ignored` each). Across these runs, summed eight-worker cgroup `memory.current` ranged from 13,204–13,884 KiB and summed per-worker `memory.peak` from 17,144–17,436 KiB; every analytical worker stayed below its 256 MiB limit. Operational point-read p99 ranged from 102.083–108.019 ms and durable-commit p99 from 710.189–851.650 ms under this short concurrent workload. These are local observations, not service targets.
-- Scope: this proves a brief 64-context operational admission batch while all eight confined analytical slots are occupied. It does not measure sustained eight-worker throughput, long-run reclamation, or target-hardware behavior.
+- Scope: this proves a brief 64-context operational admission batch while all eight confined analytical slots are occupied. It does not measure longer sustained eight-worker throughput, long-run reclamation, or target-hardware behavior.
 
 ## WI-7 follow-up: eight concurrent confined analytical workers — covered
 

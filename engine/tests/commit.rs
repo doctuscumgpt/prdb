@@ -25124,6 +25124,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     let operational_storage = &storage;
     let cancellation_storage = &storage;
     let saturated_storage = &storage;
+    let saturated_status_storage = &storage;
     let saturated_staging = &staging;
     let saturated_runtime = &runtime;
     let operational_table_id = composite_table.table_id;
@@ -25148,12 +25149,14 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         let observer_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let analytics_result_relayed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let active_operational_transactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let completed_operational_transactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let peak_active_operational_transactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let active_cancellation_workers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let additional_worker_memory_samples =
             Arc::new(std::sync::Mutex::new(Vec::<(u64, u64)>::with_capacity(7)));
         let start = Arc::new(std::sync::Barrier::new(72));
         let first_operational_batch = Arc::new(std::sync::Barrier::new(64));
+        let (saturation_started_tx, saturation_started_rx) = std::sync::mpsc::channel();
         let (index_build_start_tx, index_build_start_rx) = std::sync::mpsc::channel();
         let (index_build_started_tx, index_build_started_rx) = std::sync::mpsc::channel();
         let index_build_storage = &storage;
@@ -25185,6 +25188,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         for worker_index in 0..64u8 {
             let task_done = Arc::clone(&observer_done);
             let task_active_transactions = Arc::clone(&active_operational_transactions);
+            let task_completed_transactions = Arc::clone(&completed_operational_transactions);
             let task_peak_transactions = Arc::clone(&peak_active_operational_transactions);
             let task_first_batch = Arc::clone(&first_operational_batch);
             let task_start = Arc::clone(&start);
@@ -25267,6 +25271,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                         active_worker_commit_latencies.push(commit_latency);
                     }
                     completed += 1;
+                    task_completed_transactions.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                     if completed >= min_operations_before_exit
                         && task_done.load(std::sync::atomic::Ordering::Acquire)
                     {
@@ -25417,10 +25422,12 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         let cancellation_start = Arc::clone(&start);
         let cancellation_analytics_result_relayed = Arc::clone(&analytics_result_relayed);
         let cancellation_active_transactions = Arc::clone(&active_operational_transactions);
+        let cancellation_completed_transactions = Arc::clone(&completed_operational_transactions);
         let cancellation_active_workers = Arc::clone(&active_cancellation_workers);
         let cancellation_worker_pid = worker_pid;
         let cancellation_executor_pid = cancellation_executor.id();
         let cancellation_memory_samples = Arc::clone(&additional_worker_memory_samples);
+        let cancellation_saturation_started = saturation_started_rx;
         let cancellation_observer = scope.spawn(move || {
             let result = (|| -> Result<_, Box<dyn std::error::Error>> {
                 cancellation_start.wait();
@@ -25526,12 +25533,92 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                                 "three cancellation SQL workers did not overlap relayed analytics and an operational transaction",
                             ));
                         }
+                        cancellation_saturation_started
+                            .recv_timeout(Duration::from_secs(10))
+                            .map_err(|error| {
+                                std::io::Error::other(format!(
+                                    "primary SQL worker did not reach its sustained interval: {error}"
+                                ))
+                            })?;
+                        let transactions_before_saturation =
+                            cancellation_completed_transactions
+                                .load(std::sync::atomic::Ordering::Acquire);
+                        let saturation_started_at = std::time::Instant::now();
+                        std::thread::sleep(Duration::from_secs(2));
+                        let saturation_elapsed = saturation_started_at.elapsed();
+                        let operational_progress = cancellation_completed_transactions
+                            .load(std::sync::atomic::Ordering::Acquire)
+                            .saturating_sub(transactions_before_saturation);
+                        let primary_state = std::fs::read_to_string(format!(
+                            "/proc/{cancellation_worker_pid}/stat"
+                        ))
+                        .ok()
+                        .and_then(|stat| {
+                            stat.rsplit_once(") ")
+                                .and_then(|(_, fields)| fields.split_whitespace().next())
+                                .map(str::to_owned)
+                        });
+                        if saturation_elapsed < Duration::from_secs(2)
+                            || operational_progress < 4
+                            || primary_state
+                                .as_deref()
+                                .is_none_or(|state| state == "Z" || state == "X")
+                            || cancellation_active_workers
+                                .load(std::sync::atomic::Ordering::Acquire)
+                                != 7
+                        {
+                            return Err(std::io::Error::other(format!(
+                                "saturated analytics did not sustain operational progress: elapsed={saturation_elapsed:?}, commits={operational_progress}"
+                            )));
+                        }
+                        eprintln!(
+                            "eight-worker saturation interval: elapsed={} ms operational_commits={operational_progress}",
+                            saturation_elapsed.as_millis()
+                        );
                         let memory_sample = worker_cgroup_memory(cancellation_worker_pid)?;
                         let (_, analytics_memory_peak_bytes) = memory_sample;
                         analytics_memory_sample = Some(memory_sample);
                         if analytics_memory_peak_bytes > 256 * 1024 * 1024 {
                             return Err(std::io::Error::other(format!(
                                 "analytical worker cgroup peak {analytics_memory_peak_bytes} exceeded its 256 MiB limit"
+                            )));
+                        }
+                        let mut analytical_statuses = vec![
+                            saturated_status_storage.get_invocation_status(
+                                reservation.invocation_id,
+                                user_id,
+                                now + 4,
+                            )
+                            .map_err(std::io::Error::other)?,
+                            saturated_status_storage.get_invocation_status(
+                                cancellation_reservation.invocation_id,
+                                user_id,
+                                now + 4,
+                            )
+                            .map_err(std::io::Error::other)?,
+                        ];
+                        analytical_statuses.extend(
+                            additional_cancellation_ids.iter().map(|invocation_id| {
+                                saturated_status_storage.get_invocation_status(
+                                    *invocation_id,
+                                    user_id,
+                                    now + 4,
+                                )
+                            }).collect::<Result<Vec<_>, _>>()
+                                .map_err(std::io::Error::other)?,
+                        );
+                        if analytical_statuses.len() != 8
+                            || analytical_statuses.iter().any(|status| {
+                                status.as_ref().is_none_or(|snapshot| {
+                                    !matches!(
+                                        &snapshot.status,
+                                        prdb_engine::storage_manager::InvocationStatus::Active { .. }
+                                    )
+                                })
+                            })
+                        {
+                            return Err(std::io::Error::other(format!(
+                                "not all eight analytical invocations remained active during sustained load: {analytical_statuses:?}"
                             )));
                         }
                         let saturated_start = saturated_client.handle_start_request_with_executor(
@@ -25703,6 +25790,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         start.wait();
         let mut index_build_start_tx = Some(index_build_start_tx);
         let mut index_build_started_rx = Some(index_build_started_rx);
+        let saturation_started_tx = saturation_started_tx;
         let mut analytical_group_resumed_at = None;
         let worker_status_result = executor.observe_exit_with_results(&invocation, |payload| {
             send_gateway_result_data_event(&mut service, accepted.request_id, payload.to_vec())
@@ -25726,6 +25814,11 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 analytical_group_resumed_at = Some(std::time::Instant::now());
             }
             analytics_result_relayed.store(true, std::sync::atomic::Ordering::Release);
+            if payload == b"ANALYTICAL_GROUP_RESUMED" {
+                saturation_started_tx.send(()).map_err(|error| {
+                    std::io::Error::other(format!("notify sustained analytics window: {error}"))
+                })?;
+            }
             Ok(())
         });
         let (index_build_started_at, index_build_finished_at, index_build_id) = index_build_worker

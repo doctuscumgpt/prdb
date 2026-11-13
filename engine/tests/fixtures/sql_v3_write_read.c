@@ -21,6 +21,7 @@
 #include "prdb_sdk_optimizer_v1.h"
 #include "prdb_sdk_optimizer_v2.h"
 
+#include <errno.h>
 #include <string.h>
 #include <time.h>
 
@@ -39,6 +40,16 @@ static uint32_t cancel_update_ready_sent;
 static uint32_t fail_next_stage_update;
 static uint32_t observe_next_stage_update;
 static uint32_t observe_only_stage_update;
+
+static int sleep_without_signal_interruption(struct timespec interval) {
+    struct timespec remaining = interval;
+    struct timespec next;
+    while (nanosleep(&remaining, &next) != 0) {
+        if (errno != EINTR) return -1;
+        remaining = next;
+    }
+    return 0;
+}
 
 static int32_t cancel_update_executor_request(
     void *context, uint16_t operation, const uint8_t *request,
@@ -95,9 +106,9 @@ static int32_t cancel_update_executor_request(
         return PRDB_QUERY_CALLBACK_IO_ERROR;
     }
     cancel_update_ready_sent = 1;
-    const struct timespec poll_interval = {0, 1000000};
-    for (uint32_t poll = 0; poll < 2000; ++poll) {
-        if (nanosleep(&poll_interval, NULL) != 0) {
+    const struct timespec poll_interval = {0, 50000000};
+    for (uint32_t poll = 0; poll < 60; ++poll) {
+        if (sleep_without_signal_interruption(poll_interval) != 0) {
             return PRDB_QUERY_CALLBACK_IO_ERROR;
         }
         int32_t status = cancel_update_original_host->v4.v3.executor_request(
@@ -263,9 +274,16 @@ static int32_t verify_analytical_pressure_group(
                                     sizeof(resumed) - 1) != PRDB_QUERY_CALLBACK_OK) {
         return 1;
     }
+    if (context->group_count == 2) {
+        /* Keep the eighth analytical slot active during the bounded mixed-load window. */
+        const struct timespec saturation_interval = {3, 0};
+        if (sleep_without_signal_interruption(saturation_interval) != 0) {
+            return 1;
+        }
+    }
     /* Pace callbacks so concurrent operational and DDL work can progress. */
     const struct timespec callback_interval = {0, 1000000};
-    if (nanosleep(&callback_interval, NULL) != 0) {
+    if (sleep_without_signal_interruption(callback_interval) != 0) {
         return 1;
     }
     return 0;
