@@ -28516,6 +28516,18 @@ fn supervisor_cancellation_cleans_descendants_from_worker_cgroup()
 #[test]
 fn cancellation_during_optimizer_predicate_estimate_kills_process_tree_without_fallback()
 -> Result<(), Box<dyn std::error::Error>> {
+    run_optimizer_predicate_estimate_termination_case(true)
+}
+
+#[test]
+fn deadline_during_optimizer_predicate_estimate_kills_process_tree_without_fallback()
+-> Result<(), Box<dyn std::error::Error>> {
+    run_optimizer_predicate_estimate_termination_case(false)
+}
+
+fn run_optimizer_predicate_estimate_termination_case(
+    cancel_owner: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::ipc::{IpcFrame, Operation, read_frame, write_frame};
     use prdb_engine::metadata_discovery::{
         AuthorizedPlanRelation, AuthorizedRelationDescription, VisibleColumn,
@@ -28560,6 +28572,12 @@ fn cancellation_during_optimizer_predicate_estimate_kills_process_tree_without_f
     let token_id = id(0x7b);
     let secret = [0x33; 32];
     let invocation_id = id(0x7c);
+    let worker_deadline = std::time::Instant::now()
+        + if cancel_owner {
+            Duration::from_secs(10)
+        } else {
+            Duration::from_secs(5)
+        };
     commit_catalog_and_audit(
         &database,
         id(0x7d),
@@ -28587,7 +28605,7 @@ fn cancellation_during_optimizer_predicate_estimate_kills_process_tree_without_f
             retention_deadline_us: now + 3_600_000_000,
             max_rows: 2,
             max_bytes: 64,
-            deadline: Some(std::time::Instant::now() + Duration::from_secs(10)),
+            deadline: Some(worker_deadline),
             workload_class: prdb_engine::supervisor::WorkloadClass::Analytical,
         },
         &secret,
@@ -28698,26 +28716,45 @@ fn cancellation_during_optimizer_predicate_estimate_kills_process_tree_without_f
     )?;
     let estimate = read_frame(&mut planner_server)?.ok_or("optimizer closed before estimate")?;
     assert_eq!(estimate.operation, Operation::EstimateScan as u16);
+    assert!(
+        std::time::Instant::now() < worker_deadline,
+        "optimizer reached its estimate request after the worker deadline"
+    );
 
-    let (observed, cancellation) = std::thread::scope(|scope| {
-        let cancel = scope.spawn(|| {
-            std::thread::sleep(Duration::from_millis(25));
-            storage.cancel_owned_invocation(user_id, invocation_id, now + 1)
-        });
+    if cancel_owner {
+        let (observed, cancellation) = std::thread::scope(|scope| {
+            let cancel = scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(25));
+                storage.cancel_owned_invocation(user_id, invocation_id, now + 1)
+            });
+            let observed = invocation.observe_worker_exit_in_cgroup(
+                &mut worker,
+                cgroup,
+                Duration::from_secs(2),
+            );
+            let cancellation = cancel
+                .join()
+                .map_err(|_| std::io::Error::other("cancellation thread panicked"))??;
+            Ok::<_, Box<dyn std::error::Error>>((observed, cancellation))
+        })?;
+        assert_eq!(cancellation, OwnerCancellationResult::Accepted);
+        assert!(matches!(
+            observed,
+            Err(SupervisorInvocationError::Deadline(
+                TransactionError::CancellationRequested
+            ))
+        ));
+    } else {
+        std::thread::sleep(worker_deadline.saturating_duration_since(std::time::Instant::now()));
         let observed =
             invocation.observe_worker_exit_in_cgroup(&mut worker, cgroup, Duration::from_secs(2));
-        let cancellation = cancel
-            .join()
-            .map_err(|_| std::io::Error::other("cancellation thread panicked"))??;
-        Ok::<_, Box<dyn std::error::Error>>((observed, cancellation))
-    })?;
-    assert_eq!(cancellation, OwnerCancellationResult::Accepted);
-    assert!(matches!(
-        observed,
-        Err(SupervisorInvocationError::Deadline(
-            TransactionError::CancellationRequested
-        ))
-    ));
+        assert!(matches!(
+            observed,
+            Err(SupervisorInvocationError::Deadline(
+                TransactionError::Expired
+            ))
+        ));
+    }
     assert!(worker.try_wait()?.is_some());
     assert!(
         !std::path::Path::new(&format!("/proc/{optimizer_pid}")).exists(),
