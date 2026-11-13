@@ -23367,7 +23367,9 @@ fn sandboxed_client_supplied_sql_library_loads_and_durably_aborts_on_sql_error()
 #[test]
 fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
 -> Result<(), Box<dyn std::error::Error>> {
-    use prdb_engine::client_submit::{ClientResultEvent, SubmissionClient, TerminalOutcome};
+    use prdb_engine::client_submit::{
+        AdminClient, CancellationResult, ClientResultEvent, SubmissionClient, TerminalOutcome,
+    };
     use prdb_engine::gateway::serve_tcp_client_connection;
     use prdb_engine::outcome::OutcomeStatus;
     use prdb_engine::storage_manager::{CreateTableRequest, TableColumnDefinition};
@@ -23448,6 +23450,8 @@ fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
     let user_id = id(0xc0);
     let token_id = id(0xc1);
     let secret = [0x53; 32];
+    let admin_token_id = id(0xce);
+    let admin_secret = [0x54; 32];
     let restricted_user_id = id(0xcd);
     let admin_role = builtin_owner_id();
     let mut setup_audit = identity_audit_event(0xc2, admin_role, user_id);
@@ -23467,6 +23471,15 @@ fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
                     token_id,
                     restricted_user_id,
                     &secret,
+                    now - 1_000_000,
+                    now + 60_000_000,
+                    None,
+                    1,
+                ),
+                credential_verifier_write(
+                    admin_token_id,
+                    user_id,
+                    &admin_secret,
                     now - 1_000_000,
                     now + 60_000_000,
                     None,
@@ -23645,10 +23658,15 @@ fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
     let (mut gateway_service, mut supervisor_service) = UnixStream::pair()?;
     let tcp_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let address = tcp_listener.local_addr()?;
+    let (mut control_gateway_service, mut control_supervisor_service) = UnixStream::pair()?;
+    let control_tcp_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let control_address = control_tcp_listener.local_addr()?;
     let receipt = fixture.0.join("invocation.receipt");
     let supervisor_start_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let optimizer_estimate_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let cancellation_result = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (estimate_pending_sender, estimate_pending_receiver) = std::sync::mpsc::channel();
+    let cancellation_finished = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
 
     let cancelled_invocation_id = std::thread::scope(
         |scope| -> Result<[u8; 16], Box<dyn std::error::Error>> {
@@ -23660,11 +23678,63 @@ fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
                     .map_err(|error| format!("TCP gateway failed: {error:?}"))?;
                 Ok(())
             });
+            let control_gateway = scope.spawn(move || -> Result<(), String> {
+                let (mut client_stream, _) = control_tcp_listener
+                    .accept()
+                    .map_err(|error| format!("control TCP accept failed: {error}"))?;
+                serve_tcp_client_connection(&mut client_stream, &mut control_gateway_service)
+                    .map_err(|error| format!("control TCP gateway failed: {error:?}"))?;
+                Ok(())
+            });
+            let control_supervisor = scope.spawn(|| -> Result<(), String> {
+                let mut session = prdb_engine::client_protocol::ClientConnectionSession::default();
+                match prdb_engine::supervisor_ipc::serve_gateway_client_session(
+                    &mut control_supervisor_service,
+                    &storage,
+                    &staging,
+                    &mut session,
+                    admission,
+                )
+                .map_err(|error| format!("control supervisor session failed: {error:?}"))?
+                {
+                    GatewayClientServiceEvent::Disconnected => Ok(()),
+                    GatewayClientServiceEvent::Started { .. } => {
+                        Err("control session unexpectedly started a query".into())
+                    }
+                }
+            });
+            let cancellation_result_for_client = Arc::clone(&cancellation_result);
+            let cancellation_finished_for_client = Arc::clone(&cancellation_finished);
+            let control_canceller = scope.spawn(move || -> Result<(), String> {
+                let mut token_secret = admin_secret;
+                let mut client = AdminClient::connect_authenticated(
+                    control_address,
+                    admin_token_id,
+                    &mut token_secret,
+                )
+                .map_err(|error| format!("control-mode TCP authentication failed: {error:?}"))?;
+                let invocation_id = estimate_pending_receiver
+                    .recv()
+                    .map_err(|error| format!("pending estimate signal failed: {error}"))?;
+                let result = client
+                    .cancel_invocation(invocation_id)
+                    .map_err(|error| format!("control-mode TCP CANCEL failed: {error:?}"))?;
+                cancellation_result_for_client.store(
+                    if result == CancellationResult::Accepted {
+                        1
+                    } else {
+                        2
+                    },
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                let (finished, changed) = &*cancellation_finished_for_client;
+                *finished.lock().map_err(|_| "cancellation latch poisoned")? = true;
+                changed.notify_all();
+                Ok(())
+            });
             let supervisor = scope.spawn(|| -> Result<(), String> {
             let supervisor_start_count = Arc::clone(&supervisor_start_count);
             let optimizer_estimate_count = Arc::clone(&optimizer_estimate_count);
-            let cancellation_result = Arc::clone(&cancellation_result);
-            let observer_storage = &storage;
             let mut session = prdb_engine::client_protocol::ClientConnectionSession::default();
             loop {
                 match serve_gateway_client_session_with_executor(
@@ -23746,7 +23816,11 @@ fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
                             return Err("TCP metadata column scope was not enforced".into());
                         }
                         let estimate_count = Arc::clone(&optimizer_estimate_count);
-                        let cancellation_result = Arc::clone(&cancellation_result);
+                        let estimate_pending_sender = estimate_pending_sender.clone();
+                        let cancellation_finished = Arc::clone(&cancellation_finished);
+                        let cancellation_signal_sent = Arc::new(
+                            std::sync::atomic::AtomicBool::new(false),
+                        );
                         let decision = observe_executor_relay_and_finalize_gateway_with_optimizer_planner_observer(
                             &storage,
                             &mut invocation,
@@ -23762,19 +23836,21 @@ fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
                                         1,
                                         std::sync::atomic::Ordering::Relaxed,
                                     );
-                                } else if invocation_index == 1 {
-                                    let result = observer_storage.cancel_owned_invocation(
-                                        restricted_user_id,
-                                        invocation_id,
-                                        now + 2,
-                                    );
-                                    cancellation_result.store(
-                                        if matches!(
-                                            result,
-                                            Ok(prdb_engine::storage_manager::OwnerCancellationResult::Accepted)
-                                        ) { 1 } else { 2 },
+                                } else if invocation_index == 1
+                                    && !cancellation_signal_sent.swap(
+                                        true,
                                         std::sync::atomic::Ordering::SeqCst,
-                                    );
+                                    )
+                                {
+                                    let _ = estimate_pending_sender.send(invocation_id);
+                                    let (finished, changed) = &*cancellation_finished;
+                                    if let Ok(finished) = finished.lock() {
+                                        let _ = changed.wait_timeout_while(
+                                            finished,
+                                            Duration::from_secs(5),
+                                            |finished| !*finished,
+                                        );
+                                    }
                                 }
                             },
                         )
@@ -23856,6 +23932,18 @@ fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
                 .join()
                 .map_err(|_| std::io::Error::other("TCP gateway thread panicked"))?
                 .map_err(std::io::Error::other)?;
+            control_gateway
+                .join()
+                .map_err(|_| std::io::Error::other("control TCP gateway thread panicked"))?
+                .map_err(std::io::Error::other)?;
+            control_supervisor
+                .join()
+                .map_err(|_| std::io::Error::other("control supervisor thread panicked"))?
+                .map_err(std::io::Error::other)?;
+            control_canceller
+                .join()
+                .map_err(|_| std::io::Error::other("control canceller thread panicked"))?
+                .map_err(std::io::Error::other)?;
             supervisor
                 .join()
                 .map_err(|_| std::io::Error::other("supervisor thread panicked"))?
@@ -23867,7 +23955,7 @@ fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
             assert_eq!(
                 cancellation_result.load(std::sync::atomic::Ordering::SeqCst),
                 1,
-                "the second TCP optimizer query was not cancelled at EstimateScan"
+                "the second TCP optimizer query was not cancelled through control-mode TCP"
             );
             assert_eq!(
                 storage
