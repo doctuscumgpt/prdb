@@ -137,9 +137,28 @@ int main(void) {
                1, &temporal_parameter, 1, PRDB_SDK_VALUE_TYPE_DATE, 0, 0,
                &bound_parameter, sizeof(bound_parameter)) ==
            PRDB_SDK_SQL_EVAL_INVALID_VALUE);
+    write_be_i32(2932896, temporal_bytes);
+    assert(prdb_sdk_sql_bind_parameter_v1(
+               1, &temporal_parameter, 1, PRDB_SDK_VALUE_TYPE_DATE, 0, 0,
+               &bound_parameter, sizeof(bound_parameter)) == PRDB_SDK_SQL_EVAL_OK);
+    write_be_i32(2932897, temporal_bytes);
+    assert(prdb_sdk_sql_bind_parameter_v1(
+               1, &temporal_parameter, 1, PRDB_SDK_VALUE_TYPE_DATE, 0, 0,
+               &bound_parameter, sizeof(bound_parameter)) ==
+           PRDB_SDK_SQL_EVAL_INVALID_VALUE);
 
     temporal_parameter.type_code = PRDB_SDK_VALUE_TYPE_TIMESTAMPTZ;
     temporal_parameter.data_len = 8;
+    write_be_i64(-62135596800000000LL, temporal_bytes);
+    assert(prdb_sdk_sql_bind_parameter_v1(
+               1, &temporal_parameter, 1, PRDB_SDK_VALUE_TYPE_TIMESTAMPTZ, 0,
+               0, &bound_parameter, sizeof(bound_parameter)) ==
+           PRDB_SDK_SQL_EVAL_OK);
+    write_be_i64(-62135596800000001LL, temporal_bytes);
+    assert(prdb_sdk_sql_bind_parameter_v1(
+               1, &temporal_parameter, 1, PRDB_SDK_VALUE_TYPE_TIMESTAMPTZ, 0,
+               0, &bound_parameter, sizeof(bound_parameter)) ==
+           PRDB_SDK_SQL_EVAL_INVALID_VALUE);
     write_be_i64(253402300799999999LL, temporal_bytes);
     assert(prdb_sdk_sql_bind_parameter_v1(
                1, &temporal_parameter, 1, PRDB_SDK_VALUE_TYPE_TIMESTAMPTZ, 0,

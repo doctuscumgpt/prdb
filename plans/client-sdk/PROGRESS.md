@@ -665,3 +665,8 @@
 - Contract: [client SDK](../../specs/client-sdk.md).
 - Verification: focused GNU-hash and packager tests, formatting, workspace build, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed. All sandbox and process tests were enabled; the suite reported zero ignored tests. `git diff --check` passed.
 - Remaining: ELF inspection remains intentionally bounded and supports the repository's current little-endian ELF64 Linux x86_64 profile.
+
+## SDK value validation: SQL binder boundary matrix — verified
+
+- Regression: SQL parameter binding now checks both DATE endpoints and adjacent out-of-range values, plus both TIMESTAMPTZ endpoints and adjacent out-of-range values. This closes the binder-side coverage gap; direct value validation already had the full matrix.
+- Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed, including the TinyCC SQL parameter fixture and all maintained SDK executables.
