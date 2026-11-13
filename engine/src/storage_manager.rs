@@ -61,6 +61,8 @@ pub const MAX_DISCOVERED_COLUMNS: usize = 4096;
 const MAX_DISCOVERED_COLUMN_BYTES: usize = 1024 * 1024;
 pub const MAX_DISCOVERED_INDEXES: usize = 4096;
 const MAX_DISCOVERED_INDEX_BYTES: usize = 1024 * 1024;
+pub const MAX_DISCOVERED_CONSTRAINTS: usize = 4096;
+const MAX_DISCOVERED_CONSTRAINT_BYTES: usize = 1024 * 1024;
 static TOKEN_REQUEST_LIMITERS: OnceLock<Mutex<HashMap<usize, Weak<TokenRequestLimiter>>>> =
     OnceLock::new();
 static ADMIN_CANCELLATION_LIMITERS: OnceLock<Mutex<HashMap<usize, Weak<TokenRequestLimiter>>>> =
@@ -2666,6 +2668,58 @@ impl<'db> StorageManager<'db> {
             return Err(TransactionError::InvalidMetadataRequest);
         }
         Ok(Some(indexes))
+    }
+
+    /// Describe logical constraints for a relation only when the
+    /// authenticated control principal has administrative schema authority.
+    /// Hidden foreign-key targets are redacted from the logical response.
+    pub fn discover_token_administrative_constraints(
+        &self,
+        token_id: [u8; 16],
+        token_secret: &[u8; TOKEN_SECRET_BYTES],
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+    ) -> Result<Option<Vec<crate::metadata_discovery::AdministrativeConstraint>>, TransactionError>
+    {
+        let principal_id = lookup_credential_principal(self.database, token_id)?;
+        let mut invocation_id = [0; 16];
+        getrandom::fill(&mut invocation_id)
+            .map_err(|_| TransactionError::Storage("randomness unavailable".into()))?;
+        if invocation_id == [0; 16] {
+            return Err(TransactionError::Storage("randomness unavailable".into()));
+        }
+        let mut transaction = InvocationTransaction::begin_inner(
+            self.database,
+            InvocationCoordination::uncoordinated(),
+            invocation_id,
+            principal_id,
+            i64::MAX,
+            1,
+            1,
+        )?;
+        let now_us = now_unix_micros().ok_or(TransactionError::ClockUnavailable)?;
+        transaction.authenticate_credential_token(token_id, token_secret, now_us)?;
+        let Some(constraints) =
+            transaction.list_catalog_administrative_constraints(schema_id, relation_id)?
+        else {
+            return Ok(None);
+        };
+        let mut encoded_bytes = 0usize;
+        for constraint in &constraints {
+            encoded_bytes = encoded_bytes
+                .saturating_add(19)
+                .saturating_add(constraint.kind.as_wire_name().len())
+                .saturating_add(constraint.column_ids.len().saturating_mul(16))
+                .saturating_add(usize::from(constraint.referenced_table_id.is_some()) * 16)
+                .saturating_add(constraint.referenced_column_ids.len().saturating_mul(16));
+            if encoded_bytes > MAX_DISCOVERED_CONSTRAINT_BYTES {
+                return Err(TransactionError::InvalidMetadataRequest);
+            }
+        }
+        if constraints.len() > MAX_DISCOVERED_CONSTRAINTS {
+            return Err(TransactionError::InvalidMetadataRequest);
+        }
+        Ok(Some(constraints))
     }
 
     /// Refresh the current login and role closure before a new execution or

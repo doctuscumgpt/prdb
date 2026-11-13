@@ -1422,6 +1422,98 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         .split_whitespace()
         .nth(3)
         .ok_or("foreign-key-create output omitted the generated ID")?;
+    let foreign_key_id = decode_id_hex(foreign_key_cli_id)
+        .ok_or("foreign-key-create output contained an invalid ID")?;
+    let listed_source_constraints = admin.list_constraints_page(
+        created_schema.identity_id,
+        source_table.table_id,
+        128,
+        None,
+    )?;
+    let listed_foreign_key = listed_source_constraints
+        .records
+        .iter()
+        .find(|constraint| constraint.constraint_id == foreign_key_id)
+        .ok_or("administrative constraint page omitted the foreign key")?;
+    assert_eq!(
+        listed_foreign_key.kind,
+        prdb_engine::metadata_discovery::AdministrativeConstraintKind::ForeignKey
+    );
+    assert_eq!(
+        listed_foreign_key.column_ids,
+        vec![source_table.column_ids[0]]
+    );
+    assert_eq!(
+        listed_foreign_key.referenced_table_id,
+        Some(created_table.table_id)
+    );
+    assert_eq!(
+        listed_foreign_key.referenced_column_ids,
+        created_table.column_ids
+    );
+    let hidden_target_schema = admin.create_schema("process_hidden_fk_target", admin_user_id)?;
+    let hidden_target_table = admin.create_table(
+        hidden_target_schema.identity_id,
+        "target",
+        &[AdminColumnDefinition {
+            name: "payload".to_owned(),
+            scalar_type: ScalarType::Text,
+            nullable: true,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+    )?;
+    let hidden_target_unique = admin.create_unique_constraint(
+        hidden_target_table.table_id,
+        &hidden_target_table.column_ids,
+    )?;
+    admin.grant_object_privilege(
+        admin_user_id,
+        hidden_target_table.table_id,
+        AdminObjectPrivilege::References,
+        AdminObjectGrantTarget::Column(hidden_target_table.column_ids[0]),
+    )?;
+    let redacted_source_schema =
+        admin.create_schema("process_redacted_fk_source", transfer_owner.identity_id)?;
+    let redacted_source_table = admin.create_table(
+        redacted_source_schema.identity_id,
+        "process_admin_redacted_source",
+        &[AdminColumnDefinition {
+            name: "payload".to_owned(),
+            scalar_type: ScalarType::Text,
+            nullable: true,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+    )?;
+    let redacted_foreign_key = admin.create_foreign_key(
+        redacted_source_table.table_id,
+        &redacted_source_table.column_ids,
+        hidden_target_unique.constraint_id,
+    )?;
+    let redacted_owner_credentials = read_client_credentials(&transfer_credential_path)?;
+    let mut redacted_owner_secret = redacted_owner_credentials.token_secret;
+    let mut redacted_owner = AdminClient::connect_authenticated(
+        address,
+        redacted_owner_credentials.token_id,
+        &mut redacted_owner_secret,
+    )?;
+    drop(redacted_owner_credentials);
+    let redacted_constraints = redacted_owner.list_constraints_page(
+        redacted_source_schema.identity_id,
+        redacted_source_table.table_id,
+        128,
+        None,
+    )?;
+    let redacted_foreign_key = redacted_constraints
+        .records
+        .iter()
+        .find(|constraint| constraint.constraint_id == redacted_foreign_key.foreign_key_id)
+        .ok_or("owner constraint page omitted the foreign key")?;
+    assert_eq!(redacted_foreign_key.referenced_table_id, None);
+    assert!(redacted_foreign_key.referenced_column_ids.is_empty());
+    drop(redacted_owner);
+    admin.set_schema_owner(redacted_source_schema.identity_id, admin_user_id)?;
     let drop_foreign_key_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
             "foreign-key-drop",

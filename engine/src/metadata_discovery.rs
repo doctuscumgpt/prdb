@@ -92,6 +92,40 @@ pub struct AdministrativeIndex {
     pub unique: bool,
 }
 
+/// Constraint kinds exposed by administrative table description.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdministrativeConstraintKind {
+    NotNull,
+    PrimaryKey,
+    Unique,
+    Check,
+    ForeignKey,
+}
+
+impl AdministrativeConstraintKind {
+    pub fn as_wire_name(self) -> &'static str {
+        match self {
+            Self::NotNull => "not_null",
+            Self::PrimaryKey => "primary_key",
+            Self::Unique => "unique",
+            Self::Check => "check",
+            Self::ForeignKey => "foreign_key",
+        }
+    }
+}
+
+/// Logical constraint metadata returned only by administrative control reads.
+/// CHECK expression bodies are omitted; foreign-key target IDs are included
+/// only when the caller can administratively discover the target schema.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdministrativeConstraint {
+    pub constraint_id: [u8; 16],
+    pub kind: AdministrativeConstraintKind,
+    pub column_ids: Vec<[u8; 16]>,
+    pub referenced_table_id: Option<[u8; 16]>,
+    pub referenced_column_ids: Vec<[u8; 16]>,
+}
+
 /// The declared column shape of one discoverable relation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VisibleRelationSchema {

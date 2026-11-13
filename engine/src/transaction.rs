@@ -3484,6 +3484,113 @@ impl<'db> InvocationTransaction<'db> {
         Ok(Some(descriptions))
     }
 
+    /// Describe a table's logical constraints to a current schema owner or
+    /// database administrator. CHECK expression bodies are validated but
+    /// omitted. Foreign-key endpoints are returned only when the target
+    /// schema is also administratively visible.
+    pub(crate) fn list_catalog_administrative_constraints(
+        &mut self,
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+    ) -> Result<Option<Vec<crate::metadata_discovery::AdministrativeConstraint>>, TransactionError>
+    {
+        let roles = self.load_catalog_role_closure(self.principal_id)?;
+        if !self.has_schema_metadata_authority(schema_id, &roles)? {
+            return Ok(None);
+        }
+        let table_key = catalog_id_key(5, relation_id);
+        let Some(table) = self.read_catalog_record(&table_key)? else {
+            return Ok(None);
+        };
+        if table.family_code != 5 || catalog_id(&table, 1)? != schema_id {
+            return Ok(None);
+        }
+        self.read_discovery_relation(schema_id, relation_id)?;
+        let schema = self.load_catalog_table_schema(relation_id)?;
+        // Validate the complete logical definitions against the same pinned
+        // catalog before projecting the secret-free administrative shape.
+        self.load_catalog_indexes(&schema)?;
+        self.load_catalog_check_constraints(&schema)?;
+
+        let constraint_ids = self.scan_constraint_ids_for_table(relation_id)?;
+        let records = if constraint_ids.is_empty() {
+            self.scan_catalog_family(8)?
+        } else {
+            constraint_ids
+                .into_iter()
+                .map(|constraint_id| {
+                    self.read_catalog_record(&catalog_id_key(8, constraint_id))?
+                        .ok_or(TransactionError::CorruptCatalog)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let mut descriptions = Vec::new();
+        let mut encoded_bytes = 0usize;
+        for record in records {
+            if record.family_code != 8 || record.logical_key.len() != 19 {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            if catalog_id(&record, 1)? != relation_id {
+                continue;
+            }
+            let constraint_id: [u8; 16] = record.logical_key[3..19]
+                .try_into()
+                .map_err(|_| TransactionError::CorruptCatalog)?;
+            let kind = match catalog_u16(&record, 2)? {
+                1 => crate::metadata_discovery::AdministrativeConstraintKind::NotNull,
+                2 => crate::metadata_discovery::AdministrativeConstraintKind::PrimaryKey,
+                3 => crate::metadata_discovery::AdministrativeConstraintKind::Unique,
+                4 => crate::metadata_discovery::AdministrativeConstraintKind::Check,
+                5 => crate::metadata_discovery::AdministrativeConstraintKind::ForeignKey,
+                _ => return Err(TransactionError::CorruptCatalog),
+            };
+            let column_ids = catalog_id_list(&record, 3)?;
+            let mut referenced_table_id = None;
+            let mut referenced_column_ids = Vec::new();
+            if kind == crate::metadata_discovery::AdministrativeConstraintKind::ForeignKey {
+                let referenced_constraint_id =
+                    catalog_optional_id(&record, 5)?.ok_or(TransactionError::CorruptCatalog)?;
+                let referenced_constraint = self
+                    .read_catalog_record(&catalog_id_key(8, referenced_constraint_id))?
+                    .ok_or(TransactionError::CorruptCatalog)?;
+                if referenced_constraint.family_code != 8 {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                let target_table_id = catalog_id(&referenced_constraint, 1)?;
+                let target_table = self
+                    .read_catalog_record(&catalog_id_key(5, target_table_id))?
+                    .ok_or(TransactionError::CorruptCatalog)?;
+                if target_table.family_code != 5 {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                let target_schema_id = catalog_id(&target_table, 1)?;
+                if self.has_schema_metadata_authority(target_schema_id, &roles)? {
+                    referenced_table_id = Some(target_table_id);
+                    referenced_column_ids = catalog_id_list(&record, 6)?;
+                }
+            }
+            encoded_bytes = encoded_bytes
+                .saturating_add(18)
+                .saturating_add(kind.as_wire_name().len())
+                .saturating_add(column_ids.len().saturating_mul(16))
+                .saturating_add(1)
+                .saturating_add(usize::from(referenced_table_id.is_some()).saturating_mul(16))
+                .saturating_add(referenced_column_ids.len().saturating_mul(16));
+            if descriptions.len() >= 4096 || encoded_bytes > 1024 * 1024 {
+                return Err(TransactionError::InvalidMetadataRequest);
+            }
+            descriptions.push(crate::metadata_discovery::AdministrativeConstraint {
+                constraint_id,
+                kind,
+                column_ids,
+                referenced_table_id,
+                referenced_column_ids,
+            });
+        }
+        descriptions.sort_unstable_by_key(|constraint| constraint.constraint_id);
+        Ok(Some(descriptions))
+    }
+
     fn has_schema_metadata_authority(
         &mut self,
         schema_id: [u8; 16],

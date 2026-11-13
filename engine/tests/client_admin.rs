@@ -222,6 +222,45 @@ fn admin_client_lists_logical_index_definitions_without_physical_details() {
 }
 
 #[test]
+fn admin_client_lists_constraints_and_accepts_redacted_foreign_key_targets() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(request.kind, 10);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            r#"{"phase":"read","operation_version":1,"operation":"metadata.constraints.list","arguments":{"schema_id":"11111111111111111111111111111111","table_id":"22222222222222222222222222222222","limit":"4"}}"#
+        );
+        respond(
+            &mut stream,
+            &request,
+            br#"{"constraints":[{"constraint_id":"33333333333333333333333333333333","kind":"foreign_key","column_ids":["44444444444444444444444444444444"],"referenced_table_id":null,"referenced_column_ids":[]}],"next_cursor":null}"#,
+        );
+    });
+
+    let mut secret = [7; 32];
+    let mut client = AdminClient::connect_authenticated(address, [1; 16], &mut secret).unwrap();
+    let page = client
+        .list_constraints_page([0x11; 16], [0x22; 16], 4, None)
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+    let constraint = &page.records[0];
+    assert_eq!(constraint.constraint_id, [0x33; 16]);
+    assert_eq!(
+        constraint.kind,
+        prdb_engine::metadata_discovery::AdministrativeConstraintKind::ForeignKey
+    );
+    assert_eq!(constraint.column_ids, vec![[0x44; 16]]);
+    assert_eq!(constraint.referenced_table_id, None);
+    assert!(constraint.referenced_column_ids.is_empty());
+    server.join().unwrap();
+}
+
+#[test]
 fn submission_client_decodes_cancellation_acknowledgements() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

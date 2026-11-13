@@ -1265,6 +1265,112 @@ impl AdminClient {
         })
     }
 
+    /// Return logical constraint definitions for an administratively visible
+    /// table. CHECK expressions and hidden foreign-key targets are omitted.
+    pub fn list_constraints_page(
+        &mut self,
+        schema_id: [u8; 16],
+        table_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<MetadataPage<crate::metadata_discovery::AdministrativeConstraint>, ClientSubmitError>
+    {
+        validate_metadata_page_request(page_limit, cursor)?;
+        let arguments = format!(
+            "{{\"schema_id\":\"{}\",\"table_id\":\"{}\",{}}}",
+            lower_hex(&schema_id),
+            lower_hex(&table_id),
+            metadata_page_arguments_fields(page_limit, cursor)
+        );
+        let (records, next_cursor) =
+            request_metadata_page(&mut self.transport, "metadata.constraints.list", arguments)?;
+        let records = discovery_records(records)?;
+        let mut constraints = Vec::with_capacity(records.len());
+        let mut previous_id = None;
+        for mut record in records {
+            if record.len() != 5 {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let constraint_id = response_id(&record, "constraint_id")?;
+            let kind = match record.remove("kind") {
+                Some(ResponseValue::String(value)) => match value.as_str() {
+                    "not_null" => crate::metadata_discovery::AdministrativeConstraintKind::NotNull,
+                    "primary_key" => {
+                        crate::metadata_discovery::AdministrativeConstraintKind::PrimaryKey
+                    }
+                    "unique" => crate::metadata_discovery::AdministrativeConstraintKind::Unique,
+                    "check" => crate::metadata_discovery::AdministrativeConstraintKind::Check,
+                    "foreign_key" => {
+                        crate::metadata_discovery::AdministrativeConstraintKind::ForeignKey
+                    }
+                    _ => return Err(ClientSubmitError::InvalidResponse),
+                },
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let decode_ids = |value: Option<ResponseValue>, allow_empty: bool| match value {
+                Some(ResponseValue::Array(values)) if allow_empty || !values.is_empty() => values
+                    .into_iter()
+                    .map(|value| {
+                        value
+                            .as_string()
+                            .and_then(decode_hex_array::<16>)
+                            .filter(|id| *id != [0; 16])
+                            .ok_or(ClientSubmitError::InvalidResponse)
+                    })
+                    .collect::<Result<Vec<_>, _>>(),
+                _ => Err(ClientSubmitError::InvalidResponse),
+            };
+            let column_ids = decode_ids(record.remove("column_ids"), true)?;
+            let referenced_table_id = match record.remove("referenced_table_id") {
+                Some(ResponseValue::Null) => None,
+                Some(ResponseValue::String(value)) => Some(
+                    decode_hex_array::<16>(&value)
+                        .filter(|id| *id != [0; 16])
+                        .ok_or(ClientSubmitError::InvalidResponse)?,
+                ),
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let referenced_column_ids = decode_ids(record.remove("referenced_column_ids"), true)?;
+            let is_foreign_key =
+                kind == crate::metadata_discovery::AdministrativeConstraintKind::ForeignKey;
+            if (kind == crate::metadata_discovery::AdministrativeConstraintKind::Check
+                && !column_ids.is_empty())
+                || (kind != crate::metadata_discovery::AdministrativeConstraintKind::Check
+                    && column_ids.is_empty())
+                || (is_foreign_key
+                    && referenced_table_id.is_some() == referenced_column_ids.is_empty())
+                || (!is_foreign_key
+                    && (referenced_table_id.is_some() || !referenced_column_ids.is_empty()))
+                || previous_id.is_some_and(|previous| previous >= constraint_id)
+            {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let mut seen_columns = HashSet::new();
+            if column_ids.iter().any(|id| !seen_columns.insert(*id)) {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let mut seen_referenced = HashSet::new();
+            if referenced_column_ids
+                .iter()
+                .any(|id| !seen_referenced.insert(*id))
+            {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            previous_id = Some(constraint_id);
+            constraints.push(crate::metadata_discovery::AdministrativeConstraint {
+                constraint_id,
+                kind,
+                column_ids,
+                referenced_table_id,
+                referenced_column_ids,
+            });
+        }
+        Ok(MetadataPage {
+            records: constraints,
+            next_cursor,
+        })
+    }
+
     /// Create a login identity. New users have no credential until a token is issued.
     pub fn create_user(&mut self, name: &str) -> Result<AdminIdentityResult, ClientSubmitError> {
         self.create_identity("users.create", name, "user_id")
@@ -3010,6 +3116,7 @@ fn discovery_page_value(
         "metadata.relations.list" => "relations",
         "metadata.columns.list" => "columns",
         "metadata.indexes.list" => "indexes",
+        "metadata.constraints.list" => "constraints",
         _ => return Err(ClientSubmitError::InvalidResponse),
     };
     let mut fields = parse_flat_response(payload)?;
