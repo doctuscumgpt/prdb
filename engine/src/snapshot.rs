@@ -61,6 +61,10 @@ pub struct IndexRangeBound {
 }
 
 impl RowSnapshot {
+    pub(crate) fn read_transaction(&self) -> &ReadTransaction {
+        &self.transaction
+    }
+
     pub fn new(transaction: ReadTransaction) -> Self {
         Self { transaction }
     }

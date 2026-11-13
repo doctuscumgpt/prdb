@@ -5,6 +5,34 @@ use prdb_engine::client_protocol::{
 };
 
 #[test]
+fn audit_list_decoder_enforces_version_bounds_and_cursor_shape() {
+    let wire_cursor = format!("01{}{}", "01".repeat(16), "02".repeat(16));
+    let request = format!(
+        "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"audit.events.list\",\"arguments\":{{\"limit\":\"128\",\"cursor\":\"{wire_cursor}\"}}}}"
+    );
+    assert!(matches!(
+        decode_client_admin_command(request.as_bytes()),
+        Ok(ClientAdminCommand::ListAuditEvents { page_limit: 128, cursor: Some(cursor) })
+            if cursor.to_wire() == wire_cursor
+    ));
+    assert!(matches!(
+        decode_client_admin_read(request.as_bytes()),
+        Ok(ClientAdminRead::ListAuditEvents {
+            page_limit: 128,
+            ..
+        })
+    ));
+    for invalid in [
+        request.replace("\"limit\":\"128\"", "\"limit\":\"0\""),
+        request.replace("\"limit\":\"128\"", "\"limit\":\"129\""),
+        request.replace("\"operation_version\":1", "\"operation_version\":2"),
+        request.replace(&wire_cursor, "00"),
+    ] {
+        assert!(decode_client_admin_command(invalid.as_bytes()).is_err());
+    }
+}
+
+#[test]
 fn hello_decoder_accepts_the_version_one_shape_and_json_escapes() {
     let hello = decode_client_hello(br#"{"mode":"query","client_name":"tool\u0041"}"#).unwrap();
     assert_eq!(hello.mode, ClientMode::Query);

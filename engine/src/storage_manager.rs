@@ -51,6 +51,7 @@ const MAX_TRACKED_TOKEN_REQUEST_ACTORS: usize = 4096;
 const SUPERVISOR_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub const MAX_OWN_INVOCATION_PAGE: usize = 128;
 pub const MAX_ADMIN_INVOCATION_PAGE: usize = 128;
+pub const MAX_ADMIN_AUDIT_PAGE: usize = 128;
 /// Maximum number of schema records returned by one authenticated discovery
 /// snapshot. Clients can request a fresh snapshot when this bound is reached.
 pub const MAX_DISCOVERED_SCHEMAS: usize = 4096;
@@ -324,6 +325,81 @@ pub enum AdministrativeInvocationListError {
     Unauthorized,
     Storage,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdministrativeAuditCursor {
+    administrator_id: [u8; 16],
+    after_event_id: [u8; 16],
+}
+
+impl AdministrativeAuditCursor {
+    pub fn to_wire(&self) -> String {
+        let mut output = String::with_capacity(66);
+        for byte in std::iter::once(1)
+            .chain(self.administrator_id)
+            .chain(self.after_event_id)
+        {
+            output.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
+            output.push(char::from(b"0123456789abcdef"[(byte & 0x0f) as usize]));
+        }
+        output
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        if value.len() != 66 {
+            return None;
+        }
+        let mut bytes = [0; 33];
+        for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+            let high = lower_hex_value(pair[0])?;
+            let low = lower_hex_value(pair[1])?;
+            bytes[index] = high << 4 | low;
+        }
+        if bytes[0] != 1 {
+            return None;
+        }
+        let administrator_id = bytes[1..17].try_into().ok()?;
+        let after_event_id = bytes[17..33].try_into().ok()?;
+        (administrator_id != [0; 16] && after_event_id != [0; 16]).then_some(Self {
+            administrator_id,
+            after_event_id,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdministrativeAuditEvent {
+    pub event_id: [u8; 16],
+    pub actor_id: Option<[u8; 16]>,
+    pub correlation_id: [u8; 16],
+    pub occurred_at_us: i64,
+    pub action: AuditAction,
+    pub result: AuditResult,
+    pub target_ids: Vec<[u8; 16]>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdministrativeAuditPage {
+    pub events: Vec<AdministrativeAuditEvent>,
+    pub continuation: Option<AdministrativeAuditCursor>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdministrativeAuditListError {
+    InvalidRequest,
+    InvalidPageLimit,
+    InvalidCursor,
+    Unauthorized,
+    Storage,
+}
+
+impl std::fmt::Display for AdministrativeAuditListError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "administrative audit listing failed: {self:?}")
+    }
+}
+
+impl std::error::Error for AdministrativeAuditListError {}
 
 impl std::fmt::Display for AdministrativeInvocationListError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -10392,6 +10468,88 @@ impl<'db> StorageManager<'db> {
             fence_waits,
             fence_waits_truncated,
             continuation: projection.continuation,
+        })
+    }
+
+    /// Return a bounded page of durable AUD1 records in exclusive event-ID
+    /// order. The cursor is bound to the administrator and authority is
+    /// checked against the same redb snapshot used to read the audit table.
+    pub fn list_audit_events(
+        &self,
+        authenticated_administrator_id: [u8; 16],
+        page_limit: usize,
+        continuation: Option<&AdministrativeAuditCursor>,
+    ) -> Result<AdministrativeAuditPage, AdministrativeAuditListError> {
+        if authenticated_administrator_id == [0; 16] {
+            return Err(AdministrativeAuditListError::InvalidRequest);
+        }
+        if page_limit == 0 || page_limit > MAX_ADMIN_AUDIT_PAGE {
+            return Err(AdministrativeAuditListError::InvalidPageLimit);
+        }
+        if continuation.is_some_and(|cursor| {
+            cursor.administrator_id != authenticated_administrator_id
+                || cursor.after_event_id == [0; 16]
+        }) {
+            return Err(AdministrativeAuditListError::InvalidCursor);
+        }
+        let read = self
+            .database
+            .begin_read()
+            .map_err(|_| AdministrativeAuditListError::Storage)?;
+        let snapshot = RowSnapshot::new(read);
+        let is_administrator = database_admin_authority(&snapshot, authenticated_administrator_id)
+            .map_err(|error| match error {
+                TokenLifecycleError::TokenUnavailable => AdministrativeAuditListError::Unauthorized,
+                _ => AdministrativeAuditListError::Storage,
+            })?;
+        if !is_administrator {
+            return Err(AdministrativeAuditListError::Unauthorized);
+        }
+        let audit = snapshot
+            .read_transaction()
+            .open_table(AUDIT)
+            .map_err(|_| AdministrativeAuditListError::Storage)?;
+        let mut events = Vec::with_capacity(page_limit);
+        let mut has_more = false;
+        let first_event_id = [0; 16];
+        let lower_bound = continuation
+            .map(|cursor| std::ops::Bound::Excluded(cursor.after_event_id.as_slice()))
+            .unwrap_or(std::ops::Bound::Included(first_event_id.as_slice()));
+        let entries = audit
+            .range::<&[u8]>((lower_bound, std::ops::Bound::Unbounded))
+            .map_err(|_| AdministrativeAuditListError::Storage)?;
+        for entry in entries {
+            let (key, value) = entry.map_err(|_| AdministrativeAuditListError::Storage)?;
+            let key: [u8; 16] = key
+                .value()
+                .try_into()
+                .map_err(|_| AdministrativeAuditListError::Storage)?;
+            let event = AuditEvent::decode(value.value())
+                .map_err(|_| AdministrativeAuditListError::Storage)?;
+            if event.event_id != key {
+                return Err(AdministrativeAuditListError::Storage);
+            }
+            if events.len() == page_limit {
+                has_more = true;
+                break;
+            }
+            events.push(AdministrativeAuditEvent {
+                event_id: event.event_id,
+                actor_id: event.actor_id,
+                correlation_id: event.correlation_id,
+                occurred_at_us: event.occurred_at_us,
+                action: event.action,
+                result: event.result,
+                target_ids: event.target_ids,
+            });
+        }
+        let continuation = has_more.then(|| AdministrativeAuditCursor {
+            administrator_id: authenticated_administrator_id,
+            after_event_id: events.last().expect("nonempty page has more").event_id,
+        });
+        Ok(AdministrativeAuditPage {
+            events,
+            continuation,
         })
     }
 

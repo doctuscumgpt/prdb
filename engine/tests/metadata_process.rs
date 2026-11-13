@@ -2826,6 +2826,32 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         assert!(runtime_counter("outcome_maintenance_passes_total") > 0);
         assert_eq!(runtime_counter("outcome_maintenance_failures_total"), 0);
         let _ = runtime_counter("outcomes_pruned_total");
+        let audit_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "audit-list",
+                "--address",
+                &address.to_string(),
+                "--credentials",
+                runtime_list_credentials_path
+                    .to_str()
+                    .ok_or("credential path is not UTF-8")?,
+                "--limit",
+                "1",
+            ])
+            .output()?;
+        assert!(
+            audit_list.status.success(),
+            "audit-list CLI failed: {}",
+            String::from_utf8_lossy(&audit_list.stderr)
+        );
+        let audit_output = String::from_utf8(audit_list.stdout)?;
+        assert!(audit_output.contains("\"events\":[{"));
+        assert!(audit_output.contains("\"event_id\":\""));
+        assert!(audit_output.contains("\"occurred_at_us\":"));
+        assert!(audit_output.contains("\"action\":"));
+        assert!(audit_output.contains("\"result\":"));
+        assert!(audit_output.contains("\"target_ids\":["));
+        assert!(audit_output.contains("\"next_cursor\":\""));
         let active_status = admin
             .status(invocation_id)
             .map_err(|error| format!("active STATUS failed: {error:?}"))?;

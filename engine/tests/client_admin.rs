@@ -142,6 +142,52 @@ fn admin_client_lists_bounded_secret_free_token_pages() {
 }
 
 #[test]
+fn admin_client_decodes_bounded_audit_pages_and_cursor() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            r#"{"phase":"read","operation_version":1,"operation":"audit.events.list","arguments":{"limit":"1"}}"#
+        );
+        respond(
+            &mut stream,
+            &request,
+            br#"{"events":[{"event_id":"05050505050505050505050505050505","actor_id":null,"correlation_id":"06060606060606060606060606060606","occurred_at_us":123,"action":4,"result":2,"target_ids":["07070707070707070707070707070707"]}],"next_cursor":"010101010101010101010101010101010105050505050505050505050505050505"}"#,
+        );
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            r#"{"phase":"read","operation_version":1,"operation":"audit.events.list","arguments":{"limit":"1","cursor":"010101010101010101010101010101010105050505050505050505050505050505"}}"#
+        );
+        respond(
+            &mut stream,
+            &request,
+            br#"{"events":[{"event_id":"08080808080808080808080808080808","actor_id":"01010101010101010101010101010101","correlation_id":"09090909090909090909090909090909","occurred_at_us":124,"action":1,"result":1,"target_ids":[]}],"next_cursor":null}"#,
+        );
+    });
+    let mut secret = [7; 32];
+    let mut client = AdminClient::connect_authenticated(address, [1; 16], &mut secret).unwrap();
+    let first = client.list_audit_events_page(1, None).unwrap();
+    assert_eq!(first.events[0].event_id, [5; 16]);
+    assert_eq!(first.events[0].actor_id, None);
+    assert_eq!(first.events[0].action, 4);
+    assert_eq!(first.events[0].result, 2);
+    assert_eq!(first.events[0].target_ids, vec![[7; 16]]);
+    let second = client
+        .list_audit_events_page(1, first.next_cursor.as_deref())
+        .unwrap();
+    assert_eq!(second.events[0].event_id, [8; 16]);
+    assert_eq!(second.events[0].actor_id, Some([1; 16]));
+    assert_eq!(second.next_cursor, None);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_lists_administratively_visible_schema_pages() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

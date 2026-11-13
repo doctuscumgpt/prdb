@@ -80,6 +80,7 @@ pub enum ClientSessionError {
     Status(crate::storage_manager::InvocationStatusError),
     AdministrativeStatus(crate::storage_manager::AdministrativeInvocationListError),
     AdministrativeRuntimeList(crate::storage_manager::AdministrativeInvocationListError),
+    AdministrativeAuditList(crate::storage_manager::AdministrativeAuditListError),
     AdministrativeCancellation(crate::storage_manager::AdministrativeCancellationError),
     TokenInventory(crate::storage_manager::TokenLifecycleError),
     IdentityLifecycle(crate::storage_manager::IdentityLifecycleError),
@@ -493,6 +494,10 @@ pub enum ClientAdminRead {
         user_id: [u8; 16],
         after_token_id: Option<[u8; 16]>,
     },
+    ListAuditEvents {
+        page_limit: usize,
+        cursor: Option<crate::storage_manager::AdministrativeAuditCursor>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -552,6 +557,10 @@ pub enum ClientAdminCommand {
     ListTokens {
         user_id: [u8; 16],
         after_token_id: Option<[u8; 16]>,
+    },
+    ListAuditEvents {
+        page_limit: usize,
+        cursor: Option<crate::storage_manager::AdministrativeAuditCursor>,
     },
     ListRuntimeInvocations {
         response_version: u64,
@@ -817,6 +826,9 @@ pub fn decode_client_admin_read(payload: &[u8]) -> Result<ClientAdminRead, Clien
             user_id,
             after_token_id,
         }),
+        ClientAdminCommand::ListAuditEvents { page_limit, cursor } => {
+            Ok(ClientAdminRead::ListAuditEvents { page_limit, cursor })
+        }
         _ => Err(ClientControlError::UnsupportedAdminOperation),
     }
 }
@@ -1193,6 +1205,28 @@ pub fn decode_client_admin_command(
                 user_id,
                 after_token_id,
             })
+        }
+        Some("read") if version == Some(1) && operation.as_deref() == Some("audit.events.list") => {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let page_limit = args.remove("limit").ok_or(ClientControlError::MissingKey)?;
+            let page_limit = parse_canonical_positive_i64(&page_limit)
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|value| *value <= crate::storage_manager::MAX_ADMIN_AUDIT_PAGE)
+                .ok_or(ClientControlError::InvalidPrepare)?;
+            let cursor = args
+                .remove("cursor")
+                .map(|value| {
+                    crate::storage_manager::AdministrativeAuditCursor::from_wire(&value)
+                        .ok_or(ClientControlError::InvalidPrepare)
+                })
+                .transpose()?;
+            if !args.is_empty() {
+                return Err(ClientControlError::UnknownKey);
+            }
+            Ok(ClientAdminCommand::ListAuditEvents { page_limit, cursor })
         }
         Some("read")
             if matches!(version, Some(1 | 2))
@@ -3943,6 +3977,58 @@ impl ClientConnectionSession {
                 if let Some(cursor) = page.next_after_token_id {
                     payload.push('"');
                     payload.push_str(&encode_lower_hex_id(cursor));
+                    payload.push('"');
+                } else {
+                    payload.push_str("null");
+                }
+                payload.push('}');
+                if payload.len() > CLIENT_MAX_CONTROL_BYTES {
+                    return Err(ClientSessionError::ResourceLimit);
+                }
+                self.json_response(request.request_id, payload.into_bytes())
+            }
+            ClientAdminCommand::ListAuditEvents { page_limit, cursor } => {
+                let page = storage
+                    .list_audit_events(actor_id, page_limit, cursor.as_ref())
+                    .map_err(ClientSessionError::AdministrativeAuditList)?;
+                let mut payload = String::from("{\"events\":[");
+                for (index, event) in page.events.iter().enumerate() {
+                    if index != 0 {
+                        payload.push(',');
+                    }
+                    payload.push_str("{\"event_id\":\"");
+                    payload.push_str(&encode_lower_hex_id(event.event_id));
+                    payload.push_str("\",\"actor_id\":");
+                    if let Some(actor_id) = event.actor_id {
+                        payload.push('"');
+                        payload.push_str(&encode_lower_hex_id(actor_id));
+                        payload.push('"');
+                    } else {
+                        payload.push_str("null");
+                    }
+                    payload.push_str(" ,\"correlation_id\":\"");
+                    payload.push_str(&encode_lower_hex_id(event.correlation_id));
+                    payload.push_str("\",\"occurred_at_us\":");
+                    payload.push_str(&event.occurred_at_us.to_string());
+                    payload.push_str(" ,\"action\":");
+                    payload.push_str(&(event.action as u16).to_string());
+                    payload.push_str(" ,\"result\":");
+                    payload.push_str(&(event.result as u16).to_string());
+                    payload.push_str(" ,\"target_ids\":[");
+                    for (target_index, target_id) in event.target_ids.iter().enumerate() {
+                        if target_index != 0 {
+                            payload.push(',');
+                        }
+                        payload.push('"');
+                        payload.push_str(&encode_lower_hex_id(*target_id));
+                        payload.push('"');
+                    }
+                    payload.push_str("]}");
+                }
+                payload.push_str("],\"next_cursor\":");
+                if let Some(cursor) = page.continuation {
+                    payload.push('"');
+                    payload.push_str(&cursor.to_wire());
                     payload.push('"');
                 } else {
                     payload.push_str("null");

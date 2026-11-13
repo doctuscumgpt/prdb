@@ -138,6 +138,23 @@ pub struct AdminTokenPage {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAuditEvent {
+    pub event_id: [u8; 16],
+    pub actor_id: Option<[u8; 16]>,
+    pub correlation_id: [u8; 16],
+    pub occurred_at_us: i64,
+    pub action: u16,
+    pub result: u16,
+    pub target_ids: Vec<[u8; 16]>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAuditPage {
+    pub events: Vec<AdminAuditEvent>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdminColumnDefinition {
     pub name: String,
     pub scalar_type: crate::tuple::ScalarType,
@@ -2287,6 +2304,105 @@ impl AdminClient {
         Ok(AdminTokenPage {
             tokens,
             next_after_token_id,
+        })
+    }
+
+    /// Read a bounded, administrator-bound page of non-secret AUD1 metadata.
+    pub fn list_audit_events_page(
+        &mut self,
+        page_limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<AdminAuditPage, ClientSubmitError> {
+        if !(1..=crate::storage_manager::MAX_ADMIN_AUDIT_PAGE).contains(&page_limit)
+            || cursor.is_some_and(|value| {
+                crate::storage_manager::AdministrativeAuditCursor::from_wire(value).is_none()
+            })
+        {
+            return Err(ClientSubmitError::InvalidMetadataPage);
+        }
+        let cursor_argument = cursor
+            .map(|value| format!(",\"cursor\":\"{value}\""))
+            .unwrap_or_default();
+        let request = format!(
+            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"audit.events.list\",\"arguments\":{{\"limit\":\"{page_limit}\"{cursor_argument}}}}}"
+        );
+        let response = self.transport.exchange(10, request.into_bytes())?;
+        let mut fields = parse_flat_response(&response.payload)?;
+        if fields.len() != 2 {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        let rows = fields
+            .remove("events")
+            .and_then(|value| value.as_array().map(<[ResponseValue]>::to_vec))
+            .ok_or(ClientSubmitError::InvalidResponse)?;
+        if rows.len() > page_limit {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        let mut events = Vec::with_capacity(rows.len());
+        let mut previous_id: Option<[u8; 16]> = None;
+        for row in rows {
+            let ResponseValue::Object(mut row) = row else {
+                return Err(ClientSubmitError::InvalidResponse);
+            };
+            let event_id = response_id(&row, "event_id")?;
+            row.remove("event_id");
+            if previous_id.is_some_and(|previous| previous >= event_id) {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            previous_id = Some(event_id);
+            let actor_id = match row.remove("actor_id") {
+                Some(ResponseValue::Null) => None,
+                Some(ResponseValue::String(value)) => {
+                    let mut wrapper = HashMap::new();
+                    wrapper.insert("actor_id".to_owned(), ResponseValue::String(value));
+                    Some(response_id(&wrapper, "actor_id")?)
+                }
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let correlation_id = response_id(&row, "correlation_id")?;
+            row.remove("correlation_id");
+            let occurred_at_us = response_u64(&mut row, "occurred_at_us")?
+                .and_then(|value| i64::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .ok_or(ClientSubmitError::InvalidResponse)?;
+            let action = response_u64(&mut row, "action")?
+                .and_then(|value| u16::try_from(value).ok())
+                .filter(|value| (1..=5).contains(value))
+                .ok_or(ClientSubmitError::InvalidResponse)?;
+            let result = response_u64(&mut row, "result")?
+                .and_then(|value| u16::try_from(value).ok())
+                .filter(|value| (1..=4).contains(value))
+                .ok_or(ClientSubmitError::InvalidResponse)?;
+            let target_ids = response_id_array(&mut row, "target_ids")?;
+            if target_ids.windows(2).any(|pair| pair[0] >= pair[1]) || !row.is_empty() {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            events.push(AdminAuditEvent {
+                event_id,
+                actor_id,
+                correlation_id,
+                occurred_at_us,
+                action,
+                result,
+                target_ids,
+            });
+        }
+        let next_cursor = match fields.remove("next_cursor") {
+            Some(ResponseValue::Null) => None,
+            Some(ResponseValue::String(value))
+                if crate::storage_manager::AdministrativeAuditCursor::from_wire(&value)
+                    .is_some() =>
+            {
+                Some(value)
+            }
+            _ => return Err(ClientSubmitError::InvalidResponse),
+        };
+        if next_cursor.is_some() && events.is_empty() {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        Ok(AdminAuditPage {
+            events,
+            next_cursor,
         })
     }
 

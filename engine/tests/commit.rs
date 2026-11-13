@@ -10466,9 +10466,44 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     ];
     let mut setup_audit = audit_event(216);
     setup_audit.actor_id = Some(admin_role);
+    let mut second_setup_audit = audit_event(218);
+    second_setup_audit.actor_id = Some(admin_id);
     storage
-        .commit_catalog_and_audit(id(216), admin_role, 9_999, &records, &[setup_audit])
+        .commit_catalog_and_audit(
+            id(216),
+            admin_role,
+            9_999,
+            &records,
+            &[setup_audit, second_setup_audit],
+        )
         .map_err(|error| format!("setup catalog commit: {error:?}"))?;
+
+    use prdb_engine::storage_manager::{AdministrativeAuditListError, MAX_ADMIN_AUDIT_PAGE};
+    assert!(matches!(
+        storage.list_audit_events(ordinary_id, 1, None),
+        Err(AdministrativeAuditListError::Unauthorized)
+    ));
+    let first_audit_page = storage.list_audit_events(admin_id, 1, None)?;
+    assert_eq!(first_audit_page.events.len(), 1);
+    let audit_cursor = first_audit_page.continuation.unwrap();
+    assert_eq!(
+        prdb_engine::storage_manager::AdministrativeAuditCursor::from_wire(&audit_cursor.to_wire()),
+        Some(audit_cursor.clone())
+    );
+    assert!(matches!(
+        storage.list_audit_events(backup_admin_id, 1, Some(&audit_cursor)),
+        Err(AdministrativeAuditListError::InvalidCursor)
+    ));
+    let second_audit_page = storage.list_audit_events(admin_id, 1, Some(&audit_cursor))?;
+    assert_eq!(second_audit_page.events.len(), 1);
+    assert!(second_audit_page.continuation.is_none());
+    assert!(first_audit_page.events[0].event_id < second_audit_page.events[0].event_id);
+    assert!(storage.list_audit_events(admin_id, 0, None).is_err());
+    assert!(
+        storage
+            .list_audit_events(admin_id, MAX_ADMIN_AUDIT_PAGE + 1, None)
+            .is_err()
+    );
 
     let now_us = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
@@ -13082,6 +13117,10 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         .list_runtime_invocations(admin_id, now_us, 1, None)?
         .continuation
         .unwrap();
+    let audit_revocation_cursor = storage
+        .list_audit_events(admin_id, 1, None)?
+        .continuation
+        .ok_or("expected another durable audit event")?;
     let membership = membership_write_with_grantor(admin_id, admin_role, admin_role);
     let dependency = dependency_write(admin_id, admin_role, 5);
     let read = database.begin_read()?;
@@ -13128,6 +13167,10 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         storage.list_runtime_invocations(admin_id, now_us, 1, Some(&revocation_cursor)),
         Err(AdministrativeInvocationListError::Unauthorized)
     ));
+    assert!(matches!(
+        storage.list_audit_events(admin_id, 1, Some(&audit_revocation_cursor)),
+        Err(prdb_engine::storage_manager::AdministrativeAuditListError::Unauthorized)
+    ));
 
     assert!(second.commit().is_err());
     let latency_page = storage.list_runtime_invocations(backup_admin_id, now_us, 1, None)?;
@@ -13139,6 +13182,16 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         1
     );
     first.abort()?;
+    let mismatched_audit_value = audit_event(225).encode()?;
+    let write = database.begin_write()?;
+    write
+        .open_table(AUDIT)?
+        .insert([0xfd; 16].as_slice(), mismatched_audit_value.as_slice())?;
+    write.commit()?;
+    assert!(matches!(
+        storage.list_audit_events(backup_admin_id, MAX_ADMIN_AUDIT_PAGE, None),
+        Err(prdb_engine::storage_manager::AdministrativeAuditListError::Storage)
+    ));
     Ok(())
 }
 
