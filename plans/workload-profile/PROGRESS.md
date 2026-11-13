@@ -1,10 +1,16 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: 30-second operational row-update pressure beside eight confined analytics — measured
+
+- Harness: the four continuing operational workers now use a dedicated two-column table outside the SQL result relations. Each token-authenticated invocation scans the authorized table, applies a catalog-authorized UPDATE to its worker row, and durably commits it. The workers continue until the seven cancellation observers and the primary analytics observer finish; the separate 60 one-shot workers still establish 64-way simultaneous operational admission.
+- Verification: two sequential fresh-database delegated-cgroup acceptance runs passed with all eight analytical invocation statuses Active. Each 30-second window completed 3,029–3,085 row-changing operational commits. Summed analytical cgroup `memory.current` was 13,180–13,720 KiB and summed per-worker `memory.peak` was 17,408–17,672 KiB. Across 3,393–3,445 active-worker latency samples, point-read p99 was 69.042–74.979 ms and durable-commit p99 was 245.295–248.441 ms; baseline p99 ranged from 3.348–3.359 ms and 16.834–24.843 ms respectively. Both end-to-end runs also passed cancellation, 4 MiB slow-gateway relay, and eight-outcome pruning checks. The locked full workspace suite passed serially with zero ignored tests; workspace build, format check, warning-denied Clippy, and maintained TinyCC SDK tests/fixture passed.
+- Scope: one fresh local database run on Linux x86_64. This adds sustained row updates and retained-version churn evidence, but does not measure redb file growth or compaction/reclamation after the workload. Results are not service targets or target-hardware evidence.
+
 ## WI-7 follow-up: 30-second eight-worker mixed-load interval — covered
 
 - Harness: the primary SQL fixture remains inside its analytical callback for 31 seconds. The acceptance requires all eight storage invocation statuses to remain Active during a measured 30-second window and keeps four of the 64 operational threads cycling authorized point reads, scans, and read-only commits. Their loop limit is raised to 200 transactions each; cancellation queries poll every 100 ms within their bounded IPC allowance and have 120-second invocation deadlines.
 - Verification: two sequential fresh-database delegated-cgroup runs passed (`1 passed, 0 ignored` each). Both held all eight analytics statuses Active for 30 seconds and completed 799 operational read/scan/commit transactions in the window. Summed analytical cgroup `memory.current` ranged from 13,048–13,760 KiB and summed per-worker `memory.peak` from 16,940–17,316 KiB. Operational point-read p99 ranged from 81.793–87.499 ms and read-only durable-commit p99 from 307.883–316.075 ms. These are local observations, not service targets.
-- Scope: this is a short local mixed-workload soak using read-only operational commits. It does not add concurrent row-changing writes, measure retained-version growth/reclamation, or establish target-hardware behavior.
+- Scope: this earlier sample used read-only operational commits. The row-changing follow-up above extends it; retained-version file growth/reclamation and target-hardware behavior remain open.
 
 ## WI-7 follow-up: ten-second eight-worker saturation interval — covered
 

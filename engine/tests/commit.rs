@@ -25,7 +25,9 @@ use prdb_engine::storage_manager::{
     AdministrativeCancellationError, StorageManager, StorageManagerConfig, StorageManagerInitError,
     TokenIssueRequest,
 };
-use prdb_engine::tuple::{ColumnSchema, ScalarType, ScalarValue, decode_tuple, encode_tuple};
+use prdb_engine::tuple::{
+    ColumnSchema, FieldPatch, ScalarType, ScalarValue, decode_tuple, encode_tuple,
+};
 use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, StorageBackend};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
@@ -23737,6 +23739,39 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         retention_deadline_us: now + 3_600_000_000,
         audit_event: index_pressure_table_audit,
     })?;
+    let operational_pressure_table_invocation = id(0xeb);
+    let mut operational_pressure_table_audit =
+        identity_audit_event(0xec, user_id, schema.schema_id);
+    operational_pressure_table_audit.correlation_id = operational_pressure_table_invocation;
+    let operational_pressure_table = storage.create_table(CreateTableRequest {
+        invocation_id: operational_pressure_table_invocation,
+        authenticated_actor_id: user_id,
+        schema_id: schema.schema_id,
+        name: "operational_pressure_records".to_owned(),
+        columns: vec![
+            TableColumnDefinition {
+                name: "worker_key".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            },
+            TableColumnDefinition {
+                name: "value".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            },
+        ],
+        retention_deadline_us: now + 3_600_000_000,
+        audit_event: operational_pressure_table_audit,
+    })?;
+    let operational_pressure_table_id = operational_pressure_table.table_id;
+    let operational_pressure_column_ids = [
+        operational_pressure_table.column_ids[0],
+        operational_pressure_table.column_ids[1],
+    ];
     let index_pressure_schema = [ColumnSchema {
         scalar_type: ScalarType::Text,
         nullable: false,
@@ -23764,6 +23799,39 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         builtin_owner_id(),
         now + 3_600_000_000,
         &index_pressure_rows,
+    )?;
+    let operational_pressure_schema = [
+        ColumnSchema {
+            scalar_type: ScalarType::Integer,
+            nullable: false,
+        },
+        ColumnSchema {
+            scalar_type: ScalarType::Integer,
+            nullable: false,
+        },
+    ];
+    let operational_pressure_rows = (0..4u8)
+        .map(|index| {
+            Ok(RowWrite {
+                key: table_row_key(operational_pressure_table.table_id, id(0xed + index)),
+                expected_version: None,
+                payload: Some(encode_tuple(
+                    &operational_pressure_schema,
+                    1,
+                    &[
+                        Some(ScalarValue::Integer(i32::from(index))),
+                        Some(ScalarValue::Integer(0)),
+                    ],
+                )?),
+            })
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    commit_rows(
+        &database,
+        id(0x4c),
+        builtin_owner_id(),
+        now + 3_600_000_000,
+        &operational_pressure_rows,
     )?;
     for row_id in [0xd3, 0xd4, 0xd5] {
         assert!(
@@ -23883,6 +23951,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         dependency_write(user_id, composite_table.column_ids[1], 5),
         dependency_write(user_id, pressure_table.table_id, 5),
         dependency_write(user_id, pressure_table.column_ids[0], 5),
+        dependency_write(user_id, operational_pressure_table.table_id, 5),
+        dependency_write(user_id, operational_pressure_table.column_ids[0], 5),
+        dependency_write(user_id, operational_pressure_table.column_ids[1], 5),
     ];
     authority_writes.extend((2..=5).map(|privilege| {
         grant_write(
@@ -23962,6 +24033,41 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             user_id,
         ),
     ]);
+    authority_writes.extend([
+        grant_write(
+            user_id,
+            operational_pressure_table.table_id,
+            2,
+            1,
+            operational_pressure_table.table_id,
+            user_id,
+        ),
+        grant_write(
+            user_id,
+            operational_pressure_table.table_id,
+            4,
+            1,
+            operational_pressure_table.table_id,
+            user_id,
+        ),
+    ]);
+    authority_writes.extend(
+        operational_pressure_table
+            .column_ids
+            .iter()
+            .flat_map(|column_id| {
+                [2, 4].into_iter().map(|privilege| {
+                    grant_write(
+                        user_id,
+                        operational_pressure_table.table_id,
+                        privilege,
+                        2,
+                        *column_id,
+                        user_id,
+                    )
+                })
+            }),
+    );
     authority_writes.push(grant_write(
         user_id,
         joined_table.table_id,
@@ -24654,6 +24760,111 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         retention_deadline_us: now + 3_600_000_000,
         audit_event: identity_policy_audit,
     })?;
+    for (invocation_byte, audit_byte, operation, using_expression, with_check_expression, name) in [
+        (
+            0x40,
+            0x41,
+            prdb_engine::authorization::Operation::Select,
+            Some(prdb_engine::authorization::Expr::Literal(Some(
+                ScalarValue::Boolean(true),
+            ))),
+            None,
+            "sandbox_operational_pressure_select_policy",
+        ),
+        (
+            0x42,
+            0x43,
+            prdb_engine::authorization::Operation::Update,
+            Some(prdb_engine::authorization::Expr::Literal(Some(
+                ScalarValue::Boolean(true),
+            ))),
+            Some(prdb_engine::authorization::Expr::Literal(Some(
+                ScalarValue::Boolean(true),
+            ))),
+            "sandbox_operational_pressure_update_policy",
+        ),
+    ] {
+        let invocation_id = id(invocation_byte);
+        let mut audit_event =
+            identity_audit_event(audit_byte, user_id, operational_pressure_table.table_id);
+        audit_event.correlation_id = invocation_id;
+        storage
+            .create_policy(CreatePolicyRequest {
+                invocation_id,
+                authenticated_actor_id: user_id,
+                table_id: operational_pressure_table.table_id,
+                name: name.to_owned(),
+                kind: PolicyKind::Row,
+                operation,
+                effect: prdb_engine::authorization::Effect::Allow,
+                recipients: vec![prdb_engine::authorization::Subject::Principal(user_id)],
+                target_column_ids: Vec::new(),
+                using_expression,
+                with_check_expression,
+                retention_deadline_us: now + 3_600_000_000,
+                audit_event,
+            })
+            .map_err(|error| format!("create operational pressure policy {name}: {error:?}"))?;
+    }
+    for (column_index, column_id) in operational_pressure_column_ids.into_iter().enumerate() {
+        let operations = if column_index == 1 {
+            vec![
+                (
+                    0x44,
+                    0x45,
+                    prdb_engine::authorization::Operation::Select,
+                    Some(prdb_engine::authorization::Expr::Literal(Some(
+                        ScalarValue::Boolean(true),
+                    ))),
+                    None,
+                ),
+                (
+                    0x46,
+                    0x47,
+                    prdb_engine::authorization::Operation::Update,
+                    Some(prdb_engine::authorization::Expr::Literal(Some(
+                        ScalarValue::Boolean(true),
+                    ))),
+                    Some(prdb_engine::authorization::Expr::Literal(Some(
+                        ScalarValue::Boolean(true),
+                    ))),
+                ),
+            ]
+        } else {
+            vec![(
+                0x48,
+                0x49,
+                prdb_engine::authorization::Operation::Select,
+                Some(prdb_engine::authorization::Expr::Literal(Some(
+                    ScalarValue::Boolean(true),
+                ))),
+                None,
+            )]
+        };
+        for (invocation_byte, audit_byte, operation, using_expression, with_check_expression) in
+            operations
+        {
+            let invocation_id = id(invocation_byte);
+            let mut audit_event =
+                identity_audit_event(audit_byte, user_id, operational_pressure_table_id);
+            audit_event.correlation_id = invocation_id;
+            storage.create_policy(CreatePolicyRequest {
+                invocation_id,
+                authenticated_actor_id: user_id,
+                table_id: operational_pressure_table_id,
+                name: format!("sandbox_operational_pressure_column_{column_index}_policy_{invocation_byte:02x}"),
+                kind: PolicyKind::Cell,
+                operation,
+                effect: prdb_engine::authorization::Effect::Allow,
+                recipients: vec![prdb_engine::authorization::Subject::Principal(user_id)],
+                target_column_ids: vec![column_id],
+                using_expression,
+                with_check_expression,
+                retention_deadline_us: now + 3_600_000_000,
+                audit_event,
+            }).map_err(|error| format!("create operational pressure cell policy {column_index}/{operation:?}: {error:?}"))?;
+        }
+    }
     let range_index_invocation = id(0xd7);
     let mut range_index_audit = identity_audit_event(0xd8, user_id, composite_table.table_id);
     range_index_audit.correlation_id = range_index_invocation;
@@ -25128,6 +25339,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     let saturated_staging = &staging;
     let saturated_runtime = &runtime;
     let operational_table_id = composite_table.table_id;
+    let operational_pressure_relation_name = "operational_pressure_records";
     let index_build_invocation = id(0xe6);
     let mut index_build_audit = identity_audit_event(0xe7, user_id, index_pressure_table.table_id);
     index_build_audit.correlation_id = index_build_invocation;
@@ -25197,12 +25409,16 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 let mut active_worker_point_read_latencies = Vec::new();
                 let mut active_worker_commit_latencies = Vec::new();
                 let mut completed = 0;
-                let max_operations = if worker_index < 60 { 1 } else { 200 };
+                // The four long-running writers continue until the observers
+                // finish, so saturation and cancellation checks see live
+                // operational transactions even when the measured window is
+                // extended.
+                let max_operations = if worker_index < 60 { 1 } else { 60_000 };
                 let min_operations_before_exit = if worker_index < 60 { 1 } else { 16 };
                 for index in 0..max_operations {
                     let mut invocation_id = [0xe0; 16];
-                    invocation_id[14] = worker_index;
-                    invocation_id[15] = index;
+                    invocation_id[13] = worker_index;
+                    invocation_id[14..].copy_from_slice(&(index as u16).to_be_bytes());
                     let transaction_result = operational_storage
                         .begin_token_authenticated_invocation(
                             invocation_id,
@@ -25248,6 +25464,73 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                                 page.rows.len()
                             ));
                         }
+                        if worker_index >= 60 {
+                            let worker_key = i32::from(worker_index - 60);
+                            let mut executor = transaction.open_executor_metadata_connection();
+                            let (relation, description) = executor
+                                .resolve_relation(
+                                    "sql_roundtrip",
+                                    operational_pressure_relation_name,
+                                )
+                                .map_err(|error| {
+                                    format!("operational pressure relation resolve: {error:?}")
+                                })?
+                                .ok_or_else(|| {
+                                    "operational pressure relation was not visible".to_owned()
+                                })?;
+                            if description.columns.len() != 2 {
+                                return Err("operational pressure table schema changed".into());
+                            }
+                            let cursor = executor
+                                .open_relation_scan(
+                                    &relation,
+                                    &description
+                                        .columns
+                                        .iter()
+                                        .map(|column| column.column_id)
+                                        .collect::<Vec<_>>(),
+                                )
+                                .map_err(|error| {
+                                    format!("operational pressure scan open: {error:?}")
+                                })?;
+                            let page =
+                                executor
+                                    .next_relation_scan_page(&cursor, 8)
+                                    .map_err(|error| {
+                                        format!("operational pressure scan page: {error:?}")
+                                    })?;
+                            if page.continuation.is_some() {
+                                return Err(
+                                    "operational pressure scan unexpectedly continued".into()
+                                );
+                            }
+                            let (row_handle, _) = page
+                                .rows
+                                .into_iter()
+                                .find(|(_, cells)| {
+                                    matches!(
+                                        cells.first(),
+                                        Some(prdb_engine::authorization::SanitizedCell::Value(
+                                            ScalarValue::Integer(value)
+                                        )) if *value == worker_key
+                                    )
+                                })
+                                .ok_or_else(|| {
+                                    format!("operational pressure row {worker_key} was not visible")
+                                })?;
+                            executor
+                                .stage_update(
+                                    &row_handle,
+                                    &[FieldPatch {
+                                        ordinal: 1,
+                                        value: Some(ScalarValue::Integer(index + 1)),
+                                    }],
+                                )
+                                .map_err(|error| {
+                                    format!("operational pressure update: {error:?}")
+                                })?;
+                            drop(executor);
+                        }
                         let commit_started = std::time::Instant::now();
                         transaction
                             .commit()
@@ -25255,7 +25538,10 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                         Ok::<_, String>((point_read_latency, commit_started.elapsed()))
                     })();
                     task_active_transactions.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                    let (point_read_latency, commit_latency) = operation_result?;
+                    let (point_read_latency, commit_latency) =
+                        operation_result.map_err(|error| {
+                            format!("operational worker {worker_index} iteration {index}: {error}")
+                        })?;
                     let worker_state = std::fs::read_to_string(format!("/proc/{worker_pid}/stat"))
                         .ok()
                         .and_then(|stat| {
@@ -25530,7 +25816,13 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                                 != 7
                         {
                             return Err(std::io::Error::other(
-                                "three cancellation SQL workers did not overlap relayed analytics and an operational transaction",
+                                format!(
+                                    "three cancellation SQL workers did not overlap relayed analytics and an operational transaction (relayed={}, analytics_live={}, active_transactions={}, cancellation_workers={})",
+                                    cancellation_analytics_result_relayed.load(std::sync::atomic::Ordering::Acquire),
+                                    analytics_worker_live,
+                                    cancellation_active_transactions.load(std::sync::atomic::Ordering::Acquire),
+                                    cancellation_active_workers.load(std::sync::atomic::Ordering::Acquire),
+                                ),
                             ));
                         }
                         cancellation_saturation_started
@@ -25880,6 +26172,27 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             operational_count += completed;
             active_worker_point_read_latencies.extend(point_read_latencies);
             active_worker_commit_latencies.extend(commit_latencies);
+        }
+        for index in 0..4u8 {
+            let stored = row(
+                &database,
+                &table_row_key(operational_pressure_table.table_id, id(0xed + index)),
+            )?
+            .ok_or("operational pressure update removed its row")?;
+            let tuple = decode_tuple(&operational_pressure_schema, 1, &stored.payload)?;
+            if !matches!(
+                tuple.values.as_slice(),
+                [
+                    Some(ScalarValue::Integer(key)),
+                    Some(ScalarValue::Integer(value)),
+                ] if *key == i32::from(index) && *value > 0
+            ) {
+                return Err(format!(
+                    "operational pressure row {index} has unexpected committed values: {:?}",
+                    tuple.values
+                )
+                .into());
+            }
         }
         let peak_active_operational_transactions =
             peak_active_operational_transactions.load(std::sync::atomic::Ordering::Acquire);
@@ -26427,7 +26740,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         assert_eq!(identity_rows, 1, "SQL DEFAULT should commit one UUID row");
     }
 
-    for seed in 0xf0u8..0xf8u8 {
+    // Keep these expired fixtures early in key order so bounded pruning can
+    // reach them ahead of the sustained operational outcome history.
+    for seed in 0x10u8..0x18u8 {
         let mut expired_outcome = prdb_engine::transaction::InvocationTransaction::begin(
             &database,
             id(seed),
@@ -26435,7 +26750,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             now + 1,
             1,
             1,
-        )?;
+        )
+        .map_err(|error| format!("expired outcome fixture seed {seed}: {error:?}"))?;
         expired_outcome.abort()?;
     }
 
