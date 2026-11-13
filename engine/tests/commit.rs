@@ -25498,6 +25498,19 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         retention_deadline_us: now + 3_600_000_000,
         audit_event: range_index_audit,
     })?;
+    let records_index_invocation = id(0xf8);
+    let mut records_index_audit = identity_audit_event(0xf9, user_id, records_table.table_id);
+    records_index_audit.correlation_id = records_index_invocation;
+    storage.create_index(prdb_engine::storage_manager::CreateIndexRequest {
+        invocation_id: records_index_invocation,
+        authenticated_actor_id: user_id,
+        table_id: records_table.table_id,
+        name: "records_id_range".to_owned(),
+        column_ids: vec![records_table.column_ids[0]],
+        unique: false,
+        retention_deadline_us: now + 3_600_000_000,
+        audit_event: records_index_audit,
+    })?;
     let mut requested_scope_records = Vec::<Vec<u8>>::new();
     for schema_id in [schema.schema_id, empty_schema.schema_id] {
         let mut record = vec![1, 1];

@@ -326,11 +326,11 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
                         ..
                     })
                 );
-                let predicate_visible_rows = match &predicate_estimate {
+                let predicate_matching_rows = match &predicate_estimate {
                     Some(crate::planner_ipc::EstimatePredicateResponse::Exact {
-                        visible_rows,
+                        matching_rows,
                         ..
-                    }) => Some(*visible_rows),
+                    }) => Some(*matching_rows),
                     _ => None,
                 };
                 if operation == Operation::OptimizeSelect
@@ -338,7 +338,7 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
                     && let Ok(mut decoded) = crate::optimizer_plan::decode_plan_v1(&plan)
                     && let Ok(true) = crate::optimizer_plan::apply_population_scan_heuristic(
                         &mut decoded,
-                        predicate_visible_rows,
+                        predicate_matching_rows,
                     )
                     && let Ok(encoded) = crate::optimizer_plan::encode_plan_v1(&decoded)
                 {
@@ -879,7 +879,7 @@ mod tests {
     fn process_protocol_uses_small_nonzero_predicate_population_for_scan_choice() {
         let plan = select_plan_with_predicate_estimate(
             crate::planner_ipc::EstimatePredicateResponse::Exact {
-                visible_rows: 4,
+                visible_rows: 8,
                 matching_rows: 2,
             },
         );
