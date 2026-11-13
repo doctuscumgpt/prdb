@@ -20,9 +20,9 @@ The server sends one IPC v1 frame with operation `0x0101`, a random nonzero requ
 
 ## Startup and Recovery
 
-1. Obtain the exclusive instance lock and read validated format/root metadata.
-2. Reject unsupported versions/features before changing database files.
-3. Open redb through its supported recovery path; then validate required engine/catalog state.
+1. Obtain the exclusive instance lock, validate the managed directory, and open redb through its supported recovery path. redb owns physical recovery and may update its private file state while opening.
+2. Read engine metadata from the recovered database and reject unsupported logical versions or lifecycle states before any engine-authored durable repair, cache rebuild, or catalog mutation. The engine cannot inspect logical metadata before redb opens because that metadata is stored in redb.
+3. Validate required engine tables and catalog state. Rebuild only disposable derived indexes, and only after the compatibility and lifecycle gates pass.
 4. Check mandatory built-ins, catalog references/indexes, credential verifier formats, and commit/outcome consistency. The current credential profile is SHA-256 algorithm 1, profile version 1, for uniformly random 256-bit bearer secrets. New verifier writes use that profile; startup and commit validation reject unknown algorithms or profile versions and malformed records.
 5. Publish a recovered committed frontier and enable admission only after validation.
 
