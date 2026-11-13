@@ -82,3 +82,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Managed-directory validation now permits the exact `.prdb-migration.next` name only as an owner-owned mode-0600 regular file; startup ignores its contents and continues using `storage.redb`. A regression rejects broader permissions and any similarly named unexpected file.
 - Verification: the focused publication regressions, workspace formatting, locked build, warning-denied Clippy, and full serial workspace suite passed inside the delegated `systemd --user` service with sandbox/process tests enabled and zero ignored tests.
 - Remaining: implement source/target state validation, v1-to-v2 transformation, recovery commands, power-loss/filesystem evidence, and populated migration fixtures. This design record does not claim migration safety.
+
+## CL-5 recovery diagnostic: inspect active and staged generations — implemented
+
+- `prdb-maintain migration-inspect --instance-dir PATH` takes the exclusive instance lock, validates the active READY generation and any private `.prdb-migration.next` image through read-only redb handles, then reports both generations' logical versions and commit sequence. It does not mutate either image or decide whether to resume, discard, or publish.
+- Regression verifies matching active/staged images are both reported, both redb files remain byte-identical, and inspection is rejected while another owner holds the instance lock. The help output includes the operation.
+- The command validates only formats supported by this engine. It cannot yet inspect a v1 source after an interrupted v1-to-v2 conversion; migration-aware source validation remains open.
+- Compatibility finding: v1 has no family-17 identity tombstones. Audit history is bounded and can be pruned, so it cannot prove the complete set of deleted user/role IDs. A v1-to-v2 conversion must not synthesize or omit permanent reservations without a trusted source; the transition remains fail-closed pending a safe contract.
+- Verification: the pinned-shell formatting check, locked workspace build, and warning-denied all-target Clippy passed. The full serial workspace suite passed inside the delegated `systemd --user` unit, with sandbox integration enabled and zero ignored tests. `git diff --check` passed.

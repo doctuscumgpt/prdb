@@ -89,6 +89,7 @@ fn maintenance_help_lists_offline_audit_archival() {
     assert!(help.contains("backup --instance-dir PATH --output-dir PATH"));
     assert!(help.contains("backup-verify --backup-dir PATH"));
     assert!(help.contains("inspect --instance-dir PATH"));
+    assert!(help.contains("migration-inspect --instance-dir PATH"));
 }
 
 #[test]
@@ -140,6 +141,60 @@ fn maintenance_inspection_is_read_only_bounded_and_requires_offline_lock() {
         .expect("attempt inspection during service ownership");
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("InstanceLocked"));
+    drop(live);
+}
+
+#[test]
+fn migration_inspection_validates_active_and_staged_images_without_writing_them() {
+    let fixture = Fixture::new();
+    let mut session = prdb_engine::bootstrap::initialize(
+        fixture.instance_dir(),
+        "migration_inspect_admin",
+        i64::MAX,
+    )
+    .expect("initialize migration inspection fixture");
+    let mut secret = session.take_secret().expect("bootstrap secret");
+    use zeroize::Zeroize;
+    secret.zeroize();
+    drop(session.acknowledge().expect("publish READY"));
+
+    let active_path = fixture.instance_dir().join("storage.redb");
+    let staging_path = fixture.instance_dir().join(".prdb-migration.next");
+    std::fs::copy(&active_path, &staging_path).expect("prepare staged image");
+    std::fs::set_permissions(&staging_path, std::fs::Permissions::from_mode(0o600))
+        .expect("make staged image private");
+    let active_before = std::fs::read(&active_path).expect("read active image");
+    let staging_before = std::fs::read(&staging_path).expect("read staged image");
+
+    let inspected = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-inspect", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .output()
+        .expect("run migration inspection");
+    assert!(
+        inspected.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    let output = String::from_utf8(inspected.stdout).expect("UTF-8 migration inspection result");
+    assert!(output.contains("active=READY"), "{output}");
+    assert!(output.contains("staging=READY"), "{output}");
+    assert_eq!(
+        std::fs::read(&active_path).expect("reread active image"),
+        active_before
+    );
+    assert_eq!(
+        std::fs::read(&staging_path).expect("reread staged image"),
+        staging_before
+    );
+
+    let live = StorageInstance::open(fixture.instance_dir()).expect("hold instance lock");
+    let rejected = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-inspect", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .output()
+        .expect("attempt migration inspection while instance is owned");
+    assert!(!rejected.status.success());
     drop(live);
 }
 

@@ -31,6 +31,8 @@ fn print_help() {
          Verifies the backup manifest, file digests, and READY catalog.\n\
          prdb-maintain inspect --instance-dir PATH\n\
          Read-only READY validation and bounded engine metadata diagnostics.\n\
+         prdb-maintain migration-inspect --instance-dir PATH\n\
+         Validates the active READY image and any private staged image.\n\
          Stop gateway and supervisor services before compact, audit-archive, or backup."
     );
 }
@@ -47,7 +49,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut args = std::env::args_os().skip(1);
     let operation = args.next().ok_or(
-        "operation is required: compact, audit-archive, audit-verify, backup, backup-verify, or inspect",
+        "operation is required: compact, audit-archive, audit-verify, backup, backup-verify, inspect, or migration-inspect",
     )?;
     if operation == "audit-verify" {
         if args.next().as_deref() != Some(std::ffi::OsStr::new("--archive")) {
@@ -128,6 +130,66 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             report.index_entries,
             report.outcomes,
             report.audit_events,
+        );
+        return Ok(());
+    }
+
+    if operation == "migration-inspect" {
+        use std::os::unix::fs::MetadataExt;
+
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--instance-dir")) {
+            return Err("--instance-dir PATH is required".into());
+        }
+        let instance_dir = PathBuf::from(args.next().ok_or("instance directory is required")?);
+        if args.next().is_some() {
+            return Err("unexpected trailing arguments".into());
+        }
+
+        let active = ReadOnlyStorageInstance::open(&instance_dir)?;
+        let active_report =
+            prdb_engine::startup::validate_persisted_records_read_only(active.database())?;
+        let active_meta = active_report.metadata;
+        println!(
+            "active=READY database_id={} catalog_version={} expression_version={} builtin_semantics_version={} commit_sequence={}",
+            active_meta
+                .database_id
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+            active_meta.catalog_version,
+            active_meta.expression_version,
+            active_meta.builtin_semantics_version,
+            active_meta.commit_sequence,
+        );
+
+        let staging_path = instance_dir.join(".prdb-migration.next");
+        if !staging_path.try_exists()? {
+            println!("staging=absent");
+            return Ok(());
+        }
+        let staging_metadata = std::fs::symlink_metadata(&staging_path)?;
+        if !staging_metadata.file_type().is_file()
+            || staging_metadata.nlink() != 1
+            || staging_metadata.mode() & 0o7777 != 0o600
+            || staging_metadata.uid() != unsafe { libc::geteuid() }
+        {
+            return Err("staging image must be an owner-owned mode-0600 regular file".into());
+        }
+        let staged_database = redb::ReadOnlyDatabase::open(&staging_path)?;
+        let staged_report =
+            prdb_engine::startup::validate_persisted_records_read_only(&staged_database)?;
+        let staged_meta = staged_report.metadata;
+        println!(
+            "staging=READY database_id={} catalog_version={} expression_version={} builtin_semantics_version={} commit_sequence={}",
+            staged_meta
+                .database_id
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+            staged_meta.catalog_version,
+            staged_meta.expression_version,
+            staged_meta.builtin_semantics_version,
+            staged_meta.commit_sequence,
         );
         return Ok(());
     }
