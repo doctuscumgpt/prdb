@@ -23719,6 +23719,52 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         now + 3_600_000_000,
         &pressure_rows,
     )?;
+    let index_pressure_table_invocation = id(0xe8);
+    let mut index_pressure_table_audit = identity_audit_event(0xe9, user_id, schema.schema_id);
+    index_pressure_table_audit.correlation_id = index_pressure_table_invocation;
+    let index_pressure_table = storage.create_table(CreateTableRequest {
+        invocation_id: index_pressure_table_invocation,
+        authenticated_actor_id: user_id,
+        schema_id: schema.schema_id,
+        name: "analytics_index_pressure_records".to_owned(),
+        columns: vec![TableColumnDefinition {
+            name: "group_key".to_owned(),
+            scalar_type: ScalarType::Text,
+            nullable: false,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+        retention_deadline_us: now + 3_600_000_000,
+        audit_event: index_pressure_table_audit,
+    })?;
+    let index_pressure_schema = [ColumnSchema {
+        scalar_type: ScalarType::Text,
+        nullable: false,
+    }];
+    let index_pressure_key = "a".repeat(8_188);
+    let index_pressure_rows = (0..1024u16)
+        .map(|index| {
+            let value = format!("{index:04}{index_pressure_key}");
+            let mut row_id = id(0);
+            row_id[14..].copy_from_slice(&(index + 1).to_be_bytes());
+            Ok(RowWrite {
+                key: table_row_key(index_pressure_table.table_id, row_id),
+                expected_version: None,
+                payload: Some(encode_tuple(
+                    &index_pressure_schema,
+                    1,
+                    &[Some(ScalarValue::Text(value))],
+                )?),
+            })
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    commit_rows(
+        &database,
+        id(0xea),
+        builtin_owner_id(),
+        now + 3_600_000_000,
+        &index_pressure_rows,
+    )?;
     for row_id in [0xd3, 0xd4, 0xd5] {
         assert!(
             row(
@@ -24994,6 +25040,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     let saturated_staging = &staging;
     let saturated_runtime = &runtime;
     let operational_table_id = composite_table.table_id;
+    let index_build_invocation = id(0xe6);
+    let mut index_build_audit = identity_audit_event(0xe7, user_id, index_pressure_table.table_id);
+    index_build_audit.correlation_id = index_build_invocation;
     let (
         worker_status_result,
         concurrent_operational_invocations,
@@ -25009,6 +25058,33 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         let analytics_result_relayed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let active_operational_transactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let start = Arc::new(std::sync::Barrier::new(6));
+        let (index_build_start_tx, index_build_start_rx) = std::sync::mpsc::channel();
+        let (index_build_started_tx, index_build_started_rx) = std::sync::mpsc::channel();
+        let index_build_storage = &storage;
+        let index_build_worker = scope.spawn(move || -> Result<_, String> {
+            index_build_start_rx
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|error| {
+                    format!("analytical pressure index build was not started: {error}")
+                })?;
+            let started_at = std::time::Instant::now();
+            index_build_started_tx
+                .send(started_at)
+                .map_err(|error| format!("index build start notification failed: {error}"))?;
+            let created = index_build_storage
+                .create_index(prdb_engine::storage_manager::CreateIndexRequest {
+                    invocation_id: index_build_invocation,
+                    authenticated_actor_id: user_id,
+                    table_id: index_pressure_table.table_id,
+                    name: "analytics_pressure_group_key".to_owned(),
+                    column_ids: vec![index_pressure_table.column_ids[0]],
+                    unique: false,
+                    retention_deadline_us: now + 3_600_000_000,
+                    audit_event: index_build_audit,
+                })
+                .map_err(|error| format!("analytical pressure index build failed: {error:?}"))?;
+            Ok((started_at, std::time::Instant::now(), created.index_id))
+        });
         let mut operational_workers = Vec::with_capacity(4);
         for worker_index in 0..4u8 {
             let task_done = Arc::clone(&observer_done);
@@ -25330,12 +25406,42 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             result.map_err(|error| error.to_string())
         });
         start.wait();
+        let mut index_build_start_tx = Some(index_build_start_tx);
+        let mut index_build_started_rx = Some(index_build_started_rx);
+        let mut analytical_group_resumed_at = None;
         let worker_status_result = executor.observe_exit_with_results(&invocation, |payload| {
             send_gateway_result_data_event(&mut service, accepted.request_id, payload.to_vec())
                 .map_err(|error| std::io::Error::other(format!("result relay: {error:?}")))?;
+            if payload == b"ANALYTICAL_GROUP_STARTED" {
+                index_build_start_tx
+                    .take()
+                    .ok_or_else(|| std::io::Error::other("index build already started"))?
+                    .send(())
+                    .map_err(|error| {
+                        std::io::Error::other(format!("start index build: {error}"))
+                    })?;
+                index_build_started_rx
+                    .take()
+                    .ok_or_else(|| std::io::Error::other("index build start already observed"))?
+                    .recv()
+                    .map_err(|error| {
+                        std::io::Error::other(format!("observe index build start: {error}"))
+                    })?;
+            } else if payload == b"ANALYTICAL_GROUP_RESUMED" {
+                analytical_group_resumed_at = Some(std::time::Instant::now());
+            }
             analytics_result_relayed.store(true, std::sync::atomic::Ordering::Release);
             Ok(())
         });
+        let (index_build_started_at, index_build_finished_at, index_build_id) = index_build_worker
+            .join()
+            .map_err(|_| std::io::Error::other("analytical pressure index builder panicked"))?
+            .map_err(std::io::Error::other)?;
+        let analytical_group_resumed_at =
+            analytical_group_resumed_at.ok_or("missing resumed analytical group marker")?;
+        assert_ne!(index_build_id, [0; 16]);
+        assert!(index_build_started_at < analytical_group_resumed_at);
+        assert!(analytical_group_resumed_at < index_build_finished_at);
         let (
             cancellation_request_latency,
             cancellation_observed_latency,
@@ -25436,6 +25542,17 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     assert_eq!(
         analytical_group_started.payload,
         b"ANALYTICAL_GROUP_STARTED"
+    );
+    let analytical_group_resumed =
+        read_frame(&mut gateway)?.ok_or("missing resumed analytical group marker")?;
+    assert_eq!(
+        analytical_group_resumed.operation,
+        Operation::GatewayResultData as u16
+    );
+    assert_eq!(analytical_group_resumed.request_id, accepted.request_id);
+    assert_eq!(
+        analytical_group_resumed.payload,
+        b"ANALYTICAL_GROUP_RESUMED"
     );
     let inserted = read_frame(&mut gateway)?.ok_or("missing INSERT visibility result")?;
     assert_eq!(inserted.operation, Operation::GatewayResultData as u16);
@@ -25843,15 +25960,19 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         );
     }
     drop(gateway);
-    assert!(matches!(
-        finalize_gateway_invocation_and_send_terminal(
-            &mut invocation,
-            &mut service,
-            accepted.request_id,
-            GatewayTerminalDecision::Commit,
+    let terminal_result = finalize_gateway_invocation_and_send_terminal(
+        &mut invocation,
+        &mut service,
+        accepted.request_id,
+        GatewayTerminalDecision::Commit,
+    );
+    assert!(
+        matches!(
+            terminal_result,
+            Err(prdb_engine::supervisor_ipc::GatewayTerminalRelayError::Frame(_))
         ),
-        Err(prdb_engine::supervisor_ipc::GatewayTerminalRelayError::Frame(_))
-    ));
+        "terminal relay did not preserve the committed outcome after gateway loss: {terminal_result:?}"
+    );
     assert_eq!(
         storage
             .lookup_invocation_outcome(reservation.invocation_id, user_id, now + 1)?

@@ -225,6 +225,7 @@ static int32_t verify_analytical_pressure_group(
     const prdb_sdk_sql_bound_column_v2 *group_by_column) {
     analytical_pressure_result_context *context = opaque;
     static const uint8_t started[] = "ANALYTICAL_GROUP_STARTED";
+    static const uint8_t resumed[] = "ANALYTICAL_GROUP_RESUMED";
     uint32_t index;
     if (context == NULL || context->host == NULL || group_key == NULL ||
         group_by_column == NULL || group_key->state != PRDB_SDK_VALUE_STATE_VALUE ||
@@ -257,6 +258,12 @@ static int32_t verify_analytical_pressure_group(
                                     sizeof(started) - 1) != PRDB_QUERY_CALLBACK_OK) {
         return 1;
     }
+    if (context->group_count == 2 &&
+        context->host->write_result(context->host->context, resumed,
+                                    sizeof(resumed) - 1) != PRDB_QUERY_CALLBACK_OK) {
+        return 1;
+    }
+    /* Pace callbacks so concurrent operational and DDL work can progress. */
     const struct timespec callback_interval = {0, 1000000};
     if (nanosleep(&callback_interval, NULL) != 0) {
         return 1;
