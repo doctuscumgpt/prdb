@@ -1,5 +1,10 @@
 # Statistics Service Progress
 
+## ST-2 contract synchronization across storage and planner IPC specs — verified
+
+- Correction: updated [storage manager](../../specs/storage-manager.md) and [IPC protocol](../../specs/ipc-protocol.md) to reflect that filtered ordinary unordered SELECT uses only exact zero-match predicate estimates for the no-scan hint, and that planner relation descriptions may carry both approved unique and non-unique range paths.
+- Verification: checked the wire markers and response shape against `planner_ipc.rs`; `git diff --check` passed. Documentation-only change; no runtime checks were needed.
+
 ## ST-3 follow-up: hidden values and invisible candidates preserve estimate outputs — verified
 
 - Contract: changing a cell that remains redacted to the estimator must not change exact counts. A value-dependent row policy or additional invisible candidate rows must yield the same `Unknown` estimate when the authorized reference view is unchanged.
