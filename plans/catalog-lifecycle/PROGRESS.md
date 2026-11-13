@@ -50,3 +50,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: the binary test verifies restrictive modes, byte-for-byte source copy, repeated read-only verification without file changes, manifest corruption rejection, overwrite refusal, and rejection while the source lock is held.
 - Verification: the focused maintenance CLI integration passed. `nix develop --no-update-lock-file -c cargo fmt --all -- --check`, `cargo build --workspace --locked`, and `cargo clippy --workspace --all-targets --locked -- -D warnings` passed. The full `cargo test --workspace --locked -- --test-threads=1` suite passed inside the delegated `systemd --user` service with all sandbox tests enabled and zero ignored tests. Local Markdown links and `git diff --check` passed.
 - Limits: the manifest is an unsigned integrity check, backups duplicate identity/credentials and must not be run beside the source, and this feature does not restore or migrate databases. Power-loss durability and the migration generation switch remain open.
+
+## CL-4: independent compatibility gates — partial
+
+- Engine metadata records and enforces the current catalog schema (2), expression IR (1), and built-in semantics (1) versions. Startup and transaction/commit paths reject unsupported values; commit tests verify unsupported versions cannot publish rows or outcomes.
+- Family-16 verifier records carry algorithm and profile-version fields. The implemented SHA-256 v1 profile is used for newly issued tokens; startup and commit validation reject unsupported algorithms/versions and malformed verifier records.
+- `metadata` codec tests cover unsupported engine-metadata encoding versions and noncanonical fields. Startup tests cover supported verifier records and malformed/disabled-user records.
+- Remaining: populated old/new catalog and expression fixtures, older-binary rejection against a newer directory, explicit redb compatibility fixtures, and transition-specific semantics preservation. No migration path is implemented.
