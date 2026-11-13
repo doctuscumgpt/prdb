@@ -641,3 +641,11 @@
 - Regression: the authorized runtime response lacked the field before implementation. Storage checks the initial put, replacement, and delete semantics; TCP decoding and saturation coverage verify the projection.
 - Verification: focused runtime/protocol/TCP/saturation checks; workspace build/fmt/Clippy; TinyCC SDK tests and sandbox fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite with zero ignored tests; and `git diff --check` passed.
 - Remaining: other OM-2 counters and registries remain open.
+
+## SDK-17 / OM-2: managed commit latency buckets — verified slice
+
+- Behavior: administrator `runtime-list` pages include the six-count `invocation_commit_latency_buckets` array with fixed noncumulative ranges from `<=1,000us` through `>100,000us`. It counts managed commit API calls on success and error, uses monotonic elapsed time, saturates, and resets with the shared registry.
+- Implementation: commit duration is recorded after the managed commit returns; runtime protocol JSON, strict typed decoding, and CLI JSON expose the array.
+- Regression: the authorized runtime response lacked the field before implementation. Boundary coverage checks all ranges and sub-microsecond precision; storage integration verifies an errored managed commit increments one bucket; TCP decoding and saturation tests cover the wire contract.
+- Verification: focused storage/protocol/TCP tests; workspace build/fmt/Clippy; TinyCC tests and fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite with zero ignored tests; and `git diff --check` passed.
+- Remaining: further operational metadata items remain open.

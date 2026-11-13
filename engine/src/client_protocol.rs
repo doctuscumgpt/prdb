@@ -4043,6 +4043,7 @@ impl ClientConnectionSession {
                         invocation_policy_denials_total: page.invocation_policy_denials_total,
                         invocation_staged_value_bytes_total: page
                             .invocation_staged_value_bytes_total,
+                        invocation_commit_latency_buckets: page.invocation_commit_latency_buckets,
                         waits: &page.fence_waits,
                         truncated: page.fence_waits_truncated,
                     },
@@ -7152,6 +7153,7 @@ struct RuntimeInvocationSummary<'a> {
     admin_cancellations_denied_total: u64,
     invocation_policy_denials_total: u64,
     invocation_staged_value_bytes_total: u64,
+    invocation_commit_latency_buckets: [u64; 6],
     waits: &'a [crate::ddl_fence::DdlFenceWaitStatus],
     truncated: bool,
 }
@@ -7173,6 +7175,14 @@ fn encode_fence_waits(output: &mut String, summary: RuntimeInvocationSummary<'_>
     output.push_str(&summary.invocation_policy_denials_total.to_string());
     output.push_str(",\"invocation_staged_value_bytes_total\":");
     output.push_str(&summary.invocation_staged_value_bytes_total.to_string());
+    output.push_str(",\"invocation_commit_latency_buckets\":[");
+    for (index, bucket) in summary.invocation_commit_latency_buckets.iter().enumerate() {
+        if index != 0 {
+            output.push(',');
+        }
+        output.push_str(&bucket.to_string());
+    }
+    output.push(']');
     output.push_str(",\"fence_waits\":[");
     for (index, wait) in summary.waits.iter().enumerate() {
         if index != 0 {
@@ -7688,6 +7698,7 @@ mod runtime_wait_tests {
                 admin_cancellations_denied_total: 2,
                 invocation_policy_denials_total: 3,
                 invocation_staged_value_bytes_total: 8,
+                invocation_commit_latency_buckets: [1, 2, 3, 4, 5, 6],
                 waits: &[wait],
                 truncated: true,
             },
@@ -7695,7 +7706,7 @@ mod runtime_wait_tests {
         assert_eq!(
             output,
             format!(
-                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"invocations_admitted_total\":7,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"admin_cancellations_denied_total\":2,\"invocation_policy_denials_total\":3,\"invocation_staged_value_bytes_total\":8,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
+                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"invocations_admitted_total\":7,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"admin_cancellations_denied_total\":2,\"invocation_policy_denials_total\":3,\"invocation_staged_value_bytes_total\":8,\"invocation_commit_latency_buckets\":[1,2,3,4,5,6],\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
                 "01".repeat(16),
                 "02".repeat(16),
                 "03".repeat(16)

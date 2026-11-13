@@ -95,3 +95,11 @@
 - Regression: the expected runtime field failed before implementation. Storage coverage checks initial put, replacement, and delete semantics; TCP decoding and saturation tests cover the client field and `u64::MAX` bound.
 - Verification: focused storage/runtime, protocol JSON, TCP client and saturation tests; workspace build/fmt/Clippy; TinyCC SDK tests and sandbox fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite (zero ignored tests); and `git diff --check` passed.
 - Remaining: latency buckets, job registries, retained-byte/cache telemetry, additional wait categories, and broader pressure/authority-race tests remain open.
+
+## OM-2 managed commit latency buckets — verified slice
+
+- Contract: `invocation_commit_latency_buckets` reports six noncumulative counts for managed `InvocationTransaction::commit` calls, whether the call succeeds or errors. Durations run from API entry through return and use monotonic time; bucket boundaries are `<=1,000us`, `(1,000us,5,000us]`, `(5,000us,10,000us]`, `(10,000us,50,000us]`, `(50,000us,100,000us]`, and `>100,000us`. Uncoordinated transactions are excluded. Counts saturate and reset with the process-local registry.
+- Implementation: the managed commit wrapper reports the complete call duration through a weak admission metrics handle; the registry classifies full `Duration` values, and the admin runtime page, JSON protocol, typed client, and CLI carry the fixed six-count array.
+- Regression: the expected field was absent before implementation. Storage tests cover each range and a sub-microsecond boundary, saturation tests include the histogram, and the integration page confirms an errored managed commit increments one bucket.
+- Verification: focused runtime, client, boundary and saturation tests; workspace build/fmt/Clippy; TinyCC SDK tests and sandbox fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite (zero ignored tests); and `git diff --check` passed.
+- Remaining: job registries, retained-byte/cache telemetry, additional wait categories, and broader pressure/authority-race tests remain open.

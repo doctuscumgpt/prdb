@@ -281,6 +281,7 @@ pub struct AdministrativeInvocationPage {
     pub admin_cancellations_denied_total: u64,
     pub invocation_policy_denials_total: u64,
     pub invocation_staged_value_bytes_total: u64,
+    pub invocation_commit_latency_buckets: [u64; 6],
     pub fence_waits: Vec<crate::ddl_fence::DdlFenceWaitStatus>,
     pub fence_waits_truncated: bool,
     pub continuation: Option<AdministrativeInvocationCursor>,
@@ -1706,6 +1707,7 @@ struct LiveInvocationRegistry {
     admin_cancellations_denied_total: u64,
     invocation_policy_denials_total: u64,
     invocation_staged_value_bytes_total: u64,
+    invocation_commit_latency_buckets: [u64; 6],
     entries: HashMap<[u8; 16], LiveInvocation>,
 }
 
@@ -1720,6 +1722,7 @@ struct AdministrativeInvocationProjection {
     admin_cancellations_denied_total: u64,
     invocation_policy_denials_total: u64,
     invocation_staged_value_bytes_total: u64,
+    invocation_commit_latency_buckets: [u64; 6],
 }
 
 impl LiveInvocationRegistry {
@@ -1743,6 +1746,24 @@ impl LiveInvocationRegistry {
         self.invocation_staged_value_bytes_total = self
             .invocation_staged_value_bytes_total
             .saturating_add(bytes);
+    }
+
+    fn record_invocation_commit_latency(&mut self, elapsed: Duration) {
+        let bucket = if elapsed <= Duration::from_micros(1_000) {
+            0
+        } else if elapsed <= Duration::from_micros(5_000) {
+            1
+        } else if elapsed <= Duration::from_micros(10_000) {
+            2
+        } else if elapsed <= Duration::from_micros(50_000) {
+            3
+        } else if elapsed <= Duration::from_micros(100_000) {
+            4
+        } else {
+            5
+        };
+        self.invocation_commit_latency_buckets[bucket] =
+            self.invocation_commit_latency_buckets[bucket].saturating_add(1);
     }
 
     fn advance_generation(&mut self) {
@@ -1780,6 +1801,17 @@ impl InvocationAdmissionMetrics {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         live.record_invocation_policy_denial();
+    }
+
+    pub(crate) fn record_commit_latency(&self, elapsed: Duration) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let mut live = state
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        live.record_invocation_commit_latency(elapsed);
     }
 }
 
@@ -2059,6 +2091,7 @@ impl InvocationAdmissionState {
             admin_cancellations_denied_total: live.admin_cancellations_denied_total,
             invocation_policy_denials_total: live.invocation_policy_denials_total,
             invocation_staged_value_bytes_total: live.invocation_staged_value_bytes_total,
+            invocation_commit_latency_buckets: live.invocation_commit_latency_buckets,
         })
     }
 }
@@ -2271,6 +2304,7 @@ fn invocation_registry(
             admin_cancellations_denied_total: 0,
             invocation_policy_denials_total: 0,
             invocation_staged_value_bytes_total: 0,
+            invocation_commit_latency_buckets: [0; 6],
             entries: HashMap::new(),
         }),
         changed: Condvar::new(),
@@ -10308,6 +10342,7 @@ impl<'db> StorageManager<'db> {
             admin_cancellations_denied_total: projection.admin_cancellations_denied_total,
             invocation_policy_denials_total: projection.invocation_policy_denials_total,
             invocation_staged_value_bytes_total: projection.invocation_staged_value_bytes_total,
+            invocation_commit_latency_buckets: projection.invocation_commit_latency_buckets,
             fence_waits,
             fence_waits_truncated,
             continuation: projection.continuation,
@@ -11424,6 +11459,7 @@ mod commit_cancellation_boundary_tests {
                 admin_cancellations_denied_total: 0,
                 invocation_policy_denials_total: 0,
                 invocation_staged_value_bytes_total: 0,
+                invocation_commit_latency_buckets: [0; 6],
                 entries: std::collections::HashMap::new(),
             }),
             changed: std::sync::Condvar::new(),
@@ -11476,6 +11512,7 @@ mod commit_cancellation_boundary_tests {
                 admin_cancellations_denied_total: u64::MAX,
                 invocation_policy_denials_total: u64::MAX,
                 invocation_staged_value_bytes_total: u64::MAX,
+                invocation_commit_latency_buckets: [u64::MAX; 6],
                 entries: std::collections::HashMap::new(),
             }),
             changed: std::sync::Condvar::new(),
@@ -11498,6 +11535,9 @@ mod commit_cancellation_boundary_tests {
             .record_admin_cancellation_denial();
         permit.metrics().record_policy_denial();
         permit.record_staged_value_bytes(1);
+        permit
+            .metrics()
+            .record_commit_latency(Duration::from_micros(1_001));
         assert_eq!(
             {
                 let live = state.live.lock().unwrap();
@@ -11508,11 +11548,44 @@ mod commit_cancellation_boundary_tests {
                     live.admin_cancellations_denied_total,
                     live.invocation_policy_denials_total,
                     live.invocation_staged_value_bytes_total,
+                    live.invocation_commit_latency_buckets,
                 )
             },
-            (u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX)
+            (
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                u64::MAX,
+                [u64::MAX; 6]
+            )
         );
         drop(permit);
+    }
+
+    #[test]
+    fn invocation_commit_latency_uses_fixed_non_cumulative_buckets() {
+        let mut live = LiveInvocationRegistry {
+            generation: 1,
+            invocations_admitted_total: 0,
+            invocation_conflicts_total: 0,
+            admin_cancellations_accepted_total: 0,
+            admin_cancellations_denied_total: 0,
+            invocation_policy_denials_total: 0,
+            invocation_staged_value_bytes_total: 0,
+            invocation_commit_latency_buckets: [0; 6],
+            entries: std::collections::HashMap::new(),
+        };
+        for micros in [
+            1_000, 1_001, 5_000, 5_001, 10_000, 10_001, 50_000, 50_001, 100_000, 100_001,
+        ] {
+            live.record_invocation_commit_latency(Duration::from_micros(micros));
+        }
+        live.record_invocation_commit_latency(
+            Duration::from_micros(1_000) + Duration::from_nanos(1),
+        );
+        assert_eq!(live.invocation_commit_latency_buckets, [1, 3, 2, 2, 2, 1]);
     }
 
     #[test]

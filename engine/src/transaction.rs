@@ -7845,7 +7845,17 @@ impl<'db> InvocationTransaction<'db> {
     }
 
     /// Commit rows, engine sequence, and durable COMMITTED outcome in one redb write transaction.
-    pub fn commit(mut self) -> Result<u64, TransactionError> {
+    pub fn commit(self) -> Result<u64, TransactionError> {
+        let started_at = Instant::now();
+        let metrics = self.coordination.admission_metrics.clone();
+        let result = self.commit_inner();
+        if let Some(metrics) = metrics {
+            metrics.record_commit_latency(started_at.elapsed());
+        }
+        result
+    }
+
+    fn commit_inner(mut self) -> Result<u64, TransactionError> {
         if self.aborted {
             if !self.outcome_recorded {
                 record_aborted_outcome(

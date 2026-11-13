@@ -10475,8 +10475,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         .as_micros() as i64;
     let retention_deadline_us = now_us + 60_000_000;
     let mut first = storage.begin_invocation(id(232), admin_id, retention_deadline_us, 2, 64)?;
-    let mut second =
-        storage.begin_invocation(id(233), ordinary_id, retention_deadline_us, 2, 64)?;
+    let second = storage.begin_invocation(id(233), ordinary_id, retention_deadline_us, 2, 64)?;
     first.stage_put(
         prdb_engine::overlay::RowId {
             table: id(250),
@@ -11380,6 +11379,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         runtime_page.contains("\"invocation_staged_value_bytes_total\":13"),
         "unexpected staged value byte runtime counter: {runtime_page}"
     );
+    assert!(runtime_page.contains("\"invocation_commit_latency_buckets\":["));
     let runtime_cursor = runtime_page
         .split("\"next_cursor\":\"")
         .nth(1)
@@ -13119,7 +13119,15 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         Err(AdministrativeInvocationListError::Unauthorized)
     ));
 
-    second.abort()?;
+    assert!(second.commit().is_err());
+    let latency_page = storage.list_runtime_invocations(backup_admin_id, now_us, 1, None)?;
+    assert_eq!(
+        latency_page
+            .invocation_commit_latency_buckets
+            .iter()
+            .sum::<u64>(),
+        1
+    );
     first.abort()?;
     Ok(())
 }
