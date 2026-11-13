@@ -6,7 +6,7 @@ Implement [live monitoring and audit](../../specs/operational-metadata.md). Depe
 
 ## Decisions Before Implementation
 
-Define bounded registry schemas/status projections, observation times/consistency labels, pagination generations or explicit best-effort semantics, audit/outbox payloads, retention/expiry policy and sink retry budgets. Only database admins inspect global registries/audit initially; ordinary users get their own status/usage without global totals. Resolve obsolete checkpoint-job terminology to supported redb maintenance in specs before implementing job kinds. The first bounded audit retention mechanism is an offline PRA1 export under the exclusive instance lock; external asynchronous sink delivery remains a separate OM-6 increment.
+Define bounded registry schemas/status projections, observation times/consistency labels, pagination generations or explicit best-effort semantics, audit/outbox payloads, retention/expiry policy and sink retry budgets. Only database admins inspect global registries/audit initially; ordinary users get their own status/usage without global totals. Resolve obsolete checkpoint-job terminology to supported redb maintenance in specs before implementing job kinds. The first bounded audit retention mechanism is an offline PRA1 export under the exclusive instance lock. OM-6 adds an optional local JSONL sink with durable per-event delivery markers and at-least-once replay semantics.
 
 ## Increments
 

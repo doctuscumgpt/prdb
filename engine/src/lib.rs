@@ -2,6 +2,7 @@
 
 pub mod audit;
 pub mod audit_archive;
+pub mod audit_sink;
 pub mod authorization;
 pub mod bootstrap;
 pub mod catalog;

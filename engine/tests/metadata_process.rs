@@ -2654,7 +2654,9 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
     let uid = unsafe { libc::geteuid() };
     let uid_string = uid.to_string();
     let cgroup_string = cgroup_parent.to_str().ok_or("non-UTF-8 cgroup path")?;
+    let audit_jsonl_path = root.join("supervisor-audit.jsonl");
     let mut supervisor_command = Command::new(env!("CARGO_BIN_EXE_prdb-supervisor"));
+    supervisor_command.env("PRDB_AUDIT_JSONL_PATH", &audit_jsonl_path);
     supervisor_command.args([
         "--instance-dir",
         instance_dir.to_str().ok_or("non-UTF-8 instance path")?,
@@ -2736,6 +2738,24 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
             && event.actor_id.is_none()
             && event.target_ids.as_slice() == [token_id]
     }));
+    let sink_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(lines) = std::fs::read_to_string(&audit_jsonl_path)
+            && lines.contains("\"action\":4")
+            && lines.contains("\"result\":2")
+        {
+            assert!(lines.contains("\"actor_id\":null"));
+            assert!(lines.contains(&format!(
+                "\"target_ids\":[\"{}\"]",
+                encode_id_hex(&token_id)
+            )));
+            break;
+        }
+        if Instant::now() >= sink_deadline {
+            return Err("supervisor did not deliver the authentication audit event".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let runtime_list_credentials_path = root.join("runtime-list-admin.cred");
     write_client_credentials(
         &runtime_list_credentials_path,

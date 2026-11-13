@@ -24,7 +24,7 @@ use crate::storage_manager::{
 };
 use crate::transaction::{InvocationTransaction, TransactionError};
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -579,6 +579,8 @@ where
     let limiter = crate::gateway::GatewayConnectionLimiter::new(runtime.listener.max_connections)
         .map_err(|_| GatewayServiceListenerError::InvalidConfig)?;
     let mut next_outcome_maintenance = std::time::Instant::now();
+    let audit_jsonl_path = std::env::var_os("PRDB_AUDIT_JSONL_PATH").map(PathBuf::from);
+    let mut next_audit_delivery = std::time::Instant::now();
 
     std::thread::scope(|scope| {
         let mut workers = Vec::new();
@@ -605,6 +607,14 @@ where
                     outcome_maintenance_error = Some(error);
                     break;
                 }
+            }
+            if let Some(path) = &audit_jsonl_path
+                && std::time::Instant::now() >= next_audit_delivery
+            {
+                next_audit_delivery = std::time::Instant::now() + Duration::from_secs(1);
+                // The durable AUDIT row remains the outbox on any sink error.
+                // Retrying is best effort and must not alter a committed result.
+                let _ = crate::audit_sink::deliver_jsonl_batch(manager.database(), path, 64);
             }
             match listener.accept() {
                 Ok((mut stream, _peer)) => {

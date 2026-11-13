@@ -484,6 +484,15 @@ impl StorageInstance {
             if read_audit_records_from_table(&table)? != events {
                 return Err(AuditArchiveError::ConcurrentChange);
             }
+            let event_ids = events
+                .iter()
+                .map(|(event_id, _)| *event_id)
+                .collect::<Vec<_>>();
+            let mut stats = write
+                .open_table(crate::schema::STATS)
+                .map_err(|_| AuditArchiveError::Storage)?;
+            crate::audit_sink::remove_delivery_markers(&mut stats, &event_ids)
+                .map_err(|_| AuditArchiveError::Storage)?;
             for (event_id, _) in &events {
                 table
                     .remove(event_id.as_slice())

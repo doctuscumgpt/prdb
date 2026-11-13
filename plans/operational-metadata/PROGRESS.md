@@ -148,6 +148,15 @@
 
 - Contract: `prdb-maintain audit-verify --archive PATH` validates a mode-0600 regular PRA1 file up to the format bound without opening an instance or exposing event contents.
 - Implementation: the verifier opens with `O_NOFOLLOW|O_CLOEXEC`, bounds the read to the maximum PRA1 size, checks the complete format digest, sorted event IDs, AUD1 payloads, and key/value identity, then reports only the event count.
+
 - Regression: the process test verifies an independently generated valid archive and rejects a modified digest while preserving the archive bytes. CLI help includes the verifier operation.
 - Verification: the focused process test and full `bootstrap_binary` target passed. Workspace build/fmt/Clippy, release build/profile validation (10 engine binaries and 1 query fixture), TinyCC tests/fixture, delegated cgroup capability probe, full serial delegated-cgroup workspace suite (zero ignored tests), release-profile CLI help, and `git diff --check` passed.
 - Remaining: external asynchronous sink delivery, job registries, retained-byte/cache telemetry, additional wait categories, and broader pressure testing remain open.
+
+## OM-6 optional local JSONL audit sink — implemented slice
+
+- Contract: when `PRDB_AUDIT_JSONL_PATH` is configured with an absolute path, the supervisor drains the durable AUDIT outbox in bounded batches. It syncs each mode-0600 JSONL line before recording its STATS delivery marker. Failures retain pending AUDIT events; a crash between sink sync and marker commit can replay a duplicate keyed by `event_id`. Sink changes replay retained history, and offline archival removes corresponding markers atomically.
+- Implementation: added a private, no-follow, single-link sink with nonblocking file locking and recovery of a partial final line. Supervisor retries every second without changing committed request outcomes. JSON contains only IDs, timestamp and numeric action/result codes. Updated [operational metadata](../../specs/operational-metadata.md) with format, retry, security and Landlock behavior.
+- Regression: first observed the focused integration test fail because `audit_sink` did not exist. Real-redb tests cover durable delivery, repeat suppression, replay on sink change, sink failure retention, partial-line recovery, private permissions and absolute-path validation. A real supervisor/gateway process test checks delivery of a failed-authentication event; archive coverage verifies pruning removes markers atomically.
+- Verification: pinned toolchain versions matched; workspace build, fmt, warning-denied Clippy, and release build passed. TinyCC SDK tests and the sandbox fixture passed; release profile validated 10 engine binaries and 1 query fixture. The delegated cgroup probe passed with writable `cpu memory pids`; the full serial delegated-cgroup workspace suite passed with zero ignored tests. Focused sink tests, archive marker test, release-profile validation, and `git diff --check` passed.
+- Remaining: remote sink integrations, job registries, retained-byte/cache telemetry, additional wait categories, and broader pressure testing remain open.

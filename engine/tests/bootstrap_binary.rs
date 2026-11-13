@@ -236,6 +236,11 @@ fn audit_archive_is_durable_before_events_are_removed_and_refuses_overwrite()
         }
     }
     write.commit()?;
+    let sink_path = fixture.0.join("audit.jsonl");
+    assert_eq!(
+        prdb_engine::audit_sink::deliver_jsonl_batch(instance.database(), &sink_path, 8)?,
+        3
+    );
     drop(instance);
 
     let archive_path = fixture.0.join("audit.archive");
@@ -262,6 +267,17 @@ fn audit_archive_is_durable_before_events_are_removed_and_refuses_overwrite()
         reopened.database().begin_read()?.open_table(AUDIT)?.len()?,
         0
     );
+    let read = reopened.database().begin_read()?;
+    let stats = read.open_table(prdb_engine::schema::STATS)?;
+    assert!(!stats.iter()?.any(|entry| {
+        entry
+            .expect("valid stats row")
+            .0
+            .value()
+            .starts_with(b"audit_sink_delivered_v1:")
+    }));
+    drop(stats);
+    drop(read);
     assert!(matches!(
         reopened.archive_audit_events(fixture.instance_dir().join("inside.archive")),
         Err(prdb_engine::bootstrap::AuditArchiveError::InvalidOutputPath)

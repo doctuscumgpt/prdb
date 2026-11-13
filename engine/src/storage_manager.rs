@@ -2499,6 +2499,10 @@ pub(crate) fn clear_uncertain_database_key(database_key: usize) {
 }
 
 impl<'db> StorageManager<'db> {
+    pub(crate) fn database(&self) -> &'db Database {
+        self.database
+    }
+
     /// Prune one bounded batch of expired durable outcomes. Storage failures
     /// quarantine this database handle; the owning service must reopen it.
     pub(crate) fn prune_expired_outcomes(
