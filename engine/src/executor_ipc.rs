@@ -540,15 +540,29 @@ pub enum ScanIndexRangeResponse {
 impl ScanIndexRangeResponse {
     const MAX_ROWS: usize = 1_024;
 
+    fn unavailable_payload() -> Vec<u8> {
+        generated::encode_index_range_response_unavailable_record(
+            generated::INDEX_RANGE_RESPONSE_VERSION,
+            0,
+        )
+        .to_vec()
+    }
+
     pub fn encode(&self) -> Result<Vec<u8>, ExecutorRequestError> {
         let Self::Rows(rows) = self else {
-            return Ok(vec![1, 0]);
+            return Ok(Self::unavailable_payload());
         };
         if rows.len() > Self::MAX_ROWS {
-            return Ok(vec![1, 0]);
+            return Ok(Self::unavailable_payload());
         }
-        let mut payload = vec![1, 1];
-        payload.extend_from_slice(&(rows.len() as u16).to_be_bytes());
+        let row_count =
+            u16::try_from(rows.len()).map_err(|_| ExecutorRequestError::InvalidPayload)?;
+        let mut payload = generated::encode_index_range_response_rows_record(
+            generated::INDEX_RANGE_RESPONSE_VERSION,
+            1,
+            row_count,
+        )
+        .to_vec();
         for row in rows {
             if row.len() > crate::tuple::MAX_COLUMNS {
                 return Err(ExecutorRequestError::InvalidPayload);
@@ -559,36 +573,40 @@ impl ScanIndexRangeResponse {
             for cell in row {
                 if encode_sanitized_cell(&mut payload, cell, crate::ipc::MAX_PAYLOAD_BYTES).is_err()
                 {
-                    return Ok(vec![1, 0]);
+                    return Ok(Self::unavailable_payload());
                 }
             }
         }
         if payload.len() > crate::ipc::MAX_PAYLOAD_BYTES {
-            Ok(vec![1, 0])
+            Ok(Self::unavailable_payload())
         } else {
             Ok(payload)
         }
     }
 
     pub fn decode(payload: &[u8]) -> Result<Self, ExecutorRequestError> {
-        if payload.len() < 2 || payload.len() > crate::ipc::MAX_PAYLOAD_BYTES || payload[0] != 1 {
+        if payload.len() < 2
+            || payload.len() > crate::ipc::MAX_PAYLOAD_BYTES
+            || payload[0] != generated::INDEX_RANGE_RESPONSE_VERSION
+        {
             return Err(ExecutorRequestError::InvalidPayload);
         }
-        if payload[1] == 0 && payload.len() == 2 {
+        if generated::decode_index_range_response_unavailable_record(payload)
+            == Some((generated::INDEX_RANGE_RESPONSE_VERSION, 0))
+        {
             return Ok(Self::Unavailable);
         }
-        if payload[1] != 1 || payload.len() < 4 {
+        let (version, status, row_count) =
+            generated::decode_index_range_response_rows_record(payload)
+                .ok_or(ExecutorRequestError::InvalidPayload)?;
+        if version != generated::INDEX_RANGE_RESPONSE_VERSION || status != 1 {
             return Err(ExecutorRequestError::InvalidPayload);
         }
-        let row_count = usize::from(u16::from_be_bytes(
-            payload[2..4]
-                .try_into()
-                .map_err(|_| ExecutorRequestError::InvalidPayload)?,
-        ));
+        let row_count = usize::from(row_count);
         if row_count > Self::MAX_ROWS {
             return Err(ExecutorRequestError::InvalidPayload);
         }
-        let mut offset: usize = 4;
+        let mut offset: usize = generated::INDEX_RANGE_RESPONSE_ROWS_RECORD_HEADER_BYTES as usize;
         let mut rows = Vec::with_capacity(row_count);
         for _ in 0..row_count {
             let count_end = offset
@@ -1876,9 +1894,12 @@ mod cancellation_response_tests {
             SanitizedCell::Redacted,
         ]]);
         let encoded = response.encode().unwrap();
+        assert_eq!(&encoded[..4], &[1, 1, 0, 1]);
         assert_eq!(ScanIndexRangeResponse::decode(&encoded).unwrap(), response);
+        let unavailable = ScanIndexRangeResponse::Unavailable.encode().unwrap();
+        assert_eq!(unavailable, [1, 0]);
         assert_eq!(
-            ScanIndexRangeResponse::decode(&[1, 0]).unwrap(),
+            ScanIndexRangeResponse::decode(&unavailable).unwrap(),
             ScanIndexRangeResponse::Unavailable
         );
         assert!(ScanIndexRangeResponse::decode(&[1, 2]).is_err());

@@ -1,5 +1,13 @@
 # Internal IPC Progress
 
+## IPC-2 follow-up: generated index-range response headers — implemented
+
+- Contract: `0x1115` returns either the exact v1 unavailable record `{version:u8=1,status:u8=0}` or the rows prefix `{version:u8=1,status:u8=1,row_count:u16be}` followed by sanitized rows.
+- Implementation: added shared Rust/C codecs for both response headers. Rust response encoding/decoding and the TinyCC SDK parser now use generated codecs while retaining status, row-count, cell, payload-size, and no-partial-page validation. Updated the IPC specification with the byte layout.
+- Regression: the Rust wire test checks the exact rows prefix and unavailable bytes; ABI generator tests require the generated declarations/codecs, and the TinyCC SDK fixture exercises the C parser.
+- Verification: locked workspace build, formatting check, warning-denied Clippy, maintained TinyCC SDK tests, sandbox query fixture build, and the full serial workspace suite inside the delegated user service passed; all test targets reported zero ignored tests. `git diff --check` passed.
+- Remaining: SDK consumption, optimizer selection, end-to-end optimized/reference result and error equivalence, and broader malformed process-level IPC coverage remain open.
+
 ## IPC-2 follow-up: bounded executor index range request — verified
 
 - Behavior: executor operation `0x1115` accepts at least one typed leading-key bound and selected columns; storage revalidates the relation, catalog index, key readability, row policy, and staged-write visibility. Results expose sanitized cells only and return `unavailable` rather than a partial or oversized payload.

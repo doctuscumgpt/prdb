@@ -1913,6 +1913,62 @@ static inline int prdb_decode_executor_batch_row_record(const uint8_t *payload, 
     return 1;
 }
 
+static inline void prdb_encode_index_range_response_unavailable_record(uint8_t payload[2],
+    uint8_t version, uint8_t status) {
+    payload[0] = version;
+    payload[1] = status;
+}
+
+static inline int prdb_decode_index_range_response_unavailable_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *version, uint8_t *status) {
+    if (payload == NULL || payload_len != 2) {
+        return 0;
+    }
+    if (version == NULL) {
+        return 0;
+    }
+    *version = payload[0];
+    if (status == NULL) {
+        return 0;
+    }
+    *status = payload[1];
+    return 1;
+}
+
+static inline void prdb_encode_index_range_response_rows_record(uint8_t payload[4],
+    uint8_t version, uint8_t status, uint16_t row_count) {
+    payload[0] = version;
+    payload[1] = status;
+    uint64_t row_count_wire = (uint64_t)row_count;
+    for (size_t i = 0; i < 2; ++i) {
+        payload[2 + i] = (uint8_t)(row_count_wire >> ((2 - 1 - i) * 8));
+    }
+}
+
+static inline int prdb_decode_index_range_response_rows_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *version, uint8_t *status, uint16_t *row_count) {
+    if (payload == NULL || payload_len < 4) {
+        return 0;
+    }
+    if (version == NULL) {
+        return 0;
+    }
+    *version = payload[0];
+    if (status == NULL) {
+        return 0;
+    }
+    *status = payload[1];
+    if (row_count == NULL) {
+        return 0;
+    }
+    uint64_t row_count_wire_value = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        row_count_wire_value = (row_count_wire_value << 8) | payload[2 + i];
+    }
+    *row_count = (uint16_t)row_count_wire_value;
+    return 1;
+}
+
 static inline void prdb_encode_sanitized_cell_tag_record(uint8_t payload[1],
     uint8_t state_code) {
     payload[0] = state_code;
