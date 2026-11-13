@@ -199,6 +199,56 @@ fn abrupt_process_exit_after_bootstrap_commit_recovers_before_ready() {
 }
 
 #[test]
+fn bootstrap_child_exits_after_resume_token_rotation() {
+    let Some(marker_path) = std::env::var_os("PRDB_TEST_BOOTSTRAP_ROTATION_MARKER") else {
+        return;
+    };
+    let directory = std::env::var_os("PRDB_TEST_BOOTSTRAP_ROTATION_DIRECTORY")
+        .expect("child process receives the bootstrap directory");
+    let session = resume(directory, "rotation_admin", expiry()).unwrap();
+    let mut marker = std::fs::File::create(marker_path).unwrap();
+    marker.write_all(&session.token_id()).unwrap();
+    marker.sync_all().unwrap();
+    unsafe { libc::_exit(78) }
+}
+
+#[test]
+fn abrupt_exit_after_token_rotation_revokes_unclaimed_credential_on_retry() {
+    let fixture = Fixture::new();
+    let initial = initialize(&fixture.0, "rotation_admin", expiry()).unwrap();
+    let original_token_id = initial.token_id();
+    drop(initial);
+
+    let marker_path = fixture.0.with_extension("rotated-token-id");
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "bootstrap_child_exits_after_resume_token_rotation",
+        ])
+        .env("PRDB_TEST_BOOTSTRAP_ROTATION_MARKER", &marker_path)
+        .env("PRDB_TEST_BOOTSTRAP_ROTATION_DIRECTORY", &fixture.0)
+        .status()
+        .unwrap();
+    assert_eq!(child.code(), Some(78));
+    let unclaimed_token_id: [u8; 16] = std::fs::read(&marker_path)
+        .unwrap()
+        .try_into()
+        .expect("child recorded exactly one rotated token ID");
+
+    let mut retried = resume(&fixture.0, "rotation_admin", expiry()).unwrap();
+    assert_ne!(retried.token_id(), unclaimed_token_id);
+    assert!(verifier_revoked(retried.database(), original_token_id));
+    assert!(verifier_revoked(retried.database(), unclaimed_token_id));
+    let mut secret = retried.take_secret().unwrap();
+    secret.zeroize();
+    let ready = retried.acknowledge().unwrap();
+    assert!(validate_persisted_records(ready.database()).is_ok());
+    drop(ready);
+    let reopened = StorageInstance::open(&fixture.0).unwrap();
+    assert!(validate_persisted_records(reopened.database()).is_ok());
+}
+
+#[test]
 fn ready_storage_instance_can_run_explicit_compaction() {
     let fixture = Fixture::new();
     let mut bootstrap = initialize(&fixture.0, "compact_admin", expiry()).unwrap();

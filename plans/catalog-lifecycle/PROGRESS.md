@@ -34,3 +34,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: `abrupt_process_exit_after_bootstrap_commit_recovers_before_ready` starts a child test process, initializes the database, syncs a private token-ID marker, then calls `_exit` without running Rust destructors. The parent resumes the same directory, verifies the original verifier is revoked, acknowledges the replacement credential, and reopens the validated READY image.
 - Verification: the focused subprocess regression passed under the pinned Nix toolchain. This is abrupt process-exit evidence with the kernel and filesystem alive; it does not establish power-loss behavior.
 - Remaining: transaction-boundary fault injection for actual durability failures, additional handoff interruption points, and offline upgrade/recovery workflows remain open.
+
+## CL-2 follow-up: retry after abrupt exit at token-rotation commit — verified
+
+- Contract: if resume commits a replacement verifier but the replacement secret is not delivered, another resume must revoke that unclaimed credential and issue a fresh token while keeping the database INITIALIZING.
+- Regression: `abrupt_exit_after_token_rotation_revokes_unclaimed_credential_on_retry` starts from an INITIALIZING database, has a child process rotate the token and `_exit` before handoff, then resumes again. It verifies both the original and unclaimed replacement verifiers are revoked, the second replacement differs, and READY validation succeeds only after acknowledgement.
+- Verification: the focused subprocess regression passed under the pinned Nix toolchain. Abrupt process exit leaves the kernel and filesystem alive; this is not power-loss evidence.
+- Remaining: fault injection during redb commit/sync, further handoff interruption points, and offline upgrade/recovery workflows remain open.
