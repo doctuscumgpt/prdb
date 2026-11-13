@@ -126,6 +126,62 @@ pub struct AdministrativeConstraint {
     pub referenced_column_ids: Vec<[u8; 16]>,
 }
 
+/// Privilege names exposed by administrative grant descriptions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdministrativeGrantPrivilege {
+    Select,
+    Insert,
+    Update,
+    Delete,
+    References,
+    Alter,
+    Index,
+    ManagePolicies,
+    ManageGrants,
+}
+
+impl AdministrativeGrantPrivilege {
+    pub fn as_wire_name(self) -> &'static str {
+        match self {
+            Self::Select => "select",
+            Self::Insert => "insert",
+            Self::Update => "update",
+            Self::Delete => "delete",
+            Self::References => "references",
+            Self::Alter => "alter",
+            Self::Index => "index",
+            Self::ManagePolicies => "manage_policies",
+            Self::ManageGrants => "manage_grants",
+        }
+    }
+}
+
+/// Target scope for one direct object grant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdministrativeGrantTargetScope {
+    Object,
+    Column,
+}
+
+impl AdministrativeGrantTargetScope {
+    pub fn as_wire_name(self) -> &'static str {
+        match self {
+            Self::Object => "object",
+            Self::Column => "column",
+        }
+    }
+}
+
+/// One direct table or column grant, including its grantor provenance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdministrativeGrant {
+    pub grantee_id: [u8; 16],
+    pub grantor_id: [u8; 16],
+    pub privilege: AdministrativeGrantPrivilege,
+    pub target_scope: AdministrativeGrantTargetScope,
+    pub target_id: [u8; 16],
+}
+
 /// The declared column shape of one discoverable relation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VisibleRelationSchema {

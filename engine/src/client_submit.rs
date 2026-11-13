@@ -1371,6 +1371,108 @@ impl AdminClient {
         })
     }
 
+    /// Return one page of direct grants on an administratively visible table.
+    /// The response contains IDs and grantor provenance, never principal names.
+    pub fn list_grants_page(
+        &mut self,
+        schema_id: [u8; 16],
+        table_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<MetadataPage<crate::metadata_discovery::AdministrativeGrant>, ClientSubmitError>
+    {
+        validate_metadata_page_request(page_limit, cursor)?;
+        let arguments = format!(
+            "{{\"schema_id\":\"{}\",\"table_id\":\"{}\",{}}}",
+            lower_hex(&schema_id),
+            lower_hex(&table_id),
+            metadata_page_arguments_fields(page_limit, cursor)
+        );
+        let (records, next_cursor) =
+            request_metadata_page(&mut self.transport, "metadata.grants.list", arguments)?;
+        let records = discovery_records(records)?;
+        let mut grants = Vec::with_capacity(records.len());
+        let mut previous_key = None;
+        for mut record in records {
+            if record.len() != 5 {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let grantee_id = response_id(&record, "grantee_id")?;
+            let grantor_id = response_id(&record, "grantor_id")?;
+            let privilege = match record.remove("privilege") {
+                Some(ResponseValue::String(value)) => match value.as_str() {
+                    "select" => crate::metadata_discovery::AdministrativeGrantPrivilege::Select,
+                    "insert" => crate::metadata_discovery::AdministrativeGrantPrivilege::Insert,
+                    "update" => crate::metadata_discovery::AdministrativeGrantPrivilege::Update,
+                    "delete" => crate::metadata_discovery::AdministrativeGrantPrivilege::Delete,
+                    "references" => {
+                        crate::metadata_discovery::AdministrativeGrantPrivilege::References
+                    }
+                    "alter" => crate::metadata_discovery::AdministrativeGrantPrivilege::Alter,
+                    "index" => crate::metadata_discovery::AdministrativeGrantPrivilege::Index,
+                    "manage_policies" => {
+                        crate::metadata_discovery::AdministrativeGrantPrivilege::ManagePolicies
+                    }
+                    "manage_grants" => {
+                        crate::metadata_discovery::AdministrativeGrantPrivilege::ManageGrants
+                    }
+                    _ => return Err(ClientSubmitError::InvalidResponse),
+                },
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let target_scope = match record.remove("target_scope") {
+                Some(ResponseValue::String(value)) if value == "object" => {
+                    crate::metadata_discovery::AdministrativeGrantTargetScope::Object
+                }
+                Some(ResponseValue::String(value)) if value == "column" => {
+                    crate::metadata_discovery::AdministrativeGrantTargetScope::Column
+                }
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let target_id = response_id(&record, "target_id")?;
+            let object_scope =
+                target_scope == crate::metadata_discovery::AdministrativeGrantTargetScope::Object;
+            let column_privilege = matches!(
+                privilege,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::Select
+                    | crate::metadata_discovery::AdministrativeGrantPrivilege::Insert
+                    | crate::metadata_discovery::AdministrativeGrantPrivilege::Update
+                    | crate::metadata_discovery::AdministrativeGrantPrivilege::References
+            );
+            if (object_scope && target_id != table_id) || (!object_scope && !column_privilege) {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let privilege_order = match privilege {
+                crate::metadata_discovery::AdministrativeGrantPrivilege::Select => 2,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::Insert => 3,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::Update => 4,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::Delete => 5,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::References => 6,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::Alter => 8,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::Index => 9,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::ManagePolicies => 10,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::ManageGrants => 11,
+            };
+            let scope_order = if object_scope { 1 } else { 2 };
+            let key = (grantee_id, privilege_order, scope_order, target_id);
+            if previous_key.is_some_and(|previous| previous >= key) {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            previous_key = Some(key);
+            grants.push(crate::metadata_discovery::AdministrativeGrant {
+                grantee_id,
+                grantor_id,
+                privilege,
+                target_scope,
+                target_id,
+            });
+        }
+        Ok(MetadataPage {
+            records: grants,
+            next_cursor,
+        })
+    }
+
     /// Create a login identity. New users have no credential until a token is issued.
     pub fn create_user(&mut self, name: &str) -> Result<AdminIdentityResult, ClientSubmitError> {
         self.create_identity("users.create", name, "user_id")
@@ -3117,6 +3219,7 @@ fn discovery_page_value(
         "metadata.columns.list" => "columns",
         "metadata.indexes.list" => "indexes",
         "metadata.constraints.list" => "constraints",
+        "metadata.grants.list" => "grants",
         _ => return Err(ClientSubmitError::InvalidResponse),
     };
     let mut fields = parse_flat_response(payload)?;

@@ -355,6 +355,10 @@ enum MetadataPageQuery {
         schema_id: [u8; 16],
         relation_id: [u8; 16],
     },
+    Grants {
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -364,6 +368,7 @@ enum MetadataPageRows {
     Columns(Vec<crate::metadata_discovery::VisibleColumn>),
     Indexes(Vec<crate::metadata_discovery::AdministrativeIndex>),
     Constraints(Vec<crate::metadata_discovery::AdministrativeConstraint>),
+    Grants(Vec<crate::metadata_discovery::AdministrativeGrant>),
 }
 
 impl MetadataPageRows {
@@ -374,6 +379,7 @@ impl MetadataPageRows {
             Self::Columns(rows) => rows.len(),
             Self::Indexes(rows) => rows.len(),
             Self::Constraints(rows) => rows.len(),
+            Self::Grants(rows) => rows.len(),
         }
     }
 
@@ -396,6 +402,7 @@ impl MetadataPageRows {
                 .map(|index| index.index_id)
                 .eq(right.iter().map(|index| index.index_id)),
             (Self::Constraints(left), Self::Constraints(right)) => left == right,
+            (Self::Grants(left), Self::Grants(right)) => left == right,
             _ => false,
         }
     }
@@ -454,6 +461,12 @@ pub enum ClientAdminRead {
         page_limit: usize,
         cursor: Option<[u8; 16]>,
     },
+    ListGrantsPage {
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<[u8; 16]>,
+    },
     ListTokens {
         user_id: [u8; 16],
         after_token_id: Option<[u8; 16]>,
@@ -492,6 +505,12 @@ pub enum ClientAdminCommand {
         cursor: Option<[u8; 16]>,
     },
     ListConstraintsPage {
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<[u8; 16]>,
+    },
+    ListGrantsPage {
         schema_id: [u8; 16],
         relation_id: [u8; 16],
         page_limit: usize,
@@ -721,6 +740,17 @@ pub fn decode_client_admin_read(payload: &[u8]) -> Result<ClientAdminRead, Clien
             page_limit,
             cursor,
         } => Ok(ClientAdminRead::ListConstraintsPage {
+            schema_id,
+            relation_id,
+            page_limit,
+            cursor,
+        }),
+        ClientAdminCommand::ListGrantsPage {
+            schema_id,
+            relation_id,
+            page_limit,
+            cursor,
+        } => Ok(ClientAdminRead::ListGrantsPage {
             schema_id,
             relation_id,
             page_limit,
@@ -1001,6 +1031,35 @@ pub fn decode_client_admin_command(
                 return Err(ClientControlError::UnknownKey);
             }
             Ok(ClientAdminCommand::ListConstraintsPage {
+                schema_id,
+                relation_id,
+                page_limit: pagination.page_limit,
+                cursor: pagination.cursor,
+            })
+        }
+        Some("read")
+            if version == Some(1) && operation.as_deref() == Some("metadata.grants.list") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let schema_id = decode_lower_hex_id(
+                &args
+                    .remove("schema_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let relation_id = decode_lower_hex_id(
+                &args
+                    .remove("table_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let pagination =
+                decode_metadata_pagination(&mut args)?.ok_or(ClientControlError::MissingKey)?;
+            if !args.is_empty() {
+                return Err(ClientControlError::UnknownKey);
+            }
+            Ok(ClientAdminCommand::ListGrantsPage {
                 schema_id,
                 relation_id,
                 page_limit: pagination.page_limit,
@@ -3698,6 +3757,21 @@ impl ClientConnectionSession {
                 page_limit,
                 cursor,
             ),
+            ClientAdminCommand::ListGrantsPage {
+                schema_id,
+                relation_id,
+                page_limit,
+                cursor,
+            } => self.handle_metadata_discovery_page(
+                storage,
+                request.request_id,
+                MetadataPageQuery::Grants {
+                    schema_id,
+                    relation_id,
+                },
+                page_limit,
+                cursor,
+            ),
             ClientAdminCommand::ListTokens {
                 user_id,
                 after_token_id,
@@ -6291,6 +6365,20 @@ impl ClientConnectionSession {
                         .map_err(ClientSessionError::Storage)?
                         .unwrap_or_default(),
                 ),
+                MetadataPageQuery::Grants {
+                    schema_id,
+                    relation_id,
+                } => MetadataPageRows::Grants(
+                    storage
+                        .discover_token_administrative_grants(
+                            token_id,
+                            &secret,
+                            *schema_id,
+                            *relation_id,
+                        )
+                        .map_err(ClientSessionError::Storage)?
+                        .unwrap_or_default(),
+                ),
             };
             if !current_snapshot
                 .is_some_and(|snapshot| snapshot.rows.has_same_object_ids(&current_rows))
@@ -6353,6 +6441,20 @@ impl ClientConnectionSession {
                 } => MetadataPageRows::Constraints(
                     storage
                         .discover_token_administrative_constraints(
+                            token_id,
+                            &secret,
+                            *schema_id,
+                            *relation_id,
+                        )
+                        .map_err(ClientSessionError::Storage)?
+                        .unwrap_or_default(),
+                ),
+                MetadataPageQuery::Grants {
+                    schema_id,
+                    relation_id,
+                } => MetadataPageRows::Grants(
+                    storage
+                        .discover_token_administrative_grants(
                             token_id,
                             &secret,
                             *schema_id,
@@ -6851,6 +6953,7 @@ fn encode_metadata_page(
         MetadataPageQuery::Columns { .. } => String::from("{\"columns\":["),
         MetadataPageQuery::Indexes { .. } => String::from("{\"indexes\":["),
         MetadataPageQuery::Constraints { .. } => String::from("{\"constraints\":["),
+        MetadataPageQuery::Grants { .. } => String::from("{\"grants\":["),
     };
     for index in start..end {
         if index != start {
@@ -6940,6 +7043,20 @@ fn encode_metadata_page(
                     output.push('"');
                 }
                 output.push_str("]}");
+            }
+            (MetadataPageQuery::Grants { .. }, MetadataPageRows::Grants(rows)) => {
+                let row = rows.get(index).ok_or(ClientSessionError::ResourceLimit)?;
+                output.push_str("{\"grantee_id\":\"");
+                output.push_str(&encode_lower_hex_id(row.grantee_id));
+                output.push_str("\",\"grantor_id\":\"");
+                output.push_str(&encode_lower_hex_id(row.grantor_id));
+                output.push_str("\",\"privilege\":\"");
+                output.push_str(row.privilege.as_wire_name());
+                output.push_str("\",\"target_scope\":\"");
+                output.push_str(row.target_scope.as_wire_name());
+                output.push_str("\",\"target_id\":\"");
+                output.push_str(&encode_lower_hex_id(row.target_id));
+                output.push_str("\"}");
             }
             _ => return Err(ClientSessionError::ResourceLimit),
         }

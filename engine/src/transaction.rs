@@ -3591,6 +3591,132 @@ impl<'db> InvocationTransaction<'db> {
         Ok(Some(descriptions))
     }
 
+    /// Describe direct table and column grants to a current schema owner or
+    /// database administrator. Principal names and inherited grants are not
+    /// part of this direct-provenance view.
+    pub(crate) fn list_catalog_administrative_grants(
+        &mut self,
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+    ) -> Result<Option<Vec<crate::metadata_discovery::AdministrativeGrant>>, TransactionError> {
+        let roles = self.load_catalog_role_closure(self.principal_id)?;
+        if !self.has_schema_metadata_authority(schema_id, &roles)? {
+            return Ok(None);
+        }
+        let table_key = catalog_id_key(5, relation_id);
+        let Some(table) = self.read_catalog_record(&table_key)? else {
+            return Ok(None);
+        };
+        if table.family_code != 5 || catalog_id(&table, 1)? != schema_id {
+            return Ok(None);
+        }
+        self.read_discovery_relation(schema_id, relation_id)?;
+        let schema = self.load_catalog_table_schema(relation_id)?;
+        let columns = schema.column_ids.iter().copied().collect::<HashSet<_>>();
+        let records = self
+            .pinned_snapshot()?
+            .lookup_grants_for_object(relation_id)
+            .map_err(|error| match error {
+                SnapshotError::Storage(error) => TransactionError::Storage(error),
+                _ => TransactionError::CorruptCatalog,
+            })?;
+        self.charge_scan_work(records.len())?;
+        let mut descriptions = Vec::with_capacity(records.len());
+        let mut encoded_bytes = 0usize;
+        for record in records {
+            let key = &record.logical_key;
+            if record.family_code != 12
+                || key.len() != 59
+                || key[0..2] != 12u16.to_be_bytes()
+                || key[2] != 1
+                || key[19] != 1
+                || key[20..36] != relation_id
+                || key[36] != 1
+                || key[39] != 1
+                || key[42] != 1
+            {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            let grantee_id: [u8; 16] = key[3..19]
+                .try_into()
+                .map_err(|_| TransactionError::CorruptCatalog)?;
+            let privilege_code = u16::from_be_bytes([key[37], key[38]]);
+            let scope_code = u16::from_be_bytes([key[40], key[41]]);
+            let target_id: [u8; 16] = key[43..59]
+                .try_into()
+                .map_err(|_| TransactionError::CorruptCatalog)?;
+            if grantee_id == [0; 16] || target_id == [0; 16] {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            let grantor_id = catalog_id(&record, 1)?;
+            if grantor_id == [0; 16] || catalog_u64(&record, 2)? == 0 {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            for principal_id in [grantee_id, grantor_id] {
+                let principal = self
+                    .read_catalog_record(&catalog_id_key(10, principal_id))?
+                    .ok_or(TransactionError::CorruptCatalog)?;
+                if principal.family_code != 10 {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+            }
+            let privilege = match privilege_code {
+                2 => crate::metadata_discovery::AdministrativeGrantPrivilege::Select,
+                3 => crate::metadata_discovery::AdministrativeGrantPrivilege::Insert,
+                4 => crate::metadata_discovery::AdministrativeGrantPrivilege::Update,
+                5 => crate::metadata_discovery::AdministrativeGrantPrivilege::Delete,
+                6 => crate::metadata_discovery::AdministrativeGrantPrivilege::References,
+                8 => crate::metadata_discovery::AdministrativeGrantPrivilege::Alter,
+                9 => crate::metadata_discovery::AdministrativeGrantPrivilege::Index,
+                10 => crate::metadata_discovery::AdministrativeGrantPrivilege::ManagePolicies,
+                11 => crate::metadata_discovery::AdministrativeGrantPrivilege::ManageGrants,
+                _ => return Err(TransactionError::CorruptCatalog),
+            };
+            let target_scope = match scope_code {
+                1 if target_id == relation_id => {
+                    crate::metadata_discovery::AdministrativeGrantTargetScope::Object
+                }
+                2 if matches!(privilege_code, 2 | 3 | 4 | 6) && columns.contains(&target_id) => {
+                    crate::metadata_discovery::AdministrativeGrantTargetScope::Column
+                }
+                _ => return Err(TransactionError::CorruptCatalog),
+            };
+            encoded_bytes = encoded_bytes
+                .saturating_add(81)
+                .saturating_add(privilege.as_wire_name().len())
+                .saturating_add(target_scope.as_wire_name().len());
+            if descriptions.len() >= 4096 || encoded_bytes > 1024 * 1024 {
+                return Err(TransactionError::InvalidMetadataRequest);
+            }
+            descriptions.push(crate::metadata_discovery::AdministrativeGrant {
+                grantee_id,
+                grantor_id,
+                privilege,
+                target_scope,
+                target_id,
+            });
+        }
+        descriptions.sort_unstable_by_key(|grant| {
+            let privilege = match grant.privilege {
+                crate::metadata_discovery::AdministrativeGrantPrivilege::Select => 2,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::Insert => 3,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::Update => 4,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::Delete => 5,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::References => 6,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::Alter => 8,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::Index => 9,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::ManagePolicies => 10,
+                crate::metadata_discovery::AdministrativeGrantPrivilege::ManageGrants => 11,
+            };
+            let scope = match grant.target_scope {
+                crate::metadata_discovery::AdministrativeGrantTargetScope::Object => 1,
+                crate::metadata_discovery::AdministrativeGrantTargetScope::Column => 2,
+            };
+            (grant.grantee_id, privilege, scope, grant.target_id)
+        });
+        Ok(Some(descriptions))
+    }
+
     fn has_schema_metadata_authority(
         &mut self,
         schema_id: [u8; 16],

@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SDK-8: administrative direct grant description — verified
+
+- Contract: [client protocol](../../specs/client-protocol.md), [client SDK](../../specs/client-sdk.md), and [metadata discovery](../../specs/metadata-discovery.md). Direct table and column grants are visible only to a current schema owner or database administrator; output retains grantee/grantor IDs and does not expand roles.
+- Implementation: `metadata.grants.list` uses the snapshot's object-grant index, validates direct grant records and table/column targets, and bounds output to 4,096 records and 1 MiB. `AdminClient::list_grants_page` validates grant fields and stable ordering.
+- Regression: fake-client exact-request/typed-response coverage and a production gateway/supervisor process test verify direct column grants, grantor provenance, and empty results for a non-admin hidden table.
+- Verification: the focused fake-client test and production gateway/supervisor process test passed. The full serial workspace suite passed inside the delegated `systemd --user` service with sandbox/process tests enabled and zero ignored. Workspace build, rustfmt check, warning-denied Clippy, and diff checks passed.
+- Remaining: privileged policy and dependency descriptions remain open under MD-6.
+
 ## SDK-7: administrative index description — verified
 
 - Contract: [client protocol](../../specs/client-protocol.md), [client SDK](../../specs/client-sdk.md), and [metadata discovery](../../specs/metadata-discovery.md). Only logical index IDs, ordered column IDs, and uniqueness are exposed to a current schema owner or database administrator.

@@ -807,6 +807,12 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             .records
             .is_empty()
     );
+    assert!(
+        restricted_admin
+            .list_grants_page(restricted_schema_id, restricted_table_id, 128, None)?
+            .records
+            .is_empty()
+    );
     drop(restricted_admin);
 
     let admin_cancel_credentials_path = root.join("admin-cancel.cred");
@@ -1389,6 +1395,26 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         AdminObjectPrivilege::References,
         AdminObjectGrantTarget::Column(created_table.column_ids[0]),
     )?;
+    let administrative_grants = admin.list_grants_page(
+        created_schema.identity_id,
+        created_table.table_id,
+        128,
+        None,
+    )?;
+    assert!(administrative_grants.records.iter().any(|grant| {
+        grant.grantee_id == admin_user_id
+            && grant.grantor_id == admin_user_id
+            && grant.privilege
+                == prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Select
+            && grant.target_scope
+                == prdb_engine::metadata_discovery::AdministrativeGrantTargetScope::Column
+            && grant.target_id == created_table.column_ids[0]
+    }));
+    assert!(administrative_grants.records.iter().any(|grant| {
+        grant.grantee_id == admin_user_id
+            && grant.privilege
+                == prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::References
+    }));
     let foreign_key_cli_address = address.to_string();
     let foreign_key_cli_credentials = admin_cancel_credentials_path
         .to_str()
