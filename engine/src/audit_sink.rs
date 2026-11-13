@@ -57,6 +57,18 @@ pub fn deliver_jsonl_batch(
     path: &Path,
     max_events: usize,
 ) -> Result<usize, AuditSinkError> {
+    deliver_jsonl_batch_with_after_sync(database, path, max_events, |_| Ok(()))
+}
+
+fn deliver_jsonl_batch_with_after_sync<F>(
+    database: &Database,
+    path: &Path,
+    max_events: usize,
+    mut after_sync: F,
+) -> Result<usize, AuditSinkError>
+where
+    F: FnMut(&[u8; 16]) -> Result<(), AuditSinkError>,
+{
     if max_events == 0 || max_events > MAX_BATCH {
         return Err(AuditSinkError::InvalidBatch);
     }
@@ -117,6 +129,7 @@ pub fn deliver_jsonl_batch(
         let line = encode_json_line(&event);
         file.write_all(&line)?;
         file.sync_all()?;
+        after_sync(&event_id)?;
         mark_delivered(database, &event_id)?;
         delivered += 1;
     }
@@ -348,4 +361,79 @@ fn lower_hex(bytes: &[u8]) -> String {
         let _ = write!(output, "{byte:02x}");
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audit::{AuditAction, AuditResult};
+    use crate::schema::{AUDIT, create_tables};
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn synced_line_before_marker_commit_is_replayed_after_database_reopen() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "prdb-audit-sink-crash-window-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).expect("create fixture directory");
+        let database_path = directory.join("database.redb");
+        let sink_path = directory.join("audit.jsonl");
+        let database = Database::create(&database_path).expect("create database");
+        let write = database.begin_write().expect("begin table creation");
+        create_tables(&write).expect("create database tables");
+        {
+            let mut audit = write.open_table(AUDIT).expect("open audit table");
+            let event = AuditEvent {
+                event_id: [0x31; 16],
+                actor_id: Some([0x32; 16]),
+                correlation_id: [0x33; 16],
+                occurred_at_us: 44,
+                action: AuditAction::Ddl,
+                result: AuditResult::Succeeded,
+                target_ids: vec![[0x34; 16]],
+            };
+            audit
+                .insert(
+                    event.event_id.as_slice(),
+                    event.encode().unwrap().as_slice(),
+                )
+                .expect("insert audit event");
+        }
+        write.commit().expect("commit audit event");
+
+        let interrupted = deliver_jsonl_batch_with_after_sync(&database, &sink_path, 1, |_| {
+            Err(AuditSinkError::Storage)
+        });
+        assert!(interrupted.is_err());
+        let synced_line = std::fs::read_to_string(&sink_path).expect("read synced line");
+        assert!(synced_line.ends_with('\n'));
+        assert!(synced_line.contains("31313131313131313131313131313131"));
+
+        drop(database);
+        let database = Database::open(&database_path).expect("reopen database after crash");
+        assert_eq!(
+            deliver_jsonl_batch(&database, &sink_path, 1).expect("retry pending event"),
+            1
+        );
+        let replayed = std::fs::read_to_string(&sink_path).expect("read replayed lines");
+        let lines: Vec<_> = replayed.lines().collect();
+        assert_eq!(lines, [synced_line.trim_end(), synced_line.trim_end()]);
+        assert_eq!(
+            std::fs::metadata(&sink_path)
+                .expect("sink metadata")
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o600
+        );
+
+        drop(database);
+        std::fs::remove_dir_all(directory).expect("remove fixture directory");
+    }
 }
