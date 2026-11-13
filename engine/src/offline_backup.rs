@@ -179,6 +179,16 @@ pub fn verify_backup(
     })
 }
 
+/// Compare a private database image with the exact database bytes recorded by
+/// a previously verified backup manifest.
+pub fn database_image_matches_backup(
+    image_path: impl AsRef<Path>,
+    backup: &BackupVerification,
+) -> Result<bool, OfflineBackupError> {
+    let digest = digest_private_file(image_path.as_ref())?;
+    Ok(digest.length == backup.database_bytes && digest.sha256 == backup.database_sha256)
+}
+
 fn canonical_destination(path: &Path) -> Result<PathBuf, OfflineBackupError> {
     let name = path.file_name().ok_or(OfflineBackupError::InvalidPath)?;
     if name.is_empty() || name == "." || name == ".." {

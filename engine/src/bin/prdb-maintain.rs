@@ -33,7 +33,9 @@ fn print_help() {
          Read-only READY validation and bounded engine metadata diagnostics.\n\
          prdb-maintain migration-inspect --instance-dir PATH\n\
          Validates the active READY image and any private staged image.\n\
-         Stop gateway and supervisor services before compact, audit-archive, or backup."
+         prdb-maintain migration-discard-stage --instance-dir PATH --backup-dir PATH\n\
+         Discards staging only when active bytes match the verified backup.\n\
+         Stop gateway and supervisor services before compact, audit-archive, backup, or migration-discard-stage."
     );
 }
 
@@ -49,7 +51,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut args = std::env::args_os().skip(1);
     let operation = args.next().ok_or(
-        "operation is required: compact, audit-archive, audit-verify, backup, backup-verify, inspect, or migration-inspect",
+        "operation is required: compact, audit-archive, audit-verify, backup, backup-verify, inspect, migration-inspect, or migration-discard-stage",
     )?;
     if operation == "audit-verify" {
         if args.next().as_deref() != Some(std::ffi::OsStr::new("--archive")) {
@@ -201,6 +203,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             staged_meta.builtin_semantics_version,
             staged_meta.commit_sequence,
         );
+        return Ok(());
+    }
+
+    if operation == "migration-discard-stage" {
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--instance-dir")) {
+            return Err("--instance-dir PATH is required".into());
+        }
+        let instance_dir = PathBuf::from(args.next().ok_or("instance directory is required")?);
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--backup-dir")) {
+            return Err("--backup-dir PATH is required".into());
+        }
+        let backup_dir = PathBuf::from(args.next().ok_or("backup directory is required")?);
+        if args.next().is_some() {
+            return Err("unexpected trailing arguments".into());
+        }
+        StorageInstance::discard_unpublished_staging(&instance_dir, &backup_dir)?;
+        println!("staging=discarded active=verified_source");
         return Ok(());
     }
 

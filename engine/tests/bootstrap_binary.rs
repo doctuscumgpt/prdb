@@ -93,6 +93,7 @@ fn maintenance_help_lists_offline_audit_archival() {
     assert!(help.contains("backup-verify --backup-dir PATH"));
     assert!(help.contains("inspect --instance-dir PATH"));
     assert!(help.contains("migration-inspect --instance-dir PATH"));
+    assert!(help.contains("migration-discard-stage --instance-dir PATH --backup-dir PATH"));
 }
 
 #[test]
@@ -163,6 +164,7 @@ fn migration_inspection_validates_active_and_staged_images_without_writing_them(
 
     let active_path = fixture.instance_dir().join("storage.redb");
     let staging_path = fixture.instance_dir().join(".prdb-migration.next");
+    let backup_path = fixture.0.join("verified-backup");
     std::fs::copy(&active_path, &staging_path).expect("prepare staged image");
     std::fs::set_permissions(&staging_path, std::fs::Permissions::from_mode(0o600))
         .expect("make staged image private");
@@ -202,6 +204,83 @@ fn migration_inspection_validates_active_and_staged_images_without_writing_them(
         .expect("attempt migration inspection while instance is owned");
     assert!(!rejected.status.success());
     drop(live);
+
+    prdb_engine::offline_backup::create_verified_backup(fixture.instance_dir(), &backup_path)
+        .expect("create source backup after closing writer");
+    let active_before_discard =
+        std::fs::read(&active_path).expect("read active source before discard");
+
+    let discarded = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-discard-stage", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--backup-dir")
+        .arg(&backup_path)
+        .output()
+        .expect("discard verified unpublished stage");
+    assert!(
+        discarded.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&discarded.stderr)
+    );
+    assert!(
+        !staging_path.exists(),
+        "verified unpublished staging image should be removed"
+    );
+    assert_eq!(
+        std::fs::read(&active_path).expect("reread active image"),
+        active_before_discard,
+        "discard must preserve active source bytes"
+    );
+}
+
+#[test]
+fn migration_stage_discard_rejects_an_unrelated_verified_backup() {
+    let active_fixture = Fixture::new();
+    let other_fixture = Fixture::new();
+    for (fixture, name) in [
+        (&active_fixture, "discard_source_admin"),
+        (&other_fixture, "discard_other_admin"),
+    ] {
+        let mut session =
+            prdb_engine::bootstrap::initialize(fixture.instance_dir(), name, i64::MAX)
+                .expect("initialize discard fixture");
+        let mut secret = session.take_secret().expect("bootstrap secret");
+        use zeroize::Zeroize;
+        secret.zeroize();
+        drop(session.acknowledge().expect("publish READY"));
+    }
+    let active_path = active_fixture.instance_dir().join("storage.redb");
+    let staging_path = active_fixture.instance_dir().join(".prdb-migration.next");
+    std::fs::copy(&active_path, &staging_path).expect("prepare staged image");
+    std::fs::set_permissions(&staging_path, std::fs::Permissions::from_mode(0o600))
+        .expect("make staged image private");
+    let backup_path = other_fixture.0.join("unrelated-backup");
+    prdb_engine::offline_backup::create_verified_backup(other_fixture.instance_dir(), &backup_path)
+        .expect("create unrelated source backup");
+
+    let live = StorageInstance::open(active_fixture.instance_dir()).expect("hold instance lock");
+    let locked = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-discard-stage", "--instance-dir"])
+        .arg(active_fixture.instance_dir())
+        .arg("--backup-dir")
+        .arg(&backup_path)
+        .output()
+        .expect("attempt discard while instance is owned");
+    assert!(!locked.status.success());
+    drop(live);
+
+    let rejected = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-discard-stage", "--instance-dir"])
+        .arg(active_fixture.instance_dir())
+        .arg("--backup-dir")
+        .arg(&backup_path)
+        .output()
+        .expect("attempt discard with unrelated backup");
+    assert!(!rejected.status.success());
+    assert!(staging_path.exists(), "failed discard must retain staging");
+    drop(
+        StorageInstance::open(active_fixture.instance_dir()).expect("active source remains READY"),
+    );
 }
 
 #[test]

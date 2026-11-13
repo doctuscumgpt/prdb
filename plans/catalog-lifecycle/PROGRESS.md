@@ -98,3 +98,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - `prdb-maintain migration-inspect` can now inspect a v1 active source while normal service startup continues to reject it. A regression converts an initialized fixture to the exact v1 metadata/descriptor shape, verifies the full source walk, checks current startup rejection, and confirms the CLI diagnostic.
 - This proves source integrity but does not resolve v1's missing tombstone history or perform the v1-to-v2 conversion.
 - Verification: pinned-shell format check, locked workspace build, warning-denied all-target Clippy, and full serial workspace suite inside the delegated `systemd --user` service passed. Sandbox integration ran with zero ignored tests; `git diff --check` passed.
+
+## CL-5 recovery command: discard an unpublished staged image — implemented slice
+
+- `prdb-maintain migration-discard-stage --instance-dir PATH --backup-dir PATH` removes `.prdb-migration.next` only when the active image is byte-for-byte identical to a verified backup, its database ID/frontier matches the backup, and the staged READY image matches the same ID/frontier. Both images use read-only redb validation under the exclusive instance lock; the directory is synced after removal.
+- A transformed sidecar retained after publication cannot pass the active-byte comparison, so this command cannot erase the old source generation. It does not select or restore generations.
+- Regression covers successful removal while preserving active bytes, rejection of an unrelated verified backup without removing staging, and rejection while an instance owner holds the lock.
+- Focused discard process tests passed. Pinned-shell format check, locked workspace build, warning-denied all-target Clippy, and the full serial workspace suite passed inside the delegated `systemd --user` unit with sandbox tests enabled and zero ignored tests. `git diff --check` passed.

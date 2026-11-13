@@ -582,6 +582,55 @@ impl StorageInstance {
         })
     }
 
+    /// Discard a validated staging image only when the active file still
+    /// matches the independently verified source backup byte-for-byte.
+    #[cfg(target_os = "linux")]
+    pub fn discard_unpublished_staging(
+        instance_directory: impl AsRef<Path>,
+        verified_backup_directory: impl AsRef<Path>,
+    ) -> Result<(), BootstrapError> {
+        let directory = instance_directory.as_ref().canonicalize()?;
+        validate_managed_directory(&directory, true)?;
+        let _lock = InstanceLock::acquire(&directory)?;
+        validate_managed_directory(&directory, true)?;
+
+        let active_path = directory.join(DATABASE_FILE);
+        let staging_path = directory.join(MIGRATION_STAGING_FILE);
+        validate_private_file(&active_path)?;
+        validate_private_file(&staging_path)?;
+        let backup = crate::offline_backup::verify_backup(verified_backup_directory)
+            .map_err(|_| BootstrapError::InvalidRequest)?;
+        if !crate::offline_backup::database_image_matches_backup(&active_path, &backup)
+            .map_err(|_| BootstrapError::InvalidRequest)?
+        {
+            return Err(BootstrapError::InvalidRequest);
+        }
+
+        let active_database =
+            ReadOnlyDatabase::open(&active_path).map_err(|_| BootstrapError::Storage)?;
+        let active_report = crate::startup::validate_migration_image_read_only(&active_database)
+            .map_err(BootstrapError::Startup)?;
+        if active_report.metadata.database_id != backup.database_id
+            || active_report.metadata.commit_sequence != backup.commit_sequence
+        {
+            return Err(BootstrapError::InvalidRequest);
+        }
+        let staged_database =
+            ReadOnlyDatabase::open(&staging_path).map_err(|_| BootstrapError::Storage)?;
+        let staged_report = crate::startup::validate_migration_image_read_only(&staged_database)
+            .map_err(BootstrapError::Startup)?;
+        if active_report.metadata.database_id != staged_report.metadata.database_id
+            || active_report.metadata.commit_sequence != staged_report.metadata.commit_sequence
+        {
+            return Err(BootstrapError::InvalidRequest);
+        }
+        drop(staged_database);
+        drop(active_database);
+        fs::remove_file(&staging_path)?;
+        sync_directory(&directory)?;
+        Ok(())
+    }
+
     pub(crate) fn close_database_and<T, E>(
         self,
         operation: impl FnOnce(&Path) -> Result<T, E>,
