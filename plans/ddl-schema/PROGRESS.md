@@ -134,7 +134,14 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression evidence: the real-redb lifecycle test verifies duplicate-name rejection, successful rename with a stable schema ID and incremented object version, and denial to the previous non-admin owner. Decoder and gateway lifecycle tests cover the exact request and committed result.
 - TDD note: the schema rename assertion first failed with `InvalidRequest` against the compiling storage stub; the rename and uniqueness checks now pass through the serialized authorized DDL path.
 - Verification: focused real-redb, decoder, and gateway lifecycle tests passed. Workspace build, format check, warning-denied Clippy, all workspace tests, and `git diff --check` passed in the configured Nix shell. Tool versions were Rust/Cargo 1.95.0, rustfmt 1.9.0, Clippy 0.1.95, and TinyCC 0.9.27-unstable-2025-01-06.
-- Remaining: role-owner transfer regression, additional stale-writer and limit boundary evidence, and separate supervisor/gateway process integration.
+- Remaining: additional stale-writer and limit boundary evidence, and separate supervisor/gateway process integration.
+
+## DS-5: schema ownership transfer by inherited role member — verified
+
+- Contract: the current schema owner, including a member inheriting ownership through a role, may transfer a non-system schema to a live user or role. Ownership changes atomically and immediately determine who may perform later schema DDL.
+- Regression: the real-redb schema lifecycle test transfers ownership to a role, then has an inherited member transfer it to a user. The previous role member is denied a subsequent rename, while the new owner successfully drops the schema; the test checks durable outcomes and the final commit sequence.
+- Verification: `nix develop --no-update-lock-file -c cargo test -p prdb-engine --test commit storage_manager_creates_schema_atomically_for_privileged_actor --locked --offline -- --exact --nocapture` passed (`1 passed, 0 ignored`). `git diff --check` passed.
+- Implementation note: this increment confirms the existing guarded storage path and clarifies the schema-owner definition; no production code change was required.
 
 ## DS-5 / DS-7: index publication versus a pinned writer — verified
 

@@ -1186,24 +1186,68 @@ fn storage_manager_creates_schema_atomically_for_privileged_actor()
         ),
         Err(SchemaLifecycleError::Unauthorized)
     ));
-    let drop_invocation = id(0xec);
-    let mut drop_audit = identity_audit_event(0xed, successor_owner, id(0xee));
-    drop_audit.correlation_id = drop_invocation;
-    let dropped = storage.drop_schema(
-        drop_invocation,
+    let role_owner_transfer_invocation = id(0xd6);
+    let mut role_owner_transfer_audit =
+        identity_audit_event(0xd7, successor_owner, created.schema_id);
+    role_owner_transfer_audit.correlation_id = role_owner_transfer_invocation;
+    let role_owner_transfer = storage.set_schema_owner(
+        role_owner_transfer_invocation,
         successor_owner,
         created.schema_id,
+        actor,
         9_999,
-        drop_audit,
-    )?;
+        role_owner_transfer_audit,
+    );
+    assert!(
+        role_owner_transfer.is_ok(),
+        "inherited schema owner could not transfer ownership: {role_owner_transfer:?}"
+    );
+    assert_eq!(role_owner_transfer?, 8);
+    assert_eq!(
+        lookup_outcome(
+            &database,
+            role_owner_transfer_invocation,
+            successor_owner,
+            1
+        )?
+        .ok_or("missing role-owner transfer outcome")?
+        .status,
+        OutcomeStatus::Committed
+    );
+    let role_member_rename_invocation = id(0xd8);
+    let mut role_member_rename_audit =
+        identity_audit_event(0xd9, successor_owner, created.schema_id);
+    role_member_rename_audit.correlation_id = role_member_rename_invocation;
+    assert!(matches!(
+        storage.rename_schema(
+            role_member_rename_invocation,
+            successor_owner,
+            created.schema_id,
+            "former_role_owner_name",
+            9_999,
+            role_member_rename_audit,
+        ),
+        Err(SchemaLifecycleError::Unauthorized)
+    ));
+    assert_eq!(
+        lookup_outcome(&database, role_member_rename_invocation, successor_owner, 1)?
+            .ok_or("missing former role-owner rename outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    let drop_invocation = id(0xec);
+    let mut drop_audit = identity_audit_event(0xed, actor, id(0xee));
+    drop_audit.correlation_id = drop_invocation;
+    let dropped =
+        storage.drop_schema(drop_invocation, actor, created.schema_id, 9_999, drop_audit)?;
     assert_eq!(dropped.schema_id, created.schema_id);
-    assert_eq!(dropped.commit_sequence, 8);
+    assert_eq!(dropped.commit_sequence, 9);
     let read = database.begin_read()?;
     let catalog = read.open_table(CATALOG)?;
     assert!(catalog.get(schema_key.as_slice())?.is_none());
     assert!(catalog.get(object_key.as_slice())?.is_none());
     assert_eq!(
-        lookup_outcome(&database, drop_invocation, successor_owner, 1)?
+        lookup_outcome(&database, drop_invocation, actor, 1)?
             .unwrap()
             .status,
         OutcomeStatus::Committed
