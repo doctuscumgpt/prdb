@@ -167,3 +167,11 @@
 - Specification: replaced the obsolete checkpoint/reclamation job examples in [operational metadata](../../specs/operational-metadata.md) with the actual redb ownership and maintenance behavior. The plan now records why an empty or synthetic job registry would be misleading.
 - Verification: documentation diff and link/consistency checks only; no Rust behavior changed.
 - Remaining: define a job API and registry alongside the first supported asynchronous operation; job tracking itself is not implemented.
+
+## OM-2 redb cache usage — implemented slice
+
+- Contract: runtime-list operation version 3 reports `redb_cache_used_bytes` to database administrators. It is redb's current page-cache occupancy, not process RSS, total memory, or retained-history bytes. Older operation versions preserve their response shape.
+- Implementation: enabled the pinned redb 4.4.0 `cache_metrics` feature and carried the sample through authorized storage pages, the strict typed client, CLI JSON, and supervisor protocol. The engine avoids acquiring redb's write transaction for other page statistics because that could delay commits.
+- Regression: the runtime-page assertion failed to compile before the field existed. Storage checks positive cache occupancy; request decoding, strict TCP response decoding, and the CLI process test cover version 3 and its numeric field.
+- Verification: the expected missing-field compile failure was observed. Focused storage, protocol, typed-client and process tests passed; workspace fmt, warning-denied Clippy and build passed; TinyCC SDK tests and sandbox fixture passed; release profile validated 10 engine binaries and 1 query fixture; full serial delegated-cgroup workspace suite passed with zero ignored tests.
+- Remaining: exact retained-history bytes and other redb physical statistics remain unavailable without a read-safe redb API; job registry, other waits, and broader pressure/authority-race work remain open.

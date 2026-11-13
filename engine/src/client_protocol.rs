@@ -1229,7 +1229,7 @@ pub fn decode_client_admin_command(
             Ok(ClientAdminCommand::ListAuditEvents { page_limit, cursor })
         }
         Some("read")
-            if matches!(version, Some(1 | 2))
+            if matches!(version, Some(1..=3))
                 && operation.as_deref() == Some("runtime.invocations.list") =>
         {
             if operation_id.is_some() || seen.len() != 4 {
@@ -4144,6 +4144,8 @@ impl ClientConnectionSession {
                         outcome_maintenance_passes_total: page.outcome_maintenance_passes_total,
                         outcome_maintenance_failures_total: page.outcome_maintenance_failures_total,
                         outcomes_pruned_total: page.outcomes_pruned_total,
+                        include_redb_cache: response_version >= 3,
+                        redb_cache_used_bytes: page.redb_cache_used_bytes,
                         waits: &page.fence_waits,
                         truncated: page.fence_waits_truncated,
                     },
@@ -7258,6 +7260,8 @@ struct RuntimeInvocationSummary<'a> {
     outcome_maintenance_passes_total: u64,
     outcome_maintenance_failures_total: u64,
     outcomes_pruned_total: u64,
+    include_redb_cache: bool,
+    redb_cache_used_bytes: u64,
     waits: &'a [crate::ddl_fence::DdlFenceWaitStatus],
     truncated: bool,
 }
@@ -7294,6 +7298,10 @@ fn encode_fence_waits(output: &mut String, summary: RuntimeInvocationSummary<'_>
         output.push_str(&summary.outcome_maintenance_failures_total.to_string());
         output.push_str(",\"outcomes_pruned_total\":");
         output.push_str(&summary.outcomes_pruned_total.to_string());
+    }
+    if summary.include_redb_cache {
+        output.push_str(",\"redb_cache_used_bytes\":");
+        output.push_str(&summary.redb_cache_used_bytes.to_string());
     }
     output.push_str(",\"fence_waits\":[");
     for (index, wait) in summary.waits.iter().enumerate() {
@@ -7815,6 +7823,8 @@ mod runtime_wait_tests {
                 outcome_maintenance_passes_total: 7,
                 outcome_maintenance_failures_total: 8,
                 outcomes_pruned_total: 9,
+                include_redb_cache: true,
+                redb_cache_used_bytes: 4000,
                 waits: &[wait],
                 truncated: true,
             },
@@ -7822,7 +7832,7 @@ mod runtime_wait_tests {
         assert_eq!(
             output,
             format!(
-                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"invocations_admitted_total\":7,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"admin_cancellations_denied_total\":2,\"invocation_policy_denials_total\":3,\"invocation_staged_value_bytes_total\":8,\"invocation_commit_latency_buckets\":[1,2,3,4,5,6],\"outcome_maintenance_passes_total\":7,\"outcome_maintenance_failures_total\":8,\"outcomes_pruned_total\":9,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
+                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"invocations_admitted_total\":7,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"admin_cancellations_denied_total\":2,\"invocation_policy_denials_total\":3,\"invocation_staged_value_bytes_total\":8,\"invocation_commit_latency_buckets\":[1,2,3,4,5,6],\"outcome_maintenance_passes_total\":7,\"outcome_maintenance_failures_total\":8,\"outcomes_pruned_total\":9,\"redb_cache_used_bytes\":4000,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
                 "01".repeat(16),
                 "02".repeat(16),
                 "03".repeat(16)
@@ -7845,11 +7855,14 @@ mod runtime_wait_tests {
                 outcome_maintenance_passes_total: 9,
                 outcome_maintenance_failures_total: 2,
                 outcomes_pruned_total: 7,
+                include_redb_cache: false,
+                redb_cache_used_bytes: 0,
                 waits: &[],
                 truncated: false,
             },
         );
         assert!(!legacy_output.contains("outcome_maintenance_passes_total"));
+        assert!(!legacy_output.contains("redb_cache_used_bytes"));
         assert!(legacy_output.contains("\"fence_waits\":[]"));
     }
 }

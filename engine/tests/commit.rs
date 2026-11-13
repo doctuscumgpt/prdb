@@ -10567,6 +10567,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert_eq!(first_page.invocations[0].snapshot_pin_count, 1);
     assert_eq!(first_page.pinned_snapshot_count, 2);
     assert!(first_page.oldest_snapshot_pin_age_us > 0);
+    assert!(first_page.redb_cache_used_bytes > 0);
     assert_eq!(first_page.invocation_conflicts_total, 0);
     assert_ne!(first_page.invocations[0].transaction_id, [0; 16]);
     assert!(first_page.invocations[0].age_us <= 1_000_000);

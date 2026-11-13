@@ -408,6 +408,7 @@ pub struct RuntimeInvocationPage {
     pub outcome_maintenance_passes_total: u64,
     pub outcome_maintenance_failures_total: u64,
     pub outcomes_pruned_total: u64,
+    pub redb_cache_used_bytes: u64,
     pub fence_waits: Vec<RuntimeFenceWait>,
     pub fence_waits_truncated: bool,
     pub next_cursor: Option<String>,
@@ -1176,11 +1177,11 @@ impl AdminClient {
             arguments.push('"');
         }
         let payload = format!(
-            "{{\"phase\":\"read\",\"operation_version\":2,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
+            "{{\"phase\":\"read\",\"operation_version\":3,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
         );
         let response = self.transport.exchange(10, payload.into_bytes())?;
         let mut fields = parse_flat_response(&response.payload)?;
-        if fields.len() != 18 {
+        if fields.len() != 19 {
             return Err(ClientSubmitError::InvalidResponse);
         }
         let observed_at_us = response_u64(&mut fields, "observed_at_us")?
@@ -1331,6 +1332,8 @@ impl AdminClient {
                 .ok_or(ClientSubmitError::InvalidResponse)?;
         let outcomes_pruned_total = response_u64(&mut fields, "outcomes_pruned_total")?
             .ok_or(ClientSubmitError::InvalidResponse)?;
+        let redb_cache_used_bytes = response_u64(&mut fields, "redb_cache_used_bytes")?
+            .ok_or(ClientSubmitError::InvalidResponse)?;
         if pinned_snapshot_count == 0 && oldest_snapshot_pin_age_us != 0 {
             return Err(ClientSubmitError::InvalidResponse);
         }
@@ -1420,6 +1423,7 @@ impl AdminClient {
             outcome_maintenance_passes_total,
             outcome_maintenance_failures_total,
             outcomes_pruned_total,
+            redb_cache_used_bytes,
             fence_waits: decoded_waits,
             fence_waits_truncated,
             next_cursor,

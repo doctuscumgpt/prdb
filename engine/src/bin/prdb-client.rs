@@ -1881,10 +1881,11 @@ fn runtime_list(
         print!("{bucket}");
     }
     print!(
-        "],\"outcome_maintenance_passes_total\":{},\"outcome_maintenance_failures_total\":{},\"outcomes_pruned_total\":{},\"fence_waits\":[",
+        "],\"outcome_maintenance_passes_total\":{},\"outcome_maintenance_failures_total\":{},\"outcomes_pruned_total\":{},\"redb_cache_used_bytes\":{},\"fence_waits\":[",
         page.outcome_maintenance_passes_total,
         page.outcome_maintenance_failures_total,
-        page.outcomes_pruned_total
+        page.outcomes_pruned_total,
+        page.redb_cache_used_bytes
     );
     for (index, wait) in page.fence_waits.iter().enumerate() {
         if index != 0 {
