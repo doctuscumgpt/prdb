@@ -1,5 +1,14 @@
 # Internal IPC Progress
 
+## IPC-2 follow-up: generated index-range bound flag record — implemented
+
+- Contract: each `0x1115` bound slot starts with a one-byte flag: 0 absent, 1 inclusive, or 2 exclusive; a present flag is followed by one scalar record.
+- Red evidence: the shared-schema generator regression failed because no Rust/C codec existed for the bound flag.
+- Implementation: added the generated flag record and migrated Rust request encoding/decoding and the TinyCC SDK request builder. Updated the IPC spec with the record layout.
+- Regression: the range request wire test checks both lower and upper flag bytes, including inclusive and exclusive values; existing C fixtures verify the assembled request bytes.
+- Verification: generator tests/drift check, focused Rust range codec test, maintained TinyCC SDK tests, sandbox query fixture, locked workspace build, formatting check, warning-denied Clippy, full serial delegated-cgroup workspace suite (zero ignored tests), and `git diff --check` passed.
+- Remaining: SDK consumption, optimizer selection, end-to-end optimized/reference result and error equivalence, and broader malformed process-level IPC coverage remain open.
+
 ## IPC-2 follow-up: generated index-range request column-count record — implemented
 
 - Contract: the `0x1115` variable tail ends its optional lower/upper scalar records with a big-endian `u16` selected-column count followed by exactly that many 16-byte IDs.

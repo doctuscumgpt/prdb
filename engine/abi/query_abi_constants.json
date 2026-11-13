@@ -2047,6 +2047,15 @@
       "trailing_fields": []
     },
     {
+      "name": "EXECUTOR_SCAN_INDEX_RANGE_BOUND_FLAG_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "bound_flag", "encoding": "u8" }
+      ],
+      "trailing_fields": []
+    },
+    {
       "name": "SCALAR_VALUE_RECORD",
       "generate_rust_codec": true,
       "generate_c_codec": true,

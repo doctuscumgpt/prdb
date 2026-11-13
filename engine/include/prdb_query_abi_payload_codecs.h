@@ -1830,6 +1830,23 @@ static inline int prdb_decode_executor_scan_index_range_column_count_record(cons
     return 1;
 }
 
+static inline void prdb_encode_executor_scan_index_range_bound_flag_record(uint8_t payload[1],
+    uint8_t bound_flag) {
+    payload[0] = bound_flag;
+}
+
+static inline int prdb_decode_executor_scan_index_range_bound_flag_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *bound_flag) {
+    if (payload == NULL || payload_len != 1) {
+        return 0;
+    }
+    if (bound_flag == NULL) {
+        return 0;
+    }
+    *bound_flag = payload[0];
+    return 1;
+}
+
 static inline void prdb_encode_scalar_value_record(uint8_t payload[5],
     uint8_t type_code, uint32_t value_length) {
     payload[0] = type_code;

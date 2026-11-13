@@ -1112,6 +1112,21 @@ pub fn decode_executor_scan_index_range_column_count_record(payload: &[u8]) -> O
     Some(u16::from_be_bytes(payload[0..2].try_into().ok()?))
 }
 
+pub const EXECUTOR_SCAN_INDEX_RANGE_BOUND_FLAG_RECORD_BOUND_FLAG_OFFSET: u32 = 0;
+pub const EXECUTOR_SCAN_INDEX_RANGE_BOUND_FLAG_RECORD_HEADER_BYTES: u32 = 1;
+pub fn encode_executor_scan_index_range_bound_flag_record(bound_flag: u8) -> [u8; 1] {
+    let mut payload = [0u8; 1];
+    payload[0] = bound_flag;
+    payload
+}
+
+pub fn decode_executor_scan_index_range_bound_flag_record(payload: &[u8]) -> Option<u8> {
+    if payload.len() != 1 {
+        return None;
+    }
+    Some(payload[0])
+}
+
 pub const SCALAR_VALUE_RECORD_TYPE_CODE_OFFSET: u32 = 0;
 pub const SCALAR_VALUE_RECORD_VALUE_LENGTH_OFFSET: u32 = 1;
 pub const SCALAR_VALUE_RECORD_HEADER_BYTES: u32 = 5;

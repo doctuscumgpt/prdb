@@ -443,7 +443,9 @@ impl ScanIndexRangeRequest {
                 Some(bound) if bound.inclusive => 1,
                 Some(_) => 2,
             };
-            payload.push(flag);
+            payload.extend_from_slice(
+                &generated::encode_executor_scan_index_range_bound_flag_record(flag),
+            );
             if let Some(bound) = bound {
                 let (type_code, bytes) = encode_scalar_value(&bound.value)?;
                 append_scalar_value_record(&mut payload, type_code, &bytes)?;
@@ -471,10 +473,19 @@ impl ScanIndexRangeRequest {
         let mut offset = Self::PREFIX_BYTES;
         let mut decode_bound =
             || -> Result<Option<AuthorizedIndexRangeBound>, ExecutorRequestError> {
-                let flag = *payload
-                    .get(offset)
+                let flag_end = offset
+                    .checked_add(
+                        generated::EXECUTOR_SCAN_INDEX_RANGE_BOUND_FLAG_RECORD_HEADER_BYTES
+                            as usize,
+                    )
                     .ok_or(ExecutorRequestError::InvalidPayload)?;
-                offset += 1;
+                let flag = generated::decode_executor_scan_index_range_bound_flag_record(
+                    payload
+                        .get(offset..flag_end)
+                        .ok_or(ExecutorRequestError::InvalidPayload)?,
+                )
+                .ok_or(ExecutorRequestError::InvalidPayload)?;
+                offset = flag_end;
                 match flag {
                     0 => Ok(None),
                     1 | 2 => {
@@ -1918,6 +1929,8 @@ mod cancellation_response_tests {
         assert_eq!(&encoded[..2], &[0, 1]);
         assert_eq!(&encoded[2..18], &relation_bytes);
         assert_eq!(&encoded[18..34], &[9; 16]);
+        assert_eq!(encoded[34], 1);
+        assert_eq!(encoded[44], 2);
         assert_eq!(&encoded[54..56], &[0, 1]);
         assert_eq!(ScanIndexRangeRequest::decode(&encoded).unwrap(), request);
         assert!(ScanIndexRangeRequest::decode(&encoded[..37]).is_err());
