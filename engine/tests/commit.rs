@@ -315,6 +315,61 @@ fn executor_ipc_probe_unique(
     Ok(ProbeUniqueIndexResponse::decode(&response.payload)?)
 }
 
+fn executor_ipc_scan_index_range(
+    invocation: &mut prdb_engine::transaction::InvocationTransaction<'_>,
+    schema_name: &str,
+    table_name: &str,
+    index_id: [u8; 16],
+    lower: Option<prdb_engine::transaction::AuthorizedIndexRangeBound>,
+    upper: Option<prdb_engine::transaction::AuthorizedIndexRangeBound>,
+    column_ids: Vec<[u8; 16]>,
+) -> Result<prdb_engine::executor_ipc::ScanIndexRangeResponse, Box<dyn std::error::Error>> {
+    use prdb_engine::executor_ipc::{
+        ResolveRelationRequest, ResolveRelationResponse, ScanIndexRangeRequest,
+        ScanIndexRangeResponse, dispatch_executor_request,
+    };
+    use prdb_engine::ipc::{IpcFrame, Operation, ServiceRole};
+
+    let mut connection = invocation.open_executor_metadata_connection();
+    let resolved = dispatch_executor_request(
+        ServiceRole::Executor,
+        &mut connection,
+        &IpcFrame {
+            operation: Operation::ResolveRelation as u16,
+            request_id: 1,
+            payload: ResolveRelationRequest {
+                schema_name: schema_name.to_owned(),
+                relation_name: table_name.to_owned(),
+            }
+            .encode()?,
+        },
+    )
+    .map_err(|error| format!("executor IPC resolve failed: {error:?}"))?;
+    let ResolveRelationResponse::Resolved { handle, .. } =
+        ResolveRelationResponse::decode(&resolved.payload)?
+    else {
+        return Err("authorized relation did not resolve".into());
+    };
+    let response = dispatch_executor_request(
+        ServiceRole::Executor,
+        &mut connection,
+        &IpcFrame {
+            operation: Operation::ScanIndexRange as u16,
+            request_id: 2,
+            payload: ScanIndexRangeRequest {
+                relation: handle,
+                index_id,
+                lower,
+                upper,
+                column_ids,
+            }
+            .encode()?,
+        },
+    )
+    .map_err(|error| format!("executor IPC index range failed: {error:?}"))?;
+    Ok(ScanIndexRangeResponse::decode(&response.payload)?)
+}
+
 fn id(n: u8) -> [u8; 16] {
     [n; 16]
 }
@@ -20379,6 +20434,38 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
         )?,
         prdb_engine::executor_ipc::ProbeUniqueIndexResponse::NoMatch
     );
+    let range_bound = |value: Vec<u8>| {
+        Some(prdb_engine::transaction::AuthorizedIndexRangeBound {
+            value: ScalarValue::Bytea(value),
+            inclusive: true,
+        })
+    };
+    assert_eq!(
+        executor_ipc_scan_index_range(
+            &mut first_invocation,
+            "cell_views",
+            "records",
+            range_index_id,
+            range_bound(vec![0x53]),
+            range_bound(vec![0x53]),
+            vec![column_id],
+        )?,
+        prdb_engine::executor_ipc::ScanIndexRangeResponse::Rows(vec![vec![SanitizedCell::Value(
+            ScalarValue::Bytea(vec![0x53])
+        ),]]),
+    );
+    assert_eq!(
+        executor_ipc_scan_index_range(
+            &mut first_invocation,
+            "cell_views",
+            "records",
+            range_index_id,
+            range_bound(vec![0x55; 9]),
+            range_bound(vec![0x55; 9]),
+            vec![column_id],
+        )?,
+        prdb_engine::executor_ipc::ScanIndexRangeResponse::Rows(vec![]),
+    );
     for value in [vec![0x53], vec![0x55; 9]] {
         assert_eq!(
             executor_ipc_probe_unique(
@@ -20386,11 +20473,24 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
                 "cell_views",
                 "records",
                 index_id,
-                ScalarValue::Bytea(value),
+                ScalarValue::Bytea(value.clone()),
                 vec![column_id],
             )?,
             prdb_engine::executor_ipc::ProbeUniqueIndexResponse::Unavailable,
             "hidden unique keys must fall back identically for matching and absent values"
+        );
+        assert_eq!(
+            executor_ipc_scan_index_range(
+                &mut restricted_invocation,
+                "cell_views",
+                "records",
+                range_index_id,
+                range_bound(value.clone()),
+                range_bound(value),
+                vec![column_id],
+            )?,
+            prdb_engine::executor_ipc::ScanIndexRangeResponse::Unavailable,
+            "hidden range keys must not distinguish matching and absent values"
         );
     }
     first_invocation.abort()?;
