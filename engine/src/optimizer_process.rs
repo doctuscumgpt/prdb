@@ -899,6 +899,84 @@ mod tests {
     }
 
     #[test]
+    fn process_protocol_terminates_when_predicate_estimate_stream_closes() {
+        let (mut submission_client, mut submission_server) = UnixStream::pair().unwrap();
+        let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
+        submission_client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let optimizer_thread = std::thread::spawn(move || {
+            serve_optimizer_process(&mut submission_server, &mut planner_client)
+        });
+
+        crate::ipc::write_frame(
+            &mut submission_client,
+            &IpcFrame {
+                operation: Operation::OptimizeSelect as u16,
+                request_id: 51,
+                payload: range_select_request(),
+            },
+        )
+        .unwrap();
+        let describe = crate::ipc::read_frame(&mut planner_server)
+            .unwrap()
+            .expect("optimizer must resolve the relation before estimating");
+        crate::ipc::write_frame(
+            &mut planner_server,
+            &IpcFrame {
+                operation: describe.operation,
+                request_id: describe.request_id,
+                payload: DescribePlanRelationResponse {
+                    relation: Some(AuthorizedPlanRelation {
+                        schema_id: [1; 16],
+                        schema_version: 3,
+                        table_epoch: 7,
+                        relation: AuthorizedRelationDescription {
+                            relation_id: [2; 16],
+                            name: "items".to_owned(),
+                            columns: vec![VisibleColumn {
+                                column_id: [3; 16],
+                                name: "name".to_owned(),
+                                ordinal: 0,
+                                scalar_type: ScalarType::Text,
+                                nullable: false,
+                            }],
+                        },
+                        unique_access_paths: Vec::new(),
+                        range_access_paths: vec![
+                            crate::metadata_discovery::AuthorizedRangeAccessPath {
+                                index_id: [4; 16],
+                                column_ids: vec![[3; 16]],
+                            },
+                        ],
+                    }),
+                    proven_empty: false,
+                    visible_rows_estimate: None,
+                }
+                .encode()
+                .unwrap(),
+            },
+        )
+        .unwrap();
+        let estimate = crate::ipc::read_frame(&mut planner_server)
+            .unwrap()
+            .expect("filtered SELECT must request a predicate estimate");
+        assert_eq!(estimate.operation, Operation::EstimateScan as u16);
+        planner_server.shutdown(std::net::Shutdown::Both).unwrap();
+
+        assert!(
+            crate::ipc::read_frame(&mut submission_client)
+                .unwrap()
+                .is_none(),
+            "a cancelled or disconnected estimate must not become an unknown-estimate fallback plan"
+        );
+        assert!(matches!(
+            optimizer_thread.join().unwrap(),
+            Err(OptimizerProcessError::PlannerClosed)
+        ));
+    }
+
+    #[test]
     fn process_protocol_backpressures_submissions_while_metadata_is_pending() {
         use std::io::Read;
         use std::time::Duration;

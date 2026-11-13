@@ -658,6 +658,13 @@
 - Regression: optimizer-process protocol cases verify exact `(visible=4, matching=2)` selects a filtered sequential scan, `Unknown` retains the range plan and filter, and exact zero still selects the no-scan hint.
 - Verification: all three focused optimizer-process tests passed; workspace build, fmt check, warning-denied Clippy, TinyCC SDK tests, and sandbox fixture build passed. The delegated cgroup probe reported writable `cpu memory pids`; the full serial delegated suite passed (223 engine unit, 151 commit integration, and all other workspace targets, with zero failures or ignored tests).
 
+## OP-4 follow-up: cancelled predicate estimates do not produce fallback plans — verified
+
+- Contract: `Unknown` is a valid estimate result and may retain the ordinary access path. Cancellation, expiry, or loss of the planner stream terminates planning; it must not be converted to `Unknown` or return a fallback plan.
+- Regression: `process_protocol_terminates_when_predicate_estimate_stream_closes` lets the optimizer resolve an authorized relation, observes its `EstimateScan` request, closes the planner stream at that boundary, then verifies that no submission response or plan is emitted and the optimizer reports `PlannerClosed`. The real-redb planner-stream regression above separately verifies that a cancelled estimate closes the worker stream and durably records ABORTED.
+- Verification: the focused optimizer-process regression passed. Rust 1.95.0, Cargo 1.95.0, rustfmt 1.9.0, Clippy 0.1.95, and TinyCC 0.9.27-unstable-2025-01-06 matched the pinned shell. Workspace build, fmt check, warning-denied Clippy, maintained TinyCC tests and sandbox fixture, release build/profile validation (10 engine binaries and 1 query fixture), delegated cgroup probe, and the full serial delegated-cgroup workspace suite passed. The suite reported 224 library tests and 151 commit integration tests passed, with zero ignored tests; all other targets passed. `git diff --check` passed.
+- Remaining: deadline/cancellation behavior through the complete confined optimizer/executor process tree and broader estimate-driven candidate comparison remain open.
+
 ## OP-5 follow-up: hidden range keys do not reveal match state — verified
 
 - Contract: executor storage rejects an index range before key lookup when any indexed key column is not unconditionally readable for the invocation. Explicit requests therefore return `Unavailable` for both matching and absent hidden keys; authorized callers receive only sanitized bounded rows.
