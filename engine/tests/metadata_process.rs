@@ -2775,7 +2775,8 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
     let uid = unsafe { libc::geteuid() };
     let uid_string = uid.to_string();
     let cgroup_string = cgroup_parent.to_str().ok_or("non-UTF-8 cgroup path")?;
-    let audit_jsonl_path = root.join("supervisor-audit.jsonl");
+    let audit_sink_dir = root.join("supervisor-audit");
+    let audit_jsonl_path = audit_sink_dir.join("events.jsonl");
     let mut supervisor_command = Command::new(env!("CARGO_BIN_EXE_prdb-supervisor"));
     supervisor_command.env("PRDB_AUDIT_JSONL_PATH", &audit_jsonl_path);
     supervisor_command.args([
@@ -2859,6 +2860,11 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
             && event.actor_id.is_none()
             && event.target_ids.as_slice() == [token_id]
     }));
+    assert!(
+        !audit_jsonl_path.exists(),
+        "a failed sink must leave its audit event pending without changing authentication"
+    );
+    std::fs::create_dir(&audit_sink_dir)?;
     let sink_deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Ok(lines) = std::fs::read_to_string(&audit_jsonl_path)
