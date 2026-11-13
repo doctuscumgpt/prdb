@@ -195,9 +195,11 @@ pub struct InvocationStatusPage {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdministrativeInvocationStatus {
     pub invocation_id: [u8; 16],
+    pub transaction_id: [u8; 16],
     pub principal_id: [u8; 16],
     pub workload_class: crate::supervisor::WorkloadClass,
     pub status: InvocationStatus,
+    pub age_us: u64,
     pub staged_rows: usize,
     pub staged_value_bytes: usize,
     pub snapshot_pin_count: u8,
@@ -1660,6 +1662,7 @@ enum LiveInvocationPhase {
 
 #[derive(Clone, Copy)]
 struct LiveInvocation {
+    transaction_id: [u8; 16],
     principal_id: [u8; 16],
     workload_class: crate::supervisor::WorkloadClass,
     started_at_us: i64,
@@ -1715,6 +1718,7 @@ enum AdmissionError {
     Limit,
     Duplicate,
     DatabaseUncertain,
+    RandomnessUnavailable,
 }
 
 impl InvocationAdmissionState {
@@ -1751,12 +1755,27 @@ impl InvocationAdmissionState {
         if live.entries.len() >= self.limit.load(Ordering::Acquire) {
             return Err(AdmissionError::Limit);
         }
+        let transaction_id = loop {
+            let mut candidate = [0; 16];
+            if getrandom::fill(&mut candidate).is_err() {
+                return Err(AdmissionError::RandomnessUnavailable);
+            }
+            if candidate != [0; 16]
+                && !live
+                    .entries
+                    .values()
+                    .any(|entry| entry.transaction_id == candidate)
+            {
+                break candidate;
+            }
+        };
         let deadline_at_us = i64::try_from(max_age.as_micros())
             .ok()
             .and_then(|delta| started_at_us.checked_add(delta));
         live.entries.insert(
             invocation_id,
             LiveInvocation {
+                transaction_id,
                 principal_id,
                 workload_class,
                 started_at_us,
@@ -1859,6 +1878,7 @@ impl InvocationAdmissionState {
     fn administrative_page(
         &self,
         administrator_id: [u8; 16],
+        now_us: i64,
         limit: usize,
         cursor: Option<&AdministrativeInvocationCursor>,
     ) -> Result<
@@ -1888,6 +1908,7 @@ impl InvocationAdmissionState {
             .map(
                 |(invocation_id, invocation)| AdministrativeInvocationStatus {
                     invocation_id: *invocation_id,
+                    transaction_id: invocation.transaction_id,
                     principal_id: invocation.principal_id,
                     workload_class: invocation.workload_class,
                     status: match invocation.phase {
@@ -1907,6 +1928,8 @@ impl InvocationAdmissionState {
                             cancellation_requested: invocation.cancellation_reason_code.is_some(),
                         },
                     },
+                    age_us: u64::try_from(now_us.saturating_sub(invocation.started_at_us))
+                        .unwrap_or(0),
                     staged_rows: invocation.staged_rows,
                     staged_value_bytes: invocation.staged_value_bytes,
                     snapshot_pin_count: invocation.snapshot_pin_count,
@@ -2352,6 +2375,7 @@ impl<'db> StorageManager<'db> {
                 AdmissionError::DatabaseUncertain => TransactionError::Storage(
                     "database requires reopen after an ambiguous commit error".into(),
                 ),
+                AdmissionError::RandomnessUnavailable => TransactionError::RandomnessUnavailable,
             })?;
         InvocationTransaction::begin_inner(
             self.database,
@@ -10135,6 +10159,7 @@ impl<'db> StorageManager<'db> {
         }
         let (invocations, continuation) = self.admissions.administrative_page(
             authenticated_administrator_id,
+            now_us,
             page_limit,
             continuation,
         )?;

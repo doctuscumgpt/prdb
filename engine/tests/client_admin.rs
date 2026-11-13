@@ -209,8 +209,9 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
             r#"{"phase":"read","operation_version":1,"operation":"runtime.invocations.list","arguments":{"limit":"1"}}"#
         );
         let first_response = format!(
-            "{{\"observed_at_us\":1000,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"active\",\"workload_class\":\"operational\",\"started_at_us\":900,\"deadline_at_us\":1200,\"staged_rows\":1,\"staged_value_bytes\":12,\"snapshot_pin_count\":1,\"cancellation_requested\":false,\"cancellation_reason_code\":null}}],\"next_cursor\":\"{server_cursor}\"}}",
+            "{{\"observed_at_us\":1000,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"transaction_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"active\",\"workload_class\":\"operational\",\"started_at_us\":900,\"age_us\":100,\"deadline_at_us\":1200,\"staged_rows\":1,\"staged_value_bytes\":12,\"snapshot_pin_count\":1,\"cancellation_requested\":false,\"cancellation_reason_code\":null}}],\"next_cursor\":\"{server_cursor}\"}}",
             "10".repeat(16),
+            "30".repeat(16),
             "20".repeat(16)
         );
         respond(&mut stream, &request, first_response.as_bytes());
@@ -226,8 +227,9 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
             &mut stream,
             &request,
             format!(
-                "{{\"observed_at_us\":1001,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"committing\",\"workload_class\":\"analytical\",\"started_at_us\":901,\"deadline_at_us\":null,\"staged_rows\":2,\"staged_value_bytes\":24,\"snapshot_pin_count\":1,\"cancellation_requested\":true,\"cancellation_reason_code\":7}}],\"next_cursor\":null}}",
+                "{{\"observed_at_us\":1001,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"transaction_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"committing\",\"workload_class\":\"analytical\",\"started_at_us\":901,\"age_us\":100,\"deadline_at_us\":null,\"staged_rows\":2,\"staged_value_bytes\":24,\"snapshot_pin_count\":1,\"cancellation_requested\":true,\"cancellation_reason_code\":7}}],\"next_cursor\":null}}",
                 "11".repeat(16),
+                "31".repeat(16),
                 "20".repeat(16)
             )
             .as_bytes(),
@@ -244,6 +246,7 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
     );
     assert_eq!(first.records.len(), 1);
     assert_eq!(first.records[0].invocation_id, [0x10; 16]);
+    assert_eq!(first.records[0].transaction_id, [0x30; 16]);
     assert_eq!(first.records[0].principal_id, [0x20; 16]);
     assert_eq!(
         first.records[0].workload_class,
@@ -254,6 +257,7 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
         prdb_engine::client_submit::RuntimeInvocationState::Active
     );
     assert_eq!(first.records[0].started_at_us, Some(900));
+    assert_eq!(first.records[0].age_us, 100);
     assert_eq!(first.records[0].deadline_at_us, Some(1200));
     assert_eq!(first.records[0].staged_rows, 1);
     assert_eq!(first.records[0].staged_value_bytes, 12);
@@ -267,6 +271,8 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
         .unwrap();
     assert_eq!(second.observed_at_us, 1001);
     assert_eq!(second.records[0].invocation_id, [0x11; 16]);
+    assert_eq!(second.records[0].transaction_id, [0x31; 16]);
+    assert_eq!(second.records[0].age_us, 100);
     assert_eq!(
         second.records[0].workload_class,
         prdb_engine::client_submit::RuntimeWorkloadClass::Analytical

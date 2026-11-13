@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SDK-16: expose transaction identity and age — verified
+
+- Contract: administrator runtime invocation pages include an opaque internal transaction ID and its age at the page observation time, alongside the existing state, write-set usage, and snapshot pin count.
+- Implementation: admission assigns a nonzero random transaction ID unique among active entries. The bounded runtime page derives age from its trusted observation time, and the typed client and `runtime-list` JSON expose both fields.
+- Regression: the TCP client fixture decodes two distinct IDs and observed ages; storage and gateway protocol assertions cover live projections; the delegated gateway/supervisor CLI lifecycle checks the fields.
+- Verification: locked workspace build, formatting, warning-denied Clippy, TinyCC tests and fixture, release-profile validation, and full serial workspace suite passed in the delegated service with zero ignored tests. The cgroup probe passed and `git diff --check` passed.
+- Remaining: additional transaction detail, wait/fence, job, memory/history, and counter registries remain under OM-2.
+
 ## SDK-15: expose invocation snapshot pin count — verified
 
 - Contract: [client SDK](../../specs/client-sdk.md), [client protocol](../../specs/client-protocol.md), and [operational metadata](../../specs/operational-metadata.md). Administrator invocation records report the number of invocation-owned redb read snapshots retained (0 or 1).

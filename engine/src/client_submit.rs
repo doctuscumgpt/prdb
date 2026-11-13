@@ -360,10 +360,12 @@ pub enum RuntimeWorkloadClass {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeInvocation {
     pub invocation_id: [u8; 16],
+    pub transaction_id: [u8; 16],
     pub principal_id: [u8; 16],
     pub workload_class: RuntimeWorkloadClass,
     pub state: RuntimeInvocationState,
     pub started_at_us: Option<u64>,
+    pub age_us: u64,
     pub deadline_at_us: Option<u64>,
     pub staged_rows: u64,
     pub staged_value_bytes: u64,
@@ -1155,10 +1157,11 @@ impl AdminClient {
             let ResponseValue::Object(mut row) = value else {
                 return Err(ClientSubmitError::InvalidResponse);
             };
-            if row.len() != 11 {
+            if row.len() != 13 {
                 return Err(ClientSubmitError::InvalidResponse);
             }
             let invocation_id = response_id(&row, "invocation_id")?;
+            let transaction_id = response_id(&row, "transaction_id")?;
             let principal_id = response_id(&row, "principal_id")?;
             let workload_class = match row.remove("workload_class") {
                 Some(ResponseValue::String(value)) if value == "operational" => {
@@ -1185,6 +1188,8 @@ impl AdminClient {
                 _ => return Err(ClientSubmitError::InvalidResponse),
             };
             let started_at_us = response_optional_u64(&mut row, "started_at_us")?;
+            let age_us =
+                response_u64(&mut row, "age_us")?.ok_or(ClientSubmitError::InvalidResponse)?;
             let deadline_at_us = response_optional_u64(&mut row, "deadline_at_us")?;
             let staged_rows =
                 response_u64(&mut row, "staged_rows")?.ok_or(ClientSubmitError::InvalidResponse)?;
@@ -1203,6 +1208,7 @@ impl AdminClient {
                 RuntimeInvocationState::Active | RuntimeInvocationState::Committing
             );
             if invocation_id == [0; 16]
+                || transaction_id == [0; 16]
                 || principal_id == [0; 16]
                 || previous_id.is_some_and(|previous| previous >= invocation_id)
                 || started_at_us.is_some_and(|value| value == 0)
@@ -1220,10 +1226,12 @@ impl AdminClient {
             previous_id = Some(invocation_id);
             records.push(RuntimeInvocation {
                 invocation_id,
+                transaction_id,
                 principal_id,
                 workload_class,
                 state,
                 started_at_us,
+                age_us,
                 deadline_at_us,
                 staged_rows,
                 staged_value_bytes,

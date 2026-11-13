@@ -3994,6 +3994,8 @@ impl ClientConnectionSession {
                         };
                     payload.push_str("{\"invocation_id\":\"");
                     payload.push_str(&encode_lower_hex_id(invocation.invocation_id));
+                    payload.push_str("\",\"transaction_id\":\"");
+                    payload.push_str(&encode_lower_hex_id(invocation.transaction_id));
                     payload.push_str("\",\"principal_id\":\"");
                     payload.push_str(&encode_lower_hex_id(invocation.principal_id));
                     payload.push_str("\",\"workload_class\":\"");
@@ -4005,6 +4007,8 @@ impl ClientConnectionSession {
                     payload.push_str(state);
                     payload.push_str("\",\"started_at_us\":");
                     push_json_optional_i64(&mut payload, started_at_us);
+                    payload.push_str(" ,\"age_us\":");
+                    payload.push_str(&invocation.age_us.to_string());
                     payload.push_str(" ,\"deadline_at_us\":");
                     push_json_optional_i64(&mut payload, deadline_at_us);
                     payload.push_str(" ,\"staged_rows\":");

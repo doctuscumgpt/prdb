@@ -1771,8 +1771,9 @@ fn runtime_list(
             prdb_engine::client_submit::RuntimeInvocationState::Aborted => "aborted",
         };
         print!(
-            "{{\"invocation_id\":{},\"principal_id\":{},\"workload_class\":{},\"state\":{},\"started_at_us\":{},\"deadline_at_us\":{},\"staged_rows\":{},\"staged_value_bytes\":{},\"snapshot_pin_count\":{},\"cancellation_requested\":{},\"cancellation_reason_code\":{}}}",
+            "{{\"invocation_id\":{},\"transaction_id\":{},\"principal_id\":{},\"workload_class\":{},\"state\":{},\"started_at_us\":{},\"age_us\":{},\"deadline_at_us\":{},\"staged_rows\":{},\"staged_value_bytes\":{},\"snapshot_pin_count\":{},\"cancellation_requested\":{},\"cancellation_reason_code\":{}}}",
             json_string(&lower_hex(&invocation.invocation_id)),
+            json_string(&lower_hex(&invocation.transaction_id)),
             json_string(&lower_hex(&invocation.principal_id)),
             json_string(match invocation.workload_class {
                 prdb_engine::client_submit::RuntimeWorkloadClass::Operational => "operational",
@@ -1782,6 +1783,7 @@ fn runtime_list(
             invocation
                 .started_at_us
                 .map_or_else(|| "null".to_owned(), |v| v.to_string()),
+            invocation.age_us,
             invocation
                 .deadline_at_us
                 .map_or_else(|| "null".to_owned(), |v| v.to_string()),
