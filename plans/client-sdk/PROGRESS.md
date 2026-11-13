@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SDK-11: dependency metadata CLI — verified
+
+- Contract: [client SDK](../../specs/client-sdk.md) and [client protocol](../../specs/client-protocol.md). The CLI authenticates with a private credential file and prints one bounded dependency page without widening endpoint visibility.
+- Implementation: `prdb-client dependency-list` accepts an object ID, optional 1–128 page limit, and opaque cursor, then prints only edge IDs/kinds and the next cursor as JSON.
+- Regression: the real gateway/supervisor metadata lifecycle invokes the CLI for a foreign-key edge and verifies its kind appears in output; the API regression independently checks schema-owner hidden-target omission.
+- Verification: focused CLI-backed production-process test passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, maintained TinyCC SDK tests and sandbox fixture, and the release-profile validator passed. The full serial workspace suite passed inside the delegated `systemd --user` service with sandbox/process tests enabled and zero ignored.
+- Remaining: additional administrative metadata CLI sections and repeated authority-race stress remain open.
+
 ## SDK-10 / MD-6: visible administrative dependency descriptions — verified
 
 - Contract: [client protocol](../../specs/client-protocol.md), [client SDK](../../specs/client-sdk.md), and [metadata discovery](../../specs/metadata-discovery.md). Dependency reads return bounded direct edges only when both endpoints are currently visible; hidden endpoint edges and their counts are omitted.

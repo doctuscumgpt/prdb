@@ -1523,6 +1523,25 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         &redacted_source_table.column_ids,
         hidden_target_unique.constraint_id,
     )?;
+    let dependency_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "dependency-list",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--object-id",
+            &encode_id_hex(&redacted_foreign_key.foreign_key_id),
+        ])
+        .output()?;
+    assert!(
+        dependency_list.status.success(),
+        "dependency-list CLI failed: {}",
+        String::from_utf8_lossy(&dependency_list.stderr)
+    );
+    assert!(String::from_utf8(dependency_list.stdout)?.contains("foreign_key_target"));
     let administrator_dependencies =
         admin.list_dependencies_page(redacted_foreign_key.foreign_key_id, 128, None)?;
     assert!(
