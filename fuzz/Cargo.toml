@@ -25,5 +25,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "catalog_ddl_codecs"
+path = "fuzz_targets/catalog_ddl_codecs.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]
