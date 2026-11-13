@@ -329,6 +329,43 @@ fn unsupported_catalog_version_is_rejected_before_derived_index_rebuild() {
 }
 
 #[test]
+fn startup_uses_active_image_and_only_tolerates_private_migration_staging_file() {
+    let fixture = Fixture::new();
+    let mut session =
+        prdb_engine::bootstrap::initialize(fixture.instance_dir(), "migration_admin", i64::MAX)
+            .expect("initialize migration fixture");
+    let mut secret = session.take_secret().expect("bootstrap secret");
+    use zeroize::Zeroize;
+    secret.zeroize();
+    drop(session.acknowledge().expect("publish READY"));
+
+    let staging = fixture.instance_dir().join(".prdb-migration.next");
+    std::fs::write(&staging, b"interrupted target generation")
+        .expect("write interrupted migration target");
+    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o600))
+        .expect("make migration target private");
+    drop(StorageInstance::open(fixture.instance_dir()).expect("start from active source image"));
+
+    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o640))
+        .expect("broaden staging file permissions");
+    assert!(matches!(
+        StorageInstance::open(fixture.instance_dir()),
+        Err(BootstrapError::NotPrivate)
+    ));
+    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o600))
+        .expect("restore staging permissions");
+
+    let unexpected = fixture.instance_dir().join(".prdb-migration.extra");
+    std::fs::write(&unexpected, b"unknown file").expect("write unexpected file");
+    std::fs::set_permissions(&unexpected, std::fs::Permissions::from_mode(0o600))
+        .expect("make unexpected file private");
+    assert!(matches!(
+        StorageInstance::open(fixture.instance_dir()),
+        Err(BootstrapError::NotPrivate)
+    ));
+}
+
+#[test]
 fn maintenance_verifies_pra1_archives_and_rejects_corruption()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

@@ -35,6 +35,7 @@ use std::time::Duration;
 use zeroize::Zeroize;
 
 const DATABASE_FILE: &str = "storage.redb";
+const MIGRATION_STAGING_FILE: &str = ".prdb-migration.next";
 const LOCK_FILE: &str = ".prdb.lock";
 const MARKER_FILE: &str = ".prdb-bootstrap";
 const SETUP_SOCKET_FILE: &str = ".prdb-setup.sock";
@@ -1746,6 +1747,7 @@ fn validate_managed_directory(
                 validate_private_file(&entry.path())?;
                 saw_database = true;
             }
+            Some(MIGRATION_STAGING_FILE) => validate_private_file(&entry.path())?,
             Some(SETUP_SOCKET_FILE) => validate_private_socket(&entry.path())?,
             _ => return Err(BootstrapError::NotPrivate),
         }
