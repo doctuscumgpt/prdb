@@ -237,6 +237,30 @@ impl RowSnapshot {
         })
     }
 
+    pub(crate) fn lookup_dependencies_for_dependent(
+        &self,
+        dependent_id: [u8; 16],
+        max_records: usize,
+    ) -> Result<Vec<CatalogRecord>, SnapshotError> {
+        crate::catalog_index::lookup_dependencies_for_dependent_limited(
+            &self.transaction,
+            dependent_id,
+            max_records,
+        )
+        .map_err(|error| match error {
+            crate::catalog_index::CatalogIndexError::InvalidName
+            | crate::catalog_index::CatalogIndexError::InvalidEntry => {
+                SnapshotError::InvalidCatalogRecord
+            }
+            crate::catalog_index::CatalogIndexError::RecordLimitExceeded => {
+                SnapshotError::RecordLimitExceeded
+            }
+            crate::catalog_index::CatalogIndexError::Storage(error) => {
+                SnapshotError::Storage(error)
+            }
+        })
+    }
+
     /// Return grants indexed under one grantee from the pinned catalog
     /// snapshot. Each derived entry is checked against family 12.
     pub(crate) fn lookup_grants_for_grantee(

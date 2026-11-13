@@ -3926,6 +3926,190 @@ impl<'db> InvocationTransaction<'db> {
         Ok(Some(descriptions))
     }
 
+    fn administrative_dependency_endpoint_visible(
+        &mut self,
+        endpoint_id: [u8; 16],
+        roles: &HashSet<[u8; 16]>,
+        is_database_admin: bool,
+    ) -> Result<bool, TransactionError> {
+        if endpoint_id == [0; 16] {
+            return Ok(false);
+        }
+        let Some(mut object) = self.read_catalog_record(&catalog_id_key(2, endpoint_id))? else {
+            if !is_database_admin {
+                return Ok(false);
+            }
+            return Ok(self
+                .read_catalog_record(&catalog_id_key(1, endpoint_id))?
+                .is_some_and(|record| record.family_code == 1));
+        };
+        if object.family_code != 2 {
+            return Err(TransactionError::CorruptCatalog);
+        }
+        let object_kind = catalog_u16(&object, 1)?;
+        if matches!(object_kind, 8 | 9) {
+            return Ok(is_database_admin);
+        }
+        let owning_table_id = match object_kind {
+            4 | 6 | 7 | 10 => {
+                let family = match object_kind {
+                    4 => 6,
+                    6 => 8,
+                    7 => 9,
+                    10 => 13,
+                    _ => unreachable!(),
+                };
+                let typed = self
+                    .read_catalog_record(&catalog_id_key(family, endpoint_id))?
+                    .ok_or(TransactionError::CorruptCatalog)?;
+                if typed.family_code != family {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                Some(catalog_id(&typed, 1)?)
+            }
+            _ => None,
+        };
+        if let Some(table_id) = owning_table_id {
+            let table = self
+                .read_catalog_record(&catalog_id_key(5, table_id))?
+                .ok_or(TransactionError::CorruptCatalog)?;
+            if table.family_code != 5 {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            return self.has_schema_metadata_authority(catalog_id(&table, 1)?, roles);
+        }
+        let mut current_id = endpoint_id;
+        let mut seen = HashSet::new();
+        for _ in 0..32 {
+            if !seen.insert(current_id) {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            let kind = catalog_u16(&object, 1)?;
+            if kind == 1 {
+                return self.has_schema_metadata_authority(current_id, roles);
+            }
+            if kind == 3 {
+                let table = self
+                    .read_catalog_record(&catalog_id_key(5, current_id))?
+                    .ok_or(TransactionError::CorruptCatalog)?;
+                if table.family_code != 5 {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                return self.has_schema_metadata_authority(catalog_id(&table, 1)?, roles);
+            }
+            let Some(parent_id) = catalog_optional_id(&object, 2)? else {
+                return Ok(false);
+            };
+            let Some(parent) = self.read_catalog_record(&catalog_id_key(2, parent_id))? else {
+                return Err(TransactionError::CorruptCatalog);
+            };
+            if parent.family_code != 2 {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            current_id = parent_id;
+            object = parent;
+        }
+        Err(TransactionError::CorruptCatalog)
+    }
+
+    /// Return bounded direct dependency edges touching a visible object. Edges
+    /// with either endpoint outside the caller's administrative visibility are
+    /// omitted, without returning hidden counts or names.
+    pub(crate) fn list_catalog_administrative_dependencies(
+        &mut self,
+        object_id: [u8; 16],
+    ) -> Result<Option<Vec<crate::metadata_discovery::AdministrativeDependency>>, TransactionError>
+    {
+        let roles = self.load_catalog_role_closure(self.principal_id)?;
+        let is_database_admin = roles.contains(&crate::bootstrap::database_admin_role_id());
+        if !self.administrative_dependency_endpoint_visible(object_id, &roles, is_database_admin)? {
+            return Ok(None);
+        }
+        const EDGE_LIMIT: usize = 4097;
+        let snapshot = self.pinned_snapshot()?;
+        let outgoing = snapshot
+            .lookup_dependencies_for_dependent(object_id, EDGE_LIMIT)
+            .map_err(|error| match error {
+                SnapshotError::Storage(error) => TransactionError::Storage(error),
+                SnapshotError::RecordLimitExceeded => TransactionError::InvalidMetadataRequest,
+                _ => TransactionError::CorruptCatalog,
+            })?;
+        let incoming = snapshot
+            .lookup_dependents_for_referenced(object_id, EDGE_LIMIT)
+            .map_err(|error| match error {
+                SnapshotError::Storage(error) => TransactionError::Storage(error),
+                SnapshotError::RecordLimitExceeded => TransactionError::InvalidMetadataRequest,
+                _ => TransactionError::CorruptCatalog,
+            })?;
+        self.charge_scan_work(outgoing.len().saturating_add(incoming.len()))?;
+        let mut edges = HashSet::new();
+        for record in outgoing.into_iter().chain(incoming) {
+            let key = &record.logical_key;
+            if record.family_code != 15
+                || key.len() != 39
+                || key[0..2] != 15u16.to_be_bytes()
+                || key[2] != 1
+                || key[19] != 1
+                || key[36] != 1
+            {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            let dependent_id: [u8; 16] = key[3..19]
+                .try_into()
+                .map_err(|_| TransactionError::CorruptCatalog)?;
+            let referenced_id: [u8; 16] = key[20..36]
+                .try_into()
+                .map_err(|_| TransactionError::CorruptCatalog)?;
+            let kind = u16::from_be_bytes([key[37], key[38]]);
+            if dependent_id == [0; 16] || referenced_id == [0; 16] || !matches!(kind, 1..=5) {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            if self.administrative_dependency_endpoint_visible(
+                dependent_id,
+                &roles,
+                is_database_admin,
+            )? && self.administrative_dependency_endpoint_visible(
+                referenced_id,
+                &roles,
+                is_database_admin,
+            )? {
+                edges.insert((dependent_id, referenced_id, kind));
+            }
+        }
+        if edges.len() > 4096 {
+            return Err(TransactionError::InvalidMetadataRequest);
+        }
+        let mut descriptions = edges
+            .into_iter()
+            .map(|(dependent_id, referenced_id, kind)| {
+                let kind = match kind {
+                    1 => crate::metadata_discovery::AdministrativeDependencyKind::OwnedChild,
+                    2 => {
+                        crate::metadata_discovery::AdministrativeDependencyKind::ExpressionReference
+                    }
+                    3 => crate::metadata_discovery::AdministrativeDependencyKind::ForeignKeyTarget,
+                    4 => crate::metadata_discovery::AdministrativeDependencyKind::BackingIndex,
+                    5 => crate::metadata_discovery::AdministrativeDependencyKind::Authority,
+                    _ => unreachable!("dependency kind checked above"),
+                };
+                crate::metadata_discovery::AdministrativeDependency {
+                    dependent_id,
+                    referenced_id,
+                    kind,
+                }
+            })
+            .collect::<Vec<_>>();
+        descriptions
+            .sort_unstable_by_key(|edge| (edge.dependent_id, edge.referenced_id, edge.kind as u8));
+        let encoded_bytes = descriptions.iter().fold(0usize, |total, edge| {
+            total.saturating_add(35 + edge.kind.as_wire_name().len())
+        });
+        if encoded_bytes > 1024 * 1024 {
+            return Err(TransactionError::InvalidMetadataRequest);
+        }
+        Ok(Some(descriptions))
+    }
+
     fn has_schema_metadata_authority(
         &mut self,
         schema_id: [u8; 16],

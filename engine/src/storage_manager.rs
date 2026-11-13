@@ -67,6 +67,8 @@ pub const MAX_DISCOVERED_GRANTS: usize = 4096;
 const MAX_DISCOVERED_GRANT_BYTES: usize = 1024 * 1024;
 pub const MAX_DISCOVERED_POLICIES: usize = 4096;
 const MAX_DISCOVERED_POLICY_BYTES: usize = 1024 * 1024;
+pub const MAX_DISCOVERED_DEPENDENCIES: usize = 4096;
+const MAX_DISCOVERED_DEPENDENCY_BYTES: usize = 1024 * 1024;
 static TOKEN_REQUEST_LIMITERS: OnceLock<Mutex<HashMap<usize, Weak<TokenRequestLimiter>>>> =
     OnceLock::new();
 static ADMIN_CANCELLATION_LIMITERS: OnceLock<Mutex<HashMap<usize, Weak<TokenRequestLimiter>>>> =
@@ -2818,6 +2820,48 @@ impl<'db> StorageManager<'db> {
             return Err(TransactionError::InvalidMetadataRequest);
         }
         Ok(Some(policies))
+    }
+
+    /// List direct dependency edges touching an administratively visible
+    /// object, omitting any edge with a hidden endpoint.
+    pub fn discover_token_administrative_dependencies(
+        &self,
+        token_id: [u8; 16],
+        token_secret: &[u8; TOKEN_SECRET_BYTES],
+        object_id: [u8; 16],
+    ) -> Result<Option<Vec<crate::metadata_discovery::AdministrativeDependency>>, TransactionError>
+    {
+        let principal_id = lookup_credential_principal(self.database, token_id)?;
+        let mut invocation_id = [0; 16];
+        getrandom::fill(&mut invocation_id)
+            .map_err(|_| TransactionError::Storage("randomness unavailable".into()))?;
+        if invocation_id == [0; 16] {
+            return Err(TransactionError::Storage("randomness unavailable".into()));
+        }
+        let mut transaction = InvocationTransaction::begin_inner(
+            self.database,
+            InvocationCoordination::uncoordinated(),
+            invocation_id,
+            principal_id,
+            i64::MAX,
+            1,
+            1,
+        )?;
+        let now_us = now_unix_micros().ok_or(TransactionError::ClockUnavailable)?;
+        transaction.authenticate_credential_token(token_id, token_secret, now_us)?;
+        let Some(dependencies) = transaction.list_catalog_administrative_dependencies(object_id)?
+        else {
+            return Ok(None);
+        };
+        let encoded_bytes = dependencies.iter().fold(0usize, |total, edge| {
+            total.saturating_add(35 + edge.kind.as_wire_name().len())
+        });
+        if dependencies.len() > MAX_DISCOVERED_DEPENDENCIES
+            || encoded_bytes > MAX_DISCOVERED_DEPENDENCY_BYTES
+        {
+            return Err(TransactionError::InvalidMetadataRequest);
+        }
+        Ok(Some(dependencies))
     }
 
     /// Refresh the current login and role closure before a new execution or

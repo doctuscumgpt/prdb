@@ -226,6 +226,35 @@ pub struct AdministrativePolicy {
     pub recipients: Option<Vec<AdministrativePolicyRecipient>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdministrativeDependencyKind {
+    OwnedChild,
+    ExpressionReference,
+    ForeignKeyTarget,
+    BackingIndex,
+    Authority,
+}
+
+impl AdministrativeDependencyKind {
+    pub fn as_wire_name(self) -> &'static str {
+        match self {
+            Self::OwnedChild => "owned_child",
+            Self::ExpressionReference => "expression_reference",
+            Self::ForeignKeyTarget => "foreign_key_target",
+            Self::BackingIndex => "backing_index",
+            Self::Authority => "authority",
+        }
+    }
+}
+
+/// One direct dependency edge with both endpoints administratively visible.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdministrativeDependency {
+    pub dependent_id: [u8; 16],
+    pub referenced_id: [u8; 16],
+    pub kind: AdministrativeDependencyKind,
+}
+
 /// The declared column shape of one discoverable relation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VisibleRelationSchema {

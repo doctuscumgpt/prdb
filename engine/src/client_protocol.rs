@@ -363,6 +363,7 @@ enum MetadataPageQuery {
         schema_id: [u8; 16],
         relation_id: [u8; 16],
     },
+    Dependencies([u8; 16]),
 }
 
 #[derive(Clone, Debug)]
@@ -374,6 +375,7 @@ enum MetadataPageRows {
     Constraints(Vec<crate::metadata_discovery::AdministrativeConstraint>),
     Grants(Vec<crate::metadata_discovery::AdministrativeGrant>),
     Policies(Vec<crate::metadata_discovery::AdministrativePolicy>),
+    Dependencies(Vec<crate::metadata_discovery::AdministrativeDependency>),
 }
 
 impl MetadataPageRows {
@@ -386,6 +388,7 @@ impl MetadataPageRows {
             Self::Constraints(rows) => rows.len(),
             Self::Grants(rows) => rows.len(),
             Self::Policies(rows) => rows.len(),
+            Self::Dependencies(rows) => rows.len(),
         }
     }
 
@@ -410,6 +413,7 @@ impl MetadataPageRows {
             (Self::Constraints(left), Self::Constraints(right)) => left == right,
             (Self::Grants(left), Self::Grants(right)) => left == right,
             (Self::Policies(left), Self::Policies(right)) => left == right,
+            (Self::Dependencies(left), Self::Dependencies(right)) => left == right,
             _ => false,
         }
     }
@@ -480,6 +484,11 @@ pub enum ClientAdminRead {
         page_limit: usize,
         cursor: Option<[u8; 16]>,
     },
+    ListDependenciesPage {
+        object_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<[u8; 16]>,
+    },
     ListTokens {
         user_id: [u8; 16],
         after_token_id: Option<[u8; 16]>,
@@ -532,6 +541,11 @@ pub enum ClientAdminCommand {
     ListPoliciesPage {
         schema_id: [u8; 16],
         relation_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<[u8; 16]>,
+    },
+    ListDependenciesPage {
+        object_id: [u8; 16],
         page_limit: usize,
         cursor: Option<[u8; 16]>,
     },
@@ -783,6 +797,15 @@ pub fn decode_client_admin_read(payload: &[u8]) -> Result<ClientAdminRead, Clien
         } => Ok(ClientAdminRead::ListPoliciesPage {
             schema_id,
             relation_id,
+            page_limit,
+            cursor,
+        }),
+        ClientAdminCommand::ListDependenciesPage {
+            object_id,
+            page_limit,
+            cursor,
+        } => Ok(ClientAdminRead::ListDependenciesPage {
+            object_id,
             page_limit,
             cursor,
         }),
@@ -1121,6 +1144,29 @@ pub fn decode_client_admin_command(
             Ok(ClientAdminCommand::ListPoliciesPage {
                 schema_id,
                 relation_id,
+                page_limit: pagination.page_limit,
+                cursor: pagination.cursor,
+            })
+        }
+        Some("read")
+            if version == Some(1) && operation.as_deref() == Some("metadata.dependencies.list") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let object_id = decode_lower_hex_id(
+                &args
+                    .remove("object_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let pagination =
+                decode_metadata_pagination(&mut args)?.ok_or(ClientControlError::MissingKey)?;
+            if !args.is_empty() {
+                return Err(ClientControlError::UnknownKey);
+            }
+            Ok(ClientAdminCommand::ListDependenciesPage {
+                object_id,
                 page_limit: pagination.page_limit,
                 cursor: pagination.cursor,
             })
@@ -3846,6 +3892,17 @@ impl ClientConnectionSession {
                 page_limit,
                 cursor,
             ),
+            ClientAdminCommand::ListDependenciesPage {
+                object_id,
+                page_limit,
+                cursor,
+            } => self.handle_metadata_discovery_page(
+                storage,
+                request.request_id,
+                MetadataPageQuery::Dependencies(object_id),
+                page_limit,
+                cursor,
+            ),
             ClientAdminCommand::ListTokens {
                 user_id,
                 after_token_id,
@@ -6467,6 +6524,12 @@ impl ClientConnectionSession {
                         .map_err(ClientSessionError::Storage)?
                         .unwrap_or_default(),
                 ),
+                MetadataPageQuery::Dependencies(object_id) => MetadataPageRows::Dependencies(
+                    storage
+                        .discover_token_administrative_dependencies(token_id, &secret, *object_id)
+                        .map_err(ClientSessionError::Storage)?
+                        .unwrap_or_default(),
+                ),
             };
             if !current_snapshot
                 .is_some_and(|snapshot| snapshot.rows.has_same_object_ids(&current_rows))
@@ -6562,6 +6625,12 @@ impl ClientConnectionSession {
                             *schema_id,
                             *relation_id,
                         )
+                        .map_err(ClientSessionError::Storage)?
+                        .unwrap_or_default(),
+                ),
+                MetadataPageQuery::Dependencies(object_id) => MetadataPageRows::Dependencies(
+                    storage
+                        .discover_token_administrative_dependencies(token_id, &secret, *object_id)
                         .map_err(ClientSessionError::Storage)?
                         .unwrap_or_default(),
                 ),
@@ -7057,6 +7126,7 @@ fn encode_metadata_page(
         MetadataPageQuery::Constraints { .. } => String::from("{\"constraints\":["),
         MetadataPageQuery::Grants { .. } => String::from("{\"grants\":["),
         MetadataPageQuery::Policies { .. } => String::from("{\"policies\":["),
+        MetadataPageQuery::Dependencies(_) => String::from("{\"dependencies\":["),
     };
     for index in start..end {
         if index != start {
@@ -7216,6 +7286,16 @@ fn encode_metadata_page(
                     output.push_str("null");
                 }
                 output.push('}');
+            }
+            (MetadataPageQuery::Dependencies(_), MetadataPageRows::Dependencies(rows)) => {
+                let row = rows.get(index).ok_or(ClientSessionError::ResourceLimit)?;
+                output.push_str("{\"dependent_id\":\"");
+                output.push_str(&encode_lower_hex_id(row.dependent_id));
+                output.push_str("\",\"referenced_id\":\"");
+                output.push_str(&encode_lower_hex_id(row.referenced_id));
+                output.push_str("\",\"kind\":\"");
+                output.push_str(row.kind.as_wire_name());
+                output.push_str("\"}");
             }
             _ => return Err(ClientSessionError::ResourceLimit),
         }

@@ -355,6 +355,40 @@ fn admin_client_lists_secret_free_policy_summaries() {
 }
 
 #[test]
+fn admin_client_lists_visible_dependency_edges() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(request.kind, 10);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            r#"{"phase":"read","operation_version":1,"operation":"metadata.dependencies.list","arguments":{"object_id":"11111111111111111111111111111111","limit":"4"}}"#
+        );
+        respond(
+            &mut stream,
+            &request,
+            br#"{"dependencies":[{"dependent_id":"22222222222222222222222222222222","referenced_id":"11111111111111111111111111111111","kind":"foreign_key_target"}],"next_cursor":null}"#,
+        );
+    });
+
+    let mut secret = [7; 32];
+    let mut client = AdminClient::connect_authenticated(address, [1; 16], &mut secret).unwrap();
+    let page = client.list_dependencies_page([0x11; 16], 4, None).unwrap();
+    assert_eq!(page.records.len(), 1);
+    assert_eq!(page.records[0].dependent_id, [0x22; 16]);
+    assert_eq!(page.records[0].referenced_id, [0x11; 16]);
+    assert_eq!(
+        page.records[0].kind,
+        prdb_engine::metadata_discovery::AdministrativeDependencyKind::ForeignKeyTarget
+    );
+    server.join().unwrap();
+}
+
+#[test]
 fn submission_client_decodes_cancellation_acknowledgements() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

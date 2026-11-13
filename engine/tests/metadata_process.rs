@@ -1523,6 +1523,18 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         &redacted_source_table.column_ids,
         hidden_target_unique.constraint_id,
     )?;
+    let administrator_dependencies =
+        admin.list_dependencies_page(redacted_foreign_key.foreign_key_id, 128, None)?;
+    assert!(
+        administrator_dependencies.records.iter().any(|edge| {
+            edge.dependent_id == redacted_foreign_key.foreign_key_id
+            && edge.referenced_id == hidden_target_unique.constraint_id
+            && edge.kind
+                == prdb_engine::metadata_discovery::AdministrativeDependencyKind::ForeignKeyTarget
+        }),
+        "administrator dependency page: {:?}",
+        administrator_dependencies.records
+    );
     let redacted_owner_credentials = read_client_credentials(&transfer_credential_path)?;
     let mut redacted_owner_secret = redacted_owner_credentials.token_secret;
     let mut redacted_owner = AdminClient::connect_authenticated(
@@ -1866,6 +1878,12 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         .find(|listed| listed.policy_id == schema_owner_policy.policy_id)
         .ok_or("schema-owner policy page omitted the created policy")?;
     assert!(owner_policy.recipients.is_none());
+    let owner_dependencies = owner_policy_client.list_dependencies_page(
+        redacted_foreign_key.constraint_id,
+        128,
+        None,
+    )?;
+    assert!(owner_dependencies.records.is_empty());
     drop(owner_policy_client);
     admin.set_schema_owner(redacted_source_schema.identity_id, admin_user_id)?;
     admin.drop_policy(schema_owner_policy.policy_id)?;

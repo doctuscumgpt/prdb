@@ -927,6 +927,18 @@ pub fn lookup_dependencies_for_dependent(
     )
 }
 
+/// Return a bounded set of dependency edges originating at one object.
+pub(crate) fn lookup_dependencies_for_dependent_limited(
+    transaction: &ReadTransaction,
+    dependent_id: [u8; 16],
+    max_records: usize,
+) -> Result<Vec<crate::catalog::CatalogRecord>, CatalogIndexError> {
+    if max_records == 0 || max_records > crate::snapshot::MAX_CATALOG_FAMILY_SCAN {
+        return Err(CatalogIndexError::InvalidName);
+    }
+    lookup_dependencies(transaction, 1, dependent_id, max_records)
+}
+
 /// Return dependency edges pointing to one referenced object in this snapshot.
 pub fn lookup_dependents_for_referenced(
     transaction: &ReadTransaction,

@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SDK-10 / MD-6: visible administrative dependency descriptions — verified
+
+- Contract: [client protocol](../../specs/client-protocol.md), [client SDK](../../specs/client-sdk.md), and [metadata discovery](../../specs/metadata-discovery.md). Dependency reads return bounded direct edges only when both endpoints are currently visible; hidden endpoint edges and their counts are omitted.
+- Implementation: `metadata.dependencies.list` uses the bidirectional dependency index, validates edge keys, resolves endpoint visibility through typed table ownership where needed, sorts and caps results at 4,096 records and 1 MiB, and uses the current-authority metadata cursor flow. `AdminClient::list_dependencies_page` validates kinds, IDs, ordering, and response shape.
+- Regression: fake-TCP coverage checks the exact request and typed response. The real gateway/supervisor metadata lifecycle confirms that an administrator sees a foreign-key target edge while a source schema owner receives an empty page when the target is hidden.
+- Verification: focused client and delegated production-process tests passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, maintained TinyCC SDK tests and sandbox fixture, and the release-profile validator passed. The full serial workspace suite passed inside the delegated `systemd --user` service with sandbox/process tests enabled and zero ignored.
+- Remaining: metadata SQL binding/execution and continuations across process restart remain open under MD-4/MD-6.
+
 ## SDK-9: administrative policy summaries — verified
 
 - Contract: [client protocol](../../specs/client-protocol.md), [client SDK](../../specs/client-sdk.md), and [metadata discovery](../../specs/metadata-discovery.md). Policy expression IDs and bodies remain private; schema owners receive no recipient IDs when principal endpoints may be hidden.

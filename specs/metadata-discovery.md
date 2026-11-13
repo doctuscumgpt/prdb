@@ -110,7 +110,7 @@ The engine implements storage-side `information_schema.schemata`, schema-scoped 
 
 ## Administrative Sections
 
-Object owners or appropriately privileged administrators may inspect schema definitions, dependencies, constraints/index definitions, policies, and grant provenance for objects within their authority. Redact or omit references to objects outside their visibility rather than expanding access via a dependency edge. Full dependency diagnostics require authority over all revealed endpoints.
+Object owners or appropriately privileged administrators may inspect schema definitions, dependencies, constraints/index definitions, policies, and grant provenance for objects within their authority. The `metadata.dependencies.list` read returns only direct dependency edges adjacent to its authorized anchor. Include an edge only when both endpoint objects are administratively visible to the requester; omit hidden-endpoint edges before computing returned rows or counts, and return no hidden names or totals. The dependency projection is bounded and deterministically ordered. Full dependency diagnostics require authority over all revealed endpoints.
 
 User/role administration requires the identity privileges defined in identity DDL. Token inventory returns nonsecret lifecycle metadata only; verifiers and secrets are never returned, including to database administrators. An administrative metadata response is bounded and auditable; it does not permit editing internal records directly.
 

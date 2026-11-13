@@ -1613,6 +1613,70 @@ impl AdminClient {
         })
     }
 
+    /// Return direct dependency edges whose two endpoints are visible to this
+    /// administrative principal. Hidden endpoints are omitted server-side.
+    pub fn list_dependencies_page(
+        &mut self,
+        object_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<MetadataPage<crate::metadata_discovery::AdministrativeDependency>, ClientSubmitError>
+    {
+        validate_metadata_page_request(page_limit, cursor)?;
+        let arguments = format!(
+            "{{\"object_id\":\"{}\",{}}}",
+            lower_hex(&object_id),
+            metadata_page_arguments_fields(page_limit, cursor)
+        );
+        let (records, next_cursor) =
+            request_metadata_page(&mut self.transport, "metadata.dependencies.list", arguments)?;
+        let records = discovery_records(records)?;
+        let mut dependencies = Vec::with_capacity(records.len());
+        let mut previous_key = None;
+        for mut record in records {
+            if record.len() != 3 {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let dependent_id = response_id(&record, "dependent_id")?;
+            let referenced_id = response_id(&record, "referenced_id")?;
+            let kind = match record.remove("kind") {
+                Some(ResponseValue::String(value)) => match value.as_str() {
+                    "owned_child" => {
+                        crate::metadata_discovery::AdministrativeDependencyKind::OwnedChild
+                    }
+                    "expression_reference" => {
+                        crate::metadata_discovery::AdministrativeDependencyKind::ExpressionReference
+                    }
+                    "foreign_key_target" => {
+                        crate::metadata_discovery::AdministrativeDependencyKind::ForeignKeyTarget
+                    }
+                    "backing_index" => {
+                        crate::metadata_discovery::AdministrativeDependencyKind::BackingIndex
+                    }
+                    "authority" => {
+                        crate::metadata_discovery::AdministrativeDependencyKind::Authority
+                    }
+                    _ => return Err(ClientSubmitError::InvalidResponse),
+                },
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let key = (dependent_id, referenced_id, kind as u8);
+            if previous_key.is_some_and(|previous| previous >= key) {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            previous_key = Some(key);
+            dependencies.push(crate::metadata_discovery::AdministrativeDependency {
+                dependent_id,
+                referenced_id,
+                kind,
+            });
+        }
+        Ok(MetadataPage {
+            records: dependencies,
+            next_cursor,
+        })
+    }
+
     /// Create a login identity. New users have no credential until a token is issued.
     pub fn create_user(&mut self, name: &str) -> Result<AdminIdentityResult, ClientSubmitError> {
         self.create_identity("users.create", name, "user_id")
@@ -3361,6 +3425,7 @@ fn discovery_page_value(
         "metadata.constraints.list" => "constraints",
         "metadata.grants.list" => "grants",
         "metadata.policies.list" => "policies",
+        "metadata.dependencies.list" => "dependencies",
         _ => return Err(ClientSubmitError::InvalidResponse),
     };
     let mut fields = parse_flat_response(payload)?;
