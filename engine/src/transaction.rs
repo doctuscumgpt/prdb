@@ -606,6 +606,12 @@ impl InvocationCoordination {
             .is_some_and(InvocationAdmissionPermit::cancellation_requested)
     }
 
+    fn update_write_set_usage(&self, staged_rows: usize, staged_value_bytes: usize) {
+        if let Some(permit) = &self._admission_permit {
+            permit.update_write_set_usage(staged_rows, staged_value_bytes);
+        }
+    }
+
     fn mark_committing(&self) -> bool {
         self._admission_permit
             .as_ref()
@@ -5532,6 +5538,7 @@ impl<'db> InvocationTransaction<'db> {
     /// ABORTED outcome. A client that failed START has no transaction result.
     pub(crate) fn discard_unstarted_admission(&mut self) {
         self.overlay.abort();
+        self.coordination.update_write_set_usage(0, 0);
         self.base_versions.clear();
         self.index_writes.clear();
         self.catalog_guards.clear();
@@ -7360,7 +7367,19 @@ impl<'db> InvocationTransaction<'db> {
             return Err(TransactionError::ScanStillActive);
         }
         self.capture_base_version(id)?;
-        self.overlay.put(id, payload)?;
+        if let Err(error) = self.overlay.put(id, payload) {
+            self.coordination.update_write_set_usage(0, 0);
+            return Err(error.into());
+        }
+        self.update_write_set_usage()?;
+        Ok(())
+    }
+
+    fn update_write_set_usage(&self) -> Result<(), TransactionError> {
+        self.coordination.update_write_set_usage(
+            self.overlay.staged_row_count()?,
+            self.overlay.staged_value_bytes()?,
+        );
         Ok(())
     }
 
@@ -7742,6 +7761,7 @@ impl<'db> InvocationTransaction<'db> {
         if base_version.is_none() {
             if current.is_some() {
                 self.overlay.remove(&id)?;
+                self.update_write_set_usage()?;
                 self.base_versions.remove(&id);
                 self.index_writes.retain(|_, write| write.row_id != id);
                 self.index_bytes = self.index_writes.keys().map(Vec::len).sum();
@@ -7749,13 +7769,18 @@ impl<'db> InvocationTransaction<'db> {
             }
             return Err(TransactionError::NotFound);
         }
-        self.overlay.delete(id)?;
+        if let Err(error) = self.overlay.delete(id) {
+            self.coordination.update_write_set_usage(0, 0);
+            return Err(error.into());
+        }
+        self.update_write_set_usage()?;
         Ok(())
     }
 
     /// Roll back all staged work and make this invocation terminal.
     pub fn abort(&mut self) -> Result<(), TransactionError> {
         self.overlay.abort();
+        self.coordination.update_write_set_usage(0, 0);
         self.base_versions.clear();
         self.index_writes.clear();
         self.loaded_schemas.clear();

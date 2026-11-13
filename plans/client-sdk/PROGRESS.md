@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SDK-14: expose staged invocation usage — verified
+
+- Contract: [client SDK](../../specs/client-sdk.md), [client protocol](../../specs/client-protocol.md), and [operational metadata](../../specs/operational-metadata.md). Administrator runtime records show the current staged row count and payload bytes without exposing row contents or index bookkeeping.
+- Implementation: the invocation overlay reports staged rows and payload bytes to the admission registry; admin pages, typed decoding, and `prdb-client runtime-list` expose both values. Usage changes invalidate admin page cursors.
+- Regression: the TCP client fixture decodes nonzero usage; storage tests verify stage, replacement, delete-before-commit, and cursor invalidation; server/CLI integration asserts the live page output.
+- Verification: the intended decoder failure was observed. Focused client, storage/protocol, and delegated process tests passed. Workspace build, formatting, warning-denied Clippy, TinyCC SDK tests/fixture, release-profile validation, and the full serial delegated-cgroup workspace suite passed with zero ignored tests. `git diff --check` passed.
+- Remaining: transaction, wait, job, memory, and counter runtime registries remain open under OM-2.
+
 ## SDK-13: expose invocation workload class — verified
 
 - Contract: [client SDK](../../specs/client-sdk.md), [client protocol](../../specs/client-protocol.md), and [operational metadata](../../specs/operational-metadata.md). Administrator runtime invocation records identify each invocation as `operational` or `analytical` without exposing query contents or runtime internals.

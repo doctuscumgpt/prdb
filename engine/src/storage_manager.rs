@@ -198,6 +198,8 @@ pub struct AdministrativeInvocationStatus {
     pub principal_id: [u8; 16],
     pub workload_class: crate::supervisor::WorkloadClass,
     pub status: InvocationStatus,
+    pub staged_rows: usize,
+    pub staged_value_bytes: usize,
     pub cancellation_reason_code: Option<u16>,
 }
 
@@ -1665,6 +1667,8 @@ struct LiveInvocation {
     // Keep ambiguous commit outcomes visible as COMMITTING until a reopened
     // Database handle resolves them from redb's recovered durable state.
     commit_uncertain: bool,
+    staged_rows: usize,
+    staged_value_bytes: usize,
     cancellation_reason_code: Option<u16>,
     owner_generation: u128,
 }
@@ -1684,8 +1688,12 @@ struct LiveInvocationRegistry {
 }
 
 impl LiveInvocationRegistry {
-    fn advance_owner_generation(&mut self, principal_id: [u8; 16]) {
+    fn advance_generation(&mut self) {
         self.generation = self.generation.wrapping_add(1).max(1);
+    }
+
+    fn advance_owner_generation(&mut self, principal_id: [u8; 16]) {
+        self.advance_generation();
         let generation = self.generation;
         for invocation in self.entries.values_mut() {
             if invocation.principal_id == principal_id {
@@ -1753,6 +1761,8 @@ impl InvocationAdmissionState {
                 deadline_at_us,
                 phase: LiveInvocationPhase::Active,
                 commit_uncertain: false,
+                staged_rows: 0,
+                staged_value_bytes: 0,
                 cancellation_reason_code: None,
                 owner_generation: 0,
             },
@@ -1894,6 +1904,8 @@ impl InvocationAdmissionState {
                             cancellation_requested: invocation.cancellation_reason_code.is_some(),
                         },
                     },
+                    staged_rows: invocation.staged_rows,
+                    staged_value_bytes: invocation.staged_value_bytes,
                     cancellation_reason_code: invocation.cancellation_reason_code,
                 },
             )
@@ -1915,6 +1927,22 @@ impl InvocationAdmissionState {
 }
 
 impl InvocationAdmissionPermit {
+    pub(crate) fn update_write_set_usage(&self, staged_rows: usize, staged_value_bytes: usize) {
+        let mut live = self
+            .state
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(invocation) = live.entries.get_mut(&self.invocation_id)
+            && (invocation.staged_rows != staged_rows
+                || invocation.staged_value_bytes != staged_value_bytes)
+        {
+            invocation.staged_rows = staged_rows;
+            invocation.staged_value_bytes = staged_value_bytes;
+            live.advance_generation();
+        }
+    }
+
     pub(crate) fn mark_commit_uncertain(&self) {
         let mut live = self
             .state

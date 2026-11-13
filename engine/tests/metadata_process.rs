@@ -2799,6 +2799,8 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         assert!(runtime_output.contains("\"consistency\":\"best_effort\""));
         assert!(runtime_output.contains("\"invocations\":["));
         assert!(runtime_output.contains("\"workload_class\":\"operational\""));
+        assert!(runtime_output.contains("\"staged_rows\":0"));
+        assert!(runtime_output.contains("\"staged_value_bytes\":0"));
         let active_status = admin
             .status(invocation_id)
             .map_err(|error| format!("active STATUS failed: {error:?}"))?;

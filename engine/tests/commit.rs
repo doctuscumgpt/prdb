@@ -10472,6 +10472,13 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     let mut first = storage.begin_invocation(id(232), admin_id, retention_deadline_us, 2, 64)?;
     let mut second =
         storage.begin_invocation(id(233), ordinary_id, retention_deadline_us, 2, 64)?;
+    first.stage_put(
+        prdb_engine::overlay::RowId {
+            table: id(250),
+            row: id(251),
+        },
+        b"value",
+    )?;
 
     assert!(matches!(
         storage.list_runtime_invocations(ordinary_id, now_us, 1, None),
@@ -10481,6 +10488,8 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert_eq!(first_page.invocations.len(), 1);
     assert_eq!(first_page.invocations[0].invocation_id, id(232));
     assert_eq!(first_page.invocations[0].principal_id, admin_id);
+    assert_eq!(first_page.invocations[0].staged_rows, 1);
+    assert_eq!(first_page.invocations[0].staged_value_bytes, 5);
     assert_eq!(first_page.observed_at_us, now_us);
     assert_eq!(
         first_page.consistency,
@@ -10495,6 +10504,33 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert_eq!(second_page.invocations.len(), 1);
     assert_eq!(second_page.invocations[0].invocation_id, id(233));
     assert_eq!(second_page.invocations[0].principal_id, ordinary_id);
+    assert_eq!(second_page.invocations[0].staged_rows, 0);
+    assert_eq!(second_page.invocations[0].staged_value_bytes, 0);
+    let usage_cursor = storage
+        .list_runtime_invocations(admin_id, now_us, 1, None)?
+        .continuation
+        .unwrap();
+    first.stage_put(
+        prdb_engine::overlay::RowId {
+            table: id(250),
+            row: id(251),
+        },
+        b"new",
+    )?;
+    assert!(matches!(
+        storage.list_runtime_invocations(admin_id, now_us, 1, Some(&usage_cursor)),
+        Err(AdministrativeInvocationListError::StaleCursor)
+    ));
+    let replacement_page = storage.list_runtime_invocations(admin_id, now_us, 1, None)?;
+    assert_eq!(replacement_page.invocations[0].staged_rows, 1);
+    assert_eq!(replacement_page.invocations[0].staged_value_bytes, 3);
+    first.stage_delete(prdb_engine::overlay::RowId {
+        table: id(250),
+        row: id(251),
+    })?;
+    let deleted_page = storage.list_runtime_invocations(admin_id, now_us, 1, None)?;
+    assert_eq!(deleted_page.invocations[0].staged_rows, 0);
+    assert_eq!(deleted_page.invocations[0].staged_value_bytes, 0);
     assert!(matches!(
         storage.get_administrative_invocation_status(admin_id, id(233), now_us)?,
         Some(snapshot) if matches!(snapshot.status, InvocationStatus::Active { .. })
@@ -11211,6 +11247,13 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert!(token_inventory.contains("\"revoked\":false"));
     assert!(!token_inventory.contains("verifier"));
     assert!(!token_inventory.contains("secret"));
+    first.stage_put(
+        prdb_engine::overlay::RowId {
+            table: id(250),
+            row: id(251),
+        },
+        b"value",
+    )?;
     let runtime_page = prdb_engine::supervisor_ipc::dispatch_gateway_client_request(
         prdb_engine::ipc::ServiceRole::Gateway,
         &storage,
@@ -11241,6 +11284,8 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     )));
     assert!(runtime_page.contains("\"consistency\":\"best_effort\""));
     assert!(runtime_page.contains("\"workload_class\":\"operational\""));
+    assert!(runtime_page.contains("\"staged_rows\":1"));
+    assert!(runtime_page.contains("\"staged_value_bytes\":5"));
     let runtime_cursor = runtime_page
         .split("\"next_cursor\":\"")
         .nth(1)

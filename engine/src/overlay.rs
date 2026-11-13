@@ -143,6 +143,14 @@ impl Overlay {
         Ok(self.rows.len())
     }
 
+    /// Number of bytes in staged row payloads, excluding row IDs and index metadata.
+    pub(crate) fn staged_value_bytes(&self) -> Result<usize, OverlayError> {
+        if self.aborted {
+            return Err(OverlayError::Aborted);
+        }
+        Ok(self.bytes)
+    }
+
     /// Read the latest staged value first, falling back to the caller's pinned snapshot.
     /// The snapshot lookup is only invoked when this overlay has no entry for the row.
     pub fn read<'overlay, 'snapshot, F>(

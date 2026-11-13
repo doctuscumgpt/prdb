@@ -4007,6 +4007,10 @@ impl ClientConnectionSession {
                     push_json_optional_i64(&mut payload, started_at_us);
                     payload.push_str(" ,\"deadline_at_us\":");
                     push_json_optional_i64(&mut payload, deadline_at_us);
+                    payload.push_str(" ,\"staged_rows\":");
+                    payload.push_str(&invocation.staged_rows.to_string());
+                    payload.push_str(" ,\"staged_value_bytes\":");
+                    payload.push_str(&invocation.staged_value_bytes.to_string());
                     payload.push_str(" ,\"cancellation_requested\":");
                     payload.push_str(if cancellation_requested {
                         "true"

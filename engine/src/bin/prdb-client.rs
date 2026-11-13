@@ -1771,7 +1771,7 @@ fn runtime_list(
             prdb_engine::client_submit::RuntimeInvocationState::Aborted => "aborted",
         };
         print!(
-            "{{\"invocation_id\":{},\"principal_id\":{},\"workload_class\":{},\"state\":{},\"started_at_us\":{},\"deadline_at_us\":{},\"cancellation_requested\":{},\"cancellation_reason_code\":{}}}",
+            "{{\"invocation_id\":{},\"principal_id\":{},\"workload_class\":{},\"state\":{},\"started_at_us\":{},\"deadline_at_us\":{},\"staged_rows\":{},\"staged_value_bytes\":{},\"cancellation_requested\":{},\"cancellation_reason_code\":{}}}",
             json_string(&lower_hex(&invocation.invocation_id)),
             json_string(&lower_hex(&invocation.principal_id)),
             json_string(match invocation.workload_class {
@@ -1785,6 +1785,8 @@ fn runtime_list(
             invocation
                 .deadline_at_us
                 .map_or_else(|| "null".to_owned(), |v| v.to_string()),
+            invocation.staged_rows,
+            invocation.staged_value_bytes,
             invocation.cancellation_requested,
             invocation
                 .cancellation_reason_code
