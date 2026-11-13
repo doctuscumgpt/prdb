@@ -1097,6 +1097,21 @@ pub fn decode_visible_column_record_column_name(payload: &[u8]) -> Option<(&str,
     Some((value, end))
 }
 
+pub const EXECUTOR_SCAN_INDEX_RANGE_COLUMN_COUNT_RECORD_COLUMN_COUNT_OFFSET: u32 = 0;
+pub const EXECUTOR_SCAN_INDEX_RANGE_COLUMN_COUNT_RECORD_HEADER_BYTES: u32 = 2;
+pub fn encode_executor_scan_index_range_column_count_record(column_count: u16) -> [u8; 2] {
+    let mut payload = [0u8; 2];
+    payload[0..2].copy_from_slice(&column_count.to_be_bytes());
+    payload
+}
+
+pub fn decode_executor_scan_index_range_column_count_record(payload: &[u8]) -> Option<u16> {
+    if payload.len() != 2 {
+        return None;
+    }
+    Some(u16::from_be_bytes(payload[0..2].try_into().ok()?))
+}
+
 pub const SCALAR_VALUE_RECORD_TYPE_CODE_OFFSET: u32 = 0;
 pub const SCALAR_VALUE_RECORD_VALUE_LENGTH_OFFSET: u32 = 1;
 pub const SCALAR_VALUE_RECORD_HEADER_BYTES: u32 = 5;

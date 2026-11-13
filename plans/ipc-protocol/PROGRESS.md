@@ -1,5 +1,14 @@
 # Internal IPC Progress
 
+## IPC-2 follow-up: generated index-range request column-count record — implemented
+
+- Contract: the `0x1115` variable tail ends its optional lower/upper scalar records with a big-endian `u16` selected-column count followed by exactly that many 16-byte IDs.
+- Red evidence: the ABI generator regression failed because no shared Rust/C record existed for that count.
+- Implementation: generated the count record and migrated the Rust request encoder/decoder and TinyCC SDK request builder to it. Updated the IPC spec to make the count encoding explicit.
+- Regression: the Rust request wire-vector checks the exact count bytes at the boundary between scalar bounds and column IDs; existing TinyCC executor fixtures compare the request against expected bytes.
+- Verification: generator tests/drift check, focused Rust range codec test, maintained TinyCC SDK tests, sandbox query fixture, locked workspace build, formatting check, warning-denied Clippy, full serial delegated-cgroup workspace suite (zero ignored tests), and `git diff --check` passed.
+- Remaining: SDK consumption, optimizer selection, end-to-end optimized/reference result and error equivalence, and broader malformed process-level IPC coverage remain open.
+
 ## IPC-2 follow-up: generated unique-index probe response records — implemented
 
 - Contract: executor `0x1114` returns exact v1 unavailable/no-match records or a v1 match prefix followed by one executor batch-row record.

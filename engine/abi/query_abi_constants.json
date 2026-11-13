@@ -2038,6 +2038,15 @@
       ]
     },
     {
+      "name": "EXECUTOR_SCAN_INDEX_RANGE_COLUMN_COUNT_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "column_count", "encoding": "u16be" }
+      ],
+      "trailing_fields": []
+    },
+    {
       "name": "SCALAR_VALUE_RECORD",
       "generate_rust_codec": true,
       "generate_c_codec": true,

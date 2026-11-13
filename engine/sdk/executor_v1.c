@@ -121,11 +121,6 @@ int32_t prdb_sdk_executor_open_full_scan_v1(
     return PRDB_SDK_EXECUTOR_OK;
 }
 
-static void write_u16(uint8_t *payload, uint64_t *offset, uint16_t value) {
-    payload[(*offset)++] = (uint8_t)(value >> 8);
-    payload[(*offset)++] = (uint8_t)value;
-}
-
 static void write_u32(uint8_t *payload, uint64_t *offset, uint32_t value) {
     payload[(*offset)++] = (uint8_t)(value >> 24);
     payload[(*offset)++] = (uint8_t)(value >> 16);
@@ -229,7 +224,9 @@ int32_t prdb_sdk_executor_scan_index_range_v1(
             offset += upper_bound->data_len;
         }
     }
-    write_u16(request, &offset, column_count);
+    prdb_encode_executor_scan_index_range_column_count_record(
+        request + offset, column_count);
+    offset += PRDB_EXECUTOR_SCAN_INDEX_RANGE_COLUMN_COUNT_RECORD_HEADER_BYTES;
     if (column_count != 0) {
         memcpy(request + offset, column_ids, (size_t)column_count * 16);
         offset += (uint64_t)column_count * 16;

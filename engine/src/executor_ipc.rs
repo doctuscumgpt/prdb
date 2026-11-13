@@ -449,7 +449,9 @@ impl ScanIndexRangeRequest {
                 append_scalar_value_record(&mut payload, type_code, &bytes)?;
             }
         }
-        payload.extend_from_slice(&column_count.to_be_bytes());
+        payload.extend_from_slice(
+            &generated::encode_executor_scan_index_range_column_count_record(column_count),
+        );
         for column_id in &self.column_ids {
             payload.extend_from_slice(column_id);
         }
@@ -487,15 +489,20 @@ impl ScanIndexRangeRequest {
             };
         let lower = decode_bound()?;
         let upper = decode_bound()?;
-        let count_bytes = payload
-            .get(offset..offset + 2)
+        let count_end = offset
+            .checked_add(
+                generated::EXECUTOR_SCAN_INDEX_RANGE_COLUMN_COUNT_RECORD_HEADER_BYTES as usize,
+            )
             .ok_or(ExecutorRequestError::InvalidPayload)?;
-        let column_count = usize::from(u16::from_be_bytes(
-            count_bytes
-                .try_into()
-                .map_err(|_| ExecutorRequestError::InvalidPayload)?,
-        ));
-        offset += 2;
+        let column_count = usize::from(
+            generated::decode_executor_scan_index_range_column_count_record(
+                payload
+                    .get(offset..count_end)
+                    .ok_or(ExecutorRequestError::InvalidPayload)?,
+            )
+            .ok_or(ExecutorRequestError::InvalidPayload)?,
+        );
+        offset = count_end;
         if index_id == [0; 16]
             || (lower.is_none() && upper.is_none())
             || column_count > crate::tuple::MAX_COLUMNS
@@ -1911,6 +1918,7 @@ mod cancellation_response_tests {
         assert_eq!(&encoded[..2], &[0, 1]);
         assert_eq!(&encoded[2..18], &relation_bytes);
         assert_eq!(&encoded[18..34], &[9; 16]);
+        assert_eq!(&encoded[54..56], &[0, 1]);
         assert_eq!(ScanIndexRangeRequest::decode(&encoded).unwrap(), request);
         assert!(ScanIndexRangeRequest::decode(&encoded[..37]).is_err());
         let mut invalid_bound = encoded.clone();
