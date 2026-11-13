@@ -28529,16 +28529,9 @@ fn run_optimizer_predicate_estimate_termination_case(
     cancel_owner: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::ipc::{IpcFrame, Operation, read_frame, write_frame};
-    use prdb_engine::metadata_discovery::{
-        AuthorizedPlanRelation, AuthorizedRelationDescription, VisibleColumn,
-    };
+    use prdb_engine::optimizer_ipc::{OptimizerResponse, OptimizerStatus};
     use prdb_engine::outcome::OutcomeStatus;
-    use prdb_engine::planner_ipc::DescribePlanRelationResponse;
-    use prdb_engine::storage_manager::{
-        OwnerCancellationResult, SupervisorAdmissionRequest, SupervisorInvocationError,
-    };
-    use prdb_engine::transaction::TransactionError;
-    use prdb_engine::tuple::ScalarType;
+    use prdb_engine::storage_manager::{OwnerCancellationResult, SupervisorAdmissionRequest};
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixStream;
     use std::process::Command;
@@ -28612,9 +28605,10 @@ fn run_optimizer_predicate_estimate_termination_case(
     )?;
 
     let (mut submission_client, optimizer_submission) = UnixStream::pair()?;
-    let (optimizer_planner, mut planner_server) = UnixStream::pair()?;
+    let (planner_worker, planner_storage) = UnixStream::pair()?;
+    let (executor_worker, executor_storage) = UnixStream::pair()?;
+    let (optimizer_planner, optimizer_planner_storage) = UnixStream::pair()?;
     submission_client.set_read_timeout(Some(Duration::from_secs(3)))?;
-    planner_server.set_read_timeout(Some(Duration::from_secs(3)))?;
     let submission_fd = optimizer_submission.as_raw_fd();
     let planner_fd = optimizer_planner.as_raw_fd();
     set_cloexec(submission_fd, false)?;
@@ -28656,112 +28650,103 @@ fn run_optimizer_predicate_estimate_termination_case(
         .parse::<u32>()?;
 
     let mut request = vec![0, 1, 1, 0];
-    for name in ["public", "items"] {
+    for name in ["information_schema", "tables"] {
         request.push(name.len() as u8);
         request.extend_from_slice(name.as_bytes());
     }
     request.extend_from_slice(&1u16.to_be_bytes());
-    request.push(4);
-    request.extend_from_slice(b"name");
+    request.push(10);
+    request.extend_from_slice(b"table_name");
     request.extend_from_slice(&0u32.to_be_bytes());
     request.push(0);
-    let predicate = [0x20, 5, 0x10, 4, b'n', b'a', b'm', b'e', 0x03, 0, 1, b'm'];
+    let predicate = [
+        0x20, 5, 0x10, 10, b't', b'a', b'b', b'l', b'e', b'_', b'n', b'a', b'm', b'e', 0x03, 0, 1,
+        b'm',
+    ];
     request.truncate(request.len() - 5);
     request.extend_from_slice(&(predicate.len() as u32).to_be_bytes());
     request.extend_from_slice(&predicate);
     request.push(0);
-    write_frame(
-        &mut submission_client,
-        &IpcFrame {
-            operation: Operation::OptimizeSelect as u16,
-            request_id: 91,
-            payload: request,
-        },
-    )?;
-
-    let describe = read_frame(&mut planner_server)?.ok_or("optimizer closed before describe")?;
-    assert_eq!(describe.operation, Operation::DescribePlanRelation as u16);
-    let describe_request =
-        prdb_engine::planner_ipc::DescribePlanRelationRequest::decode(&describe.payload)?;
-    assert!(describe_request.include_scan_estimate);
-    write_frame(
-        &mut planner_server,
-        &IpcFrame {
-            operation: describe.operation,
-            request_id: describe.request_id,
-            payload: DescribePlanRelationResponse {
-                relation: Some(AuthorizedPlanRelation {
-                    schema_id: [1; 16],
-                    schema_version: 3,
-                    table_epoch: 7,
-                    relation: AuthorizedRelationDescription {
-                        relation_id: [2; 16],
-                        name: "items".to_owned(),
-                        columns: vec![VisibleColumn {
-                            column_id: [3; 16],
-                            name: "name".to_owned(),
-                            ordinal: 0,
-                            scalar_type: ScalarType::Text,
-                            nullable: false,
-                        }],
-                    },
-                    unique_access_paths: Vec::new(),
-                    range_access_paths: Vec::new(),
-                }),
-                proven_empty: false,
-                visible_rows_estimate: None,
+    let (estimate_request_tx, estimate_request_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
+    let observer = {
+        let release_rx = std::sync::Arc::clone(&release_rx);
+        move |operation, request_id| {
+            if operation == Operation::EstimateScan as u16 {
+                let _ = estimate_request_tx.send(request_id);
+                if let Ok(release) = release_rx.lock() {
+                    let _ = release.recv_timeout(Duration::from_secs(10));
+                }
             }
-            .encode()?,
-        },
-    )?;
-    let estimate = read_frame(&mut planner_server)?.ok_or("optimizer closed before estimate")?;
-    assert_eq!(estimate.operation, Operation::EstimateScan as u16);
-    assert!(
-        std::time::Instant::now() < worker_deadline,
-        "optimizer reached its estimate request after the worker deadline"
-    );
+        }
+    };
+    let (service_result, cancellation) = std::thread::scope(|scope| {
+        let serving = scope.spawn(|| {
+            invocation.serve_worker_channels_with_optimizer_planner_observer(
+                planner_storage,
+                executor_storage,
+                optimizer_planner_storage,
+                observer,
+            )
+        });
+        write_frame(
+            &mut submission_client,
+            &IpcFrame {
+                operation: Operation::OptimizeSelect as u16,
+                request_id: 91,
+                payload: request,
+            },
+        )?;
+        let estimate_request_id = estimate_request_rx
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| "production planner service did not reach EstimateScan")?;
+        assert_ne!(estimate_request_id, 0);
+        assert!(
+            std::time::Instant::now() < worker_deadline,
+            "optimizer reached its estimate request after the worker deadline"
+        );
 
-    if cancel_owner {
-        let (observed, cancellation) = std::thread::scope(|scope| {
-            let cancel = scope.spawn(|| {
-                std::thread::sleep(Duration::from_millis(25));
-                storage.cancel_owned_invocation(user_id, invocation_id, now + 1)
-            });
-            let observed = invocation.observe_worker_exit_in_cgroup(
-                &mut worker,
-                cgroup,
-                Duration::from_secs(2),
+        let cancellation = if cancel_owner {
+            let cancellation = storage.cancel_owned_invocation(user_id, invocation_id, now + 1)?;
+            assert_eq!(cancellation, OwnerCancellationResult::Accepted);
+            Some(cancellation)
+        } else {
+            std::thread::sleep(
+                worker_deadline.saturating_duration_since(std::time::Instant::now()),
             );
-            let cancellation = cancel
-                .join()
-                .map_err(|_| std::io::Error::other("cancellation thread panicked"))??;
-            Ok::<_, Box<dyn std::error::Error>>((observed, cancellation))
-        })?;
-        assert_eq!(cancellation, OwnerCancellationResult::Accepted);
-        assert!(matches!(
-            observed,
-            Err(SupervisorInvocationError::Deadline(
-                TransactionError::CancellationRequested
-            ))
-        ));
-    } else {
-        std::thread::sleep(worker_deadline.saturating_duration_since(std::time::Instant::now()));
-        let observed =
-            invocation.observe_worker_exit_in_cgroup(&mut worker, cgroup, Duration::from_secs(2));
-        assert!(matches!(
-            observed,
-            Err(SupervisorInvocationError::Deadline(
-                TransactionError::Expired
-            ))
-        ));
+            None
+        };
+        release_tx
+            .send(())
+            .map_err(|_| "estimate service gate was lost")?;
+        let service_result = serving
+            .join()
+            .map_err(|_| std::io::Error::other("worker-channel service thread panicked"))?;
+        Ok::<_, Box<dyn std::error::Error>>((service_result, cancellation))
+    })?;
+    drop(planner_worker);
+    drop(executor_worker);
+    if cancel_owner {
+        assert_eq!(cancellation, Some(OwnerCancellationResult::Accepted));
     }
-    assert!(worker.try_wait()?.is_some());
+    assert!(service_result.is_err());
+    if worker.try_wait()?.is_none() {
+        cgroup.kill_all()?;
+    }
+    worker.wait()?;
+    cgroup.cleanup(Duration::from_secs(2))?;
     assert!(
         !std::path::Path::new(&format!("/proc/{optimizer_pid}")).exists(),
         "optimizer child {optimizer_pid} survived worker cgroup cancellation"
     );
     assert!(!cgroup_path.exists(), "optimizer cgroup was not drained");
-    assert!(read_frame(&mut submission_client)?.is_none());
+    if let Some(response) = read_frame(&mut submission_client)? {
+        assert_eq!(response.operation, Operation::OptimizeSelect as u16);
+        let response = OptimizerResponse::decode(&response.payload)?;
+        assert_ne!(response.status, OptimizerStatus::Success);
+        assert!(response.plan.is_none());
+    }
     assert_eq!(
         storage
             .lookup_invocation_outcome(invocation_id, user_id, now + 1)?

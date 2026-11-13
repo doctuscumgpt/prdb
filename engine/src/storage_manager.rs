@@ -1445,10 +1445,32 @@ impl SupervisorInvocation<'_> {
     /// idle, stop every peer after handler failure, and drain all handlers.
     pub fn serve_worker_channels(
         &self,
+        planner_stream: std::os::unix::net::UnixStream,
+        executor_stream: std::os::unix::net::UnixStream,
+        optimizer_planner_stream: std::os::unix::net::UnixStream,
+    ) -> Result<(), SupervisorInvocationError> {
+        self.serve_worker_channels_with_optimizer_planner_observer(
+            planner_stream,
+            executor_stream,
+            optimizer_planner_stream,
+            |_, _| {},
+        )
+    }
+
+    /// Serve the production worker channels while observing optimizer planner
+    /// requests immediately before storage dispatch. The callback runs on the
+    /// optimizer-planner handler thread without holding the invocation lock.
+    #[doc(hidden)]
+    pub fn serve_worker_channels_with_optimizer_planner_observer<F>(
+        &self,
         mut planner_stream: std::os::unix::net::UnixStream,
         mut executor_stream: std::os::unix::net::UnixStream,
         mut optimizer_planner_stream: std::os::unix::net::UnixStream,
-    ) -> Result<(), SupervisorInvocationError> {
+        observer: F,
+    ) -> Result<(), SupervisorInvocationError>
+    where
+        F: Fn(u16, u64) + Send + Sync,
+    {
         use std::net::Shutdown;
         let stop_streams = || -> std::io::Result<(
             std::os::unix::net::UnixStream,
@@ -1519,7 +1541,26 @@ impl SupervisorInvocation<'_> {
             let optimizer_completed = completed_tx.clone();
             let optimizer = scope.spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    self.serve_planner(&mut optimizer_planner_stream)
+                    let _lease = self.enter_worker_channel()?;
+                    let mut observe_and_check = |operation, request_id| {
+                        observer(operation, request_id);
+                        self.check_worker_deadline().map_err(|error| match error {
+                            SupervisorInvocationError::Deadline(transaction_error) => {
+                                crate::planner_ipc::PlannerConnectionError::Request(
+                                    crate::planner_ipc::PlannerRequestError::Transaction(
+                                        transaction_error,
+                                    ),
+                                )
+                            }
+                            _ => crate::planner_ipc::PlannerConnectionError::SharedInvocationUnavailable,
+                        })
+                    };
+                    crate::planner_ipc::serve_planner_shared_with_observer(
+                        &mut optimizer_planner_stream,
+                        &self.transaction,
+                        &mut observe_and_check,
+                    )
+                    .map_err(SupervisorInvocationError::Planner)
                 }))
                 .unwrap_or(Err(SupervisorInvocationError::WorkerHandlerPanicked));
                 if result.is_err() {

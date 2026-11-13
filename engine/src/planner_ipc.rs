@@ -1120,6 +1120,22 @@ pub fn serve_planner_shared<S: Read + Write>(
     stream: &mut S,
     invocation: &Arc<Mutex<Option<crate::transaction::InvocationTransaction<'_>>>>,
 ) -> Result<(), PlannerConnectionError> {
+    serve_planner_shared_with_observer(stream, invocation, |_, _| Ok(()))
+}
+
+/// Variant of the shared planner service that observes optimizer-planner
+/// request headers before dispatch. This is used by the supervisor's bounded
+/// channel instrumentation and deterministic service tests; callbacks run
+/// without the invocation mutex held.
+pub fn serve_planner_shared_with_observer<S, F>(
+    stream: &mut S,
+    invocation: &Arc<Mutex<Option<crate::transaction::InvocationTransaction<'_>>>>,
+    mut on_request: F,
+) -> Result<(), PlannerConnectionError>
+where
+    S: Read + Write,
+    F: FnMut(u16, u64) -> Result<(), PlannerConnectionError>,
+{
     let mut state = crate::transaction::PlannerMetadataSessionState::default();
     let mut request_ids = std::collections::HashSet::new();
     loop {
@@ -1138,6 +1154,10 @@ pub fn serve_planner_shared<S: Read + Write>(
         if !request_ids.insert(request.request_id) {
             abort_shared_planner_invocation(invocation)?;
             return Err(PlannerConnectionError::DuplicateRequestId);
+        }
+        if let Err(error) = on_request(request.operation, request.request_id) {
+            abort_shared_planner_invocation(invocation)?;
+            return Err(error);
         }
         let response = {
             let mut invocation = match invocation.lock() {
