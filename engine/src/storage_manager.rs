@@ -289,7 +289,6 @@ pub struct AdministrativeInvocationPage {
     pub outcome_maintenance_passes_total: u64,
     pub outcome_maintenance_failures_total: u64,
     pub outcomes_pruned_total: u64,
-    pub redb_cache_used_bytes: u64,
     pub fence_waits: Vec<crate::ddl_fence::DdlFenceWaitStatus>,
     pub fence_waits_truncated: bool,
     pub continuation: Option<AdministrativeInvocationCursor>,
@@ -10508,8 +10507,6 @@ impl<'db> StorageManager<'db> {
         if !is_administrator {
             return Err(AdministrativeInvocationListError::Unauthorized);
         }
-        let redb_cache_used_bytes =
-            u64::try_from(self.database.cache_stats().used_bytes()).unwrap_or(u64::MAX);
         let observed_at = Instant::now();
         let projection = self.admissions.administrative_page(
             authenticated_administrator_id,
@@ -10535,7 +10532,6 @@ impl<'db> StorageManager<'db> {
             outcome_maintenance_passes_total: projection.outcome_maintenance_passes_total,
             outcome_maintenance_failures_total: projection.outcome_maintenance_failures_total,
             outcomes_pruned_total: projection.outcomes_pruned_total,
-            redb_cache_used_bytes,
             fence_waits,
             fence_waits_truncated,
             continuation: projection.continuation,

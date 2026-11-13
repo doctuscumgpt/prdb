@@ -5171,20 +5171,46 @@ fn managed_cancellation_releases_snapshot_admission_during_write_pressure()
         );
         let mut samples = 1;
         first_commit.wait();
+        let first_monitoring_page = storage.list_runtime_invocations(
+            admin_user_id,
+            now + 3,
+            prdb_engine::storage_manager::MAX_ADMIN_INVOCATION_PAGE,
+            None,
+        )?;
+        assert!(
+            first_monitoring_page
+                .invocations
+                .iter()
+                .any(|invocation| invocation.invocation_id == [0x30; 16])
+        );
+        let mut monitoring_pages = 1;
         while !completed.load(Ordering::Acquire) && !writer.is_finished() {
             assert_eq!(
                 retained.read(id(1))?,
                 original_value.clone(),
                 "cancellation or concurrent commits changed the retained snapshot"
             );
+            let page = storage.list_runtime_invocations(
+                admin_user_id,
+                now + i64::from(samples + 3),
+                prdb_engine::storage_manager::MAX_ADMIN_INVOCATION_PAGE,
+                None,
+            )?;
+            assert!(
+                page.invocations
+                    .iter()
+                    .any(|invocation| invocation.invocation_id == [0x30; 16])
+            );
+            monitoring_pages += 1;
             samples += 1;
             std::thread::yield_now();
         }
         writer.join().expect("pressure writer thread");
-        Ok::<_, Box<dyn std::error::Error>>(samples)
+        Ok::<_, Box<dyn std::error::Error>>((samples, monitoring_pages))
     })?;
+    assert!(samples.1 > 0, "monitoring did no work during the writes");
     assert!(
-        samples > 0,
+        samples.0 > 0,
         "the retained reader did no work during the writes"
     );
 

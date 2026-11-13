@@ -2858,7 +2858,6 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         assert!(runtime_counter("outcome_maintenance_passes_total") > 0);
         assert_eq!(runtime_counter("outcome_maintenance_failures_total"), 0);
         let _ = runtime_counter("outcomes_pruned_total");
-        let _ = runtime_counter("redb_cache_used_bytes");
         let audit_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
             .args([
                 "audit-list",
