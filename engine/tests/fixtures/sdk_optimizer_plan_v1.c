@@ -739,6 +739,7 @@ typedef struct resolve_context {
     uint8_t probe_response[4096];
     uint8_t range_response[4096];
     uint32_t range_response_len;
+    uint32_t range_response_too_small;
     uint32_t batch_response_len;
     uint32_t probe_response_len;
     uint32_t probe_calls;
@@ -909,6 +910,8 @@ static int32_t resolve_plan_relation(void *context, uint16_t operation,
                request[42] == 0 && request[43] == 1);
         assert(request[44] == 0 && request[45] == 0 && request[46] == 4);
         ++resolved->range_calls;
+        if (resolved->range_response_too_small != 0)
+            callback_status = PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
         source = resolved->range_response;
         source_len = resolved->range_response_len;
     } else if (operation == PRDB_SDK_EXECUTOR_OP_STAGE_DELETE) {
@@ -1581,6 +1584,21 @@ int main(void) {
            PRDB_SDK_OPTIMIZER_PLAN_OK);
     assert(total_rows == 1 && projected_rows_seen == 1 &&
            resolve.range_calls == 3 && resolve.calls == 6);
+    resolve.range_response_too_small = 1;
+    resolve.calls = 0;
+    resolve.cancellation_check_calls = 0;
+    projected_rows_seen = 0;
+    assert(prdb_sdk_optimizer_execute_unfiltered_plan_v1(
+               &host, ranged_plan, ranged_plan_len, 2,
+               sizeof(batch_response), response, sizeof(response),
+               scan_response, sizeof(scan_response), batch_response,
+               sizeof(batch_response), &acquired_relation,
+               sizeof(acquired_relation), acquired_columns, 4, source_cells, 4,
+               projected_values, 1, on_projected_row, NULL, &total_rows) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(total_rows == 1 && projected_rows_seen == 1 &&
+           resolve.range_calls == 4 && resolve.calls == 6);
+    resolve.range_response_too_small = 0;
     resolve.batch_response_len = build_continuing_row_batch(
         resolve.batch_response);
     resolve.calls = 0;

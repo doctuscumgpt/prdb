@@ -53,6 +53,12 @@
 - Verification: the focused `unique_constraint_uses_its_backing_index_for_invocation_writes` regression passed. Locked workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed; the suite included 195 library tests, 148 commit tests, 74 transaction tests, 5 tuple tests, and zero ignored tests across all targets. `git diff --check` passed.
 - Scope: this proves storage result equivalence for the tested exact key and same authorization snapshot; end-to-end timing against forced SDK scan fallback and wider hidden-data/error equivalence cases remain open.
 
+## OP-5 follow-up: cover explicit range response-capacity fallback — verified
+
+- Regression: the maintained TinyCC optimizer fixture now makes the range executor callback return `PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL` and verifies the runner falls back to the authorized scan, returns the same projected row, and completes with the expected executor call counts. This directly covers the oversized-response branch alongside the existing `Unavailable` fallback case.
+- Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed, including `sdk-optimizer-plan-v1` and the full maintained SDK executable suite. `git diff --check` passed.
+- Scope: the fallback behavior was already implemented; this increment adds regression coverage. Broader hidden-data/error equivalence and end-to-end SQL setup/result timing remain open.
+
 ## OP-5 follow-up: repeat point/range storage latency against reference scan — measured
 
 - The same catalog-backed regression has an opt-in `PRDB_BENCH_INDEX_ACCESS` profile. It seeds 4,096 additional indexed BYTEA rows plus one exact target, then measures 11 point probes, bounded exact-key ranges, and full authorized scan-plus-filter operations in one pinned invocation. Every measured result is checked against the same expected row.
