@@ -12,6 +12,21 @@ static prdb_sdk_value_v1 value(uint32_t state, uint32_t type,
     return result;
 }
 
+static void write_be_i32(int32_t value, uint8_t output[4]) {
+    uint32_t bits = (uint32_t)value;
+    output[0] = (uint8_t)(bits >> 24);
+    output[1] = (uint8_t)(bits >> 16);
+    output[2] = (uint8_t)(bits >> 8);
+    output[3] = (uint8_t)bits;
+}
+
+static void write_be_i64(int64_t value, uint8_t output[8]) {
+    uint64_t bits = (uint64_t)value;
+    for (size_t index = 0; index < 8; ++index) {
+        output[index] = (uint8_t)(bits >> (56 - index * 8));
+    }
+}
+
 int main(void) {
     static const uint8_t integer_bytes[] = {0, 0, 0, 42};
     static const uint8_t text_bytes[] = {'o', 'k'};
@@ -121,6 +136,35 @@ int main(void) {
         assert(prdb_sdk_value_validate_v1(&fixed_value) ==
                PRDB_SDK_VALUE_VALID);
     }
+
+    uint8_t temporal_bytes[8];
+    prdb_sdk_value_v1 temporal =
+        value(PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_DATE,
+              temporal_bytes, 4);
+    write_be_i32(-719162, temporal_bytes);
+    assert(prdb_sdk_value_validate_v1(&temporal) == PRDB_SDK_VALUE_VALID);
+    write_be_i32(2932896, temporal_bytes);
+    assert(prdb_sdk_value_validate_v1(&temporal) == PRDB_SDK_VALUE_VALID);
+    write_be_i32(-719163, temporal_bytes);
+    assert(prdb_sdk_value_validate_v1(&temporal) ==
+           PRDB_SDK_VALUE_INVALID_VALUE);
+    write_be_i32(2932897, temporal_bytes);
+    assert(prdb_sdk_value_validate_v1(&temporal) ==
+           PRDB_SDK_VALUE_INVALID_VALUE);
+
+    temporal.type_code = PRDB_SDK_VALUE_TYPE_TIMESTAMPTZ;
+    temporal.data_len = 8;
+    write_be_i64(-62135596800000000LL, temporal_bytes);
+    assert(prdb_sdk_value_validate_v1(&temporal) == PRDB_SDK_VALUE_VALID);
+    write_be_i64(253402300799999999LL, temporal_bytes);
+    assert(prdb_sdk_value_validate_v1(&temporal) == PRDB_SDK_VALUE_VALID);
+    write_be_i64(-62135596800000001LL, temporal_bytes);
+    assert(prdb_sdk_value_validate_v1(&temporal) ==
+           PRDB_SDK_VALUE_INVALID_VALUE);
+    write_be_i64(253402300800000000LL, temporal_bytes);
+    assert(prdb_sdk_value_validate_v1(&temporal) ==
+           PRDB_SDK_VALUE_INVALID_VALUE);
+
     malformed = value(PRDB_SDK_VALUE_STATE_VALUE,
                       PRDB_SDK_VALUE_TYPE_BYTEA, 0, 0);
     assert(prdb_sdk_value_validate_v1(&malformed) == PRDB_SDK_VALUE_VALID);

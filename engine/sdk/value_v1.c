@@ -2,6 +2,11 @@
 
 #include <stddef.h>
 
+static uint32_t read_be_u32(const uint8_t *bytes);
+static uint64_t read_be_u64(const uint8_t *bytes);
+static int32_t signed_i32(uint32_t bits);
+static int64_t signed_i64(uint64_t bits);
+
 static int valid_utf8(const uint8_t *bytes, size_t length) {
     size_t offset = 0;
 
@@ -118,6 +123,20 @@ int32_t prdb_sdk_value_validate_v1(const prdb_sdk_value_v1 *value) {
     length = (size_t)value->data_len;
     if (value->type_code == PRDB_SDK_VALUE_TYPE_BOOLEAN && value->data[0] > 1) {
         return PRDB_SDK_VALUE_INVALID_VALUE;
+    }
+    if (value->type_code == PRDB_SDK_VALUE_TYPE_DATE) {
+        int32_t days = signed_i32(read_be_u32(value->data));
+        if (days < PRDB_SDK_VALUE_DATE_MIN_DAYS ||
+            days > PRDB_SDK_VALUE_DATE_MAX_DAYS) {
+            return PRDB_SDK_VALUE_INVALID_VALUE;
+        }
+    }
+    if (value->type_code == PRDB_SDK_VALUE_TYPE_TIMESTAMPTZ) {
+        int64_t micros = signed_i64(read_be_u64(value->data));
+        if (micros < PRDB_SDK_VALUE_TIMESTAMPTZ_MIN_MICROS ||
+            micros > PRDB_SDK_VALUE_TIMESTAMPTZ_MAX_MICROS) {
+            return PRDB_SDK_VALUE_INVALID_VALUE;
+        }
     }
     if ((value->type_code == PRDB_SDK_VALUE_TYPE_TEXT ||
          value->type_code == PRDB_SDK_VALUE_TYPE_VARCHAR) &&

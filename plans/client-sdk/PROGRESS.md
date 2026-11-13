@@ -649,3 +649,10 @@
 - Regression: the authorized runtime response lacked the field before implementation. Boundary coverage checks all ranges and sub-microsecond precision; storage integration verifies an errored managed commit increments one bucket; TCP decoding and saturation tests cover the wire contract. The authenticated gateway/supervisor CLI test now asserts the policy-denial, staged-byte, and latency-bucket fields in a real `runtime-list` response.
 - Verification: focused storage/protocol/TCP tests and the delegated multi-process metadata test; workspace build/fmt/Clippy; TinyCC tests and fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite with zero ignored tests; and `git diff --check` passed.
 - Remaining: further operational metadata items remain open.
+
+## SDK value validation: DATE and TIMESTAMPTZ ranges — implemented
+
+- Behavior: the borrowed C value validator and SQL parameter binder reject DATE days outside `-719162..=2932896` and TIMESTAMPTZ microseconds outside `-62135596800000000..=253402300799999999`, matching the storage tuple contract. Public bound macros expose the canonical limits.
+- Regression: maintained TinyCC fixtures cover both endpoints and one value beyond each endpoint for direct validation and SQL parameter binding. The new out-of-range DATE assertion failed before the validator change.
+- Contracts: [client SDK](../../specs/client-sdk.md), [DDL and schema](../../specs/ddl-schema.md).
+- Verification: `make -f engine/sdk/Makefile test`, sandbox query fixture build, release-profile validation, and the full serial delegated-cgroup workspace suite passed; the latter reported zero ignored tests. Formatting, workspace build, warning-denied Clippy, and `git diff --check` passed.

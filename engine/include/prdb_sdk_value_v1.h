@@ -22,6 +22,11 @@
 #define PRDB_SDK_VALUE_TYPE_DATE UINT32_C(10)
 #define PRDB_SDK_VALUE_TYPE_TIMESTAMPTZ UINT32_C(11)
 
+#define PRDB_SDK_VALUE_DATE_MIN_DAYS INT32_C(-719162)
+#define PRDB_SDK_VALUE_DATE_MAX_DAYS INT32_C(2932896)
+#define PRDB_SDK_VALUE_TIMESTAMPTZ_MIN_MICROS INT64_C(-62135596800000000)
+#define PRDB_SDK_VALUE_TIMESTAMPTZ_MAX_MICROS INT64_C(253402300799999999)
+
 #define PRDB_SDK_VALUE_VALID INT32_C(0)
 #define PRDB_SDK_VALUE_INVALID_VALUE INT32_C(1)
 #define PRDB_SDK_VALUE_UNSUPPORTED_VERSION INT32_C(2)
@@ -43,7 +48,8 @@ typedef struct prdb_sdk_value_v1 {
     uint64_t data_len;
 } prdb_sdk_value_v1;
 
-/* Validates representation only; it cannot make an invalid native pointer safe. */
+/* Validates canonical encoding and scalar bounds; it cannot make an invalid
+ * native pointer safe to dereference. */
 int32_t prdb_sdk_value_validate_v1(const prdb_sdk_value_v1 *value);
 int32_t prdb_sdk_value_state_v1(const prdb_sdk_value_v1 *value,
                                 uint32_t *state_out);
