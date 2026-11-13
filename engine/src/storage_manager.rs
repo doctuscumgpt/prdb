@@ -276,6 +276,7 @@ pub struct AdministrativeInvocationPage {
     pub pinned_snapshot_count: usize,
     pub oldest_snapshot_pin_age_us: u64,
     pub invocations_admitted_total: u64,
+    pub invocation_conflicts_total: u64,
     pub fence_waits: Vec<crate::ddl_fence::DdlFenceWaitStatus>,
     pub fence_waits_truncated: bool,
     pub continuation: Option<AdministrativeInvocationCursor>,
@@ -1696,6 +1697,7 @@ struct InvocationAdmissionState {
 struct LiveInvocationRegistry {
     generation: u128,
     invocations_admitted_total: u64,
+    invocation_conflicts_total: u64,
     entries: HashMap<[u8; 16], LiveInvocation>,
 }
 
@@ -1705,6 +1707,7 @@ struct AdministrativeInvocationProjection {
     pinned_snapshot_count: usize,
     oldest_snapshot_pin_age_us: u64,
     invocations_admitted_total: u64,
+    invocation_conflicts_total: u64,
 }
 
 impl LiveInvocationRegistry {
@@ -1982,6 +1985,7 @@ impl InvocationAdmissionState {
             pinned_snapshot_count,
             oldest_snapshot_pin_age_us,
             invocations_admitted_total: live.invocations_admitted_total,
+            invocation_conflicts_total: live.invocation_conflicts_total,
         })
     }
 }
@@ -2004,6 +2008,15 @@ impl InvocationAdmissionPermit {
             };
             live.advance_generation();
         }
+    }
+
+    pub(crate) fn record_conflict(&self) {
+        let mut live = self
+            .state
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        live.invocation_conflicts_total = live.invocation_conflicts_total.saturating_add(1);
     }
 
     pub(crate) fn update_write_set_usage(&self, staged_rows: usize, staged_value_bytes: usize) {
@@ -2180,6 +2193,7 @@ fn invocation_registry(
         live: Mutex::new(LiveInvocationRegistry {
             generation: 1,
             invocations_admitted_total: 0,
+            invocation_conflicts_total: 0,
             entries: HashMap::new(),
         }),
         changed: Condvar::new(),
@@ -10212,6 +10226,7 @@ impl<'db> StorageManager<'db> {
             pinned_snapshot_count: projection.pinned_snapshot_count,
             oldest_snapshot_pin_age_us: projection.oldest_snapshot_pin_age_us,
             invocations_admitted_total: projection.invocations_admitted_total,
+            invocation_conflicts_total: projection.invocation_conflicts_total,
             fence_waits,
             fence_waits_truncated,
             continuation: projection.continuation,
@@ -11312,6 +11327,7 @@ mod commit_cancellation_boundary_tests {
             live: std::sync::Mutex::new(LiveInvocationRegistry {
                 generation: 1,
                 invocations_admitted_total: 0,
+                invocation_conflicts_total: 0,
                 entries: std::collections::HashMap::new(),
             }),
             changed: std::sync::Condvar::new(),
@@ -11350,7 +11366,7 @@ mod commit_cancellation_boundary_tests {
     }
 
     #[test]
-    fn successful_admission_counter_saturates_at_u64_max() {
+    fn admission_and_conflict_counters_saturate_at_u64_max() {
         let state = std::sync::Arc::new(InvocationAdmissionState {
             database_key: 0,
             limit: std::sync::atomic::AtomicUsize::new(1),
@@ -11359,6 +11375,7 @@ mod commit_cancellation_boundary_tests {
             live: std::sync::Mutex::new(LiveInvocationRegistry {
                 generation: 1,
                 invocations_admitted_total: u64::MAX,
+                invocation_conflicts_total: u64::MAX,
                 entries: std::collections::HashMap::new(),
             }),
             changed: std::sync::Condvar::new(),
@@ -11372,9 +11389,16 @@ mod commit_cancellation_boundary_tests {
                 Duration::from_secs(60),
             )
             .expect("admission should succeed at a saturated counter");
+        permit.record_conflict();
         assert_eq!(
-            state.live.lock().unwrap().invocations_admitted_total,
-            u64::MAX
+            {
+                let live = state.live.lock().unwrap();
+                (
+                    live.invocations_admitted_total,
+                    live.invocation_conflicts_total,
+                )
+            },
+            (u64::MAX, u64::MAX)
         );
         drop(permit);
     }

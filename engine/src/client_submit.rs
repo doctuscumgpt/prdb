@@ -382,6 +382,7 @@ pub struct RuntimeInvocationPage {
     pub pinned_snapshot_count: usize,
     pub oldest_snapshot_pin_age_us: u64,
     pub invocations_admitted_total: u64,
+    pub invocation_conflicts_total: u64,
     pub fence_waits: Vec<RuntimeFenceWait>,
     pub fence_waits_truncated: bool,
     pub next_cursor: Option<String>,
@@ -1154,7 +1155,7 @@ impl AdminClient {
         );
         let response = self.transport.exchange(10, payload.into_bytes())?;
         let mut fields = parse_flat_response(&response.payload)?;
-        if fields.len() != 9 {
+        if fields.len() != 10 {
             return Err(ClientSubmitError::InvalidResponse);
         }
         let observed_at_us = response_u64(&mut fields, "observed_at_us")?
@@ -1269,6 +1270,8 @@ impl AdminClient {
             .ok_or(ClientSubmitError::InvalidResponse)?;
         let invocations_admitted_total = response_u64(&mut fields, "invocations_admitted_total")?
             .ok_or(ClientSubmitError::InvalidResponse)?;
+        let invocation_conflicts_total = response_u64(&mut fields, "invocation_conflicts_total")?
+            .ok_or(ClientSubmitError::InvalidResponse)?;
         if pinned_snapshot_count == 0 && oldest_snapshot_pin_age_us != 0 {
             return Err(ClientSubmitError::InvalidResponse);
         }
@@ -1349,6 +1352,7 @@ impl AdminClient {
             pinned_snapshot_count,
             oldest_snapshot_pin_age_us,
             invocations_admitted_total,
+            invocation_conflicts_total,
             fence_waits: decoded_waits,
             fence_waits_truncated,
             next_cursor,

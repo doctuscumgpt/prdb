@@ -4036,6 +4036,7 @@ impl ClientConnectionSession {
                     page.pinned_snapshot_count,
                     page.oldest_snapshot_pin_age_us,
                     page.invocations_admitted_total,
+                    page.invocation_conflicts_total,
                     &page.fence_waits,
                     page.fence_waits_truncated,
                 );
@@ -7140,6 +7141,7 @@ fn encode_fence_waits(
     pinned_snapshot_count: usize,
     oldest_snapshot_pin_age_us: u64,
     invocations_admitted_total: u64,
+    invocation_conflicts_total: u64,
     waits: &[crate::ddl_fence::DdlFenceWaitStatus],
     truncated: bool,
 ) {
@@ -7149,6 +7151,8 @@ fn encode_fence_waits(
     output.push_str(&oldest_snapshot_pin_age_us.to_string());
     output.push_str(",\"invocations_admitted_total\":");
     output.push_str(&invocations_admitted_total.to_string());
+    output.push_str(",\"invocation_conflicts_total\":");
+    output.push_str(&invocation_conflicts_total.to_string());
     output.push_str(",\"fence_waits\":[");
     for (index, wait) in waits.iter().enumerate() {
         if index != 0 {
@@ -7653,11 +7657,11 @@ mod runtime_wait_tests {
             blockers_truncated: false,
         };
         let mut output = String::from("{\"invocations\":[");
-        encode_fence_waits(&mut output, 2, 23, 7, &[wait], true);
+        encode_fence_waits(&mut output, 2, 23, 7, 1, &[wait], true);
         assert_eq!(
             output,
             format!(
-                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"invocations_admitted_total\":7,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
+                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"invocations_admitted_total\":7,\"invocation_conflicts_total\":1,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
                 "01".repeat(16),
                 "02".repeat(16),
                 "03".repeat(16)

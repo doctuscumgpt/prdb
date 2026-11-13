@@ -9198,6 +9198,11 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
             "unexpected CHECK creation race outcomes: insert={insert_result:?}, check={check_result:?}"
         ),
     }
+    let runtime_now_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_micros() as i64;
+    let runtime_page = storage.list_runtime_invocations(actor, runtime_now_us, 1, None)?;
+    assert!(runtime_page.invocation_conflicts_total >= 1);
     prdb_engine::startup::validate_persisted_records(&database)?;
     Ok(())
 }
@@ -10479,7 +10484,6 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         },
         b"value",
     )?;
-
     assert!(matches!(
         storage.list_runtime_invocations(ordinary_id, now_us, 1, None),
         Err(AdministrativeInvocationListError::Unauthorized)
@@ -10493,6 +10497,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert_eq!(first_page.invocations[0].snapshot_pin_count, 1);
     assert_eq!(first_page.pinned_snapshot_count, 2);
     assert!(first_page.oldest_snapshot_pin_age_us > 0);
+    assert_eq!(first_page.invocation_conflicts_total, 0);
     assert_ne!(first_page.invocations[0].transaction_id, [0; 16]);
     assert!(first_page.invocations[0].age_us <= 1_000_000);
     assert!(first_page.fence_waits.is_empty());
@@ -11308,6 +11313,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert!(runtime_page.contains("\"pinned_snapshot_count\":2"));
     assert!(runtime_page.contains("\"oldest_snapshot_pin_age_us\":"));
     assert!(runtime_page.contains("\"invocations_admitted_total\":3"));
+    assert!(runtime_page.contains("\"invocation_conflicts_total\":0"));
     let runtime_cursor = runtime_page
         .split("\"next_cursor\":\"")
         .nth(1)

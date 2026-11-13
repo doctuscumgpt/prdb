@@ -618,6 +618,12 @@ impl InvocationCoordination {
         }
     }
 
+    fn record_conflict(&self) {
+        if let Some(permit) = &self._admission_permit {
+            permit.record_conflict();
+        }
+    }
+
     fn mark_committing(&self) -> bool {
         self._admission_permit
             .as_ref()
@@ -7932,6 +7938,9 @@ impl<'db> InvocationTransaction<'db> {
                 Err(error.into())
             }
             Err(error) => {
+                if matches!(&error, CommitError::Conflict) {
+                    self.coordination.record_conflict();
+                }
                 // The commit transaction has been discarded. Some validation paths
                 // already recorded the abort; preserve that existing decision.
                 match record_aborted_outcome(

@@ -56,10 +56,10 @@
 - Verification: focused storage and TCP tests, workspace build/fmt/Clippy, TinyCC tests and sandbox fixture, release-profile validation, delegated cgroup probe, full serial delegated-cgroup suite (zero ignored), and `git diff --check` passed.
 - Remaining: redb retained-byte/cache telemetry, job and counter registries, additional wait categories, and broader pressure/authority-race testing remain open.
 
-## OM-2 successful-admission counter — verified slice
+## OM-2 admission and conflict counters — verified slice
 
-- Contract: administrator runtime pages report successful admissions in the current process-local invocation registry. The counter saturates at `u64::MAX` and resets if the registry is recreated; it is not durable lifetime telemetry.
-- Implementation: successful registry insertion increments the counter, while rejected and duplicate admissions do not. The bounded runtime projection carries the counter through the protocol, typed client, and CLI.
-- Regression: the authorized process response failed before implementation because the field was absent, then passed with the exact admission count. A unit test verifies saturation at `u64::MAX`; the TCP fixture verifies decoding.
-- Verification: focused storage/TCP and saturation tests, workspace build/fmt/Clippy, TinyCC tests and sandbox fixture, release-profile validation, delegated cgroup probe, full serial delegated-cgroup workspace suite (unit exited successfully), and `git diff --check` passed.
-- Remaining: additional admission/conflict/policy/cancellation/byte/latency counters, job registries, redb retained-byte/cache telemetry, additional wait categories, and broader pressure/authority-race testing remain open.
+- Contract: administrator runtime pages report successful admissions and invocation commits rejected with `CommitError::Conflict` in the current process-local registry. Both counters saturate at `u64::MAX` and reset if the registry is recreated; neither is a durable lifetime total.
+- Implementation: successful registry insertion increments admissions; the invocation commit failure path increments conflicts only for the explicit conflict variant. The bounded runtime projection carries both counters through protocol, typed client, and CLI.
+- Regression: the authorized runtime response failed when the conflict field was omitted, then passed after restoration. A storage race test checks the count after real conflicting commits, the TCP fixture verifies decoding, and a unit test verifies saturation of both counters.
+- Verification: focused commit-race, runtime-page, typed TCP, and saturation tests; workspace build/fmt/Clippy; TinyCC tests and sandbox fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite (service exited successfully); and `git diff --check` passed.
+- Remaining: policy-denial, cancellation, byte, and latency counters; job registries; redb retained-byte/cache telemetry; additional wait categories; and broader pressure/authority-race testing remain open.
