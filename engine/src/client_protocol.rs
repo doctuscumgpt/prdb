@@ -554,6 +554,7 @@ pub enum ClientAdminCommand {
         after_token_id: Option<[u8; 16]>,
     },
     ListRuntimeInvocations {
+        response_version: u64,
         page_limit: usize,
         cursor: Option<crate::storage_manager::AdministrativeInvocationCursor>,
     },
@@ -1194,7 +1195,8 @@ pub fn decode_client_admin_command(
             })
         }
         Some("read")
-            if version == Some(1) && operation.as_deref() == Some("runtime.invocations.list") =>
+            if matches!(version, Some(1 | 2))
+                && operation.as_deref() == Some("runtime.invocations.list") =>
         {
             if operation_id.is_some() || seen.len() != 4 {
                 return Err(ClientControlError::UnknownKey);
@@ -1215,7 +1217,11 @@ pub fn decode_client_admin_command(
             if !args.is_empty() {
                 return Err(ClientControlError::UnknownKey);
             }
-            Ok(ClientAdminCommand::ListRuntimeInvocations { page_limit, cursor })
+            Ok(ClientAdminCommand::ListRuntimeInvocations {
+                response_version: version.ok_or(ClientControlError::MissingKey)?,
+                page_limit,
+                cursor,
+            })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("users.create") => {
             if operation_id.is_some() || seen.len() != 4 {
@@ -3947,7 +3953,11 @@ impl ClientConnectionSession {
                 }
                 self.json_response(request.request_id, payload.into_bytes())
             }
-            ClientAdminCommand::ListRuntimeInvocations { page_limit, cursor } => {
+            ClientAdminCommand::ListRuntimeInvocations {
+                response_version,
+                page_limit,
+                cursor,
+            } => {
                 let now_us = current_unix_micros().ok_or(ClientSessionError::UnsupportedRequest)?;
                 let page = storage
                     .list_runtime_invocations(actor_id, now_us, page_limit, cursor.as_ref())
@@ -4044,6 +4054,10 @@ impl ClientConnectionSession {
                         invocation_staged_value_bytes_total: page
                             .invocation_staged_value_bytes_total,
                         invocation_commit_latency_buckets: page.invocation_commit_latency_buckets,
+                        include_outcome_maintenance: response_version >= 2,
+                        outcome_maintenance_passes_total: page.outcome_maintenance_passes_total,
+                        outcome_maintenance_failures_total: page.outcome_maintenance_failures_total,
+                        outcomes_pruned_total: page.outcomes_pruned_total,
                         waits: &page.fence_waits,
                         truncated: page.fence_waits_truncated,
                     },
@@ -7154,6 +7168,10 @@ struct RuntimeInvocationSummary<'a> {
     invocation_policy_denials_total: u64,
     invocation_staged_value_bytes_total: u64,
     invocation_commit_latency_buckets: [u64; 6],
+    include_outcome_maintenance: bool,
+    outcome_maintenance_passes_total: u64,
+    outcome_maintenance_failures_total: u64,
+    outcomes_pruned_total: u64,
     waits: &'a [crate::ddl_fence::DdlFenceWaitStatus],
     truncated: bool,
 }
@@ -7183,6 +7201,14 @@ fn encode_fence_waits(output: &mut String, summary: RuntimeInvocationSummary<'_>
         output.push_str(&bucket.to_string());
     }
     output.push(']');
+    if summary.include_outcome_maintenance {
+        output.push_str(",\"outcome_maintenance_passes_total\":");
+        output.push_str(&summary.outcome_maintenance_passes_total.to_string());
+        output.push_str(",\"outcome_maintenance_failures_total\":");
+        output.push_str(&summary.outcome_maintenance_failures_total.to_string());
+        output.push_str(",\"outcomes_pruned_total\":");
+        output.push_str(&summary.outcomes_pruned_total.to_string());
+    }
     output.push_str(",\"fence_waits\":[");
     for (index, wait) in summary.waits.iter().enumerate() {
         if index != 0 {
@@ -7699,6 +7725,10 @@ mod runtime_wait_tests {
                 invocation_policy_denials_total: 3,
                 invocation_staged_value_bytes_total: 8,
                 invocation_commit_latency_buckets: [1, 2, 3, 4, 5, 6],
+                include_outcome_maintenance: true,
+                outcome_maintenance_passes_total: 7,
+                outcome_maintenance_failures_total: 8,
+                outcomes_pruned_total: 9,
                 waits: &[wait],
                 truncated: true,
             },
@@ -7706,11 +7736,34 @@ mod runtime_wait_tests {
         assert_eq!(
             output,
             format!(
-                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"invocations_admitted_total\":7,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"admin_cancellations_denied_total\":2,\"invocation_policy_denials_total\":3,\"invocation_staged_value_bytes_total\":8,\"invocation_commit_latency_buckets\":[1,2,3,4,5,6],\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
+                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"invocations_admitted_total\":7,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"admin_cancellations_denied_total\":2,\"invocation_policy_denials_total\":3,\"invocation_staged_value_bytes_total\":8,\"invocation_commit_latency_buckets\":[1,2,3,4,5,6],\"outcome_maintenance_passes_total\":7,\"outcome_maintenance_failures_total\":8,\"outcomes_pruned_total\":9,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
                 "01".repeat(16),
                 "02".repeat(16),
                 "03".repeat(16)
             )
         );
+        let mut legacy_output = String::from("{\"invocations\":[");
+        encode_fence_waits(
+            &mut legacy_output,
+            super::RuntimeInvocationSummary {
+                pinned_snapshot_count: 0,
+                oldest_snapshot_pin_age_us: 0,
+                invocations_admitted_total: 0,
+                invocation_conflicts_total: 0,
+                admin_cancellations_accepted_total: 0,
+                admin_cancellations_denied_total: 0,
+                invocation_policy_denials_total: 0,
+                invocation_staged_value_bytes_total: 0,
+                invocation_commit_latency_buckets: [0; 6],
+                include_outcome_maintenance: false,
+                outcome_maintenance_passes_total: 9,
+                outcome_maintenance_failures_total: 2,
+                outcomes_pruned_total: 7,
+                waits: &[],
+                truncated: false,
+            },
+        );
+        assert!(!legacy_output.contains("outcome_maintenance_passes_total"));
+        assert!(legacy_output.contains("\"fence_waits\":[]"));
     }
 }

@@ -549,9 +549,26 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
     );
     assert!(matches!(
         decode_client_admin_command(runtime_request.as_bytes()),
-        Ok(ClientAdminCommand::ListRuntimeInvocations { page_limit: 4, cursor: Some(cursor) })
+        Ok(ClientAdminCommand::ListRuntimeInvocations {
+            response_version: 1,
+            page_limit: 4,
+            cursor: Some(cursor)
+        })
             if cursor.to_wire() == wire_cursor
     ));
+    let runtime_v2_request =
+        runtime_request.replace("\"operation_version\":1", "\"operation_version\":2");
+    assert!(matches!(
+        decode_client_admin_command(runtime_v2_request.as_bytes()),
+        Ok(ClientAdminCommand::ListRuntimeInvocations {
+            response_version: 2,
+            page_limit: 4,
+            cursor: Some(cursor)
+        }) if cursor.to_wire() == wire_cursor
+    ));
+    let runtime_v3_request =
+        runtime_request.replace("\"operation_version\":1", "\"operation_version\":3");
+    assert!(decode_client_admin_command(runtime_v3_request.as_bytes()).is_err());
     assert_eq!(
         decode_client_admin_command(
             br#"{"phase":"prepare","operation_version":1,"operation":"users.create","arguments":{"name":"new_user_1"}}"#

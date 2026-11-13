@@ -388,6 +388,9 @@ pub struct RuntimeInvocationPage {
     pub invocation_policy_denials_total: u64,
     pub invocation_staged_value_bytes_total: u64,
     pub invocation_commit_latency_buckets: [u64; 6],
+    pub outcome_maintenance_passes_total: u64,
+    pub outcome_maintenance_failures_total: u64,
+    pub outcomes_pruned_total: u64,
     pub fence_waits: Vec<RuntimeFenceWait>,
     pub fence_waits_truncated: bool,
     pub next_cursor: Option<String>,
@@ -1156,11 +1159,11 @@ impl AdminClient {
             arguments.push('"');
         }
         let payload = format!(
-            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
+            "{{\"phase\":\"read\",\"operation_version\":2,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
         );
         let response = self.transport.exchange(10, payload.into_bytes())?;
         let mut fields = parse_flat_response(&response.payload)?;
-        if fields.len() != 15 {
+        if fields.len() != 18 {
             return Err(ClientSubmitError::InvalidResponse);
         }
         let observed_at_us = response_u64(&mut fields, "observed_at_us")?
@@ -1303,6 +1306,14 @@ impl AdminClient {
                 }
                 _ => return Err(ClientSubmitError::InvalidResponse),
             };
+        let outcome_maintenance_passes_total =
+            response_u64(&mut fields, "outcome_maintenance_passes_total")?
+                .ok_or(ClientSubmitError::InvalidResponse)?;
+        let outcome_maintenance_failures_total =
+            response_u64(&mut fields, "outcome_maintenance_failures_total")?
+                .ok_or(ClientSubmitError::InvalidResponse)?;
+        let outcomes_pruned_total = response_u64(&mut fields, "outcomes_pruned_total")?
+            .ok_or(ClientSubmitError::InvalidResponse)?;
         if pinned_snapshot_count == 0 && oldest_snapshot_pin_age_us != 0 {
             return Err(ClientSubmitError::InvalidResponse);
         }
@@ -1389,6 +1400,9 @@ impl AdminClient {
             invocation_policy_denials_total,
             invocation_staged_value_bytes_total,
             invocation_commit_latency_buckets,
+            outcome_maintenance_passes_total,
+            outcome_maintenance_failures_total,
+            outcomes_pruned_total,
             fence_waits: decoded_waits,
             fence_waits_truncated,
             next_cursor,

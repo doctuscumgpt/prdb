@@ -2811,6 +2811,21 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         assert!(runtime_output.contains("\"invocation_policy_denials_total\":0"));
         assert!(runtime_output.contains("\"invocation_staged_value_bytes_total\":0"));
         assert!(runtime_output.contains("\"invocation_commit_latency_buckets\":[0,0,0,0,0,0]"));
+        let runtime_counter = |name: &str| {
+            let field = format!("\"{name}\":");
+            runtime_output
+                .split_once(&field)
+                .and_then(|(_, value)| {
+                    value
+                        .split(|character: char| !character.is_ascii_digit())
+                        .next()
+                })
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or_else(|| panic!("missing numeric runtime field {name}: {runtime_output}"))
+        };
+        assert!(runtime_counter("outcome_maintenance_passes_total") > 0);
+        assert_eq!(runtime_counter("outcome_maintenance_failures_total"), 0);
+        let _ = runtime_counter("outcomes_pruned_total");
         let active_status = admin
             .status(invocation_id)
             .map_err(|error| format!("active STATUS failed: {error:?}"))?;

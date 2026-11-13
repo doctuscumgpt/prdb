@@ -282,6 +282,9 @@ pub struct AdministrativeInvocationPage {
     pub invocation_policy_denials_total: u64,
     pub invocation_staged_value_bytes_total: u64,
     pub invocation_commit_latency_buckets: [u64; 6],
+    pub outcome_maintenance_passes_total: u64,
+    pub outcome_maintenance_failures_total: u64,
+    pub outcomes_pruned_total: u64,
     pub fence_waits: Vec<crate::ddl_fence::DdlFenceWaitStatus>,
     pub fence_waits_truncated: bool,
     pub continuation: Option<AdministrativeInvocationCursor>,
@@ -1708,6 +1711,9 @@ struct LiveInvocationRegistry {
     invocation_policy_denials_total: u64,
     invocation_staged_value_bytes_total: u64,
     invocation_commit_latency_buckets: [u64; 6],
+    outcome_maintenance_passes_total: u64,
+    outcome_maintenance_failures_total: u64,
+    outcomes_pruned_total: u64,
     entries: HashMap<[u8; 16], LiveInvocation>,
 }
 
@@ -1723,6 +1729,9 @@ struct AdministrativeInvocationProjection {
     invocation_policy_denials_total: u64,
     invocation_staged_value_bytes_total: u64,
     invocation_commit_latency_buckets: [u64; 6],
+    outcome_maintenance_passes_total: u64,
+    outcome_maintenance_failures_total: u64,
+    outcomes_pruned_total: u64,
 }
 
 impl LiveInvocationRegistry {
@@ -1764,6 +1773,28 @@ impl LiveInvocationRegistry {
         };
         self.invocation_commit_latency_buckets[bucket] =
             self.invocation_commit_latency_buckets[bucket].saturating_add(1);
+    }
+
+    fn record_outcome_maintenance(
+        &mut self,
+        result: &Result<
+            crate::outcome::OutcomePruneResult,
+            crate::outcome::OutcomeMaintenanceError,
+        >,
+    ) {
+        self.outcome_maintenance_passes_total =
+            self.outcome_maintenance_passes_total.saturating_add(1);
+        match result {
+            Ok(result) => {
+                self.outcomes_pruned_total = self
+                    .outcomes_pruned_total
+                    .saturating_add(u64::try_from(result.removed).unwrap_or(u64::MAX));
+            }
+            Err(_) => {
+                self.outcome_maintenance_failures_total =
+                    self.outcome_maintenance_failures_total.saturating_add(1);
+            }
+        }
     }
 
     fn advance_generation(&mut self) {
@@ -2092,6 +2123,9 @@ impl InvocationAdmissionState {
             invocation_policy_denials_total: live.invocation_policy_denials_total,
             invocation_staged_value_bytes_total: live.invocation_staged_value_bytes_total,
             invocation_commit_latency_buckets: live.invocation_commit_latency_buckets,
+            outcome_maintenance_passes_total: live.outcome_maintenance_passes_total,
+            outcome_maintenance_failures_total: live.outcome_maintenance_failures_total,
+            outcomes_pruned_total: live.outcomes_pruned_total,
         })
     }
 }
@@ -2305,6 +2339,9 @@ fn invocation_registry(
             invocation_policy_denials_total: 0,
             invocation_staged_value_bytes_total: 0,
             invocation_commit_latency_buckets: [0; 6],
+            outcome_maintenance_passes_total: 0,
+            outcome_maintenance_failures_total: 0,
+            outcomes_pruned_total: 0,
             entries: HashMap::new(),
         }),
         changed: Condvar::new(),
@@ -2371,7 +2408,13 @@ impl<'db> StorageManager<'db> {
         now_us: i64,
         max_scanned: usize,
     ) -> Result<crate::outcome::OutcomePruneResult, crate::outcome::OutcomeMaintenanceError> {
-        crate::outcome::prune_expired_outcomes(self.database, now_us, max_scanned)
+        let result = crate::outcome::prune_expired_outcomes(self.database, now_us, max_scanned);
+        self.admissions
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_outcome_maintenance(&result);
+        result
     }
 
     /// Validate the recovered database, then use the default snapshot limit
@@ -10343,6 +10386,9 @@ impl<'db> StorageManager<'db> {
             invocation_policy_denials_total: projection.invocation_policy_denials_total,
             invocation_staged_value_bytes_total: projection.invocation_staged_value_bytes_total,
             invocation_commit_latency_buckets: projection.invocation_commit_latency_buckets,
+            outcome_maintenance_passes_total: projection.outcome_maintenance_passes_total,
+            outcome_maintenance_failures_total: projection.outcome_maintenance_failures_total,
+            outcomes_pruned_total: projection.outcomes_pruned_total,
             fence_waits,
             fence_waits_truncated,
             continuation: projection.continuation,
@@ -11460,6 +11506,9 @@ mod commit_cancellation_boundary_tests {
                 invocation_policy_denials_total: 0,
                 invocation_staged_value_bytes_total: 0,
                 invocation_commit_latency_buckets: [0; 6],
+                outcome_maintenance_passes_total: 0,
+                outcome_maintenance_failures_total: 0,
+                outcomes_pruned_total: 0,
                 entries: std::collections::HashMap::new(),
             }),
             changed: std::sync::Condvar::new(),
@@ -11513,6 +11562,9 @@ mod commit_cancellation_boundary_tests {
                 invocation_policy_denials_total: u64::MAX,
                 invocation_staged_value_bytes_total: u64::MAX,
                 invocation_commit_latency_buckets: [u64::MAX; 6],
+                outcome_maintenance_passes_total: u64::MAX,
+                outcome_maintenance_failures_total: u64::MAX,
+                outcomes_pruned_total: u64::MAX,
                 entries: std::collections::HashMap::new(),
             }),
             changed: std::sync::Condvar::new(),
@@ -11538,6 +11590,16 @@ mod commit_cancellation_boundary_tests {
         permit
             .metrics()
             .record_commit_latency(Duration::from_micros(1_001));
+        state.live.lock().unwrap().record_outcome_maintenance(&Ok(
+            crate::outcome::OutcomePruneResult {
+                scanned: 2,
+                removed: 1,
+                cycle_complete: true,
+            },
+        ));
+        state.live.lock().unwrap().record_outcome_maintenance(&Err(
+            crate::outcome::OutcomeMaintenanceError::InvalidLimit,
+        ));
         assert_eq!(
             {
                 let live = state.live.lock().unwrap();
@@ -11549,6 +11611,9 @@ mod commit_cancellation_boundary_tests {
                     live.invocation_policy_denials_total,
                     live.invocation_staged_value_bytes_total,
                     live.invocation_commit_latency_buckets,
+                    live.outcome_maintenance_passes_total,
+                    live.outcome_maintenance_failures_total,
+                    live.outcomes_pruned_total,
                 )
             },
             (
@@ -11558,7 +11623,10 @@ mod commit_cancellation_boundary_tests {
                 u64::MAX,
                 u64::MAX,
                 u64::MAX,
-                [u64::MAX; 6]
+                [u64::MAX; 6],
+                u64::MAX,
+                u64::MAX,
+                u64::MAX
             )
         );
         drop(permit);
@@ -11575,6 +11643,9 @@ mod commit_cancellation_boundary_tests {
             invocation_policy_denials_total: 0,
             invocation_staged_value_bytes_total: 0,
             invocation_commit_latency_buckets: [0; 6],
+            outcome_maintenance_passes_total: 0,
+            outcome_maintenance_failures_total: 0,
+            outcomes_pruned_total: 0,
             entries: std::collections::HashMap::new(),
         };
         for micros in [
@@ -11586,6 +11657,91 @@ mod commit_cancellation_boundary_tests {
             Duration::from_micros(1_000) + Duration::from_nanos(1),
         );
         assert_eq!(live.invocation_commit_latency_buckets, [1, 3, 2, 2, 2, 1]);
+    }
+
+    #[test]
+    fn outcome_maintenance_counters_count_passes_failures_and_removals() {
+        let mut live = LiveInvocationRegistry {
+            generation: 1,
+            invocations_admitted_total: 0,
+            invocation_conflicts_total: 0,
+            admin_cancellations_accepted_total: 0,
+            admin_cancellations_denied_total: 0,
+            invocation_policy_denials_total: 0,
+            invocation_staged_value_bytes_total: 0,
+            invocation_commit_latency_buckets: [0; 6],
+            outcome_maintenance_passes_total: 0,
+            outcome_maintenance_failures_total: 0,
+            outcomes_pruned_total: 0,
+            entries: std::collections::HashMap::new(),
+        };
+
+        live.record_outcome_maintenance(&Ok(crate::outcome::OutcomePruneResult {
+            scanned: 4,
+            removed: 3,
+            cycle_complete: false,
+        }));
+        live.record_outcome_maintenance(&Ok(crate::outcome::OutcomePruneResult {
+            scanned: 0,
+            removed: 0,
+            cycle_complete: true,
+        }));
+        live.record_outcome_maintenance(&Err(
+            crate::outcome::OutcomeMaintenanceError::InvalidLimit,
+        ));
+
+        assert_eq!(live.outcome_maintenance_passes_total, 3);
+        assert_eq!(live.outcome_maintenance_failures_total, 1);
+        assert_eq!(live.outcomes_pruned_total, 3);
+    }
+
+    #[test]
+    fn outcome_maintenance_api_updates_process_metrics() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::outcome::{InvocationOutcome, OutcomeStatus};
+        use crate::schema::{OUTCOMES, create_tables};
+        let fixture_id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "prdb-outcome-metrics-{}-{fixture_id}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory)?;
+        let database = Database::create(directory.join("metrics.redb"))?;
+        let write = database.begin_write()?;
+        create_tables(&write)?;
+        {
+            let mut outcomes = write.open_table(OUTCOMES)?;
+            let expired = InvocationOutcome {
+                status: OutcomeStatus::Aborted,
+                invocation_id: [0x71; 16],
+                principal_id: [0x72; 16],
+                commit_sequence: 0,
+                retention_deadline_us: 10,
+            }
+            .encode()?;
+            outcomes.insert([0x71; 16].as_slice(), expired.as_slice())?;
+        }
+        write.commit()?;
+
+        let storage =
+            StorageManager::from_validated_database(&database, StorageManagerConfig::default())?;
+        assert_eq!(storage.prune_expired_outcomes(11, 1)?.removed, 1);
+        assert!(matches!(
+            storage.prune_expired_outcomes(11, 0),
+            Err(crate::outcome::OutcomeMaintenanceError::InvalidLimit)
+        ));
+        let live = storage
+            .admissions
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(live.outcome_maintenance_passes_total, 2);
+        assert_eq!(live.outcome_maintenance_failures_total, 1);
+        assert_eq!(live.outcomes_pruned_total, 1);
+        drop(live);
+        drop(storage);
+        drop(database);
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
     }
 
     #[test]
