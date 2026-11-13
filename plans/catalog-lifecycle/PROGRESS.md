@@ -112,3 +112,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression converts a fixture to catalog-v1 metadata and descriptor form, creates and verifies its independent backup, and checks the source bytes remain unchanged.
 - This makes a v1 source independently preservable; it does not provide a safe tombstone closure or a v1-to-v2 transform.
 - Verification: pinned-shell format check, locked workspace build, warning-denied all-target Clippy, and full serial workspace suite inside the delegated `systemd --user` service passed. Sandbox integration ran with zero ignored tests; `git diff --check` passed.
+
+## CL-4 supported logical version matrix — clarified
+
+- The lifecycle specification now lists service admission, read-only source/backup support, and executable transition status for catalog/expression/built-in semantics tuples `1/1/1`, `2/1/1`, and unknown tuples.
+- It records that catalog v1 is fully inspectable and backup-capable for offline migration, while v1-to-v2 conversion remains unavailable until prior deleted identity IDs can be preserved safely.
+- Verification: documentation consistency and `git diff --check`; no code behavior changed.
