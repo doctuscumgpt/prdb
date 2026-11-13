@@ -389,8 +389,40 @@ pub fn observe_executor_relay_and_finalize_gateway<'db>(
     result_stream: &mut UnixStream,
     start_request_id: u64,
 ) -> Result<GatewayTerminalDecision, GatewayTerminalRelayError> {
-    let observation =
-        observe_executor_and_relay_results(executor, invocation, result_stream, start_request_id);
+    observe_executor_relay_and_finalize_gateway_with_optimizer_planner_observer(
+        manager,
+        invocation,
+        executor,
+        result_stream,
+        start_request_id,
+        |_, _| {},
+    )
+}
+
+/// Observe an executor, relay its provisional results, and emit the durable
+/// terminal event while exposing optimizer planner requests at the storage
+/// dispatch boundary. The observer runs on the storage handler thread without
+/// holding the invocation lock.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[doc(hidden)]
+pub fn observe_executor_relay_and_finalize_gateway_with_optimizer_planner_observer<'db, O>(
+    manager: &StorageManager<'db>,
+    invocation: &mut crate::storage_manager::SupervisorInvocation<'_>,
+    executor: &mut crate::executor_launcher::RunningExecutor,
+    result_stream: &mut UnixStream,
+    start_request_id: u64,
+    optimizer_planner_observer: O,
+) -> Result<GatewayTerminalDecision, GatewayTerminalRelayError>
+where
+    O: Fn(u16, u64) + Send + Sync,
+{
+    let observation = observe_executor_and_relay_results_with_optimizer_planner_observer(
+        executor,
+        invocation,
+        result_stream,
+        start_request_id,
+        optimizer_planner_observer,
+    );
     match observation {
         Ok(status) if status.success() => {
             match finalize_gateway_invocation_and_send_terminal(
@@ -820,9 +852,32 @@ pub fn observe_executor_and_relay_results(
     service: &mut UnixStream,
     start_request_id: u64,
 ) -> Result<std::process::ExitStatus, crate::storage_manager::SupervisorInvocationError> {
-    executor.observe_exit_with_results(invocation, |payload| {
-        write_gateway_result_data_event(service, start_request_id, payload)
-    })
+    observe_executor_and_relay_results_with_optimizer_planner_observer(
+        executor,
+        invocation,
+        service,
+        start_request_id,
+        |_, _| {},
+    )
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[doc(hidden)]
+pub fn observe_executor_and_relay_results_with_optimizer_planner_observer<O>(
+    executor: &mut crate::executor_launcher::RunningExecutor,
+    invocation: &crate::storage_manager::SupervisorInvocation<'_>,
+    service: &mut UnixStream,
+    start_request_id: u64,
+    optimizer_planner_observer: O,
+) -> Result<std::process::ExitStatus, crate::storage_manager::SupervisorInvocationError>
+where
+    O: Fn(u16, u64) + Send + Sync,
+{
+    executor.observe_exit_with_results_and_optimizer_planner_observer(
+        invocation,
+        |payload| write_gateway_result_data_event(service, start_request_id, payload),
+        optimizer_planner_observer,
+    )
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

@@ -677,7 +677,14 @@
 - Behavior: `RunningExecutor` now has a doc-hidden observation variant that passes optimizer-planner request headers through the same storage worker-channel service used by normal execution. Existing callers retain the unchanged `observe_exit_with_results` API and receive a no-op observer.
 - Regression: `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` uses the optimizer-backed filtered SELECT in the TinyCC fixture and asserts that `EstimateScan` reaches the observer while `RunningExecutor` serves the real worker processes. The same run relays provisional output and confirms the established durable terminal outcome. This verifies production executor-channel and gateway-result-relay interleaving; it does not inject cancellation while that estimate is pending.
 - Verification: locked workspace check and the focused acceptance passed. The acceptance ran inside the delegated `systemd --user` service with the maintained TinyCC artifact and real cgroup/Landlock executor launcher.
-- Scope: the blocked-estimate cancellation/deadline schedule remains proven at the storage worker-channel boundary; running that schedule through TCP START and the full executor lifecycle, broader candidate comparison, and target-host profiles remain open.
+- Scope at this slice: the blocked-estimate cancellation/deadline schedule remained proven at the storage worker-channel boundary; the next follow-up closes the TCP START and full executor lifecycle gap. Broader candidate comparison and target-host profiles remain open.
+
+## OP-4 follow-up: cancel a pending estimate through external TCP execution — verified slice
+
+- Implementation: the maintained restricted-metadata fixture now exposes ABI v4 and submits a filtered `information_schema.schemata` SELECT through the SDK optimizer bridge. The observer runs at the real executor storage-dispatch boundary and can cancel the owning invocation while `EstimateScan` is pending.
+- Regression: `sandboxed_optimizer_metadata_submission_cancels_over_tcp` uploads and starts the ABI v4 query through the external TCP gateway. The first invocation commits `empty_roundtrip`; the second is cancelled by the test observer at `EstimateScan`, receives an Aborted terminal over TCP, and has durable ABORTED status. The observer confirms the successful run also traversed `EstimateScan`.
+- Validation: the focused test passed inside the delegated user service and cgroup wrapper. Cancellation is injected through the owner storage API at the observed request boundary; this verifies external TCP ingress and terminal relay with the full executor process/cgroup lifecycle, not the separate control-mode TCP CANCEL command.
+- Scope: broader estimate-driven candidate comparison and target-host cost profiles remain open.
 
 ## OP-5 follow-up: hidden range keys do not reveal match state — verified
 

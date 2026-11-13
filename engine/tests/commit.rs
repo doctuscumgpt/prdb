@@ -23365,7 +23365,8 @@ fn sandboxed_client_supplied_sql_library_loads_and_durably_aborts_on_sql_error()
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
-fn sandboxed_v3_metadata_submission_commits_over_tcp() -> Result<(), Box<dyn std::error::Error>> {
+fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
+-> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::client_submit::{ClientResultEvent, SubmissionClient, TerminalOutcome};
     use prdb_engine::gateway::serve_tcp_client_connection;
     use prdb_engine::outcome::OutcomeStatus;
@@ -23377,7 +23378,8 @@ fn sandboxed_v3_metadata_submission_commits_over_tcp() -> Result<(), Box<dyn std
     use prdb_engine::supervisor::{StagingLimits, StagingStore, WorkloadClass};
     use prdb_engine::supervisor_ipc::{
         GatewayAdmissionConfig, GatewayClientServiceEvent, GatewayExecutorConfig,
-        GatewayTerminalDecision, observe_executor_relay_and_finalize_gateway,
+        GatewayTerminalDecision,
+        observe_executor_relay_and_finalize_gateway_with_optimizer_planner_observer,
         serve_gateway_client_session_with_executor,
     };
     use prdb_engine::tuple::ScalarType;
@@ -23414,7 +23416,7 @@ fn sandboxed_v3_metadata_submission_commits_over_tcp() -> Result<(), Box<dyn std
     let artifact = std::fs::read(artifact_path)?;
     let manifest = manifest_v1_from_elf(
         &artifact,
-        3,
+        4,
         1,
         "x86_64-v1".to_owned(),
         "test-runtime".to_owned(),
@@ -23644,17 +23646,25 @@ fn sandboxed_v3_metadata_submission_commits_over_tcp() -> Result<(), Box<dyn std
     let tcp_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let address = tcp_listener.local_addr()?;
     let receipt = fixture.0.join("invocation.receipt");
+    let supervisor_start_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let optimizer_estimate_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let cancellation_result = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
-        let gateway = scope.spawn(move || -> Result<(), String> {
-            let (mut client_stream, _) = tcp_listener
-                .accept()
-                .map_err(|error| format!("TCP accept failed: {error}"))?;
-            serve_tcp_client_connection(&mut client_stream, &mut gateway_service)
-                .map_err(|error| format!("TCP gateway failed: {error:?}"))?;
-            Ok(())
-        });
-        let supervisor = scope.spawn(|| -> Result<(), String> {
+    let cancelled_invocation_id = std::thread::scope(
+        |scope| -> Result<[u8; 16], Box<dyn std::error::Error>> {
+            let gateway = scope.spawn(move || -> Result<(), String> {
+                let (mut client_stream, _) = tcp_listener
+                    .accept()
+                    .map_err(|error| format!("TCP accept failed: {error}"))?;
+                serve_tcp_client_connection(&mut client_stream, &mut gateway_service)
+                    .map_err(|error| format!("TCP gateway failed: {error:?}"))?;
+                Ok(())
+            });
+            let supervisor = scope.spawn(|| -> Result<(), String> {
+            let supervisor_start_count = Arc::clone(&supervisor_start_count);
+            let optimizer_estimate_count = Arc::clone(&optimizer_estimate_count);
+            let cancellation_result = Arc::clone(&cancellation_result);
+            let observer_storage = &storage;
             let mut session = prdb_engine::client_protocol::ClientConnectionSession::default();
             loop {
                 match serve_gateway_client_session_with_executor(
@@ -23674,6 +23684,12 @@ fn sandboxed_v3_metadata_submission_commits_over_tcp() -> Result<(), Box<dyn std
                         executor: Some(mut executor),
                         ..
                     } => {
+                        let invocation_index = supervisor_start_count
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let invocation_id = invocation.invocation_id();
+                        let staging_owner = session
+                            .staging_owner()
+                            .map_err(|error| format!("TCP staging owner unavailable: {error:?}"))?;
                         let schemas = invocation
                             .scan_information_schema_schemata(128)
                             .map_err(|error| format!("TCP metadata API scan failed: {error:?}"))?
@@ -23729,17 +23745,54 @@ fn sandboxed_v3_metadata_submission_commits_over_tcp() -> Result<(), Box<dyn std
                         {
                             return Err("TCP metadata column scope was not enforced".into());
                         }
-                        let decision = observe_executor_relay_and_finalize_gateway(
+                        let estimate_count = Arc::clone(&optimizer_estimate_count);
+                        let cancellation_result = Arc::clone(&cancellation_result);
+                        let decision = observe_executor_relay_and_finalize_gateway_with_optimizer_planner_observer(
                             &storage,
                             &mut invocation,
                             &mut executor,
                             &mut supervisor_service,
                             request_id,
+                            move |operation, _request_id| {
+                                if operation != prdb_engine::ipc::Operation::EstimateScan as u16 {
+                                    return;
+                                }
+                                if invocation_index == 0 {
+                                    estimate_count.fetch_add(
+                                        1,
+                                        std::sync::atomic::Ordering::Relaxed,
+                                    );
+                                } else if invocation_index == 1 {
+                                    let result = observer_storage.cancel_owned_invocation(
+                                        restricted_user_id,
+                                        invocation_id,
+                                        now + 2,
+                                    );
+                                    cancellation_result.store(
+                                        if matches!(
+                                            result,
+                                            Ok(prdb_engine::storage_manager::OwnerCancellationResult::Accepted)
+                                        ) { 1 } else { 2 },
+                                        std::sync::atomic::Ordering::SeqCst,
+                                    );
+                                }
+                            },
                         )
                         .map_err(|error| format!("executor relay failed: {error:?}"))?;
-                        if decision != GatewayTerminalDecision::Commit {
-                            return Err(format!("TCP submission aborted: {decision:?}"));
+                        match (invocation_index, decision) {
+                            (0, GatewayTerminalDecision::Commit) => {}
+                            (1, GatewayTerminalDecision::Abort(_)) => {}
+                            (_, decision) => {
+                                return Err(format!(
+                                    "unexpected TCP submission outcome for START {invocation_index}: {decision:?}"
+                                ));
+                            }
                         }
+                        staging
+                            .finish_started(staging_owner, invocation_id)
+                            .map_err(|error| {
+                                format!("TCP staging cleanup failed: {error:?}")
+                            })?;
                     }
                     GatewayClientServiceEvent::Started { executor: None, .. } => {
                         return Err("supervisor did not launch the sandbox executor".into());
@@ -23748,50 +23801,91 @@ fn sandboxed_v3_metadata_submission_commits_over_tcp() -> Result<(), Box<dyn std
             }
         });
 
-        let mut client_secret = secret;
-        let mut client =
-            SubmissionClient::connect_authenticated(address, token_id, &mut client_secret)?;
-        assert_eq!(client_secret, [0; 32]);
-        let invocation_id =
-            client.upload_and_seal(&package, &[], 30_000, WorkloadClass::Operational)?;
-        {
-            let mut started = client.start(invocation_id, &receipt)?;
+            let mut client_secret = secret;
+            let mut client =
+                SubmissionClient::connect_authenticated(address, token_id, &mut client_secret)?;
+            assert_eq!(client_secret, [0; 32]);
+            let invocation_id = client
+                .upload_and_seal(&package, &[], 30_000, WorkloadClass::Operational)
+                .map_err(|error| format!("first TCP upload/seal failed: {error:?}"))?;
+            {
+                let mut started = client
+                    .start(invocation_id, &receipt)
+                    .map_err(|error| format!("first TCP START failed: {error:?}"))?;
+                assert_eq!(
+                    started.next_event()?,
+                    Some(ClientResultEvent::Data(b"empty_roundtrip".to_vec()))
+                );
+                assert!(matches!(
+                    started.next_event()?,
+                    Some(ClientResultEvent::Terminal(terminal))
+                        if terminal.invocation_id == invocation_id
+                            && terminal.outcome == TerminalOutcome::Committed
+                            && terminal.reason_code == "success"
+                ));
+                assert_eq!(started.next_event()?, None);
+            }
             assert_eq!(
-                started.next_event()?,
-                Some(ClientResultEvent::Data(b"empty_roundtrip".to_vec()))
+                client.status(invocation_id)?,
+                prdb_engine::client_submit::InvocationStatus::Committed
             );
-            assert!(matches!(
-                started.next_event()?,
-                Some(ClientResultEvent::Terminal(terminal))
-                    if terminal.invocation_id == invocation_id
-                        && terminal.outcome == TerminalOutcome::Committed
-                        && terminal.reason_code == "success"
-            ));
-            assert_eq!(started.next_event()?, None);
-        }
-        assert_eq!(
-            client.status(invocation_id)?,
-            prdb_engine::client_submit::InvocationStatus::Committed
-        );
-        drop(client);
+            let cancelled_id = client
+                .upload_and_seal(&package, &[], 30_000, WorkloadClass::Operational)
+                .map_err(|error| format!("second TCP upload/seal failed: {error:?}"))?;
+            let cancelled_receipt = fixture.0.join("cancelled-invocation.receipt");
+            {
+                let mut started = client
+                    .start(cancelled_id, &cancelled_receipt)
+                    .map_err(|error| format!("second TCP START failed: {error:?}"))?;
+                assert!(matches!(
+                    started.next_event()?,
+                    Some(ClientResultEvent::Terminal(terminal))
+                        if terminal.invocation_id == cancelled_id
+                            && terminal.outcome == TerminalOutcome::Aborted
+                            && terminal.reason_code != "success"
+                ));
+                assert_eq!(started.next_event()?, None);
+            }
+            assert_eq!(
+                client.status(cancelled_id)?,
+                prdb_engine::client_submit::InvocationStatus::Aborted
+            );
+            drop(client);
 
-        gateway
-            .join()
-            .map_err(|_| std::io::Error::other("TCP gateway thread panicked"))?
-            .map_err(std::io::Error::other)?;
-        supervisor
-            .join()
-            .map_err(|_| std::io::Error::other("supervisor thread panicked"))?
-            .map_err(std::io::Error::other)?;
-        assert_eq!(
-            storage
-                .lookup_invocation_outcome(invocation_id, restricted_user_id, now + 1)?
-                .ok_or("TCP submission outcome missing from storage")?
-                .status,
-            OutcomeStatus::Committed
-        );
-        Ok(())
-    })?;
+            gateway
+                .join()
+                .map_err(|_| std::io::Error::other("TCP gateway thread panicked"))?
+                .map_err(std::io::Error::other)?;
+            supervisor
+                .join()
+                .map_err(|_| std::io::Error::other("supervisor thread panicked"))?
+                .map_err(std::io::Error::other)?;
+            assert!(
+                optimizer_estimate_count.load(std::sync::atomic::Ordering::Relaxed) > 0,
+                "the committed TCP optimizer query did not dispatch an EstimateScan"
+            );
+            assert_eq!(
+                cancellation_result.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "the second TCP optimizer query was not cancelled at EstimateScan"
+            );
+            assert_eq!(
+                storage
+                    .lookup_invocation_outcome(invocation_id, restricted_user_id, now + 1)?
+                    .ok_or("TCP submission outcome missing from storage")?
+                    .status,
+                OutcomeStatus::Committed
+            );
+            Ok(cancelled_id)
+        },
+    )?;
+    assert_eq!(
+        storage
+            .lookup_invocation_outcome(cancelled_invocation_id, restricted_user_id, now + 3)?
+            .ok_or("TCP cancelled invocation outcome missing from storage")?
+            .status,
+        OutcomeStatus::Aborted
+    );
     Ok(())
 }
 
