@@ -4175,7 +4175,7 @@ fn write_start_receipt(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum ResponseValue {
+pub(crate) enum ResponseValue {
     String(String),
     Number(u64),
     Boolean(bool),
@@ -4212,7 +4212,7 @@ impl AdminExpectedResponseField<'_> {
 }
 
 impl ResponseValue {
-    fn as_string(&self) -> Option<&str> {
+    pub(crate) fn as_string(&self) -> Option<&str> {
         match self {
             Self::String(value) => Some(value),
             _ => None,
@@ -4239,14 +4239,14 @@ impl ResponseValue {
         }
     }
 
-    fn as_object(&self) -> Option<&HashMap<String, ResponseValue>> {
+    pub(crate) fn as_object(&self) -> Option<&HashMap<String, ResponseValue>> {
         match self {
             Self::Object(value) => Some(value),
             _ => None,
         }
     }
 
-    fn as_array(&self) -> Option<&[ResponseValue]> {
+    pub(crate) fn as_array(&self) -> Option<&[ResponseValue]> {
         match self {
             Self::Array(value) => Some(value),
             _ => None,
@@ -4257,7 +4257,17 @@ impl ResponseValue {
 fn parse_flat_response(
     payload: &[u8],
 ) -> Result<HashMap<String, ResponseValue>, ClientSubmitError> {
-    if payload.len() > CLIENT_MAX_CONTROL_BYTES {
+    parse_bounded_json_value(payload, CLIENT_MAX_CONTROL_BYTES)?
+        .as_object()
+        .cloned()
+        .ok_or(ClientSubmitError::InvalidResponse)
+}
+
+pub(crate) fn parse_bounded_json_value(
+    payload: &[u8],
+    maximum_bytes: usize,
+) -> Result<ResponseValue, ClientSubmitError> {
+    if payload.len() > maximum_bytes {
         return Err(ClientSubmitError::InvalidResponse);
     }
     let text = std::str::from_utf8(payload).map_err(|_| ClientSubmitError::InvalidResponse)?;
@@ -4266,10 +4276,10 @@ fn parse_flat_response(
         offset: 0,
     };
     parser.skip_whitespace();
-    let fields = parse_response_object(&mut parser, 0)?;
+    let value = parse_response_value(&mut parser, 0)?;
     parser.skip_whitespace();
     (parser.offset == parser.text.len())
-        .then_some(fields)
+        .then_some(value)
         .ok_or(ClientSubmitError::InvalidResponse)
 }
 

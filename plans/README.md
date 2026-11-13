@@ -14,6 +14,7 @@ These plans cover every component and supporting contract in the [specification 
 | [Client protocol](client-protocol/README.md) | External framing, upload/control state machines and reconciliation |
 | [Client gateway](client-gateway/README.md) | Dedicated TCP process and bounded gateway-service adapter |
 | [Client SDK](client-sdk/README.md) | C runtime bindings, compiler wrapper and separate submission/admin helpers |
+| [`prdb-client` SQL input](client-sql-command/README.md) | SQL file/stdin input, generated C wrapper, packaging and authenticated submission |
 | [SQL library](sql-library/README.md) | C frontend, expressions, interpreter, writes and required analytics |
 | [Optimizer](planner-compiler/README.md) | Isolated Rust binding/planning with scoped metadata and estimates |
 | [Statistics](statistics-service/README.md) | Storage-owned authorized estimates and later private collection |
@@ -83,6 +84,7 @@ Each specification has a primary owning plan. Other plans link adjacent contract
 | [Statistics](../specs/statistics-service.md) | [Statistics](statistics-service/README.md) |
 | [Executor](../specs/query-worker.md) | [Executor](query-worker/README.md) |
 | [Client SDK](../specs/client-sdk.md) | [Client SDK](client-sdk/README.md) |
+| [`prdb-client` SQL input](../specs/client-sql-command.md) | [`prdb-client` SQL input](client-sql-command/README.md) |
 | [SQL library](../specs/sql-library.md) | [SQL library](sql-library/README.md) |
 | [IPC](../specs/ipc-protocol.md) | [Internal IPC](ipc-protocol/README.md) |
 | [Linux sandbox](../specs/linux-sandbox.md) | [Linux sandbox](linux-sandbox/README.md) |

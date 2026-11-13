@@ -1,0 +1,83 @@
+# SQL Input Command for `prdb-client`
+
+## Purpose and Boundary
+
+`prdb-client run-sql` accepts one SQL statement from a local file or standard input, compiles a generated C query wrapper against the selected C SQL SDK, packages the native artifact, and submits it to a database instance through the existing authenticated TCP gateway. SQL parsing and execution remain SDK behavior inside the confined query executor. The client does not send SQL text to the gateway, and the gateway does not parse or compile SQL.
+
+The command is a convenience layer over the existing [client SDK and package contract](client-sdk.md), [SQL library](sql-library.md), and [client protocol](client-protocol.md). It must use the same package validation, capability scope, result streaming, receipt, START-once, and committed-terminal rules as `prdb-client submit`. It must not introduce a direct SQL server endpoint or trusted-process loading of query code.
+
+## Command Contract
+
+The initial CLI shape is:
+
+```text
+prdb-client run-sql --address IP:PORT --credentials FILE \
+  --sql-file FILE|- --schema NAME --scope FILE --receipt FILE \
+  --sdk-library FILE --include-dir DIR --sdk-release N \
+  --cpu-baseline NAME --runtime-profile NAME --compiler-identity TEXT \
+  [--parameters FILE] [--tcc FILE] [--shared-linker FILE] [--patchelf FILE] \
+  [--deadline-ms N] [--workload operational|analytical]
+```
+
+`--sql-file -` reads SQL bytes from standard input. The CLI does not accept SQL as an option value: the file/stdin interface avoids shell quoting ambiguity and command-line exposure of query text. The SQL input must be a regular file or stdin stream, contain at most 65,536 bytes, decode as UTF-8, and contain exactly one statement with an optional final semicolon. Empty input and embedded NUL fail before network authentication or upload. The SDK rejects multiple statements and unsupported syntax inside the confined executor; those errors follow ordinary invocation-abort semantics. The SDK remains authoritative for parsing and type/binding errors.
+
+`--schema NAME` is a required normalized schema identifier used to resolve unqualified table names. It is explicit query context, not a default silently inferred by the client. The schema must be included in the PSC1 scope and currently authorized for the principal. `run-sql` v1 supports the SQL ABI v2 single-relation SELECT grammar (projection, bounded Boolean predicates, and optional LIMIT); DML and later SQL ABI extensions are rejected until explicitly supported by a later dispatcher version. It does not translate SQL, rewrite identifiers, or infer administrator authority. The SQL statement is embedded as bytes in generated C data, never interpolated into generated C source text. The generated wrapper uses query ABI v3 and invokes the versioned C SDK statement entry point, passes typed parameters, and uses the SDK SQLR result writer for row output. The client does not load or execute a client-selected SDK library to pre-parse SQL; syntax and statement support are determined by the SDK inside the confined executor.
+
+## Parameters
+
+The optional `--parameters FILE` is a UTF-8 JSON file with this canonical shape:
+
+```json
+{"format":"PDB-SQL-PARAMETERS-1","values":[
+  {"type":"integer","value":"42"},
+  {"type":"text","value":"example"},
+  {"type":"text","value":null}
+]}
+```
+
+The `values` array is one-based: element 1 binds `$1`. Repeated placeholders reuse the same value. The array contains at most 65,535 entries and the file is capped at 1 MiB. Reject duplicate or unknown JSON keys, invalid UTF-8, excess nesting, noncanonical scalar text, and unknown format versions. Placeholder coverage and count are checked by the SDK after the wrapper starts; the CLI does not parse SQL to infer them.
+
+Each value has a declared SQL scalar type and a canonical textual value. The initial type names are `boolean`, `smallint`, `integer`, `bigint`, `decimal(P,S)`, `text`, `varchar(N)`, `bytea`, `uuid`, `date`, and `timestamptz`, using the bounds in [schema DDL](ddl-schema.md). Integer values use base-10 signed notation with no leading plus or redundant leading zeroes; Boolean is `true` or `false`; DECIMAL is base-10 text with no more fractional digits than its declared scale; text values are JSON strings; BYTEA is even-length lowercase `hex:` text; UUID is 32 lowercase hexadecimal digits; DATE is signed days since 1970-01-01; TIMESTAMPTZ is signed microseconds since the Unix epoch. A null JSON value is SQL NULL of the declared type. REDACTED is never a valid input parameter. The client encodes values into the SDK's versioned C value records; SQL binding still checks placeholder use, declared parameter type, and column compatibility against the authorized pinned schema.
+
+The CLI converts valid JSON values into the versioned `PSP1` binary parameter block and sends it through the existing invocation parameter channel. `PSP1` is: magic `PSP1` (4 bytes); value count (`u16` big-endian); flags (`u16` zero); then one record per array element in order. Each record has type code (`u32` big-endian, from `prdb_sdk_value_v1.h`), Decimal precision (`u8`), Decimal scale (`u8`), state (`u8`, VALUE=0 or NULL=1), reserved (`u8` zero), payload length (`u32` big-endian), and canonical executor scalar payload bytes. Non-Decimal metadata is zero. NULL has zero payload bytes and retains the declared type. The complete block is capped at 1 MiB and must be consumed exactly. The SDK's statement-dispatch API decodes PSP1 and rejects unknown codes/states, invalid lengths, reserved bits, malformed scalar bytes, and unsupported versions.
+
+Parameter values are runtime invocation data, not generated C source and not part of `query.so`. Changing parameter values does not require recompilation. Malformed parameter JSON or invalid scalar representation fails before connecting. Placeholder coverage/count and type compatibility are validated by the SDK during execution; a mismatch follows the ordinary statement-error abort rule. The CLI does not parse SQL to determine placeholder use.
+
+## Scope, Build Profile, and Temporary Files
+
+`--scope FILE` supplies an existing canonical PSC1 requested-scope file. The command does not infer or widen scope from SQL text. The request scope is only a ceiling; storage independently checks the authenticated principal's current grants and policies at START and during execution. A SQL reference outside the requested scope or current authority fails through the normal admission or SDK resolution path.
+
+The SDK library, include directory, release, CPU baseline, runtime profile, and compiler identity select a local packaging profile. The generated wrapper uses native query ABI v3 because it requires the statement-failure callback. `--tcc`, `--shared-linker`, and `--patchelf` have the same defaults and validation as `prdb-packager`. The profile does not establish that the server supports it: SEAL independently validates the package manifest against the configured service profile.
+
+The client creates a private mode-0700 temporary workspace and mode-0600 SQL, generated-wrapper, and compiler-input files as needed. It does not include credentials or parameter values in the compiler environment or generated artifacts. It removes temporary files on success and ordinary errors. A package retained for diagnosis must be requested explicitly in a future CLI extension; this version removes its generated package after submission ends. The caller-selected receipt is retained and is created with the existing no-overwrite, synchronized `PDBR1` behavior before START.
+
+The existing bounded `package_query` helper compiles the generated wrapper with TinyCC, links it to the selected shared SQL library, validates the ELF without loading it, and emits the standard package layout. Compilation and package validation complete before the client opens an authenticated submission connection. Build failure sends no network request and starts no invocation.
+
+## Results and Failure Semantics
+
+The command submits the prepared package through `SubmissionClient` using the same PREPARE, chunk upload, SEAL, receipt, and one-time START sequence as `submit`. It streams SQLR result bytes to stdout; SQLR records may be split across network result frames. Diagnostics and the terminal invocation outcome go to stderr. Exit success requires a supervisor-originated `committed` terminal event. Any streamed bytes remain provisional until that event. An aborted or unknown outcome returns failure. A lost or malformed START response is uncertain and must be reconciled by authenticated STATUS with the recorded invocation ID; the client never retries START.
+
+Compile errors, invalid files, malformed parameter JSON, unsupported local SDK profiles, and package validation errors occur before network submission. SQL parse, bind, authorization, cancellation, resource, or execution errors abort the invocation according to the existing SDK/storage rules, even if provisional bytes were already written. Gateway/admission failures retain the existing error behavior. The command never retries or replays SQL automatically.
+
+## Compatibility and Security
+
+The command adds no network message kinds and no server-side SQL endpoint. It emits the existing PMF1/PSC1 package and uses the existing client protocol. SDK compatibility remains governed by the package manifest and configured server profile. The generated wrapper uses query ABI v3 and the versioned SQL dispatcher entry point; a future incompatible wrapper or parameter representation requires a new version rather than implicit reinterpretation.
+
+SQL, parameters, and compiled native code are untrusted input. TinyCC runs in the bounded packager subprocess; compiled code is not loaded by the client or trusted server processes. The confined executor loads the artifact and SDK only after sandbox setup. The generated wrapper grants no authority, and credentials never enter it. Client-local temporary-file protections do not replace server admission, authorization, or confinement.
+
+## Acceptance
+
+An implementation conforms when maintained tests establish that:
+
+- SQL can be read from a file and stdin, including the byte bound, UTF-8, empty, and NUL cases; multiple statements are rejected by the SDK within the confined invocation.
+- SQL bytes are embedded without source injection, and generated C compilation goes through the maintained bounded packager.
+- Parameter JSON and PSP1 have deterministic decoding, scalar validation, one-based binding, NULL preservation, and strict rejection of malformed values; parameter data is absent from compiled artifacts.
+- Unsupported SDK/profile combinations fail before upload; unsupported grammar and malformed SQL fail inside the confined invocation without committing.
+- A real generated SQL wrapper is packaged and submitted through the production gateway/supervisor path, executes in the confined worker, emits decodable SQLR rows, and reports committed only after durable completion.
+- Invalid SQL input bytes and malformed parameter files do not create an invocation; SQL grammar/binding failures abort through the confined execution path. After PREPARE, START is issued at most once and uncertain outcomes reconcile through STATUS.
+- Requested scope is passed unchanged and does not become authority; unauthorized references and DML fail under existing storage checks.
+- Compiler and generated source environments/files contain no bearer credentials, and temporary artifacts are removed on success and ordinary failure.
+
+## Deferred Features
+
+DML and later SELECT ABI extensions are future `run-sql` additions. Deployment profile discovery/configuration, user-facing SQLR decoder/output formats, named parameters, multiline editing, and automatic scope derivation are outside this initial command contract. The CLI currently streams result bytes; a later output-format feature must preserve SQLR type, NULL, REDACTED, and provisional-result semantics.

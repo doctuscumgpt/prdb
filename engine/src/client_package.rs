@@ -280,7 +280,7 @@ fn run_shared_linker(
     command
         .env_clear()
         .arg("-shared")
-        .arg("-Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs")
+        .arg("-Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs,--hash-style=both")
         .arg("-Wl,-rpath,$ORIGIN")
         .arg(object)
         .arg(sdk_library)

@@ -18,6 +18,7 @@ SDK_SQL_JOIN_V2_SOURCE := engine/sdk/sql_join_v2.c
 SDK_PLANNER_SOURCE := engine/sdk/planner_v1.c
 SDK_EXECUTOR_SOURCE := engine/sdk/executor_v1.c
 SDK_SQL_EXEC_SOURCE := engine/sdk/sql_exec_v2.c
+SDK_SQL_DISPATCH_SOURCE := engine/sdk/sql_dispatch_v1.c
 SDK_SQL_EXEC_V4_SOURCE := engine/sdk/sql_exec_v4.c
 SDK_SQL_EXEC_V5_SOURCE := engine/sdk/sql_exec_v5.c
 SDK_SQL_EXEC_V6_SOURCE := engine/sdk/sql_exec_v6.c
@@ -41,6 +42,7 @@ SDK_SQL_JOIN_V2_OBJECT := $(BUILD_DIR)/sql_join_v2.o
 SDK_PLANNER_OBJECT := $(BUILD_DIR)/planner_v1.o
 SDK_EXECUTOR_OBJECT := $(BUILD_DIR)/executor_v1.o
 SDK_SQL_EXEC_OBJECT := $(BUILD_DIR)/sql_exec_v2.o
+SDK_SQL_DISPATCH_OBJECT := $(BUILD_DIR)/sql_dispatch_v1.o
 SDK_SQL_EXEC_V4_OBJECT := $(BUILD_DIR)/sql_exec_v4.o
 SDK_SQL_EXEC_V5_OBJECT := $(BUILD_DIR)/sql_exec_v5.o
 SDK_SQL_EXEC_V6_OBJECT := $(BUILD_DIR)/sql_exec_v6.o
@@ -53,7 +55,7 @@ SDK_MANIFEST_OBJECT := $(BUILD_DIR)/manifest_v1.o
 SDK_SCOPE_OBJECT := $(BUILD_DIR)/scope_v1.o
 SDK_OPTIMIZER_OBJECT := $(BUILD_DIR)/optimizer_v1.o
 SDK_OPTIMIZER_PLAN_OBJECT := $(BUILD_DIR)/optimizer_plan_v1.o
-SDK_OBJECTS := $(SDK_VALUE_OBJECT) $(SDK_BATCH_OBJECT) $(SDK_OWNED_BATCH_OBJECT) $(SDK_SQL_OBJECT) $(SDK_SQL_ORDER_OBJECT) $(SDK_SQL_GROUP_OBJECT) $(SDK_SQL_JOIN_OBJECT) $(SDK_SQL_JOIN_V2_OBJECT) $(SDK_PLANNER_OBJECT) $(SDK_EXECUTOR_OBJECT) $(SDK_SQL_EXEC_OBJECT) $(SDK_SQL_EXEC_V4_OBJECT) $(SDK_SQL_EXEC_V5_OBJECT) $(SDK_SQL_EXEC_V6_OBJECT) $(SDK_SQL_EXEC_V7_OBJECT) $(SDK_SQL_EXEC_V8_OBJECT) $(SDK_SQL_EXEC_V16_OBJECT) $(SDK_SQL_EXEC_V19_OBJECT) $(SDK_SQL_RESULT_OBJECT) $(SDK_MANIFEST_OBJECT) $(SDK_SCOPE_OBJECT) $(SDK_OPTIMIZER_OBJECT) $(SDK_OPTIMIZER_PLAN_OBJECT)
+SDK_OBJECTS := $(SDK_VALUE_OBJECT) $(SDK_BATCH_OBJECT) $(SDK_OWNED_BATCH_OBJECT) $(SDK_SQL_OBJECT) $(SDK_SQL_ORDER_OBJECT) $(SDK_SQL_GROUP_OBJECT) $(SDK_SQL_JOIN_OBJECT) $(SDK_SQL_JOIN_V2_OBJECT) $(SDK_PLANNER_OBJECT) $(SDK_EXECUTOR_OBJECT) $(SDK_SQL_EXEC_OBJECT) $(SDK_SQL_DISPATCH_OBJECT) $(SDK_SQL_EXEC_V4_OBJECT) $(SDK_SQL_EXEC_V5_OBJECT) $(SDK_SQL_EXEC_V6_OBJECT) $(SDK_SQL_EXEC_V7_OBJECT) $(SDK_SQL_EXEC_V8_OBJECT) $(SDK_SQL_EXEC_V16_OBJECT) $(SDK_SQL_EXEC_V19_OBJECT) $(SDK_SQL_RESULT_OBJECT) $(SDK_MANIFEST_OBJECT) $(SDK_SCOPE_OBJECT) $(SDK_OPTIMIZER_OBJECT) $(SDK_OPTIMIZER_PLAN_OBJECT)
 SDK_ARCHIVE := $(BUILD_DIR)/libprdb_sdk.a
 SDK_RELEASE ?= 1
 SDK_TARGET ?= linux-x86_64
@@ -68,7 +70,7 @@ SDK_SQL_SONAME := libprdb_sql.so.$(SDK_RELEASE)
 SDK_SQL_SHARED_LIBRARY := $(SDK_RELEASE_DIR)/$(SDK_SQL_SONAME)
 SDK_RELEASE_METADATA := $(SDK_RELEASE_DIR)/sdk-release.json
 SDK_RELEASE_CHECKSUM := $(SDK_RELEASE_DIR)/sdk-release.sha256
-SDK_SHARED_TEST_FIXTURES := sdk_value_v1 sdk_sql_select_v20 sdk_optimizer_update_v1
+SDK_SHARED_TEST_FIXTURES := sdk_value_v1 sdk_sql_select_v20 sdk_optimizer_update_v1 sdk_sql_dispatch_v1
 SDK_SHARED_TESTS := $(addprefix $(SDK_RELEASE_DIR)/shared-test-,$(SDK_SHARED_TEST_FIXTURES))
 SDK_VALUE_TEST := $(BUILD_DIR)/sdk-value-v1
 SDK_BATCH_TEST := $(BUILD_DIR)/sdk-batch-v1
@@ -104,6 +106,7 @@ SDK_SQL_V20_FUZZER := $(BUILD_DIR)/fuzz-sql-v20
 SDK_PLANNER_TEST := $(BUILD_DIR)/sdk-planner-v1
 SDK_EXECUTOR_TEST := $(BUILD_DIR)/sdk-executor-v1
 SDK_SQL_EXEC_TEST := $(BUILD_DIR)/sdk-sql-execute-v2
+SDK_SQL_DISPATCH_TEST := $(BUILD_DIR)/sdk-sql-dispatch-v1
 SDK_SQL_EXEC_V5_TEST := $(BUILD_DIR)/sdk-sql-execute-v5
 SDK_SQL_EXEC_V6_TEST := $(BUILD_DIR)/sdk-sql-execute-v6
 SDK_SQL_EXEC_V7_TEST := $(BUILD_DIR)/sdk-sql-execute-v7
@@ -193,6 +196,9 @@ $(SDK_EXECUTOR_OBJECT): $(SDK_EXECUTOR_SOURCE) $(INCLUDE_DIR)/prdb_sdk_executor_
 $(SDK_SQL_EXEC_OBJECT): $(SDK_SQL_EXEC_SOURCE) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v3.h $(INCLUDE_DIR)/prdb_sdk_sql_dml_v1.h $(INCLUDE_DIR)/prdb_sdk_sql_dml_v2.h $(INCLUDE_DIR)/prdb_query_abi_v3.h $(INCLUDE_DIR)/prdb_query_abi_constants.h $(QUERY_ABI_GENERATED_HEADERS) $(INCLUDE_DIR)/prdb_sdk_executor_v1.h $(INCLUDE_DIR)/prdb_sdk_planner_v1.h $(INCLUDE_DIR)/prdb_sdk_sql_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_v3.h $(INCLUDE_DIR)/prdb_sdk_sql_order_v1.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
+$(SDK_SQL_DISPATCH_OBJECT): $(SDK_SQL_DISPATCH_SOURCE) $(INCLUDE_DIR)/prdb_sdk_sql_dispatch_v1.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_result_v1.h $(INCLUDE_DIR)/prdb_sdk_value_v1.h $(INCLUDE_DIR)/prdb_query_abi_constants.h | $(BUILD_DIR)
+	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
+
 $(SDK_SQL_EXEC_V4_OBJECT): $(SDK_SQL_EXEC_V4_SOURCE) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v4.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v12.h $(INCLUDE_DIR)/prdb_sdk_sql_v4.h $(INCLUDE_DIR)/prdb_sdk_sql_group_v1.h $(INCLUDE_DIR)/prdb_sdk_optimizer_v1.h $(INCLUDE_DIR)/prdb_sdk_optimizer_plan_v1.h $(INCLUDE_DIR)/prdb_sdk_planner_v1.h $(INCLUDE_DIR)/prdb_sdk_executor_v1.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
@@ -239,7 +245,7 @@ $(SDK_PIC_OBJECT_DIR)/%.o: engine/sdk/%.c $(wildcard $(INCLUDE_DIR)/*.h) | $(SDK
 	$(TCC) -Wall -Wextra -Werror -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
 $(SDK_SQL_SHARED_LIBRARY): $(SDK_PIC_OBJECTS) $(SDK_EXTRA_SHARED_OBJECTS) | $(SDK_RELEASE_DIR)
-	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs,-soname,$(SDK_SQL_SONAME) $(SDK_PIC_OBJECTS) $(SDK_EXTRA_SHARED_OBJECTS) -o "$@"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs,--hash-style=both,-soname,$(SDK_SQL_SONAME) $(SDK_PIC_OBJECTS) $(SDK_EXTRA_SHARED_OBJECTS) -o "$@"
 
 $(SDK_RELEASE_DIR):
 	mkdir -p "$@"
@@ -249,7 +255,7 @@ $(SDK_RELEASE_METADATA) $(SDK_RELEASE_CHECKSUM) &: $(SDK_SQL_SHARED_LIBRARY) eng
 
 $(SDK_RELEASE_DIR)/shared-test-%: engine/tests/fixtures/%.c $(SDK_SQL_SHARED_LIBRARY) | $(SDK_RELEASE_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" -c "$<" -o "$@.o"
-	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -Wl,--no-eh-frame-hdr,-z,noexecstack "$@.o" "$(SDK_SQL_SHARED_LIBRARY)" -Wl,-rpath,'$$ORIGIN' -o "$@"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -Wl,--no-eh-frame-hdr,-z,noexecstack,--hash-style=both "$@.o" "$(SDK_SQL_SHARED_LIBRARY)" -Wl,-rpath,'$$ORIGIN' -o "$@"
 
 .PHONY: sdk-shared-release sdk-shared-tests
 sdk-shared-release: $(SDK_SQL_SHARED_LIBRARY) $(SDK_RELEASE_METADATA) $(SDK_RELEASE_CHECKSUM)
@@ -393,6 +399,9 @@ $(SDK_EXECUTOR_TEST): engine/tests/fixtures/sdk_executor_v1.c $(SDK_ARCHIVE) $(I
 $(SDK_SQL_EXEC_TEST): engine/tests/fixtures/sdk_sql_execute_v2.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v3.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v4.h $(INCLUDE_DIR)/prdb_sdk_sql_v3.h $(INCLUDE_DIR)/prdb_sdk_sql_result_v1.h $(INCLUDE_DIR)/prdb_sdk_executor_v1.h $(INCLUDE_DIR)/prdb_sdk_planner_v1.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
 
+$(SDK_SQL_DISPATCH_TEST): engine/tests/fixtures/sdk_sql_dispatch_v1.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_sql_dispatch_v1.h | $(BUILD_DIR)
+	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
+
 $(SDK_SQL_EXEC_V5_TEST): engine/tests/fixtures/sdk_sql_execute_v5.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v5.h $(INCLUDE_DIR)/prdb_sdk_sql_v5.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
 
@@ -461,39 +470,39 @@ $(SQL_V3_CAUGHT_ERROR_OBJECT): engine/tests/fixtures/sql_v3_caught_error.c $(INC
 	$(TCC) -Wall -Wextra -Werror -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
 $(SQL_V3_CAUGHT_ERROR_QUERY): $(SQL_V3_CAUGHT_ERROR_OBJECT) $(SDK_ARCHIVE) | $(BUILD_DIR)
-	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack "$<" "$(SDK_ARCHIVE)" -o "$@"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,--hash-style=both "$<" "$(SDK_ARCHIVE)" -o "$@"
 
 $(SQL_V3_SHARED_LIBRARY_QUERY): engine/tests/fixtures/sql_v3_caught_error.c $(SDK_SQL_SHARED_LIBRARY) | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@.o"
-	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs "$@.o" "$(SDK_SQL_SHARED_LIBRARY)" -Wl,-rpath,'$$ORIGIN' -o "$@"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs,--hash-style=both "$@.o" "$(SDK_SQL_SHARED_LIBRARY)" -Wl,-rpath,'$$ORIGIN' -o "$@"
 
 $(SQL_V3_MISSING_DEPENDENCY_LIBRARY): engine/tests/fixtures/missing_dependency.c | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -fPIC -c "$<" -o "$@.o"
-	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs,-soname,libprdb_missing.so.1 "$@.o" -o "$@"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs,--hash-style=both,-soname,libprdb_missing.so.1 "$@.o" -o "$@"
 
 $(SQL_V3_MISSING_DEPENDENCY_QUERY): engine/tests/fixtures/sql_missing_dependency.c $(SDK_SQL_SHARED_LIBRARY) $(SQL_V3_MISSING_DEPENDENCY_LIBRARY) | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@.o"
-	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs "$@.o" "$(SDK_SQL_SHARED_LIBRARY)" "$(SQL_V3_MISSING_DEPENDENCY_LIBRARY)" -Wl,-rpath,'$$ORIGIN' -o "$@"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,-z,defs,--hash-style=both "$@.o" "$(SDK_SQL_SHARED_LIBRARY)" "$(SQL_V3_MISSING_DEPENDENCY_LIBRARY)" -Wl,-rpath,'$$ORIGIN' -o "$@"
 
 $(SQL_V3_NETWORK_CONSTRUCTOR_OBJECT): engine/tests/fixtures/sql_v3_caught_error.c $(INCLUDE_DIR)/prdb_query_abi_v3.h $(INCLUDE_DIR)/prdb_query_abi_constants.h $(QUERY_ABI_GENERATED_HEADERS) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v2.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -DPRDB_PROBE_CONSTRUCTOR_NETWORK -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
 $(SQL_V3_NETWORK_CONSTRUCTOR_QUERY): $(SQL_V3_NETWORK_CONSTRUCTOR_OBJECT) $(SDK_ARCHIVE) | $(BUILD_DIR)
-	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack "$<" "$(SDK_ARCHIVE)" -o "$@"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,--hash-style=both "$<" "$(SDK_ARCHIVE)" -o "$@"
 
 # This is an untrusted query artifact; run it only with the sandbox acceptance test.
 $(SQL_V3_WRITE_READ_OBJECT): engine/tests/fixtures/sql_v3_write_read.c $(INCLUDE_DIR)/prdb_query_abi_v3.h $(INCLUDE_DIR)/prdb_query_abi_v4.h $(INCLUDE_DIR)/prdb_query_abi_constants.h $(QUERY_ABI_GENERATED_HEADERS) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v2.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v5.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v6.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v7.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v8.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v10.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v11.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v12.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v13.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v15.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v16.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v17.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v18.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v19.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v20.h $(INCLUDE_DIR)/prdb_sdk_sql_v10.h $(INCLUDE_DIR)/prdb_sdk_sql_v11.h $(INCLUDE_DIR)/prdb_sdk_sql_v12.h $(INCLUDE_DIR)/prdb_sdk_sql_v13.h $(INCLUDE_DIR)/prdb_sdk_sql_v15.h $(INCLUDE_DIR)/prdb_sdk_sql_v17.h $(INCLUDE_DIR)/prdb_sdk_sql_v18.h $(INCLUDE_DIR)/prdb_sdk_sql_v19.h $(INCLUDE_DIR)/prdb_sdk_sql_v20.h $(INCLUDE_DIR)/prdb_sdk_sql_result_v1.h $(INCLUDE_DIR)/prdb_sdk_optimizer_plan_v1.h $(INCLUDE_DIR)/prdb_sdk_optimizer_v1.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
 $(SQL_V3_WRITE_READ_QUERY): $(SQL_V3_WRITE_READ_OBJECT) $(SDK_ARCHIVE) | $(BUILD_DIR)
-	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack "$<" "$(SDK_ARCHIVE)" -o "$@"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,--hash-style=both "$<" "$(SDK_ARCHIVE)" -o "$@"
 
 # This is an untrusted query artifact; run it only with the sandbox acceptance test.
 $(SQL_V3_RESTRICTED_METADATA_OBJECT): engine/tests/fixtures/sql_v3_restricted_metadata.c $(INCLUDE_DIR)/prdb_query_abi_v3.h $(INCLUDE_DIR)/prdb_query_abi_constants.h $(QUERY_ABI_GENERATED_HEADERS) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v2.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
 $(SQL_V3_RESTRICTED_METADATA_QUERY): $(SQL_V3_RESTRICTED_METADATA_OBJECT) $(SDK_ARCHIVE) | $(BUILD_DIR)
-	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack "$<" "$(SDK_ARCHIVE)" -o "$@"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,--hash-style=both "$<" "$(SDK_ARCHIVE)" -o "$@"
 
 # This untrusted query deliberately bypasses the SDK and submits a forged
 # relation handle through the executor callback. Run it only in the sandbox.
@@ -501,13 +510,13 @@ $(SQL_V3_FORGED_HANDLE_OBJECT): engine/tests/fixtures/sql_v3_forged_relation_han
 	$(TCC) -Wall -Wextra -Werror -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
 $(SQL_V3_FORGED_HANDLE_QUERY): $(SQL_V3_FORGED_HANDLE_OBJECT) | $(BUILD_DIR)
-	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack "$<" -o "$@"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,--hash-style=both "$<" -o "$@"
 
 $(SQL_V3_FORGED_ROW_HANDLE_OBJECT): engine/tests/fixtures/sql_v3_forged_row_handle.c $(INCLUDE_DIR)/prdb_query_abi_v3.h $(INCLUDE_DIR)/prdb_query_abi_constants.h $(INCLUDE_DIR)/prdb_query_abi_payload_codecs.h $(QUERY_ABI_GENERATED_HEADERS) | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -fPIC -I"$(INCLUDE_DIR)" -c "$<" -o "$@"
 
 $(SQL_V3_FORGED_ROW_HANDLE_QUERY): $(SQL_V3_FORGED_ROW_HANDLE_OBJECT) | $(BUILD_DIR)
-	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack "$<" -o "$@"
+	env -u NIX_LDFLAGS NIX_DONT_SET_RPATH=1 $(SHARED_LINKER) -shared -Wl,--no-eh-frame-hdr,-z,noexecstack,--hash-style=both "$<" -o "$@"
 
 .PHONY: sandbox-query-fixture
 sandbox-query-fixture: $(SQL_V3_CAUGHT_ERROR_QUERY) $(SQL_V3_SHARED_LIBRARY_QUERY) $(SQL_V3_MISSING_DEPENDENCY_QUERY) $(SQL_V3_NETWORK_CONSTRUCTOR_QUERY) $(SQL_V3_WRITE_READ_QUERY) $(SQL_V3_RESTRICTED_METADATA_QUERY) $(SQL_V3_FORGED_HANDLE_QUERY) $(SQL_V3_FORGED_ROW_HANDLE_QUERY) sdk-hostile-constructor-release
@@ -583,7 +592,7 @@ run-sdk-optimizer-delete: $(SDK_OPTIMIZER_DELETE_TEST)
 run-sdk-optimizer-update: $(SDK_OPTIMIZER_UPDATE_TEST)
 	"$(SDK_OPTIMIZER_UPDATE_TEST)"
 
-test: abi-constants-check abi-constants-test $(QUERY_ABI_V4_TEST) $(SDK_VALUE_TEST) $(SDK_BATCH_TEST) $(SDK_SQL_TEST) $(SDK_SQL_EXPRESSION_TEST) $(SDK_SQL_V2_TEST) $(SDK_SQL_ORDER_TEST) $(SDK_SQL_GROUP_TEST) $(SDK_SQL_JOIN_TEST) $(SDK_SQL_JOIN_V2_TEST) $(SDK_SQL_V3_TEST) $(SDK_SQL_V4_TEST) $(SDK_SQL_V5_TEST) $(SDK_SQL_V6_TEST) $(SDK_SQL_V7_TEST) $(SDK_SQL_V8_TEST) $(SDK_SQL_V9_TEST) $(SDK_SQL_V10_TEST) $(SDK_SQL_V11_TEST) $(SDK_SQL_V12_TEST) $(SDK_SQL_V13_TEST) $(SDK_SQL_V14_TEST) $(SDK_SQL_V15_TEST) $(SDK_SQL_V16_TEST) $(SDK_SQL_V17_TEST) $(SDK_SQL_V18_TEST) $(SDK_SQL_V19_TEST) $(SDK_SQL_V20_TEST) $(SDK_PLANNER_TEST) $(SDK_EXECUTOR_TEST) $(SDK_SQL_EXEC_TEST) $(SDK_SQL_EXEC_V5_TEST) $(SDK_SQL_EXEC_V6_TEST) $(SDK_SQL_EXEC_V7_TEST) $(SDK_SQL_EXEC_V8_TEST) $(SDK_SQL_EXEC_V9_TEST) $(SDK_SQL_EXEC_V10_TEST) $(SDK_SQL_EXEC_V19_TEST) $(SDK_SQL_INFORMATION_SCHEMA_TEST) $(SDK_SQL_RESULT_TEST) $(SDK_SQL_RESULT_V13_TEST) $(SDK_SQL_DML_TEST) $(SDK_MANIFEST_TEST) $(SDK_SCOPE_TEST) $(SDK_IPC_FRAME_TEST) $(SDK_IPC_PAYLOAD_CODEC_TEST)
+test: abi-constants-check abi-constants-test $(QUERY_ABI_V4_TEST) $(SDK_VALUE_TEST) $(SDK_BATCH_TEST) $(SDK_SQL_TEST) $(SDK_SQL_EXPRESSION_TEST) $(SDK_SQL_V2_TEST) $(SDK_SQL_ORDER_TEST) $(SDK_SQL_GROUP_TEST) $(SDK_SQL_JOIN_TEST) $(SDK_SQL_JOIN_V2_TEST) $(SDK_SQL_V3_TEST) $(SDK_SQL_V4_TEST) $(SDK_SQL_V5_TEST) $(SDK_SQL_V6_TEST) $(SDK_SQL_V7_TEST) $(SDK_SQL_V8_TEST) $(SDK_SQL_V9_TEST) $(SDK_SQL_V10_TEST) $(SDK_SQL_V11_TEST) $(SDK_SQL_V12_TEST) $(SDK_SQL_V13_TEST) $(SDK_SQL_V14_TEST) $(SDK_SQL_V15_TEST) $(SDK_SQL_V16_TEST) $(SDK_SQL_V17_TEST) $(SDK_SQL_V18_TEST) $(SDK_SQL_V19_TEST) $(SDK_SQL_V20_TEST) $(SDK_PLANNER_TEST) $(SDK_EXECUTOR_TEST) $(SDK_SQL_EXEC_TEST) $(SDK_SQL_DISPATCH_TEST) $(SDK_SQL_EXEC_V5_TEST) $(SDK_SQL_EXEC_V6_TEST) $(SDK_SQL_EXEC_V7_TEST) $(SDK_SQL_EXEC_V8_TEST) $(SDK_SQL_EXEC_V9_TEST) $(SDK_SQL_EXEC_V10_TEST) $(SDK_SQL_EXEC_V19_TEST) $(SDK_SQL_INFORMATION_SCHEMA_TEST) $(SDK_SQL_RESULT_TEST) $(SDK_SQL_RESULT_V13_TEST) $(SDK_SQL_DML_TEST) $(SDK_MANIFEST_TEST) $(SDK_SCOPE_TEST) $(SDK_IPC_FRAME_TEST) $(SDK_IPC_PAYLOAD_CODEC_TEST)
 	"$(SDK_OPTIMIZER_TEST)"
 	"$(SDK_OPTIMIZER_PLAN_TEST)"
 	"$(QUERY_ABI_V4_TEST)"
@@ -617,6 +626,7 @@ test: abi-constants-check abi-constants-test $(QUERY_ABI_V4_TEST) $(SDK_VALUE_TE
 	"$(SDK_PLANNER_TEST)"
 	"$(SDK_EXECUTOR_TEST)"
 	"$(SDK_SQL_EXEC_TEST)"
+	"$(SDK_SQL_DISPATCH_TEST)"
 	"$(SDK_SQL_EXEC_V5_TEST)"
 	"$(SDK_SQL_EXEC_V6_TEST)"
 	"$(SDK_SQL_EXEC_V7_TEST)"

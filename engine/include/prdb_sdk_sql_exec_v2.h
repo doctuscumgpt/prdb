@@ -50,6 +50,27 @@ int32_t prdb_sdk_sql_execute_select_v2(
     prdb_sdk_value_v1 *cell_scratch, uint32_t cell_scratch_capacity,
     prdb_sdk_sql_result_row_v2_fn on_row, void *result_context);
 
+/* PSP1-aware SELECT v2 entry point. Metadata entries match parameters by
+ * one-based position and are checked against the resolved predicate column,
+ * including exact Decimal scale. */
+int32_t prdb_sdk_sql_execute_select_typed_v1(
+    const prdb_host_api_v3 *host,
+    const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *sql, uint64_t sql_len,
+    const prdb_sdk_value_v1 *parameters,
+    const prdb_sdk_sql_parameter_metadata_v1 *parameter_metadata,
+    uint32_t parameter_count,
+    uint16_t max_candidates, uint32_t max_batch_bytes,
+    uint8_t *planner_response, uint64_t planner_response_capacity,
+    uint8_t *executor_response, uint64_t executor_response_capacity,
+    uint8_t *batch_response, uint64_t batch_response_capacity,
+    prdb_sdk_sql_column_shape_v2 *planner_columns,
+    uint32_t planner_column_capacity,
+    prdb_sdk_sql_column_shape_v2 *executor_columns,
+    uint32_t executor_column_capacity,
+    prdb_sdk_value_v1 *cell_scratch, uint32_t cell_scratch_capacity,
+    prdb_sdk_sql_result_row_v2_fn on_row, void *result_context);
+
 /* Executes a single positional INSERT. `insert_values` is caller-owned
  * scratch with one slot per resolved column; request/response buffers must
  * remain valid for each synchronous host callback. The provisional returned

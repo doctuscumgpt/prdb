@@ -10,6 +10,7 @@ pub mod catalog_index;
 pub mod client_credentials;
 pub mod client_package;
 pub mod client_protocol;
+pub mod client_sql;
 pub mod client_submit;
 pub mod commit;
 pub mod credentials;

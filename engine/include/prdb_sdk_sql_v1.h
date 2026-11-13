@@ -10,6 +10,19 @@
 #define PRDB_SDK_SQL_MAX_IDENTIFIER_BYTES UINT32_C(128)
 #define PRDB_SDK_SQL_MAX_PROJECTION_COLUMNS UINT32_C(64)
 #define PRDB_SDK_SQL_MAX_PARAMETER_INDEX UINT32_C(65535)
+
+#define PRDB_SDK_SQL_PARAMETER_METADATA_ABI_V1_VERSION UINT32_C(1)
+
+/* SQL-only type information that cannot be carried by prdb_sdk_value_v1,
+ * notably Decimal precision/scale. The value remains independently versioned. */
+typedef struct prdb_sdk_sql_parameter_metadata_v1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t type_code;
+    uint8_t decimal_precision;
+    uint8_t decimal_scale;
+    uint8_t reserved[2];
+} prdb_sdk_sql_parameter_metadata_v1;
 #define PRDB_SDK_SQL_MAX_LIMIT UINT32_C(1000000)
 
 #define PRDB_SDK_SQL_OK INT32_C(0)

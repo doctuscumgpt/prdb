@@ -33,6 +33,7 @@ These documents capture the current research design for an operational database 
 - [Statistics service](statistics-service.md): trusted collection, scoped estimates, and statistics disclosure.
 - [Executor](query-worker.md): untrusted execution and the native extension contract.
 - [Client SDK](client-sdk.md): TinyCC compilation, component contracts, and artifact packaging.
+- [`prdb-client` SQL input command](client-sql-command.md): local SQL input, generated C wrapper, SDK packaging, and submission composition.
 - [Separate SQL library implementation plan](../plans/client-sdk/SEPARATE_SQL_LIBRARY.md): versioned SDK shared library, supervisor cache, packaging, and confined loading increments.
 - [SQL library](sql-library.md): SDK SQL frontend, initial language subset, and plan execution.
 - [IPC protocol](ipc-protocol.md): scoped handles, bounded requests, and authorized batches.

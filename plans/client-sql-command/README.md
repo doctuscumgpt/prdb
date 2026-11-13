@@ -1,0 +1,31 @@
+# `prdb-client run-sql` Implementation Plan
+
+## Objective and Dependencies
+
+Implement the SQL text command in the [normative spec](../../specs/client-sql-command.md). The command composes the existing Rust client, bounded `package_query` path, versioned C SQL SDK, PMF1/PSC1 package, and authenticated gateway protocol. It adds no SQL server endpoint and no direct executor access.
+
+Follow [iterated development](../../INTERATED_DEVELOPMENT.md), [client SDK](../client-sdk/README.md), [SQL library](../sql-library/README.md), [client protocol](../client-protocol/README.md), and [separate SQL library plan](../client-sdk/SEPARATE_SQL_LIBRARY.md). Normative behavior stays in `specs/`. Current SDK SQL entry points are statement/version specific; do not paper over this with a client-side SQL parser or an unbounded generated program.
+
+## Increments
+
+| ID | Observable failure first | Minimum implementation | Acceptance evidence |
+| --- | --- | --- | --- |
+| SQLCLI-1: Input and parameter contracts | CLI accepts empty/NUL/over-limit SQL or ambiguous parameters | Add command parser and strict bounded SQL-file/stdin and `PDB-SQL-PARAMETERS-1` decoders plus canonical PSP1 encoding. Use the SQL spec's 65,536-byte SQL limit and 1 MiB SQL parameter limit. Reject malformed bytes and parameter input before credentials are read or network is opened. Do not parse SQL using a client-selected library. | CLI tests cover file/stdin, EOF/error paths, UTF-8/NUL/size/empty input, duplicate/unknown JSON keys, each scalar canonical form, NULL, binary round trips, bounds, and errors that cause no gateway connection. SDK tests verify malformed/multiple SQL is rejected in the confined execution path. |
+| SQLCLI-2: One SQL execution entry point | A generated query cannot execute supplied SELECT text through one bounded SDK API | Define and implement a versioned C SDK SELECT v2 dispatch API that accepts the schema, SQL bytes, and invocation's PSP1 parameter block; it decodes typed values, invokes the existing parser/binder/runner, writes SQLR rows, and latches failures. Keep DML and later SELECT ABIs explicitly unsupported in this command version. | Maintained TinyCC tests cover SELECT v2 projection/filter/LIMIT, malformed/multiple/DML input, missing/wrong parameters, SQLR output, callback failure, and sticky transaction abort behavior. Add PSP1 and ABI layout/export checks. |
+| SQLCLI-3: Safe wrapper generation and local packaging | SQL bytes can alter generated C or packaging work requires hand-authored C | Generate a minimal query ABI wrapper with SQL bytes represented as numeric byte data; read parameter values only from invocation bytes and do not interpolate user data into C tokens. Use the existing bounded `package_query` implementation and a private temporary directory. Validate compiler argument construction, environment clearing, cleanup, and package profile propagation. | Tests compare embedded SQL bytes byte-for-byte, include quote/backslash/high-bit/injection-shaped SQL, prove parameter changes do not alter query.so, inspect package outputs and PMF1/PSC1, verify no SDK/query library loading, and assert compiler failure leaves no package and opens no network connection. |
+| SQLCLI-4: Submission orchestration | `run-sql` fails to carry a generated package through the established submission lifecycle | Reuse `SubmissionClient` for authenticated PREPARE, artifact/SQL-library/parameter upload, SEAL, durable receipt before START, one START, result streaming, and terminal outcome. Use caller-provided PSC1 without widening it. Clean generated artifacts after the operation while preserving the receipt. | CLI tests verify phase ordering and no START retry; focused gateway tests cover rejected profiles, SQLR fragmentation, committed/aborted outcomes, disconnect around START, and status reconciliation with the receipt ID. |
+| SQLCLI-5: Confined end-to-end acceptance | Mocked wrapper/submission passes while the real generated SQL artifact fails or bypasses confinement | Exercise supported SQL through a generated wrapper packaged with the maintained SQL shared library and uploaded to the production gateway/supervisor. Keep normal admission, authorization, optimizer, storage, sandbox, result relay, and durable outcome paths active. | Delegated-cgroup process acceptance executes SELECT and a supported DML/read sequence, decodes complete SQLR output, verifies committed storage state, rejects out-of-scope access, and verifies SQL/SDK code loads only after confinement. Run the full applicable locked checks from repository instructions. |
+
+Run focused tests within each increment. Run Cargo operations that write the shared target directory sequentially. The process/sandbox acceptance must use the delegated-cgroup service documented in `AGENTS.md`; compiler or mocked gateway tests are not a substitute.
+
+## Design Decisions to Resolve Before SQLCLI-2
+
+- Choose the new SDK SELECT-dispatch API version and query ABI compatibility policy. The API must route to the existing SQL v2 parser/binder/runner, not fork SQL semantics.
+- Select bounded caller-owned scratch capacities and execution defaults for the dispatch API. DML and later SELECT ABIs remain explicitly unsupported until a follow-up increment adds them.
+- Specify typed parameter construction from canonical JSON, including DECIMAL precision/scale, SQL NULL typing, UUID/DATE/TIMESTAMPTZ encoding, and exact placeholder/count checks. Reuse canonical scalar encodings rather than adding a second wire format.
+- Fix profile selection for a usable CLI invocation. Initial implementation accepts explicit flags matching `prdb-packager`; a config/discovery mechanism may follow without changing package compatibility checks.
+- Confirm temporary directory ownership, no-follow file opening, permissions, cleanup on signals/crashes, and whether retaining a failed generated package is deferred.
+
+## Handoff Evidence
+
+For each SQLCLI increment record the spec sections, observed failing assertion, changed C/Rust interfaces, commands actually run, gateway/sandbox status, and the next smallest task in a future `PROGRESS.md`. Do not mark SQLCLI-5 complete from package inspection alone; it requires the actual confined end-to-end query path.

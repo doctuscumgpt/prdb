@@ -2,7 +2,12 @@ use prdb_engine::authorization::Operation;
 use prdb_engine::client_credentials::{
     read_client_credentials, remove_client_credentials, write_client_credentials,
 };
+use prdb_engine::client_package::{PackageOptions, package_query};
 use prdb_engine::client_protocol::ClientCredentials;
+use prdb_engine::client_sql::{
+    MAX_SQL_PARAMETER_BYTES, encode_parameter_file, generate_query_source, read_sql_input,
+    validate_schema_name,
+};
 use prdb_engine::client_submit::MetadataClient;
 use prdb_engine::client_submit::{
     AdminClient, AdminColumnDefault, AdminColumnDefinition, AdminCreatePolicyRequest,
@@ -17,12 +22,17 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::SocketAddr;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = "Usage:\n\
   prdb-client submit --address IP:PORT --credentials FILE --package DIR --receipt FILE \\\n    [--parameters FILE] [--deadline-ms N] [--workload operational|analytical]\n\
+  prdb-client run-sql --address IP:PORT --credentials FILE --sql-file FILE|- --schema NAME \\
+    --scope FILE --receipt FILE --sdk-library FILE --include-dir DIR --sdk-release N \\
+    --cpu-baseline NAME --runtime-profile NAME --compiler-identity TEXT [--parameters FILE] \\
+    [--tcc FILE] [--shared-linker FILE] [--patchelf FILE] \\
+    [--deadline-ms N] [--workload operational|analytical]\n\
   prdb-client status --address IP:PORT --credentials FILE --invocation-id HEX\n\n\
   prdb-client cancel --address IP:PORT --credentials FILE --invocation-id HEX\n\n\
   prdb-client admin-cancel --address IP:PORT --credentials ADMIN_FILE --invocation-id HEX\n\n\
@@ -144,6 +154,7 @@ fn run() -> Result<(), String> {
     let credentials_path = take_path(&mut fields, "--credentials")?;
     match command.as_str() {
         "submit" => submit(address, credentials_path, &mut fields),
+        "run-sql" => run_sql(address, credentials_path, &mut fields),
         "status" => status(address, credentials_path, &mut fields),
         "cancel" => cancel(address, credentials_path, &mut fields),
         "admin-cancel" => admin_cancel(address, credentials_path, &mut fields),
@@ -1431,47 +1442,227 @@ fn submit(
     reject_unknown(fields)?;
 
     let mut parameters = read_parameters(parameters_path.as_ref())?;
-    let mut credentials =
-        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
-    let mut client = SubmissionClient::connect_authenticated(
+    submit_package_and_stream(
         address,
-        credentials.token_id,
-        &mut credentials.token_secret,
+        credentials_path,
+        &package,
+        &receipt,
+        &mut parameters,
+        deadline_ms,
+        workload,
     )
-    .map_err(|error| error.to_string())?;
-    let invocation_id = client
-        .upload_and_seal(&package, &parameters, deadline_ms, workload)
+}
+
+fn submit_package_and_stream(
+    address: SocketAddr,
+    credentials_path: PathBuf,
+    package: &Path,
+    receipt: &Path,
+    parameters: &mut [u8],
+    deadline_ms: u64,
+    workload: WorkloadClass,
+) -> Result<(), String> {
+    let result = (|| {
+        let mut credentials =
+            read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
+        let mut client = SubmissionClient::connect_authenticated(
+            address,
+            credentials.token_id,
+            &mut credentials.token_secret,
+        )
         .map_err(|error| error.to_string())?;
-    parameters.fill(0);
-    eprintln!("prepared invocation {}", lower_hex(&invocation_id));
-    let mut started = client
-        .start(invocation_id, &receipt)
-        .map_err(|error| error.to_string())?;
-    loop {
-        match started.next_event().map_err(|error| error.to_string())? {
-            Some(ClientResultEvent::Data(data)) => {
-                io::stdout()
-                    .write_all(&data)
-                    .and_then(|()| io::stdout().flush())
-                    .map_err(|error| error.to_string())?;
+        let invocation_id = client
+            .upload_and_seal(package, parameters, deadline_ms, workload)
+            .map_err(|error| error.to_string())?;
+        eprintln!("prepared invocation {}", lower_hex(&invocation_id));
+        let mut started = client
+            .start(invocation_id, receipt)
+            .map_err(|error| error.to_string())?;
+        loop {
+            match started.next_event().map_err(|error| error.to_string())? {
+                Some(ClientResultEvent::Data(data)) => {
+                    io::stdout()
+                        .write_all(&data)
+                        .and_then(|()| io::stdout().flush())
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(ClientResultEvent::Terminal(terminal)) => {
+                    eprintln!(
+                        "invocation {} outcome={:?} reason={}",
+                        lower_hex(&terminal.invocation_id),
+                        terminal.outcome,
+                        terminal.reason_code
+                    );
+                    return match terminal.outcome {
+                        TerminalOutcome::Committed => Ok(()),
+                        TerminalOutcome::Aborted | TerminalOutcome::Unknown => {
+                            Err("invocation did not commit".to_owned())
+                        }
+                    };
+                }
+                None => return Err("result stream ended without a terminal outcome".to_owned()),
             }
-            Some(ClientResultEvent::Terminal(terminal)) => {
-                eprintln!(
-                    "invocation {} outcome={:?} reason={}",
-                    lower_hex(&terminal.invocation_id),
-                    terminal.outcome,
-                    terminal.reason_code
-                );
-                return match terminal.outcome {
-                    TerminalOutcome::Committed => Ok(()),
-                    TerminalOutcome::Aborted | TerminalOutcome::Unknown => {
-                        Err("invocation did not commit".to_owned())
-                    }
-                };
-            }
-            None => return Err("result stream ended without a terminal outcome".to_owned()),
         }
+    })();
+    parameters.fill(0);
+    result
+}
+
+fn run_sql(
+    address: SocketAddr,
+    credentials_path: PathBuf,
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<(), String> {
+    let sql_path = take_path(fields, "--sql-file")?;
+    let schema = take_text(fields, "--schema")?;
+    validate_schema_name(&schema).map_err(|error| error.to_string())?;
+    let requested_scope = take_path(fields, "--scope")?;
+    let receipt = take_path(fields, "--receipt")?;
+    let sdk_library = take_path(fields, "--sdk-library")?;
+    let include_dir = take_path(fields, "--include-dir")?;
+    let sdk_release = take_text(fields, "--sdk-release")?
+        .parse::<u32>()
+        .map_err(|_| "invalid numeric value for --sdk-release".to_owned())?;
+    let cpu_baseline = take_text(fields, "--cpu-baseline")?;
+    let runtime_profile = take_text(fields, "--runtime-profile")?;
+    let compiler_identity = take_text(fields, "--compiler-identity")?;
+    let tcc = fields
+        .remove("--tcc")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("tcc"));
+    let shared_linker = fields
+        .remove("--shared-linker")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("cc"));
+    let patchelf = fields
+        .remove("--patchelf")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("patchelf"));
+    let parameters_path = fields.remove("--parameters").map(PathBuf::from);
+    let deadline_ms = fields
+        .remove("--deadline-ms")
+        .map(|value| parse_number(value, "--deadline-ms"))
+        .transpose()?
+        .unwrap_or(30_000u64);
+    let workload = match fields.remove("--workload") {
+        None => WorkloadClass::Operational,
+        Some(value) if value == "operational" => WorkloadClass::Operational,
+        Some(value) if value == "analytical" => WorkloadClass::Analytical,
+        Some(_) => return Err("--workload must be operational or analytical".to_owned()),
+    };
+    reject_unknown(fields)?;
+
+    // Local parsing and compilation finish before credentials are read or a
+    // SubmissionClient connection can be opened.
+    let sql = read_sql_input(&sql_path).map_err(|error| error.to_string())?;
+    let generated_source =
+        generate_query_source(&schema, &sql).map_err(|error| error.to_string())?;
+    let mut parameters = read_sql_parameters(parameters_path.as_deref())?;
+    let workspace = SqlWorkspace::create()?;
+    let source_path = workspace.path.join("query.c");
+    write_private_file(&source_path, &generated_source)?;
+    let package_dir = workspace.path.join("package");
+    package_query(&PackageOptions {
+        tcc,
+        shared_linker,
+        patchelf,
+        source: source_path,
+        sdk_library,
+        include_dir,
+        requested_scope,
+        output_dir: package_dir.clone(),
+        native_abi_version: 3,
+        sdk_release,
+        cpu_baseline,
+        runtime_profile,
+        compiler_identity,
+    })
+    .map_err(|error| error.to_string())?;
+    submit_package_and_stream(
+        address,
+        credentials_path,
+        &package_dir,
+        &receipt,
+        &mut parameters,
+        deadline_ms,
+        workload,
+    )
+}
+
+struct SqlWorkspace {
+    path: PathBuf,
+}
+
+impl SqlWorkspace {
+    fn create() -> Result<Self, String> {
+        let parent = std::env::temp_dir();
+        for _ in 0..8 {
+            let mut random = [0u8; 16];
+            getrandom::fill(&mut random).map_err(|error| error.to_string())?;
+            let path = parent.join(format!(
+                "prdb-run-sql-{}-{}",
+                std::process::id(),
+                lower_hex(&random)
+            ));
+            random.fill(0);
+            let mut builder = fs::DirBuilder::new();
+            builder.mode(0o700);
+            match builder.create(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Err("could not allocate a private SQL build workspace".to_owned())
     }
+}
+
+impl Drop for SqlWorkspace {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn read_sql_parameters(path: Option<&Path>) -> Result<Vec<u8>, String> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    if !file
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .is_file()
+    {
+        return Err("SQL parameter input must be a regular file".to_owned());
+    }
+    let mut input = Vec::new();
+    Read::take(&mut file, (MAX_SQL_PARAMETER_BYTES + 1) as u64)
+        .read_to_end(&mut input)
+        .map_err(|error| error.to_string())?;
+    if input.len() > MAX_SQL_PARAMETER_BYTES {
+        input.fill(0);
+        return Err("SQL parameter input exceeds 1 MiB".to_owned());
+    }
+    let encoded = encode_parameter_file(&input).map_err(|error| error.to_string());
+    input.fill(0);
+    encoded.map_err(|error| error.to_string())
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| error.to_string())
 }
 
 fn status(

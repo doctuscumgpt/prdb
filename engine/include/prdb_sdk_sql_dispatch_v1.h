@@ -1,0 +1,31 @@
+#ifndef PRDB_SDK_SQL_DISPATCH_V1_H
+#define PRDB_SDK_SQL_DISPATCH_V1_H
+
+#include "prdb_sdk_sql_exec_v2.h"
+#include "prdb_sdk_sql_result_v1.h"
+
+#define PRDB_SDK_SQL_DISPATCH_ABI_V1_VERSION UINT32_C(1)
+#define PRDB_SDK_SQL_DISPATCH_MAX_PARAMETER_BYTES UINT64_C(1048576)
+
+#define PRDB_SDK_SQL_DISPATCH_OK INT32_C(0)
+#define PRDB_SDK_SQL_DISPATCH_INVALID_ARGUMENT INT32_C(1)
+#define PRDB_SDK_SQL_DISPATCH_INVALID_PARAMETERS INT32_C(2)
+#define PRDB_SDK_SQL_DISPATCH_RESOURCE_ERROR INT32_C(3)
+#define PRDB_SDK_SQL_DISPATCH_EXECUTION_ERROR INT32_C(4)
+
+/* Decodes a canonical PSP1 block into borrowed SQL values and separate type
+ * metadata. The values borrow the input block until the caller returns. */
+int32_t prdb_sdk_sql_decode_parameters_v1(
+    const uint8_t *parameters, uint64_t parameters_len,
+    prdb_sdk_value_v1 *values, uint32_t values_capacity,
+    prdb_sdk_sql_parameter_metadata_v1 *metadata,
+    uint32_t metadata_capacity, uint32_t *parameter_count_out);
+
+/* Runs one SQL ABI v2 SELECT through the bounded executor API. Invalid
+ * PSP1/SQL input and all execution errors latch SQL statement failure. */
+int32_t prdb_sdk_sql_run_v1(
+    const prdb_host_api_v3 *host, const uint8_t *schema,
+    uint32_t schema_len, const uint8_t *sql, uint64_t sql_len,
+    const uint8_t *parameters, uint64_t parameters_len);
+
+#endif /* PRDB_SDK_SQL_DISPATCH_V1_H */
