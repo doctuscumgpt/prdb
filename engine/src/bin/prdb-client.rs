@@ -1797,8 +1797,10 @@ fn runtime_list(
         );
     }
     print!(
-        "],\"pinned_snapshot_count\":{},\"oldest_snapshot_pin_age_us\":{},\"fence_waits\":[",
-        page.pinned_snapshot_count, page.oldest_snapshot_pin_age_us
+        "],\"pinned_snapshot_count\":{},\"oldest_snapshot_pin_age_us\":{},\"invocations_admitted_total\":{},\"fence_waits\":[",
+        page.pinned_snapshot_count,
+        page.oldest_snapshot_pin_age_us,
+        page.invocations_admitted_total
     );
     for (index, wait) in page.fence_waits.iter().enumerate() {
         if index != 0 {

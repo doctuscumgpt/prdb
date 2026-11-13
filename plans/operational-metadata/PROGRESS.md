@@ -55,3 +55,11 @@
 - Regression: the production gateway/supervisor output assertion failed before implementation because the summary was absent, then passed after implementation. Storage and typed TCP fixtures verify counts, age, and serialization.
 - Verification: focused storage and TCP tests, workspace build/fmt/Clippy, TinyCC tests and sandbox fixture, release-profile validation, delegated cgroup probe, full serial delegated-cgroup suite (zero ignored), and `git diff --check` passed.
 - Remaining: redb retained-byte/cache telemetry, job and counter registries, additional wait categories, and broader pressure/authority-race testing remain open.
+
+## OM-2 successful-admission counter — verified slice
+
+- Contract: administrator runtime pages report successful admissions in the current process-local invocation registry. The counter saturates at `u64::MAX` and resets if the registry is recreated; it is not durable lifetime telemetry.
+- Implementation: successful registry insertion increments the counter, while rejected and duplicate admissions do not. The bounded runtime projection carries the counter through the protocol, typed client, and CLI.
+- Regression: the authorized process response failed before implementation because the field was absent, then passed with the exact admission count. A unit test verifies saturation at `u64::MAX`; the TCP fixture verifies decoding.
+- Verification: focused storage/TCP and saturation tests, workspace build/fmt/Clippy, TinyCC tests and sandbox fixture, release-profile validation, delegated cgroup probe, full serial delegated-cgroup workspace suite (unit exited successfully), and `git diff --check` passed.
+- Remaining: additional admission/conflict/policy/cancellation/byte/latency counters, job registries, redb retained-byte/cache telemetry, additional wait categories, and broader pressure/authority-race testing remain open.

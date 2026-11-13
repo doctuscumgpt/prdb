@@ -275,6 +275,7 @@ pub struct AdministrativeInvocationPage {
     pub invocations: Vec<AdministrativeInvocationStatus>,
     pub pinned_snapshot_count: usize,
     pub oldest_snapshot_pin_age_us: u64,
+    pub invocations_admitted_total: u64,
     pub fence_waits: Vec<crate::ddl_fence::DdlFenceWaitStatus>,
     pub fence_waits_truncated: bool,
     pub continuation: Option<AdministrativeInvocationCursor>,
@@ -1694,7 +1695,16 @@ struct InvocationAdmissionState {
 
 struct LiveInvocationRegistry {
     generation: u128,
+    invocations_admitted_total: u64,
     entries: HashMap<[u8; 16], LiveInvocation>,
+}
+
+struct AdministrativeInvocationProjection {
+    invocations: Vec<AdministrativeInvocationStatus>,
+    continuation: Option<AdministrativeInvocationCursor>,
+    pinned_snapshot_count: usize,
+    oldest_snapshot_pin_age_us: u64,
+    invocations_admitted_total: u64,
 }
 
 impl LiveInvocationRegistry {
@@ -1795,6 +1805,7 @@ impl InvocationAdmissionState {
                 owner_generation: 0,
             },
         );
+        live.invocations_admitted_total = live.invocations_admitted_total.saturating_add(1);
         live.advance_owner_generation(principal_id);
         Ok(InvocationAdmissionPermit {
             state: Arc::clone(self),
@@ -1888,15 +1899,7 @@ impl InvocationAdmissionState {
         observed_at: Instant,
         limit: usize,
         cursor: Option<&AdministrativeInvocationCursor>,
-    ) -> Result<
-        (
-            Vec<AdministrativeInvocationStatus>,
-            Option<AdministrativeInvocationCursor>,
-            usize,
-            u64,
-        ),
-        AdministrativeInvocationListError,
-    > {
+    ) -> Result<AdministrativeInvocationProjection, AdministrativeInvocationListError> {
         let live = self
             .live
             .lock()
@@ -1973,12 +1976,13 @@ impl InvocationAdmissionState {
         } else {
             None
         };
-        Ok((
-            entries,
+        Ok(AdministrativeInvocationProjection {
+            invocations: entries,
             continuation,
             pinned_snapshot_count,
             oldest_snapshot_pin_age_us,
-        ))
+            invocations_admitted_total: live.invocations_admitted_total,
+        })
     }
 }
 
@@ -2175,6 +2179,7 @@ fn invocation_registry(
         database_uncertain: AtomicBool::new(false),
         live: Mutex::new(LiveInvocationRegistry {
             generation: 1,
+            invocations_admitted_total: 0,
             entries: HashMap::new(),
         }),
         changed: Condvar::new(),
@@ -10192,24 +10197,24 @@ impl<'db> StorageManager<'db> {
             return Err(AdministrativeInvocationListError::Unauthorized);
         }
         let observed_at = Instant::now();
-        let (invocations, continuation, pinned_snapshot_count, oldest_snapshot_pin_age_us) =
-            self.admissions.administrative_page(
-                authenticated_administrator_id,
-                now_us,
-                observed_at,
-                page_limit,
-                continuation,
-            )?;
+        let projection = self.admissions.administrative_page(
+            authenticated_administrator_id,
+            now_us,
+            observed_at,
+            page_limit,
+            continuation,
+        )?;
         let (fence_waits, fence_waits_truncated) = self.ddl_fences.wait_snapshot();
         Ok(AdministrativeInvocationPage {
             observed_at_us: now_us,
             consistency: InvocationStatusConsistency::BestEffort,
-            invocations,
-            pinned_snapshot_count,
-            oldest_snapshot_pin_age_us,
+            invocations: projection.invocations,
+            pinned_snapshot_count: projection.pinned_snapshot_count,
+            oldest_snapshot_pin_age_us: projection.oldest_snapshot_pin_age_us,
+            invocations_admitted_total: projection.invocations_admitted_total,
             fence_waits,
             fence_waits_truncated,
-            continuation,
+            continuation: projection.continuation,
         })
     }
 
@@ -11306,6 +11311,7 @@ mod commit_cancellation_boundary_tests {
             database_uncertain: std::sync::atomic::AtomicBool::new(false),
             live: std::sync::Mutex::new(LiveInvocationRegistry {
                 generation: 1,
+                invocations_admitted_total: 0,
                 entries: std::collections::HashMap::new(),
             }),
             changed: std::sync::Condvar::new(),
@@ -11341,6 +11347,36 @@ mod commit_cancellation_boundary_tests {
             )
             .expect("operational invocation should use reserved global capacity");
         drop((analytical, operational));
+    }
+
+    #[test]
+    fn successful_admission_counter_saturates_at_u64_max() {
+        let state = std::sync::Arc::new(InvocationAdmissionState {
+            database_key: 0,
+            limit: std::sync::atomic::AtomicUsize::new(1),
+            analytical_limit: std::sync::atomic::AtomicUsize::new(1),
+            database_uncertain: std::sync::atomic::AtomicBool::new(false),
+            live: std::sync::Mutex::new(LiveInvocationRegistry {
+                generation: 1,
+                invocations_admitted_total: u64::MAX,
+                entries: std::collections::HashMap::new(),
+            }),
+            changed: std::sync::Condvar::new(),
+        });
+        let permit = state
+            .acquire(
+                [0x74; 16],
+                [0x84; 16],
+                crate::supervisor::WorkloadClass::Operational,
+                1_003,
+                Duration::from_secs(60),
+            )
+            .expect("admission should succeed at a saturated counter");
+        assert_eq!(
+            state.live.lock().unwrap().invocations_admitted_total,
+            u64::MAX
+        );
+        drop(permit);
     }
 
     #[test]

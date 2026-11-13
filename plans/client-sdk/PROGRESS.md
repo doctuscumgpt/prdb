@@ -601,3 +601,11 @@
 - Regression: the gateway/supervisor process assertion failed when the fields were absent and passed after implementation; storage and TCP fixtures verify the aggregate and decoding.
 - Verification: focused storage/TCP regressions, workspace build/fmt/Clippy, TinyCC tests and sandbox fixture, release-profile validation, delegated cgroup probe, full serial workspace suite in delegated `systemd --user` with zero ignored tests, and `git diff --check` passed.
 - Remaining: additional operational registries, wait categories, and broader pressure/authority-race tests remain open under OM-2.
+
+## SDK-17 / OM-2: invocation admission counter projection — verified slice
+
+- Behavior: `runtime-list` reports `invocations_admitted_total`, the saturating process-local count of successful invocation admissions. It resets when the process-local registry is recreated and does not claim a durable lifetime count.
+- Implementation: successful admission increments the registry counter; the authorized page encoder, typed TCP decoder, and CLI JSON output carry the value.
+- Regression: the real storage/gateway page test failed when the field was absent, then passed with the expected count. Unit coverage verifies saturation and the client fixture checks decoding.
+- Verification: focused regressions, workspace build/fmt/Clippy, maintained TinyCC tests and sandbox fixture, release-profile validation, delegated cgroup probe, and the full serial delegated-cgroup workspace command all succeeded; `git diff --check` passed.
+- Remaining: further runtime registries and counters remain open under OM-2.

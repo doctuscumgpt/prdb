@@ -11307,6 +11307,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert!(runtime_page.contains("\"fence_waits_truncated\":false"));
     assert!(runtime_page.contains("\"pinned_snapshot_count\":2"));
     assert!(runtime_page.contains("\"oldest_snapshot_pin_age_us\":"));
+    assert!(runtime_page.contains("\"invocations_admitted_total\":3"));
     let runtime_cursor = runtime_page
         .split("\"next_cursor\":\"")
         .nth(1)
