@@ -196,6 +196,7 @@ pub struct InvocationStatusPage {
 pub struct AdministrativeInvocationStatus {
     pub invocation_id: [u8; 16],
     pub principal_id: [u8; 16],
+    pub workload_class: crate::supervisor::WorkloadClass,
     pub status: InvocationStatus,
     pub cancellation_reason_code: Option<u16>,
 }
@@ -1875,6 +1876,7 @@ impl InvocationAdmissionState {
                 |(invocation_id, invocation)| AdministrativeInvocationStatus {
                     invocation_id: *invocation_id,
                     principal_id: invocation.principal_id,
+                    workload_class: invocation.workload_class,
                     status: match invocation.phase {
                         LiveInvocationPhase::Active => InvocationStatus::Active {
                             started_at_us: invocation.started_at_us,

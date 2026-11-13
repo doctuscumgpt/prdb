@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SDK-13: expose invocation workload class — verified
+
+- Contract: [client SDK](../../specs/client-sdk.md), [client protocol](../../specs/client-protocol.md), and [operational metadata](../../specs/operational-metadata.md). Administrator runtime invocation records identify each invocation as `operational` or `analytical` without exposing query contents or runtime internals.
+- Implementation: the admission registry's workload class is returned in the administrative page, strictly decoded into `RuntimeWorkloadClass`, and printed by `prdb-client runtime-list`.
+- Regression: the TCP fixture decodes both workload classes; storage/protocol coverage checks the serialized operational class; the real gateway/supervisor lifecycle runs `runtime-list` while a query is active and checks the class in CLI JSON.
+- Verification: the first regression run failed because the client rejected the newly specified field. Focused client and storage/protocol tests, the production-process test in a delegated unit, workspace build, formatting, warning-denied Clippy, TinyCC SDK tests/fixture, and release-profile validation passed. The full serial workspace suite passed in the delegated service with zero ignored tests. `git diff --check` passed.
+- Remaining: transaction, wait, job, memory, and counter runtime registries remain open under OM-2.
+
 ## SDK-12: administrator runtime invocation CLI — verified
 
 - Contract: [client SDK](../../specs/client-sdk.md) and [client protocol](../../specs/client-protocol.md). The authenticated administrator reads bounded invocation pages with observation time, best-effort consistency, and a process-local cursor; each page rechecks administrator authority.

@@ -1771,9 +1771,13 @@ fn runtime_list(
             prdb_engine::client_submit::RuntimeInvocationState::Aborted => "aborted",
         };
         print!(
-            "{{\"invocation_id\":{},\"principal_id\":{},\"state\":{},\"started_at_us\":{},\"deadline_at_us\":{},\"cancellation_requested\":{},\"cancellation_reason_code\":{}}}",
+            "{{\"invocation_id\":{},\"principal_id\":{},\"workload_class\":{},\"state\":{},\"started_at_us\":{},\"deadline_at_us\":{},\"cancellation_requested\":{},\"cancellation_reason_code\":{}}}",
             json_string(&lower_hex(&invocation.invocation_id)),
             json_string(&lower_hex(&invocation.principal_id)),
+            json_string(match invocation.workload_class {
+                prdb_engine::client_submit::RuntimeWorkloadClass::Operational => "operational",
+                prdb_engine::client_submit::RuntimeWorkloadClass::Analytical => "analytical",
+            }),
             json_string(state),
             invocation
                 .started_at_us

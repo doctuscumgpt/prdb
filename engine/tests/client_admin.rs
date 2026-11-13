@@ -209,7 +209,7 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
             r#"{"phase":"read","operation_version":1,"operation":"runtime.invocations.list","arguments":{"limit":"1"}}"#
         );
         let first_response = format!(
-            "{{\"observed_at_us\":1000,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"active\",\"started_at_us\":900,\"deadline_at_us\":1200,\"cancellation_requested\":false,\"cancellation_reason_code\":null}}],\"next_cursor\":\"{server_cursor}\"}}",
+            "{{\"observed_at_us\":1000,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"active\",\"workload_class\":\"operational\",\"started_at_us\":900,\"deadline_at_us\":1200,\"cancellation_requested\":false,\"cancellation_reason_code\":null}}],\"next_cursor\":\"{server_cursor}\"}}",
             "10".repeat(16),
             "20".repeat(16)
         );
@@ -226,7 +226,7 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
             &mut stream,
             &request,
             format!(
-                "{{\"observed_at_us\":1001,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"committing\",\"started_at_us\":901,\"deadline_at_us\":null,\"cancellation_requested\":true,\"cancellation_reason_code\":7}}],\"next_cursor\":null}}",
+                "{{\"observed_at_us\":1001,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"committing\",\"workload_class\":\"analytical\",\"started_at_us\":901,\"deadline_at_us\":null,\"cancellation_requested\":true,\"cancellation_reason_code\":7}}],\"next_cursor\":null}}",
                 "11".repeat(16),
                 "20".repeat(16)
             )
@@ -246,6 +246,10 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
     assert_eq!(first.records[0].invocation_id, [0x10; 16]);
     assert_eq!(first.records[0].principal_id, [0x20; 16]);
     assert_eq!(
+        first.records[0].workload_class,
+        prdb_engine::client_submit::RuntimeWorkloadClass::Operational
+    );
+    assert_eq!(
         first.records[0].state,
         prdb_engine::client_submit::RuntimeInvocationState::Active
     );
@@ -260,6 +264,10 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
         .unwrap();
     assert_eq!(second.observed_at_us, 1001);
     assert_eq!(second.records[0].invocation_id, [0x11; 16]);
+    assert_eq!(
+        second.records[0].workload_class,
+        prdb_engine::client_submit::RuntimeWorkloadClass::Analytical
+    );
     assert_eq!(
         second.records[0].state,
         prdb_engine::client_submit::RuntimeInvocationState::Committing

@@ -11240,6 +11240,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         format!("{:02x}", 232).repeat(16)
     )));
     assert!(runtime_page.contains("\"consistency\":\"best_effort\""));
+    assert!(runtime_page.contains("\"workload_class\":\"operational\""));
     let runtime_cursor = runtime_page
         .split("\"next_cursor\":\"")
         .nth(1)

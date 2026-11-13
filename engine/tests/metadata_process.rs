@@ -833,26 +833,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let mut admin =
         AdminClient::connect_authenticated(address, token_id, &mut admin_control_secret)?;
     assert_eq!(admin_control_secret, [0; 32]);
-    let runtime_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
-        .args([
-            "runtime-list",
-            "--address",
-            &address.to_string(),
-            "--credentials",
-            admin_cancel_credentials_path
-                .to_str()
-                .ok_or("credential path is not UTF-8")?,
-        ])
-        .output()?;
-    assert!(
-        runtime_list.status.success(),
-        "runtime-list CLI failed: {}",
-        String::from_utf8_lossy(&runtime_list.stderr)
-    );
-    let runtime_output = String::from_utf8(runtime_list.stdout)?;
-    assert!(runtime_output.contains("\"observed_at_us\":"));
-    assert!(runtime_output.contains("\"consistency\":\"best_effort\""));
-    assert!(runtime_output.contains("\"invocations\":["));
     let ddl_schema = admin.create_schema("process_ddl", admin_user_id)?;
     let ddl_table = admin.create_table(
         ddl_schema.identity_id,
@@ -2744,6 +2724,14 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
     let (mut gateway, address) = start_gateway(&service_socket, uid)?;
     let mut admin_secret = token_secret;
     let mut admin = AdminClient::connect_authenticated(address, token_id, &mut admin_secret)?;
+    let runtime_list_credentials_path = root.join("runtime-list-admin.cred");
+    write_client_credentials(
+        &runtime_list_credentials_path,
+        &ClientCredentials {
+            token_id,
+            token_secret,
+        },
+    )?;
     let query_user = admin
         .create_user("process_query_owner")
         .map_err(|error| format!("create query user failed: {error:?}"))?;
@@ -2790,6 +2778,27 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
             matches!(ready_event, Some(prdb_engine::client_submit::ClientResultEvent::Data(ref bytes)) if bytes == b"QUERY_READY"),
             "unexpected query startup event: {ready_event:?}"
         );
+        let runtime_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "runtime-list",
+                "--address",
+                &address.to_string(),
+                "--credentials",
+                runtime_list_credentials_path
+                    .to_str()
+                    .ok_or("credential path is not UTF-8")?,
+            ])
+            .output()?;
+        assert!(
+            runtime_list.status.success(),
+            "runtime-list CLI failed: {}",
+            String::from_utf8_lossy(&runtime_list.stderr)
+        );
+        let runtime_output = String::from_utf8(runtime_list.stdout)?;
+        assert!(runtime_output.contains("\"observed_at_us\":"));
+        assert!(runtime_output.contains("\"consistency\":\"best_effort\""));
+        assert!(runtime_output.contains("\"invocations\":["));
+        assert!(runtime_output.contains("\"workload_class\":\"operational\""));
         let active_status = admin
             .status(invocation_id)
             .map_err(|error| format!("active STATUS failed: {error:?}"))?;

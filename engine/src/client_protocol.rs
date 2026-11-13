@@ -3996,6 +3996,11 @@ impl ClientConnectionSession {
                     payload.push_str(&encode_lower_hex_id(invocation.invocation_id));
                     payload.push_str("\",\"principal_id\":\"");
                     payload.push_str(&encode_lower_hex_id(invocation.principal_id));
+                    payload.push_str("\",\"workload_class\":\"");
+                    payload.push_str(match invocation.workload_class {
+                        crate::supervisor::WorkloadClass::Operational => "operational",
+                        crate::supervisor::WorkloadClass::Analytical => "analytical",
+                    });
                     payload.push_str("\",\"state\":\"");
                     payload.push_str(state);
                     payload.push_str("\",\"started_at_us\":");

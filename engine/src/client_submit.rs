@@ -351,10 +351,17 @@ pub enum RuntimeConsistency {
     BestEffort,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeWorkloadClass {
+    Operational,
+    Analytical,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeInvocation {
     pub invocation_id: [u8; 16],
     pub principal_id: [u8; 16],
+    pub workload_class: RuntimeWorkloadClass,
     pub state: RuntimeInvocationState,
     pub started_at_us: Option<u64>,
     pub deadline_at_us: Option<u64>,
@@ -1145,11 +1152,20 @@ impl AdminClient {
             let ResponseValue::Object(mut row) = value else {
                 return Err(ClientSubmitError::InvalidResponse);
             };
-            if row.len() != 7 {
+            if row.len() != 8 {
                 return Err(ClientSubmitError::InvalidResponse);
             }
             let invocation_id = response_id(&row, "invocation_id")?;
             let principal_id = response_id(&row, "principal_id")?;
+            let workload_class = match row.remove("workload_class") {
+                Some(ResponseValue::String(value)) if value == "operational" => {
+                    RuntimeWorkloadClass::Operational
+                }
+                Some(ResponseValue::String(value)) if value == "analytical" => {
+                    RuntimeWorkloadClass::Analytical
+                }
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
             let state = match row.remove("state") {
                 Some(ResponseValue::String(value)) if value == "active" => {
                     RuntimeInvocationState::Active
@@ -1196,6 +1212,7 @@ impl AdminClient {
             records.push(RuntimeInvocation {
                 invocation_id,
                 principal_id,
+                workload_class,
                 state,
                 started_at_us,
                 deadline_at_us,
