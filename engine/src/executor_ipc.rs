@@ -304,7 +304,8 @@ pub struct ProbeUniqueIndexRequest {
 }
 
 impl ProbeUniqueIndexRequest {
-    const HEADER_BYTES: usize = 38;
+    const HEADER_BYTES: usize =
+        generated::EXECUTOR_PROBE_UNIQUE_INDEX_REQUEST_HEADER_BYTES as usize;
 
     pub fn encode(&self) -> Result<Vec<u8>, ExecutorRequestError> {
         if self.index_id == [0; 16]
@@ -326,12 +327,13 @@ impl ProbeUniqueIndexRequest {
             u16::try_from(self.values.len()).map_err(|_| ExecutorRequestError::InvalidPayload)?;
         let column_count = u16::try_from(self.column_ids.len())
             .map_err(|_| ExecutorRequestError::InvalidPayload)?;
-        let mut payload = Vec::with_capacity(Self::HEADER_BYTES + self.values.len() * 16);
-        payload.extend_from_slice(&1u16.to_be_bytes());
-        payload.extend_from_slice(&self.relation.to_bytes());
-        payload.extend_from_slice(&self.index_id);
-        payload.extend_from_slice(&key_count.to_be_bytes());
-        payload.extend_from_slice(&column_count.to_be_bytes());
+        let mut payload = generated::encode_executor_probe_unique_index_request(
+            self.relation.to_bytes(),
+            self.index_id,
+            key_count,
+            column_count,
+        )
+        .to_vec();
         for value in &self.values {
             let (type_code, bytes) = encode_scalar_value(value)?;
             append_scalar_value_record(&mut payload, type_code, &bytes)?;
@@ -347,39 +349,21 @@ impl ProbeUniqueIndexRequest {
         if payload.len() < Self::HEADER_BYTES || payload.len() > crate::ipc::MAX_PAYLOAD_BYTES {
             return Err(ExecutorRequestError::InvalidPayload);
         }
-        let version = u16::from_be_bytes(
-            payload[..2]
-                .try_into()
-                .map_err(|_| ExecutorRequestError::InvalidPayload)?,
-        );
-        let relation = ResolvedRelationHandle::from_bytes(&payload[2..18])
+        let (relation_handle, index_id, encoded_key_count, encoded_column_count) =
+            generated::decode_executor_probe_unique_index_request(payload)
+                .ok_or(ExecutorRequestError::InvalidPayload)?;
+        let relation = ResolvedRelationHandle::from_bytes(&relation_handle)
             .ok_or(ExecutorRequestError::InvalidPayload)?;
-        let index_id: [u8; 16] = payload[18..34]
-            .try_into()
-            .map_err(|_| ExecutorRequestError::InvalidPayload)?;
-        let key_count = usize::from(u16::from_be_bytes(
-            payload[34..36]
-                .try_into()
-                .map_err(|_| ExecutorRequestError::InvalidPayload)?,
-        ));
-        let column_count = if payload.len() >= 38 {
-            usize::from(u16::from_be_bytes(
-                payload[36..38]
-                    .try_into()
-                    .map_err(|_| ExecutorRequestError::InvalidPayload)?,
-            ))
-        } else {
-            return Err(ExecutorRequestError::InvalidPayload);
-        };
-        if version != 1
-            || index_id == [0; 16]
+        let key_count = usize::from(encoded_key_count);
+        let column_count = usize::from(encoded_column_count);
+        if index_id == [0; 16]
             || key_count == 0
             || key_count > crate::tuple::MAX_COLUMNS
             || column_count > crate::tuple::MAX_COLUMNS
         {
             return Err(ExecutorRequestError::InvalidPayload);
         }
-        let mut offset = 38;
+        let mut offset = Self::HEADER_BYTES;
         let mut values = Vec::with_capacity(key_count);
         for _ in 0..key_count {
             values.push(decode_scalar_value_record(payload, &mut offset)?);
@@ -1834,6 +1818,10 @@ mod cancellation_response_tests {
             column_ids: vec![[7; 16]],
         };
         let encoded = request.encode().unwrap();
+        assert_eq!(&encoded[..2], &[0, 1]);
+        assert_eq!(&encoded[2..18], &relation_bytes);
+        assert_eq!(&encoded[18..34], &[9; 16]);
+        assert_eq!(&encoded[34..38], &[0, 1, 0, 1]);
         assert_eq!(ProbeUniqueIndexRequest::decode(&encoded).unwrap(), request);
 
         for response in [

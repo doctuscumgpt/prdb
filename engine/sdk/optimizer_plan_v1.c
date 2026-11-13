@@ -695,11 +695,6 @@ static int range_probe_matches_filter(
     return 0;
 }
 
-static void write_u16_be(uint8_t *bytes, uint16_t value) {
-    bytes[0] = (uint8_t)(value >> 8);
-    bytes[1] = (uint8_t)value;
-}
-
 static uint16_t point_read_u16_be(const uint8_t *bytes) {
     return (uint16_t)(((uint16_t)bytes[0] << 8) | bytes[1]);
 }
@@ -717,7 +712,7 @@ static int encode_point_probe_request(
     const point_probe_hint *hint, const uint8_t *relation_response,
     uint64_t relation_response_len, uint8_t *request, uint64_t capacity,
     uint64_t *request_len) {
-    uint64_t offset = 38;
+    uint64_t offset = PRDB_EXECUTOR_PROBE_UNIQUE_INDEX_REQUEST_HEADER_BYTES;
     uint8_t type_code;
     const uint8_t *value_bytes = NULL;
     uint32_t value_len = 0;
@@ -773,11 +768,9 @@ static int encode_point_probe_request(
     }
     if (capacity < offset + 5 + value_len +
                        (uint64_t)relation->column_count * 16) return 0;
-    write_u16_be(request, 1);
-    memcpy(request + 2, relation->executor_handle, 16);
-    memcpy(request + 18, hint->index_id, 16);
-    write_u16_be(request + 34, 1);
-    write_u16_be(request + 36, (uint16_t)relation->column_count);
+    prdb_encode_executor_probe_unique_index_request(
+        request, relation->executor_handle, hint->index_id, 1,
+        (uint16_t)relation->column_count);
     request[offset++] = type_code;
     write_u32_be(request + offset, value_len);
     offset += 4;

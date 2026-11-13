@@ -260,6 +260,30 @@ pub fn decode_executor_open_scan_request_column_ids(payload: &[u8], count: u16) 
         .collect()
 }
 
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_REQUEST_VERSION_OFFSET: u32 = 0;
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_REQUEST_RELATION_HANDLE_OFFSET: u32 = 2;
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_REQUEST_INDEX_ID_OFFSET: u32 = 18;
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_REQUEST_KEY_COUNT_OFFSET: u32 = 34;
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_REQUEST_COLUMN_COUNT_OFFSET: u32 = 36;
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_REQUEST_HEADER_BYTES: u32 = 38;
+pub fn encode_executor_probe_unique_index_request(relation_handle: [u8; 16], index_id: [u8; 16], key_count: u16, column_count: u16) -> [u8; 38] {
+    let mut payload = [0u8; 38];
+    payload[0..2].copy_from_slice(&EXECUTOR_BATCH_PAYLOAD_VERSION.to_be_bytes());
+    payload[2..18].copy_from_slice(&relation_handle);
+    payload[18..34].copy_from_slice(&index_id);
+    payload[34..36].copy_from_slice(&key_count.to_be_bytes());
+    payload[36..38].copy_from_slice(&column_count.to_be_bytes());
+    payload
+}
+
+#[allow(clippy::type_complexity)]
+pub fn decode_executor_probe_unique_index_request(payload: &[u8]) -> Option<([u8; 16], [u8; 16], u16, u16)> {
+    if payload.len() < 38 || u16::from_be_bytes([payload[0], payload[1]]) != EXECUTOR_BATCH_PAYLOAD_VERSION {
+        return None;
+    }
+    Some((payload[2..18].try_into().ok()?, payload[18..34].try_into().ok()?, u16::from_be_bytes(payload[34..36].try_into().ok()?), u16::from_be_bytes(payload[36..38].try_into().ok()?)))
+}
+
 pub const EXECUTOR_OPEN_SCAN_RESPONSE_VERSION_OFFSET: u32 = 0;
 pub const EXECUTOR_OPEN_SCAN_RESPONSE_CURSOR_HANDLE_OFFSET: u32 = 2;
 pub const EXECUTOR_OPEN_SCAN_RESPONSE_HEADER_BYTES: u32 = 18;

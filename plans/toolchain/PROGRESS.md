@@ -955,3 +955,10 @@
 - Compatibility: validation order and accepted plan bytes remain unchanged; unsupported versions are still reported before the kind/reserved fields are validated.
 - Verification: canonical plan round-trip test, full TinyCC SDK suite, generator tests (8 passed), generated-file drift check, locked workspace build, formatting check, warning-denied Clippy, and full locked workspace tests (138 passed; 4 delegated-cgroup tests ignored) passed in the pinned Nix development shell using `--no-update-lock-file`; `git diff --check` passed.
 - Remaining: broader IPC, SDK, and release-profile schema parity remains open.
+
+## TC-2: generated unique-index probe request header — implemented
+
+- Contract: executor `0x1114` retains its 38-byte v1 prefix: version, resolved relation handle, logical index ID, key-value count, and result-column count.
+- Implementation: `EXECUTOR_PROBE_UNIQUE_INDEX_REQUEST` in the shared ABI schema now generates Rust and C codecs. The Rust request encoder/decoder and TinyCC optimizer point-probe encoder use those codecs; semantic ID/count checks and the following scalar/column tails remain at their protocol layers.
+- Regression: generator tests require both language codecs, and the Rust wire-vector checks exact prefix bytes. The maintained TinyCC optimizer-plan fixture exercises the C point-probe request and its expected counts/IDs.
+- Verification: generator schema tests and drift check, focused Rust wire regression, full maintained TinyCC SDK suite, sandbox-query-fixture build, workspace format/build/warning-denied Clippy, and full serial delegated-cgroup workspace tests passed with zero ignored tests. `git diff --check` passed.
