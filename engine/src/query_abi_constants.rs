@@ -93,6 +93,7 @@ pub const QUERY_ENTRY_V5_SYMBOL: &str = "prdb_query_main_v5";
 pub const RESOLVE_RELATION_PAYLOAD_VERSION: u16 = 1;
 pub const EXECUTOR_BATCH_PAYLOAD_VERSION: u16 = 1;
 pub const INDEX_RANGE_RESPONSE_VERSION: u8 = 1;
+pub const PROBE_UNIQUE_INDEX_RESPONSE_VERSION: u8 = 1;
 pub const PLANNER_PAYLOAD_VERSION: u16 = 1;
 pub const SUPERVISOR_PAYLOAD_VERSION: u16 = 1;
 pub const OPTIMIZER_RESPONSE_VERSION: u16 = 1;
@@ -1206,6 +1207,57 @@ pub fn decode_index_range_response_row_record(payload: &[u8]) -> Option<u16> {
         return None;
     }
     Some(u16::from_be_bytes(payload[0..2].try_into().ok()?))
+}
+
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_UNAVAILABLE_RECORD_VERSION_OFFSET: u32 = 0;
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_UNAVAILABLE_RECORD_STATUS_OFFSET: u32 = 1;
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_UNAVAILABLE_RECORD_HEADER_BYTES: u32 = 2;
+pub fn encode_executor_probe_unique_index_response_unavailable_record(version: u8, status: u8) -> [u8; 2] {
+    let mut payload = [0u8; 2];
+    payload[0] = version;
+    payload[1] = status;
+    payload
+}
+
+pub fn decode_executor_probe_unique_index_response_unavailable_record(payload: &[u8]) -> Option<(u8, u8)> {
+    if payload.len() != 2 {
+        return None;
+    }
+    Some((payload[0], payload[1]))
+}
+
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_NO_MATCH_RECORD_VERSION_OFFSET: u32 = 0;
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_NO_MATCH_RECORD_STATUS_OFFSET: u32 = 1;
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_NO_MATCH_RECORD_HEADER_BYTES: u32 = 2;
+pub fn encode_executor_probe_unique_index_response_no_match_record(version: u8, status: u8) -> [u8; 2] {
+    let mut payload = [0u8; 2];
+    payload[0] = version;
+    payload[1] = status;
+    payload
+}
+
+pub fn decode_executor_probe_unique_index_response_no_match_record(payload: &[u8]) -> Option<(u8, u8)> {
+    if payload.len() != 2 {
+        return None;
+    }
+    Some((payload[0], payload[1]))
+}
+
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_MATCH_RECORD_VERSION_OFFSET: u32 = 0;
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_MATCH_RECORD_STATUS_OFFSET: u32 = 1;
+pub const EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_MATCH_RECORD_HEADER_BYTES: u32 = 2;
+pub fn encode_executor_probe_unique_index_response_match_record(version: u8, status: u8) -> [u8; 2] {
+    let mut payload = [0u8; 2];
+    payload[0] = version;
+    payload[1] = status;
+    payload
+}
+
+pub fn decode_executor_probe_unique_index_response_match_record(payload: &[u8]) -> Option<(u8, u8)> {
+    if payload.len() < 2 {
+        return None;
+    }
+    Some((payload[0], payload[1]))
 }
 
 pub const SANITIZED_CELL_TAG_RECORD_STATE_CODE_OFFSET: u32 = 0;

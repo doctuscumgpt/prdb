@@ -1,5 +1,14 @@
 # Internal IPC Progress
 
+## IPC-2 follow-up: generated unique-index probe response records — implemented
+
+- Contract: executor `0x1114` returns exact v1 unavailable/no-match records or a v1 match prefix followed by one executor batch-row record.
+- Red evidence: the shared-schema generator regression failed because the three response variants had no generated Rust/C records.
+- Implementation: defined generated variant headers and a shared version constant. Rust response encoding/decoding and TinyCC optimizer response validation now use the generated records; the IPC specification states the exact variant layouts.
+- Regression: Rust wire-vector coverage checks all three status prefixes and round-trips the match row. Existing TinyCC optimizer fixtures exercise unavailable, no-match, and match behavior.
+- Verification: generator tests/drift check, focused Rust response regression, maintained TinyCC SDK tests, sandbox query fixture, locked workspace build, formatting check, warning-denied Clippy, full serial delegated-cgroup workspace suite (zero ignored tests), and `git diff --check` passed.
+- Remaining: SDK consumption, optimizer selection, end-to-end optimized/reference result and error equivalence, and broader malformed process-level IPC coverage remain open.
+
 ## IPC-2 follow-up: generated index-range row cell-count record — implemented
 
 - Contract: every range result row begins with the existing big-endian `u16` cell count before its sanitized cell records.

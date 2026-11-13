@@ -4286,6 +4286,8 @@ int32_t prdb_sdk_optimizer_execute_unfiltered_plan_v1(
         uint64_t probe_response_capacity;
         int32_t cancelled = 0;
         int32_t callback_status;
+        uint8_t probe_version;
+        uint8_t probe_status;
         if (!encode_point_probe_request(
                 &plan, relation_out, &point_probe, relation_response,
                 relation_response_len, request, sizeof(request),
@@ -4306,19 +4308,30 @@ int32_t prdb_sdk_optimizer_execute_unfiltered_plan_v1(
         } else if (callback_status != PRDB_QUERY_CALLBACK_OK ||
                    batch_response_len > probe_response_capacity) {
             return PRDB_SDK_OPTIMIZER_PLAN_CALLBACK_ERROR;
-        } else if (batch_response_len < 2 || batch_response[0] != 1) {
+        } else if (!prdb_decode_executor_probe_unique_index_response_match_record(
+                       batch_response, (size_t)batch_response_len,
+                       &probe_version, &probe_status) ||
+                   probe_version != PRDB_PROBE_UNIQUE_INDEX_RESPONSE_VERSION) {
             return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
-        } else if (batch_response[1] == 0 && batch_response_len == 2) {
+        } else if (probe_status == 0 &&
+                   prdb_decode_executor_probe_unique_index_response_unavailable_record(
+                       batch_response, (size_t)batch_response_len,
+                       &probe_version, &probe_status)) {
             use_full_scan = 1;
             max_scan_pages--;
-        } else if (batch_response[1] == 1 && batch_response_len == 2) {
+        } else if (probe_status == 1 &&
+                   prdb_decode_executor_probe_unique_index_response_no_match_record(
+                       batch_response, (size_t)batch_response_len,
+                       &probe_version, &probe_status)) {
             status = prdb_sdk_executor_check_cancelled_v1(host, &cancelled);
             if (status != PRDB_SDK_EXECUTOR_OK) {
                 return PRDB_SDK_OPTIMIZER_PLAN_CALLBACK_ERROR;
             }
             if (cancelled != 0) return PRDB_SDK_OPTIMIZER_PLAN_CANCELLED;
             return PRDB_SDK_OPTIMIZER_PLAN_OK;
-        } else if (batch_response[1] == 2 && batch_response_len >= 20) {
+        } else if (probe_status == 2 && batch_response_len >=
+                   PRDB_EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_MATCH_RECORD_HEADER_BYTES +
+                       PRDB_EXECUTOR_BATCH_ROW_RECORD_HEADER_BYTES) {
             uint32_t delivered = 0;
             status = prdb_sdk_executor_check_cancelled_v1(host, &cancelled);
             if (status != PRDB_SDK_EXECUTOR_OK) {
@@ -4330,14 +4343,18 @@ int32_t prdb_sdk_optimizer_execute_unfiltered_plan_v1(
                 use_full_scan = 1;
                 max_scan_pages--;
             } else {
-                memmove(batch_response + 5, batch_response + 2,
-                        (size_t)(batch_response_len - 2));
+                memmove(batch_response + 5,
+                        batch_response +
+                            PRDB_EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_MATCH_RECORD_HEADER_BYTES,
+                        (size_t)(batch_response_len -
+                                 PRDB_EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_MATCH_RECORD_HEADER_BYTES));
                 batch_response[0] = 0;
                 batch_response[1] = 1;
                 batch_response[2] = 1;
                 batch_response[3] = 0;
                 batch_response[4] = 1;
-                batch_response_len += 3;
+                batch_response_len +=
+                    5 - PRDB_EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_MATCH_RECORD_HEADER_BYTES;
                 status = prdb_sdk_batch_open_v1(
                     &batch, sizeof(batch), batch_response,
                     batch_response_len);

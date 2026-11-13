@@ -662,14 +662,27 @@ pub enum ProbeUniqueIndexResponse {
 
 impl ProbeUniqueIndexResponse {
     pub fn encode(&self) -> Result<Vec<u8>, ExecutorRequestError> {
-        let mut payload = vec![
-            1,
-            match self {
-                Self::Unavailable => 0,
-                Self::NoMatch => 1,
-                Self::Match(_) => 2,
-            },
-        ];
+        let mut payload = match self {
+            Self::Unavailable => {
+                generated::encode_executor_probe_unique_index_response_unavailable_record(
+                    generated::PROBE_UNIQUE_INDEX_RESPONSE_VERSION,
+                    0,
+                )
+                .to_vec()
+            }
+            Self::NoMatch => {
+                generated::encode_executor_probe_unique_index_response_no_match_record(
+                    generated::PROBE_UNIQUE_INDEX_RESPONSE_VERSION,
+                    1,
+                )
+                .to_vec()
+            }
+            Self::Match(_) => generated::encode_executor_probe_unique_index_response_match_record(
+                generated::PROBE_UNIQUE_INDEX_RESPONSE_VERSION,
+                2,
+            )
+            .to_vec(),
+        };
         if let Self::Match(row) = self {
             let count =
                 u16::try_from(row.cells.len()).map_err(|_| ExecutorRequestError::InvalidPayload)?;
@@ -686,16 +699,26 @@ impl ProbeUniqueIndexResponse {
     }
 
     pub fn decode(payload: &[u8]) -> Result<Self, ExecutorRequestError> {
-        if payload.len() < 2 || payload.len() > crate::ipc::MAX_PAYLOAD_BYTES || payload[0] != 1 {
+        if payload.len() < 2
+            || payload.len() > crate::ipc::MAX_PAYLOAD_BYTES
+            || payload[0] != generated::PROBE_UNIQUE_INDEX_RESPONSE_VERSION
+        {
             return Err(ExecutorRequestError::InvalidPayload);
         }
-        if payload[1] == 0 && payload.len() == 2 {
+        if generated::decode_executor_probe_unique_index_response_unavailable_record(payload)
+            == Some((generated::PROBE_UNIQUE_INDEX_RESPONSE_VERSION, 0))
+        {
             return Ok(Self::Unavailable);
         }
-        if payload[1] == 1 && payload.len() == 2 {
+        if generated::decode_executor_probe_unique_index_response_no_match_record(payload)
+            == Some((generated::PROBE_UNIQUE_INDEX_RESPONSE_VERSION, 1))
+        {
             return Ok(Self::NoMatch);
         }
-        if payload[1] != 2 {
+        let (version, status) =
+            generated::decode_executor_probe_unique_index_response_match_record(payload)
+                .ok_or(ExecutorRequestError::InvalidPayload)?;
+        if version != generated::PROBE_UNIQUE_INDEX_RESPONSE_VERSION || status != 2 {
             return Err(ExecutorRequestError::InvalidPayload);
         }
         let body = &payload[2..];
@@ -1852,6 +1875,14 @@ mod cancellation_response_tests {
             }),
         ] {
             let bytes = response.encode().unwrap();
+            assert_eq!(
+                &bytes[..2],
+                match &response {
+                    ProbeUniqueIndexResponse::Unavailable => &[1, 0],
+                    ProbeUniqueIndexResponse::NoMatch => &[1, 1],
+                    ProbeUniqueIndexResponse::Match(_) => &[1, 2],
+                }
+            );
             assert_eq!(ProbeUniqueIndexResponse::decode(&bytes).unwrap(), response);
         }
         assert!(ProbeUniqueIndexRequest::decode(&encoded[..37]).is_err());

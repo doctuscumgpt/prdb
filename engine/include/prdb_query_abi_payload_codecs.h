@@ -1993,6 +1993,72 @@ static inline int prdb_decode_index_range_response_row_record(const uint8_t *pay
     return 1;
 }
 
+static inline void prdb_encode_executor_probe_unique_index_response_unavailable_record(uint8_t payload[2],
+    uint8_t version, uint8_t status) {
+    payload[0] = version;
+    payload[1] = status;
+}
+
+static inline int prdb_decode_executor_probe_unique_index_response_unavailable_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *version, uint8_t *status) {
+    if (payload == NULL || payload_len != 2) {
+        return 0;
+    }
+    if (version == NULL) {
+        return 0;
+    }
+    *version = payload[0];
+    if (status == NULL) {
+        return 0;
+    }
+    *status = payload[1];
+    return 1;
+}
+
+static inline void prdb_encode_executor_probe_unique_index_response_no_match_record(uint8_t payload[2],
+    uint8_t version, uint8_t status) {
+    payload[0] = version;
+    payload[1] = status;
+}
+
+static inline int prdb_decode_executor_probe_unique_index_response_no_match_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *version, uint8_t *status) {
+    if (payload == NULL || payload_len != 2) {
+        return 0;
+    }
+    if (version == NULL) {
+        return 0;
+    }
+    *version = payload[0];
+    if (status == NULL) {
+        return 0;
+    }
+    *status = payload[1];
+    return 1;
+}
+
+static inline void prdb_encode_executor_probe_unique_index_response_match_record(uint8_t payload[2],
+    uint8_t version, uint8_t status) {
+    payload[0] = version;
+    payload[1] = status;
+}
+
+static inline int prdb_decode_executor_probe_unique_index_response_match_record(const uint8_t *payload, size_t payload_len,
+    uint8_t *version, uint8_t *status) {
+    if (payload == NULL || payload_len < 2) {
+        return 0;
+    }
+    if (version == NULL) {
+        return 0;
+    }
+    *version = payload[0];
+    if (status == NULL) {
+        return 0;
+    }
+    *status = payload[1];
+    return 1;
+}
+
 static inline void prdb_encode_sanitized_cell_tag_record(uint8_t payload[1],
     uint8_t state_code) {
     payload[0] = state_code;

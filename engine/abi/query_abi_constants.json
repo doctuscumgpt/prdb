@@ -1361,6 +1361,13 @@
       "c_type": "UINT8_C"
     },
     {
+      "rust_name": "PROBE_UNIQUE_INDEX_RESPONSE_VERSION",
+      "rust_type": "u8",
+      "value": 1,
+      "c_name": "PRDB_PROBE_UNIQUE_INDEX_RESPONSE_VERSION",
+      "c_type": "UINT8_C"
+    },
+    {
       "rust_name": "PLANNER_PAYLOAD_VERSION",
       "rust_type": "u16",
       "value": 1,
@@ -2091,6 +2098,37 @@
       "generate_c_codec": true,
       "fields": [
         { "name": "cell_count", "encoding": "u16be" }
+      ],
+      "trailing_fields": []
+    },
+    {
+      "name": "EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_UNAVAILABLE_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "version", "encoding": "u8" },
+        { "name": "status", "encoding": "u8" }
+      ],
+      "trailing_fields": []
+    },
+    {
+      "name": "EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_NO_MATCH_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "version", "encoding": "u8" },
+        { "name": "status", "encoding": "u8" }
+      ],
+      "trailing_fields": []
+    },
+    {
+      "name": "EXECUTOR_PROBE_UNIQUE_INDEX_RESPONSE_MATCH_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "codec_prefix": true,
+      "fields": [
+        { "name": "version", "encoding": "u8" },
+        { "name": "status", "encoding": "u8" }
       ],
       "trailing_fields": []
     },
