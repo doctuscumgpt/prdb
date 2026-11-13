@@ -1,6 +1,7 @@
 //! Verified, quiescent copies of READY database instances.
 
 use crate::bootstrap::{BootstrapError, ReadOnlyStorageInstance, StorageInstance};
+use crate::startup::validate_persisted_records_read_only;
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -58,6 +59,8 @@ impl From<io::Error> for OfflineBackupError {
 pub struct BackupVerification {
     pub database_bytes: u64,
     pub database_sha256: [u8; 32],
+    pub database_id: [u8; 16],
+    pub commit_sequence: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,6 +115,8 @@ pub fn create_verified_backup(
             }
 
             let verified = ReadOnlyStorageInstance::open(&destination)?;
+            let validation = validate_persisted_records_read_only(verified.database())
+                .map_err(BootstrapError::Startup)?;
             let marker = digest_private_file(&destination.join(MARKER_FILE))?;
             let database = digest_private_file(&destination.join(DATABASE_FILE))?;
             if marker_copy != marker || database_copy != database {
@@ -129,6 +134,8 @@ pub fn create_verified_backup(
             Ok(BackupVerification {
                 database_bytes: database.length,
                 database_sha256: database.sha256,
+                database_id: validation.metadata.database_id,
+                commit_sequence: validation.metadata.commit_sequence,
             })
         })();
 
@@ -155,7 +162,9 @@ pub fn verify_backup(
     if lock.metadata()?.len() != 0 {
         return Err(OfflineBackupError::InvalidPath);
     }
-    let _instance = ReadOnlyStorageInstance::open(&backup_directory)?;
+    let instance = ReadOnlyStorageInstance::open(&backup_directory)?;
+    let validation = validate_persisted_records_read_only(instance.database())
+        .map_err(BootstrapError::Startup)?;
     let manifest = read_manifest(&manifest_path(&backup_directory)?)?;
     let marker = digest_private_file(&backup_directory.join(MARKER_FILE))?;
     let database = digest_private_file(&backup_directory.join(DATABASE_FILE))?;
@@ -165,6 +174,8 @@ pub fn verify_backup(
     Ok(BackupVerification {
         database_bytes: database.length,
         database_sha256: database.sha256,
+        database_id: validation.metadata.database_id,
+        commit_sequence: validation.metadata.commit_sequence,
     })
 }
 

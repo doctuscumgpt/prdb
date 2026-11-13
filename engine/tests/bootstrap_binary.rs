@@ -5,7 +5,7 @@ use prdb_engine::metadata::EngineMetadata;
 use prdb_engine::schema::{AUDIT, ENGINE_META, POLICIES};
 use prdb_engine::startup::StartupError;
 use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableHandle};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::process::Command;
 
 struct Fixture(std::path::PathBuf);
@@ -363,6 +363,124 @@ fn startup_uses_active_image_and_only_tolerates_private_migration_staging_file()
         StorageInstance::open(fixture.instance_dir()),
         Err(BootstrapError::NotPrivate)
     ));
+}
+
+#[test]
+fn staged_generation_publication_atomically_exchanges_names_and_retains_source() {
+    let fixture = Fixture::new();
+    let mut session =
+        prdb_engine::bootstrap::initialize(fixture.instance_dir(), "publish_admin", i64::MAX)
+            .expect("initialize publication fixture");
+    let mut secret = session.take_secret().expect("bootstrap secret");
+    use zeroize::Zeroize;
+    secret.zeroize();
+    drop(session.acknowledge().expect("publish READY"));
+
+    let active_path = fixture.instance_dir().join("storage.redb");
+    let staging_path = fixture.instance_dir().join(".prdb-migration.next");
+    let backup_path = fixture.0.join("verified-backup");
+    prdb_engine::offline_backup::create_verified_backup(fixture.instance_dir(), &backup_path)
+        .expect("create independently verified source backup");
+    std::fs::copy(&active_path, &staging_path).expect("prepare staged database image");
+    std::fs::set_permissions(&staging_path, std::fs::Permissions::from_mode(0o600))
+        .expect("make staged database private");
+    let active_inode = std::fs::metadata(&active_path).unwrap().ino();
+    let staged_inode = std::fs::metadata(&staging_path).unwrap().ino();
+
+    let active = StorageInstance::open(fixture.instance_dir()).expect("open active generation");
+    let published = active
+        .publish_staged_generation(&backup_path)
+        .expect("atomically publish staged generation");
+    assert_eq!(std::fs::metadata(&active_path).unwrap().ino(), staged_inode);
+    assert_eq!(
+        std::fs::metadata(&staging_path).unwrap().ino(),
+        active_inode
+    );
+    drop(published);
+    drop(StorageInstance::open(fixture.instance_dir()).expect("reopen published generation"));
+}
+
+#[test]
+fn staged_generation_publication_rejects_different_database_identity() {
+    let source = Fixture::new();
+    let other = Fixture::new();
+    for (fixture, name) in [(&source, "source_admin"), (&other, "other_admin")] {
+        let mut session =
+            prdb_engine::bootstrap::initialize(fixture.instance_dir(), name, i64::MAX)
+                .expect("initialize publication fixture");
+        let mut secret = session.take_secret().expect("bootstrap secret");
+        use zeroize::Zeroize;
+        secret.zeroize();
+        drop(session.acknowledge().expect("publish READY"));
+    }
+
+    let active_path = source.instance_dir().join("storage.redb");
+    let staging_path = source.instance_dir().join(".prdb-migration.next");
+    let backup_path = source.0.join("verified-backup");
+    prdb_engine::offline_backup::create_verified_backup(source.instance_dir(), &backup_path)
+        .expect("create independently verified source backup");
+    std::fs::copy(other.instance_dir().join("storage.redb"), &staging_path)
+        .expect("copy a different READY database");
+    std::fs::set_permissions(&staging_path, std::fs::Permissions::from_mode(0o600))
+        .expect("make staged database private");
+    let active_inode = std::fs::metadata(&active_path).unwrap().ino();
+    let staged_inode = std::fs::metadata(&staging_path).unwrap().ino();
+
+    let error = match StorageInstance::open(source.instance_dir())
+        .expect("open source generation")
+        .publish_staged_generation(&backup_path)
+    {
+        Ok(_) => panic!("reject different database identity"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, BootstrapError::InvalidRequest));
+    assert_eq!(std::fs::metadata(&active_path).unwrap().ino(), active_inode);
+    assert_eq!(
+        std::fs::metadata(&staging_path).unwrap().ino(),
+        staged_inode
+    );
+    drop(StorageInstance::open(source.instance_dir()).expect("source generation remains active"));
+}
+
+#[test]
+fn staged_generation_publication_requires_a_matching_verified_backup() {
+    let source = Fixture::new();
+    let other = Fixture::new();
+    for (fixture, name) in [(&source, "source_backup_admin"), (&other, "backup_admin")] {
+        let mut session =
+            prdb_engine::bootstrap::initialize(fixture.instance_dir(), name, i64::MAX)
+                .expect("initialize publication fixture");
+        let mut secret = session.take_secret().expect("bootstrap secret");
+        use zeroize::Zeroize;
+        secret.zeroize();
+        drop(session.acknowledge().expect("publish READY"));
+    }
+
+    let backup_path = other.0.join("verified-backup");
+    prdb_engine::offline_backup::create_verified_backup(other.instance_dir(), &backup_path)
+        .expect("create an unrelated verified backup");
+    let active_path = source.instance_dir().join("storage.redb");
+    let staging_path = source.instance_dir().join(".prdb-migration.next");
+    std::fs::copy(&active_path, &staging_path).expect("prepare staged source image");
+    std::fs::set_permissions(&staging_path, std::fs::Permissions::from_mode(0o600))
+        .expect("make staged database private");
+    let active_inode = std::fs::metadata(&active_path).unwrap().ino();
+    let staged_inode = std::fs::metadata(&staging_path).unwrap().ino();
+
+    let error = match StorageInstance::open(source.instance_dir())
+        .expect("open source generation")
+        .publish_staged_generation(&backup_path)
+    {
+        Ok(_) => panic!("reject unrelated verified backup"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, BootstrapError::InvalidRequest));
+    assert_eq!(std::fs::metadata(&active_path).unwrap().ino(), active_inode);
+    assert_eq!(
+        std::fs::metadata(&staging_path).unwrap().ino(),
+        staged_inode
+    );
+    drop(StorageInstance::open(source.instance_dir()).expect("source generation remains active"));
 }
 
 #[test]

@@ -412,6 +412,38 @@ impl ReadOnlyStorageInstance {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn exchange_files(first: &Path, second: &Path) -> Result<(), BootstrapError> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let first =
+        CString::new(first.as_os_str().as_bytes()).map_err(|_| BootstrapError::InvalidRequest)?;
+    let second =
+        CString::new(second.as_os_str().as_bytes()).map_err(|_| BootstrapError::InvalidRequest)?;
+    // SAFETY: both path strings are NUL-terminated. The caller holds the
+    // instance lock; RENAME_EXCHANGE atomically swaps the two file names.
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            first.as_ptr(),
+            libc::AT_FDCWD,
+            second.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(BootstrapError::Io(std::io::Error::last_os_error()))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn exchange_files(_first: &Path, _second: &Path) -> Result<(), BootstrapError> {
+    Err(BootstrapError::UnsupportedPlatform)
+}
+
 #[derive(Debug)]
 pub enum AuditArchiveError {
     InvalidOutputPath,
@@ -460,6 +492,70 @@ impl StorageInstance {
 
     pub fn database(&self) -> &Database {
         &self.database
+    }
+
+    /// Validate a verified source backup and staged image, then atomically
+    /// publish the staged database. On success, the former active image
+    /// remains at `.prdb-migration.next`.
+    #[cfg(target_os = "linux")]
+    pub fn publish_staged_generation(
+        self,
+        verified_backup_directory: impl AsRef<Path>,
+    ) -> Result<Self, BootstrapError> {
+        let Self {
+            database,
+            database_path,
+            _lock,
+        } = self;
+        let database_path = database_path.canonicalize()?;
+        let directory = database_path
+            .parent()
+            .ok_or(BootstrapError::InvalidRequest)?
+            .to_path_buf();
+        let staging_path = directory.join(MIGRATION_STAGING_FILE);
+        validate_private_file(&staging_path)?;
+
+        let source_report =
+            validate_persisted_records(&database).map_err(BootstrapError::Startup)?;
+        let backup = crate::offline_backup::verify_backup(verified_backup_directory)
+            .map_err(|_| BootstrapError::InvalidRequest)?;
+        if source_report.metadata.database_id != backup.database_id
+            || source_report.metadata.commit_sequence != backup.commit_sequence
+        {
+            return Err(BootstrapError::InvalidRequest);
+        }
+        let staged_database =
+            ReadOnlyDatabase::open(&staging_path).map_err(|_| BootstrapError::Storage)?;
+        let staged_report = validate_persisted_records_read_only(&staged_database)
+            .map_err(BootstrapError::Startup)?;
+        if source_report.metadata.database_id != staged_report.metadata.database_id
+            || source_report.metadata.commit_sequence != staged_report.metadata.commit_sequence
+        {
+            return Err(BootstrapError::InvalidRequest);
+        }
+        drop(staged_database);
+        drop(database);
+
+        File::open(&staging_path)?.sync_all()?;
+        File::open(&database_path)?.sync_all()?;
+        exchange_files(&database_path, &staging_path)?;
+        sync_directory(&directory)?;
+
+        validate_private_file(&database_path)?;
+        validate_private_file(&staging_path)?;
+        let database = Database::open(&database_path).map_err(|_| BootstrapError::Storage)?;
+        let published_report =
+            validate_persisted_records(&database).map_err(BootstrapError::Startup)?;
+        if published_report.metadata.database_id != source_report.metadata.database_id
+            || published_report.metadata.commit_sequence != source_report.metadata.commit_sequence
+        {
+            return Err(BootstrapError::InvalidCatalog);
+        }
+        Ok(Self {
+            database: Box::new(database),
+            database_path,
+            _lock,
+        })
     }
 
     pub(crate) fn close_database_and<T, E>(
