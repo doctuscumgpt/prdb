@@ -1816,6 +1816,30 @@ struct LiveInvocationRegistry {
     entries: HashMap<[u8; 16], LiveInvocation>,
 }
 
+fn bounded_invocation_ids(
+    ids: impl IntoIterator<Item = [u8; 16]>,
+    after: Option<[u8; 16]>,
+    limit: usize,
+) -> Vec<[u8; 16]> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let capacity = limit.saturating_add(1);
+    let mut selected = std::collections::BinaryHeap::with_capacity(capacity);
+    for id in ids {
+        if after.is_some_and(|after| id <= after) {
+            continue;
+        }
+        if selected.len() < capacity {
+            selected.push(id);
+        } else if selected.peek().is_some_and(|largest| id < *largest) {
+            selected.pop();
+            selected.push(id);
+        }
+    }
+    selected.into_sorted_vec()
+}
+
 struct AdministrativeInvocationProjection {
     invocations: Vec<AdministrativeInvocationStatus>,
     continuation: Option<AdministrativeInvocationCursor>,
@@ -2081,38 +2105,42 @@ impl InvocationAdmissionState {
                 return Err(InvocationStatusError::StaleCursor);
             }
         }
-        let after = cursor.map(|cursor| cursor.after_invocation_id);
-        let mut entries = live
-            .entries
-            .iter()
-            .filter(|(invocation_id, invocation)| {
-                invocation.principal_id == principal_id
-                    && after.is_none_or(|after| **invocation_id > after)
-            })
-            .map(|(invocation_id, invocation)| OwnInvocationStatus {
-                invocation_id: *invocation_id,
-                status: match invocation.phase {
-                    LiveInvocationPhase::Active => InvocationStatus::Active {
-                        started_at_us: invocation.started_at_us,
-                        deadline_at_us: invocation.deadline_at_us,
-                        cancellation_requested: invocation.cancellation_reason_code.is_some(),
+        let mut ids = bounded_invocation_ids(
+            live.entries
+                .iter()
+                .filter(|(_, invocation)| invocation.principal_id == principal_id)
+                .map(|(invocation_id, _)| *invocation_id),
+            cursor.map(|cursor| cursor.after_invocation_id),
+            limit,
+        );
+        let has_more = ids.len() > limit;
+        ids.truncate(limit);
+        let entries = ids
+            .into_iter()
+            .filter_map(|invocation_id| {
+                let invocation = live.entries.get(&invocation_id)?;
+                Some(OwnInvocationStatus {
+                    invocation_id,
+                    status: match invocation.phase {
+                        LiveInvocationPhase::Active => InvocationStatus::Active {
+                            started_at_us: invocation.started_at_us,
+                            deadline_at_us: invocation.deadline_at_us,
+                            cancellation_requested: invocation.cancellation_reason_code.is_some(),
+                        },
+                        LiveInvocationPhase::CancellationPending => InvocationStatus::Active {
+                            started_at_us: invocation.started_at_us,
+                            deadline_at_us: invocation.deadline_at_us,
+                            cancellation_requested: false,
+                        },
+                        LiveInvocationPhase::Committing => InvocationStatus::Committing {
+                            started_at_us: invocation.started_at_us,
+                            deadline_at_us: invocation.deadline_at_us,
+                            cancellation_requested: invocation.cancellation_reason_code.is_some(),
+                        },
                     },
-                    LiveInvocationPhase::CancellationPending => InvocationStatus::Active {
-                        started_at_us: invocation.started_at_us,
-                        deadline_at_us: invocation.deadline_at_us,
-                        cancellation_requested: false,
-                    },
-                    LiveInvocationPhase::Committing => InvocationStatus::Committing {
-                        started_at_us: invocation.started_at_us,
-                        deadline_at_us: invocation.deadline_at_us,
-                        cancellation_requested: invocation.cancellation_reason_code.is_some(),
-                    },
-                },
+                })
             })
             .collect::<Vec<_>>();
-        entries.sort_unstable_by_key(|entry| entry.invocation_id);
-        let has_more = entries.len() > limit;
-        entries.truncate(limit);
         let continuation = if has_more {
             let owner_generation = owner_generation.ok_or(InvocationStatusError::InvalidRequest)?;
             entries.last().map(|entry| InvocationListCursor {
@@ -2146,7 +2174,6 @@ impl InvocationAdmissionState {
                 return Err(AdministrativeInvocationListError::StaleCursor);
             }
         }
-        let after = cursor.map(|cursor| cursor.after_invocation_id);
         let pinned_snapshot_count = live
             .entries
             .values()
@@ -2162,13 +2189,19 @@ impl InvocationAdmissionState {
             })
             .max()
             .unwrap_or(0);
-        let mut entries = live
-            .entries
-            .iter()
-            .filter(|(invocation_id, _)| after.is_none_or(|after| **invocation_id > after))
-            .map(
-                |(invocation_id, invocation)| AdministrativeInvocationStatus {
-                    invocation_id: *invocation_id,
+        let mut ids = bounded_invocation_ids(
+            live.entries.keys().copied(),
+            cursor.map(|cursor| cursor.after_invocation_id),
+            limit,
+        );
+        let has_more = ids.len() > limit;
+        ids.truncate(limit);
+        let entries = ids
+            .into_iter()
+            .filter_map(|invocation_id| {
+                let invocation = live.entries.get(&invocation_id)?;
+                Some(AdministrativeInvocationStatus {
+                    invocation_id,
                     transaction_id: invocation.transaction_id,
                     principal_id: invocation.principal_id,
                     workload_class: invocation.workload_class,
@@ -2195,12 +2228,9 @@ impl InvocationAdmissionState {
                     staged_value_bytes: invocation.staged_value_bytes,
                     snapshot_pin_count: invocation.snapshot_pin_count,
                     cancellation_reason_code: invocation.cancellation_reason_code,
-                },
-            )
+                })
+            })
             .collect::<Vec<_>>();
-        entries.sort_unstable_by_key(|entry| entry.invocation_id);
-        let has_more = entries.len() > limit;
-        entries.truncate(limit);
         let continuation = if has_more {
             entries.last().map(|entry| AdministrativeInvocationCursor {
                 administrator_id,
@@ -11734,7 +11764,7 @@ fn lookup_credential_principal(
 mod commit_cancellation_boundary_tests {
     use super::{
         AdmissionError, InvocationAdmissionState, LiveInvocationRegistry, OwnerCancellationResult,
-        StorageManager, StorageManagerConfig,
+        StorageManager, StorageManagerConfig, bounded_invocation_ids,
     };
     use redb::Database;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -11742,6 +11772,18 @@ mod commit_cancellation_boundary_tests {
     use std::time::Duration;
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn invocation_page_selection_copies_only_a_sorted_bounded_prefix() {
+        let ids = [
+            [9; 16], [2; 16], [7; 16], [1; 16], [8; 16], [3; 16], [6; 16], [4; 16],
+        ];
+        assert_eq!(
+            bounded_invocation_ids(ids, Some([2; 16]), 2),
+            vec![[3; 16], [4; 16], [6; 16]]
+        );
+        assert_eq!(bounded_invocation_ids(ids, None, 0), Vec::<[u8; 16]>::new());
+    }
 
     #[test]
     fn analytical_admission_cap_preserves_operational_capacity() {

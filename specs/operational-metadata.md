@@ -66,6 +66,6 @@ Audit is not tamper-proof against an administrator controlling database files; e
 
 ## Resource Safety and Tests
 
-Monitoring must not hold commit/catalog locks while formatting or waiting for a client. Use bounded copies or pinned registry snapshots and release references promptly. Telemetry observers cannot pin data history indefinitely or bypass queue/admission budgets. Separate required commit/outcome bookkeeping from optional high-volume metrics.
+Monitoring must not hold commit/catalog locks while formatting or waiting for a client. Own and administrator invocation pages scan the live registry but materialize at most `page_limit + 1` IDs and at most `page_limit` records while holding the registry mutex; `page_limit` is capped at 128. They copy the sorted prefix after the cursor so the extra ID indicates continuation without copying the remaining registry. Administrator authorization snapshots are dropped before taking the registry mutex, and response formatting happens after the registry lock is released. Telemetry observers cannot pin data history indefinitely or bypass queue/admission budgets. Separate required commit/outcome bookkeeping from optional high-volume metrics.
 
 Test cross-user status denial, unknown IDs, revocation mid-page, commit/cancel races, restart with committed-but-undelivered results, retention expiry, high-volume denied requests, audit sink failure, partial registry snapshots, and the absence of secrets in every error/log path. No SQL-visible live system views are promised in the initial implementation.

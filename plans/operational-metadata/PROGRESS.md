@@ -175,3 +175,11 @@
 - Regression: the runtime-page assertion failed to compile before the field existed. Storage checks positive cache occupancy; request decoding, strict TCP response decoding, and the CLI process test cover version 3 and its numeric field.
 - Verification: the expected missing-field compile failure was observed. Focused storage, protocol, typed-client and process tests passed; workspace fmt, warning-denied Clippy and build passed; TinyCC SDK tests and sandbox fixture passed; release profile validated 10 engine binaries and 1 query fixture; full serial delegated-cgroup workspace suite passed with zero ignored tests.
 - Remaining: exact retained-history bytes and other redb physical statistics remain unavailable without a read-safe redb API; job registry, other waits, and broader pressure/authority-race work remain open.
+
+## OM-7 bounded invocation-page copies — implemented slice
+
+- Contract: owner and administrator invocation pages inspect the live registry without copying/sorting every matching record under the registry mutex. Page materialization is bounded to `page_limit` records plus one ID to determine whether a continuation exists; page limits remain capped at 128.
+- Implementation: selection retains the smallest eligible `limit + 1` invocation IDs in a bounded max-heap, sorts that prefix, and copies only the requested records. The registry scan remains proportional to active invocations, but temporary page memory and record projection are bounded by the page limit. Administrator authority snapshots are released before registry access; formatting follows projection after the mutex is released.
+- Regression: a new unit test checks sorted-prefix selection after a cursor, the extra continuation candidate, and a zero-sized helper request. Existing own-page and administrator-page integration tests verify authorization, ordering, continuation, generation invalidation, and projection.
+- Verification: initial test compile failed as expected because the selector did not exist. The selector regression, owner-page integration test, administrator-page authorization/projection test, and workspace formatting check passed.
+- Remaining: stress testing concurrent commits/cancellations against high-volume monitoring and denied requests remains open, along with other OM-7 pressure cases and the remaining OM-2 registry families.
