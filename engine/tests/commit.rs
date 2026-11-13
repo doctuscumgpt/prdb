@@ -25795,6 +25795,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         analytics_memory_current_bytes,
         analytics_memory_peak_bytes,
         analytical_cap_rejected,
+        optimizer_range_latency_samples,
     ) = std::thread::scope(|scope| {
         let observer_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let analytics_result_relayed = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -26522,7 +26523,17 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         let mut index_build_started_rx = Some(index_build_started_rx);
         let saturation_started_tx = saturation_started_tx;
         let mut analytical_group_resumed_at = None;
+        let mut optimizer_range_latency_samples = Vec::with_capacity(2);
         let worker_status_result = executor.observe_exit_with_results(&invocation, |payload| {
+            if payload.len() == 16 && &payload[..7] == b"OP5RNG1" {
+                let elapsed_ns = u64::from_be_bytes(
+                    payload[8..16]
+                        .try_into()
+                        .expect("range latency payload has a fixed-width duration"),
+                );
+                optimizer_range_latency_samples.push((payload[7], elapsed_ns));
+                return Ok(());
+            }
             send_gateway_result_data_event(&mut service, accepted.request_id, payload.to_vec())
                 .map_err(|error| std::io::Error::other(format!("result relay: {error:?}")))?;
             if payload == b"ANALYTICAL_GROUP_STARTED" {
@@ -26650,6 +26661,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             analytics_memory_current_bytes,
             analytics_memory_peak_bytes,
             analytical_cap_rejected,
+            optimizer_range_latency_samples,
         ))
     })?;
     assert!(analytical_cap_rejected);
@@ -26705,6 +26717,22 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     assert!(
         worker_status.success(),
         "sandbox query worker failed: {worker_status}"
+    );
+    assert_eq!(
+        optimizer_range_latency_samples.len(),
+        2,
+        "confined range fixture must report optimizer and reference timings"
+    );
+    assert_eq!(optimizer_range_latency_samples[0].0, b'O');
+    assert_eq!(optimizer_range_latency_samples[1].0, b'R');
+    assert!(
+        optimizer_range_latency_samples
+            .iter()
+            .all(|(_, ns)| *ns > 0)
+    );
+    eprintln!(
+        "OP-5 confined SQL range latency (ns): optimizer={} reference={}",
+        optimizer_range_latency_samples[0].1, optimizer_range_latency_samples[1].1
     );
     staging.finish_started(owner, reservation.invocation_id)?;
     let analytical_group_started =

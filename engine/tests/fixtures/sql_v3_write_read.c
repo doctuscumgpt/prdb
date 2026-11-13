@@ -70,6 +70,31 @@ static int sleep_without_signal_interruption(struct timespec interval) {
     return 0;
 }
 
+static int monotonic_time_ns(uint64_t *value_out) {
+    struct timespec value;
+    if (value_out == NULL || clock_gettime(CLOCK_MONOTONIC, &value) != 0 ||
+        value.tv_sec < 0 || value.tv_nsec < 0) {
+        return 0;
+    }
+    *value_out = (uint64_t)value.tv_sec * UINT64_C(1000000000) +
+                 (uint64_t)value.tv_nsec;
+    return 1;
+}
+
+static int32_t report_range_timing(const prdb_host_api_v3 *host, uint8_t kind,
+                                   uint64_t elapsed_ns) {
+    uint8_t payload[16] = {'O', 'P', '5', 'R', 'N', 'G', '1', kind};
+    if (host == NULL || host->write_result == NULL) {
+        return PRDB_QUERY_CALLBACK_INVALID_ARGUMENT;
+    }
+    for (uint32_t index = 0; index < 8; ++index) {
+        payload[8 + index] = (uint8_t)(elapsed_ns >> (56 - index * 8));
+    }
+    return host->write_result(host->context, payload, sizeof(payload)) == 0
+               ? PRDB_QUERY_CALLBACK_OK
+               : PRDB_QUERY_CALLBACK_IO_ERROR;
+}
+
 static int32_t cancel_update_executor_request(
     void *context, uint16_t operation, const uint8_t *request,
     uint64_t request_len, uint8_t *response, uint64_t response_capacity,
@@ -2168,7 +2193,13 @@ static int32_t run_write_read_fixture(
         prdb_host_api_v4 range_observer_host = {0};
         uint32_t optimizer_rows = 0;
         uint32_t parse_error_offset = 0;
+        uint64_t optimizer_started_ns = 0;
+        uint64_t optimizer_finished_ns = 0;
         int32_t optimizer_range_status = PRDB_SDK_OPTIMIZER_PLAN_OK;
+        if (!monotonic_time_ns(&optimizer_started_ns)) {
+            static const uint8_t message[] = "fixture-error-optimizer-range-clock";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
         if (optimizer_host->optimizer_request == NULL ||
             prdb_sdk_sql_parse_select_v2(
                 optimizer_select_sql, sizeof(optimizer_select_sql) - 1,
@@ -2232,9 +2263,21 @@ static int32_t run_write_read_fixture(
             static const uint8_t message[] = "fixture-error-optimizer-range-result";
             return report_failure(host, message, sizeof(message) - 1);
         }
+        if (!monotonic_time_ns(&optimizer_finished_ns) ||
+            optimizer_finished_ns < optimizer_started_ns) {
+            static const uint8_t message[] = "fixture-error-optimizer-range-clock";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
 
         {
             range_result_context reference_results = {0};
+            uint64_t reference_started_ns = 0;
+            uint64_t reference_finished_ns = 0;
+            if (!monotonic_time_ns(&reference_started_ns)) {
+                static const uint8_t message[] =
+                    "fixture-error-reference-range-clock";
+                return report_failure(host, message, sizeof(message) - 1);
+            }
             status = prdb_sdk_sql_execute_select_v2(
                 host, schema, sizeof(schema) - 1, optimizer_range_select_sql,
                 sizeof(optimizer_range_select_sql) - 1,
@@ -2244,6 +2287,12 @@ static int32_t run_write_read_fixture(
                 sizeof(optimizer_batch), planner_columns, 9, executor_columns,
                 9, optimizer_source_cells, 9, collect_reference_range_row,
                 &reference_results);
+            if (!monotonic_time_ns(&reference_finished_ns) ||
+                reference_finished_ns < reference_started_ns) {
+                static const uint8_t message[] =
+                    "fixture-error-reference-range-clock";
+                return report_failure(host, message, sizeof(message) - 1);
+            }
             if (status != PRDB_SDK_SQL_EXEC_OK ||
                 reference_results.count != optimizer_range_results.count ||
                 memcmp(reference_results.values, optimizer_range_results.values,
@@ -2251,6 +2300,16 @@ static int32_t run_write_read_fixture(
                            sizeof(optimizer_range_results.values[0])) != 0) {
                 static const uint8_t message[] =
                     "fixture-error-reference-range-result";
+                return report_failure(host, message, sizeof(message) - 1);
+            }
+            if (report_range_timing(host, 'O',
+                                    optimizer_finished_ns - optimizer_started_ns) !=
+                    PRDB_QUERY_CALLBACK_OK ||
+                report_range_timing(host, 'R',
+                                    reference_finished_ns - reference_started_ns) !=
+                    PRDB_QUERY_CALLBACK_OK) {
+                static const uint8_t message[] =
+                    "fixture-error-range-timing-report";
                 return report_failure(host, message, sizeof(message) - 1);
             }
         }
