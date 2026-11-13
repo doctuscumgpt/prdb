@@ -52,6 +52,30 @@ fn generated_client_frame_header_preserves_little_endian_wire_bytes() {
 }
 
 #[test]
+fn client_frame_decoder_accepts_every_split_of_a_golden_frame() {
+    // Independent hand-checked PDBN v1.0 HELLO frame carrying `{}`.
+    let golden = [
+        b'P', b'D', b'B', b'N', 1, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, b'{', b'}',
+    ];
+    let expected = ClientFrame {
+        kind: 1,
+        request_id: 7,
+        response_sequence: 0,
+        payload: b"{}".to_vec(),
+    };
+
+    for split in 0..=golden.len() {
+        let mut decoder = ClientFrameDecoder::default();
+        let first = decoder.push(&golden[..split]).unwrap();
+        let second = decoder.push(&golden[split..]).unwrap();
+        assert_eq!(first.len() + second.len(), 1, "split at byte {split}");
+        assert_eq!(first.into_iter().chain(second).next().unwrap(), expected);
+        decoder.finish().unwrap();
+    }
+}
+
+#[test]
 fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

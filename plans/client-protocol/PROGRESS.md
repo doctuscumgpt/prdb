@@ -209,3 +209,10 @@
 - Regression: the real-redb administrator lifecycle test prepares `tokens.issue` for an invalid target, starts it and observes the storage error, verifies a repeated START is rejected, then completes a separate valid token issue through a fresh PREPARE. The existing issue success path verifies STATUS is committed and the secret is delivered once and never recoverable from STATUS.
 - Verification: the focused `storage_manager_runtime_and_metadata_reads_enforce_authorization` integration test passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, both maintained TinyCC Make targets, and the full serial delegated-cgroup workspace suite passed; the suite reported zero ignored tests. `git diff --check` passed.
 - Remaining: broader concurrent TCP connections, codec/state-machine fuzzing, and supervisor/process boundary coverage remain open.
+
+## NP-1 / NP-7: fragmented frame and bounded mutation coverage — verified slice
+
+- Contract: the 32-byte PDBN v1.0 frame header accepts arbitrary TCP fragmentation without changing the decoded request; malformed control payloads and frame state must fail without panicking or allocating beyond their protocol bounds.
+- Regression: an independent hand-checked HELLO frame is split at every byte boundary and decoded to the same request. A fixed-seed bounded mutation corpus changes every byte of valid HELLO, AUTH, SEAL, and ADMIN payloads, then exercises the control decoders, chunk/frame decoders, and request/response sequence guards; additional bounded random inputs cover the same entry points.
+- Verification: both focused regressions passed. Workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed; the suite reported zero ignored tests. `git diff --check` passed.
+- Remaining: coverage-guided fuzzing with sustained corpora, randomized multi-step session transitions, and broader concurrent process-boundary tests remain open under NP-7.

@@ -212,6 +212,80 @@ fn seal_decoder_accepts_only_one_nonzero_canonical_invocation_id() {
 }
 
 #[test]
+fn bounded_mutation_corpus_does_not_panic_client_codecs_or_sequence_guards() {
+    use prdb_engine::client_protocol::{
+        ClientFrame, ClientFrameDecoder, ClientRequestIds, ClientResponseSequences,
+        decode_client_hello,
+    };
+
+    fn exercise(bytes: &[u8], state: u64) {
+        let _ = decode_client_hello(bytes);
+        let _ = decode_client_credentials(bytes);
+        let _ = decode_client_prepare(bytes);
+        let _ = decode_client_seal(bytes);
+        let _ = decode_client_admin_read(bytes);
+        let _ = decode_client_admin_command(bytes);
+        let _ = decode_client_chunk(bytes);
+
+        let mut decoder = ClientFrameDecoder::default();
+        let _ = decoder.push(bytes);
+        let _ = decoder.finish();
+
+        let mut request_ids = ClientRequestIds::default();
+        let mut response_sequences = ClientResponseSequences::default();
+        let frame = ClientFrame {
+            kind: state as u16 % 105,
+            request_id: state.rotate_left(19),
+            response_sequence: state.rotate_right(11),
+            payload: bytes.to_vec(),
+        };
+        let _ = request_ids.accept(&frame);
+        let _ = response_sequences.begin_stream(frame.request_id);
+        let _ = response_sequences.accept_stream_frame(&frame);
+    }
+
+    let auth = format!(
+        "{{\"token_id\":\"{}\",\"token_secret\":\"{}\"}}",
+        "01".repeat(16),
+        "A".repeat(43) + "="
+    );
+    let seeds = [
+        br#"{"mode":"query","client_name":"tool"}"#.as_slice(),
+        auth.as_bytes(),
+        br#"{"invocation_id":"000102030405060708090a0b0c0d0e0f"}"#,
+        br#"{"phase":"read","operation_version":1,"operation":"tokens.list","arguments":{"user_id":"000102030405060708090a0b0c0d0e0f"}}"#,
+    ];
+    for (seed_index, seed) in seeds.into_iter().enumerate() {
+        for offset in 0..seed.len() {
+            for replacement in [0, b'"', b'}', 0x7f, 0xff] {
+                let mut mutated = seed.to_vec();
+                mutated[offset] = replacement;
+                exercise(&mutated, (seed_index as u64 + 1) << 32 | offset as u64);
+            }
+        }
+    }
+
+    // A fixed xorshift stream makes this a repeatable fuzz-smoke corpus without
+    // adding a test dependency or allowing unbounded allocations.
+    let mut state = 0x8f31_6a42_d975_b10cu64;
+    for _ in 0..512 {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let length = (state as usize) % 257;
+        let mut bytes = Vec::with_capacity(length);
+        for _ in 0..length {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            bytes.push(state as u8);
+        }
+
+        exercise(&bytes, state);
+    }
+}
+
+#[test]
 fn admin_read_decoder_accepts_token_inventory_and_rejects_mutation_shapes() {
     assert_eq!(
         decode_client_admin_read(
