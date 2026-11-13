@@ -56,6 +56,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Engine metadata records and enforces the current catalog schema (2), expression IR (1), and built-in semantics (1) versions. Startup and transaction/commit paths reject unsupported values; commit tests verify unsupported versions cannot publish rows or outcomes.
 - Family-16 verifier records carry algorithm and profile-version fields. The implemented SHA-256 v1 profile is used for newly issued tokens; startup and commit validation reject unsupported algorithms/versions and malformed verifier records.
 - `metadata` codec tests cover unsupported engine-metadata encoding versions and noncanonical fields. Startup tests cover supported verifier records and malformed/disabled-user records.
+- `rejects_unsupported_credential_algorithms_and_profile_versions` verifies startup rejects both an unknown verifier algorithm and an unknown profile version for an otherwise valid login identity.
+- Verification: the focused startup regression passed; formatting, locked workspace build, and warning-denied Clippy passed. The full serial workspace suite passed inside the delegated `systemd --user` service with sandbox/process tests enabled and zero ignored tests.
 - Remaining: populated old/new catalog and expression fixtures, older-binary rejection against a newer directory, explicit redb compatibility fixtures, and transition-specific semantics preservation. No migration path is implemented.
 
 ## CL-3 follow-up: reject unsupported metadata before cache repair — verified

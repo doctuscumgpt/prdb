@@ -760,6 +760,8 @@ fn principal_record_with_name(
 fn credential_verifier_record(
     token_id: [u8; 16],
     user_id: [u8; 16],
+    algorithm: u16,
+    profile_version: u16,
     verifier: &[u8],
 ) -> (Vec<u8>, Vec<u8>) {
     let mut key = 16u16.to_be_bytes().to_vec();
@@ -774,12 +776,12 @@ fn credential_verifier_record(
         CatalogField {
             tag: 2,
             wire_type: WireType::U16,
-            payload: 1u16.to_le_bytes().to_vec(),
+            payload: algorithm.to_le_bytes().to_vec(),
         },
         CatalogField {
             tag: 3,
             wire_type: WireType::U16,
-            payload: 1u16.to_le_bytes().to_vec(),
+            payload: profile_version.to_le_bytes().to_vec(),
         },
         CatalogField {
             tag: 4,
@@ -1697,7 +1699,8 @@ fn accepts_credential_verifiers_with_the_supported_profile() {
     let user_id = [70; 16];
     let (user_key, user_value) = principal_record(user_id, 1, true, 1);
     let (object_key, object_value) = object_record(user_id, 8);
-    let (verifier_key, verifier_value) = credential_verifier_record([71; 16], user_id, &[0xA5; 32]);
+    let (verifier_key, verifier_value) =
+        credential_verifier_record([71; 16], user_id, 1, 1, &[0xA5; 32]);
     for (key, value) in [
         (user_key, user_value),
         (object_key, object_value),
@@ -1719,7 +1722,7 @@ fn rejects_malformed_or_disabled_user_credential_verifiers() {
         let (object_key, object_value) =
             object_record_named(user_id, 8, builtin_owner_id(), "credential_user");
         let (verifier_key, verifier_value) =
-            credential_verifier_record([73; 16], user_id, &verifier);
+            credential_verifier_record([73; 16], user_id, 1, 1, &verifier);
         for (key, value) in [
             (user_key, user_value),
             (object_key, object_value),
@@ -1730,6 +1733,33 @@ fn rejects_malformed_or_disabled_user_credential_verifiers() {
         assert_eq!(
             validate_persisted_records(&database),
             Err(StartupError::InvalidCatalog),
+        );
+    }
+}
+
+#[test]
+fn rejects_unsupported_credential_algorithms_and_profile_versions() {
+    for (algorithm, profile_version) in [(2, 1), (1, 2)] {
+        let fixture = Fixture::new();
+        let database = fixture.database(0);
+        let user_id = [74; 16];
+        let (user_key, user_value) =
+            principal_record_with_name(user_id, 1, true, 1, "versioned_credential_user");
+        let (object_key, object_value) =
+            object_record_named(user_id, 8, builtin_owner_id(), "versioned_credential_user");
+        let (verifier_key, verifier_value) =
+            credential_verifier_record([75; 16], user_id, algorithm, profile_version, &[0xA5; 32]);
+        for (key, value) in [
+            (user_key, user_value),
+            (object_key, object_value),
+            (verifier_key, verifier_value),
+        ] {
+            put_catalog(&database, &key, &value);
+        }
+        assert_eq!(
+            validate_persisted_records(&database),
+            Err(StartupError::InvalidCatalog),
+            "algorithm={algorithm}, profile_version={profile_version}"
         );
     }
 }
