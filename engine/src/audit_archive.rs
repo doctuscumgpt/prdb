@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 
 const HEADER_LENGTH: usize = 14;
 const DIGEST_LENGTH: usize = 32;
-pub(crate) const MAX_ARCHIVE_LENGTH: usize =
+pub const MAX_ARCHIVE_LENGTH: usize =
     HEADER_LENGTH + MAX_AUDIT_EVENTS * (16 + 4 + 4_164) + DIGEST_LENGTH;
 pub type AuditArchiveRecord = ([u8; 16], Vec<u8>);
 

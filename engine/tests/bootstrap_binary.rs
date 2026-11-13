@@ -83,6 +83,52 @@ fn maintenance_help_lists_offline_audit_archival() {
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout).expect("UTF-8 help");
     assert!(help.contains("audit-archive --instance-dir PATH --output PATH"));
+    assert!(help.contains("audit-verify --archive PATH"));
+}
+
+#[test]
+fn maintenance_verifies_pra1_archives_and_rejects_corruption()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let event = AuditEvent {
+        event_id: [0x41; 16],
+        actor_id: Some([0x42; 16]),
+        correlation_id: [0x43; 16],
+        occurred_at_us: 1,
+        action: AuditAction::Ddl,
+        result: AuditResult::Succeeded,
+        target_ids: vec![[0x44; 16]],
+    };
+    let archive = prdb_engine::audit_archive::encode(&[(event.event_id, event.encode()?)])?;
+    let archive_path = fixture.0.join("audit.archive");
+    std::fs::write(&archive_path, &archive)?;
+    std::fs::set_permissions(&archive_path, std::fs::Permissions::from_mode(0o600))?;
+
+    let verified = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["audit-verify", "--archive"])
+        .arg(&archive_path)
+        .output()?;
+    assert!(
+        verified.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    assert!(String::from_utf8_lossy(&verified.stdout).contains("events=1"));
+
+    let corrupted_path = fixture.0.join("corrupted.archive");
+    let mut corrupted = archive;
+    let last = corrupted.len() - 1;
+    corrupted[last] ^= 1;
+    std::fs::write(&corrupted_path, &corrupted)?;
+    std::fs::set_permissions(&corrupted_path, std::fs::Permissions::from_mode(0o600))?;
+    let rejected = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["audit-verify", "--archive"])
+        .arg(&corrupted_path)
+        .output()?;
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("InvalidDigest"));
+    assert_eq!(std::fs::read(corrupted_path)?, corrupted);
+    Ok(())
 }
 
 #[test]

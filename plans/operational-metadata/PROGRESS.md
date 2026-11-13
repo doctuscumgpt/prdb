@@ -143,3 +143,11 @@
 - Regression: the initial process test failed because `prdb-maintain` rejected `audit-archive`. Tests now verify archive creation and private permissions, table pruning, idempotent retry, rejection of output paths inside the instance, malformed destination preservation, and refusal while the instance lock is held. Codec tests cover round-trip, event ordering, and digest corruption.
 - Verification: focused archive codec and process tests passed. Workspace build, fmt, warning-denied Clippy, release build, TinyCC tests/fixture, release-profile validation (10 engine binaries and 1 query fixture), delegated cgroup probe, and the full serial delegated-cgroup workspace suite passed. The full service exited successfully with zero ignored tests; `git diff --check` passed.
 - Remaining: external asynchronous sink delivery, job registries, retained-byte/cache telemetry, additional wait categories, and broader pressure testing remain open.
+
+## OM-5 PRA1 offline archive verification — implemented slice
+
+- Contract: `prdb-maintain audit-verify --archive PATH` validates a mode-0600 regular PRA1 file up to the format bound without opening an instance or exposing event contents.
+- Implementation: the verifier opens with `O_NOFOLLOW|O_CLOEXEC`, bounds the read to the maximum PRA1 size, checks the complete format digest, sorted event IDs, AUD1 payloads, and key/value identity, then reports only the event count.
+- Regression: the process test verifies an independently generated valid archive and rejects a modified digest while preserving the archive bytes. CLI help includes the verifier operation.
+- Verification: the focused process test and full `bootstrap_binary` target passed. Workspace build/fmt/Clippy, release build/profile validation (10 engine binaries and 1 query fixture), TinyCC tests/fixture, delegated cgroup capability probe, full serial delegated-cgroup workspace suite (zero ignored tests), release-profile CLI help, and `git diff --check` passed.
+- Remaining: external asynchronous sink delivery, job registries, retained-byte/cache telemetry, additional wait categories, and broader pressure testing remain open.
