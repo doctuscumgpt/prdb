@@ -150,8 +150,8 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
     use prdb_engine::bootstrap::initialize;
     use prdb_engine::client_protocol::{ClientFrameDecoder, ClientResponseSequences};
     use prdb_engine::client_submit::{
-        AdminClient, AdminColumnDefinition, AdminObjectGrantTarget, AdminObjectPrivilege,
-        AdminSystemPrivilege, InvocationStatus,
+        AdminClient, AdminColumnDefault, AdminColumnDefinition, AdminObjectGrantTarget,
+        AdminObjectPrivilege, AdminSystemPrivilege, InvocationStatus,
     };
     use prdb_engine::submission_manifest::{encode_manifest_v1, manifest_v1_from_elf};
     use sha2::{Digest, Sha256};
@@ -718,6 +718,40 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
             )
             .expect("table owner grants SELECT on one column through process ADMIN");
         assert!(object_grant.commit_sequence > 0);
+        let defaulted = limited
+            .set_column_default(
+                grant_table.table_id,
+                grant_table.column_ids[0],
+                prdb_engine::tuple::ScalarType::Text,
+                AdminColumnDefault::Literal(prdb_engine::tuple::ScalarValue::Text(
+                    "gateway-default".to_owned(),
+                )),
+            )
+            .expect("set a typed column default through gateway and supervisor");
+        assert!(defaulted.commit_sequence > object_grant.commit_sequence);
+        let renamed_column = limited
+            .rename_column(grant_table.table_id, grant_table.column_ids[0], "body")
+            .expect("rename an owned column through gateway and supervisor");
+        assert_eq!(renamed_column.column_id, grant_table.column_ids[0]);
+        let not_null = limited
+            .alter_column_nullability(grant_table.table_id, grant_table.column_ids[0], false)
+            .expect("set column nullability through gateway and supervisor");
+        assert!(not_null.commit_sequence > renamed_column.commit_sequence);
+        let dropped_default = limited
+            .drop_column_default(grant_table.table_id, grant_table.column_ids[0])
+            .expect("drop the column default through gateway and supervisor");
+        assert!(dropped_default.commit_sequence > not_null.commit_sequence);
+        let columns = limited
+            .list_columns_page(user_schema.identity_id, grant_table.table_id, 64, None)
+            .expect("read the updated column shape through gateway and supervisor");
+        assert_eq!(columns.records.len(), 1);
+        assert_eq!(columns.records[0].column_id, grant_table.column_ids[0]);
+        assert_eq!(columns.records[0].name, "body");
+        assert_eq!(
+            columns.records[0].scalar_type,
+            prdb_engine::tuple::ScalarType::Text
+        );
+        assert!(!columns.records[0].nullable);
         drop(grant_observer_client);
         limited
             .drop_table(grant_table.table_id)

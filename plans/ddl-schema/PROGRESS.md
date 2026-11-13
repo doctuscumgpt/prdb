@@ -267,3 +267,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: a barrier-coordinated real-redb race concurrently creates a row policy as the current table owner and transfers ownership as a database administrator. It accepts the valid serial orders, checks durable outcomes and commit-sequence advancement, verifies the resulting policy and table owner, and validates the recovered catalog image.
 - Verification: focused test passed once and in ten fresh processes. Rust 1.95.0 workspace build, format check, warning-denied Clippy, and full test suite passed; the commit integration target reported 125 passed and 3 cgroup-dependent ignored.
 - Remaining: races against other DDL families, broader stress schedules, and confined artifact execution remain open.
+
+## DS-5 / NP-6: column ALTER operations through gateway and supervisor processes — verified
+
+- Contract: [schema DDL](../../specs/ddl-schema.md) and [client protocol](../../specs/client-protocol.md). A non-admin table owner must be able to administer its own columns through the authenticated control path, with storage preserving stable column identity and enforcing the declared changes.
+- Regression: the production `prdb-gateway` and `prdb-supervisor` process acceptance creates a schema and table as a regular user with `CREATE_SCHEMA`, then sets a typed text default, renames the column, sets it NOT NULL, and drops the current default through `AdminClient`. A subsequent authenticated metadata read confirms the column ID is unchanged, its name is `body`, its type remains TEXT, and nullability is false. The existing object grant remains bound to the same column ID.
+- Verification: the focused confined process test passed inside a delegated `systemd --user` unit. Workspace format, locked build, warning-denied Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with zero ignored tests.
+- Scope: covers the `AdminClient`/TCP/gateway/supervisor/storage path for these ALTER operations. The full ALTER matrix, DDL crash recovery, and additional process-level operation families remain open.
