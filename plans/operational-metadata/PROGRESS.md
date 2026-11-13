@@ -87,3 +87,11 @@
 - Regression: an ordinary principal with SELECT but no INSERT resolves a visible relation and receives a real denied `StageInsert`; the administrator runtime response reports one. TCP decoding and saturation coverage exercise the field.
 - Verification: observed the runtime assertion fail before implementation; focused executor/runtime, TCP, and saturation tests; workspace build/fmt/Clippy; TinyCC suite and fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite with zero ignored tests; and `git diff --check` passed.
 - Remaining: byte and latency counters; job registries; retained-byte/cache telemetry; additional wait categories; and broader pressure/authority-race tests remain open.
+
+## OM-2 cumulative staged payload byte counter — verified slice
+
+- Contract: `invocation_staged_value_bytes_total` adds encoded payload bytes for every successful managed-invocation overlay put. Replacements add the replacement payload again; deletes and failed writes add nothing. It is cumulative accepted staging volume, distinct from the current per-invocation `staged_value_bytes` gauge. The global counter is administrator-only, saturating, process-local, and resets with the registry.
+- Implementation: successful `stage_put_inner` operations report payload length through their admission permit into the shared registry. The admin runtime page, protocol JSON, strict typed client, and CLI JSON expose the counter.
+- Regression: the expected runtime field failed before implementation. Storage coverage checks initial put, replacement, and delete semantics; TCP decoding and saturation tests cover the client field and `u64::MAX` bound.
+- Verification: focused storage/runtime, protocol JSON, TCP client and saturation tests; workspace build/fmt/Clippy; TinyCC SDK tests and sandbox fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite (zero ignored tests); and `git diff --check` passed.
+- Remaining: latency buckets, job registries, retained-byte/cache telemetry, additional wait categories, and broader pressure/authority-race tests remain open.

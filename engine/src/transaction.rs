@@ -617,6 +617,12 @@ impl InvocationCoordination {
         }
     }
 
+    fn record_staged_value_bytes(&self, bytes: usize) {
+        if let Some(permit) = &self._admission_permit {
+            permit.record_staged_value_bytes(bytes);
+        }
+    }
+
     fn update_snapshot_pin_count(&self, snapshot_pin_count: u8) {
         if let Some(permit) = &self._admission_permit {
             permit.update_snapshot_pin_count(snapshot_pin_count);
@@ -7396,6 +7402,7 @@ impl<'db> InvocationTransaction<'db> {
             self.coordination.update_write_set_usage(0, 0);
             return Err(error.into());
         }
+        self.coordination.record_staged_value_bytes(payload.len());
         self.update_write_set_usage()?;
         Ok(())
     }

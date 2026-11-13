@@ -1797,14 +1797,15 @@ fn runtime_list(
         );
     }
     print!(
-        "],\"pinned_snapshot_count\":{},\"oldest_snapshot_pin_age_us\":{},\"invocations_admitted_total\":{},\"invocation_conflicts_total\":{},\"admin_cancellations_accepted_total\":{},\"admin_cancellations_denied_total\":{},\"invocation_policy_denials_total\":{},\"fence_waits\":[",
+        "],\"pinned_snapshot_count\":{},\"oldest_snapshot_pin_age_us\":{},\"invocations_admitted_total\":{},\"invocation_conflicts_total\":{},\"admin_cancellations_accepted_total\":{},\"admin_cancellations_denied_total\":{},\"invocation_policy_denials_total\":{},\"invocation_staged_value_bytes_total\":{},\"fence_waits\":[",
         page.pinned_snapshot_count,
         page.oldest_snapshot_pin_age_us,
         page.invocations_admitted_total,
         page.invocation_conflicts_total,
         page.admin_cancellations_accepted_total,
         page.admin_cancellations_denied_total,
-        page.invocation_policy_denials_total
+        page.invocation_policy_denials_total,
+        page.invocation_staged_value_bytes_total
     );
     for (index, wait) in page.fence_waits.iter().enumerate() {
         if index != 0 {

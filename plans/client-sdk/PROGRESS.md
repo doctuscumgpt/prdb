@@ -633,3 +633,11 @@
 - Regression: a SELECT-only principal resolves a visible relation, then receives `AuthorizationError::Denied` for `StageInsert`; the authorized runtime page reports one. The typed TCP fixture decodes the counter, and saturation coverage verifies its bound.
 - Verification: observed the expected runtime assertion failure before implementation; focused storage/runtime, TCP and saturation tests; workspace build/fmt/Clippy; TinyCC tests and fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite with zero ignored tests; and `git diff --check` passed.
 - Remaining: additional runtime counters and registries remain open under OM-2.
+
+## SDK-17 / OM-2: cumulative staged payload byte counter — verified slice
+
+- Behavior: `runtime-list` exposes `invocation_staged_value_bytes_total`, the saturating cumulative encoded payload bytes accepted by successful managed overlay puts. Replacements count again; deletes and failed writes do not count. The total resets with the process-local registry.
+- Implementation: managed overlay writes update the shared admission registry after a successful put; the admin page, protocol encoder, strict typed client, and CLI JSON carry the field.
+- Regression: the authorized runtime response lacked the field before implementation. Storage checks the initial put, replacement, and delete semantics; TCP decoding and saturation coverage verify the projection.
+- Verification: focused runtime/protocol/TCP/saturation checks; workspace build/fmt/Clippy; TinyCC SDK tests and sandbox fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite with zero ignored tests; and `git diff --check` passed.
+- Remaining: other OM-2 counters and registries remain open.

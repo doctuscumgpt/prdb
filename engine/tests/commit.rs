@@ -10494,6 +10494,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert_eq!(first_page.invocations[0].principal_id, admin_id);
     assert_eq!(first_page.invocations[0].staged_rows, 1);
     assert_eq!(first_page.invocations[0].staged_value_bytes, 5);
+    assert_eq!(first_page.invocation_staged_value_bytes_total, 5);
     assert_eq!(first_page.invocations[0].snapshot_pin_count, 1);
     assert_eq!(first_page.pinned_snapshot_count, 2);
     assert!(first_page.oldest_snapshot_pin_age_us > 0);
@@ -10543,6 +10544,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     let replacement_page = storage.list_runtime_invocations(admin_id, now_us, 1, None)?;
     assert_eq!(replacement_page.invocations[0].staged_rows, 1);
     assert_eq!(replacement_page.invocations[0].staged_value_bytes, 3);
+    assert_eq!(replacement_page.invocation_staged_value_bytes_total, 8);
     first.stage_delete(prdb_engine::overlay::RowId {
         table: id(250),
         row: id(251),
@@ -10550,6 +10552,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     let deleted_page = storage.list_runtime_invocations(admin_id, now_us, 1, None)?;
     assert_eq!(deleted_page.invocations[0].staged_rows, 0);
     assert_eq!(deleted_page.invocations[0].staged_value_bytes, 0);
+    assert_eq!(deleted_page.invocation_staged_value_bytes_total, 8);
     assert!(matches!(
         storage.get_administrative_invocation_status(admin_id, id(233), now_us)?,
         Some(snapshot) if matches!(snapshot.status, InvocationStatus::Active { .. })
@@ -11372,6 +11375,10 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert!(
         runtime_page.contains("\"invocation_policy_denials_total\":1"),
         "unexpected policy denial runtime counter: {runtime_page}"
+    );
+    assert!(
+        runtime_page.contains("\"invocation_staged_value_bytes_total\":13"),
+        "unexpected staged value byte runtime counter: {runtime_page}"
     );
     let runtime_cursor = runtime_page
         .split("\"next_cursor\":\"")

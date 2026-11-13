@@ -209,7 +209,7 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
             r#"{"phase":"read","operation_version":1,"operation":"runtime.invocations.list","arguments":{"limit":"1"}}"#
         );
         let first_response = format!(
-            "{{\"observed_at_us\":1000,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"transaction_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"active\",\"workload_class\":\"operational\",\"started_at_us\":900,\"age_us\":100,\"deadline_at_us\":1200,\"staged_rows\":1,\"staged_value_bytes\":12,\"snapshot_pin_count\":1,\"cancellation_requested\":false,\"cancellation_reason_code\":null}}],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":500,\"invocations_admitted_total\":2,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"admin_cancellations_denied_total\":2,\"invocation_policy_denials_total\":3,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":50,\"resource_ids\":[\"{}\"],\"resources_truncated\":false,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":false,\"next_cursor\":\"{server_cursor}\"}}",
+            "{{\"observed_at_us\":1000,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"transaction_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"active\",\"workload_class\":\"operational\",\"started_at_us\":900,\"age_us\":100,\"deadline_at_us\":1200,\"staged_rows\":1,\"staged_value_bytes\":12,\"snapshot_pin_count\":1,\"cancellation_requested\":false,\"cancellation_reason_code\":null}}],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":500,\"invocations_admitted_total\":2,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"admin_cancellations_denied_total\":2,\"invocation_policy_denials_total\":3,\"invocation_staged_value_bytes_total\":32,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":50,\"resource_ids\":[\"{}\"],\"resources_truncated\":false,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":false,\"next_cursor\":\"{server_cursor}\"}}",
             "10".repeat(16),
             "30".repeat(16),
             "20".repeat(16),
@@ -230,7 +230,7 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
             &mut stream,
             &request,
             format!(
-                "{{\"observed_at_us\":1001,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"transaction_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"committing\",\"workload_class\":\"analytical\",\"started_at_us\":901,\"age_us\":100,\"deadline_at_us\":null,\"staged_rows\":2,\"staged_value_bytes\":24,\"snapshot_pin_count\":1,\"cancellation_requested\":true,\"cancellation_reason_code\":7}}],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":600,\"invocations_admitted_total\":2,\"invocation_conflicts_total\":2,\"admin_cancellations_accepted_total\":2,\"admin_cancellations_denied_total\":4,\"invocation_policy_denials_total\":5,\"fence_waits\":[],\"fence_waits_truncated\":false,\"next_cursor\":null}}",
+                "{{\"observed_at_us\":1001,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"transaction_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"committing\",\"workload_class\":\"analytical\",\"started_at_us\":901,\"age_us\":100,\"deadline_at_us\":null,\"staged_rows\":2,\"staged_value_bytes\":24,\"snapshot_pin_count\":1,\"cancellation_requested\":true,\"cancellation_reason_code\":7}}],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":600,\"invocations_admitted_total\":2,\"invocation_conflicts_total\":2,\"admin_cancellations_accepted_total\":2,\"admin_cancellations_denied_total\":4,\"invocation_policy_denials_total\":5,\"invocation_staged_value_bytes_total\":64,\"fence_waits\":[],\"fence_waits_truncated\":false,\"next_cursor\":null}}",
                 "11".repeat(16),
                 "31".repeat(16),
                 "20".repeat(16)
@@ -272,6 +272,7 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
     assert_eq!(first.admin_cancellations_accepted_total, 1);
     assert_eq!(first.admin_cancellations_denied_total, 2);
     assert_eq!(first.invocation_policy_denials_total, 3);
+    assert_eq!(first.invocation_staged_value_bytes_total, 32);
     assert_eq!(first.fence_waits.len(), 1);
     assert_eq!(first.fence_waits[0].wait_id, [0x42; 16]);
     assert_eq!(
@@ -303,6 +304,7 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
     assert_eq!(second.admin_cancellations_accepted_total, 2);
     assert_eq!(second.admin_cancellations_denied_total, 4);
     assert_eq!(second.invocation_policy_denials_total, 5);
+    assert_eq!(second.invocation_staged_value_bytes_total, 64);
     assert!(!second.fence_waits_truncated);
     assert_eq!(
         second.records[0].workload_class,
