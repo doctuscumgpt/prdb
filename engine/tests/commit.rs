@@ -25148,10 +25148,12 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         let observer_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let analytics_result_relayed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let active_operational_transactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peak_active_operational_transactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let active_cancellation_workers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let additional_worker_memory_samples =
             Arc::new(std::sync::Mutex::new(Vec::<(u64, u64)>::with_capacity(7)));
-        let start = Arc::new(std::sync::Barrier::new(12));
+        let start = Arc::new(std::sync::Barrier::new(72));
+        let first_operational_batch = Arc::new(std::sync::Barrier::new(64));
         let (index_build_start_tx, index_build_start_rx) = std::sync::mpsc::channel();
         let (index_build_started_tx, index_build_started_rx) = std::sync::mpsc::channel();
         let index_build_storage = &storage;
@@ -25179,21 +25181,25 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 .map_err(|error| format!("analytical pressure index build failed: {error:?}"))?;
             Ok((started_at, std::time::Instant::now(), created.index_id))
         });
-        let mut operational_workers = Vec::with_capacity(4);
-        for worker_index in 0..4u8 {
+        let mut operational_workers = Vec::with_capacity(64);
+        for worker_index in 0..64u8 {
             let task_done = Arc::clone(&observer_done);
             let task_active_transactions = Arc::clone(&active_operational_transactions);
+            let task_peak_transactions = Arc::clone(&peak_active_operational_transactions);
+            let task_first_batch = Arc::clone(&first_operational_batch);
             let task_start = Arc::clone(&start);
             operational_workers.push(scope.spawn(move || -> Result<_, String> {
                 task_start.wait();
                 let mut active_worker_point_read_latencies = Vec::new();
                 let mut active_worker_commit_latencies = Vec::new();
                 let mut completed = 0;
-                for index in 0..64u8 {
+                let max_operations = if worker_index < 60 { 1 } else { 64 };
+                let min_operations_before_exit = if worker_index < 60 { 1 } else { 16 };
+                for index in 0..max_operations {
                     let mut invocation_id = [0xe0; 16];
                     invocation_id[14] = worker_index;
                     invocation_id[15] = index;
-                    let (mut transaction, _) = operational_storage
+                    let transaction_result = operational_storage
                         .begin_token_authenticated_invocation(
                             invocation_id,
                             token_id,
@@ -25201,9 +25207,21 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                             now + 3_600_000_000,
                             16,
                             4096,
-                        )
+                        );
+                    if transaction_result.is_ok() {
+                        let active = task_active_transactions
+                            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+                            + 1;
+                        task_peak_transactions
+                            .fetch_max(active, std::sync::atomic::Ordering::AcqRel);
+                    }
+                    if index == 0 {
+                        // Keep the first 64 admitted invocation contexts live together before
+                        // any of them reaches its first read or durable commit.
+                        task_first_batch.wait();
+                    }
+                    let (mut transaction, _) = transaction_result
                         .map_err(|error| format!("operational admission: {error:?}"))?;
-                    task_active_transactions.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                     let operation_result = (|| {
                         let point_read_started = std::time::Instant::now();
                         let point_read = transaction
@@ -25249,7 +25267,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                         active_worker_commit_latencies.push(commit_latency);
                     }
                     completed += 1;
-                    if completed >= 16 && task_done.load(std::sync::atomic::Ordering::Acquire) {
+                    if completed >= min_operations_before_exit
+                        && task_done.load(std::sync::atomic::Ordering::Acquire)
+                    {
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(5));
@@ -25767,6 +25787,14 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             operational_count += completed;
             active_worker_point_read_latencies.extend(point_read_latencies);
             active_worker_commit_latencies.extend(commit_latencies);
+        }
+        let peak_active_operational_transactions =
+            peak_active_operational_transactions.load(std::sync::atomic::Ordering::Acquire);
+        if peak_active_operational_transactions < 64 {
+            return Err(format!(
+                "only {peak_active_operational_transactions} operational transactions were simultaneously admitted; expected 64"
+            )
+            .into());
         }
         Ok::<_, Box<dyn std::error::Error>>((
             worker_status_result,
