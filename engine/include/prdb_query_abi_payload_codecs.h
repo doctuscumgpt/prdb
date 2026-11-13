@@ -1969,6 +1969,30 @@ static inline int prdb_decode_index_range_response_rows_record(const uint8_t *pa
     return 1;
 }
 
+static inline void prdb_encode_index_range_response_row_record(uint8_t payload[2],
+    uint16_t cell_count) {
+    uint64_t cell_count_wire = (uint64_t)cell_count;
+    for (size_t i = 0; i < 2; ++i) {
+        payload[0 + i] = (uint8_t)(cell_count_wire >> ((2 - 1 - i) * 8));
+    }
+}
+
+static inline int prdb_decode_index_range_response_row_record(const uint8_t *payload, size_t payload_len,
+    uint16_t *cell_count) {
+    if (payload == NULL || payload_len != 2) {
+        return 0;
+    }
+    if (cell_count == NULL) {
+        return 0;
+    }
+    uint64_t cell_count_wire_value = 0;
+    for (size_t i = 0; i < 2; ++i) {
+        cell_count_wire_value = (cell_count_wire_value << 8) | payload[0 + i];
+    }
+    *cell_count = (uint16_t)cell_count_wire_value;
+    return 1;
+}
+
 static inline void prdb_encode_sanitized_cell_tag_record(uint8_t payload[1],
     uint8_t state_code) {
     payload[0] = state_code;

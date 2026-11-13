@@ -298,10 +298,15 @@ int32_t prdb_sdk_index_range_open_v1(
     for (uint16_t row_index = 0; row_index < row_count; ++row_index) {
         const uint8_t *count_bytes;
         uint16_t cell_count;
-        if (!take(payload, payload_len, &offset, 2, &count_bytes)) {
+        if (!take(payload, payload_len, &offset,
+                  PRDB_INDEX_RANGE_RESPONSE_ROW_RECORD_HEADER_BYTES,
+                  &count_bytes) ||
+            !prdb_decode_index_range_response_row_record(
+                count_bytes,
+                PRDB_INDEX_RANGE_RESPONSE_ROW_RECORD_HEADER_BYTES,
+                &cell_count)) {
             return PRDB_SDK_BATCH_INVALID_PAYLOAD;
         }
-        cell_count = read_u16(count_bytes, 0);
         if (cell_count > PRDB_SDK_BATCH_MAX_CELLS_PER_ROW) {
             return PRDB_SDK_BATCH_INVALID_PAYLOAD;
         }
@@ -318,7 +323,7 @@ int32_t prdb_sdk_index_range_open_v1(
     out->abi_version = PRDB_SDK_BATCH_ABI_V1_VERSION;
     out->payload = payload;
     out->payload_len = payload_len;
-    out->rows_offset = 4;
+    out->rows_offset = PRDB_INDEX_RANGE_RESPONSE_ROWS_RECORD_HEADER_BYTES;
     out->row_count = row_count;
     return PRDB_SDK_BATCH_OK;
 }
@@ -358,11 +363,14 @@ int32_t prdb_sdk_index_range_row_next_v1(
     if (range->struct_size < sizeof(*range) ||
         range->abi_version != PRDB_SDK_BATCH_ABI_V1_VERSION ||
         range->payload == NULL ||
-        !take(range->payload, range->payload_len, &iterator->offset, 2,
-              &count_bytes)) {
+        !take(range->payload, range->payload_len, &iterator->offset,
+              PRDB_INDEX_RANGE_RESPONSE_ROW_RECORD_HEADER_BYTES,
+              &count_bytes) ||
+        !prdb_decode_index_range_response_row_record(
+            count_bytes, PRDB_INDEX_RANGE_RESPONSE_ROW_RECORD_HEADER_BYTES,
+            &cell_count)) {
         return PRDB_SDK_BATCH_INVALID_PAYLOAD;
     }
-    cell_count = read_u16(count_bytes, 0);
     if (cell_count > PRDB_SDK_BATCH_MAX_CELLS_PER_ROW) {
         return PRDB_SDK_BATCH_INVALID_PAYLOAD;
     }

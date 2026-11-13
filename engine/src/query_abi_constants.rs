@@ -1193,6 +1193,21 @@ pub fn decode_index_range_response_rows_record(payload: &[u8]) -> Option<(u8, u8
     Some((payload[0], payload[1], u16::from_be_bytes(payload[2..4].try_into().ok()?)))
 }
 
+pub const INDEX_RANGE_RESPONSE_ROW_RECORD_CELL_COUNT_OFFSET: u32 = 0;
+pub const INDEX_RANGE_RESPONSE_ROW_RECORD_HEADER_BYTES: u32 = 2;
+pub fn encode_index_range_response_row_record(cell_count: u16) -> [u8; 2] {
+    let mut payload = [0u8; 2];
+    payload[0..2].copy_from_slice(&cell_count.to_be_bytes());
+    payload
+}
+
+pub fn decode_index_range_response_row_record(payload: &[u8]) -> Option<u16> {
+    if payload.len() != 2 {
+        return None;
+    }
+    Some(u16::from_be_bytes(payload[0..2].try_into().ok()?))
+}
+
 pub const SANITIZED_CELL_TAG_RECORD_STATE_CODE_OFFSET: u32 = 0;
 pub const SANITIZED_CELL_TAG_RECORD_HEADER_BYTES: u32 = 1;
 pub fn encode_sanitized_cell_tag_record(state_code: u8) -> [u8; 1] {

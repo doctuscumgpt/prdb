@@ -569,7 +569,7 @@ impl ScanIndexRangeResponse {
             }
             let count =
                 u16::try_from(row.len()).map_err(|_| ExecutorRequestError::InvalidPayload)?;
-            payload.extend_from_slice(&count.to_be_bytes());
+            payload.extend_from_slice(&generated::encode_index_range_response_row_record(count));
             for cell in row {
                 if encode_sanitized_cell(&mut payload, cell, crate::ipc::MAX_PAYLOAD_BYTES).is_err()
                 {
@@ -610,16 +610,16 @@ impl ScanIndexRangeResponse {
         let mut rows = Vec::with_capacity(row_count);
         for _ in 0..row_count {
             let count_end = offset
-                .checked_add(2)
+                .checked_add(generated::INDEX_RANGE_RESPONSE_ROW_RECORD_HEADER_BYTES as usize)
                 .ok_or(ExecutorRequestError::InvalidPayload)?;
-            let count_bytes = payload
-                .get(offset..count_end)
-                .ok_or(ExecutorRequestError::InvalidPayload)?;
-            let cell_count = usize::from(u16::from_be_bytes(
-                count_bytes
-                    .try_into()
-                    .map_err(|_| ExecutorRequestError::InvalidPayload)?,
-            ));
+            let cell_count = usize::from(
+                generated::decode_index_range_response_row_record(
+                    payload
+                        .get(offset..count_end)
+                        .ok_or(ExecutorRequestError::InvalidPayload)?,
+                )
+                .ok_or(ExecutorRequestError::InvalidPayload)?,
+            );
             offset = count_end;
             if cell_count > crate::tuple::MAX_COLUMNS {
                 return Err(ExecutorRequestError::InvalidPayload);
@@ -1895,6 +1895,7 @@ mod cancellation_response_tests {
         ]]);
         let encoded = response.encode().unwrap();
         assert_eq!(&encoded[..4], &[1, 1, 0, 1]);
+        assert_eq!(&encoded[4..6], &[0, 2]);
         assert_eq!(ScanIndexRangeResponse::decode(&encoded).unwrap(), response);
         let unavailable = ScanIndexRangeResponse::Unavailable.encode().unwrap();
         assert_eq!(unavailable, [1, 0]);

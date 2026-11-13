@@ -1,5 +1,13 @@
 # Internal IPC Progress
 
+## IPC-2 follow-up: generated index-range row cell-count record — implemented
+
+- Contract: every range result row begins with the existing big-endian `u16` cell count before its sanitized cell records.
+- Red evidence: the shared-schema generator regression failed because no Rust/C `INDEX_RANGE_RESPONSE_ROW_RECORD` codec existed.
+- Implementation: added the two-byte shared record and migrated Rust response encoding/decoding plus both TinyCC row-count parsing paths to its generated helpers. Added exact-byte coverage for the row cell count.
+- Verification: generator tests and drift check, focused Rust codec regression, maintained TinyCC SDK tests, sandbox query fixture, locked workspace build, formatting check, warning-denied Clippy, full serial delegated-cgroup workspace suite (zero ignored tests), and `git diff --check` passed.
+- Remaining: SDK consumption, optimizer selection, end-to-end optimized/reference result and error equivalence, and broader malformed process-level IPC coverage remain open.
+
 ## IPC-2 follow-up: generated index-range response headers — implemented
 
 - Contract: `0x1115` returns either the exact v1 unavailable record `{version:u8=1,status:u8=0}` or the rows prefix `{version:u8=1,status:u8=1,row_count:u16be}` followed by sanitized rows.

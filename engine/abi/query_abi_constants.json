@@ -2086,6 +2086,15 @@
       "trailing_fields": []
     },
     {
+      "name": "INDEX_RANGE_RESPONSE_ROW_RECORD",
+      "generate_rust_codec": true,
+      "generate_c_codec": true,
+      "fields": [
+        { "name": "cell_count", "encoding": "u16be" }
+      ],
+      "trailing_fields": []
+    },
+    {
       "name": "SANITIZED_CELL_TAG_RECORD",
       "generate_rust_codec": true,
       "generate_c_codec": true,
