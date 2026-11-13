@@ -65,6 +65,8 @@ pub const MAX_DISCOVERED_CONSTRAINTS: usize = 4096;
 const MAX_DISCOVERED_CONSTRAINT_BYTES: usize = 1024 * 1024;
 pub const MAX_DISCOVERED_GRANTS: usize = 4096;
 const MAX_DISCOVERED_GRANT_BYTES: usize = 1024 * 1024;
+pub const MAX_DISCOVERED_POLICIES: usize = 4096;
+const MAX_DISCOVERED_POLICY_BYTES: usize = 1024 * 1024;
 static TOKEN_REQUEST_LIMITERS: OnceLock<Mutex<HashMap<usize, Weak<TokenRequestLimiter>>>> =
     OnceLock::new();
 static ADMIN_CANCELLATION_LIMITERS: OnceLock<Mutex<HashMap<usize, Weak<TokenRequestLimiter>>>> =
@@ -2766,6 +2768,56 @@ impl<'db> StorageManager<'db> {
             return Err(TransactionError::InvalidMetadataRequest);
         }
         Ok(Some(grants))
+    }
+
+    /// List secret-free policy summaries when the authenticated principal has
+    /// current schema-owner/database-administrator authority.
+    pub fn discover_token_administrative_policies(
+        &self,
+        token_id: [u8; 16],
+        token_secret: &[u8; TOKEN_SECRET_BYTES],
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+    ) -> Result<Option<Vec<crate::metadata_discovery::AdministrativePolicy>>, TransactionError>
+    {
+        let principal_id = lookup_credential_principal(self.database, token_id)?;
+        let mut invocation_id = [0; 16];
+        getrandom::fill(&mut invocation_id)
+            .map_err(|_| TransactionError::Storage("randomness unavailable".into()))?;
+        if invocation_id == [0; 16] {
+            return Err(TransactionError::Storage("randomness unavailable".into()));
+        }
+        let mut transaction = InvocationTransaction::begin_inner(
+            self.database,
+            InvocationCoordination::uncoordinated(),
+            invocation_id,
+            principal_id,
+            i64::MAX,
+            1,
+            1,
+        )?;
+        let now_us = now_unix_micros().ok_or(TransactionError::ClockUnavailable)?;
+        transaction.authenticate_credential_token(token_id, token_secret, now_us)?;
+        let Some(policies) =
+            transaction.list_catalog_administrative_policies(schema_id, relation_id)?
+        else {
+            return Ok(None);
+        };
+        let encoded_bytes = policies.iter().fold(0usize, |total, policy| {
+            total
+                .saturating_add(33)
+                .saturating_add(policy.column_ids.len().saturating_mul(16))
+                .saturating_add(
+                    policy
+                        .recipients
+                        .as_ref()
+                        .map_or(1, |recipients| recipients.len().saturating_mul(21)),
+                )
+        });
+        if policies.len() > MAX_DISCOVERED_POLICIES || encoded_bytes > MAX_DISCOVERED_POLICY_BYTES {
+            return Err(TransactionError::InvalidMetadataRequest);
+        }
+        Ok(Some(policies))
     }
 
     /// Refresh the current login and role closure before a new execution or

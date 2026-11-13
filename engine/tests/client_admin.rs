@@ -303,6 +303,58 @@ fn admin_client_lists_direct_table_grants_with_provenance() {
 }
 
 #[test]
+fn admin_client_lists_secret_free_policy_summaries() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(request.kind, 10);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            r#"{"phase":"read","operation_version":1,"operation":"metadata.policies.list","arguments":{"schema_id":"11111111111111111111111111111111","table_id":"22222222222222222222222222222222","limit":"4"}}"#
+        );
+        respond(
+            &mut stream,
+            &request,
+            br#"{"policies":[{"policy_id":"33333333333333333333333333333333","kind":"row","operation":"select","effect":"allow","column_ids":[],"recipients":[{"kind":"user","principal_id":"44444444444444444444444444444444"}]}],"next_cursor":null}"#,
+        );
+    });
+
+    let mut secret = [7; 32];
+    let mut client = AdminClient::connect_authenticated(address, [1; 16], &mut secret).unwrap();
+    let page = client
+        .list_policies_page([0x11; 16], [0x22; 16], 4, None)
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+    let policy = &page.records[0];
+    assert_eq!(policy.policy_id, [0x33; 16]);
+    assert_eq!(
+        policy.kind,
+        prdb_engine::metadata_discovery::AdministrativePolicyKind::Row
+    );
+    assert_eq!(
+        policy.operation,
+        prdb_engine::metadata_discovery::AdministrativePolicyOperation::Select
+    );
+    assert_eq!(
+        policy.effect,
+        prdb_engine::metadata_discovery::AdministrativePolicyEffect::Allow
+    );
+    assert!(policy.column_ids.is_empty());
+    let recipients = policy.recipients.as_ref().unwrap();
+    assert_eq!(recipients.len(), 1);
+    assert_eq!(
+        recipients[0].kind,
+        prdb_engine::metadata_discovery::AdministrativePolicyRecipientKind::User
+    );
+    assert_eq!(recipients[0].principal_id, [0x44; 16]);
+    server.join().unwrap();
+}
+
+#[test]
 fn submission_client_decodes_cancellation_acknowledgements() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

@@ -359,6 +359,10 @@ enum MetadataPageQuery {
         schema_id: [u8; 16],
         relation_id: [u8; 16],
     },
+    Policies {
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -369,6 +373,7 @@ enum MetadataPageRows {
     Indexes(Vec<crate::metadata_discovery::AdministrativeIndex>),
     Constraints(Vec<crate::metadata_discovery::AdministrativeConstraint>),
     Grants(Vec<crate::metadata_discovery::AdministrativeGrant>),
+    Policies(Vec<crate::metadata_discovery::AdministrativePolicy>),
 }
 
 impl MetadataPageRows {
@@ -380,6 +385,7 @@ impl MetadataPageRows {
             Self::Indexes(rows) => rows.len(),
             Self::Constraints(rows) => rows.len(),
             Self::Grants(rows) => rows.len(),
+            Self::Policies(rows) => rows.len(),
         }
     }
 
@@ -403,6 +409,7 @@ impl MetadataPageRows {
                 .eq(right.iter().map(|index| index.index_id)),
             (Self::Constraints(left), Self::Constraints(right)) => left == right,
             (Self::Grants(left), Self::Grants(right)) => left == right,
+            (Self::Policies(left), Self::Policies(right)) => left == right,
             _ => false,
         }
     }
@@ -467,6 +474,12 @@ pub enum ClientAdminRead {
         page_limit: usize,
         cursor: Option<[u8; 16]>,
     },
+    ListPoliciesPage {
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<[u8; 16]>,
+    },
     ListTokens {
         user_id: [u8; 16],
         after_token_id: Option<[u8; 16]>,
@@ -511,6 +524,12 @@ pub enum ClientAdminCommand {
         cursor: Option<[u8; 16]>,
     },
     ListGrantsPage {
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<[u8; 16]>,
+    },
+    ListPoliciesPage {
         schema_id: [u8; 16],
         relation_id: [u8; 16],
         page_limit: usize,
@@ -751,6 +770,17 @@ pub fn decode_client_admin_read(payload: &[u8]) -> Result<ClientAdminRead, Clien
             page_limit,
             cursor,
         } => Ok(ClientAdminRead::ListGrantsPage {
+            schema_id,
+            relation_id,
+            page_limit,
+            cursor,
+        }),
+        ClientAdminCommand::ListPoliciesPage {
+            schema_id,
+            relation_id,
+            page_limit,
+            cursor,
+        } => Ok(ClientAdminRead::ListPoliciesPage {
             schema_id,
             relation_id,
             page_limit,
@@ -1060,6 +1090,35 @@ pub fn decode_client_admin_command(
                 return Err(ClientControlError::UnknownKey);
             }
             Ok(ClientAdminCommand::ListGrantsPage {
+                schema_id,
+                relation_id,
+                page_limit: pagination.page_limit,
+                cursor: pagination.cursor,
+            })
+        }
+        Some("read")
+            if version == Some(1) && operation.as_deref() == Some("metadata.policies.list") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let schema_id = decode_lower_hex_id(
+                &args
+                    .remove("schema_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let relation_id = decode_lower_hex_id(
+                &args
+                    .remove("table_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let pagination =
+                decode_metadata_pagination(&mut args)?.ok_or(ClientControlError::MissingKey)?;
+            if !args.is_empty() {
+                return Err(ClientControlError::UnknownKey);
+            }
+            Ok(ClientAdminCommand::ListPoliciesPage {
                 schema_id,
                 relation_id,
                 page_limit: pagination.page_limit,
@@ -3772,6 +3831,21 @@ impl ClientConnectionSession {
                 page_limit,
                 cursor,
             ),
+            ClientAdminCommand::ListPoliciesPage {
+                schema_id,
+                relation_id,
+                page_limit,
+                cursor,
+            } => self.handle_metadata_discovery_page(
+                storage,
+                request.request_id,
+                MetadataPageQuery::Policies {
+                    schema_id,
+                    relation_id,
+                },
+                page_limit,
+                cursor,
+            ),
             ClientAdminCommand::ListTokens {
                 user_id,
                 after_token_id,
@@ -6379,6 +6453,20 @@ impl ClientConnectionSession {
                         .map_err(ClientSessionError::Storage)?
                         .unwrap_or_default(),
                 ),
+                MetadataPageQuery::Policies {
+                    schema_id,
+                    relation_id,
+                } => MetadataPageRows::Policies(
+                    storage
+                        .discover_token_administrative_policies(
+                            token_id,
+                            &secret,
+                            *schema_id,
+                            *relation_id,
+                        )
+                        .map_err(ClientSessionError::Storage)?
+                        .unwrap_or_default(),
+                ),
             };
             if !current_snapshot
                 .is_some_and(|snapshot| snapshot.rows.has_same_object_ids(&current_rows))
@@ -6455,6 +6543,20 @@ impl ClientConnectionSession {
                 } => MetadataPageRows::Grants(
                     storage
                         .discover_token_administrative_grants(
+                            token_id,
+                            &secret,
+                            *schema_id,
+                            *relation_id,
+                        )
+                        .map_err(ClientSessionError::Storage)?
+                        .unwrap_or_default(),
+                ),
+                MetadataPageQuery::Policies {
+                    schema_id,
+                    relation_id,
+                } => MetadataPageRows::Policies(
+                    storage
+                        .discover_token_administrative_policies(
                             token_id,
                             &secret,
                             *schema_id,
@@ -6954,6 +7056,7 @@ fn encode_metadata_page(
         MetadataPageQuery::Indexes { .. } => String::from("{\"indexes\":["),
         MetadataPageQuery::Constraints { .. } => String::from("{\"constraints\":["),
         MetadataPageQuery::Grants { .. } => String::from("{\"grants\":["),
+        MetadataPageQuery::Policies { .. } => String::from("{\"policies\":["),
     };
     for index in start..end {
         if index != start {
@@ -7057,6 +7160,62 @@ fn encode_metadata_page(
                 output.push_str("\",\"target_id\":\"");
                 output.push_str(&encode_lower_hex_id(row.target_id));
                 output.push_str("\"}");
+            }
+            (MetadataPageQuery::Policies { .. }, MetadataPageRows::Policies(rows)) => {
+                let row = rows.get(index).ok_or(ClientSessionError::ResourceLimit)?;
+                output.push_str("{\"policy_id\":\"");
+                output.push_str(&encode_lower_hex_id(row.policy_id));
+                output.push_str("\",\"kind\":\"");
+                output.push_str(match row.kind {
+                    crate::metadata_discovery::AdministrativePolicyKind::Row => "row",
+                    crate::metadata_discovery::AdministrativePolicyKind::Cell => "cell",
+                });
+                output.push_str("\",\"operation\":\"");
+                output.push_str(match row.operation {
+                    crate::metadata_discovery::AdministrativePolicyOperation::Select => "select",
+                    crate::metadata_discovery::AdministrativePolicyOperation::Insert => "insert",
+                    crate::metadata_discovery::AdministrativePolicyOperation::Update => "update",
+                    crate::metadata_discovery::AdministrativePolicyOperation::Delete => "delete",
+                });
+                output.push_str("\",\"effect\":\"");
+                output.push_str(match row.effect {
+                    crate::metadata_discovery::AdministrativePolicyEffect::Allow => "allow",
+                    crate::metadata_discovery::AdministrativePolicyEffect::Restrict => "restrict",
+                });
+                output.push_str("\",\"column_ids\":[");
+                for (column_index, column_id) in row.column_ids.iter().enumerate() {
+                    if column_index != 0 {
+                        output.push(',');
+                    }
+                    output.push('"');
+                    output.push_str(&encode_lower_hex_id(*column_id));
+                    output.push('"');
+                }
+                output.push_str("],\"recipients\":");
+                if let Some(recipients) = &row.recipients {
+                    output.push('[');
+                    for (recipient_index, recipient) in recipients.iter().enumerate() {
+                        if recipient_index != 0 {
+                            output.push(',');
+                        }
+                        output.push_str("{\"kind\":\"");
+                        output.push_str(match recipient.kind {
+                            crate::metadata_discovery::AdministrativePolicyRecipientKind::User => {
+                                "user"
+                            }
+                            crate::metadata_discovery::AdministrativePolicyRecipientKind::Role => {
+                                "role"
+                            }
+                        });
+                        output.push_str("\",\"principal_id\":\"");
+                        output.push_str(&encode_lower_hex_id(recipient.principal_id));
+                        output.push_str("\"}");
+                    }
+                    output.push(']');
+                } else {
+                    output.push_str("null");
+                }
+                output.push('}');
             }
             _ => return Err(ClientSessionError::ResourceLimit),
         }

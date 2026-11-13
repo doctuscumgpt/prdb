@@ -813,6 +813,12 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             .records
             .is_empty()
     );
+    assert!(
+        restricted_admin
+            .list_policies_page(restricted_schema_id, restricted_table_id, 128, None)?
+            .records
+            .is_empty()
+    );
     drop(restricted_admin);
 
     let admin_cancel_credentials_path = root.join("admin-cancel.cred");
@@ -1790,6 +1796,79 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         ))),
         with_check_expression: None,
     })?;
+    let listed_policies = admin.list_policies_page(
+        created_schema.identity_id,
+        created_table.table_id,
+        128,
+        None,
+    )?;
+    let listed_policy = listed_policies
+        .records
+        .iter()
+        .find(|listed| listed.policy_id == policy.policy_id)
+        .ok_or("administrative policy page omitted the created policy")?;
+    assert_eq!(
+        listed_policy.kind,
+        prdb_engine::metadata_discovery::AdministrativePolicyKind::Row
+    );
+    assert_eq!(
+        listed_policy.operation,
+        prdb_engine::metadata_discovery::AdministrativePolicyOperation::Select
+    );
+    assert_eq!(
+        listed_policy.effect,
+        prdb_engine::metadata_discovery::AdministrativePolicyEffect::Allow
+    );
+    assert!(listed_policy.column_ids.is_empty());
+    assert_eq!(
+        listed_policy
+            .recipients
+            .as_ref()
+            .and_then(|recipients| recipients.first())
+            .map(|recipient| recipient.principal_id),
+        Some(admin_user_id)
+    );
+
+    let schema_owner_policy = admin.create_policy(AdminCreatePolicyRequest {
+        table_id: redacted_source_table.table_id,
+        name: "schema_owner_policy_summary",
+        kind: AdminPolicyKind::Row,
+        operation: AdminPolicyOperation::Select,
+        effect: AdminPolicyEffect::Allow,
+        recipients: &[AdminPolicyRecipient::User(admin_user_id)],
+        target_column_ids: &[],
+        using_expression: Some(&prdb_engine::authorization::Expr::Literal(Some(
+            prdb_engine::tuple::ScalarValue::Boolean(true),
+        ))),
+        with_check_expression: None,
+    })?;
+    admin.set_schema_owner(
+        redacted_source_schema.identity_id,
+        transfer_owner.identity_id,
+    )?;
+    let owner_policy_credentials = read_client_credentials(&transfer_credential_path)?;
+    let mut owner_policy_secret = owner_policy_credentials.token_secret;
+    let mut owner_policy_client = AdminClient::connect_authenticated(
+        address,
+        owner_policy_credentials.token_id,
+        &mut owner_policy_secret,
+    )?;
+    drop(owner_policy_credentials);
+    let owner_policies = owner_policy_client.list_policies_page(
+        redacted_source_schema.identity_id,
+        redacted_source_table.table_id,
+        128,
+        None,
+    )?;
+    let owner_policy = owner_policies
+        .records
+        .iter()
+        .find(|listed| listed.policy_id == schema_owner_policy.policy_id)
+        .ok_or("schema-owner policy page omitted the created policy")?;
+    assert!(owner_policy.recipients.is_none());
+    drop(owner_policy_client);
+    admin.set_schema_owner(redacted_source_schema.identity_id, admin_user_id)?;
+    admin.drop_policy(schema_owner_policy.policy_id)?;
     let dropped_policy = admin.drop_policy(policy.policy_id)?;
     assert!(dropped_policy.commit_sequence > policy.commit_sequence);
     let cli_policy_true = prdb_engine::authorization::Expr::Literal(Some(

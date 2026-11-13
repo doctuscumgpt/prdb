@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SDK-9: administrative policy summaries — verified
+
+- Contract: [client protocol](../../specs/client-protocol.md), [client SDK](../../specs/client-sdk.md), and [metadata discovery](../../specs/metadata-discovery.md). Policy expression IDs and bodies remain private; schema owners receive no recipient IDs when principal endpoints may be hidden.
+- Implementation: `metadata.policies.list` validates the current administrative schema authority, table policy index, policy records, expression bindings, and target records in one request snapshot. Database administrators receive recipient IDs; schema owners receive `null`. The client validates the typed policy shape and page order.
+- Regression: fake-client exact request/typed response coverage and a production gateway/supervisor process test verify administrator recipient visibility, schema-owner redaction, and hidden-table empty results.
+- Verification: focused fake-client and production gateway/supervisor process tests passed. The full serial workspace suite passed inside the delegated `systemd --user` service with sandbox/process tests enabled and zero ignored. Workspace build, rustfmt check, warning-denied Clippy, and diff checks passed.
+- Remaining: privileged dependency descriptions remain open under MD-6.
+
 ## SDK-8: administrative direct grant description — verified
 
 - Contract: [client protocol](../../specs/client-protocol.md), [client SDK](../../specs/client-sdk.md), and [metadata discovery](../../specs/metadata-discovery.md). Direct table and column grants are visible only to a current schema owner or database administrator; output retains grantee/grantor IDs and does not expand roles.

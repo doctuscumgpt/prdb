@@ -182,6 +182,50 @@ pub struct AdministrativeGrant {
     pub target_id: [u8; 16],
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdministrativePolicyKind {
+    Row,
+    Cell,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdministrativePolicyOperation {
+    Select,
+    Insert,
+    Update,
+    Delete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdministrativePolicyEffect {
+    Allow,
+    Restrict,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdministrativePolicyRecipientKind {
+    User,
+    Role,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdministrativePolicyRecipient {
+    pub kind: AdministrativePolicyRecipientKind,
+    pub principal_id: [u8; 16],
+}
+
+/// Secret-free administrative policy summary. Recipient IDs are `None` for
+/// schema owners because those principal endpoints may be outside their scope.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdministrativePolicy {
+    pub policy_id: [u8; 16],
+    pub kind: AdministrativePolicyKind,
+    pub operation: AdministrativePolicyOperation,
+    pub effect: AdministrativePolicyEffect,
+    pub column_ids: Vec<[u8; 16]>,
+    pub recipients: Option<Vec<AdministrativePolicyRecipient>>,
+}
+
 /// The declared column shape of one discoverable relation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VisibleRelationSchema {

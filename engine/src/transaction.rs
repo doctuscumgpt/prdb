@@ -3717,6 +3717,215 @@ impl<'db> InvocationTransaction<'db> {
         Ok(Some(descriptions))
     }
 
+    /// Return secret-free policy summaries for a table under current schema
+    /// owner/database-administrator authority. Only database administrators
+    /// receive policy recipient IDs; expression bodies and IDs are omitted.
+    pub(crate) fn list_catalog_administrative_policies(
+        &mut self,
+        schema_id: [u8; 16],
+        relation_id: [u8; 16],
+    ) -> Result<Option<Vec<crate::metadata_discovery::AdministrativePolicy>>, TransactionError>
+    {
+        let roles = self.load_catalog_role_closure(self.principal_id)?;
+        if !self.has_schema_metadata_authority(schema_id, &roles)? {
+            return Ok(None);
+        }
+        let table_key = catalog_id_key(5, relation_id);
+        let Some(table) = self.read_catalog_record(&table_key)? else {
+            return Ok(None);
+        };
+        if table.family_code != 5 || catalog_id(&table, 1)? != schema_id {
+            return Ok(None);
+        }
+        self.read_discovery_relation(schema_id, relation_id)?;
+        let schema = self.load_catalog_table_schema(relation_id)?;
+        let is_database_admin = roles.contains(&crate::bootstrap::database_admin_role_id());
+        let policy_ids = self.scan_policy_ids_for_table(relation_id)?;
+        let records = if policy_ids.is_empty() {
+            self.scan_catalog_family(13)?
+        } else {
+            policy_ids
+                .into_iter()
+                .map(|policy_id| {
+                    self.read_catalog_record(&catalog_id_key(13, policy_id))?
+                        .ok_or(TransactionError::CorruptCatalog)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let boolean_type_id = self.load_catalog_builtin_type_id(1)?;
+        let mut descriptions = Vec::new();
+        let mut encoded_bytes = 0usize;
+        for record in records {
+            if record.family_code != 13 || record.logical_key.len() != 19 {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            if catalog_id(&record, 1)? != relation_id {
+                continue;
+            }
+            let policy_id: [u8; 16] = record.logical_key[3..19]
+                .try_into()
+                .map_err(|_| TransactionError::CorruptCatalog)?;
+            if policy_id == [0; 16] || catalog_u64(&record, 7)? == 0 {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            let kind = match catalog_u16(&record, 2)? {
+                1 => crate::metadata_discovery::AdministrativePolicyKind::Row,
+                2 => crate::metadata_discovery::AdministrativePolicyKind::Cell,
+                _ => return Err(TransactionError::CorruptCatalog),
+            };
+            let operation = match catalog_u16(&record, 3)? {
+                1 => crate::metadata_discovery::AdministrativePolicyOperation::Select,
+                2 => crate::metadata_discovery::AdministrativePolicyOperation::Insert,
+                3 => crate::metadata_discovery::AdministrativePolicyOperation::Update,
+                4 => crate::metadata_discovery::AdministrativePolicyOperation::Delete,
+                _ => return Err(TransactionError::CorruptCatalog),
+            };
+            let effect = match catalog_u16(&record, 4)? {
+                1 => crate::metadata_discovery::AdministrativePolicyEffect::Allow,
+                2 => crate::metadata_discovery::AdministrativePolicyEffect::Restrict,
+                _ => return Err(TransactionError::CorruptCatalog),
+            };
+            if kind == crate::metadata_discovery::AdministrativePolicyKind::Cell
+                && operation == crate::metadata_discovery::AdministrativePolicyOperation::Delete
+            {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            let using_id = catalog_optional_id(&record, 5)?;
+            let check_id = catalog_optional_id(&record, 6)?;
+            match operation {
+                crate::metadata_discovery::AdministrativePolicyOperation::Select
+                | crate::metadata_discovery::AdministrativePolicyOperation::Delete
+                    if using_id.is_some() && check_id.is_none() => {}
+                crate::metadata_discovery::AdministrativePolicyOperation::Insert
+                    if using_id.is_none() && check_id.is_some() => {}
+                crate::metadata_discovery::AdministrativePolicyOperation::Update
+                    if using_id.is_some() && check_id.is_some() => {}
+                _ => return Err(TransactionError::CorruptCatalog),
+            }
+            if let Some(expression_id) = using_id {
+                self.read_bound_policy_expression(
+                    expression_id,
+                    ExpressionPurpose::PolicyUsing,
+                    &schema,
+                    boolean_type_id,
+                )?;
+            }
+            if let Some(expression_id) = check_id {
+                self.read_bound_policy_expression(
+                    expression_id,
+                    ExpressionPurpose::PolicyCheck,
+                    &schema,
+                    boolean_type_id,
+                )?;
+            }
+
+            let target_records = self.scan_policy_targets_for_policy(policy_id)?;
+            let mut recipients = Vec::new();
+            let mut column_ids = Vec::new();
+            let mut has_recipient = false;
+            for target_record in target_records {
+                let key = &target_record.logical_key;
+                if target_record.family_code != 14
+                    || key.len() != 39
+                    || key[0..2] != 14u16.to_be_bytes()
+                    || key[2] != 1
+                    || key[3..19] != policy_id
+                    || key[19] != 1
+                    || key[22] != 1
+                {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                let target_kind = u16::from_be_bytes([key[20], key[21]]);
+                let target_id: [u8; 16] = key[23..39]
+                    .try_into()
+                    .map_err(|_| TransactionError::CorruptCatalog)?;
+                if target_id == [0; 16] {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                match target_kind {
+                    1 | 2 => {
+                        has_recipient = true;
+                        let principal = self
+                            .read_catalog_record(&catalog_id_key(10, target_id))?
+                            .ok_or(TransactionError::CorruptCatalog)?;
+                        let expected_kind = if target_kind == 1 { 1 } else { 2 };
+                        let login_enabled = catalog_field(&principal, 3)?;
+                        if principal.family_code != 10
+                            || catalog_u16(&principal, 1)? != expected_kind
+                            || catalog_u64(&principal, 4)? == 0
+                            || !matches!(login_enabled, [0] | [1])
+                            || (expected_kind == 2 && login_enabled != [0])
+                        {
+                            return Err(TransactionError::CorruptCatalog);
+                        }
+                        if is_database_admin {
+                            recipients.push(
+                                crate::metadata_discovery::AdministrativePolicyRecipient {
+                                    kind: if target_kind == 1 {
+                                        crate::metadata_discovery::AdministrativePolicyRecipientKind::User
+                                    } else {
+                                        crate::metadata_discovery::AdministrativePolicyRecipientKind::Role
+                                    },
+                                    principal_id: target_id,
+                                },
+                            );
+                        }
+                    }
+                    3 => {
+                        if kind != crate::metadata_discovery::AdministrativePolicyKind::Cell
+                            || operation
+                                == crate::metadata_discovery::AdministrativePolicyOperation::Delete
+                            || !schema.column_ids.contains(&target_id)
+                        {
+                            return Err(TransactionError::CorruptCatalog);
+                        }
+                        let column = self
+                            .read_catalog_record(&catalog_id_key(6, target_id))?
+                            .ok_or(TransactionError::CorruptCatalog)?;
+                        if catalog_id(&column, 1)? != relation_id {
+                            return Err(TransactionError::CorruptCatalog);
+                        }
+                        column_ids.push(target_id);
+                    }
+                    _ => return Err(TransactionError::CorruptCatalog),
+                }
+            }
+            if !has_recipient
+                || recipients.is_empty() && is_database_admin
+                || column_ids.is_empty()
+                    && kind == crate::metadata_discovery::AdministrativePolicyKind::Cell
+                || !column_ids.is_empty()
+                    && kind == crate::metadata_discovery::AdministrativePolicyKind::Row
+            {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            recipients
+                .sort_unstable_by_key(|recipient| (recipient.kind as u8, recipient.principal_id));
+            column_ids.sort_unstable();
+            encoded_bytes = encoded_bytes
+                .saturating_add(33)
+                .saturating_add(column_ids.len().saturating_mul(16))
+                .saturating_add(if is_database_admin {
+                    recipients.len().saturating_mul(21)
+                } else {
+                    1
+                });
+            if descriptions.len() >= 4096 || encoded_bytes > 1024 * 1024 {
+                return Err(TransactionError::InvalidMetadataRequest);
+            }
+            descriptions.push(crate::metadata_discovery::AdministrativePolicy {
+                policy_id,
+                kind,
+                operation,
+                effect,
+                column_ids,
+                recipients: is_database_admin.then_some(recipients),
+            });
+        }
+        descriptions.sort_unstable_by_key(|policy| policy.policy_id);
+        Ok(Some(descriptions))
+    }
+
     fn has_schema_metadata_authority(
         &mut self,
         schema_id: [u8; 16],

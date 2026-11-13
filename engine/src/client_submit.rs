@@ -1473,6 +1473,146 @@ impl AdminClient {
         })
     }
 
+    /// Return a secret-free administrative policy summary page. Expression
+    /// IDs and bodies are never included in this control response.
+    pub fn list_policies_page(
+        &mut self,
+        schema_id: [u8; 16],
+        table_id: [u8; 16],
+        page_limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<MetadataPage<crate::metadata_discovery::AdministrativePolicy>, ClientSubmitError>
+    {
+        validate_metadata_page_request(page_limit, cursor)?;
+        let arguments = format!(
+            "{{\"schema_id\":\"{}\",\"table_id\":\"{}\",{}}}",
+            lower_hex(&schema_id),
+            lower_hex(&table_id),
+            metadata_page_arguments_fields(page_limit, cursor)
+        );
+        let (records, next_cursor) =
+            request_metadata_page(&mut self.transport, "metadata.policies.list", arguments)?;
+        let records = discovery_records(records)?;
+        let mut policies = Vec::with_capacity(records.len());
+        let mut previous_id = None;
+        for mut record in records {
+            if record.len() != 6 {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let policy_id = response_id(&record, "policy_id")?;
+            let kind = match record.remove("kind") {
+                Some(ResponseValue::String(value)) if value == "row" => {
+                    crate::metadata_discovery::AdministrativePolicyKind::Row
+                }
+                Some(ResponseValue::String(value)) if value == "cell" => {
+                    crate::metadata_discovery::AdministrativePolicyKind::Cell
+                }
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let operation = match record.remove("operation") {
+                Some(ResponseValue::String(value)) if value == "select" => {
+                    crate::metadata_discovery::AdministrativePolicyOperation::Select
+                }
+                Some(ResponseValue::String(value)) if value == "insert" => {
+                    crate::metadata_discovery::AdministrativePolicyOperation::Insert
+                }
+                Some(ResponseValue::String(value)) if value == "update" => {
+                    crate::metadata_discovery::AdministrativePolicyOperation::Update
+                }
+                Some(ResponseValue::String(value)) if value == "delete" => {
+                    crate::metadata_discovery::AdministrativePolicyOperation::Delete
+                }
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let effect = match record.remove("effect") {
+                Some(ResponseValue::String(value)) if value == "allow" => {
+                    crate::metadata_discovery::AdministrativePolicyEffect::Allow
+                }
+                Some(ResponseValue::String(value)) if value == "restrict" => {
+                    crate::metadata_discovery::AdministrativePolicyEffect::Restrict
+                }
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let column_ids = match record.remove("column_ids") {
+                Some(ResponseValue::Array(values)) => values
+                    .into_iter()
+                    .map(|value| {
+                        value
+                            .as_string()
+                            .and_then(decode_hex_array::<16>)
+                            .filter(|id| *id != [0; 16])
+                            .ok_or(ClientSubmitError::InvalidResponse)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let recipients = match record.remove("recipients") {
+                Some(ResponseValue::Null) => None,
+                Some(ResponseValue::Array(values)) if !values.is_empty() => {
+                    let mut recipients = Vec::with_capacity(values.len());
+                    let mut seen = HashSet::new();
+                    for value in values {
+                        let ResponseValue::Object(mut fields) = value else {
+                            return Err(ClientSubmitError::InvalidResponse);
+                        };
+                        if fields.len() != 2 {
+                            return Err(ClientSubmitError::InvalidResponse);
+                        }
+                        let kind = match fields.remove("kind") {
+                            Some(ResponseValue::String(value)) if value == "user" => {
+                                crate::metadata_discovery::AdministrativePolicyRecipientKind::User
+                            }
+                            Some(ResponseValue::String(value)) if value == "role" => {
+                                crate::metadata_discovery::AdministrativePolicyRecipientKind::Role
+                            }
+                            _ => return Err(ClientSubmitError::InvalidResponse),
+                        };
+                        let principal_id = response_id(&fields, "principal_id")?;
+                        if !seen.insert((kind as u8, principal_id)) {
+                            return Err(ClientSubmitError::InvalidResponse);
+                        }
+                        recipients.push(crate::metadata_discovery::AdministrativePolicyRecipient {
+                            kind,
+                            principal_id,
+                        });
+                    }
+                    if recipients.windows(2).any(|pair| {
+                        (pair[0].kind as u8, pair[0].principal_id)
+                            >= (pair[1].kind as u8, pair[1].principal_id)
+                    }) {
+                        return Err(ClientSubmitError::InvalidResponse);
+                    }
+                    Some(recipients)
+                }
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            if (kind == crate::metadata_discovery::AdministrativePolicyKind::Row
+                && !column_ids.is_empty())
+                || (kind == crate::metadata_discovery::AdministrativePolicyKind::Cell
+                    && (column_ids.is_empty()
+                        || operation
+                            == crate::metadata_discovery::AdministrativePolicyOperation::Delete))
+                || column_ids.iter().copied().collect::<HashSet<_>>().len() != column_ids.len()
+                || previous_id.is_some_and(|previous| previous >= policy_id)
+            {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            previous_id = Some(policy_id);
+            policies.push(crate::metadata_discovery::AdministrativePolicy {
+                policy_id,
+                kind,
+                operation,
+                effect,
+                column_ids,
+                recipients,
+            });
+        }
+        Ok(MetadataPage {
+            records: policies,
+            next_cursor,
+        })
+    }
+
     /// Create a login identity. New users have no credential until a token is issued.
     pub fn create_user(&mut self, name: &str) -> Result<AdminIdentityResult, ClientSubmitError> {
         self.create_identity("users.create", name, "user_id")
@@ -3220,6 +3360,7 @@ fn discovery_page_value(
         "metadata.indexes.list" => "indexes",
         "metadata.constraints.list" => "constraints",
         "metadata.grants.list" => "grants",
+        "metadata.policies.list" => "policies",
         _ => return Err(ClientSubmitError::InvalidResponse),
     };
     let mut fields = parse_flat_response(payload)?;
