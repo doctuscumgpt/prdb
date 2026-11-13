@@ -88,6 +88,59 @@ fn maintenance_help_lists_offline_audit_archival() {
     assert!(help.contains("audit-verify --archive PATH"));
     assert!(help.contains("backup --instance-dir PATH --output-dir PATH"));
     assert!(help.contains("backup-verify --backup-dir PATH"));
+    assert!(help.contains("inspect --instance-dir PATH"));
+}
+
+#[test]
+fn maintenance_inspection_is_read_only_bounded_and_requires_offline_lock() {
+    let fixture = Fixture::new();
+    let mut session =
+        prdb_engine::bootstrap::initialize(fixture.instance_dir(), "inspect_admin", i64::MAX)
+            .expect("initialize inspect fixture");
+    let mut secret = session.take_secret().expect("bootstrap secret");
+    use zeroize::Zeroize;
+    secret.zeroize();
+    drop(session.acknowledge().expect("publish READY"));
+
+    let database_path = fixture.instance_dir().join("storage.redb");
+    let before = std::fs::read(&database_path).expect("read database before inspection");
+    let inspected = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["inspect", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .output()
+        .expect("run read-only inspect");
+    assert!(
+        inspected.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    let output = String::from_utf8(inspected.stdout).expect("UTF-8 inspection result");
+    for expected in [
+        "status=READY",
+        "catalog_version=2",
+        "expression_version=1",
+        "builtin_semantics_version=1",
+        "catalog_records=",
+        "rows=",
+        "index_entries=",
+    ] {
+        assert!(output.contains(expected), "missing {expected}: {output}");
+    }
+    assert_eq!(
+        std::fs::read(&database_path).expect("read database after inspection"),
+        before,
+        "inspection must not write to the redb image"
+    );
+
+    let live = StorageInstance::open(fixture.instance_dir()).expect("lock instance");
+    let rejected = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["inspect", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .output()
+        .expect("attempt inspection during service ownership");
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("InstanceLocked"));
+    drop(live);
 }
 
 #[test]

@@ -66,3 +66,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - `unsupported_catalog_version_is_rejected_before_derived_index_rebuild` removes a disposable index, changes the catalog version, verifies `StorageInstance::open` reports `UnsupportedFormat`, and verifies startup did not recreate the index.
 - Verification: the focused regression passed; workspace formatting, locked build, and warning-denied Clippy passed. The full serial workspace suite passed inside the delegated `systemd --user` service with sandbox/process tests enabled and zero ignored tests.
 - Contract boundary: redb must open and recover before the engine can read logical version metadata. The startup spec now distinguishes redb-owned physical recovery from engine-authored repairs and requires logical compatibility checks before the latter.
+
+## CL-3 operator diagnostic: read-only READY inspection — implemented
+
+- `prdb-maintain inspect --instance-dir PATH` uses the exclusive instance lock and read-only redb open, validates READY state without rebuilding derived indexes, then prints bounded counts and logical versions without credential material.
+- Regression verifies the database file remains byte-identical and inspection is rejected while another instance owner holds the lock.
+- Verification: the focused maintenance CLI regression passed. Workspace formatting, locked build, warning-denied Clippy, and the full serial workspace suite passed inside the delegated `systemd --user` service with sandbox/process tests enabled and zero ignored tests.

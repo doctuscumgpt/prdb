@@ -29,13 +29,15 @@ fn print_help() {
          Copies and validates a READY instance while holding its exclusive lock.\n\
          prdb-maintain backup-verify --backup-dir PATH\n\
          Verifies the backup manifest, file digests, and READY catalog.\n\
+         prdb-maintain inspect --instance-dir PATH\n\
+         Read-only READY validation and bounded engine metadata diagnostics.\n\
          Stop gateway and supervisor services before compact, audit-archive, or backup."
     );
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    use prdb_engine::bootstrap::StorageInstance;
+    use prdb_engine::bootstrap::{ReadOnlyStorageInstance, StorageInstance};
     use std::fs::OpenOptions;
     use std::io::Read;
     use std::os::unix::fs::MetadataExt;
@@ -45,7 +47,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut args = std::env::args_os().skip(1);
     let operation = args.next().ok_or(
-        "operation is required: compact, audit-archive, audit-verify, backup, or backup-verify",
+        "operation is required: compact, audit-archive, audit-verify, backup, backup-verify, or inspect",
     )?;
     if operation == "audit-verify" {
         if args.next().as_deref() != Some(std::ffi::OsStr::new("--archive")) {
@@ -95,6 +97,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>()
+        );
+        return Ok(());
+    }
+    if operation == "inspect" {
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--instance-dir")) {
+            return Err("--instance-dir PATH is required".into());
+        }
+        let instance_dir = PathBuf::from(args.next().ok_or("instance directory is required")?);
+        if args.next().is_some() {
+            return Err("unexpected trailing arguments".into());
+        }
+        let instance = ReadOnlyStorageInstance::open(&instance_dir)?;
+        let report =
+            prdb_engine::startup::validate_persisted_records_read_only(instance.database())?;
+        let metadata = report.metadata;
+        println!(
+            "status=READY database_id={} catalog_version={} expression_version={} builtin_semantics_version={} commit_sequence={} catalog_records={} rows={} index_entries={} outcomes={} audit_events={}",
+            metadata
+                .database_id
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+            metadata.catalog_version,
+            metadata.expression_version,
+            metadata.builtin_semantics_version,
+            metadata.commit_sequence,
+            report.catalog_records,
+            report.rows,
+            report.index_entries,
+            report.outcomes,
+            report.audit_events,
         );
         return Ok(());
     }
