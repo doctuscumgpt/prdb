@@ -23514,7 +23514,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     let storage = StorageManager::with_config(
         &database,
         StorageManagerConfig {
-            max_active_analytical_invocations: 2,
+            max_active_analytical_invocations: 4,
             ..StorageManagerConfig::default()
         },
     )?;
@@ -24719,7 +24719,10 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     client.authenticate(&storage, token_id, &secret)?;
     let owner = client.staging_owner()?;
     let staging = StagingStore::new(
-        StagingLimits::default(),
+        StagingLimits {
+            max_active_analytical_per_principal: 4,
+            ..StagingLimits::default()
+        },
         Arc::new(AcceptFixture {
             requested_scope: requested_scope.clone(),
         }),
@@ -24875,6 +24878,89 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             &runtime,
         )?;
     assert_eq!(cancellation_accepted.payload, b"{\"state\":\"accepted\"}");
+    let mut additional_cancellation_workers = Vec::new();
+    for worker_index in 0..2u8 {
+        let mut worker_client = ClientConnectionSession::default();
+        worker_client.accept_hello(
+            ClientMode::Query,
+            &format!("sandbox-sql-cancellation-{worker_index}"),
+        )?;
+        worker_client.authenticate(&storage, token_id, &secret)?;
+        let worker_owner = worker_client.staging_owner()?;
+        let worker_reservation = staging.prepare(
+            worker_owner,
+            PrepareSubmission {
+                manifest_version: 1,
+                manifest: b"m".to_vec(),
+                artifact_bytes: u64::try_from(artifact.len())?,
+                artifact_sha256: Sha256::digest(&artifact).into(),
+                sql_library_bytes: 0,
+                sql_library_sha256: Sha256::digest([]).into(),
+                scope_version: 1,
+                requested_scope: requested_scope.clone(),
+                parameter_bytes: 1,
+                parameter_sha256: Sha256::digest(cancellation_parameter).into(),
+                deadline_ms: 30_000,
+                workload_class: WorkloadClass::Analytical,
+            },
+        )?;
+        let mut worker_artifact_offset = 0;
+        for chunk in artifact.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
+            worker_artifact_offset = staging
+                .upload_chunk(
+                    worker_owner,
+                    worker_reservation.invocation_id,
+                    ChunkKind::Artifact,
+                    worker_artifact_offset,
+                    chunk,
+                )
+                .map_err(|error| format!("additional cancellation artifact chunk: {error:?}"))?;
+        }
+        staging
+            .upload_chunk(
+                worker_owner,
+                worker_reservation.invocation_id,
+                ChunkKind::Parameters,
+                0,
+                &cancellation_parameter,
+            )
+            .map_err(|error| format!("additional cancellation parameter: {error:?}"))?;
+        staging.seal(worker_owner, worker_reservation.invocation_id)?;
+        let worker_invocation_hex = worker_reservation
+            .invocation_id
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let (worker_accepted, worker_invocation, worker_executor) = worker_client
+            .handle_start_request_with_executor(
+                &storage,
+                &staging,
+                ClientFrame {
+                    kind: 7,
+                    request_id: 20 + u64::from(worker_index),
+                    response_sequence: 0,
+                    payload: format!("{{\"invocation_id\":\"{worker_invocation_hex}\"}}")
+                        .into_bytes(),
+                },
+                GatewayAdmissionConfig {
+                    retention_period_us: 3_600_000_000,
+                    max_rows: 8,
+                    max_bytes: 4096,
+                },
+                &runtime,
+            )?;
+        assert_eq!(worker_accepted.payload, b"{\"state\":\"accepted\"}");
+        let (worker_service, worker_gateway) = UnixStream::pair()?;
+        worker_gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
+        additional_cancellation_workers.push((
+            worker_reservation,
+            worker_accepted,
+            worker_invocation,
+            worker_executor,
+            worker_service,
+            worker_gateway,
+        ));
+    }
     let mut saturated_client = ClientConnectionSession::default();
     saturated_client.accept_hello(ClientMode::Query, "sandbox-sql-saturation")?;
     saturated_client.authenticate(&storage, restricted_token_id, &restricted_secret)?;
@@ -25043,6 +25129,10 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     let index_build_invocation = id(0xe6);
     let mut index_build_audit = identity_audit_event(0xe7, user_id, index_pressure_table.table_id);
     index_build_audit.correlation_id = index_build_invocation;
+    let additional_cancellation_ids = additional_cancellation_workers
+        .iter()
+        .map(|(reservation, _, _, _, _, _)| reservation.invocation_id)
+        .collect::<Vec<_>>();
     let (
         worker_status_result,
         concurrent_operational_invocations,
@@ -25057,7 +25147,10 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         let observer_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let analytics_result_relayed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let active_operational_transactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let start = Arc::new(std::sync::Barrier::new(6));
+        let active_cancellation_workers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let additional_worker_memory_samples =
+            Arc::new(std::sync::Mutex::new(Vec::<(u64, u64)>::with_capacity(3)));
+        let start = Arc::new(std::sync::Barrier::new(8));
         let (index_build_start_tx, index_build_start_rx) = std::sync::mpsc::channel();
         let (index_build_started_tx, index_build_started_rx) = std::sync::mpsc::channel();
         let index_build_storage = &storage;
@@ -25167,10 +25260,146 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 ))
             }));
         }
+        let mut additional_cancellation_observers = Vec::new();
+        for (
+            worker_reservation,
+            worker_accepted,
+            worker_invocation,
+            mut worker_executor,
+            mut worker_service,
+            mut worker_gateway,
+        ) in additional_cancellation_workers
+        {
+            let worker_start = Arc::clone(&start);
+            let active_workers = Arc::clone(&active_cancellation_workers);
+            let memory_samples = Arc::clone(&additional_worker_memory_samples);
+            let worker_pid = worker_executor.id();
+            let worker_storage = &storage;
+            let worker_id = worker_reservation.invocation_id;
+            additional_cancellation_observers.push(scope.spawn(move || -> Result<(), String> {
+                worker_start.wait();
+                let observed =
+                    worker_executor.observe_exit_with_results(&worker_invocation, |payload| {
+                        if payload != b"CANCEL_READY"
+                            && payload != b"CANCEL_OBSERVED"
+                            && payload != b"CANCEL_UPDATE_CONFIRMED"
+                        {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "unexpected additional cancellation result",
+                            ));
+                        }
+                        if payload == b"CANCEL_READY" {
+                            active_workers.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                            let sample = worker_cgroup_memory(worker_pid)?;
+                            if sample.1 > 256 * 1024 * 1024 {
+                                return Err(std::io::Error::other(format!(
+                                    "additional analytical worker cgroup peak {} exceeded its 256 MiB limit",
+                                    sample.1
+                                )));
+                            }
+                            memory_samples
+                                .lock()
+                                .map_err(|_| {
+                                    std::io::Error::other(
+                                        "additional worker memory sample lock poisoned",
+                                    )
+                                })?
+                                .push(sample);
+                        }
+                        send_gateway_result_data_event(
+                            &mut worker_service,
+                            worker_accepted.request_id,
+                            payload.to_vec(),
+                        )
+                        .map_err(|error| {
+                            std::io::Error::other(format!(
+                                "additional cancellation relay: {error:?}"
+                            ))
+                        })
+                    });
+                match observed {
+                    Ok(status) if !status.success() => {}
+                    Err(prdb_engine::storage_manager::SupervisorInvocationError::WorkerExited(
+                        status,
+                    )) if !status.success() => {}
+                    Err(prdb_engine::storage_manager::SupervisorInvocationError::Deadline(
+                        prdb_engine::transaction::TransactionError::CancellationRequested
+                        | prdb_engine::transaction::TransactionError::Aborted,
+                    )) => {}
+                    Ok(status) => {
+                        return Err(format!(
+                            "additional cancellation worker exited successfully: {status}"
+                        ));
+                    }
+                    Err(error) => {
+                        return Err(format!("additional cancellation worker failed: {error:?}"));
+                    }
+                }
+                if worker_storage
+                    .lookup_invocation_outcome(worker_id, user_id, now + 3)
+                    .map_err(|error| format!("additional cancellation outcome: {error:?}"))?
+                    .is_none_or(|outcome| outcome.status != OutcomeStatus::Aborted)
+                {
+                    return Err("additional cancellation did not durably abort".to_owned());
+                }
+                match send_gateway_terminal_for_confirmed_outcome(
+                    worker_storage,
+                    &worker_invocation,
+                    &mut worker_service,
+                    worker_accepted.request_id,
+                    GatewayAbortReason::Cancelled,
+                )
+                .map_err(|error| format!("additional cancellation terminal: {error:?}"))?
+                {
+                    GatewayTerminalDecision::Abort(GatewayAbortReason::Cancelled) => {}
+                    decision => {
+                        return Err(format!(
+                            "unexpected additional cancellation terminal: {decision:?}"
+                        ));
+                    }
+                }
+                for expected_payload in [
+                    b"CANCEL_READY".as_slice(),
+                    b"CANCEL_OBSERVED".as_slice(),
+                    b"CANCEL_UPDATE_CONFIRMED".as_slice(),
+                ] {
+                    let result = read_frame(&mut worker_gateway)
+                        .map_err(|error| format!("additional cancellation result read: {error}"))?
+                        .ok_or("missing additional cancellation result event")?;
+                    if result.operation != Operation::GatewayResultData as u16
+                        || result.request_id != worker_accepted.request_id
+                        || result.payload != expected_payload
+                    {
+                        return Err(format!(
+                            "unexpected additional cancellation result frame: operation={} request_id={} payload={:?}",
+                            result.operation, result.request_id, result.payload
+                        ));
+                    }
+                }
+                let terminal = read_frame(&mut worker_gateway)
+                    .map_err(|error| format!("additional cancellation terminal read: {error}"))?
+                    .ok_or("missing additional cancellation terminal event")?;
+                let terminal_payload =
+                    String::from_utf8(terminal.payload).map_err(|error| error.to_string())?;
+                if terminal.operation != Operation::GatewayTerminal as u16
+                    || !terminal_payload.contains("\"outcome\":\"aborted\"")
+                {
+                    return Err(format!(
+                        "unexpected additional cancellation terminal frame: operation={} payload={terminal_payload}",
+                        terminal.operation
+                    ));
+                }
+                Ok(())
+            }));
+        }
         let cancellation_start = Arc::clone(&start);
         let cancellation_analytics_result_relayed = Arc::clone(&analytics_result_relayed);
         let cancellation_active_transactions = Arc::clone(&active_operational_transactions);
+        let cancellation_active_workers = Arc::clone(&active_cancellation_workers);
         let cancellation_worker_pid = worker_pid;
+        let cancellation_executor_pid = cancellation_executor.id();
+        let cancellation_memory_samples = Arc::clone(&additional_worker_memory_samples);
         let cancellation_observer = scope.spawn(move || {
             let result = (|| -> Result<_, Box<dyn std::error::Error>> {
                 cancellation_start.wait();
@@ -25197,6 +25426,25 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                         .map_err(|error| {
                             std::io::Error::other(format!("result relay: {error:?}"))
                         })?;
+                        if payload == b"CANCEL_READY" {
+                            cancellation_active_workers
+                                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                            let sample = worker_cgroup_memory(cancellation_executor_pid)?;
+                            if sample.1 > 256 * 1024 * 1024 {
+                                return Err(std::io::Error::other(format!(
+                                    "cancellation worker cgroup peak {} exceeded its 256 MiB limit",
+                                    sample.1
+                                )));
+                            }
+                            cancellation_memory_samples
+                                .lock()
+                                .map_err(|_| {
+                                    std::io::Error::other(
+                                        "cancellation worker memory sample lock poisoned",
+                                    )
+                                })?
+                                .push(sample);
+                        }
                         if payload == b"CANCEL_OBSERVED" {
                             let requested_at = cancellation_requested_at.ok_or_else(|| {
                                 std::io::Error::other(
@@ -25235,6 +25483,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                                 && cancellation_active_transactions
                                     .load(std::sync::atomic::Ordering::Acquire)
                                     > 0
+                                && cancellation_active_workers
+                                    .load(std::sync::atomic::Ordering::Acquire)
+                                    == 3
                             {
                                 break;
                             }
@@ -25246,9 +25497,12 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                             || cancellation_active_transactions
                                 .load(std::sync::atomic::Ordering::Acquire)
                                 == 0
+                            || cancellation_active_workers
+                                .load(std::sync::atomic::Ordering::Acquire)
+                                != 3
                         {
                             return Err(std::io::Error::other(
-                                "cancellation did not overlap relayed analytical output and an operational transaction",
+                                "three cancellation SQL workers did not overlap relayed analytics and an operational transaction",
                             ));
                         }
                         let memory_sample = worker_cgroup_memory(cancellation_worker_pid)?;
@@ -25289,12 +25543,12 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                             )) => {}
                             Err(error) => {
                                 return Err(std::io::Error::other(format!(
-                                    "third analytical START failed for the wrong reason: {error:?}"
+                                    "fifth analytical START failed for the wrong reason: {error:?}"
                                 )));
                             }
                             Ok(_) => {
                                 return Err(std::io::Error::other(
-                                    "third analytical START was accepted above the configured cap",
+                                    "fifth analytical START was accepted above the configured cap",
                                 ));
                             }
                         }
@@ -25313,6 +25567,26 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                             prdb_engine::storage_manager::OwnerCancellationResult::Accepted => {
                                 cancellation_request_latency = Some(request_started.elapsed());
                                 cancellation_requested_at = Some(std::time::Instant::now());
+                                for invocation_id in &additional_cancellation_ids {
+                                    match cancellation_storage
+                                        .cancel_owned_invocation(
+                                            user_id,
+                                            *invocation_id,
+                                            now + 2,
+                                        )
+                                        .map_err(|error| {
+                                            std::io::Error::other(format!(
+                                                "additional cancellation request: {error:?}"
+                                            ))
+                                        })? {
+                                        prdb_engine::storage_manager::OwnerCancellationResult::Accepted => {}
+                                        result => {
+                                            return Err(std::io::Error::other(format!(
+                                                "unexpected additional cancellation result: {result:?}"
+                                            )));
+                                        }
+                                    }
+                                }
                                 Ok(())
                             }
                             result => Err(std::io::Error::other(format!(
@@ -25452,6 +25726,34 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             .join()
             .map_err(|_| std::io::Error::other("cancellation observer thread panicked"))?
             .map_err(std::io::Error::other)?;
+        for observer in additional_cancellation_observers {
+            observer
+                .join()
+                .map_err(|_| std::io::Error::other("additional cancellation observer panicked"))?
+                .map_err(std::io::Error::other)?;
+        }
+        let (main_worker_current, main_worker_peak) =
+            (analytics_memory_current_bytes, analytics_memory_peak_bytes);
+        let mut additional_memory_samples = additional_worker_memory_samples
+            .lock()
+            .map_err(|_| std::io::Error::other("worker memory sample lock poisoned"))?;
+        if additional_memory_samples.len() != 3 {
+            return Err(format!(
+                "sampled {} of 3 additional analytical worker cgroups",
+                additional_memory_samples.len()
+            )
+            .into());
+        }
+        additional_memory_samples.push((main_worker_current, main_worker_peak));
+        let analytics_memory_current_bytes = additional_memory_samples
+            .iter()
+            .map(|(current, _)| *current)
+            .sum::<u64>();
+        let analytics_memory_peak_bytes = additional_memory_samples
+            .iter()
+            .map(|(_, peak)| *peak)
+            .sum::<u64>();
+        drop(additional_memory_samples);
         observer_done.store(true, std::sync::atomic::Ordering::Release);
         let mut operational_count = 0;
         let mut active_worker_point_read_latencies = Vec::new();
