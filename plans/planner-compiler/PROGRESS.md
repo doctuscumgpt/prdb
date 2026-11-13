@@ -651,3 +651,9 @@
 - Five fresh-database runs on Linux x86_64 with Rust 1.95.0 and redb 4.4.0 produced median-of-run p50 point/range/scan latency (ms) of 0.085/0.092/0.020 at 1 row, 0.085/0.093/0.049 at 4, 0.087/0.093/0.089 at 8, and 0.088/0.096/0.168 at 16. A one-run sweep at 2, 32, and 4,097 rows also showed scan/range p50 of 0.030/0.093, 0.346/0.097, and 56.514/0.124 ms respectively.
 - A separate run measured the row-count probe itself at 0.012–0.026 ms p50 for populations 1, 4, 8, and 4,097. It excludes planner relation resolution and projection loading.
 - Decision: retain a conservative cutoff of four rows. This measures direct storage API result latency, not SQL setup, optimizer estimation, confined executor startup, result relay, or commit; cache state and host load were uncontrolled. Target-host profiles remain open.
+
+## OP-4 follow-up: apply exact predicate population to scan choice — implemented
+
+- Behavior: filtered ordinary unordered single-table SELECT now uses the exact visible population from its bounded predicate estimate with the existing 1–4 row scan heuristic. An exact nonzero small population drops a point/range hint while retaining the Filter node, so the sequential scan still evaluates the predicate. Exact zero continues to use the validated empty-view hint; unknown estimates preserve the original access path.
+- Regression: optimizer-process protocol cases verify exact `(visible=4, matching=2)` selects a filtered sequential scan, `Unknown` retains the range plan and filter, and exact zero still selects the no-scan hint.
+- Verification: all three focused optimizer-process tests passed; workspace build, fmt check, warning-denied Clippy, TinyCC SDK tests, and sandbox fixture build passed. The delegated cgroup probe reported writable `cpu memory pids`; the full serial delegated suite passed (223 engine unit, 151 commit integration, and all other workspace targets, with zero failures or ignored tests).

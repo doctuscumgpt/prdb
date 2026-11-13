@@ -286,7 +286,7 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
                 {
                     plan = encoded;
                 }
-                let predicate_proves_empty = if operation == Operation::OptimizeSelect
+                let predicate_estimate = if operation == Operation::OptimizeSelect
                     && request.payload.get(2) == Some(&crate::query_abi::OPTIMIZER_SELECT_STATEMENT)
                     && proven_empty.first() != Some(&true)
                 {
@@ -303,28 +303,47 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
                                 }
                             });
                             if let Some(predicate) = bound_predicate {
-                                matches!(
-                                    request_predicate_estimate(
-                                        planner,
-                                        &mut next_planner_request_id,
-                                        select.schema_name,
-                                        select.relation_name,
-                                        predicate,
-                                    )?,
-                                    crate::planner_ipc::EstimatePredicateResponse::Exact {
-                                        matching_rows: 0,
-                                        ..
-                                    }
-                                )
+                                Some(request_predicate_estimate(
+                                    planner,
+                                    &mut next_planner_request_id,
+                                    select.schema_name,
+                                    select.relation_name,
+                                    predicate,
+                                )?)
                             } else {
-                                false
+                                None
                             }
                         }
-                        _ => false,
+                        _ => None,
                     }
                 } else {
-                    false
+                    None
                 };
+                let predicate_proves_empty = matches!(
+                    &predicate_estimate,
+                    Some(crate::planner_ipc::EstimatePredicateResponse::Exact {
+                        matching_rows: 0,
+                        ..
+                    })
+                );
+                let predicate_visible_rows = match &predicate_estimate {
+                    Some(crate::planner_ipc::EstimatePredicateResponse::Exact {
+                        visible_rows,
+                        ..
+                    }) => Some(*visible_rows),
+                    _ => None,
+                };
+                if operation == Operation::OptimizeSelect
+                    && request.payload.get(2) == Some(&crate::query_abi::OPTIMIZER_SELECT_STATEMENT)
+                    && let Ok(mut decoded) = crate::optimizer_plan::decode_plan_v1(&plan)
+                    && let Ok(true) = crate::optimizer_plan::apply_population_scan_heuristic(
+                        &mut decoded,
+                        predicate_visible_rows,
+                    )
+                    && let Ok(encoded) = crate::optimizer_plan::encode_plan_v1(&decoded)
+                {
+                    plan = encoded;
+                }
                 if operation == Operation::OptimizeSelect
                     && request.payload.get(2) == Some(&crate::query_abi::OPTIMIZER_SELECT_STATEMENT)
                     && (proven_empty.first() == Some(&true) || predicate_proves_empty)
@@ -857,18 +876,26 @@ mod tests {
     }
 
     #[test]
-    fn process_protocol_preserves_filtered_plan_for_nonzero_or_unknown_estimate() {
-        for estimate in [
+    fn process_protocol_uses_small_nonzero_predicate_population_for_scan_choice() {
+        let plan = select_plan_with_predicate_estimate(
             crate::planner_ipc::EstimatePredicateResponse::Exact {
                 visible_rows: 4,
                 matching_rows: 2,
             },
+        );
+        assert!(!plan.empty_view_hint);
+        assert!(plan.range_scan.is_none());
+        assert!(matches!(plan.nodes.get(1), Some(PlanNode::Filter(_))));
+    }
+
+    #[test]
+    fn process_protocol_keeps_range_plan_when_predicate_estimate_is_unknown() {
+        let plan = select_plan_with_predicate_estimate(
             crate::planner_ipc::EstimatePredicateResponse::Unknown,
-        ] {
-            let plan = select_plan_with_predicate_estimate(estimate);
-            assert!(!plan.empty_view_hint);
-            assert!(plan.range_scan.is_some());
-        }
+        );
+        assert!(!plan.empty_view_hint);
+        assert!(plan.range_scan.is_some());
+        assert!(matches!(plan.nodes.get(1), Some(PlanNode::Filter(_))));
     }
 
     #[test]
