@@ -121,13 +121,6 @@ int32_t prdb_sdk_executor_open_full_scan_v1(
     return PRDB_SDK_EXECUTOR_OK;
 }
 
-static void write_u32(uint8_t *payload, uint64_t *offset, uint32_t value) {
-    payload[(*offset)++] = (uint8_t)(value >> 24);
-    payload[(*offset)++] = (uint8_t)(value >> 16);
-    payload[(*offset)++] = (uint8_t)(value >> 8);
-    payload[(*offset)++] = (uint8_t)value;
-}
-
 static int valid_range_bound(const prdb_sdk_value_v1 *bound) {
     return bound != NULL && bound->struct_size >= sizeof(*bound) &&
            bound->abi_version == PRDB_SDK_VALUE_ABI_V1_VERSION &&
@@ -207,11 +200,19 @@ int32_t prdb_sdk_executor_scan_index_range_v1(
         request + PRDB_EXECUTOR_SCAN_INDEX_RANGE_REQUEST_HEADER_BYTES,
         decoded_request_bound_flags[0]);
     if (lower_bound != NULL) {
-        request[offset++] = lower_bound->type_code;
-        write_u32(request, &offset, (uint32_t)lower_bound->data_len);
+        uint8_t value_header[PRDB_SCALAR_VALUE_RECORD_HEADER_BYTES] = {0};
+        prdb_encode_scalar_value_record(
+            value_header, lower_bound->type_code,
+            (uint32_t)lower_bound->data_len);
+        memcpy(request + offset, value_header, sizeof(value_header));
+        offset += sizeof(value_header);
         if (lower_bound->data_len != 0) {
-            memcpy(request + offset, lower_bound->data,
-                   (size_t)lower_bound->data_len);
+            if (!prdb_encode_scalar_value_record_value_bytes(
+                    request + offset,
+                    (size_t)(request_capacity - offset), lower_bound->data,
+                    (size_t)lower_bound->data_len)) {
+                return PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL;
+            }
             offset += lower_bound->data_len;
         }
     }
@@ -219,11 +220,19 @@ int32_t prdb_sdk_executor_scan_index_range_v1(
         request + offset, decoded_request_bound_flags[1]);
     offset += PRDB_EXECUTOR_SCAN_INDEX_RANGE_BOUND_FLAG_RECORD_HEADER_BYTES;
     if (upper_bound != NULL) {
-        request[offset++] = upper_bound->type_code;
-        write_u32(request, &offset, (uint32_t)upper_bound->data_len);
+        uint8_t value_header[PRDB_SCALAR_VALUE_RECORD_HEADER_BYTES] = {0};
+        prdb_encode_scalar_value_record(
+            value_header, upper_bound->type_code,
+            (uint32_t)upper_bound->data_len);
+        memcpy(request + offset, value_header, sizeof(value_header));
+        offset += sizeof(value_header);
         if (upper_bound->data_len != 0) {
-            memcpy(request + offset, upper_bound->data,
-                   (size_t)upper_bound->data_len);
+            if (!prdb_encode_scalar_value_record_value_bytes(
+                    request + offset,
+                    (size_t)(request_capacity - offset), upper_bound->data,
+                    (size_t)upper_bound->data_len)) {
+                return PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL;
+            }
             offset += upper_bound->data_len;
         }
     }

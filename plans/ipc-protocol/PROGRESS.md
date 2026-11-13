@@ -1,5 +1,13 @@
 # Internal IPC Progress
 
+## IPC-2 follow-up: TinyCC range bounds use the shared scalar-value codec — implemented
+
+- Contract: optional `0x1115` lower and upper bounds encode as the common scalar record: one-byte type code, big-endian `u32` value length, then exactly that many value bytes.
+- Implementation: replaced the SDK's handwritten type/length writer and value copy with the generated scalar-record header and byte-tail helpers. The range request's independent golden-vector fixture retains the byte-for-byte wire check.
+- Specification: documented the exact scalar record alongside the generated bound flags and column-count record.
+- Verification: maintained TinyCC SDK tests, sandbox query fixture, locked workspace build, formatting check, warning-denied Clippy, full serial delegated-cgroup workspace suite (zero ignored tests), and `git diff --check` passed.
+- Remaining: SDK consumption, optimizer selection, end-to-end optimized/reference result and error equivalence, and broader malformed process-level IPC coverage remain open.
+
 ## IPC-2 follow-up: generated index-range bound flag record — implemented
 
 - Contract: each `0x1115` bound slot starts with a one-byte flag: 0 absent, 1 inclusive, or 2 exclusive; a present flag is followed by one scalar record.
