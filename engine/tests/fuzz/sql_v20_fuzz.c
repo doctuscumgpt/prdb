@@ -52,15 +52,34 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     assert(statement.base.right_alias.offset <= size);
     assert(statement.base.right_alias.length <= size - statement.base.right_alias.offset);
     if (statement.has_where != 0) {
+        assert(statement.has_where == 1);
         assert(statement.where_keyword_offset < size);
+        assert(statement.from_keyword_offset <
+               statement.where_keyword_offset);
         assert(statement.where_clause_end > statement.where_keyword_offset);
         assert(statement.where_clause_end <= size);
         assert(statement.where_column.relation.offset <= size);
+        assert(statement.where_column.relation.length != 0);
         assert(statement.where_column.relation.length <=
                size - statement.where_column.relation.offset);
         assert(statement.where_column.column.offset <= size);
+        assert(statement.where_column.column.length != 0);
         assert(statement.where_column.column.length <=
                size - statement.where_column.column.offset);
+        assert(statement.comparison >= PRDB_SDK_SQL_COMPARE_EQUAL);
+        assert(statement.comparison <= PRDB_SDK_SQL_COMPARE_IS_NOT_NULL);
+        if (statement.comparison == PRDB_SDK_SQL_COMPARE_IS_NULL ||
+            statement.comparison == PRDB_SDK_SQL_COMPARE_IS_NOT_NULL) {
+            assert(statement.parameter_index == 0);
+        } else {
+            assert(statement.parameter_index > 0);
+            assert(statement.parameter_index <= UINT16_MAX);
+        }
+    } else {
+        assert(statement.comparison == 0);
+        assert(statement.parameter_index == 0);
+        assert(statement.where_keyword_offset == 0);
+        assert(statement.where_clause_end == 0);
     }
 
     status = prdb_sdk_sql_bind_select_v20(
@@ -82,6 +101,17 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             assert(binding.where_projection_index ==
                    binding.output_projection_count);
             assert(binding.where_relation_side <= 1);
+            if (binding.where_relation_side == 0) {
+                assert(binding.where_column.ordinal <
+                       sizeof(left_columns) / sizeof(left_columns[0]));
+                assert(binding.where_column.type_code ==
+                       left_columns[binding.where_column.ordinal].type_code);
+            } else {
+                assert(binding.where_column.ordinal <
+                       sizeof(right_columns) / sizeof(right_columns[0]));
+                assert(binding.where_column.type_code ==
+                       right_columns[binding.where_column.ordinal].type_code);
+            }
         }
     }
     return 0;
