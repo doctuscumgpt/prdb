@@ -25,6 +25,8 @@ pub mod ipc;
 pub mod linux_sandbox;
 pub mod metadata;
 pub mod metadata_discovery;
+#[cfg(target_os = "linux")]
+pub mod offline_backup;
 pub mod optimizer_binding;
 pub mod optimizer_ipc;
 pub mod optimizer_plan;

@@ -25,7 +25,11 @@ fn print_help() {
          Writes a durable checksummed audit archive before pruning its events.\n\
          prdb-maintain audit-verify --archive PATH\n\
          Verifies one private PRA1 archive without opening a database.\n\
-         Stop gateway and supervisor services before compact or audit-archive."
+         prdb-maintain backup --instance-dir PATH --output-dir PATH\n\
+         Copies and validates a READY instance while holding its exclusive lock.\n\
+         prdb-maintain backup-verify --backup-dir PATH\n\
+         Verifies the backup manifest, file digests, and READY catalog.\n\
+         Stop gateway and supervisor services before compact, audit-archive, or backup."
     );
 }
 
@@ -40,9 +44,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Instant;
 
     let mut args = std::env::args_os().skip(1);
-    let operation = args
-        .next()
-        .ok_or("operation is required: compact, audit-archive, or audit-verify")?;
+    let operation = args.next().ok_or(
+        "operation is required: compact, audit-archive, audit-verify, backup, or backup-verify",
+    )?;
     if operation == "audit-verify" {
         if args.next().as_deref() != Some(std::ffi::OsStr::new("--archive")) {
             return Err("--archive PATH is required".into());
@@ -74,12 +78,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("verified events={}", records.len());
         return Ok(());
     }
+    if operation == "backup-verify" {
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--backup-dir")) {
+            return Err("--backup-dir PATH is required".into());
+        }
+        let backup_dir = PathBuf::from(args.next().ok_or("backup directory is required")?);
+        if args.next().is_some() {
+            return Err("unexpected trailing arguments".into());
+        }
+        let verified = prdb_engine::offline_backup::verify_backup(&backup_dir)?;
+        println!(
+            "verified database_bytes={} sha256={}",
+            verified.database_bytes,
+            verified
+                .database_sha256
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        return Ok(());
+    }
 
     if args.next().as_deref() != Some(std::ffi::OsStr::new("--instance-dir")) {
         return Err("--instance-dir PATH is required".into());
     }
     let instance_dir = PathBuf::from(args.next().ok_or("instance directory is required")?);
-    let archive_output = if operation == "compact" {
+    let operation_argument = if operation == "backup" {
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--output-dir")) {
+            return Err("--output-dir PATH is required".into());
+        }
+        let output = PathBuf::from(args.next().ok_or("backup output directory is required")?);
+        if args.next().is_some() {
+            return Err("unexpected trailing arguments".into());
+        }
+        Some(output)
+    } else if operation == "compact" {
         if args.next().is_some() {
             return Err("unexpected trailing arguments".into());
         }
@@ -97,8 +130,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("unsupported operation: {}", operation.to_string_lossy()).into());
     };
 
+    if operation == "backup" {
+        let output = operation_argument.expect("backup requires an output directory");
+        let verified = prdb_engine::offline_backup::create_verified_backup(&instance_dir, &output)?;
+        println!(
+            "backup verified database_bytes={} sha256={}",
+            verified.database_bytes,
+            verified
+                .database_sha256
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        return Ok(());
+    }
+
     let mut instance = StorageInstance::open(instance_dir)?;
-    if let Some(output) = archive_output {
+    if operation == "audit-archive" {
+        let output = operation_argument.expect("audit archive requires an output path");
         let events = instance.archive_audit_events(output)?;
         println!("archived events={events}");
     } else {

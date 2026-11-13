@@ -20,7 +20,8 @@ use crate::schema::{
 };
 use crate::tuple::{ColumnSchema, decode_tuple};
 use redb::{
-    Database, ReadTransaction, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableHandle,
+    Database, ReadOnlyDatabase, ReadTransaction, ReadableDatabase, ReadableTable,
+    ReadableTableMetadata, TableHandle,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -116,6 +117,15 @@ pub fn validate_persisted_records(
     validate_persisted_records_for_lifecycle(database, Lifecycle::Ready)
 }
 
+/// Validate a READY image without rebuilding derived lookup tables or writing
+/// to the redb file. This is used by offline backup verification.
+pub fn validate_persisted_records_read_only(
+    database: &ReadOnlyDatabase,
+) -> Result<StorageHealthReport, StartupError> {
+    let read = database.begin_read().map_err(storage_error)?;
+    validate_persisted_records_snapshot(&read, Lifecycle::Ready)
+}
+
 pub(crate) fn validate_initializing_records(
     database: &Database,
 ) -> Result<StorageHealthReport, StartupError> {
@@ -139,9 +149,16 @@ fn validate_persisted_records_for_lifecycle(
     ensure_policy_index(database)?;
     ensure_dependency_index(database)?;
     let read = database.begin_read().map_err(storage_error)?;
-    validate_tables(&read)?;
-    validate_name_domains(&read)?;
-    let metadata = read_metadata(&read)?;
+    validate_persisted_records_snapshot(&read, required_lifecycle)
+}
+
+fn validate_persisted_records_snapshot(
+    read: &ReadTransaction,
+    required_lifecycle: Lifecycle,
+) -> Result<StorageHealthReport, StartupError> {
+    validate_tables(read)?;
+    validate_name_domains(read)?;
+    let metadata = read_metadata(read)?;
     if !metadata.supports_current_formats() {
         return Err(StartupError::UnsupportedFormat);
     }
@@ -149,19 +166,19 @@ fn validate_persisted_records_for_lifecycle(
         return Err(StartupError::NotReady);
     }
 
-    let catalog = validate_catalog(&read, &metadata)?;
-    let rows = validate_rows(&read, metadata.commit_sequence, &catalog.table_schemas)?;
+    let catalog = validate_catalog(read, &metadata)?;
+    let rows = validate_rows(read, metadata.commit_sequence, &catalog.table_schemas)?;
     let index_entries = validate_indexes(
-        &read,
+        read,
         metadata.commit_sequence,
         &catalog.index_definitions,
         &catalog.index_columns,
         &catalog.unique_index_ids,
         &catalog.table_schemas,
     )?;
-    validate_foreign_key_rows(&read, &catalog.foreign_keys, &catalog.table_schemas)?;
-    let outcomes = validate_outcomes(&read, metadata.commit_sequence)?;
-    let audit_events = validate_audit(&read)?;
+    validate_foreign_key_rows(read, &catalog.foreign_keys, &catalog.table_schemas)?;
+    let outcomes = validate_outcomes(read, metadata.commit_sequence)?;
+    let audit_events = validate_audit(read)?;
 
     Ok(StorageHealthReport {
         metadata,

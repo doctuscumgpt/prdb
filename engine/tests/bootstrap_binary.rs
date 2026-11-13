@@ -84,6 +84,131 @@ fn maintenance_help_lists_offline_audit_archival() {
     let help = String::from_utf8(output.stdout).expect("UTF-8 help");
     assert!(help.contains("audit-archive --instance-dir PATH --output PATH"));
     assert!(help.contains("audit-verify --archive PATH"));
+    assert!(help.contains("backup --instance-dir PATH --output-dir PATH"));
+    assert!(help.contains("backup-verify --backup-dir PATH"));
+}
+
+#[test]
+fn maintenance_backup_is_private_validated_and_checksum_verified() {
+    let fixture = Fixture::new();
+    let mut session =
+        prdb_engine::bootstrap::initialize(fixture.instance_dir(), "backup_admin", i64::MAX)
+            .expect("initialize backup source");
+    let mut secret = session.take_secret().expect("bootstrap secret");
+    use zeroize::Zeroize;
+    secret.zeroize();
+    drop(session.acknowledge().expect("publish source READY"));
+
+    let backup_dir = fixture.0.join("backup");
+    let create = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["backup", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--output-dir")
+        .arg(&backup_dir)
+        .output()
+        .expect("create verified offline backup");
+    assert!(
+        create.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    assert!(String::from_utf8_lossy(&create.stdout).contains("backup verified"));
+    assert_eq!(
+        std::fs::metadata(&backup_dir)
+            .expect("backup directory")
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o700
+    );
+    for name in [".prdb-bootstrap", "storage.redb"] {
+        assert_eq!(
+            std::fs::metadata(backup_dir.join(name))
+                .expect("backup file")
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::read(fixture.instance_dir().join(name)).unwrap(),
+            std::fs::read(backup_dir.join(name)).unwrap()
+        );
+    }
+
+    let manifest_path = fixture.0.join("backup.prdb-backup");
+    let original_manifest = std::fs::read(&manifest_path).expect("backup manifest");
+    assert_eq!(
+        std::fs::metadata(&manifest_path)
+            .expect("manifest metadata")
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o600
+    );
+    let verified = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["backup-verify", "--backup-dir"])
+        .arg(&backup_dir)
+        .output()
+        .expect("verify offline backup");
+    assert!(
+        verified.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let stable_database = std::fs::read(backup_dir.join("storage.redb")).unwrap();
+    let verified_again = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["backup-verify", "--backup-dir"])
+        .arg(&backup_dir)
+        .output()
+        .expect("repeat offline backup verification");
+    assert!(
+        verified_again.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified_again.stderr)
+    );
+    assert_eq!(
+        std::fs::read(backup_dir.join("storage.redb")).unwrap(),
+        stable_database,
+        "read-only verification must preserve backup bytes"
+    );
+
+    let mut corrupted_manifest = original_manifest.clone();
+    let last = corrupted_manifest.len() - 2;
+    corrupted_manifest[last] = if corrupted_manifest[last] == b'0' {
+        b'1'
+    } else {
+        b'0'
+    };
+    std::fs::write(&manifest_path, &corrupted_manifest).unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["backup-verify", "--backup-dir"])
+        .arg(&backup_dir)
+        .output()
+        .expect("verify corrupted backup manifest");
+    assert!(!rejected.status.success());
+    std::fs::write(&manifest_path, original_manifest).unwrap();
+
+    let repeated = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["backup", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--output-dir")
+        .arg(&backup_dir)
+        .output()
+        .expect("refuse to overwrite an existing backup");
+    assert!(!repeated.status.success());
+
+    let live = StorageInstance::open(fixture.instance_dir()).expect("lock source instance");
+    let locked = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["backup", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--output-dir")
+        .arg(fixture.0.join("blocked-backup"))
+        .output()
+        .expect("reject backup while source is live");
+    assert!(!locked.status.success());
+    assert!(String::from_utf8_lossy(&locked.stderr).contains("InstanceLocked"));
+    drop(live);
 }
 
 #[test]

@@ -6,7 +6,7 @@ Implement [bootstrap/startup/offline upgrades](../../specs/catalog-lifecycle.md)
 
 ## Decisions Before Implementation
 
-The local directory profile, one-time secret handoff over a permission-restricted Unix socket, interrupted-handoff token rotation, and `prdb-init` setup client are implemented. Still integrate automated supervisor lifecycle, define the supported version matrix and operator diagnostics, and specify backup/retained-source verification, migration progress/publication and manual administrator recovery commands. Distinguish redb format, engine/catalog, policy IR, verifier and built-in semantics versions from network/ABI/plan versions.
+The local directory profile, one-time secret handoff over a permission-restricted Unix socket, interrupted-handoff token rotation, `prdb-init` setup client, and a checksummed offline READY backup/verification command are implemented. Still integrate automated supervisor lifecycle, define the supported version matrix and operator diagnostics, and specify migration progress/publication and manual administrator recovery commands. Distinguish redb format, engine/catalog, policy IR, verifier and built-in semantics versions from network/ABI/plan versions.
 
 ## Increments
 
@@ -16,6 +16,7 @@ The local directory profile, one-time secret handoff over a permission-restricte
 | CL-2 | Failure at every handoff/state boundary resumes safely without a default credential or plaintext persisted secret | Protected local first-admin/token delivery, explicit lost-delivery reconciliation and one-time verifier persistence |
 | CL-3 | Unknown version, required record/index corruption or redb recovery error blocks READY | Open with pinned supported redb, validate logical tables/catalog/dependencies/authority and publish readiness only after success |
 | CL-4 | An older binary/unsupported verifier or IR cannot silently read-write a newer directory | Explicit independent compatibility gates and populated cross-version fixtures; ordinary startup performs no automatic migration |
+| CL-5 prerequisite | A READY source can be preserved and independently re-opened before conversion | Exclusive offline lock, private byte copy, durable checksummed manifest, read-only READY validation, and repeatable verification |
 | CL-5 | Offline migration interruption before publication preserves source; after publication startup uses completed target | Stop admission/drain, exclusive access, verified backup/source generation, trusted bounded conversion and redb-supported atomic generation publication |
 | CL-6 | Upgrade preserves IDs, data, grants/policies and verifier semantics; post-upgrade writes prevent unsafe automatic rollback | Validate target before switch, retain source for documented window, test reverse migration/explicit restore boundaries and rebuild disposable derived caches |
 

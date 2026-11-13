@@ -15,9 +15,14 @@ use crate::ipc::{
 };
 use crate::metadata::{EngineMetadata, Lifecycle};
 use crate::schema::{AUDIT, CATALOG, ENGINE_META, PRINCIPAL_NAMES, SCHEMA_NAMES, create_tables};
-use crate::startup::{StartupError, validate_initializing_records, validate_persisted_records};
+use crate::startup::{
+    StartupError, validate_initializing_records, validate_persisted_records,
+    validate_persisted_records_read_only,
+};
 use crate::storage_manager::{StorageManager, StorageManagerConfig, StorageManagerInitError};
-use redb::{Database, Durability, ReadableDatabase, ReadableTable, ReadableTableMetadata};
+use redb::{
+    Database, Durability, ReadOnlyDatabase, ReadableDatabase, ReadableTable, ReadableTableMetadata,
+};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -373,6 +378,39 @@ pub struct StorageInstance {
     _lock: InstanceLock,
 }
 
+/// An integrity-validated READY instance opened without redb writes. The
+/// exclusive instance lock prevents a cooperating service from changing the
+/// image during inspection.
+pub struct ReadOnlyStorageInstance {
+    database: ReadOnlyDatabase,
+    _lock: InstanceLock,
+}
+
+impl ReadOnlyStorageInstance {
+    pub fn open(directory: impl AsRef<Path>) -> Result<Self, BootstrapError> {
+        let directory = directory.as_ref();
+        validate_managed_directory(directory, true)?;
+        let lock = InstanceLock::acquire(directory)?;
+        if directory.join(SETUP_SOCKET_FILE).try_exists()? {
+            return Err(BootstrapError::InvalidRequest);
+        }
+        validate_managed_directory(directory, true)?;
+        let database_path = directory.join(DATABASE_FILE);
+        validate_private_file(&database_path)?;
+        let database =
+            ReadOnlyDatabase::open(&database_path).map_err(|_| BootstrapError::Storage)?;
+        validate_persisted_records_read_only(&database).map_err(BootstrapError::Startup)?;
+        Ok(Self {
+            database,
+            _lock: lock,
+        })
+    }
+
+    pub fn database(&self) -> &ReadOnlyDatabase {
+        &self.database
+    }
+}
+
 #[derive(Debug)]
 pub enum AuditArchiveError {
     InvalidOutputPath,
@@ -421,6 +459,21 @@ impl StorageInstance {
 
     pub fn database(&self) -> &Database {
         &self.database
+    }
+
+    pub(crate) fn close_database_and<T, E>(
+        self,
+        operation: impl FnOnce(&Path) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let Self {
+            database,
+            database_path,
+            _lock,
+        } = self;
+        let directory = database_path.parent().unwrap_or_else(|| Path::new("."));
+        drop(database);
+        let _lock = _lock;
+        operation(directory)
     }
 
     /// Export the complete bounded audit table to a private checksummed file,
