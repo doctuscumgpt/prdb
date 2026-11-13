@@ -1,6 +1,7 @@
 //! Trusted engine components.
 
 pub mod audit;
+pub mod audit_archive;
 pub mod authorization;
 pub mod bootstrap;
 pub mod catalog;

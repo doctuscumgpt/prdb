@@ -373,6 +373,33 @@ pub struct StorageInstance {
     _lock: InstanceLock,
 }
 
+#[derive(Debug)]
+pub enum AuditArchiveError {
+    InvalidOutputPath,
+    InvalidArchive,
+    ConcurrentChange,
+    Storage,
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for AuditArchiveError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidOutputPath => formatter.write_str("invalid audit archive output path"),
+            Self::InvalidArchive => formatter.write_str(
+                "existing audit archive is invalid or does not match the current history",
+            ),
+            Self::ConcurrentChange => {
+                formatter.write_str("audit history changed during offline archival")
+            }
+            Self::Storage => formatter.write_str("audit archive storage operation failed"),
+            Self::Io(error) => write!(formatter, "audit archive I/O failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for AuditArchiveError {}
+
 impl StorageInstance {
     /// Open and validate a READY instance while holding its exclusive lock.
     pub fn open(directory: impl AsRef<Path>) -> Result<Self, BootstrapError> {
@@ -394,6 +421,77 @@ impl StorageInstance {
 
     pub fn database(&self) -> &Database {
         &self.database
+    }
+
+    /// Export the complete bounded audit table to a private checksummed file,
+    /// make that file and its directory entry durable, then remove the exact
+    /// exported records in one redb transaction. An existing matching archive
+    /// permits retry after a crash between export and database pruning.
+    pub fn archive_audit_events(
+        &mut self,
+        output_path: impl AsRef<Path>,
+    ) -> Result<usize, AuditArchiveError> {
+        let output_path = output_path.as_ref();
+        let output_name = output_path
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .ok_or(AuditArchiveError::InvalidOutputPath)?;
+        let output_parent = output_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let canonical_parent = output_parent
+            .canonicalize()
+            .map_err(AuditArchiveError::Io)?;
+        let instance_directory = self
+            .database_path
+            .parent()
+            .ok_or(AuditArchiveError::InvalidOutputPath)?
+            .canonicalize()
+            .map_err(AuditArchiveError::Io)?;
+        if canonical_parent.starts_with(instance_directory) {
+            return Err(AuditArchiveError::InvalidOutputPath);
+        }
+        let output_path = canonical_parent.join(output_name);
+
+        let events = read_audit_archive_records(&self.database)?;
+        if events.is_empty() {
+            return Ok(0);
+        }
+        let encoded =
+            crate::audit_archive::encode(&events).map_err(|_| AuditArchiveError::Storage)?;
+        if output_path.exists() {
+            let existing = read_bounded_archive(&output_path)?;
+            let archived = crate::audit_archive::decode(&existing)
+                .map_err(|_| AuditArchiveError::InvalidArchive)?;
+            if archived != events {
+                return Err(AuditArchiveError::InvalidArchive);
+            }
+            sync_archive_directory(&canonical_parent).map_err(AuditArchiveError::Io)?;
+        } else {
+            write_archive_without_overwrite(&canonical_parent, &output_path, &encoded)?;
+            sync_archive_directory(&canonical_parent).map_err(AuditArchiveError::Io)?;
+        }
+
+        let write = self
+            .database
+            .begin_write()
+            .map_err(|_| AuditArchiveError::Storage)?;
+        {
+            let mut table = write
+                .open_table(AUDIT)
+                .map_err(|_| AuditArchiveError::Storage)?;
+            if read_audit_records_from_table(&table)? != events {
+                return Err(AuditArchiveError::ConcurrentChange);
+            }
+            for (event_id, _) in &events {
+                table
+                    .remove(event_id.as_slice())
+                    .map_err(|_| AuditArchiveError::Storage)?;
+            }
+        }
+        write.commit().map_err(|_| AuditArchiveError::Storage)?;
+        Ok(events.len())
     }
 
     /// Make one explicit attempt to reclaim redb pages while this handle is
@@ -447,6 +545,123 @@ impl StorageInstance {
     ) -> Result<crate::outcome::OutcomePruneResult, crate::outcome::OutcomeMaintenanceError> {
         crate::outcome::prune_expired_outcomes(&self.database, now_us, max_scanned)
     }
+}
+
+fn read_audit_archive_records(
+    database: &Database,
+) -> Result<Vec<crate::audit_archive::AuditArchiveRecord>, AuditArchiveError> {
+    let read = database
+        .begin_read()
+        .map_err(|_| AuditArchiveError::Storage)?;
+    let table = read
+        .open_table(AUDIT)
+        .map_err(|_| AuditArchiveError::Storage)?;
+    if table.len().map_err(|_| AuditArchiveError::Storage)? > crate::audit::MAX_AUDIT_EVENTS as u64
+    {
+        return Err(AuditArchiveError::Storage);
+    }
+    read_audit_records_from_table(&table)
+}
+
+fn read_audit_records_from_table<T: redb::ReadableTable<&'static [u8], &'static [u8]>>(
+    table: &T,
+) -> Result<Vec<crate::audit_archive::AuditArchiveRecord>, AuditArchiveError> {
+    let mut events = Vec::new();
+    for entry in table.iter().map_err(|_| AuditArchiveError::Storage)? {
+        let (key, value) = entry.map_err(|_| AuditArchiveError::Storage)?;
+        let key: [u8; 16] = key
+            .value()
+            .try_into()
+            .map_err(|_| AuditArchiveError::Storage)?;
+        let value = value.value().to_vec();
+        let decoded = AuditEvent::decode(&value).map_err(|_| AuditArchiveError::Storage)?;
+        if decoded.event_id != key
+            || events
+                .last()
+                .is_some_and(|(previous, _): &([u8; 16], Vec<u8>)| *previous >= key)
+        {
+            return Err(AuditArchiveError::Storage);
+        }
+        events.push((key, value));
+        if events.len() > crate::audit::MAX_AUDIT_EVENTS {
+            return Err(AuditArchiveError::Storage);
+        }
+    }
+    Ok(events)
+}
+
+fn read_bounded_archive(path: &Path) -> Result<Vec<u8>, AuditArchiveError> {
+    let metadata = fs::symlink_metadata(path).map_err(AuditArchiveError::Io)?;
+    if !metadata.file_type().is_file()
+        || metadata.len() > crate::audit_archive::MAX_ARCHIVE_LENGTH as u64
+        || metadata.permissions().mode() & 0o7777 != 0o600
+    {
+        return Err(AuditArchiveError::InvalidArchive);
+    }
+    fs::read(path).map_err(AuditArchiveError::Io)
+}
+
+fn write_archive_without_overwrite(
+    directory: &Path,
+    output_path: &Path,
+    bytes: &[u8],
+) -> Result<(), AuditArchiveError> {
+    let mut temp_file = None;
+    let mut temp_path = None;
+    for _ in 0..16 {
+        let mut random = [0u8; 16];
+        getrandom::fill(&mut random).map_err(|_| AuditArchiveError::Storage)?;
+        let suffix = random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let mut temp_name = std::ffi::OsString::from(".prdb-audit-");
+        temp_name.push(suffix);
+        temp_name.push(".tmp");
+        let candidate = directory.join(temp_name);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temp_path = Some(candidate);
+                temp_file = Some(file);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(AuditArchiveError::Io(error)),
+        }
+    }
+    let temp_path = temp_path.ok_or(AuditArchiveError::Storage)?;
+    let result = (|| {
+        let mut file = temp_file.ok_or(AuditArchiveError::Storage)?;
+        file.write_all(bytes).map_err(AuditArchiveError::Io)?;
+        file.sync_all().map_err(AuditArchiveError::Io)?;
+        drop(file);
+        match fs::hard_link(&temp_path, output_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let existing = read_bounded_archive(output_path)?;
+                if existing != bytes {
+                    return Err(AuditArchiveError::InvalidArchive);
+                }
+            }
+            Err(error) => return Err(AuditArchiveError::Io(error)),
+        }
+        fs::remove_file(&temp_path).map_err(AuditArchiveError::Io)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
+}
+
+fn sync_archive_directory(directory: &Path) -> Result<(), std::io::Error> {
+    File::open(directory)?.sync_all()
 }
 
 /// Create a new local database in a previously absent directory.
