@@ -24741,7 +24741,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             requested_scope: requested_scope.clone(),
             parameter_bytes: 0,
             parameter_sha256: Sha256::digest([]).into(),
-            deadline_ms: 30_000,
+            deadline_ms: 120_000,
             workload_class: WorkloadClass::Analytical,
         },
     )?;
@@ -24829,7 +24829,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             requested_scope: requested_scope.clone(),
             parameter_bytes: 1,
             parameter_sha256: Sha256::digest(cancellation_parameter).into(),
-            deadline_ms: 30_000,
+            deadline_ms: 120_000,
             workload_class: WorkloadClass::Analytical,
         },
     )?;
@@ -24901,7 +24901,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 requested_scope: requested_scope.clone(),
                 parameter_bytes: 1,
                 parameter_sha256: Sha256::digest(cancellation_parameter).into(),
-                deadline_ms: 30_000,
+                deadline_ms: 120_000,
                 workload_class: WorkloadClass::Analytical,
             },
         )?;
@@ -25197,7 +25197,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 let mut active_worker_point_read_latencies = Vec::new();
                 let mut active_worker_commit_latencies = Vec::new();
                 let mut completed = 0;
-                let max_operations = if worker_index < 60 { 1 } else { 64 };
+                let max_operations = if worker_index < 60 { 1 } else { 200 };
                 let min_operations_before_exit = if worker_index < 60 { 1 } else { 16 };
                 for index in 0..max_operations {
                     let mut invocation_id = [0xe0; 16];
@@ -25544,7 +25544,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                             cancellation_completed_transactions
                                 .load(std::sync::atomic::Ordering::Acquire);
                         let saturation_started_at = std::time::Instant::now();
-                        std::thread::sleep(Duration::from_secs(10));
+                        std::thread::sleep(Duration::from_secs(30));
                         let saturation_elapsed = saturation_started_at.elapsed();
                         let operational_progress = cancellation_completed_transactions
                             .load(std::sync::atomic::Ordering::Acquire)
@@ -25558,7 +25558,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                                 .and_then(|(_, fields)| fields.split_whitespace().next())
                                 .map(str::to_owned)
                         });
-                        if saturation_elapsed < Duration::from_secs(10)
+                        if saturation_elapsed < Duration::from_secs(30)
                             || operational_progress < 4
                             || primary_state
                                 .as_deref()

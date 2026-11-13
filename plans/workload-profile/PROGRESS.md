@@ -1,10 +1,16 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: 30-second eight-worker mixed-load interval — covered
+
+- Harness: the primary SQL fixture remains inside its analytical callback for 31 seconds. The acceptance requires all eight storage invocation statuses to remain Active during a measured 30-second window and keeps four of the 64 operational threads cycling authorized point reads, scans, and read-only commits. Their loop limit is raised to 200 transactions each; cancellation queries poll every 100 ms within their bounded IPC allowance and have 120-second invocation deadlines.
+- Verification: two sequential fresh-database delegated-cgroup runs passed (`1 passed, 0 ignored` each). Both held all eight analytics statuses Active for 30 seconds and completed 799 operational read/scan/commit transactions in the window. Summed analytical cgroup `memory.current` ranged from 13,048–13,760 KiB and summed per-worker `memory.peak` from 16,940–17,316 KiB. Operational point-read p99 ranged from 81.793–87.499 ms and read-only durable-commit p99 from 307.883–316.075 ms. These are local observations, not service targets.
+- Scope: this is a short local mixed-workload soak using read-only operational commits. It does not add concurrent row-changing writes, measure retained-version growth/reclamation, or establish target-hardware behavior.
+
 ## WI-7 follow-up: ten-second eight-worker saturation interval — covered
 
 - Harness: the SQL fixture now keeps the primary confined analytics process live for 11 seconds after the resumed-group marker. The acceptance verifies all eight storage invocation statuses remain Active across a ten-second interval while four operational threads continue authorized point reads, scans, and durable commits. Each interval must complete at least four operational commits; the cancellation fixtures poll every 50 ms with bounded IPC.
 - Verification: four sequential fresh-database delegated-cgroup runs passed (`1 passed, 0 ignored` each). Every run held all eight analytics invocations Active for ten seconds and completed 254–258 operational commits during the interval. Summed eight-worker cgroup `memory.current` ranged from 12,936–13,396 KiB and summed per-worker `memory.peak` from 17,268–17,652 KiB. Operational point-read p99 ranged from 79.620–99.777 ms and durable-commit p99 from 650.962–733.185 ms. These are local observations, not service targets.
-- Scope: this is a repeatable ten-second admission/progress sample, not a long-duration capacity or reclamation test. Longer snapshots, concurrent row-changing writes, target-hardware behavior, and post-pressure reclamation remain open.
+- Scope: this initial ten-second interval was extended by the 30-second sample immediately above. Both use read-only operational commits; concurrent row-changing writes, long-run retained-version reclamation, and target-hardware behavior remain open.
 
 ## WI-7 follow-up: two-second eight-worker saturation interval — covered
 

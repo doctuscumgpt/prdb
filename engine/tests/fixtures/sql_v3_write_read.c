@@ -106,8 +106,8 @@ static int32_t cancel_update_executor_request(
         return PRDB_QUERY_CALLBACK_IO_ERROR;
     }
     cancel_update_ready_sent = 1;
-    const struct timespec poll_interval = {0, 50000000};
-    for (uint32_t poll = 0; poll < 240; ++poll) {
+    const struct timespec poll_interval = {0, 100000000};
+    for (uint32_t poll = 0; poll < 320; ++poll) {
         if (sleep_without_signal_interruption(poll_interval) != 0) {
             return PRDB_QUERY_CALLBACK_IO_ERROR;
         }
@@ -276,7 +276,7 @@ static int32_t verify_analytical_pressure_group(
     }
     if (context->group_count == 2) {
         /* Keep the eighth analytical slot active through the bounded mixed-load window. */
-        const struct timespec saturation_interval = {11, 0};
+        const struct timespec saturation_interval = {31, 0};
         if (sleep_without_signal_interruption(saturation_interval) != 0) {
             return 1;
         }
