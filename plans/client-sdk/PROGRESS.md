@@ -625,3 +625,11 @@
 - Regression: runtime-page output was missing the counter before implementation. Storage lifecycle checks cover denied audits for terminal and unknown targets, an accepted request leaves the denied count unchanged, and a rate-limited request remains uncounted. TCP and saturation tests verify decoding and bounds.
 - Verification: focused storage, runtime, client and saturation tests; workspace build/fmt/Clippy; TinyCC suite and fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite with zero ignored tests; and `git diff --check` passed.
 - Remaining: additional runtime counters and registries remain open under OM-2.
+
+## SDK-17 / OM-2: invocation policy denial counter projection — verified slice
+
+- Behavior: `runtime-list` exposes `invocation_policy_denials_total`, counting each managed invocation executor IPC request that returns explicit `AuthorizationError::Denied`. Hidden rows/cells, unavailable relations, malformed requests, and policy evaluation failures are excluded. The process-local counter saturates and resets with the registry.
+- Implementation: the executor dispatch boundary increments the global registry counter through a weak metrics handle, preserving immediate admission-slot release on abort.
+- Regression: a SELECT-only principal resolves a visible relation, then receives `AuthorizationError::Denied` for `StageInsert`; the authorized runtime page reports one. The typed TCP fixture decodes the counter, and saturation coverage verifies its bound.
+- Verification: observed the expected runtime assertion failure before implementation; focused storage/runtime, TCP and saturation tests; workspace build/fmt/Clippy; TinyCC tests and fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite with zero ignored tests; and `git diff --check` passed.
+- Remaining: additional runtime counters and registries remain open under OM-2.

@@ -1512,6 +1512,23 @@ pub fn dispatch_executor_request(
     connection: &mut ExecutorMetadataConnection<'_, '_>,
     request: &IpcFrame,
 ) -> Result<IpcFrame, ExecutorRequestError> {
+    let result = dispatch_executor_request_inner(role, connection, request);
+    if matches!(
+        &result,
+        Err(ExecutorRequestError::Transaction(
+            TransactionError::Authorization(crate::authorization::AuthorizationError::Denied)
+        ))
+    ) {
+        connection.record_policy_denial();
+    }
+    result
+}
+
+fn dispatch_executor_request_inner(
+    role: ServiceRole,
+    connection: &mut ExecutorMetadataConnection<'_, '_>,
+    request: &IpcFrame,
+) -> Result<IpcFrame, ExecutorRequestError> {
     let operation =
         Operation::from_code(request.operation).map_err(ExecutorRequestError::Dispatch)?;
     authorize_operation(role, operation).map_err(ExecutorRequestError::Dispatch)?;

@@ -44,7 +44,7 @@ use crate::snapshot::{MAX_CATALOG_FAMILY_SCAN, MAX_ROW_SCAN_PAGE, RowSnapshot, S
 use crate::statistics::{
     AuthorizedScanEstimate, AuthorizedScanSummary, ColumnPopulation, MAX_ESTIMATE_CANDIDATES,
 };
-use crate::storage_manager::InvocationAdmissionPermit;
+use crate::storage_manager::{InvocationAdmissionMetrics, InvocationAdmissionPermit};
 use crate::tuple::{
     ColumnSchema, FieldPatch, ScalarType, ScalarValue, TupleError, apply_patch, decode_tuple,
     encode_tuple,
@@ -552,6 +552,7 @@ struct ActiveInformationSchemaColumnsScan {
 pub(crate) struct InvocationCoordination {
     ddl_fences: Option<DdlFenceCoordinator>,
     _admission_permit: Option<InvocationAdmissionPermit>,
+    admission_metrics: Option<InvocationAdmissionMetrics>,
     max_age: Option<(Instant, Duration)>,
     max_scan_work: usize,
 }
@@ -561,6 +562,7 @@ impl InvocationCoordination {
         Self {
             ddl_fences: None,
             _admission_permit: None,
+            admission_metrics: None,
             max_age: None,
             max_scan_work: MAX_INVOCATION_SCAN_WORK,
         }
@@ -570,6 +572,7 @@ impl InvocationCoordination {
         Self {
             ddl_fences: Some(ddl_fences),
             _admission_permit: None,
+            admission_metrics: None,
             max_age: None,
             max_scan_work: MAX_INVOCATION_SCAN_WORK,
         }
@@ -581,9 +584,11 @@ impl InvocationCoordination {
         max_age: Duration,
         max_scan_work: usize,
     ) -> Self {
+        let admission_metrics = admission_permit.metrics();
         Self {
             ddl_fences: Some(ddl_fences),
             _admission_permit: Some(admission_permit),
+            admission_metrics: Some(admission_metrics),
             max_age: Some((Instant::now(), max_age)),
             max_scan_work,
         }
@@ -621,6 +626,12 @@ impl InvocationCoordination {
     fn record_conflict(&self) {
         if let Some(permit) = &self._admission_permit {
             permit.record_conflict();
+        }
+    }
+
+    fn record_policy_denial(&self) {
+        if let Some(metrics) = &self.admission_metrics {
+            metrics.record_policy_denial();
         }
     }
 
@@ -8088,6 +8099,10 @@ fn attach_plan_identity(
 }
 
 impl ExecutorMetadataConnection<'_, '_> {
+    pub(crate) fn record_policy_denial(&mut self) {
+        self.transaction.coordination.record_policy_denial();
+    }
+
     /// Poll the invocation's cancellation and deadline state. Expired or
     /// cancelled invocations are aborted before returning `true`.
     pub fn check_cancellation(&mut self) -> Result<bool, TransactionError> {

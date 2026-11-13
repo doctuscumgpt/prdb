@@ -279,6 +279,7 @@ pub struct AdministrativeInvocationPage {
     pub invocation_conflicts_total: u64,
     pub admin_cancellations_accepted_total: u64,
     pub admin_cancellations_denied_total: u64,
+    pub invocation_policy_denials_total: u64,
     pub fence_waits: Vec<crate::ddl_fence::DdlFenceWaitStatus>,
     pub fence_waits_truncated: bool,
     pub continuation: Option<AdministrativeInvocationCursor>,
@@ -1702,6 +1703,7 @@ struct LiveInvocationRegistry {
     invocation_conflicts_total: u64,
     admin_cancellations_accepted_total: u64,
     admin_cancellations_denied_total: u64,
+    invocation_policy_denials_total: u64,
     entries: HashMap<[u8; 16], LiveInvocation>,
 }
 
@@ -1714,6 +1716,7 @@ struct AdministrativeInvocationProjection {
     invocation_conflicts_total: u64,
     admin_cancellations_accepted_total: u64,
     admin_cancellations_denied_total: u64,
+    invocation_policy_denials_total: u64,
 }
 
 impl LiveInvocationRegistry {
@@ -1725,6 +1728,11 @@ impl LiveInvocationRegistry {
     fn record_admin_cancellation_denial(&mut self) {
         self.admin_cancellations_denied_total =
             self.admin_cancellations_denied_total.saturating_add(1);
+    }
+
+    fn record_invocation_policy_denial(&mut self) {
+        self.invocation_policy_denials_total =
+            self.invocation_policy_denials_total.saturating_add(1);
     }
 
     fn advance_generation(&mut self) {
@@ -1745,6 +1753,32 @@ impl LiveInvocationRegistry {
 pub(crate) struct InvocationAdmissionPermit {
     state: Arc<InvocationAdmissionState>,
     invocation_id: [u8; 16],
+}
+
+#[derive(Clone)]
+pub(crate) struct InvocationAdmissionMetrics {
+    state: Weak<InvocationAdmissionState>,
+}
+
+impl InvocationAdmissionMetrics {
+    pub(crate) fn record_policy_denial(&self) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let mut live = state
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        live.record_invocation_policy_denial();
+    }
+}
+
+impl InvocationAdmissionPermit {
+    pub(crate) fn metrics(&self) -> InvocationAdmissionMetrics {
+        InvocationAdmissionMetrics {
+            state: Arc::downgrade(&self.state),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2004,6 +2038,7 @@ impl InvocationAdmissionState {
             invocation_conflicts_total: live.invocation_conflicts_total,
             admin_cancellations_accepted_total: live.admin_cancellations_accepted_total,
             admin_cancellations_denied_total: live.admin_cancellations_denied_total,
+            invocation_policy_denials_total: live.invocation_policy_denials_total,
         })
     }
 }
@@ -2214,6 +2249,7 @@ fn invocation_registry(
             invocation_conflicts_total: 0,
             admin_cancellations_accepted_total: 0,
             admin_cancellations_denied_total: 0,
+            invocation_policy_denials_total: 0,
             entries: HashMap::new(),
         }),
         changed: Condvar::new(),
@@ -10249,6 +10285,7 @@ impl<'db> StorageManager<'db> {
             invocation_conflicts_total: projection.invocation_conflicts_total,
             admin_cancellations_accepted_total: projection.admin_cancellations_accepted_total,
             admin_cancellations_denied_total: projection.admin_cancellations_denied_total,
+            invocation_policy_denials_total: projection.invocation_policy_denials_total,
             fence_waits,
             fence_waits_truncated,
             continuation: projection.continuation,
@@ -11363,6 +11400,7 @@ mod commit_cancellation_boundary_tests {
                 invocation_conflicts_total: 0,
                 admin_cancellations_accepted_total: 0,
                 admin_cancellations_denied_total: 0,
+                invocation_policy_denials_total: 0,
                 entries: std::collections::HashMap::new(),
             }),
             changed: std::sync::Condvar::new(),
@@ -11401,7 +11439,7 @@ mod commit_cancellation_boundary_tests {
     }
 
     #[test]
-    fn admission_conflict_and_cancellation_counters_saturate_at_u64_max() {
+    fn admission_conflict_cancellation_and_policy_counters_saturate_at_u64_max() {
         let state = std::sync::Arc::new(InvocationAdmissionState {
             database_key: 0,
             limit: std::sync::atomic::AtomicUsize::new(1),
@@ -11413,6 +11451,7 @@ mod commit_cancellation_boundary_tests {
                 invocation_conflicts_total: u64::MAX,
                 admin_cancellations_accepted_total: u64::MAX,
                 admin_cancellations_denied_total: u64::MAX,
+                invocation_policy_denials_total: u64::MAX,
                 entries: std::collections::HashMap::new(),
             }),
             changed: std::sync::Condvar::new(),
@@ -11433,6 +11472,7 @@ mod commit_cancellation_boundary_tests {
             .lock()
             .unwrap()
             .record_admin_cancellation_denial();
+        permit.metrics().record_policy_denial();
         assert_eq!(
             {
                 let live = state.live.lock().unwrap();
@@ -11441,9 +11481,10 @@ mod commit_cancellation_boundary_tests {
                     live.invocation_conflicts_total,
                     live.admin_cancellations_accepted_total,
                     live.admin_cancellations_denied_total,
+                    live.invocation_policy_denials_total,
                 )
             },
-            (u64::MAX, u64::MAX, u64::MAX, u64::MAX)
+            (u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX)
         );
         drop(permit);
     }

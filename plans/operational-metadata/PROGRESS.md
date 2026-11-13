@@ -62,7 +62,7 @@
 - Implementation: successful registry insertion increments admissions; the invocation commit failure path increments conflicts only for the explicit conflict variant. The bounded runtime projection carries both counters through protocol, typed client, and CLI.
 - Regression: the authorized runtime response failed when the conflict field was omitted, then passed after restoration. A storage race test checks the count after real conflicting commits, the TCP fixture verifies decoding, and a unit test verifies saturation of both counters.
 - Verification: focused commit-race, runtime-page, typed TCP, and saturation tests; workspace build/fmt/Clippy; TinyCC tests and sandbox fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite (service exited successfully); and `git diff --check` passed.
-- Remaining: policy-denial, cancellation, byte, and latency counters; job registries; redb retained-byte/cache telemetry; additional wait categories; and broader pressure/authority-race testing remain open.
+- Remaining: byte and latency counters; job registries; redb retained-byte/cache telemetry; additional wait categories; and broader pressure/authority-race testing remain open.
 
 ## OM-2 audited administrator cancellation counter — verified slice
 
@@ -70,7 +70,7 @@
 - Implementation: the cancellation path increments the registry counter only after an accepted, changed cancellation survives the audit boundary. The authorized runtime page, strict typed TCP client, and CLI JSON carry the field.
 - Regression: the runtime-field assertion failed before implementation. Lifecycle coverage checks one first cancellation plus an accepted repeat remains at one; the saturation test includes the cancellation counter, and the typed client fixture decodes it.
 - Verification: focused storage, client, and saturation tests; workspace build/fmt/Clippy; TinyCC tests and sandbox fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite (all tests passed with zero ignored); and `git diff --check` passed.
-- Remaining: policy-denial, byte, and latency counters; job registries; retained-byte/cache telemetry; additional wait categories; and broader pressure/authority-race tests remain open.
+- Remaining: byte and latency counters; job registries; retained-byte/cache telemetry; additional wait categories; and broader pressure/authority-race tests remain open.
 
 ## OM-2 audited administrator cancellation denial counter — verified slice
 
@@ -78,4 +78,12 @@
 - Implementation: the existing COMMITTING and absent-invocation branches increment the counter after the durable denied audit succeeds; the runtime page, strict client decoder, and CLI expose it.
 - Regression: the authorized runtime response failed before the new field existed. Lifecycle coverage verifies accepted cancellation leaves denials at zero, terminal and unknown targets with committed denied audits increment it, and rate limiting does not.
 - Verification: focused cancellation lifecycle, runtime page, typed TCP and saturation tests; workspace build/fmt/Clippy; TinyCC suite and sandbox fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite with zero ignored tests; and `git diff --check` passed.
-- Remaining: policy-denial, byte, and latency counters; job registries; retained-byte/cache telemetry; additional wait categories; and broader pressure/authority-race tests remain open.
+- Remaining: byte and latency counters; job registries; retained-byte/cache telemetry; additional wait categories; and broader pressure/authority-race tests remain open.
+
+## OM-2 invocation policy denial counter — verified slice
+
+- Contract: `invocation_policy_denials_total` counts each managed-invocation executor IPC request that returns explicit `AuthorizationError::Denied`. Hidden rows/cells, unavailable relations, malformed requests, and policy evaluation failures are excluded. It is administrator-only, process-local, saturating, and resets with the invocation registry.
+- Implementation: the executor dispatch boundary records the denial through a weak metrics handle, so an authorization error can be counted after its transaction aborts and releases the admission permit without extending registry lifetime.
+- Regression: an ordinary principal with SELECT but no INSERT resolves a visible relation and receives a real denied `StageInsert`; the administrator runtime response reports one. TCP decoding and saturation coverage exercise the field.
+- Verification: observed the runtime assertion fail before implementation; focused executor/runtime, TCP, and saturation tests; workspace build/fmt/Clippy; TinyCC suite and fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite with zero ignored tests; and `git diff --check` passed.
+- Remaining: byte and latency counters; job registries; retained-byte/cache telemetry; additional wait categories; and broader pressure/authority-race tests remain open.

@@ -10733,6 +10733,59 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         ],
         &[metadata_grant_audit],
     )?;
+    let mut policy_denial_invocation =
+        storage.begin_invocation(id(0xe0), ordinary_id, retention_deadline_us, 2, 64)?;
+    let mut executor = policy_denial_invocation.open_executor_metadata_connection();
+    let resolve_request = prdb_engine::executor_ipc::ResolveRelationRequest {
+        schema_name: "visible_app".to_owned(),
+        relation_name: "metrics".to_owned(),
+    };
+    let resolved = prdb_engine::executor_ipc::dispatch_executor_request(
+        prdb_engine::ipc::ServiceRole::Executor,
+        &mut executor,
+        &prdb_engine::ipc::IpcFrame {
+            operation: prdb_engine::ipc::Operation::ResolveRelation as u16,
+            request_id: 1,
+            payload: resolve_request.encode()?,
+        },
+    )?;
+    let handle =
+        match prdb_engine::executor_ipc::ResolveRelationResponse::decode(&resolved.payload)? {
+            prdb_engine::executor_ipc::ResolveRelationResponse::Resolved { handle, .. } => handle,
+            prdb_engine::executor_ipc::ResolveRelationResponse::Unavailable => {
+                return Err("SELECT-visible relation unexpectedly unavailable".into());
+            }
+        };
+    let denied_insert = prdb_engine::executor_ipc::dispatch_executor_request(
+        prdb_engine::ipc::ServiceRole::Executor,
+        &mut executor,
+        &prdb_engine::ipc::IpcFrame {
+            operation: prdb_engine::ipc::Operation::StageInsert as u16,
+            request_id: 2,
+            payload: prdb_engine::executor_ipc::StageInsertRequest {
+                relation: handle,
+                values: vec![
+                    prdb_engine::transaction::InsertInput::Value(Some(ScalarValue::Integer(1))),
+                    prdb_engine::transaction::InsertInput::Value(Some(ScalarValue::Text(
+                        "denied".to_owned(),
+                    ))),
+                ],
+            }
+            .encode()?,
+        },
+    );
+    assert!(matches!(
+        denied_insert,
+        Err(
+            prdb_engine::executor_ipc::ExecutorRequestError::Transaction(
+                prdb_engine::transaction::TransactionError::Authorization(
+                    prdb_engine::authorization::AuthorizationError::Denied
+                )
+            )
+        )
+    ));
+    drop(executor);
+    drop(policy_denial_invocation);
     let mut control = ClientConnectionSession::default();
     control.accept_hello(ClientMode::Control, "runtime-status")?;
     control.authenticate(&storage, id(237), &[0x5a; 32])?;
@@ -11312,10 +11365,14 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert!(runtime_page.contains("\"fence_waits_truncated\":false"));
     assert!(runtime_page.contains("\"pinned_snapshot_count\":2"));
     assert!(runtime_page.contains("\"oldest_snapshot_pin_age_us\":"));
-    assert!(runtime_page.contains("\"invocations_admitted_total\":3"));
+    assert!(runtime_page.contains("\"invocations_admitted_total\":4"));
     assert!(runtime_page.contains("\"invocation_conflicts_total\":0"));
     assert!(runtime_page.contains("\"admin_cancellations_accepted_total\":1"));
     assert!(runtime_page.contains("\"admin_cancellations_denied_total\":0"));
+    assert!(
+        runtime_page.contains("\"invocation_policy_denials_total\":1"),
+        "unexpected policy denial runtime counter: {runtime_page}"
+    );
     let runtime_cursor = runtime_page
         .split("\"next_cursor\":\"")
         .nth(1)
