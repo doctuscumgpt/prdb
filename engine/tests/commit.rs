@@ -25544,7 +25544,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                             cancellation_completed_transactions
                                 .load(std::sync::atomic::Ordering::Acquire);
                         let saturation_started_at = std::time::Instant::now();
-                        std::thread::sleep(Duration::from_secs(2));
+                        std::thread::sleep(Duration::from_secs(10));
                         let saturation_elapsed = saturation_started_at.elapsed();
                         let operational_progress = cancellation_completed_transactions
                             .load(std::sync::atomic::Ordering::Acquire)
@@ -25558,7 +25558,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                                 .and_then(|(_, fields)| fields.split_whitespace().next())
                                 .map(str::to_owned)
                         });
-                        if saturation_elapsed < Duration::from_secs(2)
+                        if saturation_elapsed < Duration::from_secs(10)
                             || operational_progress < 4
                             || primary_state
                                 .as_deref()
