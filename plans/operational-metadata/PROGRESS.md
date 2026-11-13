@@ -84,8 +84,8 @@
 
 - Contract: `invocation_policy_denials_total` counts each managed-invocation executor IPC request that returns explicit `AuthorizationError::Denied`. Hidden rows/cells, unavailable relations, malformed requests, and policy evaluation failures are excluded. It is administrator-only, process-local, saturating, and resets with the invocation registry.
 - Implementation: the executor dispatch boundary records the denial through a weak metrics handle, so an authorization error can be counted after its transaction aborts and releases the admission permit without extending registry lifetime.
-- Regression: an ordinary principal with SELECT but no INSERT resolves a visible relation and receives a real denied `StageInsert`; the administrator runtime response reports one. TCP decoding and saturation coverage exercise the field.
-- Verification: observed the runtime assertion fail before implementation; focused executor/runtime, TCP, and saturation tests; workspace build/fmt/Clippy; TinyCC suite and fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite with zero ignored tests; and `git diff --check` passed.
+- Regression: an ordinary principal with SELECT but no INSERT resolves a visible relation and receives 64 real denied `StageInsert` requests across sequential managed invocations; the administrator runtime response reports all 64, and the page confirms denied invocations release their admission entries. TCP decoding and saturation coverage exercise the field.
+- Verification: observed the runtime assertion fail before implementation; focused 64-denial executor/runtime, TCP, and saturation tests; workspace build/fmt/Clippy; TinyCC suite and fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite with zero ignored tests; and `git diff --check` passed.
 - Remaining: byte and latency counters; job registries; retained-byte/cache telemetry; additional wait categories; and broader pressure/authority-race tests remain open.
 
 ## OM-2 cumulative staged payload byte counter — verified slice
