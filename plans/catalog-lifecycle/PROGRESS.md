@@ -87,7 +87,14 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - `prdb-maintain migration-inspect --instance-dir PATH` takes the exclusive instance lock, validates the active READY generation and any private `.prdb-migration.next` image through read-only redb handles, then reports both generations' logical versions and commit sequence. It does not mutate either image or decide whether to resume, discard, or publish.
 - Regression verifies matching active/staged images are both reported, both redb files remain byte-identical, and inspection is rejected while another owner holds the instance lock. The help output includes the operation.
-- The command validates only formats supported by this engine. It cannot yet inspect a v1 source after an interrupted v1-to-v2 conversion; migration-aware source validation remains open.
+- A separate read-only validator checks the exact catalog-v1 READY source shape, including its 30 bootstrap mappings and lack of family-17 tombstones. `migration-inspect` can report a v1 active source while ordinary `StorageInstance::open` continues to reject it for service admission.
 - When both images validate, the report also flags database-ID mismatch and compares commit sequences as same-frontier, active-ahead, or staging-ahead; this is diagnostic only and does not infer which image should be kept.
 - Compatibility finding: v1 has no family-17 identity tombstones. Audit history is bounded and can be pruned, so it cannot prove the complete set of deleted user/role IDs. A v1-to-v2 conversion must not synthesize or omit permanent reservations without a trusted source; the transition remains fail-closed pending a safe contract.
 - Verification: the pinned-shell formatting check, locked workspace build, and warning-denied all-target Clippy passed. The full serial workspace suite passed inside the delegated `systemd --user` unit, with sandbox integration enabled and zero ignored tests. `git diff --check` passed.
+
+## CL-5 source validation: read-only catalog-v1 validation — implemented
+
+- Added an offline-only source validator for catalog version 1. It uses the full READY integrity walk, expects the legacy 30 bootstrap mappings and families 1–16, and applies the legacy rule that revoked credentials may refer to deleted principals. It opens the redb image read-only and never rebuilds derived indexes.
+- `prdb-maintain migration-inspect` can now inspect a v1 active source while normal service startup continues to reject it. A regression converts an initialized fixture to the exact v1 metadata/descriptor shape, verifies the full source walk, checks current startup rejection, and confirms the CLI diagnostic.
+- This proves source integrity but does not resolve v1's missing tombstone history or perform the v1-to-v2 conversion.
+- Verification: pinned-shell format check, locked workspace build, warning-denied all-target Clippy, and full serial workspace suite inside the delegated `systemd --user` service passed. Sandbox integration ran with zero ignored tests; `git diff --check` passed.

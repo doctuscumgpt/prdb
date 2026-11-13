@@ -1,10 +1,13 @@
 use prdb_engine::audit::{AuditAction, AuditEvent, AuditResult};
 use prdb_engine::bootstrap::{BootstrapError, StorageInstance};
+use prdb_engine::catalog::{decode_registered_envelope, encode_envelope, family_schema};
 use prdb_engine::client_credentials::read_client_credentials;
 use prdb_engine::metadata::EngineMetadata;
-use prdb_engine::schema::{AUDIT, ENGINE_META, POLICIES};
+use prdb_engine::schema::{AUDIT, CATALOG, ENGINE_META, POLICIES};
 use prdb_engine::startup::StartupError;
-use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableHandle};
+use redb::{
+    Database, ReadOnlyDatabase, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableHandle,
+};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::process::Command;
 
@@ -426,6 +429,106 @@ fn unsupported_catalog_version_is_rejected_before_derived_index_rebuild() {
             .any(|table| table.name() == POLICIES.name()),
         "unsupported databases must not have disposable indexes rebuilt"
     );
+}
+
+#[test]
+fn v1_source_validator_checks_legacy_ready_images_without_admitting_them() {
+    let fixture = Fixture::new();
+    let mut session =
+        prdb_engine::bootstrap::initialize(fixture.instance_dir(), "v1_source_admin", i64::MAX)
+            .expect("initialize source fixture");
+    let mut secret = session.take_secret().expect("bootstrap secret");
+    use zeroize::Zeroize;
+    secret.zeroize();
+    drop(session.acknowledge().expect("publish source READY"));
+
+    let database_path = fixture.instance_dir().join("storage.redb");
+    let database = Database::open(&database_path).expect("open fixture for legacy conversion");
+    let mut metadata = {
+        let read = database.begin_read().expect("read fixture metadata");
+        let table = read.open_table(ENGINE_META).expect("open metadata table");
+        let encoded = table.get(&b"format"[..]).expect("read metadata").unwrap();
+        EngineMetadata::decode(encoded.value()).expect("decode current metadata")
+    };
+    metadata.catalog_version = 1;
+    let encoded_metadata = metadata.encode().expect("encode v1 metadata");
+    let mut database_key = 1u16.to_be_bytes().to_vec();
+    database_key.push(1);
+    database_key.extend_from_slice(&metadata.database_id);
+    let mut fields = {
+        let read = database.begin_read().expect("read fixture catalog");
+        let table = read.open_table(CATALOG).expect("open catalog table");
+        let encoded = table
+            .get(database_key.as_slice())
+            .expect("read database record")
+            .unwrap();
+        decode_registered_envelope(encoded.value())
+            .expect("decode database record")
+            .fields
+    };
+    for field in &mut fields {
+        if field.tag == 2 {
+            field.payload = 1u32.to_le_bytes().to_vec();
+        }
+        if field.tag == 3 {
+            assert_eq!(
+                u32::from_le_bytes(field.payload[..4].try_into().unwrap()),
+                31
+            );
+            field.payload[..4].copy_from_slice(&30u32.to_le_bytes());
+            field.payload.truncate(4 + 30 * 20);
+        }
+    }
+    let database_record = encode_envelope(
+        &family_schema(1).expect("database family schema"),
+        &database_key,
+        &fields,
+    )
+    .expect("encode v1 database record");
+    {
+        let write = database.begin_write().expect("begin fixture downgrade");
+        write
+            .open_table(CATALOG)
+            .expect("open catalog for downgrade")
+            .insert(database_key.as_slice(), database_record.as_slice())
+            .expect("write v1 database record");
+        write
+            .open_table(ENGINE_META)
+            .expect("open metadata for downgrade")
+            .insert(&b"format"[..], &encoded_metadata[..])
+            .expect("write v1 metadata");
+        write.commit().expect("commit v1 source fixture");
+    }
+    drop(database);
+
+    let source = ReadOnlyDatabase::open(&database_path).expect("open legacy source read-only");
+    let report = prdb_engine::startup::validate_v1_migration_source_read_only(&source)
+        .expect("validate v1 source for offline conversion");
+    assert_eq!(report.metadata.catalog_version, 1);
+    assert_eq!(report.metadata.database_id, metadata.database_id);
+    assert!(matches!(
+        prdb_engine::startup::validate_persisted_records_read_only(&source),
+        Err(StartupError::UnsupportedFormat)
+    ));
+    drop(source);
+    let inspected = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-inspect", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .output()
+        .expect("inspect legacy migration source");
+    assert!(
+        inspected.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    let output = String::from_utf8(inspected.stdout).expect("UTF-8 migration inspection result");
+    assert!(output.contains("active=READY"), "{output}");
+    assert!(output.contains("catalog_version=1"), "{output}");
+    assert!(output.contains("staging=absent"), "{output}");
+    assert!(matches!(
+        StorageInstance::open(fixture.instance_dir()),
+        Err(BootstrapError::Startup(StartupError::UnsupportedFormat))
+    ));
 }
 
 #[test]

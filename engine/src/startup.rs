@@ -123,7 +123,27 @@ pub fn validate_persisted_records_read_only(
     database: &ReadOnlyDatabase,
 ) -> Result<StorageHealthReport, StartupError> {
     let read = database.begin_read().map_err(storage_error)?;
-    validate_persisted_records_snapshot(&read, Lifecycle::Ready)
+    validate_persisted_records_snapshot(&read, Lifecycle::Ready, None)
+}
+
+/// Validate the exact catalog-v1 source format for an offline logical migration.
+/// This never rebuilds derived indexes and does not admit the image for service use.
+pub fn validate_v1_migration_source_read_only(
+    database: &ReadOnlyDatabase,
+) -> Result<StorageHealthReport, StartupError> {
+    let read = database.begin_read().map_err(storage_error)?;
+    validate_persisted_records_snapshot(&read, Lifecycle::Ready, Some(1))
+}
+
+/// Validate one READY image from a logical catalog version supported by an
+/// offline migration. This does not admit the image for service use.
+pub fn validate_migration_image_read_only(
+    database: &ReadOnlyDatabase,
+) -> Result<StorageHealthReport, StartupError> {
+    match validate_persisted_records_read_only(database) {
+        Err(StartupError::UnsupportedFormat) => validate_v1_migration_source_read_only(database),
+        result => result,
+    }
 }
 
 pub(crate) fn validate_initializing_records(
@@ -161,17 +181,25 @@ fn validate_persisted_records_for_lifecycle(
     ensure_policy_index(database)?;
     ensure_dependency_index(database)?;
     let read = database.begin_read().map_err(storage_error)?;
-    validate_persisted_records_snapshot(&read, required_lifecycle)
+    validate_persisted_records_snapshot(&read, required_lifecycle, None)
 }
 
 fn validate_persisted_records_snapshot(
     read: &ReadTransaction,
     required_lifecycle: Lifecycle,
+    required_catalog_version: Option<u32>,
 ) -> Result<StorageHealthReport, StartupError> {
     validate_tables(read)?;
     validate_name_domains(read)?;
     let metadata = read_metadata(read)?;
-    if !metadata.supports_current_formats() {
+    let supported_formats = if let Some(catalog_version) = required_catalog_version {
+        metadata.catalog_version == catalog_version
+            && metadata.expression_version == 1
+            && metadata.builtin_semantics_version == 1
+    } else {
+        metadata.supports_current_formats()
+    };
+    if !supported_formats {
         return Err(StartupError::UnsupportedFormat);
     }
     if metadata.lifecycle != required_lifecycle {
@@ -1494,7 +1522,12 @@ fn validate_catalog(
             return Err(StartupError::InvalidCatalog);
         }
         let family_code = u16::from_be_bytes([key[0], key[1]]) as usize;
-        if !(1..=17).contains(&family_code) {
+        let max_family = if metadata.catalog_version == 1 {
+            16
+        } else {
+            17
+        };
+        if !(1..=max_family).contains(&family_code) {
             return Err(StartupError::InvalidCatalog);
         }
         family_counts[family_code] = family_counts[family_code]
@@ -1974,7 +2007,13 @@ fn validate_catalog(
                     && principal_login_enabled.get(&credential.user_id) != Some(&true)
             }
             Some(_) => true,
-            None => !credential.revoked || !identity_tombstones.contains(&credential.user_id),
+            None => {
+                if metadata.catalog_version == 1 {
+                    !credential.revoked
+                } else {
+                    !credential.revoked || !identity_tombstones.contains(&credential.user_id)
+                }
+            }
         }
     }) {
         return Err(StartupError::InvalidCatalog);
@@ -2439,7 +2478,8 @@ fn validate_database_record(
         .try_into()
         .map_err(|_| StartupError::InvalidCatalog)?;
     let count = u32::from_le_bytes(count_bytes) as usize;
-    if count != 31 {
+    let required_codes = required_bootstrap_codes(metadata.catalog_version)?;
+    if count != required_codes.len() {
         return Err(StartupError::InvalidCatalog);
     }
     let expected_len = count
@@ -2460,7 +2500,7 @@ fn validate_database_record(
             .try_into()
             .map_err(|_| StartupError::InvalidCatalog)?;
         if previous_code.is_some_and(|previous| code <= previous)
-            || !is_required_bootstrap_code(code)
+            || !required_codes.contains(&code)
             || reserved != 0
             || id == [0; 16]
             || mappings.insert(code, id).is_some()
@@ -2470,18 +2510,26 @@ fn validate_database_record(
         }
         previous_code = Some(code);
     }
-    if required_bootstrap_codes().any(|code| !mappings.contains_key(&code)) {
+    if required_codes
+        .iter()
+        .any(|code| !mappings.contains_key(code))
+    {
         return Err(StartupError::InvalidCatalog);
     }
     Ok(mappings)
 }
 
-fn required_bootstrap_codes() -> impl Iterator<Item = u16> {
-    [1, 2, 3].into_iter().chain(101..=111).chain(201..=217)
-}
-
-fn is_required_bootstrap_code(code: u16) -> bool {
-    required_bootstrap_codes().any(|required| required == code)
+fn required_bootstrap_codes(catalog_version: u32) -> Result<Vec<u16>, StartupError> {
+    let last_storage_code = match catalog_version {
+        1 => 216,
+        2 => 217,
+        _ => return Err(StartupError::UnsupportedFormat),
+    };
+    Ok([1, 2, 3]
+        .into_iter()
+        .chain(101..=111)
+        .chain(201..=last_storage_code)
+        .collect())
 }
 
 fn field_id(record: &CatalogRecord, tag: u16) -> Result<[u8; 16], StartupError> {

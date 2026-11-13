@@ -145,9 +145,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return Err("unexpected trailing arguments".into());
         }
 
-        let active = ReadOnlyStorageInstance::open(&instance_dir)?;
+        let active = ReadOnlyStorageInstance::open_for_migration_inspection(&instance_dir)?;
         let active_report =
-            prdb_engine::startup::validate_persisted_records_read_only(active.database())?;
+            prdb_engine::startup::validate_migration_image_read_only(active.database())?;
         let active_meta = active_report.metadata;
         println!(
             "active=READY database_id={} catalog_version={} expression_version={} builtin_semantics_version={} commit_sequence={}",
@@ -177,7 +177,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         let staged_database = redb::ReadOnlyDatabase::open(&staging_path)?;
         let staged_report =
-            prdb_engine::startup::validate_persisted_records_read_only(&staged_database)?;
+            prdb_engine::startup::validate_migration_image_read_only(&staged_database)?;
         let staged_meta = staged_report.metadata;
         let relationship = if active_meta.database_id != staged_meta.database_id {
             "database_id_mismatch"

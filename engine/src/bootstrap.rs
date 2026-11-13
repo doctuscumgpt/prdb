@@ -407,6 +407,30 @@ impl ReadOnlyStorageInstance {
         })
     }
 
+    /// Open a READY image supported by an offline migration while keeping the
+    /// instance locked. Legacy sources accepted here are never service-ready.
+    pub fn open_for_migration_inspection(
+        directory: impl AsRef<Path>,
+    ) -> Result<Self, BootstrapError> {
+        let directory = directory.as_ref();
+        validate_managed_directory(directory, true)?;
+        let lock = InstanceLock::acquire(directory)?;
+        if directory.join(SETUP_SOCKET_FILE).try_exists()? {
+            return Err(BootstrapError::InvalidRequest);
+        }
+        validate_managed_directory(directory, true)?;
+        let database_path = directory.join(DATABASE_FILE);
+        validate_private_file(&database_path)?;
+        let database =
+            ReadOnlyDatabase::open(&database_path).map_err(|_| BootstrapError::Storage)?;
+        crate::startup::validate_migration_image_read_only(&database)
+            .map_err(BootstrapError::Startup)?;
+        Ok(Self {
+            database,
+            _lock: lock,
+        })
+    }
+
     pub fn database(&self) -> &ReadOnlyDatabase {
         &self.database
     }
