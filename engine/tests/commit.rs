@@ -28514,6 +28514,228 @@ fn supervisor_cancellation_cleans_descendants_from_worker_cgroup()
 }
 
 #[test]
+fn cancellation_during_optimizer_predicate_estimate_kills_process_tree_without_fallback()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::ipc::{IpcFrame, Operation, read_frame, write_frame};
+    use prdb_engine::metadata_discovery::{
+        AuthorizedPlanRelation, AuthorizedRelationDescription, VisibleColumn,
+    };
+    use prdb_engine::outcome::OutcomeStatus;
+    use prdb_engine::planner_ipc::DescribePlanRelationResponse;
+    use prdb_engine::storage_manager::{
+        OwnerCancellationResult, SupervisorAdmissionRequest, SupervisorInvocationError,
+    };
+    use prdb_engine::transaction::TransactionError;
+    use prdb_engine::tuple::ScalarType;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixStream;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn set_cloexec(fd: i32, enabled: bool) -> std::io::Result<()> {
+        // SAFETY: fcntl reads and updates flags for the caller-owned open fd.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let next = if enabled {
+            flags | libc::FD_CLOEXEC
+        } else {
+            flags & !libc::FD_CLOEXEC
+        };
+        // SAFETY: F_SETFD consumes the scalar descriptor flags above.
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, next) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    let cgroup_parent = std::env::var_os("PRDB_TEST_CGROUP_PARENT")
+        .ok_or("PRDB_TEST_CGROUP_PARENT is required for optimizer cancellation")?;
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?;
+    let user_id = id(0x7a);
+    let token_id = id(0x7b);
+    let secret = [0x33; 32];
+    let invocation_id = id(0x7c);
+    commit_catalog_and_audit(
+        &database,
+        id(0x7d),
+        id(9),
+        now + 3_600_000_000,
+        &[
+            principal_write_with_name(user_id, 1, 1, "optimizer_estimate_cancel_user"),
+            object_write_with_name(user_id, 8, "optimizer_estimate_cancel_user"),
+            credential_verifier_write(
+                token_id,
+                user_id,
+                &secret,
+                now - 1_000_000,
+                now + 60_000_000,
+                None,
+                1,
+            ),
+        ],
+        &[audit_event(0x7d)],
+    )?;
+    let invocation = storage.admit_supervisor_invocation_with_deadline(
+        SupervisorAdmissionRequest {
+            invocation_id,
+            token_id,
+            retention_deadline_us: now + 3_600_000_000,
+            max_rows: 2,
+            max_bytes: 64,
+            deadline: Some(std::time::Instant::now() + Duration::from_secs(10)),
+            workload_class: prdb_engine::supervisor::WorkloadClass::Analytical,
+        },
+        &secret,
+    )?;
+
+    let (mut submission_client, optimizer_submission) = UnixStream::pair()?;
+    let (optimizer_planner, mut planner_server) = UnixStream::pair()?;
+    submission_client.set_read_timeout(Some(Duration::from_secs(3)))?;
+    planner_server.set_read_timeout(Some(Duration::from_secs(3)))?;
+    let submission_fd = optimizer_submission.as_raw_fd();
+    let planner_fd = optimizer_planner.as_raw_fd();
+    set_cloexec(submission_fd, false)?;
+    set_cloexec(planner_fd, false)?;
+    let cgroup = prdb_engine::linux_sandbox::WorkerCgroup::create(
+        cgroup_parent,
+        invocation_id,
+        prdb_engine::linux_sandbox::WorkerResourceLimits {
+            cpu_quota_micros: 100_000,
+            cpu_period_micros: 100_000,
+            memory_max_bytes: 128 * 1024 * 1024,
+            max_processes: 8,
+        },
+    )?;
+    let cgroup_path = cgroup.path().to_owned();
+    let optimizer_pid_path = fixture.path().with_extension("optimizer-child.pid");
+    let mut worker = Command::new("sh");
+    worker
+        .arg("-c")
+        .arg("\"$1\" --submission-fd \"$2\" --planner-fd \"$3\" & echo $! > \"$4\"; wait")
+        .arg("sh")
+        .arg(env!("CARGO_BIN_EXE_prdb-optimizer"))
+        .arg(submission_fd.to_string())
+        .arg(planner_fd.to_string())
+        .arg(&optimizer_pid_path);
+    cgroup.attach_command_before_exec(&mut worker)?;
+    let mut worker = worker.spawn()?;
+    set_cloexec(submission_fd, true)?;
+    set_cloexec(planner_fd, true)?;
+    drop(optimizer_submission);
+    drop(optimizer_planner);
+    let optimizer_pid_deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !optimizer_pid_path.exists() && std::time::Instant::now() < optimizer_pid_deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let optimizer_pid = std::fs::read_to_string(&optimizer_pid_path)
+        .map_err(|_| "worker did not start the optimizer child")?
+        .trim()
+        .parse::<u32>()?;
+
+    let mut request = vec![0, 1, 1, 0];
+    for name in ["public", "items"] {
+        request.push(name.len() as u8);
+        request.extend_from_slice(name.as_bytes());
+    }
+    request.extend_from_slice(&1u16.to_be_bytes());
+    request.push(4);
+    request.extend_from_slice(b"name");
+    request.extend_from_slice(&0u32.to_be_bytes());
+    request.push(0);
+    let predicate = [0x20, 5, 0x10, 4, b'n', b'a', b'm', b'e', 0x03, 0, 1, b'm'];
+    request.truncate(request.len() - 5);
+    request.extend_from_slice(&(predicate.len() as u32).to_be_bytes());
+    request.extend_from_slice(&predicate);
+    request.push(0);
+    write_frame(
+        &mut submission_client,
+        &IpcFrame {
+            operation: Operation::OptimizeSelect as u16,
+            request_id: 91,
+            payload: request,
+        },
+    )?;
+
+    let describe = read_frame(&mut planner_server)?.ok_or("optimizer closed before describe")?;
+    assert_eq!(describe.operation, Operation::DescribePlanRelation as u16);
+    let describe_request =
+        prdb_engine::planner_ipc::DescribePlanRelationRequest::decode(&describe.payload)?;
+    assert!(describe_request.include_scan_estimate);
+    write_frame(
+        &mut planner_server,
+        &IpcFrame {
+            operation: describe.operation,
+            request_id: describe.request_id,
+            payload: DescribePlanRelationResponse {
+                relation: Some(AuthorizedPlanRelation {
+                    schema_id: [1; 16],
+                    schema_version: 3,
+                    table_epoch: 7,
+                    relation: AuthorizedRelationDescription {
+                        relation_id: [2; 16],
+                        name: "items".to_owned(),
+                        columns: vec![VisibleColumn {
+                            column_id: [3; 16],
+                            name: "name".to_owned(),
+                            ordinal: 0,
+                            scalar_type: ScalarType::Text,
+                            nullable: false,
+                        }],
+                    },
+                    unique_access_paths: Vec::new(),
+                    range_access_paths: Vec::new(),
+                }),
+                proven_empty: false,
+                visible_rows_estimate: None,
+            }
+            .encode()?,
+        },
+    )?;
+    let estimate = read_frame(&mut planner_server)?.ok_or("optimizer closed before estimate")?;
+    assert_eq!(estimate.operation, Operation::EstimateScan as u16);
+
+    let (observed, cancellation) = std::thread::scope(|scope| {
+        let cancel = scope.spawn(|| {
+            std::thread::sleep(Duration::from_millis(25));
+            storage.cancel_owned_invocation(user_id, invocation_id, now + 1)
+        });
+        let observed =
+            invocation.observe_worker_exit_in_cgroup(&mut worker, cgroup, Duration::from_secs(2));
+        let cancellation = cancel
+            .join()
+            .map_err(|_| std::io::Error::other("cancellation thread panicked"))??;
+        Ok::<_, Box<dyn std::error::Error>>((observed, cancellation))
+    })?;
+    assert_eq!(cancellation, OwnerCancellationResult::Accepted);
+    assert!(matches!(
+        observed,
+        Err(SupervisorInvocationError::Deadline(
+            TransactionError::CancellationRequested
+        ))
+    ));
+    assert!(worker.try_wait()?.is_some());
+    assert!(
+        !std::path::Path::new(&format!("/proc/{optimizer_pid}")).exists(),
+        "optimizer child {optimizer_pid} survived worker cgroup cancellation"
+    );
+    assert!(!cgroup_path.exists(), "optimizer cgroup was not drained");
+    assert!(read_frame(&mut submission_client)?.is_none());
+    assert_eq!(
+        storage
+            .lookup_invocation_outcome(invocation_id, user_id, now + 1)?
+            .unwrap()
+            .status,
+        OutcomeStatus::Aborted
+    );
+    Ok(())
+}
+
+#[test]
 fn sealed_start_admits_only_current_credentials_and_enforces_request_deadline()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::client_protocol::{

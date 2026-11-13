@@ -326,9 +326,9 @@
 ## SU-5 validation: cancellation and expiry during worker wait
 
 - Behavior: accepted owner cancellation and the admitted execution deadline are both observed while a worker process is idle; the supervisor kills/reaps the worker, and storage records ABORTED before terminal handling can commit.
-- Changed real-redb regressions: [cancellation during process observation and descendant cleanup](../../engine/tests/commit.rs).
-- Verification: focused `supervisor_cancellation_and_deadline_during_worker_wait_abort` passed for both paths. The new `supervisor_cancellation_cleans_descendants_from_worker_cgroup` passed under the delegated user service with a real cgroup v2 parent; it verifies the child is gone and storage records ABORTED. The full serial delegated-cgroup workspace suite passed with 224 unit tests, 152 commit integration tests, all other integration targets green, and zero ignored tests. Workspace build, formatting, warning-denied Clippy, maintained TinyCC SDK tests, sandbox fixture, release-profile validation, and `git diff --check` passed.
-- Remaining: exercise cancellation/deadline while the optimizer is blocked on an estimate through the confined process tree; the current descendant test uses a blocked child process and verifies supervisor cgroup cleanup, not the optimizer estimate path itself.
+- Changed real-redb regressions: [cancellation during process observation, descendant cleanup, and a blocked optimizer estimate](../../engine/tests/commit.rs).
+- Verification: focused `supervisor_cancellation_and_deadline_during_worker_wait_abort` passed for both paths. `supervisor_cancellation_cleans_descendants_from_worker_cgroup` passed under a real delegated cgroup v2 parent. `cancellation_during_optimizer_predicate_estimate_kills_process_tree_without_fallback` launched the production optimizer binary, held its estimate response, and verified cgroup teardown, no plan response, and durable ABORTED. The full serial delegated-cgroup workspace suite passed with zero ignored tests. Workspace build, formatting, warning-denied Clippy, maintained TinyCC SDK tests, sandbox fixture, release-profile validation, and `git diff --check` passed.
+- Remaining: route the controlled blocked-estimate schedule through the production gateway/executor channel service and cover deadline expiry at the same estimate boundary.
 
 ## SU-6 validation: reconcile after terminal delivery loss
 
