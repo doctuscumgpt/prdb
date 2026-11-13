@@ -104,6 +104,41 @@ fn jsonl_sink_failure_keeps_audit_event_pending() -> Result<(), Box<dyn std::err
 }
 
 #[test]
+fn jsonl_sink_reads_only_the_requested_pending_batch() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = create_database(&fixture.0.join("database.redb"))?;
+    {
+        let write = database.begin_write()?;
+        {
+            let mut audit = write.open_table(AUDIT)?;
+            for value in 1..=64u8 {
+                let event = AuditEvent {
+                    event_id: [value; 16],
+                    actor_id: Some([0x12; 16]),
+                    correlation_id: [0x13; 16],
+                    occurred_at_us: i64::from(value),
+                    action: AuditAction::Ddl,
+                    result: AuditResult::Succeeded,
+                    target_ids: vec![[0x14; 16]],
+                };
+                audit.insert(event.event_id.as_slice(), event.encode()?.as_slice())?;
+            }
+            audit.insert([0xff; 16].as_slice(), b"malformed".as_slice())?;
+        }
+        write.commit()?;
+    }
+
+    let sink = fixture.0.join("bounded.jsonl");
+    assert_eq!(
+        prdb_engine::audit_sink::deliver_jsonl_batch(&database, &sink, 64)?,
+        64
+    );
+    assert_eq!(std::fs::read_to_string(&sink)?.lines().count(), 64);
+    assert!(prdb_engine::audit_sink::deliver_jsonl_batch(&database, &sink, 64).is_err());
+    Ok(())
+}
+
+#[test]
 fn jsonl_sink_recovers_an_incomplete_final_line() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
     let database = create_database(&fixture.0.join("database.redb"))?;

@@ -184,3 +184,11 @@
 - Additional pressure regression: `denied_monitoring_pressure_does_not_starve_commit_or_cancellation` continuously issues unauthorized runtime-page and audit-page reads while committing a real invocation and accepting and observing cancellation of another. It verifies at least 512 denials for each API and the durable ABORTED outcome.
 - Verification: the standalone integration test passed against real redb storage in 0.07 seconds. Formatting, workspace build, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed; the suite included both the pressure regression and the existing authorization/discovery integration test, with zero ignored tests. The cgroup probe reported a writable parent with `cpu memory pids` enabled, and `git diff --check` passed.
 - Remaining: broader pressure coverage for other monitoring APIs and OM-2 registry families; synchronous runtime/audit denial pressure during commit and cancellation is covered.
+
+## OM-6 bounded JSONL outbox batches — verified follow-up
+
+- Contract: each sink tick materializes and decodes no more than its requested pending-event batch. A malformed event beyond that batch does not block earlier events; it fails closed when a later tick reaches it.
+- Red/green: the integration test seeded 64 valid events followed by one malformed AUD1 row. Before the fix, delivery failed before writing any line because the helper decoded the full audit table; after the fix, the first 64 events deliver and the next batch rejects the malformed row.
+- Implementation: pending-event collection now takes the batch limit and stops once that many undelivered records are collected, keeping temporary event memory bounded by the sink's 64-record maximum.
+- Verification: all five `audit_sink` integration tests passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, the maintained TinyCC SDK suite and sandbox fixture passed. The full serial workspace suite passed in the delegated user service, including all sandbox and process tests with zero ignored tests. `git diff --check` passed.
+- Remaining: remote sink integrations, job registries, retained-byte/cache telemetry, additional wait categories, and broader pressure testing remain open.

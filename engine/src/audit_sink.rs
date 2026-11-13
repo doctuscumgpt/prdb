@@ -107,13 +107,13 @@ pub fn deliver_jsonl_batch(
     sink_id[48..56].copy_from_slice(&birth_time.0.to_le_bytes());
     sink_id[56..].copy_from_slice(&birth_time.1.to_le_bytes());
     install_sink_id(database, &sink_id)?;
-    let pending = pending_events(database)?;
+    let pending = pending_events(database, max_events)?;
     if pending.is_empty() {
         return Ok(0);
     }
 
     let mut delivered = 0;
-    for (event_id, event) in pending.into_iter().take(max_events) {
+    for (event_id, event) in pending {
         let line = encode_json_line(&event);
         file.write_all(&line)?;
         file.sync_all()?;
@@ -230,7 +230,10 @@ fn install_sink_id(database: &Database, sink_id: &[u8; 60]) -> Result<(), AuditS
     })
 }
 
-fn pending_events(database: &Database) -> Result<Vec<([u8; 16], AuditEvent)>, AuditSinkError> {
+fn pending_events(
+    database: &Database,
+    max_events: usize,
+) -> Result<Vec<([u8; 16], AuditEvent)>, AuditSinkError> {
     let read = database.begin_read().map_err(|_| AuditSinkError::Storage)?;
     let audit = read
         .open_table(AUDIT)
@@ -241,8 +244,11 @@ fn pending_events(database: &Database) -> Result<Vec<([u8; 16], AuditEvent)>, Au
     if audit.len().map_err(|_| AuditSinkError::Storage)? > MAX_AUDIT_EVENTS as u64 {
         return Err(AuditSinkError::Storage);
     }
-    let mut events = Vec::new();
+    let mut events = Vec::with_capacity(max_events);
     for entry in audit.iter().map_err(|_| AuditSinkError::Storage)? {
+        if events.len() == max_events {
+            break;
+        }
         let (key, value) = entry.map_err(|_| AuditSinkError::Storage)?;
         let id: [u8; 16] = key
             .value()
