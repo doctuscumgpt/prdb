@@ -148,8 +148,10 @@ int32_t prdb_sdk_executor_scan_index_range_v1(
     uint16_t column_count, uint8_t *request, uint64_t request_capacity,
     uint8_t *response, uint64_t response_capacity, uint64_t *response_len,
     prdb_sdk_index_range_v1 *range_out, uint32_t range_out_capacity) {
-    uint64_t request_len = 38;
-    uint64_t offset = 35;
+    uint64_t request_len =
+        PRDB_EXECUTOR_SCAN_INDEX_RANGE_REQUEST_HEADER_BYTES + 4;
+    uint64_t offset =
+        PRDB_EXECUTOR_SCAN_INDEX_RANGE_REQUEST_HEADER_BYTES + 1;
     uint8_t decoded_request_bound_flags[2] = {0, 0};
     int32_t status;
 
@@ -204,11 +206,10 @@ int32_t prdb_sdk_executor_scan_index_range_v1(
         return PRDB_SDK_EXECUTOR_RESPONSE_TOO_SMALL;
     }
 
-    request[0] = 0;
-    request[1] = 1;
-    memcpy(request + 2, executor_handle, 16);
-    memcpy(request + 18, index_id, 16);
-    request[34] = decoded_request_bound_flags[0];
+    prdb_encode_executor_scan_index_range_request(request, executor_handle,
+                                                 index_id);
+    request[PRDB_EXECUTOR_SCAN_INDEX_RANGE_REQUEST_HEADER_BYTES] =
+        decoded_request_bound_flags[0];
     if (lower_bound != NULL) {
         request[offset++] = lower_bound->type_code;
         write_u32(request, &offset, (uint32_t)lower_bound->data_len);

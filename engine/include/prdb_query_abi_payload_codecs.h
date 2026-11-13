@@ -329,6 +329,42 @@ static inline int prdb_decode_executor_probe_unique_index_request(const uint8_t 
     return 1;
 }
 
+static inline void prdb_encode_executor_scan_index_range_request(uint8_t payload[34],
+    const uint8_t relation_handle[16], const uint8_t index_id[16]) {
+    payload[0] = (uint8_t)((PRDB_EXECUTOR_BATCH_PAYLOAD_VERSION >> 8) & 0xffu);
+    payload[1] = (uint8_t)(PRDB_EXECUTOR_BATCH_PAYLOAD_VERSION & 0xffu);
+    for (size_t i = 0; i < 16; ++i) {
+        payload[2 + i] = relation_handle[i];
+    }
+    for (size_t i = 0; i < 16; ++i) {
+        payload[18 + i] = index_id[i];
+    }
+}
+
+static inline int prdb_decode_executor_scan_index_range_request(const uint8_t *payload, size_t payload_len,
+    uint8_t relation_handle[16], uint8_t index_id[16]) {
+    if (payload == NULL || payload_len < 34) {
+        return 0;
+    }
+    if (payload[0] != (uint8_t)((PRDB_EXECUTOR_BATCH_PAYLOAD_VERSION >> 8) & 0xffu) ||
+        payload[1] != (uint8_t)(PRDB_EXECUTOR_BATCH_PAYLOAD_VERSION & 0xffu)) {
+        return 0;
+    }
+    if (relation_handle == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < 16; ++i) {
+        relation_handle[i] = payload[2 + i];
+    }
+    if (index_id == NULL) {
+        return 0;
+    }
+    for (size_t i = 0; i < 16; ++i) {
+        index_id[i] = payload[18 + i];
+    }
+    return 1;
+}
+
 static inline void prdb_encode_executor_open_scan_response(uint8_t payload[18],
     const uint8_t cursor_handle[16]) {
     payload[0] = (uint8_t)((PRDB_EXECUTOR_BATCH_PAYLOAD_VERSION >> 8) & 0xffu);

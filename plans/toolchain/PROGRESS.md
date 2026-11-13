@@ -962,3 +962,10 @@
 - Implementation: `EXECUTOR_PROBE_UNIQUE_INDEX_REQUEST` in the shared ABI schema now generates Rust and C codecs. The Rust request encoder/decoder and TinyCC optimizer point-probe encoder use those codecs; semantic ID/count checks and the following scalar/column tails remain at their protocol layers.
 - Regression: generator tests require both language codecs, and the Rust wire-vector checks exact prefix bytes. The maintained TinyCC optimizer-plan fixture exercises the C point-probe request and its expected counts/IDs.
 - Verification: generator schema tests and drift check, focused Rust wire regression, full maintained TinyCC SDK suite, sandbox-query-fixture build, workspace format/build/warning-denied Clippy, and full serial delegated-cgroup workspace tests passed with zero ignored tests. `git diff --check` passed.
+
+## TC-2: generated index-range scan request prefix — implemented
+
+- Contract: executor `0x1115` retains its v1 prefix of version, resolved relation handle, and logical index ID before lower/upper bounds and selected-column data.
+- Implementation: `EXECUTOR_SCAN_INDEX_RANGE_REQUEST` now generates Rust and C codecs. The Rust request codec and TinyCC executor SDK use the generated prefix; bound flags, scalar records, column count, and selected IDs remain variable-tail fields validated by their existing handlers.
+- Regression: generator tests require both codecs; the Rust request fixture checks exact prefix bytes and round-trips both bounds. The maintained C executor fixture compares its encoded range request against an independently assembled expected byte sequence.
+- Verification: generator schema/drift checks, focused Rust range test, full TinyCC SDK suite, sandbox-query-fixture build, workspace format/build/warning-denied Clippy, and full serial delegated-cgroup workspace suite passed; all tests were enabled and the run completed successfully. `git diff --check` passed.

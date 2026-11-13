@@ -412,7 +412,8 @@ pub struct ScanIndexRangeRequest {
 }
 
 impl ScanIndexRangeRequest {
-    const HEADER_BYTES: usize = 38;
+    const PREFIX_BYTES: usize = generated::EXECUTOR_SCAN_INDEX_RANGE_REQUEST_HEADER_BYTES as usize;
+    const HEADER_BYTES: usize = Self::PREFIX_BYTES + 4;
 
     pub fn encode(&self) -> Result<Vec<u8>, ExecutorRequestError> {
         if self.index_id == [0; 16]
@@ -431,10 +432,11 @@ impl ScanIndexRangeRequest {
         }
         let column_count = u16::try_from(self.column_ids.len())
             .map_err(|_| ExecutorRequestError::InvalidPayload)?;
-        let mut payload = Vec::with_capacity(Self::HEADER_BYTES + self.column_ids.len() * 16);
-        payload.extend_from_slice(&1u16.to_be_bytes());
-        payload.extend_from_slice(&self.relation.to_bytes());
-        payload.extend_from_slice(&self.index_id);
+        let mut payload = generated::encode_executor_scan_index_range_request(
+            self.relation.to_bytes(),
+            self.index_id,
+        )
+        .to_vec();
         for bound in [&self.lower, &self.upper] {
             let flag = match bound {
                 None => 0,
@@ -459,17 +461,12 @@ impl ScanIndexRangeRequest {
         if payload.len() < Self::HEADER_BYTES || payload.len() > crate::ipc::MAX_PAYLOAD_BYTES {
             return Err(ExecutorRequestError::InvalidPayload);
         }
-        let version = u16::from_be_bytes(
-            payload[..2]
-                .try_into()
-                .map_err(|_| ExecutorRequestError::InvalidPayload)?,
-        );
-        let relation = ResolvedRelationHandle::from_bytes(&payload[2..18])
+        let (relation_handle, index_id) =
+            generated::decode_executor_scan_index_range_request(payload)
+                .ok_or(ExecutorRequestError::InvalidPayload)?;
+        let relation = ResolvedRelationHandle::from_bytes(&relation_handle)
             .ok_or(ExecutorRequestError::InvalidPayload)?;
-        let index_id: [u8; 16] = payload[18..34]
-            .try_into()
-            .map_err(|_| ExecutorRequestError::InvalidPayload)?;
-        let mut offset = 34;
+        let mut offset = Self::PREFIX_BYTES;
         let mut decode_bound =
             || -> Result<Option<AuthorizedIndexRangeBound>, ExecutorRequestError> {
                 let flag = *payload
@@ -499,8 +496,7 @@ impl ScanIndexRangeRequest {
                 .map_err(|_| ExecutorRequestError::InvalidPayload)?,
         ));
         offset += 2;
-        if version != 1
-            || index_id == [0; 16]
+        if index_id == [0; 16]
             || (lower.is_none() && upper.is_none())
             || column_count > crate::tuple::MAX_COLUMNS
             || offset.checked_add(column_count * 16) != Some(payload.len())
@@ -1863,6 +1859,9 @@ mod cancellation_response_tests {
             column_ids: vec![[7; 16]],
         };
         let encoded = request.encode().unwrap();
+        assert_eq!(&encoded[..2], &[0, 1]);
+        assert_eq!(&encoded[2..18], &relation_bytes);
+        assert_eq!(&encoded[18..34], &[9; 16]);
         assert_eq!(ScanIndexRangeRequest::decode(&encoded).unwrap(), request);
         assert!(ScanIndexRangeRequest::decode(&encoded[..37]).is_err());
         let mut invalid_bound = encoded.clone();
