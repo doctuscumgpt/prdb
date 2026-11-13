@@ -40,6 +40,25 @@ static uint32_t cancel_update_ready_sent;
 static uint32_t fail_next_stage_update;
 static uint32_t observe_next_stage_update;
 static uint32_t observe_only_stage_update;
+static const prdb_host_api_v4 *range_observer_original_host;
+static uint32_t range_observer_scan_requests;
+
+static int32_t observe_range_executor_request(
+    void *context, uint16_t operation, const uint8_t *request,
+    uint64_t request_len, uint8_t *response, uint64_t response_capacity,
+    uint64_t *response_len) {
+    if (range_observer_original_host == NULL ||
+        context != range_observer_original_host->v3.context ||
+        range_observer_original_host->v3.executor_request == NULL) {
+        return PRDB_QUERY_CALLBACK_INVALID_ARGUMENT;
+    }
+    if (operation == PRDB_IPC_OP_SCAN_INDEX_RANGE) {
+        ++range_observer_scan_requests;
+    }
+    return range_observer_original_host->v3.executor_request(
+        context, operation, request, request_len, response,
+        response_capacity, response_len);
+}
 
 static int sleep_without_signal_interruption(struct timespec interval) {
     struct timespec remaining = interval;
@@ -614,7 +633,7 @@ static int32_t write_ordered_grouped_avg(
     const prdb_sdk_select_binding_v12 *binding) {
     grouped_result_context *context = (grouped_result_context *)opaque;
     static const int32_t expected_keys[] = {9, 7};
-    static const uint64_t expected_counts[] = {1, 2};
+    static const uint64_t expected_counts[] = {3, 2};
     int32_t key;
     if (context == NULL || binding == NULL || group_key == NULL ||
         context->row_count >= 2 || binding->order_count != 2 ||
@@ -1830,7 +1849,7 @@ static int32_t run_write_read_fixture(
         cell_scratch, 9, grouped_materialized, sizeof(grouped_materialized),
         write_grouped_composite_count_v18, &composite_grouped_results);
     if (status != PRDB_SDK_SQL_EXEC_OK ||
-        composite_grouped_results.row_count != 1) {
+        composite_grouped_results.row_count != 2) {
         static const uint8_t message[] = "fixture-error-composite-boolean";
         return report_failure(host, message, sizeof(message) - 1);
     }
@@ -2146,6 +2165,7 @@ static int32_t run_write_read_fixture(
         prdb_sdk_value_v1 optimizer_projected_values[9] = {{0}};
         optimizer_result_context optimizer_results = {0};
         range_result_context optimizer_range_results = {0};
+        prdb_host_api_v4 range_observer_host = {0};
         uint32_t optimizer_rows = 0;
         uint32_t parse_error_offset = 0;
         int32_t optimizer_range_status = PRDB_SDK_OPTIMIZER_PLAN_OK;
@@ -2183,9 +2203,14 @@ static int32_t run_write_read_fixture(
             static const uint8_t message[] = "fixture-error-optimizer-range-parse";
             return report_failure(host, message, sizeof(message) - 1);
         }
+        range_observer_host = *optimizer_host;
+        range_observer_original_host = optimizer_host;
+        range_observer_scan_requests = 0;
+        range_observer_host.v3.executor_request =
+            observe_range_executor_request;
         optimizer_range_status =
             prdb_sdk_optimizer_execute_select_ast_with_parameters_v1(
-                optimizer_host, &optimizer_statement,
+                &range_observer_host, &optimizer_statement,
                 optimizer_range_parameters, 2,
                 schema, sizeof(schema) - 1, 16, sizeof(optimizer_batch),
                 optimizer_request, sizeof(optimizer_request),
@@ -2197,7 +2222,9 @@ static int32_t run_write_read_fixture(
                 optimizer_source_cells, 9, optimizer_projected_values, 9,
                 collect_optimizer_range_row, &optimizer_range_results,
                 &optimizer_rows);
-        if (optimizer_range_status != PRDB_SDK_OPTIMIZER_PLAN_OK) {
+        range_observer_original_host = NULL;
+        if (optimizer_range_status != PRDB_SDK_OPTIMIZER_PLAN_OK ||
+            range_observer_scan_requests != 1) {
             static const uint8_t message[] = "fixture-error-optimizer-range-execute";
             return report_failure(host, message, sizeof(message) - 1);
         }
@@ -2244,7 +2271,7 @@ static int32_t run_write_read_fixture(
             prdb_sdk_value_v1 ordered_projected_values[1] = {{0}};
             ordered_optimizer_result_context ordered_results = {
                 host, ordered_columns, &ordered_relation, ordered_record,
-                sizeof(ordered_record), 0, {9, 7}};
+                sizeof(ordered_record), 0, {9, 9}};
             uint32_t ordered_rows = 0;
             uint32_t ordered_parse_error = 0;
             if (prdb_sdk_sql_parse_select_v3(

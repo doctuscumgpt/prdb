@@ -421,9 +421,9 @@ fn run_operational_read_commit_samples(
                         let page = transaction
                             .scan_catalog_authorized_rows(table_id, None, 128)
                             .map_err(|error| format!("operational authorized scan: {error:?}"))?;
-                        if page.rows.len() != 3 {
+                        if page.rows.len() != 5 {
                             return Err(format!(
-                                "operational authorized scan returned {} rows, expected 3",
+                                "operational authorized scan returned {} rows, expected 5",
                                 page.rows.len()
                             ));
                         }
@@ -24101,23 +24101,31 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             nullable: false,
         },
     ];
-    let composite_rows = [(0xd3, 1, 7), (0xd4, 1, 7), (0xd5, 2, 9)]
-        .into_iter()
-        .map(|(row_id, left, right)| {
-            Ok(RowWrite {
-                key: table_row_key(composite_table.table_id, id(row_id)),
-                expected_version: None,
-                payload: Some(encode_tuple(
-                    &composite_schema,
-                    1,
-                    &[
-                        Some(ScalarValue::Integer(left)),
-                        Some(ScalarValue::Integer(right)),
-                    ],
-                )?),
-            })
+    // Keep the authorized-view population above the optimizer's small-scan
+    // cutoff so the confined range acceptance exercises ScanIndexRange.
+    let composite_rows = [
+        (0xd3, 1, 7),
+        (0xd4, 1, 7),
+        (0xd5, 2, 9),
+        (0xd6, 2, 9),
+        (0xd7, 2, 9),
+    ]
+    .into_iter()
+    .map(|(row_id, left, right)| {
+        Ok(RowWrite {
+            key: table_row_key(composite_table.table_id, id(row_id)),
+            expected_version: None,
+            payload: Some(encode_tuple(
+                &composite_schema,
+                1,
+                &[
+                    Some(ScalarValue::Integer(left)),
+                    Some(ScalarValue::Integer(right)),
+                ],
+            )?),
         })
-        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    })
+    .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
     commit_rows(
         &database,
         id(0xd6),
@@ -24263,7 +24271,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         now + 3_600_000_000,
         &operational_pressure_rows,
     )?;
-    for row_id in [0xd3, 0xd4, 0xd5] {
+    for row_id in [0xd3, 0xd4, 0xd5, 0xd6, 0xd7] {
         assert!(
             row(
                 &database,
@@ -25888,9 +25896,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                         let page = transaction
                             .scan_catalog_authorized_rows(operational_table_id, None, 128)
                             .map_err(|error| format!("operational authorized scan: {error:?}"))?;
-                        if page.rows.len() != 3 {
+                        if page.rows.len() != 5 {
                             return Err(format!(
-                                "operational authorized scan returned {} rows, expected 3",
+                                "operational authorized scan returned {} rows, expected 5",
                                 page.rows.len()
                             ));
                         }
@@ -26826,7 +26834,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 0, 1, 0, 3, 0, 8, b'l', b'e', b'f', b't', b'_', b'k', b'e', b'y', 0, 0, 0, 3, 0, 0,
                 0, 0, 0, 0, 4, 0, 0, 0, 2, 0, 9, b'r', b'i', b'g', b'h', b't', b'_', b'k', b'e',
                 b'y', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 9, 0, 5, b'c', b'o', b'u', b'n',
-                b't', 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 1,
+                b't', 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 3,
             ][..],
         ]
         .concat()
@@ -26841,7 +26849,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 0, 1, 0, 3, 0, 8, b'l', b'e', b'f', b't', b'_', b'k', b'e', b'y', 0, 0, 0, 3, 0, 0,
                 0, 0, 0, 0, 4, 0, 0, 0, 2, 0, 9, b'r', b'i', b'g', b'h', b't', b'_', b'k', b'e',
                 b'y', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 9, 0, 5, b'c', b'o', b'u', b'n',
-                b't', 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 1,
+                b't', 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 3,
             ][..],
         ]
         .concat()
@@ -26871,7 +26879,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 0, 1, 0, 3, 0, 8, b'l', b'e', b'f', b't', b'_', b'k', b'e', b'y', 0, 0, 0, 3, 0, 0,
                 0, 0, 0, 0, 4, 0, 0, 0, 2, 0, 9, b'r', b'i', b'g', b'h', b't', b'_', b'k', b'e',
                 b'y', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 9, 0, 5, b'c', b'o', b'u', b'n',
-                b't', 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 1,
+                b't', 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 3,
             ][..],
         ]
         .concat()
@@ -26900,6 +26908,29 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     assert_eq!(grouped_composite_boolean.request_id, accepted.request_id);
     assert_eq!(
         grouped_composite_boolean.payload,
+        [
+            b"SQLR".as_slice(),
+            &[
+                0, 1, 0, 3, 0, 8, b'l', b'e', b'f', b't', b'_', b'k', b'e', b'y', 0, 0, 0, 3, 0, 0,
+                0, 0, 0, 0, 4, 0, 0, 0, 2, 0, 9, b'r', b'i', b'g', b'h', b't', b'_', b'k', b'e',
+                b'y', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 9, 0, 5, b'c', b'o', b'u', b'n',
+                b't', 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 3,
+            ][..],
+        ]
+        .concat()
+    );
+    let grouped_composite_boolean_second =
+        read_frame(&mut gateway)?.ok_or("missing second compound HAVING SQLR result")?;
+    assert_eq!(
+        grouped_composite_boolean_second.operation,
+        Operation::GatewayResultData as u16
+    );
+    assert_eq!(
+        grouped_composite_boolean_second.request_id,
+        accepted.request_id
+    );
+    assert_eq!(
+        grouped_composite_boolean_second.payload,
         [
             b"SQLR".as_slice(),
             &[
@@ -27105,7 +27136,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         ]
         .concat()
     );
-    for expected_right_key in [9u32, 7u32] {
+    for expected_right_key in [9u32, 9u32] {
         let ordered_select =
             read_frame(&mut gateway)?.ok_or("missing ordered SELECT SQLR result")?;
         assert_eq!(
