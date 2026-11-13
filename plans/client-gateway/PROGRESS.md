@@ -173,3 +173,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: `gateway_worker_pool_opens_one_service_stream_per_client` now opens two simultaneous TCP clients that both use request ID 1, verifies each gets a distinct service stream, and checks their HELLO responses return only to the matching client.
 - Decision: the one-to-one stream pair is the v1 generation/connection/session capability. The service protocol does not serialize reusable IDs because no session state can move between streams. A version that multiplexes/reuses channels must introduce explicit trusted IDs and cross-session rejection.
 - Verification: focused connection-isolation test passed; all 23 gateway tests passed; workspace format/build/warning-denied Clippy passed; and the full serial workspace suite passed in the delegated `systemd --user` service with sandbox/process tests enabled.
+
+## GW-1 / GW-2 / NP-7: partial-frame client isolation — covered
+
+- Contract: [gateway connection limits](../../specs/client-gateway.md) and [client concurrency](../../specs/client-protocol.md) require bounded per-connection framing while allowing independent clients to make progress.
+- Regression: `stalled_partial_frame_does_not_block_another_gateway_connection` opens two TCP clients with two bounded workers. The first sends only 12 bytes of its HELLO frame; the second receives a HELLO response over its own Unix service stream before the stalled peer completes a frame.
+- Verification: the focused regression passed, workspace format and warning-denied Clippy passed, and the full serial delegated-cgroup workspace suite passed with zero ignored tests. `git diff --check` passed.
+- Scope: confirms that an incomplete pre-authentication frame does not block a second worker. Existing regressions separately cover idle/write deadlines, slow result readers, and control-path progress under output pressure.

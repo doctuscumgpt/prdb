@@ -407,6 +407,108 @@ fn gateway_worker_pool_opens_one_service_stream_per_client() {
 }
 
 #[test]
+fn stalled_partial_frame_does_not_block_another_gateway_connection() {
+    let listener = TcpGatewayListener::bind(GatewayListenerConfig::default()).unwrap();
+    let address = listener.local_addr().unwrap();
+    let (service_tx, service_rx) = std::sync::mpsc::channel();
+    let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let service_shutdown = std::sync::Arc::clone(&shutdown);
+    let gateway = std::thread::spawn(move || {
+        let config = GatewayRuntimeConfig {
+            worker_count: 2,
+            queue_capacity: 2,
+            control_worker_count: 1,
+            control_queue_capacity: 1,
+            connections_per_ip_per_minute: 60,
+            auth_failures_per_ip_per_minute: 10,
+            idle_timeout: std::time::Duration::from_secs(5),
+            pre_auth_timeout: std::time::Duration::from_secs(2),
+            accept_poll_interval: std::time::Duration::from_millis(5),
+        };
+        run_gateway(
+            listener,
+            config,
+            move || {
+                let (gateway_service, supervisor_service) = std::os::unix::net::UnixStream::pair()?;
+                service_tx.send(supervisor_service).map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::BrokenPipe, "test service closed")
+                })?;
+                Ok(gateway_service)
+            },
+            service_shutdown,
+        )
+        .unwrap();
+    });
+
+    let mut stalled_client = std::net::TcpStream::connect(address).unwrap();
+    let stalled_service = service_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("gateway should assign a worker to the first connection");
+    let partial_frame = ClientFrame {
+        kind: 1,
+        request_id: 1,
+        response_sequence: 0,
+        payload: br#"{"mode":"query","client_name":"stalled"}"#.to_vec(),
+    }
+    .encode()
+    .unwrap();
+    stalled_client.write_all(&partial_frame[..12]).unwrap();
+
+    let mut active_client = std::net::TcpStream::connect(address).unwrap();
+    active_client
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    active_client
+        .write_all(
+            &ClientFrame {
+                kind: 1,
+                request_id: 1,
+                response_sequence: 0,
+                payload: br#"{"mode":"query","client_name":"active"}"#.to_vec(),
+            }
+            .encode()
+            .unwrap(),
+        )
+        .unwrap();
+
+    let mut active_service = service_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("second connection should receive an independent service stream");
+    let hello = read_frame(&mut active_service).unwrap().unwrap();
+    assert_eq!(hello.operation, Operation::OpenClientSession as u16);
+    assert!(hello.payload.windows(6).any(|part| part == b"active"));
+    write_frame(
+        &mut active_service,
+        &IpcFrame {
+            operation: hello.operation,
+            request_id: hello.request_id,
+            payload: br#"{"accepted":true}"#.to_vec(),
+        },
+    )
+    .unwrap();
+
+    let mut decoder = ClientFrameDecoder::default();
+    let mut buffer = [0u8; 256];
+    let response = loop {
+        let count = active_client.read(&mut buffer).unwrap();
+        assert_ne!(count, 0, "active connection closed before HELLO response");
+        if let Some(frame) = decoder.push(&buffer[..count]).unwrap().pop() {
+            break frame;
+        }
+    };
+    assert_eq!(response.kind, 100);
+    assert_eq!(response.request_id, 1);
+    assert_eq!(response.payload, br#"{"accepted":true}"#);
+
+    drop(stalled_service);
+    drop(stalled_client);
+    active_client.shutdown(std::net::Shutdown::Write).unwrap();
+    drop(active_service);
+    shutdown.store(true, std::sync::atomic::Ordering::Release);
+    gateway.join().unwrap();
+}
+
+#[test]
 fn gateway_binary_relays_tcp_hello_to_its_private_unix_service() {
     struct GatewayChild(std::process::Child);
 
