@@ -3848,6 +3848,30 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
         OutcomeStatus::Aborted
     );
 
+    let old_reader_invocation = id(0x8a);
+    let mut old_reader = storage.begin_invocation(old_reader_invocation, actor, 9_999, 1, 1024)?;
+    let old_reader_schema = old_reader.load_catalog_table_schema(table.table_id)?;
+    assert_eq!(old_reader_schema.columns.len(), 2);
+    let old_reader_row = prdb_engine::overlay::RowId {
+        table: table.table_id,
+        row: id(0x69),
+    };
+    let before_drop = old_reader
+        .read(old_reader_row)?
+        .ok_or("old reader row missing before DROP COLUMN")?;
+    assert_eq!(
+        prdb_engine::tuple::decode_tuple(
+            &old_reader_schema.columns,
+            old_reader_schema.schema_version,
+            &before_drop,
+        )?
+        .values,
+        vec![
+            Some(ScalarValue::Integer(73)),
+            Some(ScalarValue::Text("preserved".to_owned())),
+        ]
+    );
+
     let stale_drop_invocation = id(0x88);
     let stale_drop_row = prdb_engine::overlay::RowId {
         table: table.table_id,
@@ -3879,6 +3903,38 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
         drop_audit,
     )?;
     assert_eq!(dropped.column_id, table.column_ids[0]);
+    let after_drop = old_reader
+        .read(old_reader_row)?
+        .ok_or("old reader lost its row after DROP COLUMN")?;
+    assert_eq!(
+        prdb_engine::tuple::decode_tuple(
+            &old_reader_schema.columns,
+            old_reader_schema.schema_version,
+            &after_drop,
+        )?
+        .values,
+        vec![
+            Some(ScalarValue::Integer(73)),
+            Some(ScalarValue::Text("preserved".to_owned())),
+        ],
+        "pinned reader must retain the old row version and two-column schema"
+    );
+    let mut new_reader = storage.begin_invocation(id(0x8b), actor, 9_999, 1, 1024)?;
+    let new_reader_schema = new_reader.load_catalog_table_schema(table.table_id)?;
+    assert_eq!(new_reader_schema.columns.len(), 1);
+    assert_eq!(new_reader_schema.column_ids, vec![table.column_ids[1]]);
+    let after_drop_for_new_reader = new_reader
+        .read(old_reader_row)?
+        .ok_or("new reader lost the rewritten row after DROP COLUMN")?;
+    assert_eq!(
+        prdb_engine::tuple::decode_tuple(
+            &new_reader_schema.columns,
+            new_reader_schema.schema_version,
+            &after_drop_for_new_reader,
+        )?
+        .values,
+        vec![Some(ScalarValue::Text("preserved".to_owned()))]
+    );
     assert!(matches!(
         stale_drop_writer.commit(),
         Err(prdb_engine::transaction::TransactionError::Commit(
