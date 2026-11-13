@@ -5108,9 +5108,67 @@ fn managed_cancellation_releases_snapshot_admission_during_write_pressure()
 
     let mut executor = cancelled.open_executor_metadata_connection();
     assert!(!executor.check_cancellation()?);
+    let stop_monitoring = Arc::new(AtomicBool::new(false));
+    let pages_during_cancellation = std::thread::scope(|scope| {
+        let stop_monitoring_thread = Arc::clone(&stop_monitoring);
+        let storage = &storage;
+        let (monitoring_ready_tx, monitoring_ready_rx) = std::sync::mpsc::channel();
+        let monitor = scope.spawn(move || {
+            let mut pages = 0usize;
+            let first_page = storage
+                .list_runtime_invocations(
+                    admin_user_id,
+                    now + 1,
+                    prdb_engine::storage_manager::MAX_ADMIN_INVOCATION_PAGE,
+                    None,
+                )
+                .expect("first admin runtime page during cancellation");
+            assert!(
+                first_page
+                    .invocations
+                    .iter()
+                    .any(|invocation| invocation.invocation_id == [0x31; 16])
+            );
+            pages += 1;
+            monitoring_ready_tx
+                .send(())
+                .expect("signal first completed runtime page");
+            while !stop_monitoring_thread.load(Ordering::Acquire) {
+                let page = storage
+                    .list_runtime_invocations(
+                        admin_user_id,
+                        now + 1,
+                        prdb_engine::storage_manager::MAX_ADMIN_INVOCATION_PAGE,
+                        None,
+                    )
+                    .expect("admin runtime page concurrent with cancellation");
+                assert!(
+                    page.invocations
+                        .iter()
+                        .any(|invocation| invocation.invocation_id == [0x31; 16])
+                );
+                pages += 1;
+                std::thread::yield_now();
+            }
+            pages
+        });
+        monitoring_ready_rx
+            .recv()
+            .expect("runtime page finished before cancellation");
+        let cancellation = storage.cancel_owned_invocation(admin_user_id, [0x31; 16], now + 1);
+        stop_monitoring.store(true, Ordering::Release);
+        let pages = monitor
+            .join()
+            .expect("runtime monitoring thread must finish");
+        (cancellation, pages)
+    });
     assert_eq!(
-        storage.cancel_owned_invocation(admin_user_id, [0x31; 16], now + 1)?,
+        pages_during_cancellation.0?,
         prdb_engine::storage_manager::OwnerCancellationResult::Accepted
+    );
+    assert!(
+        pages_during_cancellation.1 > 1,
+        "monitoring must continue after cancellation begins"
     );
     assert!(executor.check_cancellation()?);
     drop(executor);
