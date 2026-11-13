@@ -47,6 +47,14 @@
 - Confined regression: the maintained SQL artifact executes `SELECT left_key FROM grouped_records WHERE left_key >= $1 AND left_key < $2 LIMIT 1` through the optimizer and non-unique range path, with typed parameters 1 and 2; it returns the expected row.
 - Verification: focused Rust planner test, full maintained SDK tests, `sandbox-query-fixture` rebuild, and focused delegated-cgroup acceptance passed. Workspace build, format check, warning-denied Clippy, and release-profile validation passed. The full serial delegated-cgroup workspace suite passed with 195 library tests, 148 commit tests, 74 transaction tests, 5 tuple tests, and zero ignored across test targets.
 
+## OP-5 follow-up: plan equality scans on non-unique leading keys — verified
+
+- Contract: an equality predicate on an authorized non-unique leading key can use a bounded range request with identical inclusive lower and upper values. Single-column unique equality retains the unique point operation. Both plans remain tied to the exact root predicate and fall back to the authorized scan when a range is unavailable or oversized.
+- Red/green: the Rust planner regression first failed because equality produced no range hint. Rust now lowers equality to paired inclusive bounds. TinyCC independently matches those bounds to the SQL filter, encodes both executor request bounds, and consumes sanitized result rows through the normal predicate/projection path.
+- Confined regression: the maintained SQL artifact now executes `SELECT left_key FROM grouped_records WHERE left_key = $1 LIMIT 1` through the real non-unique leading-key path. The sandboxed SQL acceptance verifies the expected relayed result and durable commit.
+- Verification: focused planner test passed; `make -f engine/sdk/Makefile test sandbox-query-fixture` passed. The cgroup preflight reported writable v2 delegation with `cpu memory pids` available and enabled. The full serial workspace suite passed inside the delegated user service, including `sandboxed_v3_sql_dml_sequence_is_visible_and_commits`; all test targets reported zero ignored tests. Workspace build, format check, warning-denied Clippy, and `git diff --check` passed.
+- Scope: the change adds an access path only when metadata already authorizes the indexed cells; storage continues to validate the path and return authorized sanitized rows. Broader hidden-data/error equivalence and end-to-end SQL timing remain open.
+
 ## OP-5 follow-up: compare index results with the authorized reference scan — verified
 
 - Regression: the real-redb catalog-index fixture now obtains a full authorized scan and independently filters its sanitized values, then checks that both the unique point probe and bounded range scan return the same row identity and sanitized cells. Existing cases in the same fixture continue to require `Unavailable` for hidden/conditionally readable keys and verify staged updates/deletes shadow pinned index entries.

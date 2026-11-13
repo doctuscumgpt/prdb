@@ -652,7 +652,7 @@ static int32_t run_write_read_fixture(
         "SELECT id FROM records WHERE id = $1 LIMIT 1";
     static const uint8_t optimizer_range_select_sql[] =
         "SELECT left_key FROM grouped_records "
-        "WHERE left_key >= $1 AND left_key < $2 LIMIT 1";
+        "WHERE left_key = $1 LIMIT 1";
     static const uint8_t optimizer_ordered_select_sql[] =
         "SELECT right_key FROM grouped_records "
         "ORDER BY left_key DESC LIMIT 2";
@@ -1963,12 +1963,10 @@ static int32_t run_write_read_fixture(
         uint8_t scan_response[4096] = {0};
         uint8_t optimizer_batch[4096] = {0};
         uint8_t optimizer_parameter_bytes[4] = {0, 0, 0, 42};
-        uint8_t optimizer_upper_parameter_bytes[4] = {0, 0, 0, 2};
         prdb_sdk_value_v1 optimizer_parameter = {
             sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
             optimizer_parameter_bytes, sizeof(optimizer_parameter_bytes)};
-        prdb_sdk_value_v1 optimizer_range_parameters[2] = {0};
         prdb_sdk_executor_relation_v1 optimizer_relation = {0};
         prdb_sdk_sql_column_shape_v2 optimizer_columns[9] = {{0}};
         prdb_sdk_value_v1 optimizer_source_cells[9] = {{0}};
@@ -1977,11 +1975,6 @@ static int32_t run_write_read_fixture(
         uint32_t optimizer_rows = 0;
         uint32_t parse_error_offset = 0;
         int32_t optimizer_range_status = PRDB_SDK_OPTIMIZER_PLAN_OK;
-        optimizer_range_parameters[0] = optimizer_parameter;
-        optimizer_range_parameters[1] = optimizer_parameter;
-        optimizer_range_parameters[1].data = optimizer_upper_parameter_bytes;
-        optimizer_range_parameters[1].data_len =
-            sizeof(optimizer_upper_parameter_bytes);
         if (optimizer_host->optimizer_request == NULL ||
             prdb_sdk_sql_parse_select_v2(
                 optimizer_select_sql, sizeof(optimizer_select_sql) - 1,
@@ -2020,7 +2013,7 @@ static int32_t run_write_read_fixture(
         }
         optimizer_range_status =
             prdb_sdk_optimizer_execute_select_ast_with_parameters_v1(
-                optimizer_host, &optimizer_statement, optimizer_range_parameters, 2,
+                optimizer_host, &optimizer_statement, &optimizer_parameter, 1,
                 schema, sizeof(schema) - 1, 16, sizeof(optimizer_batch),
                 optimizer_request, sizeof(optimizer_request),
                 optimizer_response, sizeof(optimizer_response),

@@ -610,7 +610,7 @@ static int range_comparison_matches_bound(
     uint64_t tag_offset = reader->offset;
     if (!read_u8(reader, &tag) || tag != 0x20 ||
         !read_compare_predicate_header(reader, tag_offset, &comparison) ||
-        comparison < 2 || comparison > 5 ||
+        comparison > 5 || comparison == 1 ||
         !read_point_probe_leaf(reader, left_column, &left_literal,
                                &left_literal_len) ||
         !read_point_probe_leaf(reader, right_column, &right_literal,
@@ -627,9 +627,22 @@ static int range_comparison_matches_bound(
         if (memcmp(right_column, key_column->column_id, 16) != 0) return 0;
         expected_literal = left_literal;
         expected_literal_len = left_literal_len;
-        comparison = comparison == 2 ? 4 : comparison == 3 ? 5 :
-                     comparison == 4 ? 2 : 3;
+        if (comparison != 0) {
+            comparison = comparison == 2 ? 4 : comparison == 3 ? 5 :
+                         comparison == 4 ? 2 : 3;
+        }
         expected_lower = comparison >= 4;
+    }
+    if (comparison == 0) {
+        *is_lower_out = 2;
+        return hint->lower_literal != NULL && hint->upper_literal != NULL &&
+               hint->lower_inclusive != 0 && hint->upper_inclusive != 0 &&
+               hint->lower_literal_len == expected_literal_len &&
+               hint->upper_literal_len == expected_literal_len &&
+               memcmp(hint->lower_literal, expected_literal,
+                      expected_literal_len) == 0 &&
+               memcmp(hint->upper_literal, expected_literal,
+                      expected_literal_len) == 0;
     }
     expected_inclusive = (uint8_t)(comparison == 3 || comparison == 5);
     *is_lower_out = expected_lower;
@@ -666,6 +679,7 @@ static int range_probe_matches_filter(
         if (!range_comparison_matches_bound(&reader, key_column, hint,
                                             &is_lower) ||
             reader.offset != reader.length) return 0;
+        if (is_lower == 2) return 1;
         return is_lower ? hint->upper_literal == NULL
                         : hint->lower_literal == NULL;
     }
@@ -680,7 +694,8 @@ static int range_probe_matches_filter(
         for (uint32_t child = 0; child < child_count; ++child) {
             int is_lower = 0;
             if (!range_comparison_matches_bound(&reader, key_column, hint,
-                                                &is_lower)) return 0;
+                                                &is_lower) || is_lower > 1)
+                return 0;
             if (is_lower) {
                 if (saw_lower) return 0;
                 saw_lower = 1;

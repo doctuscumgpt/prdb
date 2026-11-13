@@ -3286,6 +3286,9 @@ fn index_range_comparison(
         }
         (value, BoundPredicate::Column(column)) if is_point_probe_literal(column, value) => {
             let reverse = match operator {
+                crate::optimizer_request::Comparison::Equal => {
+                    crate::optimizer_request::Comparison::Equal
+                }
                 crate::optimizer_request::Comparison::Less => {
                     crate::optimizer_request::Comparison::Greater
                 }
@@ -3311,6 +3314,7 @@ fn index_range_comparison(
         })
     };
     let (lower, upper) = match operator {
+        crate::optimizer_request::Comparison::Equal => (bound(true), bound(true)),
         crate::optimizer_request::Comparison::Less => (None, bound(false)),
         crate::optimizer_request::Comparison::LessOrEqual => (None, bound(true)),
         crate::optimizer_request::Comparison::Greater => (bound(false), None),
@@ -3981,6 +3985,41 @@ mod tests {
         assert_eq!(
             validate_plan_v1(&mismatched),
             Err(PlanError::InvalidPredicate)
+        );
+    }
+
+    #[test]
+    fn non_unique_range_hint_uses_equal_inclusive_bounds_for_equality() {
+        let key = column(3, 1, ScalarType::Integer);
+        let mut bound = bound_select();
+        bound.predicate = Some(BoundPredicate::Compare {
+            operator: Comparison::Equal,
+            left: Box::new(BoundPredicate::Integer(42)),
+            right: Box::new(BoundPredicate::Column(key.clone())),
+        });
+        bound.unique_access_paths.clear();
+        bound.range_access_paths = vec![crate::metadata_discovery::AuthorizedRangeAccessPath {
+            index_id: [0x46; 16],
+            column_ids: vec![key.column_id, [0x47; 16]],
+        }];
+
+        let plan = plan_select_v1(bound).unwrap();
+        let bound = IndexRangeBoundV1 {
+            value: BoundPredicate::Integer(42),
+            inclusive: true,
+        };
+        assert_eq!(
+            plan.range_scan,
+            Some(IndexRangeScanV1 {
+                index_id: [0x46; 16],
+                key_column: key,
+                lower: Some(bound.clone()),
+                upper: Some(bound),
+            })
+        );
+        assert_eq!(
+            decode_plan_v1(&encode_plan_v1(&plan).unwrap()).unwrap(),
+            plan
         );
     }
 

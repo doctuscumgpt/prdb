@@ -557,6 +557,27 @@ static uint32_t append_integer_range_hint(uint8_t *bytes, uint32_t offset) {
     return offset;
 }
 
+static uint32_t append_integer_equality_range_hint(uint8_t *bytes,
+                                                   uint32_t offset) {
+    bytes[offset++] = 0xa2;
+    memset(bytes + offset, 0x66, 16);
+    offset += 16;
+    uint32_t column_id_offset = put_column(bytes, &offset, 3, 0);
+    bytes[column_id_offset] = 10;
+    memset(bytes + column_id_offset + 16, 0, 4);
+    bytes[offset++] = 1;
+    bytes[offset++] = 0x02;
+    memset(bytes + offset, 0, 7);
+    offset += 7;
+    bytes[offset++] = 1;
+    bytes[offset++] = 1;
+    bytes[offset++] = 0x02;
+    memset(bytes + offset, 0, 7);
+    offset += 7;
+    bytes[offset++] = 1;
+    return offset;
+}
+
 static uint32_t build_two_sided_range_plan(uint8_t *bytes,
                                            uint32_t *predicate_offset) {
     uint32_t offset = 0;
@@ -901,14 +922,23 @@ static int32_t resolve_plan_relation(void *context, uint16_t operation,
         source = resolved->probe_response;
         source_len = resolved->probe_response_len;
     } else if (operation == PRDB_SDK_EXECUTOR_OP_SCAN_INDEX_RANGE) {
-        assert(request_len == 38 + 9 + 4 * 16);
+        assert(request_len == 38 + (request[44] == 0 ? 9 : 18) + 4 * 16);
         assert(request[0] == 0 && request[1] == 1 && request[2] == 6);
         assert(request[18] == 0x66 && request[34] == 1);
         assert(request[35] == PRDB_SDK_VALUE_TYPE_INTEGER &&
                request[36] == 0 && request[37] == 0 && request[38] == 0 &&
                request[39] == 4 && request[40] == 0 && request[41] == 0 &&
                request[42] == 0 && request[43] == 1);
-        assert(request[44] == 0 && request[45] == 0 && request[46] == 4);
+        if (request[44] == 0) {
+            assert(request[45] == 0 && request[46] == 4);
+        } else {
+            assert(request[44] == 1 &&
+                   request[45] == PRDB_SDK_VALUE_TYPE_INTEGER &&
+                   request[46] == 0 && request[47] == 0 &&
+                   request[48] == 0 && request[49] == 4 &&
+                   request[50] == 0 && request[51] == 0 &&
+                   request[52] == 0 && request[53] == 1);
+        }
         ++resolved->range_calls;
         if (resolved->range_response_too_small != 0)
             callback_status = PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
@@ -1455,6 +1485,7 @@ int main(void) {
     uint8_t filtered_plan[512];
     uint8_t probed_plan[512];
     uint8_t ranged_plan[512];
+    uint8_t equality_ranged_plan[512];
     uint32_t filtered_plan_len = build_filter_plan(filtered_plan,
                                                    &predicate_offset);
     uint8_t sql_filtered[] = "SELECT c0 FROM items WHERE c0 = $1 LIMIT 1";
@@ -1492,8 +1523,21 @@ int main(void) {
     ranged_plan[predicate_offset + 1] = 5; /* >= */
     uint32_t ranged_plan_len = append_integer_range_hint(
         ranged_plan, filtered_plan_len);
+    memcpy(equality_ranged_plan, filtered_plan, filtered_plan_len);
+    uint32_t equality_ranged_plan_len = append_integer_equality_range_hint(
+        equality_ranged_plan, filtered_plan_len);
     prdb_sdk_optimizer_plan_v1 decoded_range_plan = {0};
     prdb_sdk_optimizer_filter_v1 decoded_range_filter = {0};
+    assert(prdb_sdk_optimizer_decode_plan_with_filter_v1(
+               equality_ranged_plan, equality_ranged_plan_len,
+               &decoded_range_plan, sizeof(decoded_range_plan),
+               &decoded_range_filter, sizeof(decoded_range_filter)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(prdb_sdk_optimizer_validate_select_plan_with_parameters_v1(
+               &host, &statement, filter_parameters, 1,
+               (const uint8_t *)"public", 6, equality_ranged_plan,
+               equality_ranged_plan_len, response, sizeof(response),
+               &response_len) == PRDB_SDK_OPTIMIZER_PLAN_OK);
     assert(prdb_sdk_optimizer_decode_plan_with_filter_v1(
                ranged_plan, ranged_plan_len, &decoded_range_plan,
                sizeof(decoded_range_plan), &decoded_range_filter,
@@ -1599,6 +1643,26 @@ int main(void) {
     assert(total_rows == 1 && projected_rows_seen == 1 &&
            resolve.range_calls == 4 && resolve.calls == 6);
     resolve.range_response_too_small = 0;
+    resolve.range_response[0] = 1;
+    resolve.range_response[1] = 1;
+    resolve.range_response[2] = 0;
+    resolve.range_response[3] = 1;
+    memcpy(resolve.range_response + 4, row_batch_bytes + 21,
+           row_batch_len - 21);
+    resolve.range_response_len = 4 + row_batch_len - 21;
+    resolve.calls = 0;
+    resolve.cancellation_check_calls = 0;
+    projected_rows_seen = 0;
+    assert(prdb_sdk_optimizer_execute_unfiltered_plan_v1(
+               &host, equality_ranged_plan, equality_ranged_plan_len, 2,
+               sizeof(batch_response), response, sizeof(response),
+               scan_response, sizeof(scan_response), batch_response,
+               sizeof(batch_response), &acquired_relation,
+               sizeof(acquired_relation), acquired_columns, 4, source_cells, 4,
+               projected_values, 1, on_projected_row, NULL, &total_rows) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(total_rows == 1 && projected_rows_seen == 1 &&
+           resolve.range_calls == 5 && resolve.calls == 4);
     resolve.batch_response_len = build_continuing_row_batch(
         resolve.batch_response);
     resolve.calls = 0;
