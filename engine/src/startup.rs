@@ -136,6 +136,18 @@ fn validate_persisted_records_for_lifecycle(
     database: &Database,
     required_lifecycle: Lifecycle,
 ) -> Result<StorageHealthReport, StartupError> {
+    // Compatibility and lifecycle gates must run before rebuilding disposable
+    // indexes so an unsupported image is rejected without database writes.
+    {
+        let read = database.begin_read().map_err(storage_error)?;
+        let metadata = read_metadata(&read)?;
+        if !metadata.supports_current_formats() {
+            return Err(StartupError::UnsupportedFormat);
+        }
+        if metadata.lifecycle != required_lifecycle {
+            return Err(StartupError::NotReady);
+        }
+    }
     ensure_principal_name_index(database)?;
     ensure_schema_name_index(database)?;
     ensure_relation_name_index(database)?;
