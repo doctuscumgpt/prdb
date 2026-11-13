@@ -11501,6 +11501,63 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     let mut user_manager_control = ClientConnectionSession::default();
     user_manager_control.accept_hello(ClientMode::Control, "token-manager")?;
     user_manager_control.authenticate(&storage, id(240), &[0x4b; 32])?;
+    let mut failed_issue_control = ClientConnectionSession::default();
+    failed_issue_control.accept_hello(ClientMode::Control, "failed-issue-admin")?;
+    failed_issue_control.authenticate(&storage, id(237), &[0x5a; 32])?;
+    let failed_issue_prepare = failed_issue_control.handle_admin_request(
+        &storage,
+        ClientFrame {
+            kind: 10,
+            request_id: 1,
+            response_sequence: 0,
+            payload: format!(
+                "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tokens.issue\",\"arguments\":{{\"user_id\":\"{}\",\"label\":\"unknown target\",\"expires_at_us\":\"{}\"}}}}",
+                id(222).iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+                now_us + 3_600_000_000
+            )
+            .into_bytes(),
+        },
+        now_us + 60_000_000,
+    )?;
+    let failed_issue_prepare = String::from_utf8(failed_issue_prepare.payload)?;
+    let failed_issue_operation_id = failed_issue_prepare
+        .split("\"operation_id\":\"")
+        .nth(1)
+        .ok_or("missing failed ADMIN issue operation ID")?
+        .get(..32)
+        .ok_or("invalid failed ADMIN issue operation ID")?;
+    assert!(matches!(
+        failed_issue_control.handle_admin_request(
+            &storage,
+            ClientFrame {
+                kind: 10,
+                request_id: 2,
+                response_sequence: 0,
+                payload: format!(
+                    "{{\"phase\":\"start\",\"operation_id\":\"{failed_issue_operation_id}\"}}"
+                )
+                .into_bytes(),
+            },
+            now_us + 60_000_000,
+        ),
+        Err(prdb_engine::client_protocol::ClientSessionError::TokenInventory(_))
+    ));
+    assert!(matches!(
+        failed_issue_control.handle_admin_request(
+            &storage,
+            ClientFrame {
+                kind: 10,
+                request_id: 3,
+                response_sequence: 0,
+                payload: format!(
+                    "{{\"phase\":\"start\",\"operation_id\":\"{failed_issue_operation_id}\"}}"
+                )
+                .into_bytes(),
+            },
+            now_us + 60_000_000,
+        ),
+        Err(prdb_engine::client_protocol::ClientSessionError::WrongMode)
+    ));
     let issue_prepare = prdb_engine::supervisor_ipc::dispatch_gateway_client_request(
         prdb_engine::ipc::ServiceRole::Gateway,
         &storage,
