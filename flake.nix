@@ -24,6 +24,9 @@
           gzip
           minisign
           python3
+          cargo-fuzz
+          rustup
+          clang
         ];
       };
     };
