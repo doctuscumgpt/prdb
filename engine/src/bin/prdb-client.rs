@@ -1797,11 +1797,12 @@ fn runtime_list(
         );
     }
     print!(
-        "],\"pinned_snapshot_count\":{},\"oldest_snapshot_pin_age_us\":{},\"invocations_admitted_total\":{},\"invocation_conflicts_total\":{},\"fence_waits\":[",
+        "],\"pinned_snapshot_count\":{},\"oldest_snapshot_pin_age_us\":{},\"invocations_admitted_total\":{},\"invocation_conflicts_total\":{},\"admin_cancellations_accepted_total\":{},\"fence_waits\":[",
         page.pinned_snapshot_count,
         page.oldest_snapshot_pin_age_us,
         page.invocations_admitted_total,
-        page.invocation_conflicts_total
+        page.invocation_conflicts_total,
+        page.admin_cancellations_accepted_total
     );
     for (index, wait) in page.fence_waits.iter().enumerate() {
         if index != 0 {

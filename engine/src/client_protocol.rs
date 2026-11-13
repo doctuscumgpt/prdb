@@ -4033,12 +4033,15 @@ impl ClientConnectionSession {
                 }
                 encode_fence_waits(
                     &mut payload,
-                    page.pinned_snapshot_count,
-                    page.oldest_snapshot_pin_age_us,
-                    page.invocations_admitted_total,
-                    page.invocation_conflicts_total,
-                    &page.fence_waits,
-                    page.fence_waits_truncated,
+                    RuntimeInvocationSummary {
+                        pinned_snapshot_count: page.pinned_snapshot_count,
+                        oldest_snapshot_pin_age_us: page.oldest_snapshot_pin_age_us,
+                        invocations_admitted_total: page.invocations_admitted_total,
+                        invocation_conflicts_total: page.invocation_conflicts_total,
+                        admin_cancellations_accepted_total: page.admin_cancellations_accepted_total,
+                        waits: &page.fence_waits,
+                        truncated: page.fence_waits_truncated,
+                    },
                 );
                 payload.push_str(" ,\"next_cursor\":");
                 if let Some(cursor) = page.continuation {
@@ -7136,25 +7139,29 @@ fn push_json_optional_i64(output: &mut String, value: Option<i64>) {
     }
 }
 
-fn encode_fence_waits(
-    output: &mut String,
+struct RuntimeInvocationSummary<'a> {
     pinned_snapshot_count: usize,
     oldest_snapshot_pin_age_us: u64,
     invocations_admitted_total: u64,
     invocation_conflicts_total: u64,
-    waits: &[crate::ddl_fence::DdlFenceWaitStatus],
+    admin_cancellations_accepted_total: u64,
+    waits: &'a [crate::ddl_fence::DdlFenceWaitStatus],
     truncated: bool,
-) {
+}
+
+fn encode_fence_waits(output: &mut String, summary: RuntimeInvocationSummary<'_>) {
     output.push_str("],\"pinned_snapshot_count\":");
-    output.push_str(&pinned_snapshot_count.to_string());
+    output.push_str(&summary.pinned_snapshot_count.to_string());
     output.push_str(",\"oldest_snapshot_pin_age_us\":");
-    output.push_str(&oldest_snapshot_pin_age_us.to_string());
+    output.push_str(&summary.oldest_snapshot_pin_age_us.to_string());
     output.push_str(",\"invocations_admitted_total\":");
-    output.push_str(&invocations_admitted_total.to_string());
+    output.push_str(&summary.invocations_admitted_total.to_string());
     output.push_str(",\"invocation_conflicts_total\":");
-    output.push_str(&invocation_conflicts_total.to_string());
+    output.push_str(&summary.invocation_conflicts_total.to_string());
+    output.push_str(",\"admin_cancellations_accepted_total\":");
+    output.push_str(&summary.admin_cancellations_accepted_total.to_string());
     output.push_str(",\"fence_waits\":[");
-    for (index, wait) in waits.iter().enumerate() {
+    for (index, wait) in summary.waits.iter().enumerate() {
         if index != 0 {
             output.push(',');
         }
@@ -7200,7 +7207,7 @@ fn encode_fence_waits(
         output.push('}');
     }
     output.push_str("],\"fence_waits_truncated\":");
-    output.push_str(if truncated { "true" } else { "false" });
+    output.push_str(if summary.truncated { "true" } else { "false" });
 }
 
 fn encode_metadata_page(
@@ -7657,11 +7664,22 @@ mod runtime_wait_tests {
             blockers_truncated: false,
         };
         let mut output = String::from("{\"invocations\":[");
-        encode_fence_waits(&mut output, 2, 23, 7, 1, &[wait], true);
+        encode_fence_waits(
+            &mut output,
+            super::RuntimeInvocationSummary {
+                pinned_snapshot_count: 2,
+                oldest_snapshot_pin_age_us: 23,
+                invocations_admitted_total: 7,
+                invocation_conflicts_total: 1,
+                admin_cancellations_accepted_total: 1,
+                waits: &[wait],
+                truncated: true,
+            },
+        );
         assert_eq!(
             output,
             format!(
-                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"invocations_admitted_total\":7,\"invocation_conflicts_total\":1,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
+                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"invocations_admitted_total\":7,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
                 "01".repeat(16),
                 "02".repeat(16),
                 "03".repeat(16)

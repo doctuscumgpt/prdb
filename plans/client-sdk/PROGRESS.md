@@ -609,3 +609,11 @@
 - Regression: the runtime response assertion failed when the conflict field was omitted, then passed with it restored. A storage race verifies an actual conflict increments the counter; the client fixture verifies decoding and unit coverage verifies saturation.
 - Verification: focused regressions, workspace build/fmt/Clippy, maintained TinyCC tests and sandbox fixture, release-profile validation, delegated cgroup probe, and the full serial delegated-cgroup workspace command all succeeded; `git diff --check` passed.
 - Remaining: further runtime registries and counters remain open under OM-2.
+
+## SDK-17 / OM-2: audited cancellation counter projection — verified slice
+
+- Behavior: `runtime-list` includes `admin_cancellations_accepted_total`, counting only the first audited transition to cancellation-requested. Denied, too-late, and repeated accepted requests are excluded; the process-local counter saturates and resets with the invocation registry.
+- Implementation: the server runtime projection and serializer, typed TCP decoder, and CLI JSON output carry the new counter.
+- Regression: storage lifecycle coverage verifies a first accepted cancellation increments once and an accepted repeat leaves the count unchanged. The TCP fixture verifies typed decoding, and saturation coverage checks `u64::MAX` behavior.
+- Verification: focused storage/client/saturation checks, workspace build/fmt/Clippy, TinyCC tests and sandbox fixture, release-profile validation, delegated cgroup probe, full serial delegated-cgroup workspace suite with zero ignored tests, and `git diff --check` passed.
+- Remaining: additional runtime counters and registries remain open under OM-2.

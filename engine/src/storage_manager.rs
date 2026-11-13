@@ -277,6 +277,7 @@ pub struct AdministrativeInvocationPage {
     pub oldest_snapshot_pin_age_us: u64,
     pub invocations_admitted_total: u64,
     pub invocation_conflicts_total: u64,
+    pub admin_cancellations_accepted_total: u64,
     pub fence_waits: Vec<crate::ddl_fence::DdlFenceWaitStatus>,
     pub fence_waits_truncated: bool,
     pub continuation: Option<AdministrativeInvocationCursor>,
@@ -1698,6 +1699,7 @@ struct LiveInvocationRegistry {
     generation: u128,
     invocations_admitted_total: u64,
     invocation_conflicts_total: u64,
+    admin_cancellations_accepted_total: u64,
     entries: HashMap<[u8; 16], LiveInvocation>,
 }
 
@@ -1708,9 +1710,15 @@ struct AdministrativeInvocationProjection {
     oldest_snapshot_pin_age_us: u64,
     invocations_admitted_total: u64,
     invocation_conflicts_total: u64,
+    admin_cancellations_accepted_total: u64,
 }
 
 impl LiveInvocationRegistry {
+    fn record_admin_cancellation(&mut self) {
+        self.admin_cancellations_accepted_total =
+            self.admin_cancellations_accepted_total.saturating_add(1);
+    }
+
     fn advance_generation(&mut self) {
         self.generation = self.generation.wrapping_add(1).max(1);
     }
@@ -1986,6 +1994,7 @@ impl InvocationAdmissionState {
             oldest_snapshot_pin_age_us,
             invocations_admitted_total: live.invocations_admitted_total,
             invocation_conflicts_total: live.invocation_conflicts_total,
+            admin_cancellations_accepted_total: live.admin_cancellations_accepted_total,
         })
     }
 }
@@ -2194,6 +2203,7 @@ fn invocation_registry(
             generation: 1,
             invocations_admitted_total: 0,
             invocation_conflicts_total: 0,
+            admin_cancellations_accepted_total: 0,
             entries: HashMap::new(),
         }),
         changed: Condvar::new(),
@@ -10227,6 +10237,7 @@ impl<'db> StorageManager<'db> {
             oldest_snapshot_pin_age_us: projection.oldest_snapshot_pin_age_us,
             invocations_admitted_total: projection.invocations_admitted_total,
             invocation_conflicts_total: projection.invocation_conflicts_total,
+            admin_cancellations_accepted_total: projection.admin_cancellations_accepted_total,
             fence_waits,
             fence_waits_truncated,
             continuation: projection.continuation,
@@ -10328,6 +10339,7 @@ impl<'db> StorageManager<'db> {
                         }
                     }
                     if changed {
+                        live.record_admin_cancellation();
                         live.advance_owner_generation(invocation.principal_id);
                     }
                     self.admissions.changed.notify_all();
@@ -11328,6 +11340,7 @@ mod commit_cancellation_boundary_tests {
                 generation: 1,
                 invocations_admitted_total: 0,
                 invocation_conflicts_total: 0,
+                admin_cancellations_accepted_total: 0,
                 entries: std::collections::HashMap::new(),
             }),
             changed: std::sync::Condvar::new(),
@@ -11376,6 +11389,7 @@ mod commit_cancellation_boundary_tests {
                 generation: 1,
                 invocations_admitted_total: u64::MAX,
                 invocation_conflicts_total: u64::MAX,
+                admin_cancellations_accepted_total: u64::MAX,
                 entries: std::collections::HashMap::new(),
             }),
             changed: std::sync::Condvar::new(),
@@ -11390,15 +11404,17 @@ mod commit_cancellation_boundary_tests {
             )
             .expect("admission should succeed at a saturated counter");
         permit.record_conflict();
+        state.live.lock().unwrap().record_admin_cancellation();
         assert_eq!(
             {
                 let live = state.live.lock().unwrap();
                 (
                     live.invocations_admitted_total,
                     live.invocation_conflicts_total,
+                    live.admin_cancellations_accepted_total,
                 )
             },
-            (u64::MAX, u64::MAX)
+            (u64::MAX, u64::MAX, u64::MAX)
         );
         drop(permit);
     }

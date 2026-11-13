@@ -11314,6 +11314,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert!(runtime_page.contains("\"oldest_snapshot_pin_age_us\":"));
     assert!(runtime_page.contains("\"invocations_admitted_total\":3"));
     assert!(runtime_page.contains("\"invocation_conflicts_total\":0"));
+    assert!(runtime_page.contains("\"admin_cancellations_accepted_total\":1"));
     let runtime_cursor = runtime_page
         .split("\"next_cursor\":\"")
         .nth(1)
@@ -13078,7 +13079,7 @@ fn storage_manager_audits_cancellation_before_commit_and_preserves_terminal_outc
             max_invocation_age: Duration::from_secs(15 * 60),
             max_invocation_scan_work: prdb_engine::transaction::MAX_INVOCATION_SCAN_WORK,
             max_token_lifecycle_requests_per_minute: 30,
-            max_admin_cancellation_requests_per_minute: 2,
+            max_admin_cancellation_requests_per_minute: 3,
         },
     )?;
     let admin_id = id(240);
@@ -13171,11 +13172,22 @@ fn storage_manager_audits_cancellation_before_commit_and_preserves_terminal_outc
         )?,
         AdministrativeCancellationResult::Accepted
     );
+    assert_eq!(
+        storage.cancel_invocation(
+            admin_id,
+            id(243),
+            7,
+            now_us,
+            cancellation_audit(250, admin_id, id(243)),
+        )?,
+        AdministrativeCancellationResult::Accepted
+    );
     let administrative_page = storage.list_runtime_invocations(admin_id, now_us, 1, None)?;
     assert_eq!(
         administrative_page.invocations[0].cancellation_reason_code,
         Some(7)
     );
+    assert_eq!(administrative_page.admin_cancellations_accepted_total, 1);
     assert!(matches!(
         storage
             .get_invocation_status(id(243), owner_id, now_us)?
