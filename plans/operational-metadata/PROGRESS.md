@@ -71,3 +71,11 @@
 - Regression: the runtime-field assertion failed before implementation. Lifecycle coverage checks one first cancellation plus an accepted repeat remains at one; the saturation test includes the cancellation counter, and the typed client fixture decodes it.
 - Verification: focused storage, client, and saturation tests; workspace build/fmt/Clippy; TinyCC tests and sandbox fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite (all tests passed with zero ignored); and `git diff --check` passed.
 - Remaining: policy-denial, byte, and latency counters; job registries; retained-byte/cache telemetry; additional wait categories; and broader pressure/authority-race tests remain open.
+
+## OM-2 audited administrator cancellation denial counter — verified slice
+
+- Contract: `admin_cancellations_denied_total` counts only administrative cancellation attempts whose `Denied` AUD1 record was durably committed. Unauthorized, rate-limited, unaudited late requests, and failed audit commits are excluded. It is process-local, saturating, and resets with the invocation registry.
+- Implementation: the existing COMMITTING and absent-invocation branches increment the counter after the durable denied audit succeeds; the runtime page, strict client decoder, and CLI expose it.
+- Regression: the authorized runtime response failed before the new field existed. Lifecycle coverage verifies accepted cancellation leaves denials at zero, terminal and unknown targets with committed denied audits increment it, and rate limiting does not.
+- Verification: focused cancellation lifecycle, runtime page, typed TCP and saturation tests; workspace build/fmt/Clippy; TinyCC suite and sandbox fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite with zero ignored tests; and `git diff --check` passed.
+- Remaining: policy-denial, byte, and latency counters; job registries; retained-byte/cache telemetry; additional wait categories; and broader pressure/authority-race tests remain open.

@@ -4039,6 +4039,7 @@ impl ClientConnectionSession {
                         invocations_admitted_total: page.invocations_admitted_total,
                         invocation_conflicts_total: page.invocation_conflicts_total,
                         admin_cancellations_accepted_total: page.admin_cancellations_accepted_total,
+                        admin_cancellations_denied_total: page.admin_cancellations_denied_total,
                         waits: &page.fence_waits,
                         truncated: page.fence_waits_truncated,
                     },
@@ -7145,6 +7146,7 @@ struct RuntimeInvocationSummary<'a> {
     invocations_admitted_total: u64,
     invocation_conflicts_total: u64,
     admin_cancellations_accepted_total: u64,
+    admin_cancellations_denied_total: u64,
     waits: &'a [crate::ddl_fence::DdlFenceWaitStatus],
     truncated: bool,
 }
@@ -7160,6 +7162,8 @@ fn encode_fence_waits(output: &mut String, summary: RuntimeInvocationSummary<'_>
     output.push_str(&summary.invocation_conflicts_total.to_string());
     output.push_str(",\"admin_cancellations_accepted_total\":");
     output.push_str(&summary.admin_cancellations_accepted_total.to_string());
+    output.push_str(",\"admin_cancellations_denied_total\":");
+    output.push_str(&summary.admin_cancellations_denied_total.to_string());
     output.push_str(",\"fence_waits\":[");
     for (index, wait) in summary.waits.iter().enumerate() {
         if index != 0 {
@@ -7672,6 +7676,7 @@ mod runtime_wait_tests {
                 invocations_admitted_total: 7,
                 invocation_conflicts_total: 1,
                 admin_cancellations_accepted_total: 1,
+                admin_cancellations_denied_total: 2,
                 waits: &[wait],
                 truncated: true,
             },
@@ -7679,7 +7684,7 @@ mod runtime_wait_tests {
         assert_eq!(
             output,
             format!(
-                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"invocations_admitted_total\":7,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
+                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"invocations_admitted_total\":7,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"admin_cancellations_denied_total\":2,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
                 "01".repeat(16),
                 "02".repeat(16),
                 "03".repeat(16)

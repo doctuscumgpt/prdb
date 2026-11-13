@@ -617,3 +617,11 @@
 - Regression: storage lifecycle coverage verifies a first accepted cancellation increments once and an accepted repeat leaves the count unchanged. The TCP fixture verifies typed decoding, and saturation coverage checks `u64::MAX` behavior.
 - Verification: focused storage/client/saturation checks, workspace build/fmt/Clippy, TinyCC tests and sandbox fixture, release-profile validation, delegated cgroup probe, full serial delegated-cgroup workspace suite with zero ignored tests, and `git diff --check` passed.
 - Remaining: additional runtime counters and registries remain open under OM-2.
+
+## SDK-17 / OM-2: audited cancellation denial counter projection — verified slice
+
+- Behavior: `runtime-list` exposes `admin_cancellations_denied_total` for cancellation requests with a durably committed `Denied` AUD1 event. Unauthorized, rate-limited, unaudited late requests, and audit failures do not increment it; the process-local counter saturates and resets with the registry.
+- Implementation: the storage runtime page, protocol JSON encoder, typed client, and CLI JSON output carry the counter.
+- Regression: runtime-page output was missing the counter before implementation. Storage lifecycle checks cover denied audits for terminal and unknown targets, an accepted request leaves the denied count unchanged, and a rate-limited request remains uncounted. TCP and saturation tests verify decoding and bounds.
+- Verification: focused storage, runtime, client and saturation tests; workspace build/fmt/Clippy; TinyCC suite and fixture; release-profile validation; delegated cgroup probe; full serial delegated-cgroup workspace suite with zero ignored tests; and `git diff --check` passed.
+- Remaining: additional runtime counters and registries remain open under OM-2.

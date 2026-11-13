@@ -384,6 +384,7 @@ pub struct RuntimeInvocationPage {
     pub invocations_admitted_total: u64,
     pub invocation_conflicts_total: u64,
     pub admin_cancellations_accepted_total: u64,
+    pub admin_cancellations_denied_total: u64,
     pub fence_waits: Vec<RuntimeFenceWait>,
     pub fence_waits_truncated: bool,
     pub next_cursor: Option<String>,
@@ -1156,7 +1157,7 @@ impl AdminClient {
         );
         let response = self.transport.exchange(10, payload.into_bytes())?;
         let mut fields = parse_flat_response(&response.payload)?;
-        if fields.len() != 11 {
+        if fields.len() != 12 {
             return Err(ClientSubmitError::InvalidResponse);
         }
         let observed_at_us = response_u64(&mut fields, "observed_at_us")?
@@ -1276,6 +1277,9 @@ impl AdminClient {
         let admin_cancellations_accepted_total =
             response_u64(&mut fields, "admin_cancellations_accepted_total")?
                 .ok_or(ClientSubmitError::InvalidResponse)?;
+        let admin_cancellations_denied_total =
+            response_u64(&mut fields, "admin_cancellations_denied_total")?
+                .ok_or(ClientSubmitError::InvalidResponse)?;
         if pinned_snapshot_count == 0 && oldest_snapshot_pin_age_us != 0 {
             return Err(ClientSubmitError::InvalidResponse);
         }
@@ -1358,6 +1362,7 @@ impl AdminClient {
             invocations_admitted_total,
             invocation_conflicts_total,
             admin_cancellations_accepted_total,
+            admin_cancellations_denied_total,
             fence_waits: decoded_waits,
             fence_waits_truncated,
             next_cursor,
