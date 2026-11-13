@@ -3,8 +3,8 @@
 ## SQL-8 follow-up: exact group-key memory bound through confined SQL — verified
 
 - Regression: the maintained confined write/read artifact groups 128 distinct 8,192-byte text keys with `COUNT(*)` through `prdb_sdk_sql_execute_group_count_v4`. Its callback validates all key bytes and groups, and its copied group-key payload reaches exactly 1 MiB. The enabled sandbox acceptance overlaps the query with operational reads and durable commits and verifies the callback marker and complete invocation result path.
-- Verification: `make -f engine/sdk/Makefile sandbox-query-fixture` compiled the updated artifact with TinyCC; the focused `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed in the delegated user service (`1 passed, 0 ignored`). The cancellation fixture's check interval was extended to 2 seconds so admission work can finish after readiness while the acceptance retains its separate two-second cancellation-observation bound.
-- Scope: this is one confined local workload at the current memory limit. Repeated workload timing, broader client saturation, and target-hardware measurements remain open.
+- Red/green: the acceptance failed with the pre-change artifact because `insert-visible` arrived where the new marker was expected; rebuilding the TinyCC artifact made it pass. The updated acceptance then passed five sequential fresh-database repetitions in the delegated user service (`1 passed, 0 ignored` each). The cancellation fixture's check interval was extended to 2 seconds so admission work can finish after readiness while the acceptance retains its separate two-second cancellation-observation bound.
+- Scope: the five-run timing and sampled cgroup figures are local comparative measurements at the current bound. Broader client saturation and target-hardware measurements remain open.
 
 ## SQL-5 dependency: borrowed SDK views for executor index-range results — verified
 
