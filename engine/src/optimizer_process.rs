@@ -286,9 +286,49 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
                 {
                     plan = encoded;
                 }
+                let predicate_proves_empty = if operation == Operation::OptimizeSelect
+                    && request.payload.get(2)
+                        == Some(&crate::query_abi::OPTIMIZER_SELECT_STATEMENT)
+                    && proven_empty.first() != Some(&true)
+                {
+                    let decoded_request =
+                        crate::optimizer_request::decode_select_request(&request.payload).ok();
+                    let decoded_plan = crate::optimizer_plan::decode_plan_v1(&plan).ok();
+                    match (decoded_request, decoded_plan) {
+                        (Some(select), Some(decoded_plan)) if select.predicate.is_some() => {
+                            let bound_predicate = decoded_plan.nodes.iter().find_map(|node| {
+                                if let crate::optimizer_plan::PlanNode::Filter(predicate) = node {
+                                    Some(predicate)
+                                } else {
+                                    None
+                                }
+                            });
+                            if let Some(predicate) = bound_predicate {
+                                matches!(
+                                    request_predicate_estimate(
+                                        planner,
+                                        &mut next_planner_request_id,
+                                        select.schema_name,
+                                        select.relation_name,
+                                        predicate,
+                                    )?,
+                                    crate::planner_ipc::EstimatePredicateResponse::Exact {
+                                        matching_rows: 0,
+                                        ..
+                                    }
+                                )
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    }
+                } else {
+                    false
+                };
                 if operation == Operation::OptimizeSelect
                     && request.payload.get(2) == Some(&crate::query_abi::OPTIMIZER_SELECT_STATEMENT)
-                    && proven_empty.first() == Some(&true)
+                    && (proven_empty.first() == Some(&true) || predicate_proves_empty)
                     && let Ok(mut decoded) = crate::optimizer_plan::decode_plan_v1(&plan)
                 {
                     decoded.unique_probe = None;
@@ -310,6 +350,41 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
         .map_err(OptimizerProcessError::Response)?;
         write_submission_response(submission, request.operation, request.request_id, response)?;
     }
+}
+
+fn request_predicate_estimate<P: Read + Write>(
+    planner: &mut P,
+    next_request_id: &mut u64,
+    schema_name: String,
+    relation_name: String,
+    predicate: &crate::optimizer_binding::BoundPredicate,
+) -> Result<crate::planner_ipc::EstimatePredicateResponse, OptimizerProcessError> {
+    let request_id = *next_request_id;
+    *next_request_id = next_request_id
+        .checked_add(1)
+        .ok_or(OptimizerProcessError::RequestLimitExceeded)?;
+    let request = IpcFrame {
+        operation: Operation::EstimateScan as u16,
+        request_id,
+        payload: crate::planner_ipc::EstimatePredicateRequest::from_bound_predicate(
+            schema_name,
+            relation_name,
+            predicate,
+        )
+        .and_then(|request| request.encode())
+        .map_err(OptimizerProcessError::PlannerPayload)?,
+    };
+    authorize_operation(ServiceRole::Planner, Operation::EstimateScan)
+        .map_err(OptimizerProcessError::Dispatch)?;
+    crate::ipc::write_frame(planner, &request).map_err(OptimizerProcessError::Frame)?;
+    let response = crate::ipc::read_frame(planner)
+        .map_err(OptimizerProcessError::Frame)?
+        .ok_or(OptimizerProcessError::PlannerClosed)?;
+    if response.operation != request.operation || response.request_id != request.request_id {
+        return Err(OptimizerProcessError::PlannerResponseMismatch);
+    }
+    crate::planner_ipc::EstimatePredicateResponse::decode(&response.payload)
+        .map_err(OptimizerProcessError::PlannerPayload)
 }
 
 fn write_submission_response<S: Write>(
@@ -634,6 +709,21 @@ mod tests {
                     },
                 )
                 .unwrap();
+                let estimate = crate::ipc::read_frame(&mut planner_server)
+                    .unwrap()
+                    .expect("filtered SELECT must request a bounded predicate estimate");
+                assert_eq!(estimate.operation, Operation::EstimateScan as u16);
+                crate::ipc::write_frame(
+                    &mut planner_server,
+                    &IpcFrame {
+                        operation: estimate.operation,
+                        request_id: estimate.request_id,
+                        payload: crate::planner_ipc::EstimatePredicateResponse::Unknown
+                            .encode()
+                            .unwrap(),
+                    },
+                )
+                .unwrap();
             });
             let optimizer_thread = scope
                 .spawn(|| serve_optimizer_process(&mut submission_server, &mut planner_client));
@@ -654,7 +744,98 @@ mod tests {
             assert_eq!(response.status, OptimizerStatus::Success);
             let plan = decode_plan_v1(response.plan.as_deref().unwrap()).unwrap();
             assert!(plan.range_scan.is_none());
+            assert!(!plan.empty_view_hint, "unknown estimate must preserve normal execution");
             assert!(matches!(plan.nodes.get(1), Some(PlanNode::Filter(_))));
+            submission_client.shutdown(Shutdown::Write).unwrap();
+            planner_thread.join().unwrap();
+            optimizer_thread.join().unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn process_protocol_uses_exact_empty_predicate_estimate_as_empty_plan_hint() {
+        let (mut submission_client, mut submission_server) = UnixStream::pair().unwrap();
+        let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
+        std::thread::scope(|scope| {
+            let planner_thread = scope.spawn(|| {
+                let describe = crate::ipc::read_frame(&mut planner_server)
+                    .unwrap()
+                    .expect("optimizer must resolve relation metadata");
+                crate::ipc::write_frame(
+                    &mut planner_server,
+                    &IpcFrame {
+                        operation: describe.operation,
+                        request_id: describe.request_id,
+                        payload: DescribePlanRelationResponse {
+                            relation: Some(AuthorizedPlanRelation {
+                                schema_id: [1; 16],
+                                schema_version: 3,
+                                table_epoch: 7,
+                                relation: AuthorizedRelationDescription {
+                                    relation_id: [2; 16],
+                                    name: "items".to_owned(),
+                                    columns: vec![VisibleColumn {
+                                        column_id: [3; 16],
+                                        name: "name".to_owned(),
+                                        ordinal: 0,
+                                        scalar_type: ScalarType::Text,
+                                        nullable: false,
+                                    }],
+                                },
+                                unique_access_paths: Vec::new(),
+                                range_access_paths: Vec::new(),
+                            }),
+                            proven_empty: false,
+                            visible_rows_estimate: None,
+                        }
+                        .encode()
+                        .unwrap(),
+                    },
+                )
+                .unwrap();
+
+                let estimate = crate::ipc::read_frame(&mut planner_server)
+                    .unwrap()
+                    .expect("filtered SELECT must request a bounded predicate estimate");
+                assert_eq!(estimate.operation, Operation::EstimateScan as u16);
+                let decoded = crate::planner_ipc::EstimatePredicateRequest::decode(&estimate.payload)
+                    .unwrap();
+                assert_eq!(decoded.schema_name, "public");
+                assert_eq!(decoded.relation_name, "items");
+                crate::ipc::write_frame(
+                    &mut planner_server,
+                    &IpcFrame {
+                        operation: estimate.operation,
+                        request_id: estimate.request_id,
+                        payload: crate::planner_ipc::EstimatePredicateResponse::Exact {
+                            visible_rows: 4,
+                            matching_rows: 0,
+                        }
+                        .encode()
+                        .unwrap(),
+                    },
+                )
+                .unwrap();
+            });
+            let optimizer_thread =
+                scope.spawn(|| serve_optimizer_process(&mut submission_server, &mut planner_client));
+            crate::ipc::write_frame(
+                &mut submission_client,
+                &IpcFrame {
+                    operation: Operation::OptimizeSelect as u16,
+                    request_id: 31,
+                    payload: range_select_request(),
+                },
+            )
+            .unwrap();
+            let response = crate::ipc::read_frame(&mut submission_client)
+                .unwrap()
+                .expect("optimizer must return a plan");
+            let response = OptimizerResponse::decode(&response.payload).unwrap();
+            assert_eq!(response.status, OptimizerStatus::Success);
+            let plan = decode_plan_v1(response.plan.as_deref().unwrap()).unwrap();
+            assert!(plan.empty_view_hint);
+            assert!(plan.unique_probe.is_none() && plan.range_scan.is_none());
             submission_client.shutdown(Shutdown::Write).unwrap();
             planner_thread.join().unwrap();
             optimizer_thread.join().unwrap().unwrap();
