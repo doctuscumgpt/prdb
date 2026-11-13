@@ -547,6 +547,8 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 socket_path.to_str().ok_or("non-UTF-8 socket path")?,
                 "--service-uid",
                 &uid.to_string(),
+                "--connections-per-ip",
+                "256",
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -831,6 +833,26 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let mut admin =
         AdminClient::connect_authenticated(address, token_id, &mut admin_control_secret)?;
     assert_eq!(admin_control_secret, [0; 32]);
+    let runtime_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "runtime-list",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        runtime_list.status.success(),
+        "runtime-list CLI failed: {}",
+        String::from_utf8_lossy(&runtime_list.stderr)
+    );
+    let runtime_output = String::from_utf8(runtime_list.stdout)?;
+    assert!(runtime_output.contains("\"observed_at_us\":"));
+    assert!(runtime_output.contains("\"consistency\":\"best_effort\""));
+    assert!(runtime_output.contains("\"invocations\":["));
     let ddl_schema = admin.create_schema("process_ddl", admin_user_id)?;
     let ddl_table = admin.create_table(
         ddl_schema.identity_id,

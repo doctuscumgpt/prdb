@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SDK-12: administrator runtime invocation CLI — verified
+
+- Contract: [client SDK](../../specs/client-sdk.md) and [client protocol](../../specs/client-protocol.md). The authenticated administrator reads bounded invocation pages with observation time, best-effort consistency, and a process-local cursor; each page rechecks administrator authority.
+- Implementation: added typed `AdminClient::list_runtime_invocations_page` decoding and `prdb-client runtime-list`, default limit 64, maximum 128, JSON output without query values, paths, or pointers.
+- Regression: TCP client paging coverage and the real gateway/supervisor CLI lifecycle are added. Focused tests passed before final validation.
+- Verification: the focused TCP paging test passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, and warning-denied workspace Clippy passed. `make -f engine/sdk/Makefile test` and `sandbox-query-fixture` passed; `release-profile` built the release workspace and validated 9 engine binaries and 1 query fixture. The cgroup probe found writable delegated `cpu memory pids`; the full serial workspace suite, including process and sandbox integrations, passed with zero ignored tests. `git diff --check` passed.
+- Remaining: other administrative runtime registries and repeated authority-race stress remain open under OM-2.
+
 ## SDK-11: dependency metadata CLI — verified
 
 - Contract: [client SDK](../../specs/client-sdk.md) and [client protocol](../../specs/client-protocol.md). The CLI authenticates with a private credential file and prints one bounded dependency page without widening endpoint visibility.

@@ -188,6 +188,89 @@ fn admin_client_lists_administratively_visible_schema_pages() {
 }
 
 #[test]
+fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let cursor = format!(
+        "01{}{}{}",
+        "02".repeat(16),
+        "03".repeat(16),
+        "04".repeat(16)
+    );
+    let server_cursor = cursor.clone();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(request.kind, 10);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            r#"{"phase":"read","operation_version":1,"operation":"runtime.invocations.list","arguments":{"limit":"1"}}"#
+        );
+        let first_response = format!(
+            "{{\"observed_at_us\":1000,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"active\",\"started_at_us\":900,\"deadline_at_us\":1200,\"cancellation_requested\":false,\"cancellation_reason_code\":null}}],\"next_cursor\":\"{server_cursor}\"}}",
+            "10".repeat(16),
+            "20".repeat(16)
+        );
+        respond(&mut stream, &request, first_response.as_bytes());
+
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            format!(
+                "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"runtime.invocations.list\",\"arguments\":{{\"limit\":\"1\",\"cursor\":\"{server_cursor}\"}}}}"
+            )
+        );
+        respond(
+            &mut stream,
+            &request,
+            format!(
+                "{{\"observed_at_us\":1001,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"committing\",\"started_at_us\":901,\"deadline_at_us\":null,\"cancellation_requested\":true,\"cancellation_reason_code\":7}}],\"next_cursor\":null}}",
+                "11".repeat(16),
+                "20".repeat(16)
+            )
+            .as_bytes(),
+        );
+    });
+
+    let mut secret = [7; 32];
+    let mut client = AdminClient::connect_authenticated(address, [1; 16], &mut secret).unwrap();
+    let first = client.list_runtime_invocations_page(1, None).unwrap();
+    assert_eq!(first.observed_at_us, 1000);
+    assert_eq!(
+        first.consistency,
+        prdb_engine::client_submit::RuntimeConsistency::BestEffort
+    );
+    assert_eq!(first.records.len(), 1);
+    assert_eq!(first.records[0].invocation_id, [0x10; 16]);
+    assert_eq!(first.records[0].principal_id, [0x20; 16]);
+    assert_eq!(
+        first.records[0].state,
+        prdb_engine::client_submit::RuntimeInvocationState::Active
+    );
+    assert_eq!(first.records[0].started_at_us, Some(900));
+    assert_eq!(first.records[0].deadline_at_us, Some(1200));
+    assert!(!first.records[0].cancellation_requested);
+    assert_eq!(first.records[0].cancellation_reason_code, None);
+    assert_eq!(first.next_cursor.as_deref(), Some(cursor.as_str()));
+
+    let second = client
+        .list_runtime_invocations_page(1, first.next_cursor.as_deref())
+        .unwrap();
+    assert_eq!(second.observed_at_us, 1001);
+    assert_eq!(second.records[0].invocation_id, [0x11; 16]);
+    assert_eq!(
+        second.records[0].state,
+        prdb_engine::client_submit::RuntimeInvocationState::Committing
+    );
+    assert!(second.records[0].cancellation_requested);
+    assert_eq!(second.records[0].cancellation_reason_code, Some(7));
+    assert_eq!(second.next_cursor, None);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_lists_logical_index_definitions_without_physical_details() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

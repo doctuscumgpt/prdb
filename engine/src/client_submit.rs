@@ -338,6 +338,38 @@ pub struct MetadataPage<T> {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeInvocationState {
+    Active,
+    Committing,
+    Committed,
+    Aborted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeConsistency {
+    BestEffort,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeInvocation {
+    pub invocation_id: [u8; 16],
+    pub principal_id: [u8; 16],
+    pub state: RuntimeInvocationState,
+    pub started_at_us: Option<u64>,
+    pub deadline_at_us: Option<u64>,
+    pub cancellation_requested: bool,
+    pub cancellation_reason_code: Option<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeInvocationPage {
+    pub observed_at_us: u64,
+    pub consistency: RuntimeConsistency,
+    pub records: Vec<RuntimeInvocation>,
+    pub next_cursor: Option<String>,
+}
+
 pub const DEFAULT_METADATA_PAGE_SIZE: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1063,6 +1095,127 @@ impl AdminClient {
             crate::client_protocol::ClientMode::Control,
         )?;
         Ok(Self { transport })
+    }
+
+    /// Return one best-effort page of invocation registry state. The server checks
+    /// current database-administrator authority on every page.
+    pub fn list_runtime_invocations_page(
+        &mut self,
+        page_limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<RuntimeInvocationPage, ClientSubmitError> {
+        if !(1..=crate::storage_manager::MAX_ADMIN_INVOCATION_PAGE).contains(&page_limit)
+            || cursor.is_some_and(|value| decode_admin_runtime_cursor(value).is_none())
+        {
+            return Err(ClientSubmitError::InvalidMetadataPage);
+        }
+        let mut arguments = format!("\"limit\":\"{page_limit}\"");
+        if let Some(cursor) = cursor {
+            arguments.push_str(",\"cursor\":\"");
+            arguments.push_str(cursor);
+            arguments.push('"');
+        }
+        let payload = format!(
+            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
+        );
+        let response = self.transport.exchange(10, payload.into_bytes())?;
+        let mut fields = parse_flat_response(&response.payload)?;
+        if fields.len() != 4 {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        let observed_at_us = response_u64(&mut fields, "observed_at_us")?
+            .filter(|value| *value > 0)
+            .ok_or(ClientSubmitError::InvalidResponse)?;
+        let consistency = match fields.remove("consistency") {
+            Some(ResponseValue::String(value)) if value == "best_effort" => {
+                RuntimeConsistency::BestEffort
+            }
+            _ => return Err(ClientSubmitError::InvalidResponse),
+        };
+        let rows = match fields.remove("invocations") {
+            Some(ResponseValue::Array(values)) => values,
+            _ => return Err(ClientSubmitError::InvalidResponse),
+        };
+        if rows.len() > page_limit {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        let mut records = Vec::with_capacity(rows.len());
+        let mut previous_id = None;
+        for value in rows {
+            let ResponseValue::Object(mut row) = value else {
+                return Err(ClientSubmitError::InvalidResponse);
+            };
+            if row.len() != 7 {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let invocation_id = response_id(&row, "invocation_id")?;
+            let principal_id = response_id(&row, "principal_id")?;
+            let state = match row.remove("state") {
+                Some(ResponseValue::String(value)) if value == "active" => {
+                    RuntimeInvocationState::Active
+                }
+                Some(ResponseValue::String(value)) if value == "committing" => {
+                    RuntimeInvocationState::Committing
+                }
+                Some(ResponseValue::String(value)) if value == "committed" => {
+                    RuntimeInvocationState::Committed
+                }
+                Some(ResponseValue::String(value)) if value == "aborted" => {
+                    RuntimeInvocationState::Aborted
+                }
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let started_at_us = response_optional_u64(&mut row, "started_at_us")?;
+            let deadline_at_us = response_optional_u64(&mut row, "deadline_at_us")?;
+            let cancellation_requested = match row.remove("cancellation_requested") {
+                Some(ResponseValue::Boolean(value)) => value,
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let cancellation_reason_code =
+                response_optional_u16(&mut row, "cancellation_reason_code")?;
+            let is_live = matches!(
+                state,
+                RuntimeInvocationState::Active | RuntimeInvocationState::Committing
+            );
+            if invocation_id == [0; 16]
+                || principal_id == [0; 16]
+                || previous_id.is_some_and(|previous| previous >= invocation_id)
+                || started_at_us.is_some_and(|value| value == 0)
+                || deadline_at_us.is_some_and(|value| value == 0)
+                || cancellation_reason_code.is_some_and(|value| value == 0)
+                || is_live != started_at_us.is_some()
+                || cancellation_requested != cancellation_reason_code.is_some()
+                || (!is_live
+                    && (deadline_at_us.is_some()
+                        || cancellation_requested
+                        || cancellation_reason_code.is_some()))
+            {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            previous_id = Some(invocation_id);
+            records.push(RuntimeInvocation {
+                invocation_id,
+                principal_id,
+                state,
+                started_at_us,
+                deadline_at_us,
+                cancellation_requested,
+                cancellation_reason_code,
+            });
+        }
+        let next_cursor = match fields.remove("next_cursor") {
+            None | Some(ResponseValue::Null) => None,
+            Some(ResponseValue::String(value)) if decode_admin_runtime_cursor(&value).is_some() => {
+                Some(value)
+            }
+            _ => return Err(ClientSubmitError::InvalidResponse),
+        };
+        Ok(RuntimeInvocationPage {
+            observed_at_us,
+            consistency,
+            records,
+            next_cursor,
+        })
     }
 
     /// Return one ordered page of metadata visible to this authenticated
@@ -3471,6 +3624,48 @@ fn response_id(
         .filter(|id| *id != [0; 16])
         .ok_or(ClientSubmitError::InvalidResponse)?;
     Ok(id)
+}
+
+fn response_u64(
+    fields: &mut HashMap<String, ResponseValue>,
+    key: &str,
+) -> Result<Option<u64>, ClientSubmitError> {
+    match fields.remove(key) {
+        Some(ResponseValue::Number(value)) => Ok(Some(value)),
+        _ => Err(ClientSubmitError::InvalidResponse),
+    }
+}
+
+fn response_optional_u64(
+    fields: &mut HashMap<String, ResponseValue>,
+    key: &str,
+) -> Result<Option<u64>, ClientSubmitError> {
+    match fields.remove(key) {
+        Some(ResponseValue::Number(value)) => Ok(Some(value)),
+        Some(ResponseValue::Null) => Ok(None),
+        _ => Err(ClientSubmitError::InvalidResponse),
+    }
+}
+
+fn response_optional_u16(
+    fields: &mut HashMap<String, ResponseValue>,
+    key: &str,
+) -> Result<Option<u16>, ClientSubmitError> {
+    response_optional_u64(fields, key)?
+        .map(|value| u16::try_from(value).map_err(|_| ClientSubmitError::InvalidResponse))
+        .transpose()
+}
+
+fn decode_admin_runtime_cursor(value: &str) -> Option<[u8; 49]> {
+    let bytes = decode_hex_array::<49>(value)?;
+    if bytes[0] != 1
+        || bytes[1..17] == [0; 16]
+        || bytes[17..33] == [0; 16]
+        || bytes[33..49] == [0; 16]
+    {
+        return None;
+    }
+    Some(bytes)
 }
 
 fn response_timestamp(

@@ -40,6 +40,8 @@ Token secrets are saved only to mode-0600 credential files and are never printed
     [--after-token-id HEX]\n\n\
   prdb-client dependency-list --address IP:PORT --credentials ADMIN_FILE --object-id HEX\n\
     [--limit N] [--cursor HEX]\n\n\
+  prdb-client runtime-list --address IP:PORT --credentials ADMIN_FILE\n\
+    [--limit N] [--cursor HEX]\n\n\
   prdb-client user-create|role-create --address IP:PORT --credentials ADMIN_FILE --name NAME\n\
   prdb-client user-rename|role-rename --address IP:PORT --credentials ADMIN_FILE --id HEX --name NAME\n\
   prdb-client user-drop|role-drop --address IP:PORT --credentials ADMIN_FILE --id HEX\n\
@@ -149,6 +151,7 @@ fn run() -> Result<(), String> {
         "token-revoke" => token_revoke(address, credentials_path, &mut fields),
         "token-list" => token_list(address, credentials_path, &mut fields),
         "dependency-list" => dependency_list(address, credentials_path, &mut fields),
+        "runtime-list" => runtime_list(address, credentials_path, &mut fields),
         "schema-create" | "schema-rename" | "schema-drop" | "schema-owner-set" | "table-create"
         | "table-rename" | "table-drop" | "table-owner-set" => {
             schema_table_admin(&command, address, credentials_path, &mut fields)
@@ -1707,6 +1710,81 @@ fn dependency_list(
             json_string(&lower_hex(&edge.dependent_id)),
             json_string(&lower_hex(&edge.referenced_id)),
             json_string(edge.kind.as_wire_name())
+        );
+    }
+    match page.next_cursor {
+        Some(cursor) => println!("],\"next_cursor\":{}}}", json_string(&cursor)),
+        None => println!("],\"next_cursor\":null}}"),
+    }
+    Ok(())
+}
+
+fn runtime_list(
+    address: SocketAddr,
+    credentials_path: PathBuf,
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<(), String> {
+    let page_limit = fields
+        .remove("--limit")
+        .map(|value| parse_number::<usize>(value, "--limit"))
+        .transpose()?
+        .unwrap_or(64);
+    if !(1..=prdb_engine::storage_manager::MAX_ADMIN_INVOCATION_PAGE).contains(&page_limit) {
+        return Err(format!(
+            "--limit must be between 1 and {}",
+            prdb_engine::storage_manager::MAX_ADMIN_INVOCATION_PAGE
+        ));
+    }
+    let cursor = fields
+        .remove("--cursor")
+        .map(|value| {
+            value
+                .into_string()
+                .map_err(|_| "--cursor must be UTF-8".to_owned())
+        })
+        .transpose()?;
+    reject_unknown(fields)?;
+
+    let mut administrator =
+        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
+    let mut client = AdminClient::connect_authenticated(
+        address,
+        administrator.token_id,
+        &mut administrator.token_secret,
+    )
+    .map_err(|error| error.to_string())?;
+    let page = client
+        .list_runtime_invocations_page(page_limit, cursor.as_deref())
+        .map_err(|error| error.to_string())?;
+    print!(
+        "{{\"observed_at_us\":{},\"consistency\":\"best_effort\",\"invocations\":[",
+        page.observed_at_us
+    );
+    for (index, invocation) in page.records.iter().enumerate() {
+        if index != 0 {
+            print!(",");
+        }
+        let state = match invocation.state {
+            prdb_engine::client_submit::RuntimeInvocationState::Active => "active",
+            prdb_engine::client_submit::RuntimeInvocationState::Committing => "committing",
+            prdb_engine::client_submit::RuntimeInvocationState::Committed => "committed",
+            prdb_engine::client_submit::RuntimeInvocationState::Aborted => "aborted",
+        };
+        print!(
+            "{{\"invocation_id\":{},\"principal_id\":{},\"state\":{},\"started_at_us\":{},\"deadline_at_us\":{},\"cancellation_requested\":{},\"cancellation_reason_code\":{}}}",
+            json_string(&lower_hex(&invocation.invocation_id)),
+            json_string(&lower_hex(&invocation.principal_id)),
+            json_string(state),
+            invocation
+                .started_at_us
+                .map_or_else(|| "null".to_owned(), |v| v.to_string()),
+            invocation
+                .deadline_at_us
+                .map_or_else(|| "null".to_owned(), |v| v.to_string()),
+            invocation.cancellation_requested,
+            invocation
+                .cancellation_reason_code
+                .map_or_else(|| "null".to_owned(), |v| v.to_string())
         );
     }
     match page.next_cursor {
