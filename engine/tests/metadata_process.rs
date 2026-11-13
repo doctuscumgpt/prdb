@@ -2804,6 +2804,8 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         assert!(runtime_output.contains("\"snapshot_pin_count\":1"));
         assert!(runtime_output.contains("\"transaction_id\":\""));
         assert!(runtime_output.contains("\"age_us\":"));
+        assert!(runtime_output.contains("\"fence_waits\":[]"));
+        assert!(runtime_output.contains("\"fence_waits_truncated\":false"));
         let active_status = admin
             .status(invocation_id)
             .map_err(|error| format!("active STATUS failed: {error:?}"))?;

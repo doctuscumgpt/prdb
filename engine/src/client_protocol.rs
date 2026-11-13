@@ -4031,7 +4031,8 @@ impl ClientConnectionSession {
                     }
                     payload.push('}');
                 }
-                payload.push_str("],\"next_cursor\":");
+                encode_fence_waits(&mut payload, &page.fence_waits, page.fence_waits_truncated);
+                payload.push_str(" ,\"next_cursor\":");
                 if let Some(cursor) = page.continuation {
                     payload.push('"');
                     payload.push_str(&cursor.to_wire());
@@ -7127,6 +7128,61 @@ fn push_json_optional_i64(output: &mut String, value: Option<i64>) {
     }
 }
 
+fn encode_fence_waits(
+    output: &mut String,
+    waits: &[crate::ddl_fence::DdlFenceWaitStatus],
+    truncated: bool,
+) {
+    output.push_str("],\"fence_waits\":[");
+    for (index, wait) in waits.iter().enumerate() {
+        if index != 0 {
+            output.push(',');
+        }
+        output.push_str("{\"wait_id\":\"");
+        output.push_str(&encode_lower_hex_id(wait.wait_id));
+        output.push_str("\",\"category\":\"");
+        output.push_str(match wait.category {
+            crate::ddl_fence::DdlFenceWaitCategory::Writer => "writer",
+            crate::ddl_fence::DdlFenceWaitCategory::Ddl => "ddl",
+        });
+        output.push_str("\",\"waited_us\":");
+        output.push_str(&wait.waited_us.to_string());
+        output.push_str(" ,\"resource_ids\":[");
+        for (resource_index, resource_id) in wait.resource_ids.iter().enumerate() {
+            if resource_index != 0 {
+                output.push(',');
+            }
+            output.push('\"');
+            output.push_str(&encode_lower_hex_id(*resource_id));
+            output.push('\"');
+        }
+        output.push_str("],\"resources_truncated\":");
+        output.push_str(if wait.resources_truncated {
+            "true"
+        } else {
+            "false"
+        });
+        output.push_str(" ,\"blocker_ids\":[");
+        for (blocker_index, blocker_id) in wait.blocker_ids.iter().enumerate() {
+            if blocker_index != 0 {
+                output.push(',');
+            }
+            output.push('\"');
+            output.push_str(&encode_lower_hex_id(*blocker_id));
+            output.push('\"');
+        }
+        output.push_str("],\"blockers_truncated\":");
+        output.push_str(if wait.blockers_truncated {
+            "true"
+        } else {
+            "false"
+        });
+        output.push('}');
+    }
+    output.push_str("],\"fence_waits_truncated\":");
+    output.push_str(if truncated { "true" } else { "false" });
+}
+
 fn encode_metadata_page(
     snapshot: &ActiveMetadataPageSnapshot,
     start: usize,
@@ -7561,5 +7617,35 @@ impl ClientResponseSequences {
             );
             Ok(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod runtime_wait_tests {
+    use super::encode_fence_waits;
+    use crate::ddl_fence::{DdlFenceWaitCategory, DdlFenceWaitStatus};
+
+    #[test]
+    fn runtime_wait_json_uses_opaque_ids_and_explicit_truncation_flags() {
+        let wait = DdlFenceWaitStatus {
+            wait_id: [1; 16],
+            category: DdlFenceWaitCategory::Ddl,
+            waited_us: 23,
+            resource_ids: vec![[2; 16]],
+            resources_truncated: true,
+            blocker_ids: vec![[3; 16]],
+            blockers_truncated: false,
+        };
+        let mut output = String::from("{\"invocations\":[");
+        encode_fence_waits(&mut output, &[wait], true);
+        assert_eq!(
+            output,
+            format!(
+                "{{\"invocations\":[],\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
+                "01".repeat(16),
+                "02".repeat(16),
+                "03".repeat(16)
+            )
+        );
     }
 }

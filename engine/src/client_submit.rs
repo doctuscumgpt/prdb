@@ -379,7 +379,26 @@ pub struct RuntimeInvocationPage {
     pub observed_at_us: u64,
     pub consistency: RuntimeConsistency,
     pub records: Vec<RuntimeInvocation>,
+    pub fence_waits: Vec<RuntimeFenceWait>,
+    pub fence_waits_truncated: bool,
     pub next_cursor: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeFenceWaitCategory {
+    Writer,
+    Ddl,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeFenceWait {
+    pub wait_id: [u8; 16],
+    pub category: RuntimeFenceWaitCategory,
+    pub waited_us: u64,
+    pub resource_ids: Vec<[u8; 16]>,
+    pub resources_truncated: bool,
+    pub blocker_ids: Vec<[u8; 16]>,
+    pub blockers_truncated: bool,
 }
 
 pub const DEFAULT_METADATA_PAGE_SIZE: usize = 64;
@@ -1132,7 +1151,7 @@ impl AdminClient {
         );
         let response = self.transport.exchange(10, payload.into_bytes())?;
         let mut fields = parse_flat_response(&response.payload)?;
-        if fields.len() != 4 {
+        if fields.len() != 6 {
             return Err(ClientSubmitError::InvalidResponse);
         }
         let observed_at_us = response_u64(&mut fields, "observed_at_us")?
@@ -1240,6 +1259,69 @@ impl AdminClient {
                 cancellation_reason_code,
             });
         }
+        let fence_waits = match fields.remove("fence_waits") {
+            Some(ResponseValue::Array(values))
+                if values.len() <= crate::ddl_fence::MAX_DDL_FENCE_WAIT_PAGE =>
+            {
+                values
+            }
+            _ => return Err(ClientSubmitError::InvalidResponse),
+        };
+        let mut decoded_waits = Vec::with_capacity(fence_waits.len());
+        let mut previous_wait_id = None;
+        for value in fence_waits {
+            let ResponseValue::Object(mut wait) = value else {
+                return Err(ClientSubmitError::InvalidResponse);
+            };
+            if wait.len() != 7 {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let wait_id = response_id(&wait, "wait_id")?;
+            let category = match wait.remove("category") {
+                Some(ResponseValue::String(value)) if value == "writer" => {
+                    RuntimeFenceWaitCategory::Writer
+                }
+                Some(ResponseValue::String(value)) if value == "ddl" => {
+                    RuntimeFenceWaitCategory::Ddl
+                }
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let waited_us =
+                response_u64(&mut wait, "waited_us")?.ok_or(ClientSubmitError::InvalidResponse)?;
+            let resource_ids = response_id_array(&mut wait, "resource_ids")?;
+            let resources_truncated = response_boolean(&mut wait, "resources_truncated")?;
+            let blocker_ids = response_id_array(&mut wait, "blocker_ids")?;
+            let blockers_truncated = response_boolean(&mut wait, "blockers_truncated")?;
+            if previous_wait_id.is_some_and(|previous| previous >= wait_id)
+                || resource_ids.is_empty()
+                || resource_ids.len() > crate::ddl_fence::MAX_DDL_FENCE_IDS_PER_WAIT
+                || (resources_truncated
+                    && resource_ids.len() != crate::ddl_fence::MAX_DDL_FENCE_IDS_PER_WAIT)
+                || blocker_ids.is_empty()
+                || blocker_ids.len() > crate::ddl_fence::MAX_DDL_FENCE_IDS_PER_WAIT
+                || (blockers_truncated
+                    && blocker_ids.len() != crate::ddl_fence::MAX_DDL_FENCE_IDS_PER_WAIT)
+                || !strictly_ordered_ids(&resource_ids)
+                || !strictly_ordered_ids(&blocker_ids)
+            {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            previous_wait_id = Some(wait_id);
+            decoded_waits.push(RuntimeFenceWait {
+                wait_id,
+                category,
+                waited_us,
+                resource_ids,
+                resources_truncated,
+                blocker_ids,
+                blockers_truncated,
+            });
+        }
+        let fence_waits_truncated = response_boolean(&mut fields, "fence_waits_truncated")?;
+        if fence_waits_truncated && decoded_waits.len() != crate::ddl_fence::MAX_DDL_FENCE_WAIT_PAGE
+        {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
         let next_cursor = match fields.remove("next_cursor") {
             None | Some(ResponseValue::Null) => None,
             Some(ResponseValue::String(value)) if decode_admin_runtime_cursor(&value).is_some() => {
@@ -1251,6 +1333,8 @@ impl AdminClient {
             observed_at_us,
             consistency,
             records,
+            fence_waits: decoded_waits,
+            fence_waits_truncated,
             next_cursor,
         })
     }
@@ -3661,6 +3745,39 @@ fn response_id(
         .filter(|id| *id != [0; 16])
         .ok_or(ClientSubmitError::InvalidResponse)?;
     Ok(id)
+}
+
+fn response_id_array(
+    fields: &mut HashMap<String, ResponseValue>,
+    key: &str,
+) -> Result<Vec<[u8; 16]>, ClientSubmitError> {
+    let values = match fields.remove(key) {
+        Some(ResponseValue::Array(values)) => values,
+        _ => return Err(ClientSubmitError::InvalidResponse),
+    };
+    values
+        .into_iter()
+        .map(|value| match value {
+            ResponseValue::String(value) => decode_hex_array::<16>(&value)
+                .filter(|id| *id != [0; 16])
+                .ok_or(ClientSubmitError::InvalidResponse),
+            _ => Err(ClientSubmitError::InvalidResponse),
+        })
+        .collect()
+}
+
+fn response_boolean(
+    fields: &mut HashMap<String, ResponseValue>,
+    key: &str,
+) -> Result<bool, ClientSubmitError> {
+    match fields.remove(key) {
+        Some(ResponseValue::Boolean(value)) => Ok(value),
+        _ => Err(ClientSubmitError::InvalidResponse),
+    }
+}
+
+fn strictly_ordered_ids(ids: &[[u8; 16]]) -> bool {
+    ids.windows(2).all(|pair| pair[0] < pair[1])
 }
 
 fn response_u64(

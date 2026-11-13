@@ -273,6 +273,8 @@ pub struct AdministrativeInvocationPage {
     pub observed_at_us: i64,
     pub consistency: InvocationStatusConsistency,
     pub invocations: Vec<AdministrativeInvocationStatus>,
+    pub fence_waits: Vec<crate::ddl_fence::DdlFenceWaitStatus>,
+    pub fence_waits_truncated: bool,
     pub continuation: Option<AdministrativeInvocationCursor>,
 }
 
@@ -10163,10 +10165,13 @@ impl<'db> StorageManager<'db> {
             page_limit,
             continuation,
         )?;
+        let (fence_waits, fence_waits_truncated) = self.ddl_fences.wait_snapshot();
         Ok(AdministrativeInvocationPage {
             observed_at_us: now_us,
             consistency: InvocationStatusConsistency::BestEffort,
             invocations,
+            fence_waits,
+            fence_waits_truncated,
             continuation,
         })
     }

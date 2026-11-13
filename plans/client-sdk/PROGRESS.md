@@ -585,3 +585,11 @@
 - Contracts: [client SDK](../../specs/client-sdk.md) and [client protocol](../../specs/client-protocol.md).
 - Verification: the focused TCP client test and CLI escaping test passed; the focused gateway/supervisor process test passed in the delegated `systemd --user` service. Workspace build, formatting, warning-denied Clippy, maintained TinyCC SDK suite, and the full serial delegated-cgroup workspace suite passed with zero ignored tests. Commit integration reported 145 passed; transaction integration reported 74 passed. `git diff --check` passed.
 - Remaining: broader authenticated CLI coverage for additional administrator operations and repeated authority-race stress remain open.
+
+## SDK-17 / OM-2: live DDL fence wait projection — verified slice
+
+- Contract: administrator runtime invocation pages include bounded best-effort DDL fence waits, with opaque wait/resource/blocker IDs, category, duration, and explicit truncation flags. The projection is available only through the existing administrator-authorized page path.
+- Implementation: the fence manager tracks blocked acquisitions and the held leases that block them. It caps the live waiter registry at 128, returned pages at 16 waits, and each wait at 8 resource IDs and 8 blocker IDs. The typed client strictly validates these records and `prdb-client runtime-list` includes them in JSON output.
+- Regression: unit coverage exercises blockers, cleanup, waiter/resource caps, and truncation; protocol and TCP fixtures cover serialization/decoding; storage and gateway/supervisor checks preserve authorization and report empty pages when no waits exist.
+- Verification: focused regressions, workspace build, formatting, warning-denied Clippy, maintained TinyCC SDK tests and sandbox fixture, release-profile validation, the delegated cgroup probe, and the full serial delegated-cgroup workspace suite passed with zero ignored tests. `git diff --check` passed.
+- Remaining: additional wait categories, job/memory/history/counter registries, and broader pressure/authority-race testing remain open.

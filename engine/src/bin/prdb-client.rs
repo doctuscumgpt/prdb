@@ -1796,9 +1796,45 @@ fn runtime_list(
                 .map_or_else(|| "null".to_owned(), |v| v.to_string())
         );
     }
+    print!("],\"fence_waits\":[");
+    for (index, wait) in page.fence_waits.iter().enumerate() {
+        if index != 0 {
+            print!(",");
+        }
+        print!(
+            "{{\"wait_id\":{},\"category\":{},\"waited_us\":{},\"resource_ids\":[",
+            json_string(&lower_hex(&wait.wait_id)),
+            json_string(match wait.category {
+                prdb_engine::client_submit::RuntimeFenceWaitCategory::Writer => "writer",
+                prdb_engine::client_submit::RuntimeFenceWaitCategory::Ddl => "ddl",
+            }),
+            wait.waited_us
+        );
+        for (resource_index, resource_id) in wait.resource_ids.iter().enumerate() {
+            if resource_index != 0 {
+                print!(",");
+            }
+            print!("{}", json_string(&lower_hex(resource_id)));
+        }
+        print!(
+            "],\"resources_truncated\":{},\"blocker_ids\":[",
+            wait.resources_truncated
+        );
+        for (blocker_index, blocker_id) in wait.blocker_ids.iter().enumerate() {
+            if blocker_index != 0 {
+                print!(",");
+            }
+            print!("{}", json_string(&lower_hex(blocker_id)));
+        }
+        print!("],\"blockers_truncated\":{}}}", wait.blockers_truncated);
+    }
+    print!(
+        "],\"fence_waits_truncated\":{},",
+        page.fence_waits_truncated
+    );
     match page.next_cursor {
-        Some(cursor) => println!("],\"next_cursor\":{}}}", json_string(&cursor)),
-        None => println!("],\"next_cursor\":null}}"),
+        Some(cursor) => println!("\"next_cursor\":{}}}", json_string(&cursor)),
+        None => println!("\"next_cursor\":null}}"),
     }
     Ok(())
 }

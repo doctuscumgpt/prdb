@@ -10493,6 +10493,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert_eq!(first_page.invocations[0].snapshot_pin_count, 1);
     assert_ne!(first_page.invocations[0].transaction_id, [0; 16]);
     assert!(first_page.invocations[0].age_us <= 1_000_000);
+    assert!(first_page.fence_waits.is_empty());
     assert_eq!(first_page.observed_at_us, now_us);
     assert_eq!(
         first_page.consistency,
@@ -11298,6 +11299,8 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert!(runtime_page.contains("\"snapshot_pin_count\":1"));
     assert!(runtime_page.contains("\"transaction_id\":\""));
     assert!(runtime_page.contains("\"age_us\":"));
+    assert!(runtime_page.contains("\"fence_waits\":[]"));
+    assert!(runtime_page.contains("\"fence_waits_truncated\":false"));
     let runtime_cursor = runtime_page
         .split("\"next_cursor\":\"")
         .nth(1)

@@ -39,3 +39,11 @@
 - Regression: storage verifies staged, replaced, and deleted usage values plus stale cursor rejection. The typed client fixture decodes nonzero values, and a delegated gateway/supervisor process test checks the CLI page.
 - Verification: the expected decoder rejection was observed before implementation. Workspace build/fmt/Clippy, TinyCC tests and fixture, release-profile validation, focused regressions, and full serial delegated-cgroup tests passed with zero ignored tests. `git diff --check` passed.
 - Remaining: dedicated transaction ID/state/pin reporting and wait/job/memory/counter registries remain open.
+
+## OM-2 DDL fence waits — verified slice
+
+- Contract: administrator runtime pages report current blocked DDL fence acquisitions as bounded best-effort metadata. Wait, resource, and blocker identifiers are opaque; no SQL, table names, or client addresses are exposed.
+- Implementation: the fence manager tracks active writer/exclusive leases and blocked exclusive/writer requests. It rejects blocked acquisition growth beyond 128 live waiters, bounds each tracked request to 128 normalized resources, returns up to 16 waits with up to 8 resource IDs and 8 blocker IDs each, and signals each projection cap with truncation flags. Wait pages use the same administrator authorization path as invocation pages; each wait snapshot is sampled independently and is not pinned by an invocation cursor.
+- Regression: tests verify blocker relationships, cleanup, bounded admission and response truncation, typed protocol decoding, and the authorized runtime page.
+- Verification: focused regressions, workspace build/fmt/Clippy, TinyCC tests and fixture, release-profile validation, delegated cgroup probe, and full serial delegated-cgroup tests passed with zero ignored tests. `git diff --check` passed.
+- Remaining: other wait/fence categories, job, memory/history, and counter registries plus broader pressure and authority-race testing remain open.
