@@ -437,6 +437,96 @@ mod tests {
         bytes
     }
 
+    fn select_plan_with_predicate_estimate(
+        estimate_response: crate::planner_ipc::EstimatePredicateResponse,
+    ) -> crate::optimizer_plan::SingleTablePlanV1 {
+        let (mut submission_client, mut submission_server) = UnixStream::pair().unwrap();
+        let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
+        std::thread::scope(|scope| {
+            let planner_thread = scope.spawn(|| {
+                let describe = crate::ipc::read_frame(&mut planner_server)
+                    .unwrap()
+                    .expect("optimizer must resolve relation metadata");
+                crate::ipc::write_frame(
+                    &mut planner_server,
+                    &IpcFrame {
+                        operation: describe.operation,
+                        request_id: describe.request_id,
+                        payload: DescribePlanRelationResponse {
+                            relation: Some(AuthorizedPlanRelation {
+                                schema_id: [1; 16],
+                                schema_version: 3,
+                                table_epoch: 7,
+                                relation: AuthorizedRelationDescription {
+                                    relation_id: [2; 16],
+                                    name: "items".to_owned(),
+                                    columns: vec![VisibleColumn {
+                                        column_id: [3; 16],
+                                        name: "name".to_owned(),
+                                        ordinal: 0,
+                                        scalar_type: ScalarType::Text,
+                                        nullable: false,
+                                    }],
+                                },
+                                unique_access_paths: Vec::new(),
+                                range_access_paths: vec![
+                                    crate::metadata_discovery::AuthorizedRangeAccessPath {
+                                        index_id: [4; 16],
+                                        column_ids: vec![[3; 16]],
+                                    },
+                                ],
+                            }),
+                            proven_empty: false,
+                            visible_rows_estimate: None,
+                        }
+                        .encode()
+                        .unwrap(),
+                    },
+                )
+                .unwrap();
+                let estimate = crate::ipc::read_frame(&mut planner_server)
+                    .unwrap()
+                    .expect("filtered SELECT must request a bounded predicate estimate");
+                assert_eq!(estimate.operation, Operation::EstimateScan as u16);
+                let decoded =
+                    crate::planner_ipc::EstimatePredicateRequest::decode(&estimate.payload)
+                        .unwrap();
+                assert_eq!(decoded.schema_name, "public");
+                assert_eq!(decoded.relation_name, "items");
+                crate::ipc::write_frame(
+                    &mut planner_server,
+                    &IpcFrame {
+                        operation: estimate.operation,
+                        request_id: estimate.request_id,
+                        payload: estimate_response.encode().unwrap(),
+                    },
+                )
+                .unwrap();
+            });
+            let optimizer_thread = scope
+                .spawn(|| serve_optimizer_process(&mut submission_server, &mut planner_client));
+            crate::ipc::write_frame(
+                &mut submission_client,
+                &IpcFrame {
+                    operation: Operation::OptimizeSelect as u16,
+                    request_id: 32,
+                    payload: range_select_request(),
+                },
+            )
+            .unwrap();
+            let response = crate::ipc::read_frame(&mut submission_client)
+                .unwrap()
+                .expect("optimizer must return a plan");
+            let response = OptimizerResponse::decode(&response.payload).unwrap();
+            assert_eq!(response.status, OptimizerStatus::Success);
+            let plan = decode_plan_v1(response.plan.as_deref().unwrap()).unwrap();
+            submission_client.shutdown(Shutdown::Write).unwrap();
+            planner_thread.join().unwrap();
+            optimizer_thread.join().unwrap().unwrap();
+            plan
+        })
+    }
+
     fn ordered_select_request() -> Vec<u8> {
         let mut bytes = vec![
             0,
@@ -843,6 +933,21 @@ mod tests {
             planner_thread.join().unwrap();
             optimizer_thread.join().unwrap().unwrap();
         });
+    }
+
+    #[test]
+    fn process_protocol_preserves_filtered_plan_for_nonzero_or_unknown_estimate() {
+        for estimate in [
+            crate::planner_ipc::EstimatePredicateResponse::Exact {
+                visible_rows: 4,
+                matching_rows: 2,
+            },
+            crate::planner_ipc::EstimatePredicateResponse::Unknown,
+        ] {
+            let plan = select_plan_with_predicate_estimate(estimate);
+            assert!(!plan.empty_view_hint);
+            assert!(plan.range_scan.is_some());
+        }
     }
 
     #[test]
