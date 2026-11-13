@@ -1,5 +1,13 @@
 # Client SDK Progress
 
+## SDK-15: expose invocation snapshot pin count — verified
+
+- Contract: [client SDK](../../specs/client-sdk.md), [client protocol](../../specs/client-protocol.md), and [operational metadata](../../specs/operational-metadata.md). Administrator invocation records report the number of invocation-owned redb read snapshots retained (0 or 1).
+- Implementation: the admission registry records a pin as soon as `begin_read` succeeds and clears it after the snapshot is released on abort, unstarted-admission discard, or commit finalization. Pin changes invalidate administrator page continuations. The typed client, protocol JSON, and `runtime-list` CLI expose the value.
+- Regression: the TCP client fixture checks active and committing records; storage/protocol assertions and the delegated gateway/supervisor CLI test confirm live records report one pin. The regression first rejected the newly added response field, then passed after implementation.
+- Verification: locked workspace build, formatting, warning-denied Clippy, TinyCC tests and sandbox fixture, release-profile validation, and the full serial workspace suite passed in a delegated `systemd --user` unit with zero ignored tests. The cgroup probe reported writable `cpu memory pids`; `git diff --check` passed.
+- Remaining: transaction, wait, job, memory, and counter runtime registries remain open under OM-2.
+
 ## SDK-14: expose staged invocation usage — verified
 
 - Contract: [client SDK](../../specs/client-sdk.md), [client protocol](../../specs/client-protocol.md), and [operational metadata](../../specs/operational-metadata.md). Administrator runtime records show the current staged row count and payload bytes without exposing row contents or index bookkeeping.

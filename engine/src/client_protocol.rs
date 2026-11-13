@@ -4011,6 +4011,8 @@ impl ClientConnectionSession {
                     payload.push_str(&invocation.staged_rows.to_string());
                     payload.push_str(" ,\"staged_value_bytes\":");
                     payload.push_str(&invocation.staged_value_bytes.to_string());
+                    payload.push_str(" ,\"snapshot_pin_count\":");
+                    payload.push_str(&invocation.snapshot_pin_count.to_string());
                     payload.push_str(" ,\"cancellation_requested\":");
                     payload.push_str(if cancellation_requested {
                         "true"

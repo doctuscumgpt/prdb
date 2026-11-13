@@ -612,6 +612,12 @@ impl InvocationCoordination {
         }
     }
 
+    fn update_snapshot_pin_count(&self, snapshot_pin_count: u8) {
+        if let Some(permit) = &self._admission_permit {
+            permit.update_snapshot_pin_count(snapshot_pin_count);
+        }
+    }
+
     fn mark_committing(&self) -> bool {
         self._admission_permit
             .as_ref()
@@ -701,6 +707,7 @@ impl<'db> InvocationTransaction<'db> {
         let transaction = database
             .begin_read()
             .map_err(|error| TransactionError::Storage(error.to_string()))?;
+        coordination.update_snapshot_pin_count(1);
         let metadata_bytes = transaction
             .open_table(ENGINE_META)
             .map_err(|error| TransactionError::Storage(error.to_string()))?
@@ -5546,6 +5553,7 @@ impl<'db> InvocationTransaction<'db> {
         self.loaded_indexes.clear();
         self.loaded_foreign_keys.clear();
         self.snapshot.take();
+        self.coordination.update_snapshot_pin_count(0);
         self.aborted = true;
         self.outcome_recorded = true;
         self.coordination._admission_permit.take();
@@ -7798,6 +7806,7 @@ impl<'db> InvocationTransaction<'db> {
         self.active_information_schema_columns_scan = None;
         self.aborted = true;
         self.snapshot.take();
+        self.coordination.update_snapshot_pin_count(0);
         if !self.outcome_recorded {
             record_aborted_outcome(
                 self.database,
@@ -7908,6 +7917,8 @@ impl<'db> InvocationTransaction<'db> {
                 },
             )
         });
+        self.snapshot.take();
+        self.coordination.update_snapshot_pin_count(0);
         match result {
             Ok(sequence) => Ok(sequence),
             Err(

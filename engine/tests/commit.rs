@@ -10490,6 +10490,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert_eq!(first_page.invocations[0].principal_id, admin_id);
     assert_eq!(first_page.invocations[0].staged_rows, 1);
     assert_eq!(first_page.invocations[0].staged_value_bytes, 5);
+    assert_eq!(first_page.invocations[0].snapshot_pin_count, 1);
     assert_eq!(first_page.observed_at_us, now_us);
     assert_eq!(
         first_page.consistency,
@@ -10506,6 +10507,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert_eq!(second_page.invocations[0].principal_id, ordinary_id);
     assert_eq!(second_page.invocations[0].staged_rows, 0);
     assert_eq!(second_page.invocations[0].staged_value_bytes, 0);
+    assert_eq!(second_page.invocations[0].snapshot_pin_count, 1);
     let usage_cursor = storage
         .list_runtime_invocations(admin_id, now_us, 1, None)?
         .continuation
@@ -11286,6 +11288,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert!(runtime_page.contains("\"workload_class\":\"operational\""));
     assert!(runtime_page.contains("\"staged_rows\":1"));
     assert!(runtime_page.contains("\"staged_value_bytes\":5"));
+    assert!(runtime_page.contains("\"snapshot_pin_count\":1"));
     let runtime_cursor = runtime_page
         .split("\"next_cursor\":\"")
         .nth(1)

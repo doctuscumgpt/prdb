@@ -367,6 +367,7 @@ pub struct RuntimeInvocation {
     pub deadline_at_us: Option<u64>,
     pub staged_rows: u64,
     pub staged_value_bytes: u64,
+    pub snapshot_pin_count: u64,
     pub cancellation_requested: bool,
     pub cancellation_reason_code: Option<u16>,
 }
@@ -1154,7 +1155,7 @@ impl AdminClient {
             let ResponseValue::Object(mut row) = value else {
                 return Err(ClientSubmitError::InvalidResponse);
             };
-            if row.len() != 10 {
+            if row.len() != 11 {
                 return Err(ClientSubmitError::InvalidResponse);
             }
             let invocation_id = response_id(&row, "invocation_id")?;
@@ -1188,6 +1189,8 @@ impl AdminClient {
             let staged_rows =
                 response_u64(&mut row, "staged_rows")?.ok_or(ClientSubmitError::InvalidResponse)?;
             let staged_value_bytes = response_u64(&mut row, "staged_value_bytes")?
+                .ok_or(ClientSubmitError::InvalidResponse)?;
+            let snapshot_pin_count = response_u64(&mut row, "snapshot_pin_count")?
                 .ok_or(ClientSubmitError::InvalidResponse)?;
             let cancellation_requested = match row.remove("cancellation_requested") {
                 Some(ResponseValue::Boolean(value)) => value,
@@ -1224,6 +1227,7 @@ impl AdminClient {
                 deadline_at_us,
                 staged_rows,
                 staged_value_bytes,
+                snapshot_pin_count,
                 cancellation_requested,
                 cancellation_reason_code,
             });

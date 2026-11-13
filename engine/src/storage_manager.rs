@@ -200,6 +200,7 @@ pub struct AdministrativeInvocationStatus {
     pub status: InvocationStatus,
     pub staged_rows: usize,
     pub staged_value_bytes: usize,
+    pub snapshot_pin_count: u8,
     pub cancellation_reason_code: Option<u16>,
 }
 
@@ -1669,6 +1670,7 @@ struct LiveInvocation {
     commit_uncertain: bool,
     staged_rows: usize,
     staged_value_bytes: usize,
+    snapshot_pin_count: u8,
     cancellation_reason_code: Option<u16>,
     owner_generation: u128,
 }
@@ -1763,6 +1765,7 @@ impl InvocationAdmissionState {
                 commit_uncertain: false,
                 staged_rows: 0,
                 staged_value_bytes: 0,
+                snapshot_pin_count: 0,
                 cancellation_reason_code: None,
                 owner_generation: 0,
             },
@@ -1906,6 +1909,7 @@ impl InvocationAdmissionState {
                     },
                     staged_rows: invocation.staged_rows,
                     staged_value_bytes: invocation.staged_value_bytes,
+                    snapshot_pin_count: invocation.snapshot_pin_count,
                     cancellation_reason_code: invocation.cancellation_reason_code,
                 },
             )
@@ -1927,6 +1931,20 @@ impl InvocationAdmissionState {
 }
 
 impl InvocationAdmissionPermit {
+    pub(crate) fn update_snapshot_pin_count(&self, snapshot_pin_count: u8) {
+        let mut live = self
+            .state
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(invocation) = live.entries.get_mut(&self.invocation_id)
+            && invocation.snapshot_pin_count != snapshot_pin_count
+        {
+            invocation.snapshot_pin_count = snapshot_pin_count;
+            live.advance_generation();
+        }
+    }
+
     pub(crate) fn update_write_set_usage(&self, staged_rows: usize, staged_value_bytes: usize) {
         let mut live = self
             .state
