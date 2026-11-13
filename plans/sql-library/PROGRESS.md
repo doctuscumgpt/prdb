@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-5 follow-up: confined indexed-range equivalence — verified
+
+- Contract: [SQL library](../../specs/sql-library.md) and [planner/compiler](../../specs/planner-compiler.md). A validated two-sided leading-key range over an authorized non-unique index must return the same projected rows as the normal authorized SQL scan on the invocation snapshot.
+- Regression: `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` now runs `left_key >= $1 AND left_key < $2` over the real `grouped_left_key_range` index, collects the optimizer results and reference scan results, and compares their values and multiplicity. The seeded `(1, 7), (1, 7), (2, 9)` rows make the expected range contain two duplicate key values.
+- Verification: the acceptance passed inside the delegated `systemd --user` service with all seven cancellation workers and the 64-thread operational workload active. The focused run completed 3,085 operational commits during its 30-second interval; the SQL worker also passed the existing cancellation, backpressure, and durable-commit assertions. TinyCC rebuilt the confined artifact with `-Wall -Wextra -Werror`.
+- Scope: this proves equivalence for the supported exact two-sided INTEGER range over one non-unique index and one invocation snapshot. It does not broaden planner range extraction or replace the separately tested fallback/malformed-result cases.
+
 ## SQL-8 follow-up: exact group-key memory bound through confined SQL — verified
 
 - Regression: the maintained confined write/read artifact groups 128 distinct 8,192-byte text keys with `COUNT(*)` through `prdb_sdk_sql_execute_group_count_v4`. Its callback validates all key bytes and groups, and its copied group-key payload reaches exactly 1 MiB. The enabled sandbox acceptance overlaps the query with operational reads and durable commits and verifies the callback marker and complete invocation result path.

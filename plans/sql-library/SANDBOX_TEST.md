@@ -98,3 +98,7 @@ cargo test -p prdb-engine --locked --test metadata_process disconnected_submissi
 ```
 
 Do not execute or load the artifact outside this executor path. The complete workspace command reports these tests as passed rather than ignored; the test must run on a host with the configured cgroup delegation and runtime profile.
+
+## Indexed range equivalence
+
+The confined write/read fixture submits the two-sided INTEGER predicate `left_key >= $1 AND left_key < $2` against the authorized non-unique `grouped_left_key_range` index. It collects optimizer output and the normal authorized full-row SQL scan output from the same invocation snapshot and compares value order and duplicate multiplicity. The existing delegated acceptance therefore checks range-hint matching, executor range submission, filtering/projection, and equivalence across the real confined process path.

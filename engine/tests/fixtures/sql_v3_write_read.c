@@ -131,6 +131,69 @@ typedef struct optimizer_result_context {
     uint32_t expected_value;
 } optimizer_result_context;
 
+typedef struct range_result_context {
+    int32_t values[4];
+    uint32_t count;
+} range_result_context;
+
+static int32_t decode_range_integer(const prdb_sdk_value_v1 *value,
+                                    int32_t *decoded_out) {
+    if (value == NULL || decoded_out == NULL ||
+        value->state != PRDB_SDK_VALUE_STATE_VALUE ||
+        value->type_code != PRDB_SDK_VALUE_TYPE_INTEGER ||
+        value->data == NULL || value->data_len != 4) {
+        return 0;
+    }
+    uint32_t bits = ((uint32_t)value->data[0] << 24) |
+                    ((uint32_t)value->data[1] << 16) |
+                    ((uint32_t)value->data[2] << 8) | value->data[3];
+    memcpy(decoded_out, &bits, sizeof(bits));
+    return 1;
+}
+
+static int32_t collect_optimizer_range_row(
+    void *opaque, const prdb_sdk_optimizer_plan_column_v1 *projections,
+    const prdb_sdk_value_v1 *values, uint32_t projection_count) {
+    range_result_context *context = opaque;
+    int32_t value;
+    if (context == NULL || projections == NULL || values == NULL ||
+        projection_count != 1 || context->count >= 4 ||
+        !decode_range_integer(&values[0], &value)) {
+        return 1;
+    }
+    context->values[context->count++] = value;
+    return PRDB_QUERY_CALLBACK_OK;
+}
+
+static int32_t collect_reference_range_row(
+    void *opaque, const prdb_sdk_row_v1 *row,
+    const prdb_sdk_select_binding_v2 *binding) {
+    range_result_context *context = opaque;
+    prdb_sdk_cell_iterator_v1 cells = {0};
+    prdb_sdk_value_v1 value = {0};
+    int32_t decoded;
+    if (context == NULL || row == NULL || binding == NULL ||
+        binding->projection_count != 1 ||
+        binding->projection_ordinals[0] >= row->cell_count ||
+        context->count >= 4 ||
+        prdb_sdk_row_cells_begin_v1(row, &cells, sizeof(cells)) !=
+            PRDB_SDK_BATCH_OK ||
+        prdb_sdk_cell_next_v1(&cells, &value, sizeof(value)) !=
+            PRDB_SDK_BATCH_OK) {
+        return 1;
+    }
+    for (uint32_t ordinal = 0; ordinal < binding->projection_ordinals[0];
+         ++ordinal) {
+        if (prdb_sdk_cell_next_v1(&cells, &value, sizeof(value)) !=
+            PRDB_SDK_BATCH_OK) {
+            return 1;
+        }
+    }
+    if (!decode_range_integer(&value, &decoded)) return 1;
+    context->values[context->count++] = decoded;
+    return PRDB_QUERY_CALLBACK_OK;
+}
+
 typedef struct ordered_optimizer_result_context {
     const prdb_host_api_v3 *host;
     const prdb_sdk_sql_column_shape_v2 *columns;
@@ -727,7 +790,7 @@ static int32_t run_write_read_fixture(
         "SELECT id FROM records WHERE id = $1 LIMIT 1";
     static const uint8_t optimizer_range_select_sql[] =
         "SELECT left_key FROM grouped_records "
-        "WHERE left_key = $1 LIMIT 1";
+        "WHERE left_key >= $1 AND left_key < $2";
     static const uint8_t optimizer_ordered_select_sql[] =
         "SELECT right_key FROM grouped_records "
         "ORDER BY left_key DESC LIMIT 2";
@@ -2066,11 +2129,23 @@ static int32_t run_write_read_fixture(
             sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
             optimizer_parameter_bytes, sizeof(optimizer_parameter_bytes)};
+        uint8_t optimizer_range_lower_bytes[4] = {0, 0, 0, 1};
+        uint8_t optimizer_range_upper_bytes[4] = {0, 0, 0, 2};
+        prdb_sdk_value_v1 optimizer_range_parameters[2] = {
+            {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+             optimizer_range_lower_bytes,
+             sizeof(optimizer_range_lower_bytes)},
+            {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+             optimizer_range_upper_bytes,
+             sizeof(optimizer_range_upper_bytes)}};
         prdb_sdk_executor_relation_v1 optimizer_relation = {0};
         prdb_sdk_sql_column_shape_v2 optimizer_columns[9] = {{0}};
         prdb_sdk_value_v1 optimizer_source_cells[9] = {{0}};
         prdb_sdk_value_v1 optimizer_projected_values[9] = {{0}};
         optimizer_result_context optimizer_results = {0};
+        range_result_context optimizer_range_results = {0};
         uint32_t optimizer_rows = 0;
         uint32_t parse_error_offset = 0;
         int32_t optimizer_range_status = PRDB_SDK_OPTIMIZER_PLAN_OK;
@@ -2098,9 +2173,7 @@ static int32_t run_write_read_fixture(
         }
 
         memset(&optimizer_statement, 0, sizeof(optimizer_statement));
-        memset(&optimizer_results, 0, sizeof(optimizer_results));
-        optimizer_results.expected_value = 1;
-        optimizer_parameter_bytes[3] = 1;
+        memset(&optimizer_range_results, 0, sizeof(optimizer_range_results));
         optimizer_rows = 0;
         if (prdb_sdk_sql_parse_select_v2(
                 optimizer_range_select_sql,
@@ -2112,7 +2185,8 @@ static int32_t run_write_read_fixture(
         }
         optimizer_range_status =
             prdb_sdk_optimizer_execute_select_ast_with_parameters_v1(
-                optimizer_host, &optimizer_statement, &optimizer_parameter, 1,
+                optimizer_host, &optimizer_statement,
+                optimizer_range_parameters, 2,
                 schema, sizeof(schema) - 1, 16, sizeof(optimizer_batch),
                 optimizer_request, sizeof(optimizer_request),
                 optimizer_response, sizeof(optimizer_response),
@@ -2121,17 +2195,38 @@ static int32_t run_write_read_fixture(
                 sizeof(optimizer_batch), &optimizer_relation,
                 sizeof(optimizer_relation), optimizer_columns, 9,
                 optimizer_source_cells, 9, optimizer_projected_values, 9,
-                verify_optimizer_row, &optimizer_results, &optimizer_rows);
+                collect_optimizer_range_row, &optimizer_range_results,
+                &optimizer_rows);
         if (optimizer_range_status != PRDB_SDK_OPTIMIZER_PLAN_OK) {
             static const uint8_t message[] = "fixture-error-optimizer-range-execute";
             return report_failure(host, message, sizeof(message) - 1);
         }
-        if (optimizer_rows != 1 || optimizer_results.row_count != 1 ||
-            !optimizer_results.matched_expected_value) {
+        if (optimizer_rows != 2 || optimizer_range_results.count != 2) {
             static const uint8_t message[] = "fixture-error-optimizer-range-result";
             return report_failure(host, message, sizeof(message) - 1);
         }
-        optimizer_parameter_bytes[3] = 42;
+
+        {
+            range_result_context reference_results = {0};
+            status = prdb_sdk_sql_execute_select_v2(
+                host, schema, sizeof(schema) - 1, optimizer_range_select_sql,
+                sizeof(optimizer_range_select_sql) - 1,
+                optimizer_range_parameters, 2, 16, sizeof(optimizer_batch),
+                planner_response, sizeof(planner_response), executor_response,
+                sizeof(executor_response), optimizer_batch,
+                sizeof(optimizer_batch), planner_columns, 9, executor_columns,
+                9, optimizer_source_cells, 9, collect_reference_range_row,
+                &reference_results);
+            if (status != PRDB_SDK_SQL_EXEC_OK ||
+                reference_results.count != optimizer_range_results.count ||
+                memcmp(reference_results.values, optimizer_range_results.values,
+                       optimizer_range_results.count *
+                           sizeof(optimizer_range_results.values[0])) != 0) {
+                static const uint8_t message[] =
+                    "fixture-error-reference-range-result";
+                return report_failure(host, message, sizeof(message) - 1);
+            }
+        }
 
         {
             static uint8_t ordered_request[PRDB_SDK_OPTIMIZER_MAX_REQUEST_BYTES];
