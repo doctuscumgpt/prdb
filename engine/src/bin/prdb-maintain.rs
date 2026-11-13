@@ -28,14 +28,16 @@ fn print_help() {
          prdb-maintain backup --instance-dir PATH --output-dir PATH\n\
          Copies and validates a READY instance while holding its exclusive lock.\n\
          prdb-maintain backup-verify --backup-dir PATH\n\
-         Verifies the backup manifest, file digests, and READY catalog.\n\
+         Verifies the backup manifest, file digests, and supported READY catalog.\n\
+         prdb-maintain migration-backup --instance-dir PATH --output-dir PATH\n\
+         Copies a v1 migration source under its exclusive lock and verifies it.\n\
          prdb-maintain inspect --instance-dir PATH\n\
          Read-only READY validation and bounded engine metadata diagnostics.\n\
          prdb-maintain migration-inspect --instance-dir PATH\n\
          Validates the active READY image and any private staged image.\n\
          prdb-maintain migration-discard-stage --instance-dir PATH --backup-dir PATH\n\
          Discards staging only when active bytes match the verified backup.\n\
-         Stop gateway and supervisor services before compact, audit-archive, backup, or migration-discard-stage."
+         Stop gateway and supervisor services before compact, audit-archive, backup, migration-backup, or migration-discard-stage."
     );
 }
 
@@ -51,7 +53,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut args = std::env::args_os().skip(1);
     let operation = args.next().ok_or(
-        "operation is required: compact, audit-archive, audit-verify, backup, backup-verify, inspect, migration-inspect, or migration-discard-stage",
+        "operation is required: compact, audit-archive, audit-verify, backup, backup-verify, migration-backup, inspect, migration-inspect, or migration-discard-stage",
     )?;
     if operation == "audit-verify" {
         if args.next().as_deref() != Some(std::ffi::OsStr::new("--archive")) {
@@ -95,6 +97,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let verified = prdb_engine::offline_backup::verify_backup(&backup_dir)?;
         println!(
             "verified database_bytes={} sha256={}",
+            verified.database_bytes,
+            verified
+                .database_sha256
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        return Ok(());
+    }
+    if operation == "migration-backup" {
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--instance-dir")) {
+            return Err("--instance-dir PATH is required".into());
+        }
+        let instance_dir = PathBuf::from(args.next().ok_or("instance directory is required")?);
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--output-dir")) {
+            return Err("--output-dir PATH is required".into());
+        }
+        let output_dir = PathBuf::from(args.next().ok_or("backup output directory is required")?);
+        if args.next().is_some() {
+            return Err("unexpected trailing arguments".into());
+        }
+        let verified = prdb_engine::offline_backup::create_verified_migration_backup(
+            &instance_dir,
+            &output_dir,
+        )?;
+        println!(
+            "migration backup verified database_bytes={} sha256={}",
             verified.database_bytes,
             verified
                 .database_sha256

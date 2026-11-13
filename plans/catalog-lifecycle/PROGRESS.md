@@ -105,3 +105,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - A transformed sidecar retained after publication cannot pass the active-byte comparison, so this command cannot erase the old source generation. It does not select or restore generations.
 - Regression covers successful removal while preserving active bytes, rejection of an unrelated verified backup without removing staging, and rejection while an instance owner holds the lock.
 - Focused discard process tests passed. Pinned-shell format check, locked workspace build, warning-denied all-target Clippy, and the full serial workspace suite passed inside the delegated `systemd --user` unit with sandbox tests enabled and zero ignored tests. `git diff --check` passed.
+
+## CL-5 prerequisite: verified catalog-v1 migration backup — implemented
+
+- Added `prdb-maintain migration-backup --instance-dir PATH --output-dir PATH` to copy a v1 migration source while holding its exclusive lock, using read-only source validation. The existing backup manifest format applies unchanged; `backup-verify` now accepts both supported v1 migration sources and current v2 READY images.
+- Regression converts a fixture to catalog-v1 metadata and descriptor form, creates and verifies its independent backup, and checks the source bytes remain unchanged.
+- This makes a v1 source independently preservable; it does not provide a safe tombstone closure or a v1-to-v2 transform.
+- Verification: pinned-shell format check, locked workspace build, warning-denied all-target Clippy, and full serial workspace suite inside the delegated `systemd --user` service passed. Sandbox integration ran with zero ignored tests; `git diff --check` passed.

@@ -1,7 +1,11 @@
 //! Verified, quiescent copies of READY database instances.
 
 use crate::bootstrap::{BootstrapError, ReadOnlyStorageInstance, StorageInstance};
-use crate::startup::validate_persisted_records_read_only;
+use crate::startup::{
+    StartupError, StorageHealthReport, validate_migration_image_read_only,
+    validate_persisted_records_read_only,
+};
+use redb::ReadOnlyDatabase;
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -78,8 +82,38 @@ pub fn create_verified_backup(
 ) -> Result<BackupVerification, OfflineBackupError> {
     let source_directory = source_directory.as_ref().canonicalize()?;
     let source = StorageInstance::open(&source_directory)?;
-    let destination = canonical_destination(backup_directory.as_ref())?;
-    if destination.starts_with(&source_directory) {
+    source.close_database_and(|source_directory| {
+        create_backup_copy(
+            source_directory,
+            backup_directory.as_ref(),
+            validate_persisted_records_read_only,
+        )
+    })
+}
+
+/// Create a verified backup of either a current READY instance or a catalog-v1
+/// migration source while holding its instance lock and without writing source.
+pub fn create_verified_migration_backup(
+    source_directory: impl AsRef<Path>,
+    backup_directory: impl AsRef<Path>,
+) -> Result<BackupVerification, OfflineBackupError> {
+    let source_directory = source_directory.as_ref().canonicalize()?;
+    let source = ReadOnlyStorageInstance::open_for_migration_inspection(&source_directory)?;
+    validate_migration_image_read_only(source.database()).map_err(BootstrapError::Startup)?;
+    create_backup_copy(
+        &source_directory,
+        backup_directory.as_ref(),
+        validate_migration_image_read_only,
+    )
+}
+
+fn create_backup_copy(
+    source_directory: &Path,
+    backup_directory: &Path,
+    validate: fn(&ReadOnlyDatabase) -> Result<StorageHealthReport, StartupError>,
+) -> Result<BackupVerification, OfflineBackupError> {
+    let destination = canonical_destination(backup_directory)?;
+    if destination.starts_with(source_directory) {
         return Err(OfflineBackupError::InvalidPath);
     }
     let manifest_path = manifest_path(&destination)?;
@@ -87,69 +121,66 @@ pub fn create_verified_backup(
         return Err(OfflineBackupError::DestinationExists);
     }
 
-    source.close_database_and(|source_directory| {
-        fs::create_dir(&destination)?;
-        let mut manifest_created = false;
-        let result = (|| {
-            fs::set_permissions(&destination, fs::Permissions::from_mode(0o700))?;
-            sync_directory(
-                destination
-                    .parent()
-                    .ok_or(OfflineBackupError::InvalidPath)?,
-            )?;
+    fs::create_dir(&destination)?;
+    let mut manifest_created = false;
+    let result = (|| {
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o700))?;
+        sync_directory(
+            destination
+                .parent()
+                .ok_or(OfflineBackupError::InvalidPath)?,
+        )?;
 
-            let marker_copy = copy_private_file(
-                &source_directory.join(MARKER_FILE),
-                &destination.join(MARKER_FILE),
-            )?;
-            let database_copy = copy_private_file(
-                &source_directory.join(DATABASE_FILE),
-                &destination.join(DATABASE_FILE),
-            )?;
-            sync_directory(&destination)?;
+        let marker_copy = copy_private_file(
+            &source_directory.join(MARKER_FILE),
+            &destination.join(MARKER_FILE),
+        )?;
+        let database_copy = copy_private_file(
+            &source_directory.join(DATABASE_FILE),
+            &destination.join(DATABASE_FILE),
+        )?;
+        sync_directory(&destination)?;
 
-            if marker_copy != digest_private_file(&destination.join(MARKER_FILE))?
-                || database_copy != digest_private_file(&destination.join(DATABASE_FILE))?
-            {
-                return Err(OfflineBackupError::IntegrityMismatch);
-            }
-
-            let verified = ReadOnlyStorageInstance::open(&destination)?;
-            let validation = validate_persisted_records_read_only(verified.database())
-                .map_err(BootstrapError::Startup)?;
-            let marker = digest_private_file(&destination.join(MARKER_FILE))?;
-            let database = digest_private_file(&destination.join(DATABASE_FILE))?;
-            if marker_copy != marker || database_copy != database {
-                return Err(OfflineBackupError::IntegrityMismatch);
-            }
-            drop(verified);
-
-            write_manifest(&manifest_path, &marker, &database)?;
-            manifest_created = true;
-            sync_directory(
-                destination
-                    .parent()
-                    .ok_or(OfflineBackupError::InvalidPath)?,
-            )?;
-            Ok(BackupVerification {
-                database_bytes: database.length,
-                database_sha256: database.sha256,
-                database_id: validation.metadata.database_id,
-                commit_sequence: validation.metadata.commit_sequence,
-            })
-        })();
-
-        if result.is_err() {
-            if manifest_created {
-                let _ = fs::remove_file(&manifest_path);
-            }
-            let _ = fs::remove_dir_all(&destination);
-            if let Some(parent) = destination.parent() {
-                let _ = sync_directory(parent);
-            }
+        if marker_copy != digest_private_file(&destination.join(MARKER_FILE))?
+            || database_copy != digest_private_file(&destination.join(DATABASE_FILE))?
+        {
+            return Err(OfflineBackupError::IntegrityMismatch);
         }
-        result
-    })
+
+        let verified = ReadOnlyStorageInstance::open_for_migration_inspection(&destination)?;
+        let validation = validate(verified.database()).map_err(BootstrapError::Startup)?;
+        let marker = digest_private_file(&destination.join(MARKER_FILE))?;
+        let database = digest_private_file(&destination.join(DATABASE_FILE))?;
+        if marker_copy != marker || database_copy != database {
+            return Err(OfflineBackupError::IntegrityMismatch);
+        }
+        drop(verified);
+
+        write_manifest(&manifest_path, &marker, &database)?;
+        manifest_created = true;
+        sync_directory(
+            destination
+                .parent()
+                .ok_or(OfflineBackupError::InvalidPath)?,
+        )?;
+        Ok(BackupVerification {
+            database_bytes: database.length,
+            database_sha256: database.sha256,
+            database_id: validation.metadata.database_id,
+            commit_sequence: validation.metadata.commit_sequence,
+        })
+    })();
+
+    if result.is_err() {
+        if manifest_created {
+            let _ = fs::remove_file(&manifest_path);
+        }
+        let _ = fs::remove_dir_all(&destination);
+        if let Some(parent) = destination.parent() {
+            let _ = sync_directory(parent);
+        }
+    }
+    result
 }
 
 /// Verify the private manifest, both copied files, and the READY database
@@ -162,9 +193,9 @@ pub fn verify_backup(
     if lock.metadata()?.len() != 0 {
         return Err(OfflineBackupError::InvalidPath);
     }
-    let instance = ReadOnlyStorageInstance::open(&backup_directory)?;
-    let validation = validate_persisted_records_read_only(instance.database())
-        .map_err(BootstrapError::Startup)?;
+    let instance = ReadOnlyStorageInstance::open_for_migration_inspection(&backup_directory)?;
+    let validation =
+        validate_migration_image_read_only(instance.database()).map_err(BootstrapError::Startup)?;
     let manifest = read_manifest(&manifest_path(&backup_directory)?)?;
     let marker = digest_private_file(&backup_directory.join(MARKER_FILE))?;
     let database = digest_private_file(&backup_directory.join(DATABASE_FILE))?;

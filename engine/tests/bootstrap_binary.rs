@@ -91,6 +91,7 @@ fn maintenance_help_lists_offline_audit_archival() {
     assert!(help.contains("audit-verify --archive PATH"));
     assert!(help.contains("backup --instance-dir PATH --output-dir PATH"));
     assert!(help.contains("backup-verify --backup-dir PATH"));
+    assert!(help.contains("migration-backup --instance-dir PATH --output-dir PATH"));
     assert!(help.contains("inspect --instance-dir PATH"));
     assert!(help.contains("migration-inspect --instance-dir PATH"));
     assert!(help.contains("migration-discard-stage --instance-dir PATH --backup-dir PATH"));
@@ -604,6 +605,36 @@ fn v1_source_validator_checks_legacy_ready_images_without_admitting_them() {
     assert!(output.contains("active=READY"), "{output}");
     assert!(output.contains("catalog_version=1"), "{output}");
     assert!(output.contains("staging=absent"), "{output}");
+    let source_before_backup = std::fs::read(&database_path).expect("read legacy source bytes");
+    let backup_path = fixture.0.join("v1-migration-backup");
+    let backed_up = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-backup", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--output-dir")
+        .arg(&backup_path)
+        .output()
+        .expect("create legacy migration backup");
+    assert!(
+        backed_up.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&backed_up.stderr)
+    );
+    let verified = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["backup-verify", "--backup-dir"])
+        .arg(&backup_path)
+        .output()
+        .expect("verify legacy migration backup");
+    assert!(
+        verified.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    assert!(String::from_utf8_lossy(&verified.stdout).contains("verified database_bytes="));
+    assert_eq!(
+        std::fs::read(&database_path).expect("reread legacy source bytes"),
+        source_before_backup,
+        "migration backup must not modify the legacy source"
+    );
     assert!(matches!(
         StorageInstance::open(fixture.instance_dir()),
         Err(BootstrapError::Startup(StartupError::UnsupportedFormat))
