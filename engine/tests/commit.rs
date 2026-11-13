@@ -10504,6 +10504,41 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
             .list_audit_events(admin_id, MAX_ADMIN_AUDIT_PAGE + 1, None)
             .is_err()
     );
+    let failed_token_id = id(237);
+    for _ in 0..5 {
+        assert!(matches!(
+            storage.authenticate_query_session(failed_token_id, &[0; 32]),
+            Err(prdb_engine::transaction::TransactionError::AuthenticationFailed)
+        ));
+    }
+    let failed_authentication_events = storage
+        .list_audit_events(admin_id, MAX_ADMIN_AUDIT_PAGE, None)?
+        .events
+        .into_iter()
+        .filter(|event| {
+            event.action == AuditAction::AuthenticationFailure
+                && event.target_ids.as_slice() == [failed_token_id]
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(failed_authentication_events.len(), 4);
+    assert!(
+        failed_authentication_events
+            .iter()
+            .all(|event| { event.actor_id.is_none() && event.result == AuditResult::Denied })
+    );
+    assert!(matches!(
+        storage.authenticate_query_session([0; 16], &[0; 32]),
+        Err(prdb_engine::transaction::TransactionError::AuthenticationFailed)
+    ));
+    let zero_token_failure = storage
+        .list_audit_events(admin_id, MAX_ADMIN_AUDIT_PAGE, None)?
+        .events
+        .into_iter()
+        .find(|event| {
+            event.action == AuditAction::AuthenticationFailure && event.target_ids.is_empty()
+        })
+        .ok_or("zero token authentication failure was not audited")?;
+    assert!(zero_token_failure.actor_id.is_none());
 
     let now_us = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?

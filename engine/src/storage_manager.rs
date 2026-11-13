@@ -48,6 +48,7 @@ use zeroize::Zeroize;
 
 const TOKEN_REQUEST_WINDOW: Duration = Duration::from_secs(60);
 const MAX_TRACKED_TOKEN_REQUEST_ACTORS: usize = 4096;
+const MAX_AUTH_FAILURE_AUDITS_PER_TOKEN_PER_MINUTE: usize = 4;
 const SUPERVISOR_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub const MAX_OWN_INVOCATION_PAGE: usize = 128;
 pub const MAX_ADMIN_INVOCATION_PAGE: usize = 128;
@@ -73,6 +74,8 @@ const MAX_DISCOVERED_DEPENDENCY_BYTES: usize = 1024 * 1024;
 static TOKEN_REQUEST_LIMITERS: OnceLock<Mutex<HashMap<usize, Weak<TokenRequestLimiter>>>> =
     OnceLock::new();
 static ADMIN_CANCELLATION_LIMITERS: OnceLock<Mutex<HashMap<usize, Weak<TokenRequestLimiter>>>> =
+    OnceLock::new();
+static AUTH_FAILURE_AUDIT_LIMITERS: OnceLock<Mutex<HashMap<usize, Weak<TokenRequestLimiter>>>> =
     OnceLock::new();
 static INVOCATION_REGISTRIES: OnceLock<Mutex<HashMap<usize, Weak<InvocationAdmissionState>>>> =
     OnceLock::new();
@@ -1049,6 +1052,7 @@ pub struct StorageManager<'db> {
     admissions: Arc<InvocationAdmissionState>,
     token_requests: Arc<TokenRequestLimiter>,
     admin_cancellation_requests: Arc<TokenRequestLimiter>,
+    authentication_failure_audits: Arc<TokenRequestLimiter>,
     max_invocation_age: Duration,
     max_invocation_scan_work: usize,
 }
@@ -1739,6 +1743,23 @@ fn shared_admin_cancellation_limiter(
         return limiter;
     }
     let limiter = Arc::new(TokenRequestLimiter::new(configured_limit));
+    registry.insert(database_key, Arc::downgrade(&limiter));
+    limiter
+}
+
+fn shared_auth_failure_audit_limiter(database: &Database) -> Arc<TokenRequestLimiter> {
+    let database_key = database as *const Database as usize;
+    let registry = AUTH_FAILURE_AUDIT_LIMITERS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    registry.retain(|_, limiter| limiter.strong_count() != 0);
+    if let Some(limiter) = registry.get(&database_key).and_then(Weak::upgrade) {
+        return limiter;
+    }
+    let limiter = Arc::new(TokenRequestLimiter::new(
+        MAX_AUTH_FAILURE_AUDITS_PER_TOKEN_PER_MINUTE,
+    ));
     registry.insert(database_key, Arc::downgrade(&limiter));
     limiter
 }
@@ -2566,6 +2587,7 @@ impl<'db> StorageManager<'db> {
             database,
             config.max_admin_cancellation_requests_per_minute,
         );
+        let authentication_failure_audits = shared_auth_failure_audit_limiter(database);
         let admissions = shared_invocation_registry(
             database,
             config.max_active_invocations,
@@ -2579,6 +2601,7 @@ impl<'db> StorageManager<'db> {
             admissions,
             token_requests,
             admin_cancellation_requests,
+            authentication_failure_audits,
             max_invocation_age: config.max_invocation_age,
             max_invocation_scan_work: config.max_invocation_scan_work,
         })
@@ -2759,7 +2782,16 @@ impl<'db> StorageManager<'db> {
         token_id: [u8; 16],
         token_secret: &[u8; TOKEN_SECRET_BYTES],
     ) -> Result<AuthenticatedQuerySession, TransactionError> {
-        let (principal_id, role_ids) = self.resolve_query_identity(token_id, token_secret)?;
+        let (principal_id, role_ids) = match self.resolve_query_identity(token_id, token_secret) {
+            Ok(identity) => identity,
+            Err(TransactionError::AuthenticationFailed) => {
+                if self.authentication_failure_audits.consume(token_id).is_ok() {
+                    persist_authentication_failure_audit(self.database, token_id)?;
+                }
+                return Err(TransactionError::AuthenticationFailed);
+            }
+            Err(error) => return Err(error),
+        };
         let connection_id = generate_query_connection_id()?;
         Ok(AuthenticatedQuerySession {
             connection_id,
@@ -10714,6 +10746,50 @@ fn database_admin_authority(
     let mut database_admin_role = [0x80; 16];
     database_admin_role[15] = 3;
     Ok(roles.contains(&database_admin_role))
+}
+
+fn persist_authentication_failure_audit(
+    database: &Database,
+    attempted_token_id: [u8; 16],
+) -> Result<(), TransactionError> {
+    let event_id = generate_query_connection_id()?;
+    let correlation_id = generate_query_connection_id()?;
+    let occurred_at_us = now_unix_micros().ok_or(TransactionError::ClockUnavailable)?;
+    let event = AuditEvent {
+        event_id,
+        actor_id: None,
+        correlation_id,
+        occurred_at_us,
+        action: AuditAction::AuthenticationFailure,
+        result: AuditResult::Denied,
+        target_ids: (attempted_token_id != [0; 16])
+            .then_some(attempted_token_id)
+            .into_iter()
+            .collect(),
+    };
+    let encoded = event
+        .encode()
+        .map_err(|_| TransactionError::Storage("invalid authentication audit event".into()))?;
+    let storage_error = |error: &dyn std::fmt::Display| {
+        mark_database_uncertain(database);
+        TransactionError::Storage(error.to_string())
+    };
+    let mut write = database
+        .begin_write()
+        .map_err(|error| storage_error(&error))?;
+    write
+        .set_durability(redb::Durability::Immediate)
+        .map_err(|error| storage_error(&error))?;
+    write.set_two_phase_commit(true);
+    {
+        let mut audit = write
+            .open_table(AUDIT)
+            .map_err(|error| storage_error(&error))?;
+        audit
+            .insert(event.event_id.as_slice(), encoded.as_slice())
+            .map_err(|error| storage_error(&error))?;
+    }
+    write.commit().map_err(|error| storage_error(&error))
 }
 
 fn persist_admin_cancellation_audit(

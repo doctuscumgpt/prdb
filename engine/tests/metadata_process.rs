@@ -2724,6 +2724,18 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
     let (mut gateway, address) = start_gateway(&service_socket, uid)?;
     let mut admin_secret = token_secret;
     let mut admin = AdminClient::connect_authenticated(address, token_id, &mut admin_secret)?;
+    let mut invalid_admin_secret = [0; 32];
+    assert!(
+        SubmissionClient::connect_authenticated(address, token_id, &mut invalid_admin_secret)
+            .is_err()
+    );
+    let authentication_audit = admin.list_audit_events_page(128, None)?;
+    assert!(authentication_audit.events.iter().any(|event| {
+        event.action == 4
+            && event.result == 2
+            && event.actor_id.is_none()
+            && event.target_ids.as_slice() == [token_id]
+    }));
     let runtime_list_credentials_path = root.join("runtime-list-admin.cred");
     write_client_credentials(
         &runtime_list_credentials_path,
