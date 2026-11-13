@@ -652,6 +652,23 @@
 - A separate run measured the row-count probe itself at 0.012–0.026 ms p50 for populations 1, 4, 8, and 4,097. It excludes planner relation resolution and projection loading.
 - Decision: retain a conservative cutoff of four rows. This measures direct storage API result latency, not SQL setup, optimizer estimation, confined executor startup, result relay, or commit; cache state and host load were uncontrolled. Target-host profiles remain open.
 
+## OP-4 follow-up: sample the scan/index crossover above the cutoff — measured
+
+- Harness: repeated `PRDB_BENCH_INDEX_ACCESS=1 PRDB_BENCH_INDEX_ROWS=<n>` on five fresh redb databases at each point. Each run took 11 samples of the bounded population estimate, unique point probe, exact-key range, and full authorized scan plus filter; every operation checked the same exact target row.
+- Results: the median of the five run-level p50/p95 values (milliseconds) for total visible rows was:
+
+  | Rows | Estimate | Point | Range | Scan + filter |
+  | ---: | ---: | ---: | ---: | ---: |
+  | 6 | 0.015 / 0.022 | 0.086 / 0.111 | 0.094 / 0.111 | 0.070 / 0.087 |
+  | 7 | 0.015 / 0.017 | 0.085 / 0.097 | 0.094 / 0.107 | 0.080 / 0.093 |
+  | 9 | 0.015 / 0.017 | 0.086 / 0.100 | 0.095 / 0.126 | 0.100 / 0.113 |
+  | 11 | 0.015 / 0.023 | 0.086 / 0.101 | 0.095 / 0.101 | 0.120 / 0.130 |
+  | 13 | 0.016 / 0.033 | 0.090 / 0.106 | 0.101 / 0.116 | 0.142 / 0.164 |
+
+- Decision: keep the existing four-row sequential-scan cutoff. The direct API crossover is between seven and nine rows for this one-match workload; at seven rows the scan advantage over a point probe is only about five microseconds, and the estimate's roughly 15-microsecond median plus planner/setup work is not included. This supports avoiding a broader cutoff based on a fragile local margin.
+- Scope: one Linux x86_64 host, uncontrolled cache/load, one exact matching row, and storage API calls only. The harness excludes optimizer process startup, SQL setup, gateway relay, and durable commit; no target-hardware or service-latency claim follows.
+- Verification: all 25 fresh-database benchmark invocations passed and confirmed the target row; each used 11 timed samples.
+
 ## OP-4 follow-up: apply exact predicate population to scan choice — implemented
 
 - Behavior: filtered ordinary unordered single-table SELECT now uses the exact visible population from its bounded predicate estimate with the existing 1–4 row scan heuristic. An exact nonzero small population drops a point/range hint while retaining the Filter node, so the sequential scan still evaluates the predicate. Exact zero continues to use the validated empty-view hint; unknown estimates preserve the original access path.
