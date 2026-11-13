@@ -656,3 +656,12 @@
 - Regression: maintained TinyCC fixtures cover both endpoints and one value beyond each endpoint for direct validation and SQL parameter binding. The new out-of-range DATE assertion failed before the validator change.
 - Contracts: [client SDK](../../specs/client-sdk.md), [DDL and schema](../../specs/ddl-schema.md).
 - Verification: `make -f engine/sdk/Makefile test`, sandbox query fixture build, release-profile validation, and the full serial delegated-cgroup workspace suite passed; the latter reported zero ignored tests. Formatting, workspace build, warning-denied Clippy, and `git diff --check` passed.
+- Remaining: no additional DATE/TIMESTAMPTZ scalar range gap is known in SDK input validation.
+
+## SDK-3 manifest ELF inspection: GNU hash support — implemented
+
+- Behavior: manifest inspection bounds dynamic symbols using SysV `DT_HASH` or GNU `DT_GNU_HASH`. GNU bucket chains must terminate within the symbol and traversal bounds. When both tags exist, each table is validated independently and their symbol counts must agree. Duplicate hash tags and malformed tables are rejected; artifacts are never loaded for inspection.
+- Regression: a focused GNU-hash unit fixture checks a two-symbol chain and rejects a missing terminator. Freshly compiled packager artifacts exercise GNU-only and dual-hash ELF forms; two packager integration tests pass with dual-hash output.
+- Contract: [client SDK](../../specs/client-sdk.md).
+- Verification: focused GNU-hash and packager tests, formatting, workspace build, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed. All sandbox and process tests were enabled; the suite reported zero ignored tests. `git diff --check` passed.
+- Remaining: ELF inspection remains intentionally bounded and supports the repository's current little-endian ELF64 Linux x86_64 profile.

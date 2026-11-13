@@ -517,6 +517,7 @@ fn decode_elf_dynamic_info_internal(
     let mut symbol_table = None;
     let mut symbol_entry_size = None;
     let mut hash_table = None;
+    let mut gnu_hash_table = None;
     let mut found_null = false;
     for index in 0..dynamic.file_size / 16 {
         let entry = dynamic.offset + index * 16;
@@ -532,6 +533,7 @@ fn decode_elf_dynamic_info_internal(
             15 if rpath_offset.replace(value).is_none() => {}
             29 if runpath_offset.replace(value).is_none() => {}
             4 if hash_table.replace(value).is_none() => {}
+            0x6fff_fef5 if gnu_hash_table.replace(value).is_none() => {}
             6 if symbol_table.replace(value).is_none() => {}
             5 if string_table.replace(value).is_none() => {}
             10 if string_table_size.replace(value).is_none() => {}
@@ -539,7 +541,7 @@ fn decode_elf_dynamic_info_internal(
             0x6fff_fefb | 0x6fff_fefc | 0x7fff_fffd | 0x7fff_ffff => {
                 return Err(ManifestError::InvalidArtifact);
             }
-            4 | 5 | 6 | 10 | 11 | 14 | 15 | 29 => {
+            4 | 5 | 6 | 10 | 11 | 14 | 15 | 29 | 0x6fff_fef5 => {
                 return Err(ManifestError::InvalidArtifact);
             }
             _ => {}
@@ -564,7 +566,8 @@ fn decode_elf_dynamic_info_internal(
         .get(string_table_offset..string_table_end)
         .ok_or(ManifestError::InvalidArtifact)?;
     if let Some(required_symbols) = required_symbols {
-        let hash_address = hash_table.ok_or(ManifestError::InvalidArtifact)?;
+        let symbol_count =
+            dynamic_symbol_count(artifact, &load_segments, hash_table, gnu_hash_table)?;
         let symbol_table_address = symbol_table.ok_or(ManifestError::InvalidArtifact)?;
         if symbol_entry_size != Some(24) {
             return Err(ManifestError::InvalidArtifact);
@@ -572,7 +575,7 @@ fn decode_elf_dynamic_info_internal(
         validate_required_dynamic_symbols(
             artifact,
             &load_segments,
-            hash_address,
+            symbol_count,
             symbol_table_address,
             table,
             required_symbols,
@@ -629,43 +632,15 @@ fn decode_elf_dynamic_info_internal(
 fn validate_required_dynamic_symbols(
     artifact: &[u8],
     load_segments: &[ElfSegment],
-    hash_address: u64,
+    symbol_count: usize,
     symbol_table_address: u64,
     string_table: &[u8],
     required: (&str, u8, &str, u8),
 ) -> Result<(), ManifestError> {
     const MAX_DYNAMIC_SYMBOLS: usize = 262_144;
-    let hash_header = map_virtual_address(hash_address, 8, load_segments)?;
-    let bucket_count = read_elf_u32(artifact, hash_header)? as usize;
-    let symbol_count = read_elf_u32(artifact, hash_header + 4)? as usize;
-    if bucket_count == 0 || symbol_count == 0 || symbol_count > MAX_DYNAMIC_SYMBOLS {
+    if symbol_count == 0 || symbol_count > MAX_DYNAMIC_SYMBOLS {
         return Err(ManifestError::InvalidArtifact);
     }
-    let hash_words = bucket_count
-        .checked_add(symbol_count)
-        .and_then(|count| count.checked_add(2))
-        .ok_or(ManifestError::InvalidArtifact)?;
-    let hash_size = hash_words
-        .checked_mul(4)
-        .ok_or(ManifestError::InvalidArtifact)?;
-    let hash_offset = map_virtual_address(hash_address, hash_size, load_segments)?;
-    let hash_end = hash_offset
-        .checked_add(hash_size)
-        .ok_or(ManifestError::InvalidArtifact)?;
-    let hash_bytes = artifact
-        .get(hash_offset..hash_end)
-        .ok_or(ManifestError::InvalidArtifact)?;
-    for chunk in hash_bytes[8..].chunks_exact(4) {
-        let index = u32::from_le_bytes(
-            chunk
-                .try_into()
-                .map_err(|_| ManifestError::InvalidArtifact)?,
-        ) as usize;
-        if index >= symbol_count {
-            return Err(ManifestError::InvalidArtifact);
-        }
-    }
-
     let symbol_table_size = symbol_count
         .checked_mul(24)
         .ok_or(ManifestError::InvalidArtifact)?;
@@ -715,6 +690,134 @@ fn validate_required_dynamic_symbols(
         Ok(())
     } else {
         Err(ManifestError::InvalidArtifact)
+    }
+}
+
+fn dynamic_symbol_count(
+    artifact: &[u8],
+    load_segments: &[ElfSegment],
+    sysv_hash: Option<u64>,
+    gnu_hash: Option<u64>,
+) -> Result<usize, ManifestError> {
+    const MAX_DYNAMIC_SYMBOLS: usize = 262_144;
+    match (sysv_hash, gnu_hash) {
+        (Some(sysv_address), Some(gnu_address)) => {
+            let sysv_count =
+                dynamic_symbol_count(artifact, load_segments, Some(sysv_address), None)?;
+            let gnu_count = dynamic_symbol_count(artifact, load_segments, None, Some(gnu_address))?;
+            if sysv_count == gnu_count {
+                Ok(sysv_count)
+            } else {
+                Err(ManifestError::InvalidArtifact)
+            }
+        }
+        (Some(address), None) => {
+            let header = map_virtual_address(address, 8, load_segments)?;
+            let bucket_count = read_elf_u32(artifact, header)? as usize;
+            let symbol_count = read_elf_u32(artifact, header + 4)? as usize;
+            if bucket_count == 0
+                || bucket_count > MAX_DYNAMIC_SYMBOLS
+                || symbol_count == 0
+                || symbol_count > MAX_DYNAMIC_SYMBOLS
+            {
+                return Err(ManifestError::InvalidArtifact);
+            }
+            let word_count = bucket_count
+                .checked_add(symbol_count)
+                .and_then(|count| count.checked_add(2))
+                .ok_or(ManifestError::InvalidArtifact)?;
+            let table_size = word_count
+                .checked_mul(4)
+                .ok_or(ManifestError::InvalidArtifact)?;
+            let table_offset = map_virtual_address(address, table_size, load_segments)?;
+            let table_end = table_offset
+                .checked_add(table_size)
+                .ok_or(ManifestError::InvalidArtifact)?;
+            let table = artifact
+                .get(table_offset..table_end)
+                .ok_or(ManifestError::InvalidArtifact)?;
+            if table[8..].chunks_exact(4).any(|word| {
+                u32::from_le_bytes([word[0], word[1], word[2], word[3]]) >= symbol_count as u32
+            }) {
+                return Err(ManifestError::InvalidArtifact);
+            }
+            Ok(symbol_count)
+        }
+        (None, Some(address)) => {
+            let header = map_virtual_address(address, 16, load_segments)?;
+            let bucket_count = read_elf_u32(artifact, header)? as usize;
+            let symbol_offset = read_elf_u32(artifact, header + 4)? as usize;
+            let bloom_count = read_elf_u32(artifact, header + 8)? as usize;
+            if bucket_count == 0
+                || bucket_count > MAX_DYNAMIC_SYMBOLS
+                || symbol_offset == 0
+                || symbol_offset > MAX_DYNAMIC_SYMBOLS
+                || bloom_count == 0
+                || bloom_count > MAX_DYNAMIC_SYMBOLS
+            {
+                return Err(ManifestError::InvalidArtifact);
+            }
+
+            let bloom_bytes = bloom_count
+                .checked_mul(8)
+                .ok_or(ManifestError::InvalidArtifact)?;
+            let bucket_bytes = bucket_count
+                .checked_mul(4)
+                .ok_or(ManifestError::InvalidArtifact)?;
+            let bucket_address = address
+                .checked_add(16)
+                .and_then(|value| value.checked_add(bloom_bytes as u64))
+                .ok_or(ManifestError::InvalidArtifact)?;
+            map_virtual_address(bucket_address, bucket_bytes, load_segments)?;
+            let chain_address = bucket_address
+                .checked_add(bucket_bytes as u64)
+                .ok_or(ManifestError::InvalidArtifact)?;
+
+            let mut symbol_count = symbol_offset;
+            let mut visited_chain_entries = 0usize;
+            for bucket in 0..bucket_count {
+                let bucket_address = bucket_address
+                    .checked_add((bucket * 4) as u64)
+                    .ok_or(ManifestError::InvalidArtifact)?;
+                let bucket_offset = map_virtual_address(bucket_address, 4, load_segments)?;
+                let first_symbol = read_elf_u32(artifact, bucket_offset)? as usize;
+                if first_symbol == 0 {
+                    continue;
+                }
+                if first_symbol < symbol_offset || first_symbol >= MAX_DYNAMIC_SYMBOLS {
+                    return Err(ManifestError::InvalidArtifact);
+                }
+                let mut symbol_index = first_symbol;
+                loop {
+                    visited_chain_entries = visited_chain_entries
+                        .checked_add(1)
+                        .ok_or(ManifestError::InvalidArtifact)?;
+                    if visited_chain_entries > MAX_DYNAMIC_SYMBOLS
+                        || symbol_index >= MAX_DYNAMIC_SYMBOLS
+                    {
+                        return Err(ManifestError::InvalidArtifact);
+                    }
+                    let chain_index = symbol_index - symbol_offset;
+                    let chain_address = chain_address
+                        .checked_add(
+                            chain_index
+                                .checked_mul(4)
+                                .ok_or(ManifestError::InvalidArtifact)?
+                                as u64,
+                        )
+                        .ok_or(ManifestError::InvalidArtifact)?;
+                    let chain_offset = map_virtual_address(chain_address, 4, load_segments)?;
+                    let chain_hash = read_elf_u32(artifact, chain_offset)?;
+                    symbol_count = symbol_count.max(symbol_index + 1);
+                    if chain_hash & 1 != 0 {
+                        break;
+                    }
+                    symbol_index += 1;
+                }
+            }
+            Ok(symbol_count)
+        }
+        _ => Err(ManifestError::InvalidArtifact),
     }
 }
 
@@ -872,9 +975,9 @@ fn is_dependency_name(value: &str) -> bool {
 mod tests {
     use super::{
         ArtifactCompatibilityProfile, ArtifactManifestV1, CLIENT_PROTOCOL_MAJOR,
-        CLIENT_PROTOCOL_MINOR, MANIFEST_V1_HEADER_BYTES, MAX_MANIFEST_DEPENDENCIES, ManifestError,
-        VersionedSubmissionMetadataValidator, decode_elf_needed_dependencies, decode_manifest_v1,
-        encode_manifest_v1, manifest_v1_from_elf,
+        CLIENT_PROTOCOL_MINOR, ElfSegment, MANIFEST_V1_HEADER_BYTES, MAX_MANIFEST_DEPENDENCIES,
+        ManifestError, VersionedSubmissionMetadataValidator, decode_elf_needed_dependencies,
+        decode_manifest_v1, dynamic_symbol_count, encode_manifest_v1, manifest_v1_from_elf,
     };
     use crate::supervisor::{
         ChunkKind, PrepareSubmission, StagingError, StagingLimits, StagingOwner, StagingStore,
@@ -933,6 +1036,33 @@ mod tests {
                 "test_runtime".to_owned(),
                 "fixture compiler".to_owned(),
             ),
+            Err(ManifestError::InvalidArtifact)
+        );
+    }
+
+    #[test]
+    fn gnu_hash_bounds_dynamic_symbols_by_terminated_bucket_chains() {
+        let mut artifact = vec![0u8; 36];
+        artifact[0..4].copy_from_slice(&1u32.to_le_bytes()); // bucket count
+        artifact[4..8].copy_from_slice(&1u32.to_le_bytes()); // first hashed symbol
+        artifact[8..12].copy_from_slice(&1u32.to_le_bytes()); // bloom count
+        artifact[12..16].copy_from_slice(&5u32.to_le_bytes()); // bloom shift
+        artifact[24..28].copy_from_slice(&1u32.to_le_bytes()); // bucket head
+        artifact[28..32].copy_from_slice(&0x1234u32.to_le_bytes());
+        artifact[32..36].copy_from_slice(&0x2345u32.to_le_bytes()); // final chain bit
+        let segments = [ElfSegment {
+            offset: 0,
+            virtual_address: 0,
+            file_size: artifact.len(),
+        }];
+
+        assert_eq!(
+            dynamic_symbol_count(&artifact, &segments, None, Some(0)),
+            Ok(3)
+        );
+        artifact[32..36].copy_from_slice(&0x2344u32.to_le_bytes());
+        assert_eq!(
+            dynamic_symbol_count(&artifact, &segments, None, Some(0)),
             Err(ManifestError::InvalidArtifact)
         );
     }
