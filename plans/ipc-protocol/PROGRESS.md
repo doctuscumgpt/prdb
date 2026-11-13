@@ -1,5 +1,12 @@
 # Internal IPC Progress
 
+## IPC-2 follow-up: TinyCC unique-index probe uses the shared scalar-value codec — implemented
+
+- Contract: the `0x1114` key scalar uses the common record `{type_code:u8, value_length:u32be, value_bytes[value_length]}`.
+- Implementation: replaced the point-probe producer's handwritten type/length writes and value copy with the generated scalar header and byte-tail helpers. The existing TinyCC optimizer fixture independently checks the request's type, length, and value bytes.
+- Verification: maintained TinyCC SDK tests, sandbox query fixture, locked workspace build, formatting check, warning-denied Clippy, full serial delegated-cgroup workspace suite (zero ignored tests), and `git diff --check` passed.
+- Remaining: SDK consumption, optimizer selection, end-to-end optimized/reference result and error equivalence, and broader malformed process-level IPC coverage remain open.
+
 ## IPC-2 follow-up: TinyCC range bounds use the shared scalar-value codec — implemented
 
 - Contract: optional `0x1115` lower and upper bounds encode as the common scalar record: one-byte type code, big-endian `u32` value length, then exactly that many value bytes.

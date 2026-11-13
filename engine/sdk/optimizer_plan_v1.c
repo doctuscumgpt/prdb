@@ -766,15 +766,18 @@ static int encode_point_probe_request(
         default:
             return 0;
     }
-    if (capacity < offset + 5 + value_len +
+    if (capacity < offset + PRDB_SCALAR_VALUE_RECORD_HEADER_BYTES + value_len +
                        (uint64_t)relation->column_count * 16) return 0;
     prdb_encode_executor_probe_unique_index_request(
         request, relation->executor_handle, hint->index_id, 1,
         (uint16_t)relation->column_count);
-    request[offset++] = type_code;
-    write_u32_be(request + offset, value_len);
-    offset += 4;
-    memcpy(request + offset, value_bytes, value_len);
+    uint8_t value_header[PRDB_SCALAR_VALUE_RECORD_HEADER_BYTES] = {0};
+    prdb_encode_scalar_value_record(value_header, type_code, value_len);
+    memcpy(request + offset, value_header, sizeof(value_header));
+    offset += sizeof(value_header);
+    if (!prdb_encode_scalar_value_record_value_bytes(
+            request + offset, (size_t)(capacity - offset), value_bytes,
+            value_len)) return 0;
     offset += value_len;
     uint64_t relation_offset = 35;
     uint16_t relation_name_len =
