@@ -72,3 +72,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - `prdb-maintain inspect --instance-dir PATH` uses the exclusive instance lock and read-only redb open, validates READY state without rebuilding derived indexes, then prints bounded counts and logical versions without credential material.
 - Regression verifies the database file remains byte-identical and inspection is rejected while another instance owner holds the lock.
 - Verification: the focused maintenance CLI regression passed. Workspace formatting, locked build, warning-denied Clippy, and the full serial workspace suite passed inside the delegated `systemd --user` service with sandbox/process tests enabled and zero ignored tests.
+
+## CL-5 publication design: same-directory atomic exchange — decided
+
+- redb owns physical file-format conversion and recovery. Logical migration writes a distinct private staging database through the pinned redb API and leaves active `storage.redb` untouched until the target passes full read-only READY validation.
+- Publication uses Linux `renameat2(RENAME_EXCHANGE)` within the managed instance directory, followed by directory sync. Before exchange, `storage.redb` remains the source; after exchange, it names the target and `.prdb-migration.next` retains the old source. Unsupported exchange fails before publication; two sequential renames are prohibited.
+- Migrations with multiple committed batches persist bounded progress in the target. Startup only opens `storage.redb`; offline maintenance owns resume/discard and ambiguous post-exchange recovery. Automatic rollback after target writes remains prohibited.
+- Remaining: implement source/target state validation, v1-to-v2 transformation, recovery commands, power-loss/filesystem evidence, and populated migration fixtures. This design record does not claim migration safety.
