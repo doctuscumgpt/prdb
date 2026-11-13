@@ -305,16 +305,16 @@ fn repair_partial_tail(file: &mut File) -> Result<(), AuditSinkError> {
         file.seek(SeekFrom::End(0))?;
         return Ok(());
     }
-    if length > MAX_LINE_LENGTH {
-        return Err(AuditSinkError::InvalidSinkFile);
-    }
-    let mut bytes = vec![0; length as usize];
-    file.seek(SeekFrom::Start(0))?;
-    file.read_exact(&mut bytes)?;
-    let truncate_to = bytes
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(0, |i| i + 1);
+    let suffix_length = length.min(MAX_LINE_LENGTH);
+    let suffix_start = length - suffix_length;
+    let mut suffix = vec![0; suffix_length as usize];
+    file.seek(SeekFrom::Start(suffix_start))?;
+    file.read_exact(&mut suffix)?;
+    let truncate_to = match suffix.iter().rposition(|byte| *byte == b'\n') {
+        Some(index) => suffix_start + index as u64 + 1,
+        None if suffix_start == 0 => 0,
+        None => return Err(AuditSinkError::InvalidSinkFile),
+    };
     file.set_len(truncate_to as u64)?;
     file.sync_all()?;
     file.seek(SeekFrom::End(0))?;

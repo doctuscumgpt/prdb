@@ -192,3 +192,11 @@
 - Implementation: pending-event collection now takes the batch limit and stops once that many undelivered records are collected, keeping temporary event memory bounded by the sink's 64-record maximum.
 - Verification: all five `audit_sink` integration tests passed; `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, the maintained TinyCC SDK suite and sandbox fixture passed. The full serial workspace suite passed in the delegated user service, including all sandbox and process tests with zero ignored tests. `git diff --check` passed.
 - Remaining: remote sink integrations, job registries, retained-byte/cache telemetry, additional wait categories, and broader pressure testing remain open.
+
+## OM-6 large-file partial-line recovery — verified follow-up
+
+- Contract: a crash-truncated final JSONL line is recoverable even when the complete sink file exceeds the per-line bound; recovery examines only a bounded suffix and rejects a partial line longer than that bound.
+- Red/green: a sink with a 2,000-line complete prefix and a short partial tail failed before the change with `InvalidSinkFile`; it now preserves the full prefix, removes the partial bytes, and appends the pending event.
+- Implementation: recovery seeks to at most `MAX_LINE_LENGTH` bytes from EOF, finds the last newline in that suffix, truncates after it, syncs the repair, and resumes appending. A suffix with no newline is rejected only when the partial line exceeds the configured bound.
+- Verification: the focused regression passed after failing before implementation; all six audit-sink integration tests passed. Workspace build, formatting, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed, including sandbox and process tests with zero ignored tests. `git diff --check` passed.
+- Remaining: remote sink integrations, job registries, retained-byte/cache telemetry, additional wait categories, and broader pressure testing remain open.

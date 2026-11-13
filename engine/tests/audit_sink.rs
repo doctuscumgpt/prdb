@@ -158,6 +158,31 @@ fn jsonl_sink_recovers_an_incomplete_final_line() -> Result<(), Box<dyn std::err
 }
 
 #[test]
+fn jsonl_sink_recovers_a_partial_tail_after_a_large_file() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = Fixture::new();
+    let database = create_database(&fixture.0.join("database.redb"))?;
+    let sink = fixture.0.join("large-partial.jsonl");
+    let mut contents = b"{\"prior\":true}\n".repeat(2_000);
+    let complete_length = contents.len();
+    contents.extend_from_slice(b"{\"incomplete\"");
+    std::fs::write(&sink, &contents)?;
+    std::fs::set_permissions(&sink, std::fs::Permissions::from_mode(0o600))?;
+
+    assert_eq!(
+        prdb_engine::audit_sink::deliver_jsonl_batch(&database, &sink, 8)?,
+        1
+    );
+    let output = std::fs::read(&sink)?;
+    assert!(output.len() > complete_length);
+    assert_eq!(&output[..complete_length], &contents[..complete_length]);
+    assert!(output[complete_length..].starts_with(b"{\"event_id\":"));
+    assert!(output.ends_with(b"\n"));
+    assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 2_001);
+    Ok(())
+}
+
+#[test]
 fn jsonl_sink_rejects_non_private_existing_files() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
     let database = create_database(&fixture.0.join("database.redb"))?;
