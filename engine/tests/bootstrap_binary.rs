@@ -464,65 +464,67 @@ fn maintenance_backup_is_private_validated_and_checksum_verified() {
 }
 
 #[test]
-fn unsupported_catalog_version_is_rejected_before_derived_index_rebuild() {
-    let fixture = Fixture::new();
-    let mut session =
-        prdb_engine::bootstrap::initialize(fixture.instance_dir(), "version_admin", i64::MAX)
-            .expect("initialize version fixture");
-    let mut secret = session.take_secret().expect("bootstrap secret");
-    use zeroize::Zeroize;
-    secret.zeroize();
-    drop(session.acknowledge().expect("publish READY"));
+fn unsupported_catalog_versions_are_rejected_before_derived_index_rebuild() {
+    for unsupported_version in [1, 3] {
+        let fixture = Fixture::new();
+        let mut session =
+            prdb_engine::bootstrap::initialize(fixture.instance_dir(), "version_admin", i64::MAX)
+                .expect("initialize version fixture");
+        let mut secret = session.take_secret().expect("bootstrap secret");
+        use zeroize::Zeroize;
+        secret.zeroize();
+        drop(session.acknowledge().expect("publish READY"));
 
-    let database_path = fixture.instance_dir().join("storage.redb");
-    let database = Database::open(&database_path).expect("open version fixture");
-    let mut metadata = {
-        let read = database.begin_read().expect("read engine metadata");
-        let table = read.open_table(ENGINE_META).expect("open metadata table");
-        EngineMetadata::decode(
-            table
-                .get(&b"format"[..])
-                .expect("read metadata")
-                .expect("metadata exists")
-                .value(),
-        )
-        .expect("decode metadata")
-    };
-    metadata.catalog_version = 1;
-    let encoded = metadata.encode().expect("encode unsupported metadata");
-    {
-        let write = database.begin_write().expect("begin metadata update");
-        write
-            .open_table(ENGINE_META)
-            .expect("open metadata table")
-            .insert(&b"format"[..], &encoded[..])
-            .expect("write unsupported version");
-        write.delete_table(POLICIES).expect("remove derived index");
-        write.commit().expect("commit unsupported metadata");
+        let database_path = fixture.instance_dir().join("storage.redb");
+        let database = Database::open(&database_path).expect("open version fixture");
+        let mut metadata = {
+            let read = database.begin_read().expect("read engine metadata");
+            let table = read.open_table(ENGINE_META).expect("open metadata table");
+            EngineMetadata::decode(
+                table
+                    .get(&b"format"[..])
+                    .expect("read metadata")
+                    .expect("metadata exists")
+                    .value(),
+            )
+            .expect("decode metadata")
+        };
+        metadata.catalog_version = unsupported_version;
+        let encoded = metadata.encode().expect("encode unsupported metadata");
+        {
+            let write = database.begin_write().expect("begin metadata update");
+            write
+                .open_table(ENGINE_META)
+                .expect("open metadata table")
+                .insert(&b"format"[..], &encoded[..])
+                .expect("write unsupported version");
+            write.delete_table(POLICIES).expect("remove derived index");
+            write.commit().expect("commit unsupported metadata");
+        }
+        drop(database);
+
+        let open_error = match StorageInstance::open(fixture.instance_dir()) {
+            Ok(_) => panic!("catalog version {unsupported_version} must be rejected"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                &open_error,
+                BootstrapError::Startup(StartupError::UnsupportedFormat)
+            ),
+            "unexpected startup error for catalog version {unsupported_version}: {open_error:?}"
+        );
+
+        let database = Database::open(&database_path).expect("reopen unsupported image");
+        let read = database.begin_read().expect("read unsupported image");
+        assert!(
+            !read
+                .list_tables()
+                .expect("list tables")
+                .any(|table| table.name() == POLICIES.name()),
+            "catalog version {unsupported_version} must not have disposable indexes rebuilt"
+        );
     }
-    drop(database);
-
-    let open_error = match StorageInstance::open(fixture.instance_dir()) {
-        Ok(_) => panic!("unsupported catalog version must be rejected"),
-        Err(error) => error,
-    };
-    assert!(
-        matches!(
-            &open_error,
-            BootstrapError::Startup(StartupError::UnsupportedFormat)
-        ),
-        "unexpected startup error: {open_error:?}"
-    );
-
-    let database = Database::open(&database_path).expect("reopen unsupported image");
-    let read = database.begin_read().expect("read unsupported image");
-    assert!(
-        !read
-            .list_tables()
-            .expect("list tables")
-            .any(|table| table.name() == POLICIES.name()),
-        "unsupported databases must not have disposable indexes rebuilt"
-    );
 }
 
 #[test]

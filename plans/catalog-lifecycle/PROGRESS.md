@@ -126,3 +126,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - This identifies which named file still holds the backup source after an interrupted generation exchange. It remains diagnostic only; matching bytes does not select a recovery action or prove the exchange was durably acknowledged.
 - Regression verifies the active and staged images both match the source backup, checks both database files remain byte-identical, and retains the lock-exclusion and unpublished-stage discard coverage.
 - Verification: focused maintenance CLI test passed. Pinned-shell format check, locked workspace build, warning-denied all-target Clippy, and full serial workspace suite inside the delegated `systemd --user` service passed. Sandbox tests ran with zero ignored; `git diff --check` passed.
+
+## CL-4: reject both legacy and future catalog versions before index repair — verified
+
+- Regression: the startup fixture now mutates a READY v2 image to catalog versions 1 and 3, removes a disposable derived index, and verifies `StorageInstance::open` returns `UnsupportedFormat` without recreating that index in either case.
+- Verification: focused `bootstrap_binary` regression, `cargo fmt --all -- --check`, locked workspace build, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed with zero ignored tests. `git diff --check` passed.
+- Scope: covers the current binary's compatibility gate for one known legacy and one unknown future catalog version; it does not substitute for testing an archived older binary against a directory produced by a future release.
