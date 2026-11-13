@@ -28405,6 +28405,115 @@ fn supervisor_cancellation_and_deadline_during_worker_wait_abort()
 }
 
 #[test]
+fn supervisor_cancellation_cleans_descendants_from_worker_cgroup()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::outcome::OutcomeStatus;
+    use prdb_engine::storage_manager::{OwnerCancellationResult, SupervisorInvocationError};
+    use prdb_engine::transaction::TransactionError;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let cgroup_parent = std::env::var_os("PRDB_TEST_CGROUP_PARENT")
+        .ok_or("PRDB_TEST_CGROUP_PARENT is required for process-tree cancellation")?;
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?;
+    let user_id = id(0x76);
+    let token_id = id(0x77);
+    let secret = [0x32; 32];
+    let invocation_id = id(0x78);
+    commit_catalog_and_audit(
+        &database,
+        id(0x79),
+        id(9),
+        now + 3_600_000_000,
+        &[
+            principal_write_with_name(user_id, 1, 1, "optimizer_cancel_user"),
+            object_write_with_name(user_id, 8, "optimizer_cancel_user"),
+            credential_verifier_write(
+                token_id,
+                user_id,
+                &secret,
+                now - 1_000_000,
+                now + 60_000_000,
+                None,
+                1,
+            ),
+        ],
+        &[audit_event(0x79)],
+    )?;
+    let invocation = storage.admit_supervisor_invocation(
+        invocation_id,
+        token_id,
+        &secret,
+        now + 60_000_000,
+        2,
+        64,
+    )?;
+    let cgroup = prdb_engine::linux_sandbox::WorkerCgroup::create(
+        cgroup_parent,
+        invocation_id,
+        prdb_engine::linux_sandbox::WorkerResourceLimits {
+            cpu_quota_micros: 100_000,
+            cpu_period_micros: 100_000,
+            memory_max_bytes: 128 * 1024 * 1024,
+            max_processes: 8,
+        },
+    )?;
+    let descendant_pid_path = fixture.path().with_extension("worker-descendant.pid");
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg("sleep 30 & echo $! > \"$1\"; wait")
+        .arg("sh")
+        .arg(&descendant_pid_path);
+    cgroup.attach_command_before_exec(&mut command)?;
+    let mut worker = command.spawn()?;
+    let pid_deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !descendant_pid_path.exists() && std::time::Instant::now() < pid_deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let descendant_pid = std::fs::read_to_string(&descendant_pid_path)
+        .map_err(|_| "worker did not start its child process")?
+        .trim()
+        .parse::<u32>()?;
+
+    let (observed, cancellation) = std::thread::scope(|scope| {
+        let cancel = scope.spawn(|| {
+            std::thread::sleep(Duration::from_millis(25));
+            storage.cancel_owned_invocation(user_id, invocation_id, now + 1)
+        });
+        let observed =
+            invocation.observe_worker_exit_in_cgroup(&mut worker, cgroup, Duration::from_secs(2));
+        let cancellation = cancel
+            .join()
+            .map_err(|_| std::io::Error::other("cancellation thread panicked"))??;
+        Ok::<_, Box<dyn std::error::Error>>((observed, cancellation))
+    })?;
+    assert_eq!(cancellation, OwnerCancellationResult::Accepted);
+    assert!(matches!(
+        observed,
+        Err(SupervisorInvocationError::Deadline(
+            TransactionError::CancellationRequested
+        ))
+    ));
+    assert!(worker.try_wait()?.is_some());
+    assert!(
+        !std::path::Path::new(&format!("/proc/{descendant_pid}")).exists(),
+        "worker child process {descendant_pid} survived cgroup cancellation"
+    );
+    assert_eq!(
+        storage
+            .lookup_invocation_outcome(invocation_id, user_id, now + 1)?
+            .unwrap()
+            .status,
+        OutcomeStatus::Aborted
+    );
+    Ok(())
+}
+
+#[test]
 fn sealed_start_admits_only_current_credentials_and_enforces_request_deadline()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::client_protocol::{

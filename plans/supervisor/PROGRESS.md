@@ -326,9 +326,9 @@
 ## SU-5 validation: cancellation and expiry during worker wait
 
 - Behavior: accepted owner cancellation and the admitted execution deadline are both observed while a worker process is idle; the supervisor kills/reaps the worker, and storage records ABORTED before terminal handling can commit.
-- Changed real-redb regression: [cancellation during process observation](../../engine/tests/commit.rs).
-- Verification: focused `supervisor_cancellation_and_deadline_during_worker_wait_abort` passed for both paths. Full configured Nix-shell validation passed: format check, workspace build, warning-denied Clippy, workspace tests, and `git diff --check`.
-- Remaining: exercise these paths with cgroup descendant cleanup and live cgroup availability.
+- Changed real-redb regressions: [cancellation during process observation and descendant cleanup](../../engine/tests/commit.rs).
+- Verification: focused `supervisor_cancellation_and_deadline_during_worker_wait_abort` passed for both paths. The new `supervisor_cancellation_cleans_descendants_from_worker_cgroup` passed under the delegated user service with a real cgroup v2 parent; it verifies the child is gone and storage records ABORTED. The full serial delegated-cgroup workspace suite passed with 224 unit tests, 152 commit integration tests, all other integration targets green, and zero ignored tests. Workspace build, formatting, warning-denied Clippy, maintained TinyCC SDK tests, sandbox fixture, release-profile validation, and `git diff --check` passed.
+- Remaining: exercise cancellation/deadline while the optimizer is blocked on an estimate through the confined process tree; the current descendant test uses a blocked child process and verifies supervisor cgroup cleanup, not the optimizer estimate path itself.
 
 ## SU-6 validation: reconcile after terminal delivery loss
 
