@@ -27,4 +27,10 @@
 - A command-level `run-sql` smoke check compiled and packaged `SELECT 1` through the generated wrapper and the maintained SDK; with a deliberately unused `127.0.0.1:1` endpoint, it then stopped at the expected connection-refused error before START.
 - `git diff --check` passed.
 
-The confined suite validates the existing SQL SDK, result relay, authorization, and lifecycle paths. A dedicated acceptance that starts `prdb-client run-sql` against a live test instance with a generated SQL wrapper remains a useful follow-up; this validation does not claim a new command-specific live-server test.
+## SQLCLI-5: generated `run-sql` through the production gateway — verified
+
+- Contract: [SQL input command](../../specs/client-sql-command.md). The CLI must compile and package its generated wrapper locally, submit once through authenticated PREPARE/SEAL/START, emit complete SQLR data, and report success only after durable COMMITTED.
+- Regression: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` now starts `prdb-client run-sql` with SQL, typed parameter JSON, credential, and PSC1 files against the live gateway. It selects the restricted user's visible `empty_roundtrip` schema row from `information_schema.schemata`, validates the complete one-column SQLR record and committed terminal diagnostic, then checks the durable invocation state through STATUS using the receipt ID.
+- Red/green: the first process run failed during packaging because the installed release-profile SDK predated the SQL dispatcher symbol. Rebuilding `release-profile` refreshed the SDK; the same acceptance then passed through the confined executor and durable storage path.
+- Verification: the focused delegated production-process test passed (`1 passed, 0 failed, 0 ignored`). The release-profile validator checked 10 engine binaries and one query fixture. Locked workspace build, format check, warning-denied Clippy, maintained TinyCC suite/fixture, and the full serial delegated workspace suite passed; the commit, metadata-process, and transaction targets reported 150, 2, and 75 tests passed with zero ignored.
+- Scope: covers one authorized information-schema SELECT with one TEXT parameter on the pinned Linux x86_64 profile. SQL DML and additional command-specific error/reconciliation cases remain outside `run-sql` v1 or open follow-ups.

@@ -607,6 +607,127 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             query.cancel(invocation_id)?,
             CancellationResult::Terminal(TerminalOutcome::Committed)
         );
+
+        let credentials_path = root.join("run-sql-restricted.cred");
+        write_client_credentials(
+            &credentials_path,
+            &ClientCredentials {
+                token_id: restricted_token,
+                token_secret: restricted_secret,
+            },
+        )?;
+        let sql_path = root.join("run-sql.sql");
+        std::fs::write(
+            &sql_path,
+            "SELECT schema_name FROM schemata WHERE schema_name = $1 LIMIT 1",
+        )?;
+        std::fs::set_permissions(&sql_path, std::fs::Permissions::from_mode(0o600))?;
+        let parameters_path = root.join("run-sql.parameters.json");
+        std::fs::write(
+            &parameters_path,
+            r#"{"format":"PDB-SQL-PARAMETERS-1","values":[{"type":"text","value":"empty_roundtrip"}]}"#,
+        )?;
+        std::fs::set_permissions(&parameters_path, std::fs::Permissions::from_mode(0o600))?;
+        let requested_scope_path = root.join("run-sql.scope.psc1");
+        let mut requested_scope = b"PSC1\0\x01\x01\x01".to_vec();
+        requested_scope.extend_from_slice(&sql_visible_schema_id);
+        std::fs::write(&requested_scope_path, requested_scope)?;
+        std::fs::set_permissions(
+            &requested_scope_path,
+            std::fs::Permissions::from_mode(0o600),
+        )?;
+        let receipt_path = root.join("run-sql.receipt");
+        let sql_address = address.to_string();
+        let sdk_release_dir = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR")
+            .map(std::path::PathBuf::from)
+            .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR is required for run-sql")?;
+        let sql_sdk = sdk_release_dir.join("libprdb_sql.so.1");
+        let include_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
+        let run_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "run-sql",
+                "--address",
+                &sql_address,
+                "--credentials",
+                credentials_path
+                    .to_str()
+                    .ok_or("run-sql credentials path is not UTF-8")?,
+                "--sql-file",
+                sql_path.to_str().ok_or("run-sql SQL path is not UTF-8")?,
+                "--schema",
+                "information_schema",
+                "--scope",
+                requested_scope_path
+                    .to_str()
+                    .ok_or("run-sql scope path is not UTF-8")?,
+                "--receipt",
+                receipt_path
+                    .to_str()
+                    .ok_or("run-sql receipt path is not UTF-8")?,
+                "--sdk-library",
+                sql_sdk.to_str().ok_or("SQL SDK path is not UTF-8")?,
+                "--include-dir",
+                include_dir
+                    .to_str()
+                    .ok_or("SQL SDK include path is not UTF-8")?,
+                "--sdk-release",
+                "1",
+                "--cpu-baseline",
+                "x86_64-v1",
+                "--runtime-profile",
+                "test-runtime",
+                "--compiler-identity",
+                "TinyCC process integration fixture",
+                "--parameters",
+                parameters_path
+                    .to_str()
+                    .ok_or("run-sql parameter path is not UTF-8")?,
+            ])
+            .output()?;
+        assert!(
+            run_sql.status.success(),
+            "run-sql failed: {}",
+            String::from_utf8_lossy(&run_sql.stderr)
+        );
+        assert!(String::from_utf8_lossy(&run_sql.stderr).contains("outcome=Committed"));
+        let sqlr = &run_sql.stdout;
+        assert!(sqlr.len() >= 32);
+        assert_eq!(&sqlr[..4], b"SQLR");
+        assert_eq!(u16::from_be_bytes([sqlr[4], sqlr[5]]), 1);
+        assert_eq!(u16::from_be_bytes([sqlr[6], sqlr[7]]), 1);
+        let column_name_len = usize::from(u16::from_be_bytes([sqlr[8], sqlr[9]]));
+        assert_eq!(&sqlr[10..10 + column_name_len], b"schema_name");
+        let type_offset = 10 + column_name_len;
+        assert_eq!(
+            u32::from_be_bytes(sqlr[type_offset..type_offset + 4].try_into()?),
+            6
+        );
+        assert_eq!(sqlr[type_offset + 6], 0);
+        let value_len_offset = type_offset + 7;
+        let value_len =
+            u32::from_be_bytes(sqlr[value_len_offset..value_len_offset + 4].try_into()?) as usize;
+        let value_start = value_len_offset + 4;
+        assert_eq!(value_len, b"empty_roundtrip".len());
+        assert_eq!(
+            &sqlr[value_start..value_start + value_len],
+            b"empty_roundtrip"
+        );
+        assert_eq!(value_start + value_len, sqlr.len());
+        let receipt_text = std::fs::read_to_string(&receipt_path)?;
+        let receipt_id = receipt_text
+            .strip_prefix("PDBR1 ")
+            .and_then(|value| decode_id_hex(value.trim()))
+            .ok_or("run-sql wrote a malformed invocation receipt")?;
+        let mut status_secret = restricted_secret;
+        let mut status_client =
+            SubmissionClient::connect_authenticated(address, restricted_token, &mut status_secret)?;
+        assert_eq!(status_secret, [0; 32]);
+        assert_eq!(
+            status_client.status(receipt_id)?,
+            InvocationStatus::Committed
+        );
+        remove_client_credentials(&credentials_path)?;
+
         let cancel_credentials_path = root.join("cancel-owner.cred");
         let cancel_credentials = ClientCredentials {
             token_id: restricted_token,

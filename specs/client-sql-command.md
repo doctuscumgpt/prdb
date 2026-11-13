@@ -78,6 +78,8 @@ An implementation conforms when maintained tests establish that:
 - Requested scope is passed unchanged and does not become authority; unauthorized references and DML fail under existing storage checks.
 - Compiler and generated source environments/files contain no bearer credentials, and temporary artifacts are removed on success and ordinary failure.
 
+The delegated `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` acceptance invokes the actual `prdb-client run-sql` command against the production gateway. It verifies the generated query's SQLR record, the committed terminal response, and receipt-backed STATUS as a durable COMMITTED outcome after execution in the confined executor.
+
 ## Deferred Features
 
 DML and later SELECT ABI extensions are future `run-sql` additions. Deployment profile discovery/configuration, user-facing SQLR decoder/output formats, named parameters, multiline editing, and automatic scope derivation are outside this initial command contract. The CLI currently streams result bytes; a later output-format feature must preserve SQLR type, NULL, REDACTED, and provisional-result semantics.
