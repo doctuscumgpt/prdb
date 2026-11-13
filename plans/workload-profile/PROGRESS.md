@@ -1,5 +1,11 @@
 # Workload and Integration Progress
 
+## WI-7 follow-up: confined SQL group-memory pressure beside operational work — covered
+
+- Harness: the enabled `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance seeds 128 distinct 8,192-byte text keys in a separate authorized table and groups them with `COUNT(*)` in the confined TinyCC query. The copied group-key payload is exactly 1,048,576 bytes, at the SDK runner's 1 MiB materialization bound. The fixture validates every key byte and every distinct group, and relays a marker on its first callback while four operational workers continue reads and durable commits.
+- Verification: the focused acceptance passed inside delegated `systemd --user` cgroups with `cpu`, `memory`, and `pids` (`1 passed, 0 ignored`). The worker's sampled current/peak cgroup memory during live SQL was 3,532 KiB; 256 confined-SQL operational operations completed. Baseline versus concurrent point-read p50/p95/p99 was 1.464/2.850/3.249 ms versus 1.863/2.796/3.673 ms; durable-commit p50/p95/p99 was 12.558/15.616/16.164 ms versus 12.009/20.042/56.366 ms. Cancellation request took 10 µs and SDK poll relay took 49.299 ms. This is one local run, not a service target.
+- Scope: the SQL acceptance now reaches the runner's exact copied-key budget with concurrent operational traffic. It does not measure allocator-level copies or test spill (the runner is bounded and does not spill); saturation at configured global limits, index-build/compaction overlap, longer repeats, and target-hardware profiles remain open.
+
 ## WI-7 follow-up: point/range index latency against an authorized scan — measured
 
 - Harness: `PRDB_BENCH_INDEX_ACCESS=1 nix develop --no-update-lock-file -c cargo test -p prdb-engine --test transaction unique_constraint_uses_its_backing_index_for_invocation_writes --locked -- --exact --nocapture` seeds a fresh redb database with 4,096 additional indexed BYTEA rows and one exact target, then measures 11 unique point probes, bounded exact-key ranges, and paged full authorized scan-plus-filter calls in the same invocation snapshot. Each measured result is checked for the expected target row.

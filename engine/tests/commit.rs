@@ -23641,6 +23641,24 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         retention_deadline_us: now + 3_600_000_000,
         audit_event: composite_table_audit,
     })?;
+    let pressure_table_invocation = id(0xe1);
+    let mut pressure_table_audit = identity_audit_event(0xe2, user_id, schema.schema_id);
+    pressure_table_audit.correlation_id = pressure_table_invocation;
+    let pressure_table = storage.create_table(CreateTableRequest {
+        invocation_id: pressure_table_invocation,
+        authenticated_actor_id: user_id,
+        schema_id: schema.schema_id,
+        name: "analytics_pressure_records".to_owned(),
+        columns: vec![TableColumnDefinition {
+            name: "group_key".to_owned(),
+            scalar_type: ScalarType::Text,
+            nullable: false,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+        retention_deadline_us: now + 3_600_000_000,
+        audit_event: pressure_table_audit,
+    })?;
     let composite_schema = [
         ColumnSchema {
             scalar_type: ScalarType::Integer,
@@ -23674,6 +23692,32 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         builtin_owner_id(),
         now + 3_600_000_000,
         &composite_rows,
+    )?;
+    let pressure_schema = [ColumnSchema {
+        scalar_type: ScalarType::Text,
+        nullable: false,
+    }];
+    let pressure_key = "a".repeat(8_188);
+    let pressure_rows = (0..128u16)
+        .map(|index| {
+            let value = format!("{index:04}{pressure_key}");
+            Ok(RowWrite {
+                key: table_row_key(pressure_table.table_id, id((index + 1) as u8)),
+                expected_version: None,
+                payload: Some(encode_tuple(
+                    &pressure_schema,
+                    1,
+                    &[Some(ScalarValue::Text(value))],
+                )?),
+            })
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    commit_rows(
+        &database,
+        id(0xe3),
+        builtin_owner_id(),
+        now + 3_600_000_000,
+        &pressure_rows,
     )?;
     for row_id in [0xd3, 0xd4, 0xd5] {
         assert!(
@@ -23791,6 +23835,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         dependency_write(user_id, composite_table.table_id, 5),
         dependency_write(user_id, composite_table.column_ids[0], 5),
         dependency_write(user_id, composite_table.column_ids[1], 5),
+        dependency_write(user_id, pressure_table.table_id, 5),
+        dependency_write(user_id, pressure_table.column_ids[0], 5),
     ];
     authority_writes.extend((2..=5).map(|privilege| {
         grant_write(
@@ -23851,6 +23897,22 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             2,
             1,
             composite_table.table_id,
+            user_id,
+        ),
+        grant_write(
+            user_id,
+            pressure_table.table_id,
+            2,
+            1,
+            pressure_table.table_id,
+            user_id,
+        ),
+        grant_write(
+            user_id,
+            pressure_table.table_id,
+            2,
+            2,
+            pressure_table.column_ids[0],
             user_id,
         ),
     ]);
@@ -24124,6 +24186,17 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             .value()
             .to_vec(),
     );
+    let mut pressure_policy_table_epoch =
+        table_write_with_versions(pressure_table.table_id, schema.schema_id, 1, 2);
+    pressure_policy_table_epoch.expected_value = Some(
+        database
+            .begin_read()?
+            .open_table(CATALOG)?
+            .get(id_catalog_key(5, pressure_table.table_id).as_slice())?
+            .ok_or("sandbox analytical pressure table record missing")?
+            .value()
+            .to_vec(),
+    );
     let select_using_id = id(0x8a);
     let update_using_id = id(0x8b);
     let mut policy_writes = vec![
@@ -24181,6 +24254,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         insert_policy_table_epoch,
         joined_policy_table_epoch,
         composite_policy_table_epoch,
+        pressure_policy_table_epoch,
     ];
     let make_using_expression = |expression_id: [u8; 16], name: &str| {
         let key = id_catalog_key(7, expression_id);
@@ -24450,6 +24524,26 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         "sandbox_composite_right_select_policy",
     )?;
     add_table_policy(
+        pressure_table.table_id,
+        pressure_table.column_ids[0],
+        id(0xe4),
+        1,
+        Some(select_using_id),
+        None,
+        false,
+        "sandbox_analytics_pressure_select_policy",
+    )?;
+    add_table_policy(
+        pressure_table.table_id,
+        pressure_table.column_ids[0],
+        id(0xe5),
+        1,
+        Some(select_using_id),
+        None,
+        true,
+        "sandbox_analytics_pressure_cell_select_policy",
+    )?;
+    add_table_policy(
         composite_table.table_id,
         composite_table.column_ids[0],
         id(0xda),
@@ -24534,7 +24628,14 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         requested_scope_records.push(record);
     }
     for operation in 2u8..=5 {
-        let mut tables = if operation == 2 || operation == 4 {
+        let mut tables = if operation == 2 {
+            vec![
+                &records_table,
+                &joined_table,
+                &composite_table,
+                &pressure_table,
+            ]
+        } else if operation == 4 {
             vec![&records_table, &joined_table, &composite_table]
         } else if operation == 3 {
             vec![&records_table, &identity_table]
@@ -25325,6 +25426,17 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         "sandbox query worker failed: {worker_status}"
     );
     staging.finish_started(owner, reservation.invocation_id)?;
+    let analytical_group_started =
+        read_frame(&mut gateway)?.ok_or("missing bounded analytical group marker")?;
+    assert_eq!(
+        analytical_group_started.operation,
+        Operation::GatewayResultData as u16
+    );
+    assert_eq!(analytical_group_started.request_id, accepted.request_id);
+    assert_eq!(
+        analytical_group_started.payload,
+        b"ANALYTICAL_GROUP_STARTED"
+    );
     let inserted = read_frame(&mut gateway)?.ok_or("missing INSERT visibility result")?;
     assert_eq!(inserted.operation, Operation::GatewayResultData as u16);
     assert_eq!(inserted.request_id, accepted.request_id);
@@ -25352,6 +25464,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         user_table.payload == b"records"
             || user_table.payload == b"linked_records"
             || user_table.payload == b"grouped_records"
+            || user_table.payload == b"analytics_pressure_records"
             || user_table.payload == b"identity_records",
         "unexpected SQL user table result: {:?}",
         user_table.payload

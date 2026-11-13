@@ -96,7 +96,7 @@ static int32_t cancel_update_executor_request(
     }
     cancel_update_ready_sent = 1;
     const struct timespec poll_interval = {0, 1000000};
-    for (uint32_t poll = 0; poll < 200; ++poll) {
+    for (uint32_t poll = 0; poll < 2000; ++poll) {
         if (nanosleep(&poll_interval, NULL) != 0) {
             return PRDB_QUERY_CALLBACK_IO_ERROR;
         }
@@ -213,6 +213,56 @@ typedef struct grouped_result_context {
     uint64_t output_len;
     uint32_t row_count;
 } grouped_result_context;
+
+typedef struct analytical_pressure_result_context {
+    const prdb_host_api_v3 *host;
+    uint8_t seen[128];
+    uint32_t group_count;
+} analytical_pressure_result_context;
+
+static int32_t verify_analytical_pressure_group(
+    void *opaque, const prdb_sdk_value_v1 *group_key, uint64_t count,
+    const prdb_sdk_sql_bound_column_v2 *group_by_column) {
+    analytical_pressure_result_context *context = opaque;
+    static const uint8_t started[] = "ANALYTICAL_GROUP_STARTED";
+    uint32_t index;
+    if (context == NULL || context->host == NULL || group_key == NULL ||
+        group_by_column == NULL || group_key->state != PRDB_SDK_VALUE_STATE_VALUE ||
+        group_key->type_code != PRDB_SDK_VALUE_TYPE_TEXT ||
+        group_key->data == NULL || group_key->data_len != 8192 || count != 1) {
+        return 1;
+    }
+    if (group_key->data[0] < '0' || group_key->data[0] > '9' ||
+        group_key->data[1] < '0' || group_key->data[1] > '9' ||
+        group_key->data[2] < '0' || group_key->data[2] > '9' ||
+        group_key->data[3] < '0' || group_key->data[3] > '9') {
+        return 1;
+    }
+    index = (uint32_t)(group_key->data[0] - '0') * 1000 +
+            (uint32_t)(group_key->data[1] - '0') * 100 +
+            (uint32_t)(group_key->data[2] - '0') * 10 +
+            (uint32_t)(group_key->data[3] - '0');
+    if (index >= 128 || context->seen[index] != 0) {
+        return 1;
+    }
+    for (uint32_t offset = 4; offset < 8192; ++offset) {
+        if (group_key->data[offset] != 'a') {
+            return 1;
+        }
+    }
+    context->seen[index] = 1;
+    ++context->group_count;
+    if (context->group_count == 1 &&
+        context->host->write_result(context->host->context, started,
+                                    sizeof(started) - 1) != PRDB_QUERY_CALLBACK_OK) {
+        return 1;
+    }
+    const struct timespec callback_interval = {0, 1000000};
+    if (nanosleep(&callback_interval, NULL) != 0) {
+        return 1;
+    }
+    return 0;
+}
 
 typedef struct joined_result_context {
     const prdb_host_api_v3 *host;
@@ -662,6 +712,9 @@ static int32_t run_write_read_fixture(
         "SELECT id, SUM(id) FROM records GROUP BY id";
     static const uint8_t select_grouped_avg_sql[] =
         "SELECT id, AVG(id) FROM records GROUP BY id";
+    static const uint8_t select_analytical_pressure_sql[] =
+        "SELECT group_key, COUNT(*) FROM analytics_pressure_records "
+        "GROUP BY group_key";
     static const uint8_t select_ordered_grouped_avg_sql[] =
         "SELECT right_key, AVG(left_key) FROM grouped_records "
         "GROUP BY right_key ORDER BY AVG(left_key) DESC NULLS LAST, "
@@ -773,6 +826,9 @@ static int32_t run_write_read_fixture(
     static prdb_sdk_sql_join_materialized_row_v16 composite_join_right_rows[128];
     static uint8_t composite_join_materialized_bytes[
         PRDB_SDK_SQL_EXEC_V8_MAX_MATERIALIZED_BYTES];
+    static uint8_t analytical_pressure_batch_response[PRDB_SDK_BATCH_MAX_BYTES];
+    static uint8_t analytical_pressure_group_key_bytes[
+        PRDB_SDK_SQL_EXEC_V4_MAX_GROUP_KEY_BYTES];
     prdb_sdk_executor_insert_value_v1 insert_values[1] = {{0}};
     prdb_sdk_executor_insert_value_v1 multi_insert_values[2] = {{0}};
     prdb_sdk_executor_update_patch_v1 update_patches[1] = {{0}};
@@ -808,6 +864,9 @@ static int32_t run_write_read_fixture(
     uint32_t deleted_count = 0;
     uint32_t multi_inserted_count = UINT32_MAX;
     int32_t status;
+    analytical_pressure_result_context analytical_pressure_results = {
+        .host = host,
+    };
 
     if (host == NULL || invocation == NULL ||
         host->struct_size < sizeof(*host) ||
@@ -1058,6 +1117,21 @@ static int32_t run_write_read_fixture(
         return 1;
     }
     results.host = host;
+    status = prdb_sdk_sql_execute_group_count_v4(
+        host, schema, sizeof(schema) - 1, select_analytical_pressure_sql,
+        sizeof(select_analytical_pressure_sql) - 1, NULL, 0, 128,
+        PRDB_SDK_BATCH_MAX_BYTES, planner_response, sizeof(planner_response),
+        executor_response, sizeof(executor_response),
+        analytical_pressure_batch_response,
+        sizeof(analytical_pressure_batch_response), planner_columns, 9,
+        executor_columns, 9, cell_scratch, 9, analytical_pressure_group_key_bytes,
+        sizeof(analytical_pressure_group_key_bytes),
+        verify_analytical_pressure_group, &analytical_pressure_results);
+    if (status != PRDB_SDK_SQL_EXEC_OK ||
+        analytical_pressure_results.group_count != 128) {
+        static const uint8_t message[] = "fixture-error-analytical-pressure-group";
+        return report_failure(host, message, sizeof(message) - 1);
+    }
     parameter.struct_size = sizeof(parameter);
     parameter.abi_version = PRDB_SDK_VALUE_ABI_V1_VERSION;
     parameter.state = PRDB_SDK_VALUE_STATE_VALUE;
