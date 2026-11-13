@@ -379,6 +379,8 @@ pub struct RuntimeInvocationPage {
     pub observed_at_us: u64,
     pub consistency: RuntimeConsistency,
     pub records: Vec<RuntimeInvocation>,
+    pub pinned_snapshot_count: usize,
+    pub oldest_snapshot_pin_age_us: u64,
     pub fence_waits: Vec<RuntimeFenceWait>,
     pub fence_waits_truncated: bool,
     pub next_cursor: Option<String>,
@@ -1151,7 +1153,7 @@ impl AdminClient {
         );
         let response = self.transport.exchange(10, payload.into_bytes())?;
         let mut fields = parse_flat_response(&response.payload)?;
-        if fields.len() != 6 {
+        if fields.len() != 8 {
             return Err(ClientSubmitError::InvalidResponse);
         }
         let observed_at_us = response_u64(&mut fields, "observed_at_us")?
@@ -1259,6 +1261,14 @@ impl AdminClient {
                 cancellation_reason_code,
             });
         }
+        let pinned_snapshot_count = response_u64(&mut fields, "pinned_snapshot_count")?
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or(ClientSubmitError::InvalidResponse)?;
+        let oldest_snapshot_pin_age_us = response_u64(&mut fields, "oldest_snapshot_pin_age_us")?
+            .ok_or(ClientSubmitError::InvalidResponse)?;
+        if pinned_snapshot_count == 0 && oldest_snapshot_pin_age_us != 0 {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
         let fence_waits = match fields.remove("fence_waits") {
             Some(ResponseValue::Array(values))
                 if values.len() <= crate::ddl_fence::MAX_DDL_FENCE_WAIT_PAGE =>
@@ -1333,6 +1343,8 @@ impl AdminClient {
             observed_at_us,
             consistency,
             records,
+            pinned_snapshot_count,
+            oldest_snapshot_pin_age_us,
             fence_waits: decoded_waits,
             fence_waits_truncated,
             next_cursor,

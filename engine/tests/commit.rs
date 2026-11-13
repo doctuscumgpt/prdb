@@ -10491,6 +10491,8 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert_eq!(first_page.invocations[0].staged_rows, 1);
     assert_eq!(first_page.invocations[0].staged_value_bytes, 5);
     assert_eq!(first_page.invocations[0].snapshot_pin_count, 1);
+    assert_eq!(first_page.pinned_snapshot_count, 2);
+    assert!(first_page.oldest_snapshot_pin_age_us > 0);
     assert_ne!(first_page.invocations[0].transaction_id, [0; 16]);
     assert!(first_page.invocations[0].age_us <= 1_000_000);
     assert!(first_page.fence_waits.is_empty());
@@ -10511,6 +10513,8 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert_eq!(second_page.invocations[0].staged_rows, 0);
     assert_eq!(second_page.invocations[0].staged_value_bytes, 0);
     assert_eq!(second_page.invocations[0].snapshot_pin_count, 1);
+    assert_eq!(second_page.pinned_snapshot_count, 2);
+    assert!(second_page.oldest_snapshot_pin_age_us > 0);
     assert_ne!(second_page.invocations[0].transaction_id, [0; 16]);
     assert_ne!(
         first_page.invocations[0].transaction_id,
@@ -11301,6 +11305,8 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     assert!(runtime_page.contains("\"age_us\":"));
     assert!(runtime_page.contains("\"fence_waits\":[]"));
     assert!(runtime_page.contains("\"fence_waits_truncated\":false"));
+    assert!(runtime_page.contains("\"pinned_snapshot_count\":2"));
+    assert!(runtime_page.contains("\"oldest_snapshot_pin_age_us\":"));
     let runtime_cursor = runtime_page
         .split("\"next_cursor\":\"")
         .nth(1)

@@ -593,3 +593,11 @@
 - Regression: unit coverage exercises blockers, cleanup, waiter/resource caps, and truncation; protocol and TCP fixtures cover serialization/decoding; storage and gateway/supervisor checks preserve authorization and report empty pages when no waits exist.
 - Verification: focused regressions, workspace build, formatting, warning-denied Clippy, maintained TinyCC SDK tests and sandbox fixture, release-profile validation, the delegated cgroup probe, and the full serial delegated-cgroup workspace suite passed with zero ignored tests. `git diff --check` passed.
 - Remaining: additional wait categories, job/memory/history/counter registries, and broader pressure/authority-race testing remain open.
+
+## SDK-17 / OM-2: pinned-history summary projection — verified slice
+
+- Behavior: `runtime-list` pages include `pinned_snapshot_count` and `oldest_snapshot_pin_age_us`, sampled from live invocation-owned redb snapshot pins. The summary is independent of page records and excludes retained-byte or total-memory estimates.
+- Implementation: the existing authorized server page, protocol encoder, strict typed `AdminClient` decoder, and CLI JSON projection carry both fields.
+- Regression: the gateway/supervisor process assertion failed when the fields were absent and passed after implementation; storage and TCP fixtures verify the aggregate and decoding.
+- Verification: focused storage/TCP regressions, workspace build/fmt/Clippy, TinyCC tests and sandbox fixture, release-profile validation, delegated cgroup probe, full serial workspace suite in delegated `systemd --user` with zero ignored tests, and `git diff --check` passed.
+- Remaining: additional operational registries, wait categories, and broader pressure/authority-race tests remain open under OM-2.

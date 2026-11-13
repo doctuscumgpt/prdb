@@ -273,6 +273,8 @@ pub struct AdministrativeInvocationPage {
     pub observed_at_us: i64,
     pub consistency: InvocationStatusConsistency,
     pub invocations: Vec<AdministrativeInvocationStatus>,
+    pub pinned_snapshot_count: usize,
+    pub oldest_snapshot_pin_age_us: u64,
     pub fence_waits: Vec<crate::ddl_fence::DdlFenceWaitStatus>,
     pub fence_waits_truncated: bool,
     pub continuation: Option<AdministrativeInvocationCursor>,
@@ -1676,6 +1678,7 @@ struct LiveInvocation {
     staged_rows: usize,
     staged_value_bytes: usize,
     snapshot_pin_count: u8,
+    snapshot_pinned_at: Option<Instant>,
     cancellation_reason_code: Option<u16>,
     owner_generation: u128,
 }
@@ -1787,6 +1790,7 @@ impl InvocationAdmissionState {
                 staged_rows: 0,
                 staged_value_bytes: 0,
                 snapshot_pin_count: 0,
+                snapshot_pinned_at: None,
                 cancellation_reason_code: None,
                 owner_generation: 0,
             },
@@ -1881,12 +1885,15 @@ impl InvocationAdmissionState {
         &self,
         administrator_id: [u8; 16],
         now_us: i64,
+        observed_at: Instant,
         limit: usize,
         cursor: Option<&AdministrativeInvocationCursor>,
     ) -> Result<
         (
             Vec<AdministrativeInvocationStatus>,
             Option<AdministrativeInvocationCursor>,
+            usize,
+            u64,
         ),
         AdministrativeInvocationListError,
     > {
@@ -1903,6 +1910,21 @@ impl InvocationAdmissionState {
             }
         }
         let after = cursor.map(|cursor| cursor.after_invocation_id);
+        let pinned_snapshot_count = live
+            .entries
+            .values()
+            .filter(|invocation| invocation.snapshot_pin_count != 0)
+            .count();
+        let oldest_snapshot_pin_age_us = live
+            .entries
+            .values()
+            .filter_map(|invocation| invocation.snapshot_pinned_at)
+            .map(|pinned_at| {
+                u64::try_from(observed_at.saturating_duration_since(pinned_at).as_micros())
+                    .unwrap_or(u64::MAX)
+            })
+            .max()
+            .unwrap_or(0);
         let mut entries = live
             .entries
             .iter()
@@ -1951,7 +1973,12 @@ impl InvocationAdmissionState {
         } else {
             None
         };
-        Ok((entries, continuation))
+        Ok((
+            entries,
+            continuation,
+            pinned_snapshot_count,
+            oldest_snapshot_pin_age_us,
+        ))
     }
 }
 
@@ -1966,6 +1993,11 @@ impl InvocationAdmissionPermit {
             && invocation.snapshot_pin_count != snapshot_pin_count
         {
             invocation.snapshot_pin_count = snapshot_pin_count;
+            invocation.snapshot_pinned_at = if snapshot_pin_count == 0 {
+                None
+            } else {
+                Some(Instant::now())
+            };
             live.advance_generation();
         }
     }
@@ -10159,17 +10191,22 @@ impl<'db> StorageManager<'db> {
         if !is_administrator {
             return Err(AdministrativeInvocationListError::Unauthorized);
         }
-        let (invocations, continuation) = self.admissions.administrative_page(
-            authenticated_administrator_id,
-            now_us,
-            page_limit,
-            continuation,
-        )?;
+        let observed_at = Instant::now();
+        let (invocations, continuation, pinned_snapshot_count, oldest_snapshot_pin_age_us) =
+            self.admissions.administrative_page(
+                authenticated_administrator_id,
+                now_us,
+                observed_at,
+                page_limit,
+                continuation,
+            )?;
         let (fence_waits, fence_waits_truncated) = self.ddl_fences.wait_snapshot();
         Ok(AdministrativeInvocationPage {
             observed_at_us: now_us,
             consistency: InvocationStatusConsistency::BestEffort,
             invocations,
+            pinned_snapshot_count,
+            oldest_snapshot_pin_age_us,
             fence_waits,
             fence_waits_truncated,
             continuation,

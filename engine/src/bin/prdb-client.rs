@@ -1796,7 +1796,10 @@ fn runtime_list(
                 .map_or_else(|| "null".to_owned(), |v| v.to_string())
         );
     }
-    print!("],\"fence_waits\":[");
+    print!(
+        "],\"pinned_snapshot_count\":{},\"oldest_snapshot_pin_age_us\":{},\"fence_waits\":[",
+        page.pinned_snapshot_count, page.oldest_snapshot_pin_age_us
+    );
     for (index, wait) in page.fence_waits.iter().enumerate() {
         if index != 0 {
             print!(",");

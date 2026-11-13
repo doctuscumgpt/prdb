@@ -47,3 +47,11 @@
 - Regression: tests verify blocker relationships, cleanup, bounded admission and response truncation, typed protocol decoding, and the authorized runtime page.
 - Verification: focused regressions, workspace build/fmt/Clippy, TinyCC tests and fixture, release-profile validation, delegated cgroup probe, and full serial delegated-cgroup tests passed with zero ignored tests. `git diff --check` passed.
 - Remaining: other wait/fence categories, job, memory/history, and counter registries plus broader pressure and authority-race testing remain open.
+
+## OM-2 pinned-history summary — verified slice
+
+- Contract: administrator runtime pages include a best-effort aggregate count of active invocation-owned redb snapshots and the oldest pin age at observation. This reports live snapshot pins only and does not estimate retained page bytes or memory.
+- Implementation: the bounded invocation registry records a monotonic pin start when its snapshot count transitions to one and clears it when released. Each authorized runtime page copies the global pin count and oldest age independently of page records; the summary is not retained by a cursor.
+- Regression: the production gateway/supervisor output assertion failed before implementation because the summary was absent, then passed after implementation. Storage and typed TCP fixtures verify counts, age, and serialization.
+- Verification: focused storage and TCP tests, workspace build/fmt/Clippy, TinyCC tests and sandbox fixture, release-profile validation, delegated cgroup probe, full serial delegated-cgroup suite (zero ignored), and `git diff --check` passed.
+- Remaining: redb retained-byte/cache telemetry, job and counter registries, additional wait categories, and broader pressure/authority-race testing remain open.

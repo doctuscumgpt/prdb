@@ -4031,7 +4031,13 @@ impl ClientConnectionSession {
                     }
                     payload.push('}');
                 }
-                encode_fence_waits(&mut payload, &page.fence_waits, page.fence_waits_truncated);
+                encode_fence_waits(
+                    &mut payload,
+                    page.pinned_snapshot_count,
+                    page.oldest_snapshot_pin_age_us,
+                    &page.fence_waits,
+                    page.fence_waits_truncated,
+                );
                 payload.push_str(" ,\"next_cursor\":");
                 if let Some(cursor) = page.continuation {
                     payload.push('"');
@@ -7130,10 +7136,16 @@ fn push_json_optional_i64(output: &mut String, value: Option<i64>) {
 
 fn encode_fence_waits(
     output: &mut String,
+    pinned_snapshot_count: usize,
+    oldest_snapshot_pin_age_us: u64,
     waits: &[crate::ddl_fence::DdlFenceWaitStatus],
     truncated: bool,
 ) {
-    output.push_str("],\"fence_waits\":[");
+    output.push_str("],\"pinned_snapshot_count\":");
+    output.push_str(&pinned_snapshot_count.to_string());
+    output.push_str(",\"oldest_snapshot_pin_age_us\":");
+    output.push_str(&oldest_snapshot_pin_age_us.to_string());
+    output.push_str(",\"fence_waits\":[");
     for (index, wait) in waits.iter().enumerate() {
         if index != 0 {
             output.push(',');
@@ -7637,11 +7649,11 @@ mod runtime_wait_tests {
             blockers_truncated: false,
         };
         let mut output = String::from("{\"invocations\":[");
-        encode_fence_waits(&mut output, &[wait], true);
+        encode_fence_waits(&mut output, 2, 23, &[wait], true);
         assert_eq!(
             output,
             format!(
-                "{{\"invocations\":[],\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
+                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
                 "01".repeat(16),
                 "02".repeat(16),
                 "03".repeat(16)
