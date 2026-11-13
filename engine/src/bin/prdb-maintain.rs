@@ -179,8 +179,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let staged_report =
             prdb_engine::startup::validate_persisted_records_read_only(&staged_database)?;
         let staged_meta = staged_report.metadata;
+        let relationship = if active_meta.database_id != staged_meta.database_id {
+            "database_id_mismatch"
+        } else if active_meta.commit_sequence == staged_meta.commit_sequence {
+            "same_frontier"
+        } else if active_meta.commit_sequence > staged_meta.commit_sequence {
+            "active_ahead"
+        } else {
+            "staging_ahead"
+        };
         println!(
-            "staging=READY database_id={} catalog_version={} expression_version={} builtin_semantics_version={} commit_sequence={}",
+            "staging=READY relationship={} database_id={} catalog_version={} expression_version={} builtin_semantics_version={} commit_sequence={}",
+            relationship,
             staged_meta
                 .database_id
                 .iter()
