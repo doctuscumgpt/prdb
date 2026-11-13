@@ -71,6 +71,43 @@ impl StorageBackend for FailNextSyncBackend {
 }
 
 #[derive(Debug)]
+struct ExitAfterNextWriteBackend {
+    inner: redb::backends::FileBackend,
+    armed: Arc<AtomicBool>,
+    exit_code: i32,
+}
+
+impl StorageBackend for ExitAfterNextWriteBackend {
+    fn len(&self) -> Result<u64, std::io::Error> {
+        self.inner.len()
+    }
+
+    fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), std::io::Error> {
+        self.inner.read(offset, out)
+    }
+
+    fn set_len(&self, len: u64) -> Result<(), std::io::Error> {
+        self.inner.set_len(len)
+    }
+
+    fn sync_data(&self) -> Result<(), std::io::Error> {
+        self.inner.sync_data()
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> Result<(), std::io::Error> {
+        self.inner.write(offset, data)?;
+        if self.armed.swap(false, Ordering::SeqCst) {
+            std::process::exit(self.exit_code);
+        }
+        Ok(())
+    }
+
+    fn close(&self) -> Result<(), std::io::Error> {
+        self.inner.close()
+    }
+}
+
+#[derive(Debug)]
 struct PauseNextWriteBackend {
     inner: redb::backends::FileBackend,
     state: Arc<PauseNextWriteState>,
@@ -22292,6 +22329,243 @@ fn process_exit_after_atomic_row_index_commit_preserves_publication()
     assert_eq!(outcome.status, OutcomeStatus::Committed);
     assert_eq!(outcome.commit_sequence, 1);
     assert_eq!(commit_sequence(&reopened)?, 1);
+    Ok(())
+}
+
+#[test]
+fn process_crash_during_authorized_index_ddl_recovers_all_or_none()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{CreateTableRequest, TableColumnDefinition};
+    use std::process::Command;
+
+    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_CRASH_DURING_INDEX_DDL_DATABASE";
+    const CHILD_BOUNDARY_ENV: &str = "PRDB_TEST_CRASH_DURING_INDEX_DDL_BOUNDARY";
+    const CHILD_EXIT_CODE: i32 = 87;
+    const POST_COMMIT_EXIT_CODE: i32 = 88;
+    const ACTOR_ID: [u8; 16] = [0xa5; 16];
+    const SEED_INVOCATION_ID: [u8; 16] = [0xa6; 16];
+    const INDEX_INVOCATION_ID: [u8; 16] = [0xa7; 16];
+    const INDEX_AUDIT_ID: [u8; 16] = [0xa8; 16];
+    const ROW_ID: [u8; 16] = [0xa9; 16];
+
+    if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
+        let database_path = std::path::PathBuf::from(database_path);
+        let database = initialize(&database_path)?;
+        let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+        let admin_role = builtin_owner_id();
+        let setup = [
+            principal_write_with_name(ACTOR_ID, 1, 1, "index_crash_actor"),
+            object_write_with_name(ACTOR_ID, 8, "index_crash_actor"),
+            membership_write(ACTOR_ID, admin_role),
+            dependency_write(ACTOR_ID, admin_role, 5),
+        ];
+        let mut setup_audit = identity_audit_event(0xaa, admin_role, id(0xab));
+        setup_audit.action = AuditAction::AuthorityChange;
+        storage.commit_catalog_and_audit(id(0xab), admin_role, i64::MAX, &setup, &[setup_audit])?;
+
+        let schema_invocation = id(0xac);
+        let mut schema_audit = identity_audit_event(0xad, ACTOR_ID, id(0xae));
+        schema_audit.correlation_id = schema_invocation;
+        let schema = storage.create_schema(
+            schema_invocation,
+            ACTOR_ID,
+            "index_crash_schema",
+            ACTOR_ID,
+            i64::MAX,
+            schema_audit,
+        )?;
+        let table_invocation = id(0xaf);
+        let mut table_audit = identity_audit_event(0xb0, ACTOR_ID, id(0xb1));
+        table_audit.correlation_id = table_invocation;
+        let table = storage.create_table(CreateTableRequest {
+            invocation_id: table_invocation,
+            authenticated_actor_id: ACTOR_ID,
+            schema_id: schema.schema_id,
+            name: "index_crash_table".to_owned(),
+            columns: vec![TableColumnDefinition {
+                name: "value".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            }],
+            retention_deadline_us: i64::MAX,
+            audit_event: table_audit,
+        })?;
+        let mut seed = storage.begin_invocation(SEED_INVOCATION_ID, ACTOR_ID, i64::MAX, 1, 1024)?;
+        let table_schema = seed.load_catalog_table_schema(table.table_id)?;
+        seed.load_catalog_indexes(&table_schema)?;
+        let row = prdb_engine::overlay::RowId {
+            table: table.table_id,
+            row: ROW_ID,
+        };
+        let row_payload = encode_tuple(
+            &table_schema.columns,
+            table_schema.schema_version,
+            &[Some(ScalarValue::Integer(7))],
+        )?;
+        seed.stage_put(row, &row_payload)?;
+        seed.commit()?;
+        let before_ddl_sequence = commit_sequence(&database)?;
+        let metadata_path = database_path.with_extension("index-crash-metadata");
+        let mut metadata = Vec::with_capacity(80);
+        metadata.extend_from_slice(&schema.schema_id);
+        metadata.extend_from_slice(&table.table_id);
+        metadata.extend_from_slice(&table.column_ids[0]);
+        metadata.extend_from_slice(&ROW_ID);
+        metadata.extend_from_slice(&table_schema.schema_version.to_le_bytes());
+        metadata.extend_from_slice(&before_ddl_sequence.to_le_bytes());
+        std::fs::write(metadata_path, metadata)?;
+        drop(storage);
+        drop(database);
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&database_path)?;
+        let armed = Arc::new(AtomicBool::new(false));
+        let instrumented = Database::builder().create_with_backend(ExitAfterNextWriteBackend {
+            inner: redb::backends::FileBackend::new(file)?,
+            armed: armed.clone(),
+            exit_code: CHILD_EXIT_CODE,
+        })?;
+        let storage = StorageManager::new(&instrumented, Duration::from_millis(100))?;
+        let mut index_audit = identity_audit_event(INDEX_AUDIT_ID[0], ACTOR_ID, id(0xb2));
+        index_audit.event_id = INDEX_AUDIT_ID;
+        index_audit.correlation_id = INDEX_INVOCATION_ID;
+        let boundary = std::env::var(CHILD_BOUNDARY_ENV)?;
+        if boundary == "write" {
+            armed.store(true, Ordering::SeqCst);
+        } else if boundary != "after_commit" {
+            return Err(format!("unknown index DDL crash boundary {boundary}").into());
+        }
+        let create_result =
+            storage.create_index(prdb_engine::storage_manager::CreateIndexRequest {
+                invocation_id: INDEX_INVOCATION_ID,
+                authenticated_actor_id: ACTOR_ID,
+                table_id: table.table_id,
+                name: "crash_index".to_owned(),
+                column_ids: table.column_ids,
+                unique: false,
+                retention_deadline_us: i64::MAX,
+                audit_event: index_audit,
+            });
+        if boundary == "write" {
+            return Err(format!(
+                "index DDL returned without the injected backend-write exit: {create_result:?}"
+            )
+            .into());
+        }
+        create_result?;
+        std::process::exit(POST_COMMIT_EXIT_CODE);
+    }
+
+    for (boundary, expected_exit) in [
+        ("write", CHILD_EXIT_CODE),
+        ("after_commit", POST_COMMIT_EXIT_CODE),
+    ] {
+        let fixture = Fixture::new();
+        let database_path = fixture.path();
+        let child_status = Command::new(std::env::current_exe()?)
+            .arg("--exact")
+            .arg("process_crash_during_authorized_index_ddl_recovers_all_or_none")
+            .arg("--nocapture")
+            .env(CHILD_DATABASE_ENV, &database_path)
+            .env(CHILD_BOUNDARY_ENV, boundary)
+            .status()?;
+        assert_eq!(
+            child_status.code(),
+            Some(expected_exit),
+            "index DDL child missed the {boundary} crash boundary: {child_status}"
+        );
+
+        let metadata = std::fs::read(database_path.with_extension("index-crash-metadata"))?;
+        assert_eq!(metadata.len(), 80);
+        let schema_id: [u8; 16] = metadata[0..16].try_into()?;
+        let table_id: [u8; 16] = metadata[16..32].try_into()?;
+        let column_id: [u8; 16] = metadata[32..48].try_into()?;
+        let row_id: [u8; 16] = metadata[48..64].try_into()?;
+        let schema_version = u64::from_le_bytes(metadata[64..72].try_into()?);
+        let before_ddl_sequence = u64::from_le_bytes(metadata[72..80].try_into()?);
+        let reopened = Database::open(&database_path)?;
+        let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+        let read = reopened.begin_read()?;
+        let published_index = lookup_index_id_by_name(&read, schema_id, "crash_index")?;
+        let recovered_sequence = commit_sequence(&reopened)?;
+        let outcome = read
+            .open_table(schema::OUTCOMES)?
+            .get(&INDEX_INVOCATION_ID[..])?
+            .map(|value| InvocationOutcome::decode(value.value()))
+            .transpose()?;
+        let audit_exists = read
+            .open_table(schema::AUDIT)?
+            .get(&INDEX_AUDIT_ID[..])?
+            .is_some();
+        let row_key = table_row_key(table_id, row_id);
+        assert_eq!(
+            row(&reopened, &row_key)?.unwrap().payload,
+            encode_tuple(
+                &[ColumnSchema {
+                    scalar_type: ScalarType::Integer,
+                    nullable: false
+                }],
+                schema_version,
+                &[Some(ScalarValue::Integer(7))],
+            )?
+        );
+
+        let recovered_commit = match (published_index, outcome, audit_exists, recovered_sequence) {
+            (Some(index_id), Some(outcome), true, sequence)
+                if sequence == before_ddl_sequence + 1
+                    && outcome.status == OutcomeStatus::Committed
+                    && outcome.commit_sequence == sequence =>
+            {
+                let table_columns = [column_id];
+                let index_key = prdb_engine::index_key::derive_index_key(
+                    index_id,
+                    row_id,
+                    schema_version,
+                    &table_columns,
+                    &[ColumnSchema {
+                        scalar_type: ScalarType::Integer,
+                        nullable: false,
+                    }],
+                    &encode_tuple(
+                        &[ColumnSchema {
+                            scalar_type: ScalarType::Integer,
+                            nullable: false,
+                        }],
+                        schema_version,
+                        &[Some(ScalarValue::Integer(7))],
+                    )?,
+                    &table_columns,
+                )?;
+                let locator = read
+                    .open_table(schema::INDEXES)?
+                    .get(index_key.key.as_slice())?
+                    .ok_or("committed DDL index locator was not recovered")?
+                    .value()
+                    .to_vec();
+                assert_eq!(
+                    IndexLocator::decode_for_key(&index_key.key, &locator)?.row_version,
+                    before_ddl_sequence
+                );
+                let mut reverse_key = row_key.to_vec();
+                reverse_key.extend_from_slice(&index_key.key[..index_key.key.len() - 16]);
+                assert!(
+                    read.open_table(schema::ROW_INDEXES)?
+                        .get(reverse_key.as_slice())?
+                        .is_some()
+                );
+                true
+            }
+            (None, None, false, sequence) if sequence == before_ddl_sequence => false,
+            state => {
+                return Err(format!("recovered a partial index DDL publication: {state:?}").into());
+            }
+        };
+        assert_eq!(recovered_commit, boundary == "after_commit");
+    }
     Ok(())
 }
 
