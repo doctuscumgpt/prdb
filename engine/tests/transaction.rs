@@ -5981,6 +5981,25 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
     );
     assert_eq!(hidden_estimate_a, hidden_estimate_b);
     assert_eq!(
+        hidden_value_a.estimate_authorized_predicate_at_most(
+            table_id,
+            &filtered_projection,
+            &predicate,
+            4,
+        )?,
+        None,
+        "value-dependent row policy must suppress predicate estimates"
+    );
+    assert_eq!(
+        hidden_value_b.estimate_authorized_predicate_at_most(
+            table_id,
+            &filtered_projection,
+            &predicate,
+            4,
+        )?,
+        None
+    );
+    assert_eq!(
         hidden_value_a.estimate_authorized_population_at_most(table_id, &projection, 4)?,
         Some(3)
     );
@@ -6006,6 +6025,25 @@ fn authorized_scan_estimate_counts_sanitized_cells_and_private_writes()
     assert_eq!(
         more_candidates.estimate_authorized_scan(table_id, &filtered_projection)?,
         prdb_engine::statistics::AuthorizedScanEstimate::Unknown
+    );
+    assert_eq!(
+        fewer_candidates.estimate_authorized_predicate_at_most(
+            table_id,
+            &filtered_projection,
+            &predicate,
+            4,
+        )?,
+        None
+    );
+    assert_eq!(
+        more_candidates.estimate_authorized_predicate_at_most(
+            table_id,
+            &filtered_projection,
+            &predicate,
+            4,
+        )?,
+        None,
+        "adding invisible candidates must not change the released estimate"
     );
     assert_eq!(
         more_candidates.estimate_authorized_population_at_most(
