@@ -672,6 +672,13 @@
 - Verification: the initial service-level deadline regression failed because the optimizer returned Success. After the request-boundary check, both focused delegated-cgroup regressions passed. Locked workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests and sandbox fixture, release-profile validation (10 engine binaries and one query fixture), and the full serial delegated-cgroup suite passed. The suite reported 224 library tests and 154 commit integration tests passed, with zero ignored; all other workspace targets passed. `git diff --check` passed.
 - Scope: this exercises the production optimizer and storage worker-channel multiplexer but still does not route the blocked-estimate schedule through the external TCP gateway and full executor service lifecycle. End-to-end gateway/executor interleaving, broader candidate comparison, and target-host profiles remain open.
 
+## OP-4 follow-up: observe predicate estimates through the confined executor lifecycle — verified slice
+
+- Behavior: `RunningExecutor` now has a doc-hidden observation variant that passes optimizer-planner request headers through the same storage worker-channel service used by normal execution. Existing callers retain the unchanged `observe_exit_with_results` API and receive a no-op observer.
+- Regression: `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` uses the optimizer-backed filtered SELECT in the TinyCC fixture and asserts that `EstimateScan` reaches the observer while `RunningExecutor` serves the real worker processes. The same run relays provisional output and confirms the established durable terminal outcome. This verifies production executor-channel and gateway-result-relay interleaving; it does not inject cancellation while that estimate is pending.
+- Verification: locked workspace check and the focused acceptance passed. The acceptance ran inside the delegated `systemd --user` service with the maintained TinyCC artifact and real cgroup/Landlock executor launcher.
+- Scope: the blocked-estimate cancellation/deadline schedule remains proven at the storage worker-channel boundary; running that schedule through TCP START and the full executor lifecycle, broader candidate comparison, and target-host profiles remain open.
+
 ## OP-5 follow-up: hidden range keys do not reveal match state — verified
 
 - Contract: executor storage rejects an index range before key lookup when any indexed key column is not unconditionally readable for the invocation. Explicit requests therefore return `Unavailable` for both matching and absent hidden keys; authorized callers receive only sanitized bounded rows.

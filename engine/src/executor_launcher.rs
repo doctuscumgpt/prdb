@@ -197,10 +197,32 @@ impl RunningExecutor {
     pub fn observe_exit_with_results<F>(
         &mut self,
         invocation: &SupervisorInvocation<'_>,
-        mut on_result: F,
+        on_result: F,
     ) -> Result<ExitStatus, SupervisorInvocationError>
     where
         F: FnMut(&[u8]) -> io::Result<()>,
+    {
+        self.observe_exit_with_results_and_optimizer_planner_observer(
+            invocation,
+            on_result,
+            |_, _| {},
+        )
+    }
+
+    /// Concurrently serves worker channels and relays bounded provisional
+    /// output while observing optimizer planner requests at their storage
+    /// dispatch boundary. The request observer runs on the storage handler
+    /// thread without holding the invocation lock.
+    #[doc(hidden)]
+    pub fn observe_exit_with_results_and_optimizer_planner_observer<F, O>(
+        &mut self,
+        invocation: &SupervisorInvocation<'_>,
+        mut on_result: F,
+        optimizer_planner_observer: O,
+    ) -> Result<ExitStatus, SupervisorInvocationError>
+    where
+        F: FnMut(&[u8]) -> io::Result<()>,
+        O: Fn(u16, u64) + Send + Sync,
     {
         let result_stream = self.result_stream.take();
         let mut primary_error = None;
@@ -214,12 +236,15 @@ impl RunningExecutor {
                         .take()
                         .map(|(planner, executor, optimizer_planner)| {
                             let (storage_tx, storage_rx) = std::sync::mpsc::channel();
+                            let optimizer_planner_observer = &optimizer_planner_observer;
                             let storage_thread = scope.spawn(move || {
-                                let result = invocation.serve_worker_channels(
-                                    planner,
-                                    executor,
-                                    optimizer_planner,
-                                );
+                                let result = invocation
+                                    .serve_worker_channels_with_optimizer_planner_observer(
+                                        planner,
+                                        executor,
+                                        optimizer_planner,
+                                        optimizer_planner_observer,
+                                    );
                                 let _ = storage_tx.send(result);
                             });
                             (storage_thread, storage_rx)
@@ -314,8 +339,13 @@ impl RunningExecutor {
                     primary_error.get_or_insert(SupervisorInvocationError::WorkerHandlerPanicked);
                 }
             });
-        } else if self.worker_channels.is_some()
-            && let Err(error) = self.serve_worker_channels(invocation)
+        } else if let Some((planner, executor, optimizer_planner)) = self.worker_channels.take()
+            && let Err(error) = invocation.serve_worker_channels_with_optimizer_planner_observer(
+                planner,
+                executor,
+                optimizer_planner,
+                optimizer_planner_observer,
+            )
         {
             self.kill_reap_and_cleanup();
             return Err(error);

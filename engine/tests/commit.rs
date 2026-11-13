@@ -26524,44 +26524,67 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         let saturation_started_tx = saturation_started_tx;
         let mut analytical_group_resumed_at = None;
         let mut optimizer_range_latency_samples = Vec::with_capacity(2);
-        let worker_status_result = executor.observe_exit_with_results(&invocation, |payload| {
-            if payload.len() == 16 && &payload[..7] == b"OP5RNG1" {
-                let elapsed_ns = u64::from_be_bytes(
-                    payload[8..16]
-                        .try_into()
-                        .expect("range latency payload has a fixed-width duration"),
-                );
-                optimizer_range_latency_samples.push((payload[7], elapsed_ns));
-                return Ok(());
-            }
-            send_gateway_result_data_event(&mut service, accepted.request_id, payload.to_vec())
-                .map_err(|error| std::io::Error::other(format!("result relay: {error:?}")))?;
-            if payload == b"ANALYTICAL_GROUP_STARTED" {
-                index_build_start_tx
-                    .take()
-                    .ok_or_else(|| std::io::Error::other("index build already started"))?
-                    .send(())
-                    .map_err(|error| {
-                        std::io::Error::other(format!("start index build: {error}"))
-                    })?;
-                index_build_started_rx
-                    .take()
-                    .ok_or_else(|| std::io::Error::other("index build start already observed"))?
-                    .recv()
-                    .map_err(|error| {
-                        std::io::Error::other(format!("observe index build start: {error}"))
-                    })?;
-            } else if payload == b"ANALYTICAL_GROUP_RESUMED" {
-                analytical_group_resumed_at = Some(std::time::Instant::now());
-            }
-            analytics_result_relayed.store(true, std::sync::atomic::Ordering::Release);
-            if payload == b"ANALYTICAL_GROUP_RESUMED" {
-                saturation_started_tx.send(()).map_err(|error| {
-                    std::io::Error::other(format!("notify sustained analytics window: {error}"))
-                })?;
-            }
-            Ok(())
-        });
+        let optimizer_estimate_requests = std::sync::atomic::AtomicUsize::new(0);
+        let worker_status_result = executor
+            .observe_exit_with_results_and_optimizer_planner_observer(
+                &invocation,
+                |payload| {
+                    if payload.len() == 16 && &payload[..7] == b"OP5RNG1" {
+                        let elapsed_ns = u64::from_be_bytes(
+                            payload[8..16]
+                                .try_into()
+                                .expect("range latency payload has a fixed-width duration"),
+                        );
+                        optimizer_range_latency_samples.push((payload[7], elapsed_ns));
+                        return Ok(());
+                    }
+                    send_gateway_result_data_event(
+                        &mut service,
+                        accepted.request_id,
+                        payload.to_vec(),
+                    )
+                    .map_err(|error| std::io::Error::other(format!("result relay: {error:?}")))?;
+                    if payload == b"ANALYTICAL_GROUP_STARTED" {
+                        index_build_start_tx
+                            .take()
+                            .ok_or_else(|| std::io::Error::other("index build already started"))?
+                            .send(())
+                            .map_err(|error| {
+                                std::io::Error::other(format!("start index build: {error}"))
+                            })?;
+                        index_build_started_rx
+                            .take()
+                            .ok_or_else(|| {
+                                std::io::Error::other("index build start already observed")
+                            })?
+                            .recv()
+                            .map_err(|error| {
+                                std::io::Error::other(format!("observe index build start: {error}"))
+                            })?;
+                    } else if payload == b"ANALYTICAL_GROUP_RESUMED" {
+                        analytical_group_resumed_at = Some(std::time::Instant::now());
+                    }
+                    analytics_result_relayed.store(true, std::sync::atomic::Ordering::Release);
+                    if payload == b"ANALYTICAL_GROUP_RESUMED" {
+                        saturation_started_tx.send(()).map_err(|error| {
+                            std::io::Error::other(format!(
+                                "notify sustained analytics window: {error}"
+                            ))
+                        })?;
+                    }
+                    Ok(())
+                },
+                |operation, _request_id| {
+                    if operation == Operation::EstimateScan as u16 {
+                        optimizer_estimate_requests
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                },
+            );
+        assert!(
+            optimizer_estimate_requests.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "confined SQL acceptance did not route an EstimateScan through RunningExecutor"
+        );
         let (index_build_started_at, index_build_finished_at, index_build_id) = index_build_worker
             .join()
             .map_err(|_| std::io::Error::other("analytical pressure index builder panicked"))?
