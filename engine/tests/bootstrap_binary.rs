@@ -5,7 +5,7 @@ use prdb_engine::catalog::{
 };
 use prdb_engine::client_credentials::read_client_credentials;
 use prdb_engine::metadata::EngineMetadata;
-use prdb_engine::schema::{AUDIT, CATALOG, ENGINE_META, POLICIES};
+use prdb_engine::schema::{AUDIT, CATALOG, ENGINE_META, POLICIES, ROWS};
 use prdb_engine::startup::StartupError;
 use redb::{
     Database, ReadOnlyDatabase, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableHandle,
@@ -533,12 +533,99 @@ fn v1_source_validator_checks_legacy_ready_images_without_admitting_them() {
     let mut session =
         prdb_engine::bootstrap::initialize(fixture.instance_dir(), "v1_source_admin", i64::MAX)
             .expect("initialize source fixture");
+    let admin_id = session.admin_user_id();
     let mut secret = session.take_secret().expect("bootstrap secret");
     use zeroize::Zeroize;
     secret.zeroize();
     drop(session.acknowledge().expect("publish source READY"));
 
     let database_path = fixture.instance_dir().join("storage.redb");
+    let database = Database::open(&database_path).expect("open fixture for populated records");
+    let storage = prdb_engine::storage_manager::StorageManager::new(
+        &database,
+        std::time::Duration::from_millis(100),
+    )
+    .expect("create fixture storage manager");
+    let make_ddl_audit = |event_id, correlation_id| AuditEvent {
+        event_id,
+        actor_id: Some(admin_id),
+        correlation_id,
+        occurred_at_us: 1,
+        action: AuditAction::Ddl,
+        result: AuditResult::Succeeded,
+        target_ids: Vec::new(),
+    };
+    let schema = storage
+        .create_schema(
+            [0x71; 16],
+            admin_id,
+            "legacy_fixture",
+            admin_id,
+            i64::MAX,
+            make_ddl_audit([0x72; 16], [0x71; 16]),
+        )
+        .expect("create populated legacy schema");
+    let table = storage
+        .create_table(prdb_engine::storage_manager::CreateTableRequest {
+            invocation_id: [0x73; 16],
+            authenticated_actor_id: admin_id,
+            schema_id: schema.schema_id,
+            name: "records".to_owned(),
+            columns: vec![prdb_engine::storage_manager::TableColumnDefinition {
+                name: "payload".to_owned(),
+                scalar_type: prdb_engine::tuple::ScalarType::Text,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: Some(prdb_engine::storage_manager::TableColumnDefault::Literal(
+                    Some(prdb_engine::tuple::ScalarValue::Text(
+                        "legacy value".to_owned(),
+                    )),
+                )),
+            }],
+            retention_deadline_us: i64::MAX,
+            audit_event: make_ddl_audit([0x74; 16], [0x73; 16]),
+        })
+        .expect("create populated legacy table and default expression");
+    let mut row_key = Vec::with_capacity(32);
+    row_key.extend_from_slice(&table.table_id);
+    row_key.extend_from_slice(&[0x75; 16]);
+    let row_payload = prdb_engine::tuple::encode_tuple(
+        &[prdb_engine::tuple::ColumnSchema {
+            scalar_type: prdb_engine::tuple::ScalarType::Text,
+            nullable: false,
+        }],
+        1,
+        &[Some(prdb_engine::tuple::ScalarValue::Text(
+            "persisted legacy row".to_owned(),
+        ))],
+    )
+    .expect("encode populated legacy row");
+    let row_record = prdb_engine::row_record::RowRecord {
+        row_version: 1,
+        payload: row_payload,
+    }
+    .encode()
+    .expect("encode legacy row record");
+    {
+        let write = database.begin_write().expect("begin populated row write");
+        write
+            .open_table(ROWS)
+            .expect("open rows table")
+            .insert(row_key.as_slice(), row_record.as_slice())
+            .expect("write populated legacy row");
+        write.commit().expect("commit populated legacy row");
+    }
+    drop(storage);
+    drop(database);
+
+    let current = ReadOnlyDatabase::open(&database_path).expect("open populated v2 image");
+    let current_report = prdb_engine::startup::validate_persisted_records_read_only(&current)
+        .expect("validate populated current catalog");
+    assert_eq!(current_report.metadata.catalog_version, 2);
+    assert!(current_report.catalog_records > 31);
+    assert_eq!(current_report.rows, 1);
+    drop(current);
+
     let database = Database::open(&database_path).expect("open fixture for legacy conversion");
     let mut metadata = {
         let read = database.begin_read().expect("read fixture metadata");
@@ -599,9 +686,11 @@ fn v1_source_validator_checks_legacy_ready_images_without_admitting_them() {
 
     let source = ReadOnlyDatabase::open(&database_path).expect("open legacy source read-only");
     let report = prdb_engine::startup::validate_v1_migration_source_read_only(&source)
-        .expect("validate v1 source for offline conversion");
+        .expect("validate populated v1 source for offline conversion");
     assert_eq!(report.metadata.catalog_version, 1);
     assert_eq!(report.metadata.database_id, metadata.database_id);
+    assert!(report.catalog_records > 30);
+    assert_eq!(report.rows, 1);
     assert!(matches!(
         prdb_engine::startup::validate_persisted_records_read_only(&source),
         Err(StartupError::UnsupportedFormat)
