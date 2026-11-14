@@ -371,6 +371,32 @@ fn admin_sql_cli_rejects_unsupported_ddl_before_credentials_or_network() {
         listener.accept(),
         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
     ));
+    fs::write(
+        &sql_path,
+        "ALTER TABLE app.events ADD COLUMN note TEXT DEFAULT 'new'",
+    )
+    .unwrap();
+    let recognized_add_column = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            temp.join("missing.cred").to_str().unwrap(),
+            "--sql-file",
+            sql_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!recognized_add_column.status.success());
+    assert!(
+        !String::from_utf8_lossy(&recognized_add_column.stderr)
+            .contains("invalid administrative SQL")
+    );
+    assert!(matches!(
+        listener.accept(),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
     fs::remove_dir_all(temp).unwrap();
 }
 

@@ -69,6 +69,13 @@ pub struct AlterColumnNullabilitySql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddColumnSql {
+    pub schema: String,
+    pub table: String,
+    pub column: AdminColumnDefinition,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckExpressionSql {
     Column(String),
     IsNull(String),
@@ -417,6 +424,52 @@ pub fn parse_alter_column_nullability(sql: &str) -> Result<AlterColumnNullabilit
         table,
         column,
         nullable,
+    })
+}
+
+/// Parse one typed `ALTER TABLE schema.table ADD COLUMN` definition.
+pub fn parse_add_column(sql: &str) -> Result<AddColumnSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("table")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("add")?;
+    parser.word("column")?;
+    let name = parser.identifier()?;
+    let scalar_type = parser.scalar_type()?;
+    let mut nullable = true;
+    let mut default = None;
+    loop {
+        if parser.peek_word("not") && nullable {
+            parser.word("not")?;
+            parser.word("null")?;
+            nullable = false;
+        } else if parser.peek_word("default") && default.is_none() {
+            parser.word("default")?;
+            default = Some(parser.default_value(scalar_type)?);
+        } else {
+            break;
+        }
+    }
+    if matches!(default, Some(AdminColumnDefault::CurrentPrincipalId))
+        || matches!(default, Some(AdminColumnDefault::Null)) && !nullable
+        || !nullable && default.is_none()
+    {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    finish_statement(&mut parser)?;
+    Ok(AddColumnSql {
+        schema,
+        table,
+        column: AdminColumnDefinition {
+            name,
+            scalar_type,
+            nullable,
+            generated_uuid_identity: false,
+            default,
+        },
     })
 }
 
@@ -1050,6 +1103,37 @@ mod tests {
                 parse_alter_column_nullability(sql).is_err(),
                 "accepted {sql}"
             );
+        }
+    }
+
+    #[test]
+    fn parses_typed_add_column_with_bounded_defaults() {
+        let parsed = parse_add_column(
+            "ALTER TABLE app.events ADD COLUMN label VARCHAR(30) NOT NULL DEFAULT 'unknown';",
+        )
+        .unwrap();
+        assert_eq!(parsed.schema, "app");
+        assert_eq!(parsed.table, "events");
+        assert_eq!(parsed.column.name, "label");
+        assert_eq!(
+            parsed.column.scalar_type,
+            ScalarType::Varchar { max_chars: 30 }
+        );
+        assert!(!parsed.column.nullable);
+        assert_eq!(
+            parsed.column.default,
+            Some(AdminColumnDefault::Literal(ScalarValue::Varchar(
+                "unknown".into()
+            )))
+        );
+        for sql in [
+            "ALTER TABLE app.events ADD COLUMN label TEXT NOT NULL",
+            "ALTER TABLE app.events ADD COLUMN label TEXT DEFAULT CURRENT_PRINCIPAL_ID()",
+            "ALTER TABLE app.events ADD COLUMN label TEXT NOT NULL DEFAULT NULL",
+            "ALTER TABLE events ADD COLUMN label TEXT",
+            "ALTER TABLE app.events ADD COLUMN label TEXT; ALTER TABLE app.events ADD COLUMN extra TEXT",
+        ] {
+            assert!(parse_add_column(sql).is_err(), "accepted {sql}");
         }
     }
 

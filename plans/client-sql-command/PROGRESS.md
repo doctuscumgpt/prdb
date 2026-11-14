@@ -184,3 +184,9 @@
 - `admin-sql` accepts qualified `ALTER TABLE ... ALTER COLUMN ... SET NOT NULL` and `DROP NOT NULL`, resolving the column before typed dispatch.
 - Parser, authenticated AdminClient TCP, and CLI pre-credential recognition coverage added; malformed and multi-statement input fails closed.
 - Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.
+
+## Administrative SQL: ALTER TABLE ADD COLUMN — implemented
+
+- `admin-sql` accepts one qualified `ADD COLUMN` with supported scalar type, optional NOT NULL, and optional typed literal default.
+- Parser checks nullability/default rules and fail-closed statement boundaries. Authenticated client coverage verifies table lookup and typed `tables.add_column` dispatch; CLI process coverage verifies local recognition.
+- Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.

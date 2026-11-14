@@ -2998,6 +2998,18 @@ impl AdminClient {
         self.alter_column_nullability(table_id, column.column_id, statement.nullable)
     }
 
+    /// Append one bounded SQL column definition through authenticated control
+    /// metadata and the existing typed add-column operation.
+    pub fn execute_add_column_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminTableColumnResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_add_column(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let table_id = self.resolve_table_sql_name(&statement.schema, &statement.table)?;
+        self.add_column(table_id, &statement.column)
+    }
+
     pub fn execute_rename_table_sql(
         &mut self,
         sql: &str,

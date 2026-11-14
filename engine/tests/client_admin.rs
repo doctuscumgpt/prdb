@@ -1607,6 +1607,75 @@ fn admin_client_binds_nullability_sql_to_metadata_ids() {
 }
 
 #[test]
+fn admin_client_adds_typed_column_from_sql_names() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        for (operation, body) in [
+            (
+                "metadata.schemas.list",
+                format!(
+                    r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                    "a3".repeat(16)
+                ),
+            ),
+            (
+                "metadata.relations.list",
+                format!(
+                    r#"{{"relations":[{{"relation_id":"{}","name":"events"}}],"next_cursor":null}}"#,
+                    "b4".repeat(16)
+                ),
+            ),
+        ] {
+            let request = read_frame(&mut stream, &mut decoder);
+            assert!(
+                String::from_utf8_lossy(&request.payload)
+                    .contains(&format!(r#""operation":"{operation}""#))
+            );
+            respond(&mut stream, &request, body.as_bytes());
+        }
+        let prepare = read_frame(&mut stream, &mut decoder);
+        let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+        assert!(payload.contains(r#""operation":"tables.add_column""#));
+        assert!(
+            payload.contains(r#""table_id":"b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4","column":{"name":"label","type":"varchar(30)","nullable":false,"generated_uuid_identity":false,"default":{"kind":"literal","value":"unknown"}}"#),
+            "unexpected PREPARE payload: {payload}"
+        );
+        respond(
+            &mut stream,
+            &prepare,
+            format!(
+                r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                "d7".repeat(16)
+            )
+            .as_bytes(),
+        );
+        let start = read_frame(&mut stream, &mut decoder);
+        respond(&mut stream, &start, format!(r#"{{"operation_id":"{}","outcome":"committed","table_id":"{}","column_id":"{}","schema_version":"2","commit_sequence":"80"}}"#, "d7".repeat(16), "b4".repeat(16), "e8".repeat(16)).as_bytes());
+    });
+
+    let mut secret = [5; 32];
+    let mut client = AdminClient::connect_authenticated_with_timeout(
+        address,
+        [6; 16],
+        &mut secret,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let added = client
+        .execute_add_column_sql(
+            "ALTER TABLE app.events ADD COLUMN label VARCHAR(30) NOT NULL DEFAULT 'unknown'",
+        )
+        .unwrap();
+    assert_eq!(added.column_id, [0xe8; 16]);
+    assert_eq!(added.commit_sequence, 80);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_renames_and_drops_tables() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

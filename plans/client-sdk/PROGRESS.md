@@ -740,3 +740,10 @@
 - Authenticated TCP regression verifies metadata requests and typed PREPARE fields. The CLI test verifies supported SQL is recognized before credentials/network.
 - Storage remains responsible for NOT NULL backfill validation and DDL fencing.
 - Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.
+
+## Administrative SQL: ALTER TABLE ADD COLUMN — implemented
+
+- `execute_add_column_sql` parses one bounded typed column definition, resolves the qualified table through authenticated metadata, and submits `tables.add_column` with the existing validated column encoder.
+- The SQL path rejects generated identities and context-dependent backfill defaults; NOT NULL requires a non-null literal. The storage path remains authoritative for row limits, index/locator rewrites, fencing, and authorization.
+- Parser, authenticated TCP, and CLI pre-credential recognition regressions added.
+- Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.

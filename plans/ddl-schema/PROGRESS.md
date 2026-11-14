@@ -568,3 +568,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: parser tests cover both operations and reject unqualified tables, malformed actions, and multiple statements. Authenticated TCP coverage checks metadata resolution, stable column ID submission, and committed response; the CLI process test checks pre-credential recognition.
 - Limit: validation and storage mutation remain the existing typed path; SQL only adds name resolution and dispatch.
 - Verification: parser, authenticated AdminClient TCP, and CLI pre-credential recognition regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.
+
+## DS-8: ALTER TABLE ADD COLUMN SQL — implemented
+
+- Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). One typed column can be appended using `ALTER TABLE schema.table ADD COLUMN name type [NOT NULL] [DEFAULT literal]`; NOT NULL requires a compatible non-null literal. Context-dependent defaults are rejected for backfill. Storage keeps the existing bounded atomic row/index/locator rewrite behavior.
+- Regression: parser coverage checks supported typed defaults and rejects missing non-null defaults, NULL backfills, current-principal defaults, unqualified names, and multiple statements. Authenticated TCP coverage verifies table resolution and `tables.add_column` arguments; CLI coverage confirms pre-credential syntax recognition.
+- Verification: parser, authenticated AdminClient TCP, and CLI pre-credential recognition tests passed. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.
