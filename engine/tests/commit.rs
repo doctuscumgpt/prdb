@@ -23961,10 +23961,10 @@ fn process_crash_during_add_column_recovers_all_or_none() -> Result<(), Box<dyn 
 fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn std::error::Error>>
 {
     use prdb_engine::storage_manager::{
-        CreateCheckConstraintRequest, CreateIndexRequest, CreatePolicyRequest,
-        CreatePrimaryKeyRequest, CreateTableRequest, CreateUniqueConstraintRequest,
-        ObjectGrantPrivilege, ObjectGrantTarget, PolicyKind, SetObjectGrantRequest,
-        TableColumnDefinition,
+        CreateCheckConstraintRequest, CreateForeignKeyRequest, CreateIndexRequest,
+        CreatePolicyRequest, CreatePrimaryKeyRequest, CreateTableRequest,
+        CreateUniqueConstraintRequest, ObjectGrantPrivilege, ObjectGrantTarget, PolicyKind,
+        SetObjectGrantRequest, TableColumnDefinition,
     };
     use std::process::Command;
 
@@ -24067,6 +24067,40 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
             retention_deadline_us: i64::MAX,
             audit_event: primary_key_audit,
         })?;
+        let mut references_audit = identity_audit_event(0x28, builtin_owner_id(), id(0x29));
+        references_audit.action = AuditAction::AuthorityChange;
+        let mut actor_epoch = principal_write_with_name(ACTOR_ID, 1, 2, "drop_table_crash_actor");
+        actor_epoch.expected_value =
+            principal_write_with_name(ACTOR_ID, 1, 1, "drop_table_crash_actor").payload;
+        storage.commit_catalog_and_audit(
+            id(0x29),
+            builtin_owner_id(),
+            i64::MAX,
+            &[
+                grant_write(
+                    ACTOR_ID,
+                    table.table_id,
+                    6,
+                    1,
+                    table.table_id,
+                    builtin_owner_id(),
+                ),
+                dependency_write(ACTOR_ID, table.table_id, 5),
+                actor_epoch,
+            ],
+            &[references_audit],
+        )?;
+        let mut foreign_key_audit = identity_audit_event(0x19, ACTOR_ID, table.table_id);
+        foreign_key_audit.correlation_id = id(0x1a);
+        let foreign_key = storage.create_foreign_key(CreateForeignKeyRequest {
+            invocation_id: id(0x1a),
+            authenticated_actor_id: ACTOR_ID,
+            source_table_id: table.table_id,
+            source_column_ids: vec![table.column_ids[0]],
+            target_constraint_id: primary_key.constraint_id,
+            retention_deadline_us: i64::MAX,
+            audit_event: foreign_key_audit,
+        })?;
         let mut unique_audit = identity_audit_event(0x14, ACTOR_ID, table.table_id);
         unique_audit.correlation_id = id(0x15);
         let unique = storage.create_unique_constraint(CreateUniqueConstraintRequest {
@@ -24122,7 +24156,7 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
             audit_event: grant_audit,
         })?;
         let before_drop_sequence = commit_sequence(&database)?;
-        let mut metadata = Vec::with_capacity(224);
+        let mut metadata = Vec::with_capacity(240);
         metadata.extend_from_slice(&schema.schema_id);
         metadata.extend_from_slice(&table.table_id);
         metadata.extend_from_slice(&table.column_ids[0]);
@@ -24142,6 +24176,7 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
                 .using_expression_id
                 .ok_or("created row policy is missing its USING expression")?,
         );
+        metadata.extend_from_slice(&foreign_key.foreign_key_id);
         std::fs::write(
             database_path.with_extension("drop-table-crash-metadata"),
             metadata,
@@ -24206,7 +24241,7 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
         );
 
         let metadata = std::fs::read(database_path.with_extension("drop-table-crash-metadata"))?;
-        assert_eq!(metadata.len(), 224);
+        assert_eq!(metadata.len(), 240);
         let schema_id: [u8; 16] = metadata[0..16].try_into()?;
         let table_id: [u8; 16] = metadata[16..32].try_into()?;
         let column_id: [u8; 16] = metadata[32..48].try_into()?;
@@ -24222,6 +24257,7 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
         let check_expression_id: [u8; 16] = metadata[176..192].try_into()?;
         let policy_id: [u8; 16] = metadata[192..208].try_into()?;
         let policy_expression_id: [u8; 16] = metadata[208..224].try_into()?;
+        let foreign_key_id: [u8; 16] = metadata[224..240].try_into()?;
         let reopened = Database::open(&database_path)?;
         let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
         let read = reopened.begin_read()?;
@@ -24242,13 +24278,18 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
         let mut recovered_constraints =
             prdb_engine::catalog_index::scan_constraint_ids_for_table(&read, table_id, 8)?;
         recovered_constraints.sort_unstable();
-        let mut expected_constraints = vec![primary_key_id, unique_id, check_id];
+        let mut expected_constraints = vec![primary_key_id, foreign_key_id, unique_id, check_id];
         expected_constraints.sort_unstable();
         let grant_key = grant_write(GRANTEE_ID, table_id, 2, 1, table_id, ACTOR_ID).key;
         let grant_dependency_key = dependency_write(GRANTEE_ID, table_id, 5).key;
+        let references_grant_key =
+            grant_write(ACTOR_ID, table_id, 6, 1, table_id, builtin_owner_id()).key;
+        let references_grant_dependency_key = dependency_write(ACTOR_ID, table_id, 5).key;
         let policy_expression_dependency_key =
             dependency_write(policy_id, policy_expression_id, 2).key;
         let policy_recipient_dependency_key = dependency_write(policy_id, ACTOR_ID, 5).key;
+        let foreign_key_target_dependency_key =
+            dependency_write(foreign_key_id, primary_key_id, 3).key;
         let row_key = table_row_key(table_id, row_id);
         let row_exists = row(&reopened, &row_key)?.is_some();
         let row_payload = encode_tuple(
@@ -24344,8 +24385,11 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
             for retained_key in [
                 grant_key.as_slice(),
                 grant_dependency_key.as_slice(),
+                references_grant_key.as_slice(),
+                references_grant_dependency_key.as_slice(),
                 policy_expression_dependency_key.as_slice(),
                 policy_recipient_dependency_key.as_slice(),
+                foreign_key_target_dependency_key.as_slice(),
             ] {
                 assert!(catalog.get(retained_key)?.is_some());
             }
@@ -24417,8 +24461,11 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
             for removed_key in [
                 grant_key.as_slice(),
                 grant_dependency_key.as_slice(),
+                references_grant_key.as_slice(),
+                references_grant_dependency_key.as_slice(),
                 policy_expression_dependency_key.as_slice(),
                 policy_recipient_dependency_key.as_slice(),
+                foreign_key_target_dependency_key.as_slice(),
             ] {
                 assert!(catalog.get(removed_key)?.is_none());
             }
