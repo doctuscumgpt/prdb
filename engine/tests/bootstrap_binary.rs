@@ -1173,6 +1173,22 @@ fn migration_apply_requires_complete_history_ack_and_publishes_validated_v2() {
         )
         .expect("compare retained source with backup")
     );
+    let retained_bytes = std::fs::read(fixture.instance_dir().join(".prdb-migration.next"))
+        .expect("read retained source before discard attempt");
+    let discard_after_publication = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-discard-stage", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--backup-dir")
+        .arg(&backup_path)
+        .output()
+        .expect("attempt to discard retained source after publication");
+    assert!(!discard_after_publication.status.success());
+    assert_eq!(
+        std::fs::read(fixture.instance_dir().join(".prdb-migration.next"))
+            .expect("reread retained source"),
+        retained_bytes,
+        "post-publication cleanup must preserve the rollback evidence"
+    );
 }
 
 #[test]
