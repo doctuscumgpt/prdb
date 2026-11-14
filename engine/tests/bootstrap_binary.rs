@@ -696,6 +696,99 @@ fn v1_source_validator_checks_legacy_ready_images_without_admitting_them() {
         Err(StartupError::UnsupportedFormat)
     ));
     drop(source);
+
+    let staging_path = fixture.0.join("v1-staging.redb");
+    std::fs::copy(&database_path, &staging_path).expect("copy source to private staging image");
+    let staging = Database::open(&staging_path).expect("open staging image");
+    let history = prdb_engine::identity_history::IdentityHistory {
+        database_id: report.metadata.database_id,
+        commit_sequence: report.metadata.commit_sequence,
+        tombstone_ids: vec![[0xfe; 16]],
+    };
+    prdb_engine::migration::upgrade_v1_staging_database(&staging, &history)
+        .expect("upgrade copied v1 staging image");
+    drop(staging);
+    let upgraded = ReadOnlyDatabase::open(&staging_path).expect("open upgraded staging image");
+    let upgraded_report = prdb_engine::startup::validate_persisted_records_read_only(&upgraded)
+        .expect("fully validate upgraded staging image");
+    assert_eq!(upgraded_report.metadata.catalog_version, 2);
+    assert_eq!(
+        upgraded_report.metadata.database_id,
+        report.metadata.database_id
+    );
+    assert_eq!(
+        upgraded_report.metadata.commit_sequence,
+        report.metadata.commit_sequence
+    );
+    assert_eq!(upgraded_report.rows, report.rows);
+    let read = upgraded.begin_read().expect("read upgraded catalog");
+    let catalog = read.open_table(CATALOG).expect("open upgraded catalog");
+    let tombstone_key = [17u16.to_be_bytes().as_slice(), &[1], &[0xfe; 16]].concat();
+    assert!(
+        catalog
+            .get(tombstone_key.as_slice())
+            .expect("read tombstone")
+            .is_some()
+    );
+    let database_record_key = [
+        1u16.to_be_bytes().as_slice(),
+        &[1],
+        &report.metadata.database_id,
+    ]
+    .concat();
+    let database_record = catalog
+        .get(database_record_key.as_slice())
+        .expect("read upgraded database descriptor")
+        .expect("database descriptor exists");
+    let descriptor =
+        decode_registered_envelope(database_record.value()).expect("decode upgraded descriptor");
+    let builtins = descriptor
+        .fields
+        .iter()
+        .find(|field| field.tag == 3)
+        .expect("built-in mapping field");
+    assert_eq!(
+        u32::from_le_bytes(builtins.payload[..4].try_into().unwrap()),
+        31
+    );
+    assert_eq!(
+        u16::from_le_bytes(
+            builtins.payload[builtins.payload.len() - 20..][..2]
+                .try_into()
+                .unwrap()
+        ),
+        217
+    );
+    drop(database_record);
+    drop(catalog);
+    drop(read);
+    drop(upgraded);
+
+    let colliding_staging_path = fixture.0.join("v1-staging-collision.redb");
+    std::fs::copy(&database_path, &colliding_staging_path)
+        .expect("copy source to collision staging image");
+    let colliding_staging =
+        Database::open(&colliding_staging_path).expect("open collision staging image");
+    let colliding_history = prdb_engine::identity_history::IdentityHistory {
+        database_id: report.metadata.database_id,
+        commit_sequence: report.metadata.commit_sequence,
+        tombstone_ids: vec![{
+            let mut id = [0x80; 16];
+            id[15] = 3;
+            id
+        }],
+    };
+    assert!(matches!(
+        prdb_engine::migration::upgrade_v1_staging_database(&colliding_staging, &colliding_history),
+        Err(prdb_engine::migration::MigrationError::InvalidHistory(
+            prdb_engine::identity_history::IdentityHistoryError::TombstoneIdAlreadyUsed
+        ))
+    ));
+    let unmodified = prdb_engine::startup::validate_v1_migration_database(&colliding_staging)
+        .expect("failed conversion leaves staging image at v1");
+    assert_eq!(unmodified.metadata.catalog_version, 1);
+    drop(colliding_staging);
+
     let inspected = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
         .args(["migration-inspect", "--instance-dir"])
         .arg(fixture.instance_dir())

@@ -135,6 +135,16 @@ pub fn validate_v1_migration_source_read_only(
     validate_persisted_records_snapshot(&read, Lifecycle::Ready, Some(1))
 }
 
+/// Validate a catalog-v1 staging database without rebuilding derived indexes.
+/// The writable handle is accepted only so migration can validate a cloned
+/// target before applying its atomic format transaction.
+pub fn validate_v1_migration_database(
+    database: &Database,
+) -> Result<StorageHealthReport, StartupError> {
+    let read = database.begin_read().map_err(storage_error)?;
+    validate_persisted_records_snapshot(&read, Lifecycle::Ready, Some(1))
+}
+
 /// Validate one READY image from a logical catalog version supported by an
 /// offline migration. This does not admit the image for service use.
 pub fn validate_migration_image_read_only(
