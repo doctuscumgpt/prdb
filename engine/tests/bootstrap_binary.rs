@@ -1292,7 +1292,7 @@ fn migration_apply_resumes_a_fully_validated_v2_staging_image() {
 }
 
 #[test]
-fn restore_requires_data_loss_ack_and_recovers_an_unreadable_active_image() {
+fn restore_requires_data_loss_ack_and_recovers_an_unreadable_newer_active_image() {
     let fixture = Fixture::new();
     let mut session =
         prdb_engine::bootstrap::initialize(fixture.instance_dir(), "restore_admin", i64::MAX)
@@ -1307,7 +1307,35 @@ fn restore_requires_data_loss_ack_and_recovers_an_unreadable_active_image() {
     prdb_engine::offline_backup::create_verified_backup(fixture.instance_dir(), &backup_path)
         .expect("create verified restore backup");
     let expected_bytes = std::fs::read(&active_path).expect("read original active image");
-    let mut corrupted_bytes = expected_bytes.clone();
+    {
+        let instance =
+            StorageInstance::open(fixture.instance_dir()).expect("open newer generation");
+        let write = instance
+            .database()
+            .begin_write()
+            .expect("begin newer durable write");
+        let event = AuditEvent {
+            event_id: [0x51; 16],
+            actor_id: Some([0x10; 16]),
+            correlation_id: [0x52; 16],
+            occurred_at_us: 81,
+            action: AuditAction::Ddl,
+            result: AuditResult::Succeeded,
+            target_ids: vec![[0x30; 16]],
+        };
+        write
+            .open_table(AUDIT)
+            .expect("open audit table")
+            .insert(
+                event.event_id.as_slice(),
+                event.encode().expect("encode event").as_slice(),
+            )
+            .expect("persist newer audit event");
+        write.commit().expect("commit newer durable write");
+    }
+    let newer_generation = std::fs::read(&active_path).expect("read newer active image");
+    assert_ne!(newer_generation, expected_bytes);
+    let mut corrupted_bytes = newer_generation;
     corrupted_bytes[0] ^= 0xff;
     std::fs::write(&active_path, &corrupted_bytes).expect("corrupt active redb header");
     let interrupted_copy = fixture.instance_dir().join(".prdb-restore.copying");
