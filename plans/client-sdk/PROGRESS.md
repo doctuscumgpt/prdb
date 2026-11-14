@@ -708,3 +708,9 @@
 - Contract: [client SDK](../../specs/client-sdk.md) and [schema DDL](../../specs/ddl-schema.md). The SQL helper resolves an authorized visible schema/relation and then uses existing typed table lifecycle requests.
 - Regression: mock TCP coverage resolves schema and relation pages, asserts `tables.rename` and `tables.drop` PREPARE arguments, and checks committed operation results.
 - Verification: the authenticated AdminClient TCP rename/drop regression passed after resolving metadata pages. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. Details are in [schema DDL progress](../ddl-schema/PROGRESS.md).
+
+## SDK-5: CREATE TABLE SQL with a table-level PRIMARY KEY — implemented
+
+- Contract: [client SDK](../../specs/client-sdk.md) and [schema DDL](../../specs/ddl-schema.md). `AdminClient::execute_create_table_sql` parses an optional table-level PK, implies NOT NULL on its columns, and sends ordered names in the existing typed `tables.create` PREPARE request. `AdminClient::create_table_with_primary_key` is also available for structured callers and validates the supplied columns before sending.
+- Regression: authenticated TCP coverage asserts the typed `primary_key_columns` field; SQL parser and strict decoder tests cover composite ordering, implied nullability, nullable rejection, and duplicates.
+- Verification: focused parser/decoder/AdminClient tests, locked workspace build, format check, warning-denied Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.

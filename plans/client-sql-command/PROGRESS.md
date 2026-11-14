@@ -153,3 +153,9 @@
 - Contract: [client SQL command](../../specs/client-sql-command.md), [client SDK](../../specs/client-sdk.md), and [schema DDL](../../specs/ddl-schema.md). Qualified names resolve through authenticated metadata and invoke the existing table lifecycle operations.
 - Regression: parser tests verify single-statement qualified rename and RESTRICT drop. AdminClient TCP coverage verifies schema/relation metadata resolution, typed PREPARE requests, and committed responses for both operations.
 - Verification: all eight parser tests and the authenticated AdminClient TCP rename/drop regression passed after resolving paged metadata. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. See [schema DDL progress](../ddl-schema/PROGRESS.md).
+
+## Administrative SQL CLI: table-level PRIMARY KEY — implemented
+
+- Contract: [client SQL command](../../specs/client-sql-command.md), [client SDK](../../specs/client-sdk.md), and [schema DDL](../../specs/ddl-schema.md). `admin-sql` accepts a final table-level `PRIMARY KEY (columns...)` in CREATE TABLE, validates it before credentials/network, and sends the structured column names through authenticated control mode.
+- Regression: the process-level CLI test verifies the PK field in PREPARE; parser regressions cover composite keys and rejection of unknown/duplicate columns.
+- Verification: focused CLI test, locked workspace build, format check, warning-denied Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.

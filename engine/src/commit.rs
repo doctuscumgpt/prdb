@@ -8454,6 +8454,8 @@ fn table_create_ddl_authority_guards(
     }
     let mut table_record_write = None;
     let mut object_writes = HashMap::<[u8; 16], &CatalogWrite>::new();
+    let mut constraint_writes = HashMap::<[u8; 16], &CatalogWrite>::new();
+    let mut index_writes = HashMap::<[u8; 16], &CatalogWrite>::new();
     let mut column_writes = Vec::<&CatalogWrite>::new();
     let mut expression_writes = HashMap::<[u8; 16], &CatalogWrite>::new();
     let mut dependencies = HashSet::<([u8; 16], [u8; 16], u16)>::new();
@@ -8485,13 +8487,30 @@ fn table_create_ddl_authority_guards(
                     return Err(CommitError::InvalidCatalog);
                 }
             }
+            8 if write.key.len() == 19 => {
+                let id = write.key[3..19]
+                    .try_into()
+                    .map_err(|_| CommitError::InvalidCatalog)?;
+                if constraint_writes.insert(id, write).is_some() {
+                    return Err(CommitError::InvalidCatalog);
+                }
+            }
+            9 if write.key.len() == 19 => {
+                let id = write.key[3..19]
+                    .try_into()
+                    .map_err(|_| CommitError::InvalidCatalog)?;
+                if index_writes.insert(id, write).is_some() {
+                    return Err(CommitError::InvalidCatalog);
+                }
+            }
             15 => {
                 let bytes = write
                     .payload
                     .as_deref()
                     .ok_or(CommitError::InvalidCatalog)?;
                 let (dependent, referenced, kind) = decode_dependency_edge(&write.key, bytes)?;
-                if !matches!(kind, 1 | 2) || !dependencies.insert((dependent, referenced, kind)) {
+                if !matches!(kind, 1 | 2 | 4) || !dependencies.insert((dependent, referenced, kind))
+                {
                     return Err(CommitError::InvalidCatalog);
                 }
             }
@@ -8771,9 +8790,114 @@ fn table_create_ddl_authority_guards(
         )
         .map_err(|_| CommitError::InvalidCatalog)?;
     }
-    if object_writes.len() != column_ids.len() + default_bindings.len() + 1
+    let primary_key = match (constraint_writes.iter().next(), index_writes.iter().next()) {
+        (None, None) => None,
+        (Some((&constraint_id, constraint_write)), Some((&index_id, index_write)))
+            if constraint_writes.len() == 1 && index_writes.len() == 1 =>
+        {
+            let constraint_key = id_catalog_key(8, constraint_id);
+            let constraint_bytes = constraint_write
+                .payload
+                .as_deref()
+                .ok_or(CommitError::InvalidCatalog)?;
+            validate_constraint_shape(&constraint_key, constraint_bytes)?;
+            if catalog_field_u16(&constraint_key, constraint_bytes, 8, 2)? != 2
+                || constraint_table_id(&constraint_key, constraint_bytes)? != table_id
+            {
+                return Err(CommitError::InvalidCatalog);
+            }
+            let key_columns = catalog_id_list_field(&constraint_key, constraint_bytes, 8, 3)?;
+            if key_columns.is_empty()
+                || key_columns
+                    .iter()
+                    .any(|column_id| !column_ids.contains(column_id))
+            {
+                return Err(CommitError::InvalidCatalog);
+            }
+            for column_id in &key_columns {
+                let column_key = id_catalog_key(6, *column_id);
+                let column_write = column_writes
+                    .iter()
+                    .find(|write| write.key == column_key)
+                    .ok_or(CommitError::InvalidCatalog)?;
+                let column_bytes = column_write
+                    .payload
+                    .as_deref()
+                    .ok_or(CommitError::InvalidCatalog)?;
+                if catalog_field_bytes(&column_key, column_bytes, 6, 6)? != [0] {
+                    return Err(CommitError::InvalidCatalog);
+                }
+            }
+            let index_key = id_catalog_key(9, index_id);
+            let index_bytes = index_write
+                .payload
+                .as_deref()
+                .ok_or(CommitError::InvalidCatalog)?;
+            let (decoded_index_id, decoded_table_id) =
+                decode_index_definition(&index_key, index_bytes)?;
+            let index_object_key = id_catalog_key(2, index_id);
+            let constraint_object_key = id_catalog_key(2, constraint_id);
+            let expected_index_name = format!(
+                "primary_key_index_{}",
+                index_id
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            );
+            let expected_constraint_name = format!(
+                "primary_key_constraint_{}",
+                constraint_id
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            );
+            let index_object = object_writes
+                .get(&index_id)
+                .and_then(|write| write.payload.as_deref())
+                .ok_or(CommitError::InvalidCatalog)?;
+            let constraint_object = object_writes
+                .get(&constraint_id)
+                .and_then(|write| write.payload.as_deref())
+                .ok_or(CommitError::InvalidCatalog)?;
+            if decoded_index_id != index_id
+                || decoded_table_id != table_id
+                || catalog_field_u16(&index_key, index_bytes, 9, 3)? != 1
+                || catalog_field_bytes(&index_key, index_bytes, 9, 4)? != [1]
+                || catalog_field_u16(&index_key, index_bytes, 9, 5)? != 1
+                || catalog_field_bytes(&index_key, index_bytes, 9, 6)? != constraint_id
+                || catalog_field_bytes(&index_key, index_bytes, 9, 7)? != index_id
+                || catalog_field_u16(&index_key, index_bytes, 9, 8)? != 1
+                || catalog_field_u32(&index_key, index_bytes, 9, 9)? != 1
+                || catalog_field_u64(&index_key, index_bytes, 9, 10)? != 1
+                || catalog_field_u16(&constraint_object_key, constraint_object, 2, 1)? != 6
+                || catalog_field_bytes(&constraint_object_key, constraint_object, 2, 3)?
+                    != expected_constraint_name.as_bytes()
+                || catalog_field_bytes(&constraint_object_key, constraint_object, 2, 4)?
+                    != principal_id
+                || catalog_field_u64(&constraint_object_key, constraint_object, 2, 5)? != 1
+                || catalog_field_u16(&constraint_object_key, constraint_object, 2, 6)? != 1
+                || catalog_field_u16(&index_object_key, index_object, 2, 1)? != 7
+                || catalog_field_bytes(&index_object_key, index_object, 2, 3)?
+                    != expected_index_name.as_bytes()
+                || catalog_field_bytes(&index_object_key, index_object, 2, 4)? != principal_id
+                || catalog_field_u64(&index_object_key, index_object, 2, 5)? != 1
+                || catalog_field_u16(&index_object_key, index_object, 2, 6)? != 1
+                || !dependencies.contains(&(constraint_id, index_id, 4))
+            {
+                return Err(CommitError::InvalidCatalog);
+            }
+            Some((constraint_id, index_id))
+        }
+        _ => return Err(CommitError::InvalidCatalog),
+    };
+    let primary_key_write_count = usize::from(primary_key.is_some());
+    if object_writes.len()
+        != column_ids.len() + default_bindings.len() + 1 + 2 * primary_key_write_count
         || expression_writes.len() != default_bindings.len()
-        || dependencies.len() != column_ids.len() + 1 + default_bindings.len()
+        || dependencies.len()
+            != column_ids.len() + 1 + default_bindings.len() + primary_key_write_count
+        || constraint_writes.len() != primary_key_write_count
+        || index_writes.len() != primary_key_write_count
         || default_bindings
             .iter()
             .any(|(expression_id, column_id, _, _, _)| {

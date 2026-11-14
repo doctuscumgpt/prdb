@@ -296,6 +296,7 @@ enum PendingAdminAction {
         schema_id: [u8; 16],
         name: String,
         columns: Vec<crate::storage_manager::TableColumnDefinition>,
+        primary_key_columns: Option<Vec<String>>,
     },
     RenameIdentity {
         identity_id: [u8; 16],
@@ -684,6 +685,7 @@ pub enum ClientAdminCommand {
         schema_id: [u8; 16],
         name: String,
         columns: Vec<crate::storage_manager::TableColumnDefinition>,
+        primary_key_columns: Option<Vec<String>>,
     },
     PrepareRenameIdentity {
         identity_id: [u8; 16],
@@ -852,6 +854,7 @@ pub fn decode_client_admin_command(
     let mut operation = None;
     let mut arguments = None;
     let mut table_columns = None;
+    let mut primary_key_columns = None;
     let mut foreign_key_source_columns = None;
     let mut constraint_column_ids = None;
     let mut index_unique = None;
@@ -897,6 +900,11 @@ pub fn decode_client_admin_command(
                     if arg == "columns" && parser.text.get(parser.offset) == Some(&b'[') {
                         table_columns = Some(parser.parse_table_column_array()?);
                         args.insert(arg, "<structured-columns>".to_owned());
+                    } else if arg == "primary_key_columns"
+                        && parser.text.get(parser.offset) == Some(&b'[')
+                    {
+                        primary_key_columns = Some(parser.parse_string_array()?);
+                        args.insert(arg, "<structured-names>".to_owned());
                     } else if arg == "source_column_ids"
                         && parser.text.get(parser.offset) == Some(&b'[')
                     {
@@ -1966,7 +1974,7 @@ pub fn decode_client_admin_command(
             })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("tables.create") => {
-            if operation_id.is_some() || seen.len() != 4 {
+            if operation_id.is_some() || !(seen.len() == 4 || seen.len() == 5) {
                 return Err(ClientControlError::UnknownKey);
             }
             let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
@@ -1980,10 +1988,28 @@ pub fn decode_client_admin_command(
                 .remove("columns")
                 .ok_or(ClientControlError::MissingKey)?;
             let columns = table_columns.ok_or(ClientControlError::MissingKey)?;
+            let primary_key_marker = args.remove("primary_key_columns");
+            if primary_key_marker.as_deref()
+                != primary_key_columns.as_ref().map(|_| "<structured-names>")
+            {
+                return Err(ClientControlError::InvalidPrepare);
+            }
             if columns_value != "<structured-columns>"
                 || !is_canonical_admin_principal_name(&name)
                 || columns.is_empty()
                 || columns.len() > crate::tuple::MAX_COLUMNS
+                || (primary_key_columns.is_some()
+                    && (primary_key_columns.as_ref().is_some_and(Vec::is_empty)
+                        || primary_key_columns.as_ref().is_some_and(|names| {
+                            names.len() > columns.len()
+                                || names.iter().collect::<std::collections::HashSet<_>>().len()
+                                    != names.len()
+                                || names.iter().any(|name| {
+                                    !columns
+                                        .iter()
+                                        .any(|column| column.name == *name && !column.nullable)
+                                })
+                        })))
                 || !args.is_empty()
             {
                 return Err(ClientControlError::InvalidPrepare);
@@ -1992,6 +2018,7 @@ pub fn decode_client_admin_command(
                 schema_id,
                 name,
                 columns,
+                primary_key_columns,
             })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("users.rename") => {
@@ -2779,6 +2806,27 @@ impl JsonStringObjectParser<'_> {
             self.expect(b',')?;
         }
         Ok(columns)
+    }
+
+    fn parse_string_array(&mut self) -> Result<Vec<String>, ClientControlError> {
+        self.expect(b'[')?;
+        self.skip_whitespace();
+        let mut values = Vec::new();
+        if self.consume(b']') {
+            return Ok(values);
+        }
+        loop {
+            if values.len() >= crate::tuple::MAX_COLUMNS {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            values.push(self.parse_string()?);
+            self.skip_whitespace();
+            if self.consume(b']') {
+                break;
+            }
+            self.expect(b',')?;
+        }
+        Ok(values)
     }
 
     fn parse_id_array(&mut self) -> Result<Vec<[u8; 16]>, ClientControlError> {
@@ -4975,6 +5023,7 @@ impl ClientConnectionSession {
                 schema_id,
                 name,
                 columns,
+                primary_key_columns,
             } => {
                 if self.pending_admin_operation.is_some() {
                     return Err(ClientSessionError::WrongMode);
@@ -4994,6 +5043,7 @@ impl ClientConnectionSession {
                         schema_id,
                         name,
                         columns,
+                        primary_key_columns,
                     },
                 });
                 self.json_response(
@@ -6149,26 +6199,33 @@ impl ClientConnectionSession {
                         schema_id,
                         name,
                         columns,
+                        primary_key_columns,
                     } => {
-                        let created = storage
-                            .create_table(crate::storage_manager::CreateTableRequest {
-                                invocation_id: operation_id,
-                                authenticated_actor_id: actor_id,
-                                schema_id,
-                                name,
-                                columns,
-                                retention_deadline_us,
-                                audit_event: crate::audit::AuditEvent {
-                                    event_id,
-                                    actor_id: Some(actor_id),
-                                    correlation_id: operation_id,
-                                    occurred_at_us: now_us,
-                                    action: crate::audit::AuditAction::Ddl,
-                                    result: crate::audit::AuditResult::Succeeded,
-                                    target_ids: Vec::new(),
-                                },
-                            })
-                            .map_err(ClientSessionError::TableLifecycle)?;
+                        let create_request = crate::storage_manager::CreateTableRequest {
+                            invocation_id: operation_id,
+                            authenticated_actor_id: actor_id,
+                            schema_id,
+                            name,
+                            columns,
+                            retention_deadline_us,
+                            audit_event: crate::audit::AuditEvent {
+                                event_id,
+                                actor_id: Some(actor_id),
+                                correlation_id: operation_id,
+                                occurred_at_us: now_us,
+                                action: crate::audit::AuditAction::Ddl,
+                                result: crate::audit::AuditResult::Succeeded,
+                                target_ids: Vec::new(),
+                            },
+                        };
+                        let created = match primary_key_columns {
+                            Some(primary_key_columns) => storage.create_table_with_primary_key(
+                                create_request,
+                                &primary_key_columns,
+                            ),
+                            None => storage.create_table(create_request),
+                        }
+                        .map_err(ClientSessionError::TableLifecycle)?;
                         let mut payload = format!(
                             "{{\"operation_id\":\"{}\",\"outcome\":\"committed\",\"table_id\":\"{}\",\"column_ids\":[",
                             encode_lower_hex_id(operation_id),

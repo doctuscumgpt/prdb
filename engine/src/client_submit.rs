@@ -2609,11 +2609,53 @@ impl AdminClient {
         name: &str,
         columns: &[AdminColumnDefinition],
     ) -> Result<AdminTableResult, ClientSubmitError> {
+        self.create_table_internal(schema_id, name, columns, None)
+    }
+
+    pub fn create_table_with_primary_key(
+        &mut self,
+        schema_id: [u8; 16],
+        name: &str,
+        columns: &[AdminColumnDefinition],
+        primary_key_columns: &[String],
+    ) -> Result<AdminTableResult, ClientSubmitError> {
+        self.create_table_internal(schema_id, name, columns, Some(primary_key_columns))
+    }
+
+    fn create_table_internal(
+        &mut self,
+        schema_id: [u8; 16],
+        name: &str,
+        columns: &[AdminColumnDefinition],
+        primary_key_columns: Option<&[String]>,
+    ) -> Result<AdminTableResult, ClientSubmitError> {
         validate_admin_id(schema_id)?;
         validate_admin_name(name)?;
         let encoded_columns = encode_admin_table_columns(columns)?;
+        let primary_key_json = if let Some(primary_key_columns) = primary_key_columns {
+            if primary_key_columns.is_empty()
+                || primary_key_columns.len() > columns.len()
+                || primary_key_columns.iter().collect::<HashSet<_>>().len()
+                    != primary_key_columns.len()
+                || primary_key_columns.iter().any(|name| {
+                    !columns
+                        .iter()
+                        .any(|column| &column.name == name && !column.nullable)
+                })
+            {
+                return Err(ClientSubmitError::InvalidAdministrativeRequest);
+            }
+            let names = primary_key_columns
+                .iter()
+                .map(|name| format!("\"{name}\""))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(",\"primary_key_columns\":[{names}]")
+        } else {
+            String::new()
+        };
         let prepare = format!(
-            "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tables.create\",\"arguments\":{{\"schema_id\":\"{}\",\"name\":\"{name}\",\"columns\":{encoded_columns}}}}}",
+            "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tables.create\",\"arguments\":{{\"schema_id\":\"{}\",\"name\":\"{name}\",\"columns\":{encoded_columns}{primary_key_json}}}}}",
             lower_hex(&schema_id)
         );
         let prepared = self.transport.exchange(10, prepare.into_bytes())?;
@@ -2701,7 +2743,15 @@ impl AdminClient {
         let statement = crate::ddl_sql::parse_create_table(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
         let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
-        self.create_table(schema_id, &statement.table, &statement.columns)
+        match statement.primary_key_columns {
+            Some(primary_key_columns) => self.create_table_with_primary_key(
+                schema_id,
+                &statement.table,
+                &statement.columns,
+                &primary_key_columns,
+            ),
+            None => self.create_table(schema_id, &statement.table, &statement.columns),
+        }
     }
 
     /// Execute bounded CREATE SCHEMA SQL with an explicit UUID owner through

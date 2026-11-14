@@ -223,3 +223,9 @@
 - Campaign evidence: the original targets built. `client_decoders` completed campaigns of 655,538 runs and 240,862 runs (the latter with the protocol dictionary and a 1 MiB maximum input); `client_sequence_state` completed 3,769,480 runs. A helper-driven repeat completed 842,222 sequence-state runs in six seconds. The new `client_responses` target completed 10,000 runs with a 1 MiB maximum input, reaching 539 coverage counters. No crashes or sanitizer findings occurred. Fuzzer-generated non-crash inputs were not retained; the reviewed seed corpus remains checked in.
 - Validation: `cargo fmt --all -- --check`, `cargo build --workspace --locked`, warning-denied workspace Clippy, and the full serial delegated-cgroup workspace test suite passed. The suite reported zero ignored tests. `git diff --check` passed.
 - Remaining: sustained CI fuzzing, crash minimization into regression tests if discoveries occur, broader concurrent TCP/slow-client coverage, and supervisor/process boundary work remain open under NP-7 and related plan items.
+
+## `tables.create` optional primary-key column list — implemented
+
+- Contract: [client protocol](../../specs/client-protocol.md). PREPARE accepts optional `primary_key_columns` as an ordered string array. Decoder validation requires a non-empty, distinct list of declared non-nullable columns; START routes the list to the atomic storage table-create path.
+- Regression: the decoder accepts a valid key and rejects nullable or repeated key columns; the full protocol decoder and commit integration targets passed.
+- Verification: locked workspace build, format check, warning-denied Clippy, complete serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.

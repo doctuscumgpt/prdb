@@ -530,3 +530,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: parser tests reject unqualified names, incomplete syntax, CASCADE, and multiple statements. The mock TCP AdminClient test resolves schema and relation metadata, checks typed operation arguments for rename/drop, and verifies committed outcomes.
 - Verification: all eight parser tests and the authenticated AdminClient TCP rename/drop regression passed. Workspace formatting, locked offline build, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests.
 - Next smallest behavior: add SQL `CREATE TABLE ... PRIMARY KEY` only after extending the typed create operation and storage commit to atomically publish the key and backing index with the table.
+
+## DS-3: atomic PRIMARY KEY in CREATE TABLE SQL — implemented
+
+- Contract: [schema DDL](../../specs/ddl-schema.md) and [client protocol](../../specs/client-protocol.md). The bounded administrative SQL grammar now accepts one final table-level `PRIMARY KEY (columns...)`; its columns become non-nullable and the table, constraint, owned unique index, dependencies, audit, and outcome publish in one authorized commit.
+- Implementation: [SQL parser](../../engine/src/ddl_sql.rs), [table creation](../../engine/src/storage_manager.rs), and commit-time DDL validation in [commit.rs](../../engine/src/commit.rs).
+- Regression evidence: composite-key parser coverage checks implied NOT NULL; the authenticated storage lifecycle regression creates a composite key and validates startup; protocol decoding accepts valid keys and rejects nullable or duplicate names; AdminClient and `admin-sql` control requests carry the structured column list.
+- Verification: focused parser, decoder, AdminClient, CLI, and storage tests passed. Locked workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests. `git diff --check` passed.
+- Next: add bounded table-level UNIQUE support to administrative CREATE TABLE SQL with the same atomic publication rules.

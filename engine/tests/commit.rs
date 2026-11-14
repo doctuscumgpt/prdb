@@ -9505,6 +9505,72 @@ fn storage_manager_creates_primary_key_with_owned_unique_index()
     }
     drop(current_catalog);
     drop(current_read);
+
+    let atomic_create_invocation = id(0xc1);
+    let mut atomic_create_audit = identity_audit_event(0xc2, actor, id(0xc3));
+    atomic_create_audit.correlation_id = atomic_create_invocation;
+    let created_table = storage
+        .create_table_with_primary_key(
+            prdb_engine::storage_manager::CreateTableRequest {
+                invocation_id: atomic_create_invocation,
+                authenticated_actor_id: actor,
+                schema_id: id(80),
+                name: "atomic_primary".to_owned(),
+                columns: vec![
+                    prdb_engine::storage_manager::TableColumnDefinition {
+                        name: "tenant".to_owned(),
+                        scalar_type: ScalarType::Uuid,
+                        nullable: false,
+                        generated_uuid_identity: false,
+                        default: None,
+                    },
+                    prdb_engine::storage_manager::TableColumnDefinition {
+                        name: "event_id".to_owned(),
+                        scalar_type: ScalarType::Integer,
+                        nullable: false,
+                        generated_uuid_identity: false,
+                        default: None,
+                    },
+                    prdb_engine::storage_manager::TableColumnDefinition {
+                        name: "label".to_owned(),
+                        scalar_type: ScalarType::Text,
+                        nullable: true,
+                        generated_uuid_identity: false,
+                        default: None,
+                    },
+                ],
+                retention_deadline_us: 9_999,
+                audit_event: atomic_create_audit,
+            },
+            &["tenant".to_owned(), "event_id".to_owned()],
+        )
+        .map_err(|error| format!("atomic table and PRIMARY KEY create failed: {error:?}"))?;
+    assert_eq!(created_table.commit_sequence, 4);
+    assert_eq!(created_table.column_ids.len(), 3);
+    let atomic_reader = database.begin_read()?;
+    let atomic_constraint_ids = prdb_engine::catalog_index::scan_constraint_ids_for_table(
+        &atomic_reader,
+        created_table.table_id,
+        1,
+    )?;
+    assert_eq!(atomic_constraint_ids.len(), 1);
+    let atomic_catalog = atomic_reader.open_table(CATALOG)?;
+    let atomic_constraint = atomic_catalog
+        .get(id_catalog_key(8, atomic_constraint_ids[0]).as_slice())?
+        .ok_or("atomic PRIMARY KEY record missing")?;
+    let atomic_constraint = decode_registered_envelope(atomic_constraint.value())?;
+    let primary_key_kind = atomic_constraint
+        .fields
+        .iter()
+        .find(|field| field.tag == 2)
+        .ok_or("atomic PRIMARY KEY kind missing")?;
+    assert_eq!(
+        u16::from_le_bytes(primary_key_kind.payload.as_slice().try_into()?),
+        2
+    );
+    drop(atomic_constraint);
+    drop(atomic_catalog);
+    drop(atomic_reader);
     prdb_engine::startup::validate_persisted_records(&database)?;
     Ok(())
 }

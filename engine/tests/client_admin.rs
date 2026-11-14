@@ -1,4 +1,7 @@
-use prdb_engine::client_protocol::{ClientFrame, ClientFrameDecoder};
+use prdb_engine::client_protocol::{
+    ClientAdminCommand, ClientControlError, ClientFrame, ClientFrameDecoder,
+    decode_client_admin_command,
+};
 use prdb_engine::client_submit::{
     AdminClient, AdminColumnDefault, AdminColumnDefinition, AdminSystemPrivilege,
     CancellationResult, InvocationStatus, SubmissionClient, TerminalOutcome,
@@ -7,6 +10,29 @@ use prdb_engine::tuple::{ScalarType, ScalarValue};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
+
+#[test]
+fn admin_create_table_decoder_accepts_only_valid_inline_primary_keys() {
+    let valid = br#"{"phase":"prepare","operation_version":1,"operation":"tables.create","arguments":{"schema_id":"11111111111111111111111111111111","name":"events","columns":[{"name":"id","type":"uuid","nullable":false,"generated_uuid_identity":true}],"primary_key_columns":["id"]}}"#;
+    assert!(matches!(
+        decode_client_admin_command(valid),
+        Ok(ClientAdminCommand::PrepareCreateTable {
+            primary_key_columns: Some(names),
+            ..
+        }) if names == ["id"]
+    ));
+
+    let nullable = br#"{"phase":"prepare","operation_version":1,"operation":"tables.create","arguments":{"schema_id":"11111111111111111111111111111111","name":"events","columns":[{"name":"id","type":"uuid","nullable":true,"generated_uuid_identity":false}],"primary_key_columns":["id"]}}"#;
+    assert_eq!(
+        decode_client_admin_command(nullable),
+        Err(ClientControlError::InvalidPrepare)
+    );
+    let duplicate = br#"{"phase":"prepare","operation_version":1,"operation":"tables.create","arguments":{"schema_id":"11111111111111111111111111111111","name":"events","columns":[{"name":"id","type":"uuid","nullable":false,"generated_uuid_identity":true}],"primary_key_columns":["id","id"]}}"#;
+    assert_eq!(
+        decode_client_admin_command(duplicate),
+        Err(ClientControlError::InvalidPrepare)
+    );
+}
 
 fn read_frame(stream: &mut TcpStream, decoder: &mut ClientFrameDecoder) -> ClientFrame {
     let mut input = [0u8; 4096];
@@ -1520,6 +1546,7 @@ fn admin_client_executes_create_table_sql_on_authenticated_control_channel() {
         assert!(payload.contains(r#""operation":"tables.create""#));
         assert!(payload.contains(r#""name":"events""#));
         assert!(payload.contains(r#""generated_uuid_identity":true"#));
+        assert!(payload.contains(r#""primary_key_columns":["id"]"#));
         assert!(payload.contains(r#""type":"decimal(8,2)""#));
         assert!(payload.contains(r#""default":{"kind":"literal","value":"-1.20"}"#));
         assert!(payload.contains(r#""value":"hello 'sql'""#));
@@ -1551,7 +1578,7 @@ fn admin_client_executes_create_table_sql_on_authenticated_control_channel() {
     .unwrap();
     let created = client
         .execute_create_table_sql(
-            "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY, amount DECIMAL(8, 2) DEFAULT -1.20, title TEXT DEFAULT 'hello ''sql''', owner UUID DEFAULT CURRENT_PRINCIPAL_ID());",
+            "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY, amount DECIMAL(8, 2) DEFAULT -1.20, title TEXT DEFAULT 'hello ''sql''', owner UUID DEFAULT CURRENT_PRINCIPAL_ID(), PRIMARY KEY (id));",
         )
         .unwrap();
     assert_eq!(created.table_id, [0xa5; 16]);

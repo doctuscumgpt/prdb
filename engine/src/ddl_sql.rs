@@ -16,6 +16,7 @@ pub struct CreateTableSql {
     pub schema: String,
     pub table: String,
     pub columns: Vec<AdminColumnDefinition>,
+    pub primary_key_columns: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,7 +73,26 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
     let table = parser.identifier()?;
     parser.take(Token::LeftParen)?;
     let mut columns = Vec::new();
+    let mut primary_key_columns = None;
     loop {
+        if parser.peek_word("primary") {
+            parser.word("primary")?;
+            parser.word("key")?;
+            parser.take(Token::LeftParen)?;
+            let mut names = vec![parser.identifier()?];
+            while parser.peek() == Some(&Token::Comma) {
+                parser.position += 1;
+                names.push(parser.identifier()?);
+            }
+            parser.take(Token::RightParen)?;
+            if names.len() > crate::tuple::MAX_COLUMNS
+                || names.iter().collect::<std::collections::HashSet<_>>().len() != names.len()
+            {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+            primary_key_columns = Some(names);
+            break;
+        }
         if columns.len() == 4096 {
             return Err(DdlSqlError::InvalidStatement);
         }
@@ -130,10 +150,20 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
     if parser.peek().is_some() {
         return Err(DdlSqlError::InvalidStatement);
     }
+    if let Some(key_columns) = &primary_key_columns {
+        for column_name in key_columns {
+            let column = columns
+                .iter_mut()
+                .find(|column| &column.name == column_name)
+                .ok_or(DdlSqlError::InvalidStatement)?;
+            column.nullable = false;
+        }
+    }
     Ok(CreateTableSql {
         schema,
         table,
         columns,
+        primary_key_columns,
     })
 }
 
@@ -703,6 +733,29 @@ mod tests {
                 parse_rename_table(sql).is_err() && parse_drop_table(sql).is_err(),
                 "accepted {sql}"
             );
+        }
+    }
+
+    #[test]
+    fn parses_composite_primary_key_and_implies_not_null() {
+        let parsed = parse_create_table(
+            "CREATE TABLE app.events (tenant UUID, event_id BIGINT, label TEXT, PRIMARY KEY (tenant, event_id))",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.primary_key_columns,
+            Some(vec!["tenant".into(), "event_id".into()])
+        );
+        assert!(!parsed.columns[0].nullable);
+        assert!(!parsed.columns[1].nullable);
+        assert!(parsed.columns[2].nullable);
+        for sql in [
+            "CREATE TABLE app.t (id UUID, PRIMARY KEY (missing))",
+            "CREATE TABLE app.t (id UUID, PRIMARY KEY (id, id))",
+            "CREATE TABLE app.t (id UUID, PRIMARY KEY (id), extra INTEGER)",
+            "CREATE TABLE app.t (id UUID PRIMARY KEY)",
+        ] {
+            assert!(parse_create_table(sql).is_err(), "accepted {sql}");
         }
     }
 
