@@ -346,6 +346,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: the focused lifecycle test passed (`1 passed, 0 ignored`), formatting passed, warning-denied Clippy for the commit integration target passed, and the full serial workspace suite passed inside the delegated user service with all sandbox/process tests enabled and zero ignored tests.
 - Implementation note: the storage behavior was already implemented; this increment adds explicit old-reader evidence.
 
+## DS-5: table owner transfer preserves pinned readers — verified
+
+- Regression: `storage_manager_renames_tables_and_drop_column_rewrites_rows` now retains a redb catalog snapshot across `set_table_owner`. The pinned view keeps the original owner, object version, and table epoch; a new view sees the successor role with the object version and table epoch each advanced once. The existing stale writer still aborts after transfer without publishing its row.
+- Verification: the focused lifecycle test passed (`1 passed, 0 ignored`), formatting passed, warning-denied Clippy for the commit integration target passed, and `git diff --check` passed.
+- Implementation note: transfer behavior was already implemented; this increment adds explicit snapshot evidence for both ownership and its write fence.
+
 ## DS-6 / DS-7: DROP COLUMN process-crash recovery — verified
 
 - Contract: [schema DDL](../../specs/ddl-schema.md) requires the new table/column catalog, rewritten rows, audit event, outcome, and commit sequence to publish atomically.

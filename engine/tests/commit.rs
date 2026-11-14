@@ -4213,6 +4213,48 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
         &[Some(ScalarValue::Text("stale".to_owned()))],
     )?;
     stale_owner_writer.stage_put(stale_owner_row, &stale_owner_tuple)?;
+    let owner_snapshot = database.begin_read()?;
+    let owner_snapshot_catalog = owner_snapshot.open_table(CATALOG)?;
+    let previous_owner_object = decode_registered_envelope(
+        owner_snapshot_catalog
+            .get(id_catalog_key(2, table.table_id).as_slice())?
+            .ok_or("table object missing from pinned owner snapshot")?
+            .value(),
+    )?;
+    let previous_owner_version = u64::from_le_bytes(
+        previous_owner_object
+            .fields
+            .iter()
+            .find(|field| field.tag == 5)
+            .ok_or("table owner object version missing")?
+            .payload
+            .as_slice()
+            .try_into()?,
+    );
+    let previous_table_epoch = u64::from_le_bytes(
+        decode_registered_envelope(
+            owner_snapshot_catalog
+                .get(id_catalog_key(5, table.table_id).as_slice())?
+                .ok_or("table record missing from pinned owner snapshot")?
+                .value(),
+        )?
+        .fields
+        .iter()
+        .find(|field| field.tag == 3)
+        .ok_or("table write epoch missing")?
+        .payload
+        .as_slice()
+        .try_into()?,
+    );
+    assert_eq!(
+        previous_owner_object
+            .fields
+            .iter()
+            .find(|field| field.tag == 4)
+            .ok_or("table owner missing from pinned snapshot")?
+            .payload,
+        actor
+    );
     let transfer_invocation = id(0xd1);
     let mut transfer_audit = identity_audit_event(0xd2, actor, table.table_id);
     transfer_audit.correlation_id = transfer_invocation;
@@ -4230,6 +4272,53 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
     );
     let transfer_sequence = transfer_result?;
     assert!(transfer_sequence > table.commit_sequence);
+    let retained_owner_object = decode_registered_envelope(
+        owner_snapshot_catalog
+            .get(id_catalog_key(2, table.table_id).as_slice())?
+            .ok_or("table object disappeared from pinned owner snapshot")?
+            .value(),
+    )?;
+    assert_eq!(
+        retained_owner_object
+            .fields
+            .iter()
+            .find(|field| field.tag == 4)
+            .ok_or("pinned table owner field missing")?
+            .payload,
+        actor
+    );
+    assert_eq!(
+        u64::from_le_bytes(
+            retained_owner_object
+                .fields
+                .iter()
+                .find(|field| field.tag == 5)
+                .ok_or("pinned table owner version missing")?
+                .payload
+                .as_slice()
+                .try_into()?
+        ),
+        previous_owner_version
+    );
+    let retained_table_record = decode_registered_envelope(
+        owner_snapshot_catalog
+            .get(id_catalog_key(5, table.table_id).as_slice())?
+            .ok_or("table record disappeared from pinned owner snapshot")?
+            .value(),
+    )?;
+    assert_eq!(
+        u64::from_le_bytes(
+            retained_table_record
+                .fields
+                .iter()
+                .find(|field| field.tag == 3)
+                .ok_or("pinned table epoch missing")?
+                .payload
+                .as_slice()
+                .try_into()?
+        ),
+        previous_table_epoch
+    );
     assert!(matches!(
         stale_owner_writer.commit(),
         Err(prdb_engine::transaction::TransactionError::Commit(
@@ -4267,6 +4356,38 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
                 .payload,
             successor_role
         );
+        assert_eq!(
+            u64::from_le_bytes(
+                object
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 5)
+                    .ok_or("new table owner version missing")?
+                    .payload
+                    .as_slice()
+                    .try_into()?
+            ),
+            previous_owner_version + 1
+        );
+        let table_record = decode_registered_envelope(
+            catalog
+                .get(id_catalog_key(5, table.table_id).as_slice())?
+                .ok_or("table record disappeared after owner transfer")?
+                .value(),
+        )?;
+        assert_eq!(
+            u64::from_le_bytes(
+                table_record
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 3)
+                    .ok_or("new table epoch missing")?
+                    .payload
+                    .as_slice()
+                    .try_into()?
+            ),
+            previous_table_epoch + 1
+        );
         let mut successor_grants_prefix = 12u16.to_be_bytes().to_vec();
         successor_grants_prefix.push(1);
         successor_grants_prefix.extend_from_slice(&successor_role);
@@ -4278,6 +4399,8 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
                 .is_none_or(|(key, _)| !key.value().starts_with(&successor_grants_prefix))
         );
     }
+    drop(owner_snapshot_catalog);
+    drop(owner_snapshot);
     let outsider_transfer_invocation = id(0xd8);
     let mut outsider_transfer_audit = identity_audit_event(0xd9, outsider, table.table_id);
     outsider_transfer_audit.correlation_id = outsider_transfer_invocation;
