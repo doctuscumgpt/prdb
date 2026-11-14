@@ -334,6 +334,170 @@ fn executor_ipc_rejects_forged_handles(
     Ok(())
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn run_sandboxed_forged_handle_client(
+    storage: &StorageManager,
+    credentials: &prdb_engine::client_protocol::ClientCredentials,
+    user_id: [u8; 16],
+    now_us: i64,
+    artifact_env: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::client_protocol::{ClientConnectionSession, ClientFrame, ClientMode};
+    use prdb_engine::ipc::{Operation, read_frame};
+    use prdb_engine::supervisor::{
+        ChunkKind, PrepareSubmission, StagingLimits, StagingStore, SubmissionMetadata,
+        SubmissionMetadataValidator, WorkloadClass,
+    };
+    use prdb_engine::supervisor_ipc::{
+        GatewayAdmissionConfig, GatewayExecutorConfig, GatewayTerminalDecision,
+        observe_executor_relay_and_finalize_gateway,
+    };
+    use sha2::{Digest, Sha256};
+    use std::os::unix::net::UnixStream;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    struct AcceptFixture;
+    impl SubmissionMetadataValidator for AcceptFixture {
+        fn supports_versions(&self, manifest_version: u32, scope_version: u32) -> bool {
+            manifest_version == 1 && scope_version == 1
+        }
+
+        fn validate(&self, metadata: &SubmissionMetadata) -> bool {
+            metadata.manifest == b"m" && metadata.requested_scope == requested_scope_fixture()
+        }
+    }
+
+    fn required_paths(name: &str) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+        let value = std::env::var_os(name)
+            .ok_or_else(|| format!("{name} must list sandbox runtime paths"))?;
+        if name == "PRDB_TEST_RUNTIME_READ_ONLY" && value.is_empty() {
+            return Ok(Vec::new());
+        }
+        let paths = std::env::split_paths(&value).collect::<Vec<_>>();
+        if paths.is_empty() || paths.iter().any(|path| !path.is_absolute()) {
+            return Err(format!("{name} must contain absolute paths").into());
+        }
+        Ok(paths)
+    }
+
+    let cgroup_parent = std::env::var_os("PRDB_TEST_CGROUP_PARENT")
+        .map(PathBuf::from)
+        .ok_or("PRDB_TEST_CGROUP_PARENT must name a delegated cgroup v2 parent")?;
+    let artifact_path = std::env::var_os(artifact_env)
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("{artifact_env} must name its TinyCC artifact"))?;
+    if !cgroup_parent.is_absolute() || !artifact_path.is_absolute() {
+        return Err("sandbox test paths must be absolute".into());
+    }
+    let artifact = std::fs::read(&artifact_path)?;
+    let mut client = ClientConnectionSession::default();
+    client.accept_hello(ClientMode::Query, "sandbox-cell-policy-forgery")?;
+    client.authenticate(storage, credentials.token_id, &credentials.token_secret)?;
+    let owner = client.staging_owner()?;
+    let manifest = b"m".to_vec();
+    let staging = StagingStore::new(StagingLimits::default(), Arc::new(AcceptFixture))?;
+    let reservation = staging.prepare(
+        owner,
+        PrepareSubmission {
+            manifest_version: 1,
+            manifest: manifest.clone(),
+            artifact_bytes: u64::try_from(artifact.len())?,
+            artifact_sha256: Sha256::digest(&artifact).into(),
+            sql_library_bytes: 0,
+            sql_library_sha256: Sha256::digest([]).into(),
+            scope_version: 1,
+            requested_scope: requested_scope_fixture(),
+            parameter_bytes: 0,
+            parameter_sha256: Sha256::digest([]).into(),
+            deadline_ms: 30_000,
+            workload_class: WorkloadClass::Operational,
+        },
+    )?;
+    let mut offset = 0;
+    for chunk in artifact.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
+        offset = staging
+            .upload_chunk(
+                owner,
+                reservation.invocation_id,
+                ChunkKind::Artifact,
+                offset,
+                chunk,
+            )
+            .map_err(|error| format!("hostile query upload: {error:?}"))?;
+    }
+    staging
+        .seal(owner, reservation.invocation_id)
+        .map_err(|error| format!("hostile query seal: {error:?}"))?;
+
+    let runtime = GatewayExecutorConfig {
+        cgroup_parent,
+        resource_limits: prdb_engine::linux_sandbox::WorkerResourceLimits {
+            cpu_quota_micros: 500_000,
+            cpu_period_micros: 100_000,
+            memory_max_bytes: 256 * 1024 * 1024,
+            max_processes: 32,
+        },
+        analytical_resource_limits: None,
+        launch: prdb_engine::executor_launcher::ExecutorLaunchConfig {
+            executor_path: PathBuf::from(env!("CARGO_BIN_EXE_prdb-executor")),
+            optimizer_path: PathBuf::from(env!("CARGO_BIN_EXE_prdb-optimizer")),
+            scratch_parent: std::env::temp_dir(),
+            runtime_read_execute: required_paths("PRDB_TEST_RUNTIME_READ_EXECUTE")?,
+            runtime_read_only: required_paths("PRDB_TEST_RUNTIME_READ_ONLY")?,
+            cleanup_timeout: Duration::from_secs(2),
+        },
+    };
+    let invocation_id = reservation.invocation_id;
+    let id_hex = invocation_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let (accepted, mut invocation, mut executor) = client.handle_start_request_with_executor(
+        storage,
+        &staging,
+        ClientFrame {
+            kind: 7,
+            request_id: 1,
+            response_sequence: 0,
+            payload: format!("{{\"invocation_id\":\"{id_hex}\"}}").into_bytes(),
+        },
+        GatewayAdmissionConfig {
+            retention_period_us: 3_600_000_000,
+            max_rows: 2,
+            max_bytes: 1024,
+        },
+        &runtime,
+    )?;
+    assert_eq!(accepted.payload, b"{\"state\":\"accepted\"}");
+    let (mut service, mut gateway) = UnixStream::pair()?;
+    gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
+    assert_eq!(
+        observe_executor_relay_and_finalize_gateway(
+            storage,
+            &mut invocation,
+            &mut executor,
+            &mut service,
+            accepted.request_id,
+        )?,
+        GatewayTerminalDecision::Abort(prdb_engine::supervisor_ipc::GatewayAbortReason::QueryError)
+    );
+    staging.finish_started(owner, invocation_id)?;
+    drop(executor);
+    let terminal = read_frame(&mut gateway)?.ok_or("missing hostile-query terminal")?;
+    assert_eq!(terminal.operation, Operation::GatewayTerminal as u16);
+    assert_eq!(terminal.request_id, accepted.request_id);
+    assert!(String::from_utf8(terminal.payload)?.contains("\"outcome\":\"aborted\""));
+    assert_eq!(
+        storage
+            .lookup_invocation_outcome(invocation_id, user_id, now_us + 1)?
+            .ok_or("missing hostile-query outcome")?
+            .status,
+        prdb_engine::outcome::OutcomeStatus::Aborted
+    );
+    Ok(())
+}
+
 fn executor_ipc_probe_unique(
     invocation: &mut prdb_engine::transaction::InvocationTransaction<'_>,
     schema_name: &str,
@@ -22737,6 +22901,39 @@ fn gateway_service_listener_authenticates_control_admin_over_socket()
         );
         reader.abort()?;
         restricted.abort()?;
+        run_sandboxed_forged_handle_client(
+            &storage,
+            &restricted_credentials,
+            id_bytes(&restricted_user_id)?,
+            now + 3_600_000_000,
+            "PRDB_TEST_FORGED_HANDLE_QUERY_ARTIFACT",
+        )?;
+        run_sandboxed_forged_handle_client(
+            &storage,
+            &restricted_credentials,
+            id_bytes(&restricted_user_id)?,
+            now + 3_600_000_000,
+            "PRDB_TEST_FORGED_ROW_HANDLE_QUERY_ARTIFACT",
+        )?;
+        let (mut restricted_after_forgery, _) = storage.begin_token_authenticated_invocation(
+            id(0x9b),
+            restricted_credentials.token_id,
+            &restricted_credentials.token_secret,
+            now + 3_600_000_000,
+            4,
+            4096,
+        )?;
+        assert_eq!(
+            executor_ipc_scan_cells(
+                &mut restricted_after_forgery,
+                "socket_policy_schema",
+                "socket_policy_table",
+                vec![column_id_bytes]
+            )?,
+            vec![vec![prdb_engine::authorization::SanitizedCell::Redacted]],
+            "confined forged-handle client must not widen the restricted principal's cell view"
+        );
+        restricted_after_forgery.abort()?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     std::fs::remove_file(socket_path)?;
