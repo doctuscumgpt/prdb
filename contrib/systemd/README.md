@@ -58,6 +58,7 @@ rotates the unacknowledged bootstrap token.
 ```ini
 # ~/.config/prdb/supervisor.env
 PRDB_SUPERVISOR_ARGS=--instance-dir\ /home/USER/.local/state/prdb/instance\ --service-socket\ /run/user/1000/prdb/supervisor.sock\ --gateway-uid\ 1000\ --cgroup-parent\ systemd\ --executor\ /home/USER/.local/libexec/prdb/prdb-executor\ --optimizer\ /home/USER/.local/libexec/prdb/prdb-optimizer\ --scratch-parent\ /home/USER/.local/state/prdb/scratch\ --runtime-read-execute\ /usr/lib64/ld-linux-x86-64.so.2\ --runtime-read-execute\ /usr/lib64/libc.so.6\ --runtime-profile\ nixos-x86_64-glibc-2.42\ --cpu-baseline\ x86_64-v1\ --sdk-release\ 1\ --sdk-release-dir\ /home/USER/.local/lib/prdb/sql-sdk\ --sdk-cache-dir\ /home/USER/.local/state/prdb/sdk-cache\ --sdk-cache-max-bytes\ 1073741824\ --allowed-dependency\ libc.so.6\ --retention-seconds\ 86400\ --max-rows\ 100000\ --max-bytes\ 67108864\ --cpu-quota-us\ 100000\ --cpu-period-us\ 100000\ --memory-max-bytes\ 536870912\ --max-processes\ 32
+PRDB_AUDIT_JSONL_PATH=/home/USER/.local/state/prdb/audit.jsonl
 PRDB_LANDLOCK_TRAVERSE_PATHS=/home\ /home/USER\ /home/USER/.local\ /home/USER/.local/lib\ /home/USER/.local/lib/prdb\ /run\ /run/user\ /run/user/1000\ /sys\ /sys/fs\ /sys/fs/cgroup\ /nix\ /nix/store
 PRDB_SUPERVISOR_LANDLOCK_PATHS=/home/USER/.local/libexec/prdb/prdb-executor\ /home/USER/.local/libexec/prdb/prdb-optimizer\ /home/USER/.local/lib/prdb/sql-sdk\ /nix/store/HASH-glibc\ /nix/store/HASH-gcc-lib
 ```
@@ -74,6 +75,16 @@ Add the SDK's non-SDK dependencies to `--allowed-dependency`. Do not enable
 the SDK 1 transition and will be removed at the SDK 2 cutoff. Set the gateway UID to
 the login UID (use `id -u`). The user service uses the default 0600 local
 socket.
+
+To enable the optional local audit sink, set `PRDB_AUDIT_JSONL_PATH` to an
+absolute path whose parent already exists. The example above keeps the JSONL
+file in the supervisor's existing state directory, which the user unit already
+allows for writes through both systemd and Landlock. The sink is created with
+mode `0600`. For a sink elsewhere, add its path to the supervisor Landlock
+policy with `--writable-env PRDB_AUDIT_JSONL_PATH` in the unit's
+`prdb-landlock-run` command and grant the path through `ReadWritePaths=` (or a
+systemd drop-in); also include its ancestors in
+`PRDB_LANDLOCK_TRAVERSE_PATHS` when they are not already traversable.
 
 ```ini
 # ~/.config/prdb/gateway.env
@@ -184,6 +195,20 @@ required supervisor options as above, using these paths and values:
 - `--service-socket-mode 0660`
 - `--cgroup-parent systemd`
 - `--scratch-parent /var/lib/prdb/scratch`
+
+The optional JSONL audit sink can use `/var/lib/prdb/audit.jsonl`; the service
+already has write access to `/var/lib/prdb` through its systemd and Landlock
+policies. Set this in `/etc/prdb/supervisor.env`:
+
+```ini
+PRDB_AUDIT_JSONL_PATH=/var/lib/prdb/audit.jsonl
+```
+
+The sink parent directory must exist, and the sink is created with mode `0600`.
+For a path outside `/var/lib/prdb` and `/run/prdb`, grant it through both
+systemd `ReadWritePaths=` and the supervisor Landlock policy (for example,
+`--writable-env PRDB_AUDIT_JSONL_PATH` in the unit's `prdb-landlock-run`
+command); add missing ancestors to `PRDB_LANDLOCK_TRAVERSE_PATHS` as needed.
 
 Configure `PRDB_GATEWAY_ARGS` in `/etc/prdb/gateway.env` with
 `--service-socket /run/prdb/supervisor.sock` and `--service-uid` set to

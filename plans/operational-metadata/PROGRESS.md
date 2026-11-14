@@ -214,3 +214,9 @@
 - Contract: a local JSONL sink I/O failure does not change the authentication/request result or remove the durable AUDIT event; the supervisor retries pending delivery after the configured sink becomes writable.
 - Regression: the real gateway/supervisor process test configures a sink under a directory that does not exist, sends an invalid authentication attempt, confirms the generic authentication failure and corresponding durable audit event while no sink file exists, then creates the directory and waits for the supervisor to deliver the event.
 - Verification: the focused delegated process test passed; workspace build, formatting, warning-denied Clippy, maintained TinyCC SDK tests, sandbox fixture, and release-profile validation (10 engine binaries and one query fixture) passed. The delegated cgroup probe reported writable `cpu memory pids`; the full serial delegated workspace suite passed (223 engine unit, 151 commit integration, and all other workspace targets, zero failures or ignored tests). `git diff --check` passed.
+
+## OM-6 systemd JSONL sink deployment — documented
+
+- Contract: the optional sink must be usable under the maintained supervisor units without weakening their default filesystem confinement; alternate locations require matching systemd and Landlock write grants.
+- Documentation: the user and system installation examples now configure a mode-0600 sink in their existing writable state directory. They explain that the parent must exist and that external paths need `ReadWritePaths=`, a supervisor `--writable-env PRDB_AUDIT_JSONL_PATH` grant, and traversal permission for missing ancestors.
+- Verification: checked the documented default locations against both supervisor unit `ReadWritePaths` entries and `prdb-landlock-run --writable` arguments; `git diff --check` passed. This is deployment documentation, not a new runtime behavior.
