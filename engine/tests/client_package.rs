@@ -14,7 +14,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use zeroize::Zeroize;
 
 fn unique_temp_dir() -> PathBuf {
@@ -189,6 +189,66 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
             "{case} opened a gateway connection before local validation completed"
         );
     }
+
+    let stdin_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    stdin_listener.set_nonblocking(true).unwrap();
+    let stdin_address = stdin_listener.local_addr().unwrap();
+    let stdin_parameters = temp.join("stdin-parameters.json");
+    fs::write(
+        &stdin_parameters,
+        br#"{"format":"PDB-SQL-PARAMETERS-1","values":[],"extra":true}"#,
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "run-sql",
+            "--address",
+            &stdin_address.to_string(),
+            "--credentials",
+            credentials.to_str().unwrap(),
+            "--sql-file",
+            "-",
+            "--schema",
+            "public",
+            "--scope",
+            temp.join("missing-stdin-scope.psc1").to_str().unwrap(),
+            "--receipt",
+            temp.join("stdin-receipt").to_str().unwrap(),
+            "--sdk-library",
+            temp.join("missing-stdin-sdk.so").to_str().unwrap(),
+            "--include-dir",
+            temp.join("missing-stdin-include").to_str().unwrap(),
+            "--sdk-release",
+            "1",
+            "--cpu-baseline",
+            "x86_64-v1",
+            "--runtime-profile",
+            "test-runtime",
+            "--compiler-identity",
+            "run-sql stdin validation test",
+            "--parameters",
+            stdin_parameters.to_str().unwrap(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"SELECT 1").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        !output.status.success(),
+        "stdin SQL with malformed parameters unexpectedly succeeded"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("invalid SQL parameter file"),
+        "stdin SQL returned an unexpected local error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        matches!(stdin_listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "run-sql opened a gateway connection after stdin validation failed"
+    );
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
