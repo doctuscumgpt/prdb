@@ -14,6 +14,7 @@
 #include "prdb_sdk_sql_exec_v16.h"
 #include "prdb_sdk_sql_exec_v19.h"
 #include "prdb_sdk_sql_exec_v20.h"
+#include "prdb_sdk_sql_exec_v21.h"
 #include "prdb_sdk_sql_exec_v4.h"
 #include "prdb_sdk_sql_result_v1.h"
 #include "prdb_sdk_executor_v1.h"
@@ -493,6 +494,27 @@ static int32_t write_grouped_composite_count_v18(
         matching_row_count, &binding->base.base.base);
 }
 
+static int32_t write_grouped_composite_count_v21(
+    void *opaque, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v21 *binding) {
+    const prdb_sdk_sql_having_node_v21 *literal;
+    if (binding == NULL || binding->base.having_node_count != 1 ||
+        binding->base.having_type_code != PRDB_SDK_VALUE_TYPE_BIGINT ||
+        binding->having_nodes[0].base.operand_kind !=
+            PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL ||
+        binding->having_nodes[0].scale != 0)
+        return 1;
+    literal = &binding->having_nodes[0];
+    for (uint32_t index = 0; index < sizeof(literal->coefficient) - 1; ++index)
+        if (literal->coefficient[index] != 0) return 1;
+    if (literal->coefficient[15] != 2) return 1;
+    return write_grouped_composite_count(
+        opaque, group_keys, group_key_count, aggregate_value,
+        matching_row_count, &binding->base.base.base.base);
+}
+
 static int32_t write_joined_row(void *opaque,
                                 const prdb_sdk_value_v1 *projected_values,
                                 uint32_t projection_count,
@@ -880,6 +902,9 @@ static int32_t run_write_read_fixture(
         "(COUNT(*) >= 2 OR COUNT(*) = 3) AND NOT COUNT(*) < 2 "
         "ORDER BY right_key DESC NULLS LAST, COUNT(*) DESC, "
         "left_key ASC NULLS LAST LIMIT 2";
+    static const uint8_t select_composite_numeric_v21_sql[] =
+        "SELECT left_key, right_key, COUNT(*) FROM grouped_records "
+        "GROUP BY left_key, right_key HAVING COUNT(*) >= 2.0e0";
     static const uint8_t select_join_sql[] =
         "SELECT records.id, linked_records.id FROM records INNER JOIN "
         "linked_records ON records.id = linked_records.id LIMIT 1";
@@ -1881,6 +1906,22 @@ static int32_t run_write_read_fixture(
     if (status != PRDB_SDK_SQL_EXEC_OK ||
         composite_grouped_results.row_count != 2) {
         static const uint8_t message[] = "fixture-error-composite-boolean";
+        return report_failure(host, message, sizeof(message) - 1);
+    }
+
+    composite_grouped_results.row_count = 0;
+    composite_grouped_results.output_len = 0;
+    status = prdb_sdk_sql_execute_group_v21(
+        host, schema, sizeof(schema) - 1, select_composite_numeric_v21_sql,
+        sizeof(select_composite_numeric_v21_sql) - 1, NULL, 0, 16,
+        sizeof(batch_response), planner_response, sizeof(planner_response),
+        executor_response, sizeof(executor_response), batch_response,
+        sizeof(batch_response), planner_columns, 9, executor_columns, 9,
+        cell_scratch, 9, grouped_materialized, sizeof(grouped_materialized),
+        write_grouped_composite_count_v21, &composite_grouped_results);
+    if (status != PRDB_SDK_SQL_EXEC_OK ||
+        composite_grouped_results.row_count != 2) {
+        static const uint8_t message[] = "fixture-error-composite-numeric-v21";
         return report_failure(host, message, sizeof(message) - 1);
     }
 
