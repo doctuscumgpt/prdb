@@ -352,6 +352,13 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: the focused lifecycle test passed (`1 passed, 0 ignored`), formatting passed, warning-denied Clippy for the commit integration target passed, and `git diff --check` passed.
 - Implementation note: transfer behavior was already implemented; this increment adds explicit snapshot evidence for both ownership and its write fence.
 
+## DS-6 / DS-7: table owner-transfer process-crash recovery — verified
+
+- Contract: table ownership, object version, table write epoch, audit, durable outcome, and commit sequence recover as one publication.
+- Regression: `process_crash_during_table_owner_transfer_recovers_all_or_none` creates a real schema/table and successor role, then exits at the backend-write boundary or after `set_table_owner` returns. Reopen through `StorageManager` validates startup and checks the old owner/version/epoch on the interrupted write or the successor role with version, epoch, and sequence advanced once after completion; audit and outcome agree with the recovered state.
+- Verification: the focused two-boundary process-crash test passed inside the delegated user service (`1 passed, 0 ignored`); formatting, warning-denied Clippy for the commit integration target, and `git diff --check` passed.
+- Scope: abrupt process exit does not simulate power loss.
+
 ## DS-6 / DS-7: DROP COLUMN process-crash recovery — verified
 
 - Contract: [schema DDL](../../specs/ddl-schema.md) requires the new table/column catalog, rewritten rows, audit event, outcome, and commit sequence to publish atomically.
