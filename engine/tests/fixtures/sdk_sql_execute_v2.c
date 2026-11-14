@@ -840,8 +840,31 @@ int main(void) {
     assert(mock.planner_calls == 1);
     assert(mock.executor_calls == 6);
     assert(mock.statement_failed == 0);
+
+    mock.batch = three_rows_batch;
+    mock.batch_len = three_rows_batch_len;
+    mock.planner_calls = 0;
+    mock.executor_calls = 0;
+    mock.statement_failed = 0;
+    mock.stage_update_calls = 0;
+    mock.expected_max_candidates = 3;
+    updated_count = 777;
+    assert(prdb_sdk_sql_execute_update_v1(
+               &host, schema, sizeof(schema) - 1, update_sql,
+               sizeof(update_sql) - 1, &parameter, 1, 3, 1024,
+               planner_response, sizeof(planner_response), executor_response,
+               sizeof(executor_response), batch_response,
+               sizeof(batch_response), update_request, sizeof(update_request),
+               planner_columns, 1, executor_columns, 1, &update_binding,
+               sizeof(update_binding), update_cell_scratch, 1, update_targets,
+               3, update_patches, 1, &updated_count) ==
+           PRDB_SDK_SQL_EXEC_OK);
+    assert(updated_count == 3 && mock.stage_update_calls == 3 &&
+           mock.planner_calls == 1 && mock.executor_calls == 7 &&
+           mock.statement_failed == 0 && mock.scan_finished);
     mock.stage_handles_repeated = 0;
     mock.require_finished_scan_before_stage = 0;
+    mock.expected_max_candidates = 0;
 
     mock.batch = two_rows_batch;
     mock.batch_len = two_rows_batch_len;

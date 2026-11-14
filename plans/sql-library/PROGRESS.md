@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-4 follow-up: multi-row UPDATE staging past the two-row case — verified
+
+- Contract: UPDATE must materialize all matching targets, close the input scan, and stage the same bound patch for each target. The three-row regression verifies distinct opaque handles and requires the cursor's terminal page before any patch is staged.
+- Regression: `sdk_sql_execute_v2.c` reuses a continued three-row batch, checks the request's candidate bound, requires scan completion before all three stage calls, and asserts the output count and staged update count are three.
+- Verification: the focused TinyCC fixture and complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` suite passed with TinyCC 0.9.27-unstable-2025-01-06.
+- Scope: extends UPDATE runner coverage beyond two targets; the 128-row boundary and adversarial live storage coverage remain open.
+
 ## SQL-4 follow-up: multi-row DELETE staging past the two-row case — verified
 
 - Contract: the bounded DELETE runner retains every matching row handle through the scan, closes the cursor, and only then stages mutations. The three-row regression uses distinct handles and requires all three delete operations after the terminal scan page.
@@ -193,7 +200,7 @@
 - Execution: `prdb_sdk_sql_execute_update_v1` binds SET ordinals and typed values, validates predicate parameters before scanning, evaluates authorized full-shape rows, copies at most 128 matching row handles into caller-owned storage, closes the scan, then stages the same patch set per target. It budgets its own executor requests before staging and invokes sticky failure on any error.
 - Regression: the SQL runner fixture checks exact `stage_update` bytes after fetching a matching row and receiving a finished continuation page. It also stages two distinct matching rows successfully and asserts the scan has finished before either stage call. A two-row result with a one-target buffer reports `MATERIALIZATION_LIMIT`, latches failure, leaves the output count unchanged, and sends no update operation.
 - Verification: full `make -f engine/sdk/Makefile test`, `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace --locked` passed in the required Nix shell with TinyCC 0.9.27-unstable-2025-01-06.
-- Limits/next: the combined INSERT/SELECT/UPDATE/SELECT/DELETE/SELECT fixture verifies own-write visibility and durable commit through the confined executor. More-than-two-row UPDATE stress and adversarial live storage coverage remain open.
+- Limits/next: three-row UPDATE staging is covered by the follow-up above. The 128-row boundary and adversarial live storage coverage remain open; the combined INSERT/SELECT/UPDATE/SELECT/DELETE/SELECT fixture verifies own-write visibility and durable commit through the confined executor.
 
 ## SQL-4 dependency: bounded DELETE parser and runner — partial
 
