@@ -3,6 +3,7 @@ use prdb_engine::client_protocol::{
     CLIENT_FRAME_HEADER_BYTES, ClientCredentials, ClientFrame, ClientFrameDecoder,
     decode_client_chunk, decode_client_credentials, decode_client_prepare,
 };
+use prdb_engine::client_sql::{encode_parameter_file, generate_query_source};
 use prdb_engine::client_submit::SubmissionClient;
 use prdb_engine::submission_manifest::{
     ArtifactCompatibilityProfile, VersionedSubmissionMetadataValidator, decode_elf_dynamic_info,
@@ -13,7 +14,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use zeroize::Zeroize;
@@ -373,6 +374,7 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
+
     let output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .env("TMPDIR", &sql_workspace_root)
         .args([
@@ -471,8 +473,37 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
         "run-sql left temporary build artifacts after SDK profile validation failed"
     );
 
+    fs::write(&sql_path, "SELECT $1").unwrap();
+    let parameter_secret = "sqlcli-parameter-secret-4d3a";
+    let parameter_path = temp.join("compiler-failure-parameters.json");
+    fs::write(
+        &parameter_path,
+        format!(
+            "{{\"format\":\"PDB-SQL-PARAMETERS-1\",\"values\":[{{\"type\":\"text\",\"value\":\"{parameter_secret}\"}}]}}"
+        ),
+    )
+    .unwrap();
+    let compiler_source_capture = temp.join("compiler-source.capture");
+    let compiler_environment_capture = temp.join("compiler-environment.capture");
+    let fake_tcc = temp.join("capture-compiler-env");
+    fs::write(
+        &fake_tcc,
+        format!(
+            "#!/bin/sh\nif [ \"${{PRDB_TEST_COMPILER_SECRET_SENTINEL+x}}\" = x ]; then printf leaked > '{}'; else printf clean > '{}'; fi\nwhile IFS= read -r line; do printf '%s\\n' \"$line\"; done < \"$8\" > '{}'\nexit 1\n",
+            compiler_environment_capture.display(),
+            compiler_environment_capture.display(),
+            compiler_source_capture.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake_tcc, fs::Permissions::from_mode(0o700)).unwrap();
+
     let output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .env("TMPDIR", &sql_workspace_root)
+        .env(
+            "PRDB_TEST_COMPILER_SECRET_SENTINEL",
+            "credential-secret-sentinel",
+        )
         .args([
             "run-sql",
             "--address",
@@ -499,8 +530,10 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
             "test-runtime",
             "--compiler-identity",
             "run-sql compiler failure test",
+            "--parameters",
+            parameter_path.to_str().unwrap(),
             "--tcc",
-            "false",
+            fake_tcc.to_str().unwrap(),
             "--shared-linker",
             "cc",
             "--patchelf",
@@ -525,7 +558,119 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
         fs::read_dir(&sql_workspace_root).unwrap().next().is_none(),
         "run-sql left temporary build artifacts after compilation failed"
     );
+    assert_eq!(
+        fs::read_to_string(&compiler_environment_capture).unwrap(),
+        "clean",
+        "compiler inherited a parent environment secret"
+    );
+    let captured_source = fs::read(&compiler_source_capture).unwrap();
+    assert!(
+        !captured_source
+            .windows(parameter_secret.len())
+            .any(|window| window == parameter_secret.as_bytes()),
+        "parameter data appeared in generated compiler source"
+    );
 
+    fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+fn generated_query_artifact_is_independent_of_parameter_values() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let temp = unique_temp_dir();
+    fs::create_dir(&temp).unwrap();
+    let sdk_build = temp.join("sdk");
+    let sdk_release =
+        sdk_build.join("releases/linux-x86_64/x86_64-v1/test-runtime/sdk-1-abis1,2,3,4,5");
+    let source_path = temp.join("query.c");
+    let scope_path = temp.join("scope.psc1");
+    let mut scope = b"PSC1\0\x01\x01\x01".to_vec();
+    scope.extend_from_slice(&[0x35; 16]);
+    fs::write(&scope_path, scope).unwrap();
+    fs::write(
+        &source_path,
+        generate_query_source("public", b"SELECT $1").unwrap(),
+    )
+    .unwrap();
+
+    let build = Command::new("make")
+        .current_dir(&root)
+        .args([
+            "-f",
+            "engine/sdk/Makefile",
+            &format!("BUILD_DIR={}", sdk_build.display()),
+            "SDK_RUNTIME_PROFILE=test-runtime",
+            "sdk-shared-release",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "SQL SDK build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let parameter_values = [
+        "first-parameter-secret-7e91",
+        "second-parameter-secret-0b24",
+    ];
+    let mut artifact_bytes = Vec::new();
+    let mut parameter_blocks = Vec::new();
+    for (index, value) in parameter_values.iter().enumerate() {
+        let parameter_json = format!(
+            "{{\"format\":\"PDB-SQL-PARAMETERS-1\",\"values\":[{{\"type\":\"text\",\"value\":\"{value}\"}}]}}"
+        );
+        parameter_blocks.push(encode_parameter_file(parameter_json.as_bytes()).unwrap());
+        let package_path = temp.join(format!("package-{index}"));
+        let status = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
+            .arg("--source")
+            .arg(&source_path)
+            .arg("--sdk-library")
+            .arg(sdk_release.join("libprdb_sql.so.1"))
+            .arg("--shared-linker")
+            .arg("cc")
+            .arg("--include-dir")
+            .arg(root.join("engine/include"))
+            .arg("--scope")
+            .arg(&scope_path)
+            .arg("--output-dir")
+            .arg(&package_path)
+            .args([
+                "--abi",
+                "3",
+                "--sdk-release",
+                "1",
+                "--cpu-baseline",
+                "x86_64-v1",
+                "--runtime-profile",
+                "test-runtime",
+                "--compiler-identity",
+                "TinyCC SQL parameter separation test",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            status.status.success(),
+            "package {index} failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&status.stdout),
+            String::from_utf8_lossy(&status.stderr)
+        );
+        artifact_bytes.push(fs::read(package_path.join("query.so")).unwrap());
+    }
+
+    assert_ne!(parameter_blocks[0], parameter_blocks[1]);
+    assert_eq!(artifact_bytes[0], artifact_bytes[1]);
+    for (index, artifact) in artifact_bytes.iter().enumerate() {
+        assert!(
+            !artifact
+                .windows(parameter_values[index].len())
+                .any(|window| window == parameter_values[index].as_bytes()),
+            "parameter value {index} appeared in query.so"
+        );
+    }
     fs::remove_dir_all(temp).unwrap();
 }
 
