@@ -158,6 +158,7 @@ fn maintenance_help_lists_offline_audit_archival() {
     assert!(help.contains("backup-verify --backup-dir PATH"));
     assert!(help.contains("migration-backup --instance-dir PATH --output-dir PATH"));
     assert!(help.contains("migration-apply --instance-dir PATH --backup-dir PATH"));
+    assert!(help.contains("restore --instance-dir PATH --backup-dir PATH --confirm-data-loss"));
     assert!(help.contains("inspect --instance-dir PATH"));
     assert!(help.contains("migration-inspect --instance-dir PATH"));
     assert!(help.contains("migration-discard-stage --instance-dir PATH --backup-dir PATH"));
@@ -1288,6 +1289,93 @@ fn migration_apply_resumes_a_fully_validated_v2_staging_image() {
     assert_eq!(report.metadata.database_id, metadata.database_id);
     assert_eq!(report.metadata.commit_sequence, metadata.commit_sequence);
     drop(migrated);
+}
+
+#[test]
+fn restore_requires_data_loss_ack_and_recovers_an_unreadable_active_image() {
+    let fixture = Fixture::new();
+    let mut session =
+        prdb_engine::bootstrap::initialize(fixture.instance_dir(), "restore_admin", i64::MAX)
+            .expect("initialize restore instance");
+    let mut secret = session.take_secret().expect("bootstrap secret");
+    use zeroize::Zeroize;
+    secret.zeroize();
+    drop(session.acknowledge().expect("publish READY"));
+
+    let active_path = fixture.instance_dir().join("storage.redb");
+    let backup_path = fixture.0.join("restore-backup");
+    prdb_engine::offline_backup::create_verified_backup(fixture.instance_dir(), &backup_path)
+        .expect("create verified restore backup");
+    let expected_bytes = std::fs::read(&active_path).expect("read original active image");
+    let mut corrupted_bytes = expected_bytes.clone();
+    corrupted_bytes[0] ^= 0xff;
+    std::fs::write(&active_path, &corrupted_bytes).expect("corrupt active redb header");
+    let interrupted_copy = fixture.instance_dir().join(".prdb-restore.copying");
+    std::fs::write(&interrupted_copy, b"interrupted backup copy")
+        .expect("write interrupted restore copy");
+    std::fs::set_permissions(&interrupted_copy, std::fs::Permissions::from_mode(0o600))
+        .expect("restrict interrupted restore copy");
+    assert!(StorageInstance::open(fixture.instance_dir()).is_err());
+
+    let missing_ack = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["restore", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--backup-dir")
+        .arg(&backup_path)
+        .output()
+        .expect("run restore without data-loss acknowledgment");
+    assert!(!missing_ack.status.success());
+    assert_eq!(
+        std::fs::read(&active_path).expect("read still-corrupt active image"),
+        corrupted_bytes
+    );
+
+    let restored = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["restore", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--backup-dir")
+        .arg(&backup_path)
+        .arg("--confirm-data-loss")
+        .output()
+        .expect("restore verified v2 backup");
+    assert!(
+        restored.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&restored.stdout),
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    assert!(String::from_utf8_lossy(&restored.stdout).contains("restore=published"));
+    assert_eq!(
+        std::fs::read(&active_path).expect("read restored active bytes"),
+        expected_bytes
+    );
+    assert!(!interrupted_copy.exists());
+    assert_eq!(
+        std::fs::read(fixture.instance_dir().join(".prdb-migration.next"))
+            .expect("read retained corrupt image"),
+        corrupted_bytes
+    );
+    let repeated_restore = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["restore", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--backup-dir")
+        .arg(&backup_path)
+        .arg("--confirm-data-loss")
+        .output()
+        .expect("retry restore after the backup is active");
+    assert!(repeated_restore.status.success());
+    assert!(String::from_utf8_lossy(&repeated_restore.stdout).contains("restore=already-active"));
+    assert_eq!(
+        std::fs::read(fixture.instance_dir().join(".prdb-migration.next"))
+            .expect("verify retained corrupt image after retry"),
+        corrupted_bytes
+    );
+    let restored_instance =
+        StorageInstance::open(fixture.instance_dir()).expect("open restored READY instance");
+    let report = prdb_engine::startup::validate_persisted_records(restored_instance.database())
+        .expect("validate restored backup generation");
+    assert_eq!(report.metadata.catalog_version, 2);
+    drop(restored_instance);
 }
 
 #[test]

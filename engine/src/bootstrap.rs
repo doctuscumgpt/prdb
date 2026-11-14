@@ -36,6 +36,7 @@ use zeroize::Zeroize;
 
 const DATABASE_FILE: &str = "storage.redb";
 const MIGRATION_STAGING_FILE: &str = ".prdb-migration.next";
+const RESTORE_COPY_FILE: &str = ".prdb-restore.copying";
 const LOCK_FILE: &str = ".prdb.lock";
 const MARKER_FILE: &str = ".prdb-bootstrap";
 const SETUP_SOCKET_FILE: &str = ".prdb-setup.sock";
@@ -596,6 +597,149 @@ pub fn migrate_catalog_v1(
         return Err(BootstrapError::InvalidCatalog);
     }
     Ok(published_report)
+}
+
+/// Explicitly restore a current catalog-v2 backup, acknowledging that commits
+/// newer than the backup will be lost. The previous active file remains under
+/// the private staging name after the atomic exchange.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn restore_from_backup(
+    instance_directory: impl AsRef<Path>,
+    verified_backup_directory: impl AsRef<Path>,
+    confirm_data_loss: bool,
+) -> Result<(crate::startup::StorageHealthReport, bool), BootstrapError> {
+    if !confirm_data_loss {
+        return Err(BootstrapError::InvalidRequest);
+    }
+    let directory = instance_directory.as_ref().canonicalize()?;
+    validate_managed_directory(&directory, true)?;
+    let _lock = InstanceLock::acquire(&directory)?;
+    validate_managed_directory(&directory, true)?;
+    let active_path = directory.join(DATABASE_FILE);
+    let staging_path = directory.join(MIGRATION_STAGING_FILE);
+    let restore_copy_path = directory.join(RESTORE_COPY_FILE);
+    validate_private_file(&active_path)?;
+    let staging_exists = match fs::symlink_metadata(&staging_path) {
+        Ok(_) => {
+            validate_private_file(&staging_path)?;
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(BootstrapError::Io(error)),
+    };
+    let restore_copy_exists = match fs::symlink_metadata(&restore_copy_path) {
+        Ok(_) => {
+            validate_private_file(&restore_copy_path)?;
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(BootstrapError::Io(error)),
+    };
+
+    let backup_directory = verified_backup_directory.as_ref().canonicalize()?;
+    let backup = crate::offline_backup::verify_backup(&backup_directory)
+        .map_err(|_| BootstrapError::InvalidRequest)?;
+    let backup_database_path = backup_directory.join(DATABASE_FILE);
+    let backup_database =
+        ReadOnlyDatabase::open(&backup_database_path).map_err(|_| BootstrapError::Storage)?;
+    let backup_report = crate::startup::validate_persisted_records_read_only(&backup_database)
+        .map_err(BootstrapError::Startup)?;
+    if backup_report.metadata.catalog_version != 2
+        || backup_report.metadata.database_id != backup.database_id
+        || backup_report.metadata.commit_sequence != backup.commit_sequence
+    {
+        return Err(BootstrapError::InvalidRequest);
+    }
+    drop(backup_database);
+
+    if crate::offline_backup::database_image_matches_backup(&active_path, &backup)
+        .map_err(|_| BootstrapError::InvalidRequest)?
+    {
+        if restore_copy_exists {
+            fs::remove_file(&restore_copy_path)?;
+            sync_directory(&directory)?;
+        }
+        let active = ReadOnlyDatabase::open(&active_path).map_err(|_| BootstrapError::Storage)?;
+        let report = crate::startup::validate_persisted_records_read_only(&active)
+            .map_err(BootstrapError::Startup)?;
+        if report.metadata.database_id != backup.database_id
+            || report.metadata.commit_sequence != backup.commit_sequence
+        {
+            return Err(BootstrapError::InvalidCatalog);
+        }
+        return Ok((report, false));
+    }
+
+    if staging_exists {
+        if !crate::offline_backup::database_image_matches_backup(&staging_path, &backup)
+            .map_err(|_| BootstrapError::InvalidRequest)?
+        {
+            return Err(BootstrapError::InvalidRequest);
+        }
+        if restore_copy_exists {
+            fs::remove_file(&restore_copy_path)?;
+            sync_directory(&directory)?;
+        }
+    } else {
+        let use_existing_copy = restore_copy_exists
+            && crate::offline_backup::database_image_matches_backup(&restore_copy_path, &backup)
+                .map_err(|_| BootstrapError::InvalidRequest)?;
+        if restore_copy_exists && !use_existing_copy {
+            fs::remove_file(&restore_copy_path)?;
+            sync_directory(&directory)?;
+        }
+        if !use_existing_copy {
+            copy_private_database_image(&backup_database_path, &restore_copy_path, &directory)?;
+        }
+        if !crate::offline_backup::database_image_matches_backup(&restore_copy_path, &backup)
+            .map_err(|_| BootstrapError::InvalidRequest)?
+        {
+            let _ = fs::remove_file(&restore_copy_path);
+            let _ = sync_directory(&directory);
+            return Err(BootstrapError::InvalidRequest);
+        }
+        let staged_copy =
+            ReadOnlyDatabase::open(&restore_copy_path).map_err(|_| BootstrapError::Storage)?;
+        let staged_copy_report = crate::startup::validate_persisted_records_read_only(&staged_copy)
+            .map_err(BootstrapError::Startup)?;
+        if staged_copy_report.metadata.database_id != backup.database_id
+            || staged_copy_report.metadata.commit_sequence != backup.commit_sequence
+        {
+            return Err(BootstrapError::InvalidRequest);
+        }
+        drop(staged_copy);
+        fs::rename(&restore_copy_path, &staging_path)?;
+        sync_directory(&directory)?;
+    }
+    let staged_database =
+        ReadOnlyDatabase::open(&staging_path).map_err(|_| BootstrapError::Storage)?;
+    let staged_report = crate::startup::validate_persisted_records_read_only(&staged_database)
+        .map_err(BootstrapError::Startup)?;
+    if staged_report.metadata.database_id != backup.database_id
+        || staged_report.metadata.commit_sequence != backup.commit_sequence
+    {
+        return Err(BootstrapError::InvalidRequest);
+    }
+    drop(staged_database);
+
+    File::open(&staging_path)?.sync_all()?;
+    File::open(&active_path)?.sync_all()?;
+    exchange_files(&active_path, &staging_path)?;
+    sync_directory(&directory)?;
+
+    validate_private_file(&active_path)?;
+    validate_private_file(&staging_path)?;
+    let restored = ReadOnlyDatabase::open(&active_path).map_err(|_| BootstrapError::Storage)?;
+    let restored_report = crate::startup::validate_persisted_records_read_only(&restored)
+        .map_err(BootstrapError::Startup)?;
+    if restored_report.metadata.database_id != backup.database_id
+        || restored_report.metadata.commit_sequence != backup.commit_sequence
+        || !crate::offline_backup::database_image_matches_backup(&active_path, &backup)
+            .map_err(|_| BootstrapError::InvalidRequest)?
+    {
+        return Err(BootstrapError::InvalidCatalog);
+    }
+    Ok((restored_report, true))
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -2109,6 +2253,7 @@ fn validate_managed_directory(
                 saw_database = true;
             }
             Some(MIGRATION_STAGING_FILE) => validate_private_file(&entry.path())?,
+            Some(RESTORE_COPY_FILE) => validate_private_file(&entry.path())?,
             Some(SETUP_SOCKET_FILE) => validate_private_socket(&entry.path())?,
             _ => return Err(BootstrapError::NotPrivate),
         }
