@@ -213,6 +213,8 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
     );
     let sdk_release =
         sdk_build.join("releases/linux-x86_64/x86_64-v1/test-runtime/sdk-1-abis1,2,3,4,5");
+    let sql_workspace_root = temp.join("sql-workspaces");
+    fs::create_dir(&sql_workspace_root).unwrap();
     let scope_path = temp.join("valid-scope.psc1");
     let mut scope = b"PSC1\0\x01\x01\x01".to_vec();
     scope.extend_from_slice(&[0x51; 16]);
@@ -225,6 +227,7 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .env("TMPDIR", &sql_workspace_root)
         .args([
             "run-sql",
             "--address",
@@ -267,8 +270,13 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
         matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
         "run-sql opened a gateway connection after scope validation failed"
     );
+    assert!(
+        fs::read_dir(&sql_workspace_root).unwrap().next().is_none(),
+        "run-sql left temporary build artifacts after scope validation failed"
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .env("TMPDIR", &sql_workspace_root)
         .args([
             "run-sql",
             "--address",
@@ -316,6 +324,10 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
     assert!(
         matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
         "run-sql opened a gateway connection after compilation failed"
+    );
+    assert!(
+        fs::read_dir(&sql_workspace_root).unwrap().next().is_none(),
+        "run-sql left temporary build artifacts after compilation failed"
     );
 
     fs::remove_dir_all(temp).unwrap();
