@@ -676,3 +676,11 @@
 - Regression: a synthetic ELF split its GNU-hash header and bucket/chain bytes across load segments while leaving the advertised bloom-filter virtual range unmapped. The parser initially accepted it; the focused test reproduced `Ok(2)` instead of `InvalidArtifact`.
 - Behavior: GNU-hash inspection now requires the entire bloom-filter byte range to map to file-backed load-segment bytes before reading buckets and chains.
 - Verification: all 14 submission-manifest unit tests passed; workspace formatting, locked build, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed with zero ignored tests. `git diff --check` passed.
+
+
+## SDK-5 follow-up: typed defaults through the SQL DDL helper — verified
+
+- Contract: [client SDK](../../specs/client-sdk.md). SQL DDL is exposed only by the authenticated `AdminClient`; no administrative credential or capability is added to query artifacts.
+- Implementation/evidence: `AdminClient::execute_create_table_sql` maps exact typed SQL defaults to `AdminColumnDefinition` and uses the existing PREPARE/START client method. The owning schema DDL progress records parser and control-session coverage.
+- Verification: workspace build, formatting, warning-denied Clippy, maintained TinyCC tests, release-profile validation, delegated-cgroup preflight, and the complete serial delegated-cgroup workspace suite passed; zero tests were ignored.
+- Next: expose the bounded administrative SQL DDL helper through an explicit local CLI command while keeping it separate from `run-sql`.

@@ -4,7 +4,10 @@
 //! the existing typed control operation. Authorization and catalog validation
 //! remain server-side.
 
-use crate::{client_submit::AdminColumnDefinition, tuple::ScalarType};
+use crate::{
+    client_submit::{AdminColumnDefault, AdminColumnDefinition},
+    tuple::{ScalarType, ScalarValue},
+};
 
 const MAX_DDL_BYTES: usize = 65_536;
 
@@ -24,6 +27,9 @@ pub enum DdlSqlError {
 enum Token {
     Word(String),
     Number(String),
+    String(String),
+    Minus,
+    Plus,
     Dot,
     Comma,
     LeftParen,
@@ -53,19 +59,26 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
         }
         let name = parser.identifier()?;
         let scalar_type = parser.scalar_type()?;
-        let nullable = if parser.peek_word("not") {
-            parser.word("not")?;
-            parser.word("null")?;
-            false
-        } else {
-            true
-        };
+        let mut nullable = true;
+        let mut default = None;
+        loop {
+            if parser.peek_word("not") && nullable {
+                parser.word("not")?;
+                parser.word("null")?;
+                nullable = false;
+            } else if parser.peek_word("default") && default.is_none() {
+                parser.word("default")?;
+                default = Some(parser.default_value(scalar_type)?);
+            } else {
+                break;
+            }
+        }
         columns.push(AdminColumnDefinition {
             name,
             scalar_type,
             nullable,
             generated_uuid_identity: false,
-            default: None,
+            default,
         });
         if parser.peek() == Some(&Token::Comma) {
             parser.position += 1;
@@ -124,8 +137,8 @@ impl Parser {
         match self.peek() {
             Some(Token::Word(word))
                 if !word.is_empty()
-                    && word.len() <= 63
-                    && word.as_bytes()[0].is_ascii_lowercase()
+                    && word.len() <= 128
+                    && (word.as_bytes()[0].is_ascii_lowercase() || word.as_bytes()[0] == b'_')
                     && word.bytes().all(|byte| {
                         byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
                     }) =>
@@ -192,6 +205,164 @@ impl Parser {
             _ => Err(DdlSqlError::InvalidStatement),
         }
     }
+
+    fn default_value(
+        &mut self,
+        scalar_type: ScalarType,
+    ) -> Result<AdminColumnDefault, DdlSqlError> {
+        if self.peek_word("null") {
+            self.position += 1;
+            return Ok(AdminColumnDefault::Null);
+        }
+        if self.peek_word("current_principal_id") {
+            if scalar_type != ScalarType::Uuid {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+            self.position += 1;
+            self.take(Token::LeftParen)?;
+            self.take(Token::RightParen)?;
+            return Ok(AdminColumnDefault::CurrentPrincipalId);
+        }
+        let mut consumed_tokens = if matches!(self.peek(), Some(Token::Minus | Token::Plus)) {
+            2
+        } else {
+            1
+        };
+        let value = match scalar_type {
+            ScalarType::Boolean => match self.peek() {
+                Some(Token::Word(word)) if word == "true" => ScalarValue::Boolean(true),
+                Some(Token::Word(word)) if word == "false" => ScalarValue::Boolean(false),
+                _ => return Err(DdlSqlError::InvalidStatement),
+            },
+            ScalarType::SmallInt => {
+                ScalarValue::SmallInt(self.signed_number()?.parse().map_err(invalid)?)
+            }
+            ScalarType::Integer => {
+                ScalarValue::Integer(self.signed_number()?.parse().map_err(invalid)?)
+            }
+            ScalarType::BigInt => {
+                ScalarValue::BigInt(self.signed_number()?.parse().map_err(invalid)?)
+            }
+            ScalarType::Decimal { precision, scale } => ScalarValue::Decimal(
+                parse_decimal_coefficient(&self.signed_number()?, precision, scale)?,
+            ),
+            ScalarType::Text => match self.peek() {
+                Some(Token::String(value)) => ScalarValue::Text(value.clone()),
+                _ => return Err(DdlSqlError::InvalidStatement),
+            },
+            ScalarType::Varchar { max_chars } => match self.peek() {
+                Some(Token::String(value)) if value.chars().count() <= max_chars as usize => {
+                    ScalarValue::Varchar(value.clone())
+                }
+                _ => return Err(DdlSqlError::InvalidStatement),
+            },
+            ScalarType::Bytea => {
+                if !self.peek_word("x") {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
+                consumed_tokens = 2;
+                let Some(Token::String(hex)) = self.tokens.get(self.position + 1) else {
+                    return Err(DdlSqlError::InvalidStatement);
+                };
+                ScalarValue::Bytea(decode_hex(hex)?)
+            }
+            ScalarType::Uuid => {
+                let Some(Token::String(text)) = self.peek() else {
+                    return Err(DdlSqlError::InvalidStatement);
+                };
+                ScalarValue::Uuid(parse_uuid(text)?)
+            }
+            ScalarType::Date => ScalarValue::Date(self.signed_number()?.parse().map_err(invalid)?),
+            ScalarType::TimestampTz => {
+                ScalarValue::TimestampTz(self.signed_number()?.parse().map_err(invalid)?)
+            }
+        };
+        self.position += consumed_tokens;
+        Ok(AdminColumnDefault::Literal(value))
+    }
+
+    fn signed_number(&mut self) -> Result<String, DdlSqlError> {
+        let (negative, number_position) = match self.peek() {
+            Some(Token::Minus) => (true, self.position + 1),
+            Some(Token::Plus) => (false, self.position + 1),
+            _ => (false, self.position),
+        };
+        let Some(Token::Number(number)) = self.tokens.get(number_position) else {
+            return Err(DdlSqlError::InvalidStatement);
+        };
+        if number.contains('.') && !matches!(number.as_bytes().last(), Some(b'0'..=b'9')) {
+            return Err(DdlSqlError::InvalidStatement);
+        }
+        let mut number = number.clone();
+        if negative {
+            number.insert(0, '-');
+        }
+        Ok(number)
+    }
+}
+
+fn invalid<T>(_: T) -> DdlSqlError {
+    DdlSqlError::InvalidStatement
+}
+
+fn parse_decimal_coefficient(literal: &str, precision: u8, scale: u8) -> Result<i128, DdlSqlError> {
+    let negative = literal.starts_with('-');
+    let unsigned = literal.strip_prefix('-').unwrap_or(literal);
+    let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|b| b.is_ascii_digit())
+        || !fraction.bytes().all(|b| b.is_ascii_digit())
+        || fraction.len() > scale as usize
+    {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    let mut digits = whole.to_owned();
+    digits.push_str(fraction);
+    digits.extend(std::iter::repeat_n('0', scale as usize - fraction.len()));
+    let significant = digits.trim_start_matches('0');
+    if significant.len() > precision as usize {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    let magnitude: i128 = if significant.is_empty() {
+        0
+    } else {
+        significant.parse().map_err(invalid)?
+    };
+    Ok(if negative { -magnitude } else { magnitude })
+}
+
+fn decode_hex(text: &str) -> Result<Vec<u8>, DdlSqlError> {
+    if !text.len().is_multiple_of(2) {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    text.as_bytes()
+        .chunks_exact(2)
+        .map(|pair| Ok((hex_digit(pair[0])? << 4) | hex_digit(pair[1])?))
+        .collect()
+}
+
+fn parse_uuid(text: &str) -> Result<[u8; 16], DdlSqlError> {
+    if text.len() == 36 {
+        for position in [8, 13, 18, 23] {
+            if text.as_bytes().get(position) != Some(&b'-') {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+        }
+    } else if text.len() != 32 {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    let compact: String = text.chars().filter(|&ch| ch != '-').collect();
+    let bytes = decode_hex(&compact)?;
+    bytes.try_into().map_err(invalid)
+}
+
+fn hex_digit(byte: u8) -> Result<u8, DdlSqlError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(DdlSqlError::InvalidStatement),
+    }
 }
 
 fn tokenize(sql: &str) -> Result<Vec<Token>, DdlSqlError> {
@@ -221,6 +392,38 @@ fn tokenize(sql: &str) -> Result<Vec<Token>, DdlSqlError> {
                 tokens.push(Token::Semicolon);
                 cursor += 1;
             }
+            b'-' => {
+                tokens.push(Token::Minus);
+                cursor += 1;
+            }
+            b'+' => {
+                tokens.push(Token::Plus);
+                cursor += 1;
+            }
+            b'\'' => {
+                cursor += 1;
+                let mut value = Vec::new();
+                let mut closed = false;
+                while cursor < bytes.len() {
+                    if bytes[cursor] == b'\'' {
+                        if bytes.get(cursor + 1) == Some(&b'\'') {
+                            value.push(b'\'');
+                            cursor += 2;
+                        } else {
+                            cursor += 1;
+                            closed = true;
+                            break;
+                        }
+                    } else {
+                        value.push(bytes[cursor]);
+                        cursor += 1;
+                    }
+                }
+                if !closed {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
+                tokens.push(Token::String(String::from_utf8(value).map_err(invalid)?));
+            }
             byte if byte.is_ascii_alphabetic() || byte == b'_' => {
                 let start = cursor;
                 cursor += 1;
@@ -238,6 +441,14 @@ fn tokenize(sql: &str) -> Result<Vec<Token>, DdlSqlError> {
                 cursor += 1;
                 while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
                     cursor += 1;
+                }
+                if bytes.get(cursor) == Some(&b'.')
+                    && bytes.get(cursor + 1).is_some_and(u8::is_ascii_digit)
+                {
+                    cursor += 1;
+                    while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+                        cursor += 1;
+                    }
                 }
                 let number = std::str::from_utf8(&bytes[start..cursor])
                     .map_err(|_| DdlSqlError::InvalidStatement)?;
@@ -284,6 +495,72 @@ mod tests {
             "CREATE TABLE app.events (id UUID); CREATE TABLE app.other (id UUID)",
             "CREATE TABLE \"app\".events (id UUID)",
             "CREATE TABLE app.events (id DECIMAL(39, 0))",
+        ] {
+            assert!(parse_create_table(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_exact_typed_defaults_and_modifier_orders() {
+        for column in [
+            "label TEXT DEFAULT 'O''Reilly'",
+            "amount DECIMAL(6,2) DEFAULT -12.30 NOT NULL",
+            "active BOOLEAN NOT NULL DEFAULT TRUE",
+            "raw BYTEA DEFAULT X'00ff'",
+            "owner UUID DEFAULT CURRENT_PRINCIPAL_ID()",
+        ] {
+            parse_create_table(&format!("CREATE TABLE app.values ({column})"))
+                .unwrap_or_else(|error| panic!("{column}: {error:?}"));
+        }
+        let parsed = parse_create_table(
+            "CREATE TABLE app.values (label TEXT DEFAULT 'O''Reilly', amount DECIMAL(6,2) DEFAULT -12.30 NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE, raw BYTEA DEFAULT X'00FF', owner UUID DEFAULT CURRENT_PRINCIPAL_ID(), fixed_id UUID DEFAULT '00112233-4455-6677-8899-aabbccddeeff', optional TEXT DEFAULT NULL);",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.columns[0].default,
+            Some(AdminColumnDefault::Literal(ScalarValue::Text(
+                "O'Reilly".into()
+            )))
+        );
+        assert_eq!(
+            parsed.columns[1].default,
+            Some(AdminColumnDefault::Literal(ScalarValue::Decimal(-1230)))
+        );
+        assert!(!parsed.columns[1].nullable);
+        assert!(!parsed.columns[2].nullable);
+        assert_eq!(
+            parsed.columns[2].default,
+            Some(AdminColumnDefault::Literal(ScalarValue::Boolean(true)))
+        );
+        assert_eq!(
+            parsed.columns[3].default,
+            Some(AdminColumnDefault::Literal(ScalarValue::Bytea(vec![
+                0, 255
+            ])))
+        );
+        assert_eq!(
+            parsed.columns[4].default,
+            Some(AdminColumnDefault::CurrentPrincipalId)
+        );
+        assert_eq!(
+            parsed.columns[5].default,
+            Some(AdminColumnDefault::Literal(ScalarValue::Uuid([
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff,
+            ])))
+        );
+        assert_eq!(parsed.columns[6].default, Some(AdminColumnDefault::Null));
+    }
+
+    #[test]
+    fn rejects_defaults_with_loss_or_type_mismatch() {
+        for sql in [
+            "CREATE TABLE app.t (n DECIMAL(4,2) DEFAULT 1.234)",
+            "CREATE TABLE app.t (n DECIMAL(2,1) DEFAULT 123.0)",
+            "CREATE TABLE app.t (n INTEGER DEFAULT '1')",
+            "CREATE TABLE app.t (n BYTEA DEFAULT X'0')",
+            "CREATE TABLE app.t (n INTEGER DEFAULT CURRENT_PRINCIPAL_ID())",
+            "CREATE TABLE app.t (n VARCHAR(2) DEFAULT 'abc')",
         ] {
             assert!(parse_create_table(sql).is_err(), "accepted {sql}");
         }

@@ -694,3 +694,19 @@
 - Implementation/evidence: the bounded parser and authenticated control-session integration test are recorded in the owning [schema DDL progress](../ddl-schema/PROGRESS.md). This SQL-library entry records the boundary and keeps query-execution DDL rejected.
 - Verification: see DS-8 targeted parser and mock TCP control-session test results in the schema DDL progress entry.
 - Next smallest behavior: keep the query dispatcher rejection regression aligned as SQL administrative syntax coverage expands.
+
+
+## SQL DDL follow-up: exact typed CREATE TABLE defaults — implemented
+
+- Contract: administrative SQL remains client-parsed and routed over authenticated control mode; query invocation SQL continues to reject DDL.
+- Implementation/evidence: the owning schema DDL entry now records supported typed default parsing and the control-session serialization regression in [schema DDL progress](../ddl-schema/PROGRESS.md).
+- Verification: focused parser and TCP control-session tests passed; see the DS-8 follow-up entry for details.
+- Next smallest behavior: preserve the query execution DDL rejection while adding generated UUID identity syntax to the administrative CREATE TABLE grammar.
+
+
+## SQL DDL defaults follow-up — verified
+
+- Contract: client-parsed administrative CREATE TABLE defaults must use the existing typed control operation; user invocation SQL continues to reject DDL.
+- Evidence: exact typed literal conversion and the control-session serialization path are covered by the DS-8 default follow-up in [schema DDL progress](../ddl-schema/PROGRESS.md).
+- Verification: the full serial workspace suite passed under delegated cgroups with all confined/process tests enabled and zero ignored tests.
+- Next: generated UUID identity SQL syntax remains the next parser extension.
