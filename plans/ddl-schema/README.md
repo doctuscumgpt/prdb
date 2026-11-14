@@ -19,7 +19,7 @@ Fix bounded DDL text/structured schemas, normalized identifier limits, scalar wi
 | DS-5 | Rename/add/default/NOT NULL/constraint/ownership/drop operations preserve stable references and old-row meaning | Implement every supported ALTER incrementally; immutable add-column defaults, restricted drops and no new-column grants; reject type rewrite/cascades and deferred features |
 | DS-6 | Index versus reference scan agrees on visibility/errors; failed/crashed build exposes no usable partial index | Plain-column ascending nulls-last logical indexes with redb ordering fixtures, constraint-owned index restrictions and atomic VALID publication |
 | DS-7 | DDL fences block affected commits while unrelated writes/old readers continue; stale writers abort | Acquire ordered fences, capture latest build snapshot after fencing, avoid long redb writer holds, validate/publish atomically and retain old definitions/indexes until safe |
-| DS-8 | An authenticated administrator can express basic schema and table creation/lifecycle in SQL without sending DDL to query execution | Parse bounded schema/table create, rename, and RESTRICT drop statements in the client; expose through authenticated `admin-sql`; translate to existing typed operations and retain server-side authorization/catalog validation |
+| DS-8 | An authenticated administrator can express basic schema and table creation/lifecycle in SQL without sending DDL to query execution | Parse bounded schema/table create, rename, RESTRICT drop, and key-constraint ALTER statements in the client; expose through authenticated `admin-sql`; translate to existing typed operations and retain server-side authorization/catalog validation |
 
 ## Acceptance and Handoff
 

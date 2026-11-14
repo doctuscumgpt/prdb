@@ -40,6 +40,20 @@ pub struct RenameTableSql {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KeyConstraintKind {
+    PrimaryKey,
+    Unique,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddKeyConstraintSql {
+    pub schema: String,
+    pub table: String,
+    pub columns: Vec<String>,
+    pub kind: KeyConstraintKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DdlSqlError {
     InvalidStatement,
 }
@@ -284,6 +298,48 @@ pub fn parse_drop_table(sql: &str) -> Result<(String, String), DdlSqlError> {
     parser.word("restrict")?;
     finish_statement(&mut parser)?;
     Ok((schema, table))
+}
+
+/// Parse `ALTER TABLE schema.table ADD {PRIMARY KEY|UNIQUE} (columns...)`.
+pub fn parse_add_key_constraint(sql: &str) -> Result<AddKeyConstraintSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("table")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("add")?;
+    let kind = if parser.peek_word("primary") {
+        parser.word("primary")?;
+        parser.word("key")?;
+        KeyConstraintKind::PrimaryKey
+    } else {
+        parser.word("unique")?;
+        KeyConstraintKind::Unique
+    };
+    parser.take(Token::LeftParen)?;
+    let mut columns = vec![parser.identifier()?];
+    while parser.peek() == Some(&Token::Comma) {
+        parser.position += 1;
+        columns.push(parser.identifier()?);
+    }
+    parser.take(Token::RightParen)?;
+    finish_statement(&mut parser)?;
+    if columns.len() > crate::tuple::MAX_COLUMNS
+        || columns
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            != columns.len()
+    {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    Ok(AddKeyConstraintSql {
+        schema,
+        table,
+        columns,
+        kind,
+    })
 }
 
 fn statement_parser(sql: &str) -> Result<Parser, DdlSqlError> {
@@ -769,6 +825,35 @@ mod tests {
                 parse_rename_table(sql).is_err() && parse_drop_table(sql).is_err(),
                 "accepted {sql}"
             );
+        }
+    }
+
+    #[test]
+    fn parses_table_level_key_constraint_alterations() {
+        assert_eq!(
+            parse_add_key_constraint("ALTER TABLE app.events ADD UNIQUE (tenant, event_id);")
+                .unwrap(),
+            AddKeyConstraintSql {
+                schema: "app".into(),
+                table: "events".into(),
+                columns: vec!["tenant".into(), "event_id".into()],
+                kind: KeyConstraintKind::Unique,
+            }
+        );
+        assert_eq!(
+            parse_add_key_constraint("ALTER TABLE app.events ADD PRIMARY KEY (id)")
+                .unwrap()
+                .kind,
+            KeyConstraintKind::PrimaryKey
+        );
+        for sql in [
+            "ALTER TABLE events ADD UNIQUE (id)",
+            "ALTER TABLE app.events ADD CONSTRAINT key UNIQUE (id)",
+            "ALTER TABLE app.events ADD UNIQUE ()",
+            "ALTER TABLE app.events ADD UNIQUE (id, id)",
+            "ALTER TABLE app.events ADD UNIQUE (id); ALTER TABLE app.events ADD UNIQUE (id)",
+        ] {
+            assert!(parse_add_key_constraint(sql).is_err(), "accepted {sql}");
         }
     }
 

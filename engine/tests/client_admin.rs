@@ -1369,6 +1369,88 @@ fn admin_client_executes_table_rename_and_drop_sql_through_control_protocol() {
 }
 
 #[test]
+fn admin_client_adds_key_constraint_from_qualified_sql_names() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let schemas = read_frame(&mut stream, &mut decoder);
+        respond(
+            &mut stream,
+            &schemas,
+            format!(
+                r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                "a3".repeat(16)
+            )
+            .as_bytes(),
+        );
+        let relations = read_frame(&mut stream, &mut decoder);
+        respond(
+            &mut stream,
+            &relations,
+            format!(
+                r#"{{"relations":[{{"relation_id":"{}","name":"events"}}],"next_cursor":null}}"#,
+                "b4".repeat(16)
+            )
+            .as_bytes(),
+        );
+        let columns = read_frame(&mut stream, &mut decoder);
+        assert!(
+            String::from_utf8(columns.payload.clone())
+                .unwrap()
+                .contains(r#""operation":"metadata.columns.list""#)
+        );
+        respond(
+            &mut stream,
+            &columns,
+            format!(r#"{{"columns":[{{"column_id":"{}","name":"tenant","ordinal":0,"scalar_type":"uuid","nullable":false}},{{"column_id":"{}","name":"event_id","ordinal":1,"scalar_type":"integer","nullable":false}}],"next_cursor":null}}"#, "c5".repeat(16), "c6".repeat(16)).as_bytes(),
+        );
+        let prepare = read_frame(&mut stream, &mut decoder);
+        let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+        assert!(payload.contains(r#""operation":"constraints.create_unique""#));
+        assert!(payload.contains(&format!(
+            r#""arguments":{{"table_id":"{}","column_ids":["{}","{}"]}}"#,
+            "b4".repeat(16),
+            "c5".repeat(16),
+            "c6".repeat(16)
+        )));
+        respond(
+            &mut stream,
+            &prepare,
+            format!(
+                r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                "d7".repeat(16)
+            )
+            .as_bytes(),
+        );
+        let start = read_frame(&mut stream, &mut decoder);
+        respond(
+            &mut stream,
+            &start,
+            format!(r#"{{"operation_id":"{}","outcome":"committed","constraint_id":"{}","index_id":"{}","commit_sequence":"77"}}"#, "d7".repeat(16), "e8".repeat(16), "e9".repeat(16)).as_bytes(),
+        );
+    });
+
+    let mut secret = [5; 32];
+    let mut client = AdminClient::connect_authenticated_with_timeout(
+        address,
+        [6; 16],
+        &mut secret,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let created = client
+        .execute_add_key_constraint_sql("ALTER TABLE app.events ADD UNIQUE (tenant, event_id)")
+        .unwrap();
+    assert_eq!(created.constraint_id, [0xe8; 16]);
+    assert_eq!(created.index_id, [0xe9; 16]);
+    assert_eq!(created.commit_sequence, 77);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_renames_and_drops_tables() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

@@ -720,3 +720,9 @@
 - Contract: [client SDK](../../specs/client-sdk.md) and [schema DDL](../../specs/ddl-schema.md). SQL parsing accepts multiple final table-level UNIQUE clauses; `AdminClient` serializes them in the typed `tables.create` request, and `create_table_with_constraints` supports structured callers.
 - Regression: authenticated TCP coverage checks nested UNIQUE arrays alongside a PRIMARY KEY; parser tests cover composite/multiple definitions, while decoder tests cover structure and invalid references.
 - Verification: focused parser/decoder/AdminClient tests, locked workspace build, format check, warning-denied Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.
+
+## SDK-5: ALTER TABLE SQL for PRIMARY KEY and UNIQUE — implemented
+
+- Contract: [client SDK](../../specs/client-sdk.md) and [schema DDL](../../specs/ddl-schema.md). `AdminClient::execute_add_key_constraint_sql` parses qualified names, resolves the visible relation and ordered columns on the same authenticated control connection, and dispatches existing typed PRIMARY KEY or UNIQUE creation.
+- Regression: the mock TCP integration verifies schema/relation/column discovery, ordered ID mapping, typed UNIQUE PREPARE arguments, and generated constraint/index IDs. Parser tests cover supported and rejected forms.
+- Verification: focused parser/AdminClient tests, locked workspace build, format check, warning-denied Clippy, complete serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.

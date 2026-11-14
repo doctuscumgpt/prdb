@@ -224,12 +224,14 @@ fn admin_sql(
     let drop_schema_statement = prdb_engine::ddl_sql::parse_drop_schema(sql).ok();
     let rename_table_statement = prdb_engine::ddl_sql::parse_rename_table(sql).ok();
     let drop_table_statement = prdb_engine::ddl_sql::parse_drop_table(sql).ok();
+    let add_key_constraint_statement = prdb_engine::ddl_sql::parse_add_key_constraint(sql).ok();
     if table_statement.is_none()
         && schema_statement.is_none()
         && rename_schema_statement.is_none()
         && drop_schema_statement.is_none()
         && rename_table_statement.is_none()
         && drop_table_statement.is_none()
+        && add_key_constraint_statement.is_none()
     {
         return Err("invalid administrative SQL: unsupported statement".to_owned());
     }
@@ -287,6 +289,21 @@ fn admin_sql(
             .map_err(|error| error.to_string())?;
         println!(
             "renamed table (operation {}, commit {})",
+            lower_hex(&result.operation_id),
+            result.commit_sequence
+        );
+    } else if let Some(statement) = add_key_constraint_statement {
+        let result = client
+            .execute_add_key_constraint_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "created {} constraint {} with index {} (operation {}, commit {})",
+            match statement.kind {
+                prdb_engine::ddl_sql::KeyConstraintKind::PrimaryKey => "primary-key",
+                prdb_engine::ddl_sql::KeyConstraintKind::Unique => "unique",
+            },
+            lower_hex(&result.constraint_id),
+            lower_hex(&result.index_id),
             lower_hex(&result.operation_id),
             result.commit_sequence
         );

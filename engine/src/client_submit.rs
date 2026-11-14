@@ -2849,6 +2849,52 @@ impl AdminClient {
         self.drop_schema(schema_id)
     }
 
+    /// Add a PRIMARY KEY or UNIQUE constraint using qualified SQL names and
+    /// the existing typed, separately authorized constraint operation.
+    pub fn execute_add_key_constraint_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminKeyConstraintResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_add_key_constraint(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
+        let mut cursor = None;
+        let mut visible_columns = Vec::new();
+        loop {
+            let page = self.list_columns_page(
+                schema_id,
+                table_id,
+                DEFAULT_METADATA_PAGE_SIZE,
+                cursor.as_deref(),
+            )?;
+            visible_columns.extend(page.records);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let mut column_ids = Vec::with_capacity(statement.columns.len());
+        for column_name in &statement.columns {
+            let column = visible_columns
+                .iter()
+                .find(|column| &column.name == column_name)
+                .ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
+            if statement.kind == crate::ddl_sql::KeyConstraintKind::PrimaryKey && column.nullable {
+                return Err(ClientSubmitError::InvalidAdministrativeRequest);
+            }
+            column_ids.push(column.column_id);
+        }
+        match statement.kind {
+            crate::ddl_sql::KeyConstraintKind::PrimaryKey => {
+                self.create_primary_key(table_id, &column_ids)
+            }
+            crate::ddl_sql::KeyConstraintKind::Unique => {
+                self.create_unique_constraint(table_id, &column_ids)
+            }
+        }
+    }
+
     pub fn execute_rename_table_sql(
         &mut self,
         sql: &str,
@@ -2893,6 +2939,14 @@ impl AdminClient {
         table: &str,
     ) -> Result<[u8; 16], ClientSubmitError> {
         let schema_id = self.resolve_schema_sql_name(schema)?;
+        self.resolve_table_sql_name_in_schema(schema_id, table)
+    }
+
+    fn resolve_table_sql_name_in_schema(
+        &mut self,
+        schema_id: [u8; 16],
+        table: &str,
+    ) -> Result<[u8; 16], ClientSubmitError> {
         let mut table_id = None;
         let mut cursor = None;
         loop {
