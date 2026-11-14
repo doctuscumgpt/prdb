@@ -202,7 +202,7 @@
 - Regression: `token_authenticated_catalog_scans_redact_cells_per_principal` creates two users through identity DDL, issues separate tokens, installs independent schema/table/column grants and row/cell policies through `StorageManager`, then compares executor IPC scans over the same variable-length Bytea row. The readable principal receives VALUE; the second principal sees the row and receives only REDACTED.
 - Red evidence: when the restricted principal's row SELECT ALLOW policy was removed, the regression returned zero rows instead of the visible redacted row.
 - Verification: the focused test passed; locked workspace build, formatting, warning-denied Clippy, maintained TinyCC SDK tests, sandbox-query fixture build, and the full serial delegated-cgroup workspace suite passed under Rust/Cargo 1.95.0. The commit integration target reported 146 passed and zero ignored.
-- Remaining: run a confined hostile IPC client against this same principal/data fixture. Existing sandboxed tests separately exercise forged relation and row handles.
+- Follow-up completed below: the authenticated-control-socket regression now runs both confined forged-handle TinyCC artifacts as the restricted principal and verifies the cell remains `REDACTED` afterward.
 
 ## WI-2 follow-up: create principal-specific cell views through authenticated control socket — verified
 
