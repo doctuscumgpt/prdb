@@ -228,3 +228,10 @@
 - Red/green: the first run correctly rejected the test's use of the built-in owner role ID as an administrator principal. The fixture now creates a real administrator principal and membership; the focused test passes.
 - Verification: locked workspace build, rustfmt check, warning-denied all-target Clippy, TinyCC SDK tests and sandbox fixture, release-profile validation (10 engine binaries and one query fixture), delegated cgroup probe with writable `cpu memory pids`, and full serial delegated-cgroup workspace tests all passed with zero ignored tests. `git diff --check` passed.
 - Remaining: broader pressure coverage for other monitoring APIs and OM-2 registry families; exact redb retained-byte/cache telemetry remains unavailable, and there is no asynchronous job API to monitor.
+
+## OM-7 owner point-status pressure — verified
+
+- Contract: owner-scoped point status remains available for a live invocation and its retained terminal outcome while monitoring load overlaps a durable commit and cancellation.
+- Regression: the monitoring pressure loop now performs at least 512 `get_invocation_status` lookups for the cancellation target, accepting either its live phase or retained terminal status. The same run continues bounded owner/admin page reads and denied requests while committing another invocation and confirming the cancellation outcome.
+- Verification: the focused delegated-cgroup regression passed; workspace build, format check, warning-denied all-target Clippy, TinyCC SDK suite, sandbox fixture, release-profile validation (10 binaries and one query fixture), delegated cgroup probe, and full serial delegated-cgroup workspace suite passed with zero ignored tests. `git diff --check` passed.
+- Remaining: broader pressure coverage for other monitoring APIs and OM-2 registry families; exact redb retained-byte/cache telemetry remains unavailable, and there is no asynchronous job API to monitor.
