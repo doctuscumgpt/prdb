@@ -436,11 +436,77 @@ mod tests {
     }
 
     #[test]
+    fn parameter_file_encodes_every_scalar_type_as_canonical_psp1() {
+        let input = r#"{"format":"PDB-SQL-PARAMETERS-1","values":[{"type":"boolean","value":"true"},{"type":"smallint","value":"-2"},{"type":"integer","value":"42"},{"type":"bigint","value":"-900000000000"},{"type":"decimal(5,2)","value":"-12.3"},{"type":"text","value":"é"},{"type":"varchar(2)","value":"🙂"},{"type":"bytea","value":"hex:00ff"},{"type":"uuid","value":"00112233445566778899aabbccddeeff"},{"type":"date","value":"-1"},{"type":"timestamptz","value":"1"}]}"#;
+        let mut expected = b"PSP1\0\x0b\0\0".to_vec();
+        let records: [(u32, u8, u8, Vec<u8>); 11] = [
+            (1, 0, 0, vec![1]),
+            (2, 0, 0, (-2i16).to_le_bytes().to_vec()),
+            (3, 0, 0, 42i32.to_le_bytes().to_vec()),
+            (4, 0, 0, (-900_000_000_000i64).to_le_bytes().to_vec()),
+            (5, 5, 2, (-1230i128).to_le_bytes().to_vec()),
+            (6, 0, 0, vec![0xc3, 0xa9]),
+            (7, 0, 0, vec![0xf0, 0x9f, 0x99, 0x82]),
+            (8, 0, 0, vec![0x00, 0xff]),
+            (
+                9,
+                0,
+                0,
+                vec![
+                    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+                    0xcc, 0xdd, 0xee, 0xff,
+                ],
+            ),
+            (10, 0, 0, (-1i32).to_le_bytes().to_vec()),
+            (11, 0, 0, 1i64.to_le_bytes().to_vec()),
+        ];
+        for (type_code, precision, scale, payload) in records {
+            expected.extend_from_slice(&type_code.to_be_bytes());
+            expected.extend_from_slice(&[precision, scale, 0, 0]);
+            expected.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+            expected.extend_from_slice(&payload);
+        }
+
+        assert_eq!(encode_parameter_file(input.as_bytes()).unwrap(), expected);
+    }
+
+    #[test]
+    fn parameter_file_rejects_noncanonical_or_out_of_range_scalar_values() {
+        let invalid_values = [
+            ("boolean", "TRUE"),
+            ("smallint", "32768"),
+            ("integer", "+1"),
+            ("bigint", "01"),
+            ("decimal(5,2)", "01.0"),
+            ("decimal(5,2)", "-0"),
+            ("decimal(5,2)", "1.234"),
+            ("varchar(1)", "é🙂"),
+            ("bytea", "hex:AF"),
+            ("uuid", "00112233-4455-6677-8899-aabbccddeeff"),
+            ("date", "2932897"),
+            ("timestamptz", "+1"),
+            ("timestamptz", "253402300800000000"),
+        ];
+        for (type_name, value) in invalid_values {
+            let input = format!(
+                "{{\"format\":\"PDB-SQL-PARAMETERS-1\",\"values\":[{{\"type\":\"{type_name}\",\"value\":\"{value}\"}}]}}"
+            );
+            assert_eq!(
+                encode_parameter_file(input.as_bytes()),
+                Err(SqlInputError::InvalidFormat),
+                "accepted invalid {type_name} value {value:?}"
+            );
+        }
+    }
+
+    #[test]
     fn sql_input_is_bounded_nonempty_utf8_and_nul_free() {
+        let exact_limit = vec![b'x'; MAX_SQL_BYTES];
         assert_eq!(
             read_sql_from(Cursor::new(b"SELECT 1")).unwrap(),
             b"SELECT 1"
         );
+        assert_eq!(read_sql_from(Cursor::new(&exact_limit)).unwrap(), exact_limit);
         assert_eq!(
             read_sql_from(Cursor::new(vec![b'x'; MAX_SQL_BYTES + 1])),
             Err(SqlInputError::TooLarge)
@@ -452,6 +518,15 @@ mod tests {
         assert_eq!(
             read_sql_from(Cursor::new([0xff])),
             Err(SqlInputError::InvalidSql)
+        );
+    }
+
+    #[test]
+    fn parameter_file_enforces_the_one_mibibyte_input_limit() {
+        let oversized = vec![b' '; super::MAX_SQL_PARAMETER_BYTES + 1];
+        assert_eq!(
+            encode_parameter_file(&oversized),
+            Err(SqlInputError::TooLarge)
         );
     }
 
