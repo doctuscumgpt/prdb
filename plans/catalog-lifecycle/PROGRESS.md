@@ -136,8 +136,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## CL-4 historical catalog-v1 runtime probe — partial evidence
 
 - Built the engine from historical commit `295caee7^`, whose `EngineMetadata::supports_current_formats` accepts catalog v1, in a temporary source tree. Its real `StorageManager::new` path rejected a freshly initialized catalog-v2 instance with `Startup(UnsupportedFormat)`.
-- A second probe performed only `redb::Database::open` and close on a byte-identical copy; that alone changed the database-file digest. The historical startup validator also rejects with `UnsupportedFormat`. Current read-only inspection of the rejected images reported the same READY metadata and record counts as the source, but exact logical-table equivalence was not measured. No archived binary or database fixture was added to the repository.
-- Remaining: specify whether redb's open-time byte changes are acceptable for an unsupported image, compare logical records across the probe, then add repeatable archived runtime/data fixtures. Do not treat an `UnsupportedFormat` result alone as byte-preserving old-binary rejection.
+- A second probe performed only `redb::Database::open` and close on a byte-identical copy; that alone changed the database-file digest. A row-by-row digest over all 20 logical engine tables matched a control copy exactly before and after the historical runtime's rejected `StorageManager::new` attempt. The runtime returned `UnsupportedFormat`; the physical change is in redb-owned file state, not the logical table contents covered by the probe. No archived binary or database fixture was added to the repository.
+- Remaining: add repeatable archived runtime/data fixtures and retain the distinction between redb-owned open/recovery metadata changes and engine-authored logical mutations. Do not describe the rejection as byte-preserving.
 
 ## CL-4 / CL-5 source fixture: populated v2 and v1 images — verified slice
 
