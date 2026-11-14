@@ -33515,6 +33515,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             || user_table.payload == b"linked_records"
             || user_table.payload == b"grouped_records"
             || user_table.payload == b"analytics_pressure_records"
+            || user_table.payload == b"decimal_grouped_records"
             || user_table.payload == b"identity_records",
         "unexpected SQL user table result: {:?}",
         user_table.payload
