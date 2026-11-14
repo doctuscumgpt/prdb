@@ -161,6 +161,13 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: focused regression passed. In the configured Nix shell, workspace build, format check, warning-denied Clippy, all workspace tests, and `git diff --check` passed for this increment. Tool versions were Rust/Cargo 1.95.0, rustfmt 1.9.0, Clippy 0.1.95, and TinyCC 0.9.27-unstable-2025-01-06.
 - Remaining: other constraint variants and separate supervisor/gateway process integration.
 
+## DS-5 / DS-7: CHECK constraint removal preserves reader snapshots — verified
+
+- Contract: [schema DDL](../../specs/ddl-schema.md) requires readers pinned before a constraint drop to retain the old catalog view while later readers see the removed constraint and its private expression records.
+- Regression: `storage_manager_creates_and_drops_check_constraint` now holds a redb snapshot across `drop_check_constraint`; the pinned snapshot retains the CHECK, expression, and dependency records while a new snapshot sees all three removed.
+- Verification: the focused real-redb lifecycle test passed (`1 passed, 0 ignored`). Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, sandbox-query fixture, and release-profile validation (10 binaries and one query fixture) passed. The full serial delegated-cgroup workspace suite passed with 224 library tests, 164 commit tests, and 75 transaction tests, plus all other integration suites; no tests were ignored. `git diff --check` passed.
+- Scope: covers one CHECK constraint and its expression dependency; it does not simulate process crash or power loss.
+
 ## DS-5 / DS-7: PRIMARY KEY and UNIQUE publication versus a pinned writer — verified
 
 - Behavior: a writer that loaded a table's schema and indexes before PRIMARY KEY and UNIQUE constraints were published cannot commit a row using the stale constraint graph.

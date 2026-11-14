@@ -9295,6 +9295,19 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
         )?,
         4
     );
+    assert_eq!(
+        prdb_engine::catalog_index::scan_constraint_ids_for_table(&constraint_snapshot, id(82), 1)?,
+        vec![created.constraint_id]
+    );
+    let pinned_catalog = constraint_snapshot.open_table(CATALOG)?;
+    for key in [
+        id_catalog_key(8, created.constraint_id),
+        id_catalog_key(7, created.expression_id),
+        dependency_write(created.constraint_id, created.expression_id, 2).key,
+    ] {
+        assert!(pinned_catalog.get(key.as_slice())?.is_some());
+    }
+    drop(pinned_catalog);
     let dropped_constraint_snapshot = database.begin_read()?;
     assert!(
         prdb_engine::catalog_index::scan_constraint_ids_for_table(
@@ -9304,6 +9317,15 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
         )?
         .is_empty()
     );
+    let current_catalog = dropped_constraint_snapshot.open_table(CATALOG)?;
+    for key in [
+        id_catalog_key(8, created.constraint_id),
+        id_catalog_key(7, created.expression_id),
+        dependency_write(created.constraint_id, created.expression_id, 2).key,
+    ] {
+        assert!(current_catalog.get(key.as_slice())?.is_none());
+    }
+    drop(current_catalog);
     assert!(matches!(
         stale_drop_writer.commit(),
         Err(prdb_engine::transaction::TransactionError::Commit(
