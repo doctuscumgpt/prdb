@@ -27,7 +27,7 @@
 - Red/green: the maintained TinyCC batch fixture first failed to compile because the range-view API was absent. It now checks a typed row/cell read, unavailable status, malformed state, excessive row count, truncation, and trailing-byte rejection.
 - Implementation: `prdb_sdk_index_range_v1` validates the entire response before publishing a range view and provides row/cell iterators with no row-handle field.
 - Verification: focused TinyCC batch fixture and complete `make -f engine/sdk/Makefile test` passed, including 8 ABI generator tests and the SDK release metadata checks.
-- Remaining: submit the new executor operation from the SQL runner and match/fallback against the verified SELECT predicate; optimizer range selection remains open.
+- Follow-up complete: the SDK submission path and optimizer range selection are exercised by the confined indexed-range equivalence acceptance above. That acceptance proves the supported two-sided INTEGER case over one non-unique index; other bound types and fallback/malformed-result paths remain limited to their focused fixtures.
 
 ## SQL-5 follow-up: direct executor range submission — verified
 
@@ -35,7 +35,7 @@
 - Red/green: the TinyCC executor fixture first failed to compile because operation `0x1115` and its SDK call were missing. The fixture now checks exact request bytes, decoded empty-range results, unavailable/malformed responses, absent bounds, and undersized request buffers without unintended callbacks.
 - Implementation: `prdb_sdk_executor_scan_index_range_v1` encodes typed bounds, validates nonzero unique column IDs and the request budget, calls executor IPC, and publishes only a validated borrowed range view.
 - Verification: focused TinyCC executor fixture, full `make -f engine/sdk/Makefile test`, and `make -f engine/sdk/Makefile sandbox-query-fixture` passed.
-- Remaining: route validated SELECT range hints through this SDK operation; optimizer selection and confined optimized/reference equivalence remain open.
+- Follow-up complete: validated range hints are submitted through this operation by the optimizer-backed row runner, which matches returned rows against the parsed filter and falls back to the authorized full scan when the range is unavailable or over-bound. The confined indexed-range equivalence acceptance above verifies the supported two-sided INTEGER case on one invocation snapshot.
 
 ## SQL-8 follow-up: grouped ORDER BY limits and cancellation — verified
 
