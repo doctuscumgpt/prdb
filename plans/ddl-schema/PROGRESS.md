@@ -537,7 +537,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Implementation: [SQL parser](../../engine/src/ddl_sql.rs), [table creation](../../engine/src/storage_manager.rs), and commit-time DDL validation in [commit.rs](../../engine/src/commit.rs).
 - Regression evidence: composite-key parser coverage checks implied NOT NULL; the authenticated storage lifecycle regression creates a composite key and validates startup; protocol decoding accepts valid keys and rejects nullable or duplicate names; AdminClient and `admin-sql` control requests carry the structured column list.
 - Verification: focused parser, decoder, AdminClient, CLI, and storage tests passed. Locked workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests. `git diff --check` passed.
-- Next: add bounded table-level UNIQUE support to administrative CREATE TABLE SQL with the same atomic publication rules.
+- Next: extend bounded CREATE TABLE SQL to support atomic foreign-key definitions; named constraints remain deferred.
 
 ## DS-3: atomic UNIQUE constraints in CREATE TABLE SQL — implemented
 
