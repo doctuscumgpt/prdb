@@ -24714,6 +24714,261 @@ fn process_crash_during_check_constraint_drop_recovers_all_or_none()
 }
 
 #[test]
+fn process_crash_during_column_default_replacement_recovers_all_or_none()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{
+        AlterColumnDefaultRequest, CreateTableRequest, TableColumnDefault, TableColumnDefinition,
+    };
+    use std::process::Command;
+
+    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_CRASH_DURING_DEFAULT_REPLACEMENT_DATABASE";
+    const CHILD_BOUNDARY_ENV: &str = "PRDB_TEST_CRASH_DURING_DEFAULT_REPLACEMENT_BOUNDARY";
+    const CHILD_EXIT_CODE: i32 = 87;
+    const POST_COMMIT_EXIT_CODE: i32 = 88;
+    const ACTOR_ID: [u8; 16] = [0xe1; 16];
+    const INVOCATION_ID: [u8; 16] = [0xe2; 16];
+    const AUDIT_ID: [u8; 16] = [0xe3; 16];
+
+    if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
+        let database_path = std::path::PathBuf::from(database_path);
+        let metadata = std::fs::read(database_path.with_extension("default-replace-meta"))?;
+        if metadata.len() != 64 {
+            return Err(format!(
+                "invalid default replacement metadata length: {}",
+                metadata.len()
+            )
+            .into());
+        }
+        let table_id: [u8; 16] = metadata[0..16].try_into()?;
+        let column_id: [u8; 16] = metadata[16..32].try_into()?;
+        let boundary = std::env::var(CHILD_BOUNDARY_ENV)?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&database_path)?;
+        let armed = Arc::new(AtomicBool::new(false));
+        let instrumented = Database::builder().create_with_backend(ExitAfterNextWriteBackend {
+            inner: redb::backends::FileBackend::new(file)?,
+            armed: armed.clone(),
+            exit_code: CHILD_EXIT_CODE,
+        })?;
+        let storage = StorageManager::new(&instrumented, Duration::from_millis(100))?;
+        let mut audit = identity_audit_event(AUDIT_ID[0], ACTOR_ID, column_id);
+        audit.event_id = AUDIT_ID;
+        audit.correlation_id = INVOCATION_ID;
+        if boundary == "write" {
+            armed.store(true, Ordering::SeqCst);
+        } else if boundary != "after_commit" {
+            return Err(format!("unknown default replacement crash boundary {boundary}").into());
+        }
+        let result = storage.alter_column_default(AlterColumnDefaultRequest {
+            invocation_id: INVOCATION_ID,
+            authenticated_actor_id: ACTOR_ID,
+            table_id,
+            column_id,
+            default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(43)))),
+            retention_deadline_us: i64::MAX,
+            audit_event: audit,
+        });
+        if boundary == "write" {
+            return Err(format!(
+                "default replacement returned without injected backend-write exit: {result:?}"
+            )
+            .into());
+        }
+        result?;
+        std::process::exit(POST_COMMIT_EXIT_CODE);
+    }
+
+    for (boundary, expected_exit) in [
+        ("write", CHILD_EXIT_CODE),
+        ("after_commit", POST_COMMIT_EXIT_CODE),
+    ] {
+        let fixture = Fixture::new();
+        let database_path = fixture.path();
+        let database = initialize(&database_path)?;
+        let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+        let admin_role = builtin_owner_id();
+        let mut setup_audit = identity_audit_event(0xe4, admin_role, id(0xe5));
+        setup_audit.action = AuditAction::AuthorityChange;
+        storage.commit_catalog_and_audit(
+            id(0xe5),
+            admin_role,
+            i64::MAX,
+            &[
+                principal_write_with_name(ACTOR_ID, 1, 1, "default_recovery_actor"),
+                object_write_with_name(ACTOR_ID, 8, "default_recovery_actor"),
+                membership_write(ACTOR_ID, admin_role),
+                dependency_write(ACTOR_ID, admin_role, 5),
+            ],
+            &[setup_audit],
+        )?;
+        let schema_invocation = id(0xe6);
+        let mut schema_audit = identity_audit_event(0xe7, ACTOR_ID, id(0xe8));
+        schema_audit.correlation_id = schema_invocation;
+        let schema = storage.create_schema(
+            schema_invocation,
+            ACTOR_ID,
+            "default_recovery_schema",
+            ACTOR_ID,
+            i64::MAX,
+            schema_audit,
+        )?;
+        let table_invocation = id(0xe9);
+        let mut table_audit = identity_audit_event(0xea, ACTOR_ID, id(0xeb));
+        table_audit.correlation_id = table_invocation;
+        let table = storage.create_table(CreateTableRequest {
+            invocation_id: table_invocation,
+            authenticated_actor_id: ACTOR_ID,
+            schema_id: schema.schema_id,
+            name: "defaults".to_owned(),
+            columns: vec![TableColumnDefinition {
+                name: "value".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: true,
+                generated_uuid_identity: false,
+                default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(42)))),
+            }],
+            retention_deadline_us: i64::MAX,
+            audit_event: table_audit,
+        })?;
+        let before_sequence = commit_sequence(&database)?;
+        let (old_default_id, before_epoch) = {
+            let read = database.begin_read()?;
+            let catalog = read.open_table(CATALOG)?;
+            let column = catalog
+                .get(id_catalog_key(6, table.column_ids[0]).as_slice())?
+                .ok_or("default recovery column missing")?;
+            let fields = decode_registered_envelope(column.value())?;
+            let old_default_id: [u8; 16] = fields
+                .fields
+                .iter()
+                .find(|field| field.tag == 7)
+                .ok_or("initial default expression ID missing")?
+                .payload
+                .as_slice()
+                .try_into()?;
+            let table_record = catalog
+                .get(id_catalog_key(5, table.table_id).as_slice())?
+                .ok_or("default recovery table missing")?;
+            let epoch = u64::from_le_bytes(
+                decode_registered_envelope(table_record.value())?
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 3)
+                    .ok_or("default recovery table epoch missing")?
+                    .payload
+                    .as_slice()
+                    .try_into()?,
+            );
+            (old_default_id, epoch)
+        };
+        let mut metadata = Vec::with_capacity(64);
+        metadata.extend_from_slice(&table.table_id);
+        metadata.extend_from_slice(&table.column_ids[0]);
+        metadata.extend_from_slice(&old_default_id);
+        metadata.extend_from_slice(&before_epoch.to_le_bytes());
+        metadata.extend_from_slice(&before_sequence.to_le_bytes());
+        std::fs::write(
+            database_path.with_extension("default-replace-meta"),
+            metadata,
+        )?;
+        drop(storage);
+        drop(database);
+
+        let child_status = Command::new(std::env::current_exe()?)
+            .arg("--exact")
+            .arg("process_crash_during_column_default_replacement_recovers_all_or_none")
+            .arg("--nocapture")
+            .env(CHILD_DATABASE_ENV, &database_path)
+            .env(CHILD_BOUNDARY_ENV, boundary)
+            .status()?;
+        assert_eq!(
+            child_status.code(),
+            Some(expected_exit),
+            "default replacement child missed the {boundary} crash boundary: {child_status}"
+        );
+
+        let metadata = std::fs::read(database_path.with_extension("default-replace-meta"))?;
+        let table_id: [u8; 16] = metadata[0..16].try_into()?;
+        let column_id: [u8; 16] = metadata[16..32].try_into()?;
+        let old_default_id: [u8; 16] = metadata[32..48].try_into()?;
+        let before_epoch = u64::from_le_bytes(metadata[48..56].try_into()?);
+        let before_sequence = u64::from_le_bytes(metadata[56..64].try_into()?);
+        let committed = boundary == "after_commit";
+        let reopened = Database::open(&database_path)?;
+        let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+        let read = reopened.begin_read()?;
+        let catalog = read.open_table(CATALOG)?;
+        let column = catalog
+            .get(id_catalog_key(6, column_id).as_slice())?
+            .ok_or("default recovery column missing after reopen")?;
+        let current_default_id: [u8; 16] = decode_registered_envelope(column.value())?
+            .fields
+            .iter()
+            .find(|field| field.tag == 7)
+            .ok_or("current default expression ID missing after reopen")?
+            .payload
+            .as_slice()
+            .try_into()?;
+        assert_eq!(current_default_id == old_default_id, !committed);
+        let old_expression_key = id_catalog_key(7, old_default_id);
+        let old_object_key = id_catalog_key(2, old_default_id);
+        let old_dependency_key = dependency_write(column_id, old_default_id, 2).key;
+        for key in [old_expression_key, old_object_key, old_dependency_key] {
+            assert_eq!(catalog.get(key.as_slice())?.is_some(), !committed);
+        }
+        let current_expression_key = id_catalog_key(7, current_default_id);
+        let current_object_key = id_catalog_key(2, current_default_id);
+        let current_dependency_key = dependency_write(column_id, current_default_id, 2).key;
+        for key in [
+            current_expression_key,
+            current_object_key,
+            current_dependency_key,
+        ] {
+            assert!(catalog.get(key.as_slice())?.is_some());
+        }
+        let table = catalog
+            .get(id_catalog_key(5, table_id).as_slice())?
+            .ok_or("default recovery table missing after reopen")?;
+        let epoch = u64::from_le_bytes(
+            decode_registered_envelope(table.value())?
+                .fields
+                .iter()
+                .find(|field| field.tag == 3)
+                .ok_or("default recovery epoch missing after reopen")?
+                .payload
+                .as_slice()
+                .try_into()?,
+        );
+        assert_eq!(epoch, before_epoch + u64::from(committed));
+        let sequence = commit_sequence(&reopened)?;
+        assert_eq!(sequence, before_sequence + u64::from(committed));
+        let audit_exists = read
+            .open_table(schema::AUDIT)?
+            .get(&AUDIT_ID[..])?
+            .is_some();
+        assert_eq!(audit_exists, committed);
+        let outcome = read
+            .open_table(schema::OUTCOMES)?
+            .get(&INVOCATION_ID[..])?
+            .map(|value| InvocationOutcome::decode(value.value()))
+            .transpose()?;
+        if committed {
+            let outcome = outcome.ok_or("committed default replacement outcome missing")?;
+            assert_eq!(outcome.status, OutcomeStatus::Committed);
+            assert_eq!(outcome.commit_sequence, sequence);
+        } else {
+            assert_eq!(outcome, None);
+        }
+        drop(catalog);
+        drop(read);
+        prdb_engine::startup::validate_persisted_records(&reopened)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn process_crash_during_primary_key_creation_recovers_all_or_none()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{
