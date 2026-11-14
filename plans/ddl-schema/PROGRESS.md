@@ -349,9 +349,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## DS-6 / DS-7: DROP TABLE process-crash recovery — verified
 
 - Contract: [schema DDL](../../specs/ddl-schema.md) requires removal of the table, columns, index definition and memberships, rows, audit event, durable outcome, and commit sequence as one publication.
-- Regression: `process_crash_during_drop_table_recovers_all_or_none` creates an indexed table with a persisted row, exits a child at the backend write boundary or after `drop_table` returns, then reopens and validates startup. The interrupted path retains the complete table, row, forward index locator, reverse index membership, and old sequence without an audit or outcome; the completed path removes them and recovers the audit, committed outcome, and one sequence advance.
+- Regression: `process_crash_during_drop_table_recovers_all_or_none` now drops a populated table owning a plain index, PRIMARY KEY, UNIQUE constraint, and CHECK expression. The write-boundary recovery retains all three indexes, both physical membership directions for each, all three constraints, their object records, CHECK expression, row, and old sequence without a drop audit or outcome. Post-commit recovery removes the complete owned graph and row, then recovers the audit, committed outcome, and one sequence advance. Both reopened images pass startup validation.
 - Verification: focused two-boundary process-crash test passed. Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, release-profile validation (10 binaries and one query fixture), and the delegated cgroup probe passed. The complete serial workspace suite passed in the delegated `systemd --user` service: 224 library tests, 158 commit tests, and 75 transaction tests, including confined SQL and process integration tests.
-- Scope: process exit checks atomic recovery for one indexed table with one row. It does not simulate power loss or validate every combination of owned constraints, policies, grants, and dependency records.
+- Scope: process exit checks atomic recovery for one table with one row, two owned key constraints, one CHECK, and one additional index. It does not simulate power loss or cover policies, grants, foreign keys, or every owned-object combination.
 
 ## DS-3 / DS-7: CREATE TABLE process-crash recovery — verified
 

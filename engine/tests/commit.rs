@@ -23961,7 +23961,8 @@ fn process_crash_during_add_column_recovers_all_or_none() -> Result<(), Box<dyn 
 fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn std::error::Error>>
 {
     use prdb_engine::storage_manager::{
-        CreateIndexRequest, CreateTableRequest, TableColumnDefinition,
+        CreateCheckConstraintRequest, CreateIndexRequest, CreatePrimaryKeyRequest,
+        CreateTableRequest, CreateUniqueConstraintRequest, TableColumnDefinition,
     };
     use std::process::Command;
 
@@ -24051,8 +24052,39 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
             retention_deadline_us: i64::MAX,
             audit_event: index_audit,
         })?;
+        let mut primary_key_audit = identity_audit_event(0x12, ACTOR_ID, table.table_id);
+        primary_key_audit.correlation_id = id(0x13);
+        let primary_key = storage.create_primary_key(CreatePrimaryKeyRequest {
+            invocation_id: id(0x13),
+            authenticated_actor_id: ACTOR_ID,
+            table_id: table.table_id,
+            column_ids: vec![table.column_ids[0]],
+            retention_deadline_us: i64::MAX,
+            audit_event: primary_key_audit,
+        })?;
+        let mut unique_audit = identity_audit_event(0x14, ACTOR_ID, table.table_id);
+        unique_audit.correlation_id = id(0x15);
+        let unique = storage.create_unique_constraint(CreateUniqueConstraintRequest {
+            invocation_id: id(0x15),
+            authenticated_actor_id: ACTOR_ID,
+            table_id: table.table_id,
+            column_ids: vec![table.column_ids[0]],
+            retention_deadline_us: i64::MAX,
+            audit_event: unique_audit,
+        })?;
+        let mut check_audit = identity_audit_event(0x16, ACTOR_ID, table.table_id);
+        check_audit.correlation_id = id(0x17);
+        let check = storage.create_check_constraint(CreateCheckConstraintRequest {
+            invocation_id: id(0x17),
+            authenticated_actor_id: ACTOR_ID,
+            table_id: table.table_id,
+            expression: prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Boolean(true))),
+            dependency_column_ids: Vec::new(),
+            retention_deadline_us: i64::MAX,
+            audit_event: check_audit,
+        })?;
         let before_drop_sequence = commit_sequence(&database)?;
-        let mut metadata = Vec::with_capacity(96);
+        let mut metadata = Vec::with_capacity(192);
         metadata.extend_from_slice(&schema.schema_id);
         metadata.extend_from_slice(&table.table_id);
         metadata.extend_from_slice(&table.column_ids[0]);
@@ -24060,6 +24092,12 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
         metadata.extend_from_slice(&ROW_ID);
         metadata.extend_from_slice(&table_schema.schema_version.to_le_bytes());
         metadata.extend_from_slice(&before_drop_sequence.to_le_bytes());
+        metadata.extend_from_slice(&primary_key.constraint_id);
+        metadata.extend_from_slice(&primary_key.index_id);
+        metadata.extend_from_slice(&unique.constraint_id);
+        metadata.extend_from_slice(&unique.index_id);
+        metadata.extend_from_slice(&check.constraint_id);
+        metadata.extend_from_slice(&check.expression_id);
         std::fs::write(
             database_path.with_extension("drop-table-crash-metadata"),
             metadata,
@@ -24124,7 +24162,7 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
         );
 
         let metadata = std::fs::read(database_path.with_extension("drop-table-crash-metadata"))?;
-        assert_eq!(metadata.len(), 96);
+        assert_eq!(metadata.len(), 192);
         let schema_id: [u8; 16] = metadata[0..16].try_into()?;
         let table_id: [u8; 16] = metadata[16..32].try_into()?;
         let column_id: [u8; 16] = metadata[32..48].try_into()?;
@@ -24132,6 +24170,12 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
         let row_id: [u8; 16] = metadata[64..80].try_into()?;
         let schema_version = u64::from_le_bytes(metadata[80..88].try_into()?);
         let before_drop_sequence = u64::from_le_bytes(metadata[88..96].try_into()?);
+        let primary_key_id: [u8; 16] = metadata[96..112].try_into()?;
+        let primary_key_index_id: [u8; 16] = metadata[112..128].try_into()?;
+        let unique_id: [u8; 16] = metadata[128..144].try_into()?;
+        let unique_index_id: [u8; 16] = metadata[144..160].try_into()?;
+        let check_id: [u8; 16] = metadata[160..176].try_into()?;
+        let check_expression_id: [u8; 16] = metadata[176..192].try_into()?;
         let reopened = Database::open(&database_path)?;
         let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
         let read = reopened.begin_read()?;
@@ -24144,6 +24188,16 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
             .is_some();
         let recovered_index = lookup_index_id_by_name(&read, schema_id, "drop_table_crash_index")?;
         let relation = lookup_relation_id_by_name(&read, schema_id, "drop_table_crash_table")?;
+        let mut recovered_indexes =
+            prdb_engine::catalog_index::scan_index_ids_for_table(&read, table_id, 8)?;
+        recovered_indexes.sort_unstable();
+        let mut expected_indexes = vec![index_id, primary_key_index_id, unique_index_id];
+        expected_indexes.sort_unstable();
+        let mut recovered_constraints =
+            prdb_engine::catalog_index::scan_constraint_ids_for_table(&read, table_id, 8)?;
+        recovered_constraints.sort_unstable();
+        let mut expected_constraints = vec![primary_key_id, unique_id, check_id];
+        expected_constraints.sort_unstable();
         let row_key = table_row_key(table_id, row_id);
         let row_exists = row(&reopened, &row_key)?.is_some();
         let row_payload = encode_tuple(
@@ -24168,6 +24222,32 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
         )?;
         let mut reverse_index_key = row_key.to_vec();
         reverse_index_key.extend_from_slice(&index_key.key[..index_key.key.len() - 16]);
+        for owned_index_id in [primary_key_index_id, unique_index_id] {
+            let owned_key = prdb_engine::index_key::derive_index_key(
+                owned_index_id,
+                row_id,
+                schema_version,
+                &[column_id],
+                &[ColumnSchema {
+                    scalar_type: ScalarType::Integer,
+                    nullable: false,
+                }],
+                &row_payload,
+                &[column_id],
+            )?;
+            let mut owned_reverse_key = row_key.to_vec();
+            owned_reverse_key.extend_from_slice(&owned_key.key[..owned_key.key.len() - 16]);
+            let owned_forward_exists = read
+                .open_table(schema::INDEXES)?
+                .get(owned_key.key.as_slice())?
+                .is_some();
+            let owned_reverse_exists = read
+                .open_table(schema::ROW_INDEXES)?
+                .get(owned_reverse_key.as_slice())?
+                .is_some();
+            assert_eq!(owned_forward_exists, boundary == "write");
+            assert_eq!(owned_reverse_exists, boundary == "write");
+        }
         let forward_index_exists = read
             .open_table(schema::INDEXES)?
             .get(index_key.key.as_slice())?
@@ -24191,6 +24271,37 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
             assert!(table_exists);
             assert!(column_exists);
             assert_eq!(recovered_index, Some(index_id));
+            assert_eq!(recovered_indexes, expected_indexes);
+            assert_eq!(recovered_constraints, expected_constraints);
+            for retained_index_id in &expected_indexes {
+                assert!(
+                    catalog
+                        .get(id_catalog_key(2, *retained_index_id).as_slice())?
+                        .is_some()
+                );
+                assert!(
+                    catalog
+                        .get(id_catalog_key(9, *retained_index_id).as_slice())?
+                        .is_some()
+                );
+            }
+            for retained_constraint_id in &expected_constraints {
+                assert!(
+                    catalog
+                        .get(id_catalog_key(2, *retained_constraint_id).as_slice())?
+                        .is_some()
+                );
+                assert!(
+                    catalog
+                        .get(id_catalog_key(8, *retained_constraint_id).as_slice())?
+                        .is_some()
+                );
+            }
+            assert!(
+                catalog
+                    .get(id_catalog_key(7, check_expression_id).as_slice())?
+                    .is_some()
+            );
             assert_eq!(relation, Some(table_id));
             assert!(row_exists);
             assert!(forward_index_exists);
@@ -24208,6 +24319,37 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
             assert!(!table_exists);
             assert!(!column_exists);
             assert_eq!(recovered_index, None);
+            assert!(recovered_indexes.is_empty());
+            assert!(recovered_constraints.is_empty());
+            for removed_id in expected_indexes {
+                assert!(
+                    catalog
+                        .get(id_catalog_key(2, removed_id).as_slice())?
+                        .is_none()
+                );
+                assert!(
+                    catalog
+                        .get(id_catalog_key(9, removed_id).as_slice())?
+                        .is_none()
+                );
+            }
+            for removed_id in expected_constraints {
+                assert!(
+                    catalog
+                        .get(id_catalog_key(2, removed_id).as_slice())?
+                        .is_none()
+                );
+                assert!(
+                    catalog
+                        .get(id_catalog_key(8, removed_id).as_slice())?
+                        .is_none()
+                );
+            }
+            assert!(
+                catalog
+                    .get(id_catalog_key(7, check_expression_id).as_slice())?
+                    .is_none()
+            );
             assert_eq!(relation, None);
             assert!(!row_exists);
             assert!(!forward_index_exists);
