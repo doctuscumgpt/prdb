@@ -453,8 +453,8 @@ mod tests {
                 0,
                 0,
                 vec![
-                    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
-                    0xcc, 0xdd, 0xee, 0xff,
+                    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
+                    0xdd, 0xee, 0xff,
                 ],
             ),
             (10, 0, 0, (-1i32).to_le_bytes().to_vec()),
@@ -506,7 +506,10 @@ mod tests {
             read_sql_from(Cursor::new(b"SELECT 1")).unwrap(),
             b"SELECT 1"
         );
-        assert_eq!(read_sql_from(Cursor::new(&exact_limit)).unwrap(), exact_limit);
+        assert_eq!(
+            read_sql_from(Cursor::new(&exact_limit)).unwrap(),
+            exact_limit
+        );
         assert_eq!(
             read_sql_from(Cursor::new(vec![b'x'; MAX_SQL_BYTES + 1])),
             Err(SqlInputError::TooLarge)
