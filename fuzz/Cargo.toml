@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-prdb-engine = { path = "../engine" }
+prdb-engine = { path = "../engine", features = ["protocol-fuzzing"] }
 
 [[bin]]
 name = "client_decoders"
@@ -21,6 +21,13 @@ bench = false
 [[bin]]
 name = "client_sequence_state"
 path = "fuzz_targets/client_sequence_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_responses"
+path = "fuzz_targets/client_responses.rs"
 test = false
 doc = false
 bench = false

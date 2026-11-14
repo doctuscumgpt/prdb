@@ -4331,6 +4331,12 @@ pub(crate) fn parse_bounded_json_value(
     Ok(std::mem::replace(&mut *value, ResponseValue::Null))
 }
 
+#[cfg(feature = "protocol-fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_decode_bounded_response_json(payload: &[u8]) {
+    let _ = parse_bounded_json_value(payload, CLIENT_MAX_CONTROL_BYTES);
+}
+
 fn parse_response_object(
     parser: &mut JsonStringObjectParser<'_>,
     depth: usize,
