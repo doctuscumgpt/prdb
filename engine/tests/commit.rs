@@ -24461,15 +24461,16 @@ fn process_crash_during_primary_key_creation_recovers_all_or_none()
 }
 
 #[test]
-fn process_crash_during_primary_key_drop_recovers_all_or_none()
+fn process_crash_during_key_constraint_drop_recovers_all_or_none()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{
-        CreatePrimaryKeyRequest, CreateTableRequest, TableColumnDefinition,
+        CreatePrimaryKeyRequest, CreateTableRequest, CreateUniqueConstraintRequest,
+        TableColumnDefinition,
     };
     use std::process::Command;
 
-    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_CRASH_DURING_PRIMARY_KEY_DROP_DATABASE";
-    const CHILD_BOUNDARY_ENV: &str = "PRDB_TEST_CRASH_DURING_PRIMARY_KEY_DROP_BOUNDARY";
+    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_CRASH_DURING_KEY_CONSTRAINT_DROP_DATABASE";
+    const CHILD_BOUNDARY_ENV: &str = "PRDB_TEST_CRASH_DURING_KEY_CONSTRAINT_DROP_BOUNDARY";
     const CHILD_EXIT_CODE: i32 = 87;
     const POST_COMMIT_EXIT_CODE: i32 = 88;
     const ACTOR_ID: [u8; 16] = [0xd1; 16];
@@ -24479,15 +24480,16 @@ fn process_crash_during_primary_key_drop_recovers_all_or_none()
 
     if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
         let database_path = std::path::PathBuf::from(database_path);
-        let metadata = std::fs::read(database_path.with_extension("primary-key-drop-metadata"))?;
-        if metadata.len() != 120 {
+        let metadata = std::fs::read(database_path.with_extension("key-constraint-drop-metadata"))?;
+        if metadata.len() != 121 {
             return Err(format!(
-                "invalid PRIMARY KEY drop metadata length: {}",
+                "invalid key-constraint drop metadata length: {}",
                 metadata.len()
             )
             .into());
         }
         let constraint_id: [u8; 16] = metadata[32..48].try_into()?;
+        let constraint_kind = metadata[120];
         let boundary = std::env::var(CHILD_BOUNDARY_ENV)?;
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -24506,13 +24508,28 @@ fn process_crash_during_primary_key_drop_recovers_all_or_none()
         if boundary == "write" {
             armed.store(true, Ordering::SeqCst);
         } else if boundary != "after_commit" {
-            return Err(format!("unknown PRIMARY KEY drop crash boundary {boundary}").into());
+            return Err(format!("unknown key-constraint drop crash boundary {boundary}").into());
         }
-        let result =
-            storage.drop_primary_key(DROP_INVOCATION_ID, ACTOR_ID, constraint_id, i64::MAX, audit);
+        let result = match constraint_kind {
+            2 => storage.drop_primary_key(
+                DROP_INVOCATION_ID,
+                ACTOR_ID,
+                constraint_id,
+                i64::MAX,
+                audit,
+            ),
+            3 => storage.drop_unique_constraint(
+                DROP_INVOCATION_ID,
+                ACTOR_ID,
+                constraint_id,
+                i64::MAX,
+                audit,
+            ),
+            kind => return Err(format!("unknown key-constraint kind {kind}").into()),
+        };
         if boundary == "write" {
             return Err(format!(
-                "PRIMARY KEY drop returned without injected backend-write exit: {result:?}"
+                "key-constraint drop returned without injected backend-write exit: {result:?}"
             )
             .into());
         }
@@ -24520,244 +24537,272 @@ fn process_crash_during_primary_key_drop_recovers_all_or_none()
         std::process::exit(POST_COMMIT_EXIT_CODE);
     }
 
-    for (boundary, expected_exit) in [
-        ("write", CHILD_EXIT_CODE),
-        ("after_commit", POST_COMMIT_EXIT_CODE),
-    ] {
-        let fixture = Fixture::new();
-        let database_path = fixture.path();
-        let database = initialize(&database_path)?;
-        let storage = StorageManager::new(&database, Duration::from_millis(100))?;
-        let admin_role = builtin_owner_id();
-        let mut setup_audit = identity_audit_event(0xd5, admin_role, id(0xd6));
-        setup_audit.action = AuditAction::AuthorityChange;
-        storage.commit_catalog_and_audit(
-            id(0xd6),
-            admin_role,
-            i64::MAX,
-            &[
-                principal_write_with_name(ACTOR_ID, 1, 1, "primary_key_drop_actor"),
-                object_write_with_name(ACTOR_ID, 8, "primary_key_drop_actor"),
-                membership_write(ACTOR_ID, admin_role),
-                dependency_write(ACTOR_ID, admin_role, 5),
-            ],
-            &[setup_audit],
-        )?;
-        let schema_invocation = id(0xd7);
-        let mut schema_audit = identity_audit_event(0xd8, ACTOR_ID, id(0xd9));
-        schema_audit.correlation_id = schema_invocation;
-        let schema = storage.create_schema(
-            schema_invocation,
-            ACTOR_ID,
-            "primary_key_drop_schema",
-            ACTOR_ID,
-            i64::MAX,
-            schema_audit,
-        )?;
-        let table_invocation = id(0xda);
-        let mut table_audit = identity_audit_event(0xdb, ACTOR_ID, id(0xdc));
-        table_audit.correlation_id = table_invocation;
-        let table = storage.create_table(CreateTableRequest {
-            invocation_id: table_invocation,
-            authenticated_actor_id: ACTOR_ID,
-            schema_id: schema.schema_id,
-            name: "primary_key_drop_table".to_owned(),
-            columns: vec![TableColumnDefinition {
-                name: "value".to_owned(),
-                scalar_type: ScalarType::Integer,
-                nullable: false,
-                generated_uuid_identity: false,
-                default: None,
-            }],
-            retention_deadline_us: i64::MAX,
-            audit_event: table_audit,
-        })?;
-        let mut seed = storage.begin_invocation(id(0xdd), ACTOR_ID, i64::MAX, 1, 1024)?;
-        let table_schema = seed.load_catalog_table_schema(table.table_id)?;
-        seed.load_catalog_indexes(&table_schema)?;
-        let row_id = ROW_ID;
-        let row_payload = encode_tuple(
-            &table_schema.columns,
-            table_schema.schema_version,
-            &[Some(ScalarValue::Integer(37))],
-        )?;
-        seed.stage_put(
-            prdb_engine::overlay::RowId {
-                table: table.table_id,
-                row: row_id,
-            },
-            &row_payload,
-        )?;
-        seed.commit()?;
-        let mut create_audit = identity_audit_event(0xde, ACTOR_ID, table.table_id);
-        create_audit.correlation_id = id(0xdf);
-        let created = storage.create_primary_key(CreatePrimaryKeyRequest {
-            invocation_id: id(0xdf),
-            authenticated_actor_id: ACTOR_ID,
-            table_id: table.table_id,
-            column_ids: table.column_ids.clone(),
-            retention_deadline_us: i64::MAX,
-            audit_event: create_audit,
-        })?;
-        let before_sequence = commit_sequence(&database)?;
-        let read = database.begin_read()?;
-        let catalog = read.open_table(CATALOG)?;
-        let table_record = catalog
-            .get(id_catalog_key(5, table.table_id).as_slice())?
-            .ok_or("PRIMARY KEY table record missing before drop")?;
-        let before_epoch = u64::from_le_bytes(
-            decode_registered_envelope(table_record.value())?
-                .fields
-                .iter()
-                .find(|field| field.tag == 3)
-                .ok_or("PRIMARY KEY table epoch missing before drop")?
-                .payload
-                .as_slice()
-                .try_into()?,
-        );
-        drop(catalog);
-        drop(read);
-        let mut metadata = Vec::with_capacity(120);
-        metadata.extend_from_slice(&schema.schema_id);
-        metadata.extend_from_slice(&table.table_id);
-        metadata.extend_from_slice(&created.constraint_id);
-        metadata.extend_from_slice(&created.index_id);
-        metadata.extend_from_slice(&table.column_ids[0]);
-        metadata.extend_from_slice(&row_id);
-        metadata.extend_from_slice(&table_schema.schema_version.to_le_bytes());
-        metadata.extend_from_slice(&before_sequence.to_le_bytes());
-        metadata.extend_from_slice(&before_epoch.to_le_bytes());
-        std::fs::write(
-            database_path.with_extension("primary-key-drop-metadata"),
-            metadata,
-        )?;
-        drop(storage);
-        drop(database);
-
-        let child_status = Command::new(std::env::current_exe()?)
-            .arg("--exact")
-            .arg("process_crash_during_primary_key_drop_recovers_all_or_none")
-            .arg("--nocapture")
-            .env(CHILD_DATABASE_ENV, &database_path)
-            .env(CHILD_BOUNDARY_ENV, boundary)
-            .status()?;
-        assert_eq!(
-            child_status.code(),
-            Some(expected_exit),
-            "PRIMARY KEY drop child missed the {boundary} crash boundary: {child_status}"
-        );
-
-        let metadata = std::fs::read(database_path.with_extension("primary-key-drop-metadata"))?;
-        assert_eq!(metadata.len(), 120);
-        let schema_id: [u8; 16] = metadata[0..16].try_into()?;
-        let table_id: [u8; 16] = metadata[16..32].try_into()?;
-        let constraint_id: [u8; 16] = metadata[32..48].try_into()?;
-        let index_id: [u8; 16] = metadata[48..64].try_into()?;
-        let column_id: [u8; 16] = metadata[64..80].try_into()?;
-        let row_id: [u8; 16] = metadata[80..96].try_into()?;
-        let schema_version = u64::from_le_bytes(metadata[96..104].try_into()?);
-        let before_sequence = u64::from_le_bytes(metadata[104..112].try_into()?);
-        let before_epoch = u64::from_le_bytes(metadata[112..120].try_into()?);
-        let reopened = Database::open(&database_path)?;
-        let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
-        let read = reopened.begin_read()?;
-        let catalog = read.open_table(CATALOG)?;
-        let constraint_ids =
-            prdb_engine::catalog_index::scan_constraint_ids_for_table(&read, table_id, 2)?;
-        let sequence = commit_sequence(&reopened)?;
-        let table_record = catalog
-            .get(id_catalog_key(5, table_id).as_slice())?
-            .ok_or("PRIMARY KEY table record missing after reopen")?;
-        let table_epoch = u64::from_le_bytes(
-            decode_registered_envelope(table_record.value())?
-                .fields
-                .iter()
-                .find(|field| field.tag == 3)
-                .ok_or("PRIMARY KEY table epoch missing after reopen")?
-                .payload
-                .as_slice()
-                .try_into()?,
-        );
-        let row_key = table_row_key(table_id, row_id);
-        let row_payload = encode_tuple(
-            &[ColumnSchema {
-                scalar_type: ScalarType::Integer,
-                nullable: false,
-            }],
-            schema_version,
-            &[Some(ScalarValue::Integer(37))],
-        )?;
-        assert_eq!(
-            row(&reopened, &row_key)?
-                .ok_or("PRIMARY KEY row missing")?
-                .payload,
-            row_payload
-        );
-        let index_key = prdb_engine::index_key::derive_index_key(
-            index_id,
-            row_id,
-            schema_version,
-            &[column_id],
-            &[ColumnSchema {
-                scalar_type: ScalarType::Integer,
-                nullable: false,
-            }],
-            &row_payload,
-            &[column_id],
-        )?;
-        let forward_exists = read
-            .open_table(schema::INDEXES)?
-            .get(index_key.key.as_slice())?
-            .is_some();
-        let mut reverse_key = row_key.to_vec();
-        reverse_key.extend_from_slice(&index_key.key[..index_key.key.len() - 16]);
-        let reverse_exists = read
-            .open_table(schema::ROW_INDEXES)?
-            .get(reverse_key.as_slice())?
-            .is_some();
-        let audit_exists = read
-            .open_table(schema::AUDIT)?
-            .get(&DROP_AUDIT_ID[..])?
-            .is_some();
-        let outcome = read
-            .open_table(schema::OUTCOMES)?
-            .get(&DROP_INVOCATION_ID[..])?
-            .map(|value| InvocationOutcome::decode(value.value()))
-            .transpose()?;
-        let committed = boundary == "after_commit";
-        for key in [
-            id_catalog_key(8, constraint_id),
-            id_catalog_key(9, index_id),
-            id_catalog_key(2, constraint_id),
-            id_catalog_key(2, index_id),
-            dependency_write(constraint_id, index_id, 4).key,
+    for (constraint_kind, constraint_name) in [(2, "primary_key"), (3, "unique")] {
+        for (boundary, expected_exit) in [
+            ("write", CHILD_EXIT_CODE),
+            ("after_commit", POST_COMMIT_EXIT_CODE),
         ] {
-            assert_eq!(
-                catalog.get(key.as_slice())?.is_some(),
-                !committed,
-                "unexpected PRIMARY KEY drop catalog state for {key:?}"
+            let fixture = Fixture::new();
+            let database_path = fixture.path();
+            let database = initialize(&database_path)?;
+            let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+            let admin_role = builtin_owner_id();
+            let mut setup_audit = identity_audit_event(0xd5, admin_role, id(0xd6));
+            setup_audit.action = AuditAction::AuthorityChange;
+            storage.commit_catalog_and_audit(
+                id(0xd6),
+                admin_role,
+                i64::MAX,
+                &[
+                    principal_write_with_name(ACTOR_ID, 1, 1, "key_constraint_drop_actor"),
+                    object_write_with_name(ACTOR_ID, 8, "key_constraint_drop_actor"),
+                    membership_write(ACTOR_ID, admin_role),
+                    dependency_write(ACTOR_ID, admin_role, 5),
+                ],
+                &[setup_audit],
+            )?;
+            let schema_invocation = id(0xd7);
+            let mut schema_audit = identity_audit_event(0xd8, ACTOR_ID, id(0xd9));
+            schema_audit.correlation_id = schema_invocation;
+            let schema = storage.create_schema(
+                schema_invocation,
+                ACTOR_ID,
+                &format!("{constraint_name}_drop_schema"),
+                ACTOR_ID,
+                i64::MAX,
+                schema_audit,
+            )?;
+            let table_invocation = id(0xda);
+            let mut table_audit = identity_audit_event(0xdb, ACTOR_ID, id(0xdc));
+            table_audit.correlation_id = table_invocation;
+            let table = storage.create_table(CreateTableRequest {
+                invocation_id: table_invocation,
+                authenticated_actor_id: ACTOR_ID,
+                schema_id: schema.schema_id,
+                name: format!("{constraint_name}_drop_table"),
+                columns: vec![TableColumnDefinition {
+                    name: "value".to_owned(),
+                    scalar_type: ScalarType::Integer,
+                    nullable: false,
+                    generated_uuid_identity: false,
+                    default: None,
+                }],
+                retention_deadline_us: i64::MAX,
+                audit_event: table_audit,
+            })?;
+            let mut seed = storage.begin_invocation(id(0xdd), ACTOR_ID, i64::MAX, 1, 1024)?;
+            let table_schema = seed.load_catalog_table_schema(table.table_id)?;
+            seed.load_catalog_indexes(&table_schema)?;
+            let row_id = ROW_ID;
+            let row_payload = encode_tuple(
+                &table_schema.columns,
+                table_schema.schema_version,
+                &[Some(ScalarValue::Integer(37))],
+            )?;
+            seed.stage_put(
+                prdb_engine::overlay::RowId {
+                    table: table.table_id,
+                    row: row_id,
+                },
+                &row_payload,
+            )?;
+            seed.commit()?;
+            let mut create_audit = identity_audit_event(0xde, ACTOR_ID, table.table_id);
+            create_audit.correlation_id = id(0xdf);
+            let (constraint_id, index_id) = match constraint_kind {
+                2 => {
+                    let created = storage.create_primary_key(CreatePrimaryKeyRequest {
+                        invocation_id: id(0xdf),
+                        authenticated_actor_id: ACTOR_ID,
+                        table_id: table.table_id,
+                        column_ids: table.column_ids.clone(),
+                        retention_deadline_us: i64::MAX,
+                        audit_event: create_audit,
+                    })?;
+                    (created.constraint_id, created.index_id)
+                }
+                3 => {
+                    let created =
+                        storage.create_unique_constraint(CreateUniqueConstraintRequest {
+                            invocation_id: id(0xdf),
+                            authenticated_actor_id: ACTOR_ID,
+                            table_id: table.table_id,
+                            column_ids: table.column_ids.clone(),
+                            retention_deadline_us: i64::MAX,
+                            audit_event: create_audit,
+                        })?;
+                    (created.constraint_id, created.index_id)
+                }
+                _ => unreachable!(),
+            };
+            let before_sequence = commit_sequence(&database)?;
+            let read = database.begin_read()?;
+            let catalog = read.open_table(CATALOG)?;
+            let table_record = catalog
+                .get(id_catalog_key(5, table.table_id).as_slice())?
+                .ok_or("key-constraint table record missing before drop")?;
+            let before_epoch = u64::from_le_bytes(
+                decode_registered_envelope(table_record.value())?
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 3)
+                    .ok_or("key-constraint table epoch missing before drop")?
+                    .payload
+                    .as_slice()
+                    .try_into()?,
             );
+            drop(catalog);
+            drop(read);
+            let mut metadata = Vec::with_capacity(120);
+            metadata.extend_from_slice(&schema.schema_id);
+            metadata.extend_from_slice(&table.table_id);
+            metadata.extend_from_slice(&constraint_id);
+            metadata.extend_from_slice(&index_id);
+            metadata.extend_from_slice(&table.column_ids[0]);
+            metadata.extend_from_slice(&row_id);
+            metadata.extend_from_slice(&table_schema.schema_version.to_le_bytes());
+            metadata.extend_from_slice(&before_sequence.to_le_bytes());
+            metadata.extend_from_slice(&before_epoch.to_le_bytes());
+            metadata.push(constraint_kind as u8);
+            std::fs::write(
+                database_path.with_extension("key-constraint-drop-metadata"),
+                metadata,
+            )?;
+            drop(storage);
+            drop(database);
+
+            let child_status = Command::new(std::env::current_exe()?)
+                .arg("--exact")
+                .arg("process_crash_during_key_constraint_drop_recovers_all_or_none")
+                .arg("--nocapture")
+                .env(CHILD_DATABASE_ENV, &database_path)
+                .env(CHILD_BOUNDARY_ENV, boundary)
+                .status()?;
+            assert_eq!(
+                child_status.code(),
+                Some(expected_exit),
+                "{constraint_name} drop child missed the {boundary} crash boundary: {child_status}"
+            );
+
+            let metadata =
+                std::fs::read(database_path.with_extension("key-constraint-drop-metadata"))?;
+            assert_eq!(metadata.len(), 121);
+            let schema_id: [u8; 16] = metadata[0..16].try_into()?;
+            let table_id: [u8; 16] = metadata[16..32].try_into()?;
+            let constraint_id: [u8; 16] = metadata[32..48].try_into()?;
+            let constraint_kind = metadata[120];
+            let index_id: [u8; 16] = metadata[48..64].try_into()?;
+            let column_id: [u8; 16] = metadata[64..80].try_into()?;
+            let row_id: [u8; 16] = metadata[80..96].try_into()?;
+            let schema_version = u64::from_le_bytes(metadata[96..104].try_into()?);
+            let before_sequence = u64::from_le_bytes(metadata[104..112].try_into()?);
+            let before_epoch = u64::from_le_bytes(metadata[112..120].try_into()?);
+            assert_eq!(metadata[120], constraint_kind as u8);
+            let reopened = Database::open(&database_path)?;
+            let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+            let read = reopened.begin_read()?;
+            let catalog = read.open_table(CATALOG)?;
+            let constraint_ids =
+                prdb_engine::catalog_index::scan_constraint_ids_for_table(&read, table_id, 2)?;
+            let sequence = commit_sequence(&reopened)?;
+            let table_record = catalog
+                .get(id_catalog_key(5, table_id).as_slice())?
+                .ok_or("key-constraint table record missing after reopen")?;
+            let table_epoch = u64::from_le_bytes(
+                decode_registered_envelope(table_record.value())?
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 3)
+                    .ok_or("key-constraint table epoch missing after reopen")?
+                    .payload
+                    .as_slice()
+                    .try_into()?,
+            );
+            let row_key = table_row_key(table_id, row_id);
+            let row_payload = encode_tuple(
+                &[ColumnSchema {
+                    scalar_type: ScalarType::Integer,
+                    nullable: false,
+                }],
+                schema_version,
+                &[Some(ScalarValue::Integer(37))],
+            )?;
+            assert_eq!(
+                row(&reopened, &row_key)?
+                    .ok_or("key-constraint row missing")?
+                    .payload,
+                row_payload
+            );
+            let index_key = prdb_engine::index_key::derive_index_key(
+                index_id,
+                row_id,
+                schema_version,
+                &[column_id],
+                &[ColumnSchema {
+                    scalar_type: ScalarType::Integer,
+                    nullable: false,
+                }],
+                &row_payload,
+                &[column_id],
+            )?;
+            let forward_exists = read
+                .open_table(schema::INDEXES)?
+                .get(index_key.key.as_slice())?
+                .is_some();
+            let mut reverse_key = row_key.to_vec();
+            reverse_key.extend_from_slice(&index_key.key[..index_key.key.len() - 16]);
+            let reverse_exists = read
+                .open_table(schema::ROW_INDEXES)?
+                .get(reverse_key.as_slice())?
+                .is_some();
+            let audit_exists = read
+                .open_table(schema::AUDIT)?
+                .get(&DROP_AUDIT_ID[..])?
+                .is_some();
+            let outcome = read
+                .open_table(schema::OUTCOMES)?
+                .get(&DROP_INVOCATION_ID[..])?
+                .map(|value| InvocationOutcome::decode(value.value()))
+                .transpose()?;
+            let committed = boundary == "after_commit";
+            for key in [
+                id_catalog_key(8, constraint_id),
+                id_catalog_key(9, index_id),
+                id_catalog_key(2, constraint_id),
+                id_catalog_key(2, index_id),
+                dependency_write(constraint_id, index_id, 4).key,
+            ] {
+                assert_eq!(
+                    catalog.get(key.as_slice())?.is_some(),
+                    !committed,
+                    "unexpected key-constraint drop catalog state for {key:?}"
+                );
+            }
+            assert_eq!(constraint_ids.len(), if committed { 0 } else { 1 });
+            assert_eq!(forward_exists, !committed);
+            assert_eq!(reverse_exists, !committed);
+            assert_eq!(table_epoch, before_epoch + u64::from(committed));
+            assert_eq!(sequence, before_sequence + u64::from(committed));
+            assert_eq!(audit_exists, committed);
+            if committed {
+                let outcome = outcome.ok_or("key-constraint drop outcome missing")?;
+                assert_eq!(outcome.status, OutcomeStatus::Committed);
+                assert_eq!(outcome.commit_sequence, sequence);
+            } else {
+                assert_eq!(outcome, None);
+            }
+            assert_eq!(
+                lookup_relation_id_by_name(
+                    &read,
+                    schema_id,
+                    &format!("{constraint_name}_drop_table")
+                )?,
+                Some(table_id)
+            );
+            drop(catalog);
+            drop(read);
+            prdb_engine::startup::validate_persisted_records(&reopened)?;
         }
-        assert_eq!(constraint_ids.len(), if committed { 0 } else { 1 });
-        assert_eq!(forward_exists, !committed);
-        assert_eq!(reverse_exists, !committed);
-        assert_eq!(table_epoch, before_epoch + u64::from(committed));
-        assert_eq!(sequence, before_sequence + u64::from(committed));
-        assert_eq!(audit_exists, committed);
-        if committed {
-            let outcome = outcome.ok_or("PRIMARY KEY drop outcome missing")?;
-            assert_eq!(outcome.status, OutcomeStatus::Committed);
-            assert_eq!(outcome.commit_sequence, sequence);
-        } else {
-            assert_eq!(outcome, None);
-        }
-        assert_eq!(
-            lookup_relation_id_by_name(&read, schema_id, "primary_key_drop_table")?,
-            Some(table_id)
-        );
-        drop(catalog);
-        drop(read);
-        prdb_engine::startup::validate_persisted_records(&reopened)?;
     }
     Ok(())
 }
