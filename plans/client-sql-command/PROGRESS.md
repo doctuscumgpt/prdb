@@ -147,3 +147,9 @@
 - Contract: [client SQL command](../../specs/client-sql-command.md), [client SDK](../../specs/client-sdk.md), and [schema DDL](../../specs/ddl-schema.md). The command accepts schema rename and `DROP ... RESTRICT` statements and sends only typed authenticated control operations.
 - Regression: parser cases cover both statements and fail-closed handling of CASCADE and multiple statements. AdminClient process-boundary protocol tests cover metadata resolution, PREPARE/START, and committed results.
 - Verification: all seven parser tests and the authenticated AdminClient TCP rename/drop regression passed. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. See [schema DDL progress](../ddl-schema/PROGRESS.md).
+
+## Administrative SQL CLI: table rename and restricted drop — implemented
+
+- Contract: [client SQL command](../../specs/client-sql-command.md), [client SDK](../../specs/client-sdk.md), and [schema DDL](../../specs/ddl-schema.md). Qualified names resolve through authenticated metadata and invoke the existing table lifecycle operations.
+- Regression: parser tests verify single-statement qualified rename and RESTRICT drop. AdminClient TCP coverage verifies schema/relation metadata resolution, typed PREPARE requests, and committed responses for both operations.
+- Verification: all eight parser tests and the authenticated AdminClient TCP rename/drop regression passed after resolving paged metadata. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. See [schema DDL progress](../ddl-schema/PROGRESS.md).

@@ -2735,6 +2735,26 @@ impl AdminClient {
         self.drop_schema(schema_id)
     }
 
+    pub fn execute_rename_table_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_rename_table(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let table_id = self.resolve_table_sql_name(&statement.schema, &statement.table)?;
+        self.rename_table(table_id, &statement.new_name)
+    }
+
+    pub fn execute_drop_table_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let (schema, table) = crate::ddl_sql::parse_drop_table(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let table_id = self.resolve_table_sql_name(&schema, &table)?;
+        self.drop_table(table_id)
+    }
+
     fn resolve_schema_sql_name(&mut self, name: &str) -> Result<[u8; 16], ClientSubmitError> {
         let mut cursor = None;
         let mut schema_id = None;
@@ -2751,6 +2771,30 @@ impl AdminClient {
             }
         }
         schema_id.ok_or(ClientSubmitError::InvalidAdministrativeRequest)
+    }
+
+    fn resolve_table_sql_name(
+        &mut self,
+        schema: &str,
+        table: &str,
+    ) -> Result<[u8; 16], ClientSubmitError> {
+        let schema_id = self.resolve_schema_sql_name(schema)?;
+        let mut table_id = None;
+        let mut cursor = None;
+        loop {
+            let page =
+                self.list_relations_page(schema_id, DEFAULT_METADATA_PAGE_SIZE, cursor.as_deref())?;
+            for relation in page.records {
+                if relation.name == table && table_id.replace(relation.relation_id).is_some() {
+                    return Err(ClientSubmitError::InvalidResponse);
+                }
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        table_id.ok_or(ClientSubmitError::InvalidAdministrativeRequest)
     }
 
     pub fn add_column(

@@ -522,3 +522,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: parser tests reject incomplete clauses, quoted names, CASCADE, and multi-statement input. The authenticated AdminClient TCP integration renames then drops a schema via SQL and verifies the typed operation arguments and committed results.
 - Verification: all seven parser tests and the authenticated AdminClient TCP rename/drop regression passed. Workspace formatting, locked offline build, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests.
 - Next smallest behavior: add SQL `CREATE TABLE ... PRIMARY KEY` only after extending the typed create operation and storage commit to atomically publish the key and backing index with the table.
+
+## DS-8 follow-up: table rename and restricted drop SQL — implemented
+
+- Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). Qualified table names resolve through the authenticated schema and relation metadata pages; storage retains ownership and dependency validation.
+- Implementation: `ALTER TABLE schema.table RENAME TO name` and `DROP TABLE schema.table RESTRICT` map to the existing `tables.rename` and `tables.drop` operations on the same authenticated control connection.
+- Regression: parser tests reject unqualified names, incomplete syntax, CASCADE, and multiple statements. The mock TCP AdminClient test resolves schema and relation metadata, checks typed operation arguments for rename/drop, and verifies committed outcomes.
+- Verification: all eight parser tests and the authenticated AdminClient TCP rename/drop regression passed. Workspace formatting, locked offline build, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests.
+- Next smallest behavior: add SQL `CREATE TABLE ... PRIMARY KEY` only after extending the typed create operation and storage commit to atomically publish the key and backing index with the table.

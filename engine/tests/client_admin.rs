@@ -1250,6 +1250,93 @@ fn admin_client_executes_schema_rename_and_drop_sql_through_control_protocol() {
 }
 
 #[test]
+fn admin_client_executes_table_rename_and_drop_sql_through_control_protocol() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        for (operation, arguments, operation_id, sequence) in [
+            (
+                "tables.rename",
+                r#"{"table_id":"b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4","name":"archive"}"#,
+                [0x69; 16],
+                47,
+            ),
+            (
+                "tables.drop",
+                r#"{"table_id":"b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4"}"#,
+                [0x6a; 16],
+                48,
+            ),
+        ] {
+            let schemas = read_frame(&mut stream, &mut decoder);
+            assert!(
+                String::from_utf8(schemas.payload.clone())
+                    .unwrap()
+                    .contains(r#""operation":"metadata.schemas.list""#)
+            );
+            respond(
+                &mut stream,
+                &schemas,
+                format!(
+                    r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                    "a3".repeat(16)
+                )
+                .as_bytes(),
+            );
+            let relations = read_frame(&mut stream, &mut decoder);
+            let relation_payload = String::from_utf8(relations.payload.clone()).unwrap();
+            assert!(relation_payload.contains(r#""operation":"metadata.relations.list""#));
+            assert!(relation_payload.contains(&"a3".repeat(16)));
+            respond(
+                &mut stream,
+                &relations,
+                format!(r#"{{"relations":[{{"relation_id":"{}","name":"events"}}],"next_cursor":null}}"#, "b4".repeat(16)).as_bytes(),
+            );
+            let prepare = read_frame(&mut stream, &mut decoder);
+            let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+            assert!(payload.contains(&format!("\"operation\":\"{operation}\"")));
+            assert!(payload.contains(&format!("\"arguments\":{arguments}")));
+            respond(
+                &mut stream,
+                &prepare,
+                format!(
+                    r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                    hex(&operation_id)
+                )
+                .as_bytes(),
+            );
+            let start = read_frame(&mut stream, &mut decoder);
+            respond(
+                &mut stream,
+                &start,
+                format!(r#"{{"operation_id":"{}","outcome":"committed","table_id":"{}","commit_sequence":"{}"}}"#, hex(&operation_id), "b4".repeat(16), sequence).as_bytes(),
+            );
+        }
+    });
+
+    let mut secret = [5; 32];
+    let mut client = AdminClient::connect_authenticated_with_timeout(
+        address,
+        [6; 16],
+        &mut secret,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let renamed = client
+        .execute_rename_table_sql("ALTER TABLE app.events RENAME TO archive")
+        .unwrap();
+    assert_eq!(renamed.commit_sequence, 47);
+    let dropped = client
+        .execute_drop_table_sql("DROP TABLE app.events RESTRICT")
+        .unwrap();
+    assert_eq!(dropped.commit_sequence, 48);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_renames_and_drops_tables() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

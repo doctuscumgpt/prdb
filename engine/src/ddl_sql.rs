@@ -30,6 +30,13 @@ pub struct RenameSchemaSql {
     pub new_name: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RenameTableSql {
+    pub schema: String,
+    pub table: String,
+    pub new_name: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DdlSqlError {
     InvalidStatement,
@@ -181,6 +188,36 @@ pub fn parse_drop_schema(sql: &str) -> Result<String, DdlSqlError> {
     parser.word("restrict")?;
     finish_statement(&mut parser)?;
     Ok(schema)
+}
+
+pub fn parse_rename_table(sql: &str) -> Result<RenameTableSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("table")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("rename")?;
+    parser.word("to")?;
+    let new_name = parser.identifier()?;
+    finish_statement(&mut parser)?;
+    Ok(RenameTableSql {
+        schema,
+        table,
+        new_name,
+    })
+}
+
+pub fn parse_drop_table(sql: &str) -> Result<(String, String), DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("drop")?;
+    parser.word("table")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("restrict")?;
+    finish_statement(&mut parser)?;
+    Ok((schema, table))
 }
 
 fn statement_parser(sql: &str) -> Result<Parser, DdlSqlError> {
@@ -636,6 +673,34 @@ mod tests {
         ] {
             assert!(
                 parse_rename_schema(sql).is_err() && parse_drop_schema(sql).is_err(),
+                "accepted {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_qualified_table_rename_and_restrict_drop() {
+        assert_eq!(
+            parse_rename_table("ALTER TABLE app.events RENAME TO archived;").unwrap(),
+            RenameTableSql {
+                schema: "app".into(),
+                table: "events".into(),
+                new_name: "archived".into(),
+            }
+        );
+        assert_eq!(
+            parse_drop_table("DROP TABLE app.events RESTRICT").unwrap(),
+            ("app".into(), "events".into())
+        );
+        for sql in [
+            "ALTER TABLE events RENAME TO archived",
+            "ALTER TABLE app.events RENAME archived",
+            "DROP TABLE app.events",
+            "DROP TABLE app.events CASCADE",
+            "DROP TABLE app.events RESTRICT; DROP TABLE app.other RESTRICT",
+        ] {
+            assert!(
+                parse_rename_table(sql).is_err() && parse_drop_table(sql).is_err(),
                 "accepted {sql}"
             );
         }

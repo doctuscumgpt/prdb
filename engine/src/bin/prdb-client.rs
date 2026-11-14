@@ -222,10 +222,14 @@ fn admin_sql(
     let schema_statement = prdb_engine::ddl_sql::parse_create_schema(sql).ok();
     let rename_schema_statement = prdb_engine::ddl_sql::parse_rename_schema(sql).ok();
     let drop_schema_statement = prdb_engine::ddl_sql::parse_drop_schema(sql).ok();
+    let rename_table_statement = prdb_engine::ddl_sql::parse_rename_table(sql).ok();
+    let drop_table_statement = prdb_engine::ddl_sql::parse_drop_table(sql).ok();
     if table_statement.is_none()
         && schema_statement.is_none()
         && rename_schema_statement.is_none()
         && drop_schema_statement.is_none()
+        && rename_table_statement.is_none()
+        && drop_table_statement.is_none()
     {
         return Err("invalid administrative SQL: unsupported statement".to_owned());
     }
@@ -268,12 +272,30 @@ fn admin_sql(
             lower_hex(&result.operation_id),
             result.commit_sequence
         );
-    } else {
+    } else if drop_schema_statement.is_some() {
         let result = client
             .execute_drop_schema_sql(sql)
             .map_err(|error| error.to_string())?;
         println!(
             "dropped schema (operation {}, commit {})",
+            lower_hex(&result.operation_id),
+            result.commit_sequence
+        );
+    } else if rename_table_statement.is_some() {
+        let result = client
+            .execute_rename_table_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "renamed table (operation {}, commit {})",
+            lower_hex(&result.operation_id),
+            result.commit_sequence
+        );
+    } else {
+        let result = client
+            .execute_drop_table_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "dropped table (operation {}, commit {})",
             lower_hex(&result.operation_id),
             result.commit_sequence
         );

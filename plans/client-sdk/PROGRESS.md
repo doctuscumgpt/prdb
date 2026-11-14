@@ -702,3 +702,9 @@
 - Contract: [client SDK](../../specs/client-sdk.md) and [schema DDL](../../specs/ddl-schema.md). SQL entry points resolve only schemas visible through the authenticated control metadata API and dispatch the existing typed operations.
 - Regression: mock authenticated control coverage resolves the schema twice, verifies `schemas.rename` and `schemas.drop` arguments, and checks their committed outcomes.
 - Verification: the authenticated AdminClient TCP rename/drop regression passed. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. Details are in [schema DDL progress](../ddl-schema/PROGRESS.md).
+
+## SDK-5 follow-up: table rename and restricted drop through SQL — implemented
+
+- Contract: [client SDK](../../specs/client-sdk.md) and [schema DDL](../../specs/ddl-schema.md). The SQL helper resolves an authorized visible schema/relation and then uses existing typed table lifecycle requests.
+- Regression: mock TCP coverage resolves schema and relation pages, asserts `tables.rename` and `tables.drop` PREPARE arguments, and checks committed operation results.
+- Verification: the authenticated AdminClient TCP rename/drop regression passed after resolving metadata pages. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. Details are in [schema DDL progress](../ddl-schema/PROGRESS.md).
