@@ -80,6 +80,8 @@ The SQL DML AST API in [`prdb_sdk_sql_dml_v1.h`](../engine/include/prdb_sdk_sql_
 
 Expose typed definitions/builders and text submission for [schema DDL](ddl-schema.md), [users/roles](ddl-identity.md), and [permission DDL](ddl-permissions.md). Administration occurs in the client over a separate authenticated control-mode gateway connection; user query libraries cannot inherit that connection or its tokens. Storage validates every definition and privilege independently. Do not embed credentials in compiled artifacts or logged SQL. Data SQL functions reject DDL in an invocation, even when its principal also has administrative privileges.
 
+`AdminClient::execute_add_foreign_key_sql` resolves source and target columns through authenticated metadata and binds the target to an ordered visible PRIMARY KEY or UNIQUE constraint before calling the typed foreign-key operation. `execute_drop_constraint_sql` accepts a generated foreign-key ID from the ADD result, confirms that the foreign key belongs to the selected source table, and invokes the typed drop operation. Constraint names are not available in the current catalog.
+
 ## Metadata SDK Surfaces
 
 Provide typed discovery records and bounded paging for [metadata discovery](metadata-discovery.md), including SQL access to its built-in metadata relations. Keep administrative definition inspection and [live monitoring](operational-metadata.md) in the client control API, not executor host callbacks. Expose neither raw dictionary records nor physical roots/paths. Durable status has an explicit unknown/expired outcome so clients cannot mistake missing retained history for safe retry.

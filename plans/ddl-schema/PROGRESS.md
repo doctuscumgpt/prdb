@@ -545,7 +545,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Implementation: [SQL parser](../../engine/src/ddl_sql.rs), [table creation](../../engine/src/storage_manager.rs), and create-table DDL validation in [commit.rs](../../engine/src/commit.rs).
 - Regression evidence: parser coverage handles multiple composite keys and rejects duplicate, unknown, or repeated columns. The authenticated storage regression atomically creates a composite PRIMARY KEY plus nullable UNIQUE constraint and validates persisted catalog startup. Decoder, AdminClient, and CLI tests assert nested typed arrays.
 - Verification: focused parser, decoder, AdminClient, CLI, and storage tests passed. Locked workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
-- Next: add bounded SQL FOREIGN KEY creation and ALTER CONSTRAINT lifecycle coverage; named constraints and broader expression forms remain deferred.
+- Next: extend bounded CREATE TABLE SQL to support atomic foreign-key definitions; named constraints remain deferred.
 
 ## DS-8: ALTER TABLE SQL for PRIMARY KEY and UNIQUE — implemented
 
@@ -553,7 +553,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Implementation: bounded statement parsing in [ddl_sql.rs](../../engine/src/ddl_sql.rs), metadata resolution and typed dispatch in [client_submit.rs](../../engine/src/client_submit.rs), and `admin-sql` routing in [prdb-client.rs](../../engine/src/bin/prdb-client.rs). Named constraints remain unsupported because the current typed APIs generate catalog identities.
 - Regression: parser tests accept composite key forms and reject unqualified, empty, duplicate, named, and multi-statement input. The authenticated TCP test resolves schema, relation, and columns, then verifies the typed `constraints.create_unique` request and returned IDs. The CLI process test confirms recognized SQL reaches credential loading before network access.
 - Verification: focused parser, AdminClient TCP, and CLI tests passed. Locked workspace build, format check, warning-denied Clippy, complete serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.
-- Next: add bounded SQL FOREIGN KEY creation and ALTER CONSTRAINT lifecycle coverage; named constraints remain deferred.
+- Next: extend bounded CREATE TABLE SQL to support atomic foreign-key definitions; named constraints remain deferred.
 
 ## DS-8: bounded ALTER TABLE CHECK SQL — implemented
 
@@ -601,3 +601,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: parser and binder tests cover DECIMAL coefficient scaling, VARCHAR and Boolean typing, type mismatch/loss rejection, ALTER metadata binding/dependency IDs, CREATE TABLE EIR1 decoding, CLI recognition, expression validation, and atomic storage publication.
 - Limit: CHECK remains deterministic and row-local; named constraints and FOREIGN KEY SQL are deferred.
 - Validation: focused parser, EIR binding, authenticated AdminClient, CLI, and storage regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed.
+
+
+## DS-11: ALTER TABLE FOREIGN KEY SQL lifecycle — implemented
+
+- Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). ADD resolves source/target relations and columns through authenticated metadata and requires the ordered target columns to match a visible PRIMARY KEY or UNIQUE constraint before dispatching typed FK creation. DROP CONSTRAINT accepts the generated foreign-key ID and verifies it belongs to the selected table before typed removal.
+- Regression: parser coverage checks qualified composite forms, equal arity, duplicate-name rejection, single-statement syntax, and generated-ID parsing. Authenticated TCP tests verify metadata binding, target constraint selection, create/drop operations, and returned IDs; CLI recognition is covered before credentials/network.
+- Limit: FK creation in CREATE TABLE remains unsupported because the existing atomic create API has no referenced-table definition. User-defined constraint names remain deferred.
+- Validation: focused parser, authenticated AdminClient, and CLI regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed.

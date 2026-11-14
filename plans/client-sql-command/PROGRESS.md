@@ -215,3 +215,9 @@
 - `admin-sql` accepts typed comparisons and literals in CREATE TABLE and ALTER TABLE CHECK clauses and rejects incompatible types before PREPARE.
 - Literals are contextual to compared columns; DECIMAL coefficients are rescaled exactly to the column scale.
 - Focused parser, authenticated client, CLI, expression, and storage regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed.
+
+
+## Administrative SQL: foreign-key create/drop — implemented
+
+- `admin-sql` recognizes qualified ADD FOREIGN KEY and DROP CONSTRAINT by generated ID. Metadata binding requires a visible ordered PRIMARY KEY or UNIQUE target and confirms drop ownership by source table.
+- Parser, authenticated AdminClient create/drop, and CLI pre-credential regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed.

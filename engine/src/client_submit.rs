@@ -2947,6 +2947,127 @@ impl AdminClient {
         }
     }
 
+    /// Add a foreign key by resolving both relations and the referenced
+    /// PRIMARY KEY/UNIQUE constraint through authenticated administrative
+    /// metadata before invoking the typed operation.
+    pub fn execute_add_foreign_key_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminForeignKeyResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_add_foreign_key(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let source_schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        let source_table_id =
+            self.resolve_table_sql_name_in_schema(source_schema_id, &statement.table)?;
+        let target_schema_id = self.resolve_schema_sql_name(&statement.referenced_schema)?;
+        let target_table_id =
+            self.resolve_table_sql_name_in_schema(target_schema_id, &statement.referenced_table)?;
+
+        fn read_columns(
+            client: &mut AdminClient,
+            schema_id: [u8; 16],
+            table_id: [u8; 16],
+        ) -> Result<Vec<crate::metadata_discovery::VisibleColumn>, ClientSubmitError> {
+            let mut cursor = None;
+            let mut columns = Vec::new();
+            loop {
+                let page = client.list_columns_page(
+                    schema_id,
+                    table_id,
+                    DEFAULT_METADATA_PAGE_SIZE,
+                    cursor.as_deref(),
+                )?;
+                columns.extend(page.records);
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    return Ok(columns);
+                }
+            }
+        }
+
+        let source_columns = read_columns(self, source_schema_id, source_table_id)?;
+        let target_columns = read_columns(self, target_schema_id, target_table_id)?;
+        let resolve_ids =
+            |names: &[String], columns: &[crate::metadata_discovery::VisibleColumn]| {
+                names
+                    .iter()
+                    .map(|name| {
+                        columns
+                            .iter()
+                            .find(|column| &column.name == name)
+                            .map(|column| column.column_id)
+                            .ok_or(ClientSubmitError::InvalidAdministrativeRequest)
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            };
+        let source_column_ids = resolve_ids(&statement.columns, &source_columns)?;
+        let target_column_ids = resolve_ids(&statement.referenced_columns, &target_columns)?;
+
+        let mut cursor = None;
+        let mut target_constraints = Vec::new();
+        loop {
+            let page = self.list_constraints_page(
+                target_schema_id,
+                target_table_id,
+                DEFAULT_METADATA_PAGE_SIZE,
+                cursor.as_deref(),
+            )?;
+            target_constraints.extend(page.records);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let target_constraint_id = target_constraints
+            .iter()
+            .find(|constraint| {
+                matches!(
+                    constraint.kind,
+                    crate::metadata_discovery::AdministrativeConstraintKind::PrimaryKey
+                        | crate::metadata_discovery::AdministrativeConstraintKind::Unique
+                ) && constraint.column_ids == target_column_ids
+            })
+            .map(|constraint| constraint.constraint_id)
+            .ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
+
+        self.create_foreign_key(source_table_id, &source_column_ids, target_constraint_id)
+    }
+
+    /// Drop a foreign key from the selected table using its generated ID.
+    /// Constraint names are not supported by the current typed catalog API.
+    pub fn execute_drop_constraint_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_drop_constraint(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
+        let mut cursor = None;
+        let mut found_foreign_key = false;
+        loop {
+            let page = self.list_constraints_page(
+                schema_id,
+                table_id,
+                DEFAULT_METADATA_PAGE_SIZE,
+                cursor.as_deref(),
+            )?;
+            found_foreign_key |= page.records.iter().any(|constraint| {
+                constraint.constraint_id == statement.constraint_id
+                    && constraint.kind
+                        == crate::metadata_discovery::AdministrativeConstraintKind::ForeignKey
+            });
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        if !found_foreign_key {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        self.drop_foreign_key(statement.constraint_id)
+    }
+
     /// Add a bounded CHECK expression using qualified SQL names and the
     /// existing typed, separately authorized constraint operation.
     pub fn execute_add_check_constraint_sql(

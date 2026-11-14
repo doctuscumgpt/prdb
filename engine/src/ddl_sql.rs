@@ -55,6 +55,23 @@ pub struct AddKeyConstraintSql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddForeignKeySql {
+    pub schema: String,
+    pub table: String,
+    pub columns: Vec<String>,
+    pub referenced_schema: String,
+    pub referenced_table: String,
+    pub referenced_columns: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DropConstraintSql {
+    pub schema: String,
+    pub table: String,
+    pub constraint_id: [u8; 16],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AddCheckConstraintSql {
     pub schema: String,
     pub table: String,
@@ -429,6 +446,87 @@ pub fn parse_add_key_constraint(sql: &str) -> Result<AddKeyConstraintSql, DdlSql
         columns,
         kind,
     })
+}
+
+/// Parse qualified `ALTER TABLE ... ADD FOREIGN KEY (...) REFERENCES ...`.
+pub fn parse_add_foreign_key(sql: &str) -> Result<AddForeignKeySql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("table")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("add")?;
+    parser.word("foreign")?;
+    parser.word("key")?;
+    let columns = parse_column_name_list(&mut parser)?;
+    parser.word("references")?;
+    let referenced_schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let referenced_table = parser.identifier()?;
+    let referenced_columns = parse_column_name_list(&mut parser)?;
+    finish_statement(&mut parser)?;
+    if columns.len() > crate::tuple::MAX_COLUMNS
+        || columns.len() != referenced_columns.len()
+        || has_duplicates(&columns)
+        || has_duplicates(&referenced_columns)
+    {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    Ok(AddForeignKeySql {
+        schema,
+        table,
+        columns,
+        referenced_schema,
+        referenced_table,
+        referenced_columns,
+    })
+}
+
+/// Parse qualified `ALTER TABLE ... DROP CONSTRAINT 'generated-id'`.
+/// The current catalog has generated constraint IDs and no user constraint
+/// names, so SQL identifies the object using the ID returned by its creation.
+pub fn parse_drop_constraint(sql: &str) -> Result<DropConstraintSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("table")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("drop")?;
+    parser.word("constraint")?;
+    let constraint_id = match parser.peek() {
+        Some(Token::String(value)) => {
+            let parsed = parse_uuid(value)?;
+            parser.position += 1;
+            parsed
+        }
+        _ => return Err(DdlSqlError::InvalidStatement),
+    };
+    finish_statement(&mut parser)?;
+    if constraint_id == [0; 16] {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    Ok(DropConstraintSql {
+        schema,
+        table,
+        constraint_id,
+    })
+}
+
+fn parse_column_name_list(parser: &mut Parser) -> Result<Vec<String>, DdlSqlError> {
+    parser.take(Token::LeftParen)?;
+    let mut names = vec![parser.identifier()?];
+    while parser.peek() == Some(&Token::Comma) {
+        parser.position += 1;
+        names.push(parser.identifier()?);
+    }
+    parser.take(Token::RightParen)?;
+    Ok(names)
+}
+
+fn has_duplicates(names: &[String]) -> bool {
+    names.iter().collect::<std::collections::HashSet<_>>().len() != names.len()
 }
 
 /// Parse `ALTER TABLE schema.table ADD CHECK (expression)` using a bounded
@@ -1504,6 +1602,53 @@ mod tests {
             "ALTER TABLE app.events ADD UNIQUE (id); ALTER TABLE app.events ADD UNIQUE (id)",
         ] {
             assert!(parse_add_key_constraint(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_qualified_foreign_key_alteration() {
+        assert_eq!(
+            parse_add_foreign_key(
+                "ALTER TABLE app.events ADD FOREIGN KEY (tenant_id, event_id) REFERENCES core.tenants (tenant_id, id);"
+            )
+            .unwrap(),
+            AddForeignKeySql {
+                schema: "app".into(),
+                table: "events".into(),
+                columns: vec!["tenant_id".into(), "event_id".into()],
+                referenced_schema: "core".into(),
+                referenced_table: "tenants".into(),
+                referenced_columns: vec!["tenant_id".into(), "id".into()],
+            }
+        );
+        for sql in [
+            "ALTER TABLE app.events ADD FOREIGN KEY (tenant_id) REFERENCES core.tenants (tenant_id, id)",
+            "ALTER TABLE app.events ADD FOREIGN KEY (tenant_id, tenant_id) REFERENCES core.tenants (tenant_id, id)",
+            "ALTER TABLE app.events ADD FOREIGN KEY (tenant_id) REFERENCES tenants (tenant_id)",
+            "ALTER TABLE app.events ADD FOREIGN KEY (tenant_id) REFERENCES core.tenants (tenant_id); ALTER TABLE app.events ADD FOREIGN KEY (x) REFERENCES core.tenants (x)",
+        ] {
+            assert!(parse_add_foreign_key(sql).is_err(), "accepted {sql}");
+        }
+        assert_eq!(
+            parse_drop_constraint(
+                "ALTER TABLE app.orders DROP CONSTRAINT '01234567-89ab-cdef-0123-456789abcdef'"
+            )
+            .unwrap(),
+            DropConstraintSql {
+                schema: "app".into(),
+                table: "orders".into(),
+                constraint_id: [
+                    0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89,
+                    0xab, 0xcd, 0xef,
+                ],
+            }
+        );
+        for sql in [
+            "ALTER TABLE app.orders DROP CONSTRAINT fk_orders_customer",
+            "ALTER TABLE orders DROP CONSTRAINT '0123456789abcdef0123456789abcdef'",
+            "ALTER TABLE app.orders DROP CONSTRAINT '00000000000000000000000000000000'",
+        ] {
+            assert!(parse_drop_constraint(sql).is_err(), "accepted {sql}");
         }
     }
 

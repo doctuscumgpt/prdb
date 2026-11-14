@@ -225,6 +225,8 @@ fn admin_sql(
     let rename_table_statement = prdb_engine::ddl_sql::parse_rename_table(sql).ok();
     let drop_table_statement = prdb_engine::ddl_sql::parse_drop_table(sql).ok();
     let add_key_constraint_statement = prdb_engine::ddl_sql::parse_add_key_constraint(sql).ok();
+    let add_foreign_key_statement = prdb_engine::ddl_sql::parse_add_foreign_key(sql).ok();
+    let drop_constraint_statement = prdb_engine::ddl_sql::parse_drop_constraint(sql).ok();
     let add_check_constraint_statement = prdb_engine::ddl_sql::parse_add_check_constraint(sql).ok();
     let alter_column_nullability_statement =
         prdb_engine::ddl_sql::parse_alter_column_nullability(sql).ok();
@@ -238,6 +240,8 @@ fn admin_sql(
         && rename_table_statement.is_none()
         && drop_table_statement.is_none()
         && add_key_constraint_statement.is_none()
+        && add_foreign_key_statement.is_none()
+        && drop_constraint_statement.is_none()
         && add_check_constraint_statement.is_none()
         && alter_column_nullability_statement.is_none()
         && add_column_statement.is_none()
@@ -300,6 +304,25 @@ fn admin_sql(
             .map_err(|error| error.to_string())?;
         println!(
             "renamed table (operation {}, commit {})",
+            lower_hex(&result.operation_id),
+            result.commit_sequence
+        );
+    } else if add_foreign_key_statement.is_some() {
+        let result = client
+            .execute_add_foreign_key_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "created FOREIGN KEY {} (operation {}, commit {})",
+            lower_hex(&result.foreign_key_id),
+            lower_hex(&result.operation_id),
+            result.commit_sequence
+        );
+    } else if drop_constraint_statement.is_some() {
+        let result = client
+            .execute_drop_constraint_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "dropped constraint (operation {}, commit {})",
             lower_hex(&result.operation_id),
             result.commit_sequence
         );

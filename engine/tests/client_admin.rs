@@ -1452,6 +1452,200 @@ fn admin_client_adds_key_constraint_from_qualified_sql_names() {
 }
 
 #[test]
+fn admin_client_binds_foreign_key_sql_to_visible_columns_and_unique_target() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let replies = [
+            (
+                "metadata.schemas.list",
+                format!(
+                    r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                    "a3".repeat(16)
+                ),
+            ),
+            (
+                "metadata.relations.list",
+                format!(
+                    r#"{{"relations":[{{"relation_id":"{}","name":"orders"}}],"next_cursor":null}}"#,
+                    "b4".repeat(16)
+                ),
+            ),
+            (
+                "metadata.schemas.list",
+                format!(
+                    r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                    "a3".repeat(16)
+                ),
+            ),
+            (
+                "metadata.relations.list",
+                format!(
+                    r#"{{"relations":[{{"relation_id":"{}","name":"customers"}}],"next_cursor":null}}"#,
+                    "b5".repeat(16)
+                ),
+            ),
+            (
+                "metadata.columns.list",
+                format!(
+                    r#"{{"columns":[{{"column_id":"{}","name":"customer_id","ordinal":0,"scalar_type":"integer","nullable":false}}],"next_cursor":null}}"#,
+                    "c5".repeat(16)
+                ),
+            ),
+            (
+                "metadata.columns.list",
+                format!(
+                    r#"{{"columns":[{{"column_id":"{}","name":"id","ordinal":0,"scalar_type":"integer","nullable":false}}],"next_cursor":null}}"#,
+                    "c6".repeat(16)
+                ),
+            ),
+            (
+                "metadata.constraints.list",
+                format!(
+                    r#"{{"constraints":[{{"constraint_id":"{}","kind":"primary_key","column_ids":["{}"],"referenced_table_id":null,"referenced_column_ids":[]}}],"next_cursor":null}}"#,
+                    "d7".repeat(16),
+                    "c6".repeat(16)
+                ),
+            ),
+        ];
+        for (operation, body) in replies {
+            let request = read_frame(&mut stream, &mut decoder);
+            assert!(
+                String::from_utf8_lossy(&request.payload)
+                    .contains(&format!(r#""operation":"{operation}""#))
+            );
+            respond(&mut stream, &request, body.as_bytes());
+        }
+        let prepare = read_frame(&mut stream, &mut decoder);
+        let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+        assert!(payload.contains(r#""operation":"foreign_keys.create""#));
+        assert!(payload.contains(&format!(
+            r#""arguments":{{"source_table_id":"{}","source_column_ids":["{}"],"target_constraint_id":"{}"}}"#,
+            "b4".repeat(16),
+            "c5".repeat(16),
+            "d7".repeat(16)
+        )));
+        respond(
+            &mut stream,
+            &prepare,
+            format!(
+                r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                "e8".repeat(16)
+            )
+            .as_bytes(),
+        );
+        let start = read_frame(&mut stream, &mut decoder);
+        respond(
+            &mut stream,
+            &start,
+            format!(r#"{{"operation_id":"{}","outcome":"committed","foreign_key_id":"{}","commit_sequence":"79"}}"#, "e8".repeat(16), "f9".repeat(16)).as_bytes(),
+        );
+    });
+
+    let mut secret = [5; 32];
+    let mut client = AdminClient::connect_authenticated_with_timeout(
+        address,
+        [6; 16],
+        &mut secret,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let created = client
+        .execute_add_foreign_key_sql(
+            "ALTER TABLE app.orders ADD FOREIGN KEY (customer_id) REFERENCES app.customers (id)",
+        )
+        .unwrap();
+    assert_eq!(created.foreign_key_id, [0xf9; 16]);
+    assert_eq!(created.commit_sequence, 79);
+    server.join().unwrap();
+}
+
+#[test]
+fn admin_client_drops_only_a_foreign_key_attached_to_the_selected_table() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        for (operation, body) in [
+            (
+                "metadata.schemas.list",
+                format!(
+                    r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                    "a3".repeat(16)
+                ),
+            ),
+            (
+                "metadata.relations.list",
+                format!(
+                    r#"{{"relations":[{{"relation_id":"{}","name":"orders"}}],"next_cursor":null}}"#,
+                    "b4".repeat(16)
+                ),
+            ),
+            (
+                "metadata.constraints.list",
+                format!(
+                    r#"{{"constraints":[{{"constraint_id":"{}","kind":"foreign_key","column_ids":["{}"],"referenced_table_id":"{}","referenced_column_ids":["{}"]}}],"next_cursor":null}}"#,
+                    "c5".repeat(16),
+                    "c6".repeat(16),
+                    "d7".repeat(16),
+                    "e8".repeat(16)
+                ),
+            ),
+        ] {
+            let request = read_frame(&mut stream, &mut decoder);
+            assert!(
+                String::from_utf8_lossy(&request.payload)
+                    .contains(&format!(r#""operation":"{operation}""#))
+            );
+            respond(&mut stream, &request, body.as_bytes());
+        }
+        let prepare = read_frame(&mut stream, &mut decoder);
+        let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+        assert!(payload.contains(r#""operation":"foreign_keys.drop""#));
+        assert!(payload.contains(&format!(
+            r#""arguments":{{"foreign_key_id":"{}"}}"#,
+            "c5".repeat(16)
+        )));
+        respond(
+            &mut stream,
+            &prepare,
+            format!(
+                r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                "f9".repeat(16)
+            )
+            .as_bytes(),
+        );
+        let start = read_frame(&mut stream, &mut decoder);
+        respond(
+            &mut stream,
+            &start,
+            format!(r#"{{"operation_id":"{}","outcome":"committed","foreign_key_id":"{}","commit_sequence":"80"}}"#, "f9".repeat(16), "c5".repeat(16)).as_bytes(),
+        );
+    });
+
+    let mut secret = [5; 32];
+    let mut client = AdminClient::connect_authenticated_with_timeout(
+        address,
+        [6; 16],
+        &mut secret,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let result = client
+        .execute_drop_constraint_sql(
+            "ALTER TABLE app.orders DROP CONSTRAINT 'c5c5c5c5-c5c5-c5c5-c5c5-c5c5c5c5c5c5'",
+        )
+        .unwrap();
+    assert_eq!(result.commit_sequence, 80);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_binds_check_sql_names_to_eir_dependencies() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

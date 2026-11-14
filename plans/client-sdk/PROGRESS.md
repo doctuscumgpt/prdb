@@ -772,3 +772,9 @@
 - CREATE TABLE and ALTER TABLE CHECK now share schema-aware expression binding for all six comparison operators and typed scalar literals. ALTER binds names/types through authenticated column metadata and derives stable dependency IDs from the resulting EIR tree.
 - DECIMAL literals are parsed exactly at the compared column's scale; incompatible types, overflow, and lossy scale reduction reject before submission.
 - Parser, expression binding, authenticated AdminClient CREATE/ALTER, CLI, and storage regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed.
+
+
+## Administrative SQL: foreign-key create/drop — implemented
+
+- `ALTER TABLE ... ADD FOREIGN KEY` resolves source and target metadata, chooses the visible ordered PK/UNIQUE target, and uses the existing typed operation. `DROP CONSTRAINT 'generated-id'` confirms the FK belongs to the selected relation before removal.
+- Authenticated TCP and CLI syntax recognition regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed.
