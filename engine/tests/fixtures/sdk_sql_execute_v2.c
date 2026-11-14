@@ -106,6 +106,10 @@ static int32_t executor_request(void *context, uint16_t operation,
             0, 1, 7, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
             0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
             0, 3, 0, 0, 4, 0};
+        static const uint8_t expected_max_candidates_request[24] = {
+            0, 1, 7, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
+            0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
+            0, 128, 0, 0, 16, 0};
         static const uint8_t expected_many_candidates[24] = {
             0, 1, 7, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
             0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
@@ -122,6 +126,10 @@ static int32_t executor_request(void *context, uint16_t operation,
             0, 1, 7, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
             0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
             0, 3, 0, 0, 4, 0};
+        static const uint8_t continuation_max_candidates_request[24] = {
+            0, 1, 7, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
+            0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
+            0, 128, 0, 0, 16, 0};
         static const uint8_t continuation_many_candidates[24] = {
             0, 1, 7, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
             0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55,
@@ -148,6 +156,8 @@ static int32_t executor_request(void *context, uint16_t operation,
             const uint8_t *expected_continuation =
                 mock->expected_max_candidates == 3
                     ? continuation_three_candidates
+                    : mock->expected_max_candidates == 128
+                    ? continuation_max_candidates_request
                     : mock->expected_max_candidates == 40
                     ? continuation_many_candidates
                     : (mock->batch_len > 60 ? continuation_two_candidates
@@ -162,6 +172,8 @@ static int32_t executor_request(void *context, uint16_t operation,
             const uint8_t *expected_request =
                 mock->expected_max_candidates == 3
                     ? expected_three_candidates
+                    : mock->expected_max_candidates == 128
+                    ? expected_max_candidates_request
                     : mock->expected_max_candidates == 40
                     ? expected_many_candidates
                     : (mock->batch_len > 60 ? expected_two_candidates
@@ -345,15 +357,15 @@ static uint32_t make_two_matching_rows(uint8_t *p) {
     return offset;
 }
 
-static uint32_t make_three_matching_rows(uint8_t *p) {
+static uint32_t make_matching_rows(uint8_t *p, uint16_t row_count) {
     uint32_t offset = 0;
     put_u16(p, &offset, 1);
     p[offset++] = 0;
     p[offset++] = 7;
     memset(p + offset, 0x55, 15);
     offset += 15;
-    put_u16(p, &offset, 3);
-    for (uint8_t row = 0; row < 3; ++row) {
+    put_u16(p, &offset, row_count);
+    for (uint16_t row = 0; row < row_count; ++row) {
         p[offset++] = 8;
         memset(p + offset, (int)(row + 1), 15);
         offset += 15;
@@ -800,7 +812,10 @@ int main(void) {
     uint8_t two_rows_batch[128] = {0};
     uint32_t two_rows_batch_len = make_two_matching_rows(two_rows_batch);
     uint8_t three_rows_batch[160] = {0};
-    uint32_t three_rows_batch_len = make_three_matching_rows(three_rows_batch);
+    uint32_t three_rows_batch_len = make_matching_rows(three_rows_batch, 3);
+    uint8_t max_rows_batch[4096] = {0};
+    uint32_t max_rows_batch_len =
+        make_matching_rows(max_rows_batch, PRDB_SDK_SQL_EXEC_MAX_MUTATION_TARGETS);
     uint32_t updated_count = 0;
     assert(prdb_sdk_sql_execute_update_v1(
                &host, schema, sizeof(schema) - 1, update_sql,
@@ -861,6 +876,31 @@ int main(void) {
            PRDB_SDK_SQL_EXEC_OK);
     assert(updated_count == 3 && mock.stage_update_calls == 3 &&
            mock.planner_calls == 1 && mock.executor_calls == 7 &&
+           mock.statement_failed == 0 && mock.scan_finished);
+
+    mock.batch = max_rows_batch;
+    mock.batch_len = max_rows_batch_len;
+    mock.planner_calls = 0;
+    mock.executor_calls = 0;
+    mock.statement_failed = 0;
+    mock.stage_update_calls = 0;
+    mock.scan_finished = 0;
+    mock.expected_max_candidates = PRDB_SDK_SQL_EXEC_MAX_MUTATION_TARGETS;
+    updated_count = 777;
+    assert(prdb_sdk_sql_execute_update_v1(
+               &host, schema, sizeof(schema) - 1, update_sql,
+               sizeof(update_sql) - 1, &parameter, 1,
+               PRDB_SDK_SQL_EXEC_MAX_MUTATION_TARGETS, sizeof(batch_response),
+               planner_response, sizeof(planner_response), executor_response,
+               sizeof(executor_response), batch_response,
+               sizeof(batch_response), update_request, sizeof(update_request),
+               planner_columns, 1, executor_columns, 1, &update_binding,
+               sizeof(update_binding), update_cell_scratch, 1, update_targets,
+               PRDB_SDK_SQL_EXEC_MAX_MUTATION_TARGETS, update_patches, 1,
+               &updated_count) == PRDB_SDK_SQL_EXEC_OK);
+    assert(updated_count == PRDB_SDK_SQL_EXEC_MAX_MUTATION_TARGETS &&
+           mock.stage_update_calls == PRDB_SDK_SQL_EXEC_MAX_MUTATION_TARGETS &&
+           mock.planner_calls == 1 && mock.executor_calls == 132 &&
            mock.statement_failed == 0 && mock.scan_finished);
     mock.stage_handles_repeated = 0;
     mock.require_finished_scan_before_stage = 0;
@@ -949,6 +989,30 @@ int main(void) {
                1, update_targets, 3, &deleted_count) == PRDB_SDK_SQL_EXEC_OK);
     assert(deleted_count == 3 && mock.stage_delete_calls == 3 &&
            mock.planner_calls == 1 && mock.executor_calls == 7 &&
+           mock.statement_failed == 0 && mock.scan_finished);
+
+    mock.batch = max_rows_batch;
+    mock.batch_len = max_rows_batch_len;
+    mock.planner_calls = 0;
+    mock.executor_calls = 0;
+    mock.statement_failed = 0;
+    mock.stage_delete_calls = 0;
+    mock.scan_finished = 0;
+    mock.expected_max_candidates = PRDB_SDK_SQL_EXEC_MAX_MUTATION_TARGETS;
+    deleted_count = 888;
+    assert(prdb_sdk_sql_execute_delete_v1(
+               &host, schema, sizeof(schema) - 1, delete_sql,
+               sizeof(delete_sql) - 1, &parameter, 1,
+               PRDB_SDK_SQL_EXEC_MAX_MUTATION_TARGETS, sizeof(batch_response),
+               planner_response, sizeof(planner_response), executor_response,
+               sizeof(executor_response), batch_response,
+               sizeof(batch_response), planner_columns, 1, executor_columns,
+               1, &update_binding, sizeof(update_binding), update_cell_scratch,
+               1, update_targets, PRDB_SDK_SQL_EXEC_MAX_MUTATION_TARGETS,
+               &deleted_count) == PRDB_SDK_SQL_EXEC_OK);
+    assert(deleted_count == PRDB_SDK_SQL_EXEC_MAX_MUTATION_TARGETS &&
+           mock.stage_delete_calls == PRDB_SDK_SQL_EXEC_MAX_MUTATION_TARGETS &&
+           mock.planner_calls == 1 && mock.executor_calls == 132 &&
            mock.statement_failed == 0 && mock.scan_finished);
     mock.stage_handles_repeated = 0;
     mock.require_finished_scan_before_stage = 0;
