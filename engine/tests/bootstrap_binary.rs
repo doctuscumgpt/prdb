@@ -1458,7 +1458,7 @@ fn restore_refuses_to_overwrite_an_unrelated_staging_image() {
 }
 
 #[test]
-fn startup_uses_active_image_and_only_tolerates_private_migration_staging_file() {
+fn startup_uses_active_image_and_tolerates_only_known_private_generation_files() {
     let fixture = Fixture::new();
     let mut session =
         prdb_engine::bootstrap::initialize(fixture.instance_dir(), "migration_admin", i64::MAX)
@@ -1483,6 +1483,23 @@ fn startup_uses_active_image_and_only_tolerates_private_migration_staging_file()
     ));
     std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o600))
         .expect("restore staging permissions");
+
+    let restore_copy = fixture.instance_dir().join(".prdb-restore.copying");
+    std::fs::write(&restore_copy, b"interrupted restore copy")
+        .expect("write interrupted restore copy");
+    std::fs::set_permissions(&restore_copy, std::fs::Permissions::from_mode(0o600))
+        .expect("make restore copy private");
+    drop(
+        StorageInstance::open(fixture.instance_dir()).expect("start with interrupted restore copy"),
+    );
+    std::fs::set_permissions(&restore_copy, std::fs::Permissions::from_mode(0o640))
+        .expect("broaden restore copy permissions");
+    assert!(matches!(
+        StorageInstance::open(fixture.instance_dir()),
+        Err(BootstrapError::NotPrivate)
+    ));
+    std::fs::set_permissions(&restore_copy, std::fs::Permissions::from_mode(0o600))
+        .expect("restore restore-copy permissions");
 
     let unexpected = fixture.instance_dir().join(".prdb-migration.extra");
     std::fs::write(&unexpected, b"unknown file").expect("write unexpected file");
