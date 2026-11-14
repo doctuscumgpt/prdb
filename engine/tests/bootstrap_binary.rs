@@ -1173,6 +1173,27 @@ fn migration_apply_requires_complete_history_ack_and_publishes_validated_v2() {
         )
         .expect("compare retained source with backup")
     );
+    let inspected = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-inspect", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--backup-dir")
+        .arg(&backup_path)
+        .output()
+        .expect("inspect migration generations after publication");
+    assert!(
+        inspected.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    let inspection = String::from_utf8(inspected.stdout).expect("UTF-8 inspection output");
+    assert!(inspection.contains("active=READY"), "{inspection}");
+    assert!(inspection.contains("catalog_version=2"), "{inspection}");
+    assert!(inspection.contains("staging=READY"), "{inspection}");
+    assert!(inspection.contains("catalog_version=1"), "{inspection}");
+    assert!(
+        inspection.contains("backup=VERIFIED active_matches=false staging_matches=true"),
+        "{inspection}"
+    );
     let retained_bytes = std::fs::read(fixture.instance_dir().join(".prdb-migration.next"))
         .expect("read retained source before discard attempt");
     let discard_after_publication = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
