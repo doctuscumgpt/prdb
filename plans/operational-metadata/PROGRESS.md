@@ -242,3 +242,10 @@
 - Regression: the pressure loop now performs at least 512 cross-owner `get_invocation_status` calls and requires `None` for the same live/terminal cancellation target. Owner point lookups continue to return a valid live or retained status in the same loop.
 - Verification: focused delegated-cgroup pressure test, workspace build, format check, warning-denied all-target Clippy, TinyCC SDK suite and sandbox fixture, release-profile validation (10 binaries and one query fixture), and delegated cgroup probe passed. The full serial delegated-cgroup workspace suite passed with zero ignored tests; it reported 233 engine unit tests, 172 commit tests, and all other targets passing. `git diff --check` passed.
 - Remaining: broader pressure coverage for other monitoring APIs and OM-2 registry families; exact redb retained-byte/cache telemetry remains unavailable, and there is no asynchronous job API to monitor.
+
+## OM-7 administrator point-status pressure — verified
+
+- Contract: administrator point-status lookup remains available for a live invocation and its retained terminal outcome while monitoring load overlaps a durable commit and cancellation.
+- Regression: `denied_monitoring_pressure_does_not_starve_commit_or_cancellation` now performs at least 512 authorized `get_administrative_invocation_status` lookups for the cancellation target. Each result must be a valid live, committing, or terminal status; the same run continues owner and cross-owner status checks plus authorized and denied page reads.
+- Verification: the focused delegated-cgroup regression passed. Workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests and sandbox fixture, release-profile build, delegated cgroup probe, and the full serial delegated-cgroup workspace suite passed with zero ignored tests. The suite reported 233 engine unit tests and 172 commit tests passing; `git diff --check` passed.
+- Remaining: broader pressure coverage for other monitoring APIs and OM-2 registry families; exact redb retained-byte/cache telemetry remains unavailable, and there is no asynchronous job API to monitor.

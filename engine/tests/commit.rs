@@ -13805,6 +13805,7 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
     let own_status_requests = std::sync::atomic::AtomicUsize::new(0);
     let owner_point_status_requests = std::sync::atomic::AtomicUsize::new(0);
     let cross_owner_status_requests = std::sync::atomic::AtomicUsize::new(0);
+    let admin_point_status_requests = std::sync::atomic::AtomicUsize::new(0);
     let admin_runtime_requests = std::sync::atomic::AtomicUsize::new(0);
     let admin_audit_requests = std::sync::atomic::AtomicUsize::new(0);
 
@@ -13817,6 +13818,7 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
         let own_count = &own_status_requests;
         let owner_point_count = &owner_point_status_requests;
         let cross_owner_count = &cross_owner_status_requests;
+        let admin_point_count = &admin_point_status_requests;
         let admin_runtime_count = &admin_runtime_requests;
         let admin_audit_count = &admin_audit_requests;
         let pressure = scope.spawn(move || {
@@ -13854,6 +13856,17 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
                     .expect("cross-owner status denial remains available under pressure")
                     .is_none());
                 cross_owner_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let admin_status = pressure_storage
+                    .get_administrative_invocation_status(admin_id, cancel_id, now_us)
+                    .expect("authorized administrator point status remains available under pressure")
+                    .expect("administrator can inspect the live or retained invocation");
+                assert!(matches!(
+                    admin_status.status,
+                    prdb_engine::storage_manager::InvocationStatus::Active { .. }
+                        | prdb_engine::storage_manager::InvocationStatus::Committing { .. }
+                        | prdb_engine::storage_manager::InvocationStatus::Terminal(_)
+                ));
+                admin_point_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 pressure_storage
                     .list_runtime_invocations(admin_id, now_us, 1, None)
                     .expect("authorized runtime page remains available under pressure");
@@ -13874,6 +13887,7 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
                     && own_count.load(std::sync::atomic::Ordering::Relaxed) >= 512
                     && owner_point_count.load(std::sync::atomic::Ordering::Relaxed) >= 512
                     && cross_owner_count.load(std::sync::atomic::Ordering::Relaxed) >= 512
+                    && admin_point_count.load(std::sync::atomic::Ordering::Relaxed) >= 512
                     && admin_runtime_count.load(std::sync::atomic::Ordering::Relaxed) >= 512
                     && admin_audit_count.load(std::sync::atomic::Ordering::Relaxed) >= 512
                 {
@@ -13908,6 +13922,7 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
     assert!(own_status_requests.load(std::sync::atomic::Ordering::Relaxed) >= 512);
     assert!(owner_point_status_requests.load(std::sync::atomic::Ordering::Relaxed) >= 512);
     assert!(cross_owner_status_requests.load(std::sync::atomic::Ordering::Relaxed) >= 512);
+    assert!(admin_point_status_requests.load(std::sync::atomic::Ordering::Relaxed) >= 512);
     assert!(admin_runtime_requests.load(std::sync::atomic::Ordering::Relaxed) >= 512);
     assert!(admin_audit_requests.load(std::sync::atomic::Ordering::Relaxed) >= 512);
     assert!(matches!(
