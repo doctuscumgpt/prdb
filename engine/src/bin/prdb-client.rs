@@ -34,6 +34,7 @@ const USAGE: &str = "Usage:\n\
     --cpu-baseline NAME --runtime-profile NAME --compiler-identity TEXT [--parameters FILE] \\
     [--tcc FILE] [--shared-linker FILE] [--patchelf FILE] \\
     [--deadline-ms N] [--workload operational|analytical]\n\
+  prdb-client admin-sql --address IP:PORT --credentials ADMIN_FILE --sql-file FILE|-\n\
   prdb-client status --address IP:PORT --credentials FILE --invocation-id HEX\n\n\
   prdb-client cancel --address IP:PORT --credentials FILE --invocation-id HEX\n\n\
   prdb-client admin-cancel --address IP:PORT --credentials ADMIN_FILE --invocation-id HEX\n\n\
@@ -156,6 +157,7 @@ fn run() -> Result<(), String> {
     match command.as_str() {
         "submit" => submit(address, credentials_path, &mut fields),
         "run-sql" => run_sql(address, credentials_path, &mut fields),
+        "admin-sql" => admin_sql(address, credentials_path, &mut fields),
         "status" => status(address, credentials_path, &mut fields),
         "cancel" => cancel(address, credentials_path, &mut fields),
         "admin-cancel" => admin_cancel(address, credentials_path, &mut fields),
@@ -204,6 +206,40 @@ fn run() -> Result<(), String> {
         }
         _ => Err(format!("unknown command {command}\n{USAGE}")),
     }
+}
+
+fn admin_sql(
+    address: SocketAddr,
+    credentials_path: PathBuf,
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<(), String> {
+    let sql_path = take_path(fields, "--sql-file")?;
+    reject_unknown(fields)?;
+    let sql_bytes = Zeroizing::new(read_sql_input(&sql_path).map_err(|error| error.to_string())?);
+    let sql =
+        std::str::from_utf8(&sql_bytes).map_err(|_| "SQL input must be valid UTF-8".to_owned())?;
+    let statement = prdb_engine::ddl_sql::parse_create_table(sql)
+        .map_err(|error| format!("invalid administrative SQL: {error:?}"))?;
+
+    let mut administrator =
+        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
+    let mut client = AdminClient::connect_authenticated(
+        address,
+        administrator.token_id,
+        &mut administrator.token_secret,
+    )
+    .map_err(|error| error.to_string())?;
+    let result = client
+        .execute_create_table_sql(sql)
+        .map_err(|error| error.to_string())?;
+    println!(
+        "created table {} with {} columns (operation {}, commit {})",
+        lower_hex(&result.table_id),
+        statement.columns.len(),
+        lower_hex(&result.operation_id),
+        result.commit_sequence
+    );
+    Ok(())
 }
 
 fn schema_table_admin(

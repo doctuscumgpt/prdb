@@ -33,3 +33,8 @@ Run focused tests within each increment. Run Cargo operations that write the sha
 ## Handoff Evidence
 
 For each SQLCLI increment record the spec sections, observed failing assertion, changed C/Rust interfaces, commands actually run, gateway/sandbox status, and the next smallest task in a future `PROGRESS.md`. Do not mark SQLCLI-5 complete from package inspection alone; it requires the actual confined end-to-end query path.
+
+
+## Separate Administrative DDL Command
+
+`prdb-client admin-sql` is a distinct control-mode command for the bounded administrative CREATE TABLE SQL subset. It reuses the bounded local SQL file reader and typed `AdminClient` control operation. It is not a SQLCLI run-sql feature, does not use an invocation package, and does not send SQL to the gateway. Track its acceptance in this component's `PROGRESS.md` while broader DDL syntax grows under the schema DDL plan.

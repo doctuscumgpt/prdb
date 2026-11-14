@@ -683,4 +683,4 @@
 - Contract: [client SDK](../../specs/client-sdk.md). SQL DDL is exposed only by the authenticated `AdminClient`; no administrative credential or capability is added to query artifacts.
 - Implementation/evidence: `AdminClient::execute_create_table_sql` maps exact typed SQL defaults to `AdminColumnDefinition` and uses the existing PREPARE/START client method. The owning schema DDL progress records parser and control-session coverage.
 - Verification: workspace build, formatting, warning-denied Clippy, maintained TinyCC tests, release-profile validation, delegated-cgroup preflight, and the complete serial delegated-cgroup workspace suite passed; zero tests were ignored.
-- Next: expose the bounded administrative SQL DDL helper through an explicit local CLI command while keeping it separate from `run-sql`.
+- Follow-up: `prdb-client admin-sql` now exposes the bounded helper through a local SQL-file/stdin command. Its process tests verify typed control-mode PREPARE/START and reject unsupported SQL before credentials or network; see [client SQL command progress](../client-sql-command/PROGRESS.md).

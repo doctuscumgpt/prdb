@@ -79,6 +79,143 @@ fn client_frame_decoder_accepts_every_split_of_a_golden_frame() {
 }
 
 #[test]
+fn admin_sql_cli_runs_create_table_over_authenticated_control_mode() {
+    let temp = unique_temp_dir();
+    fs::create_dir(&temp).unwrap();
+    let credential_path = temp.join("admin.cred");
+    write_client_credentials(
+        &credential_path,
+        &ClientCredentials {
+            token_id: [0x41; 16],
+            token_secret: [0x42; 32],
+        },
+    )
+    .unwrap();
+    let sql_path = temp.join("create.sql");
+    fs::write(
+        &sql_path,
+        "CREATE TABLE app.events (id UUID NOT NULL, amount DECIMAL(5,2) DEFAULT 1.20);",
+    )
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        let hello = read_client_frame(&mut stream, &mut decoder);
+        assert_eq!(hello.kind, 1);
+        write_server_response(&mut stream, &hello, br#"{"transport":"plaintext_tcp","limits":{"chunk_bytes":131072,"control_bytes":32768,"payload_bytes":524288},"mode":"control","minor":0,"major":1}"#);
+        let auth = read_client_frame(&mut stream, &mut decoder);
+        assert_eq!(auth.kind, 2);
+        let decoded = decode_client_credentials(&auth.payload).unwrap();
+        assert_eq!(decoded.token_id, [0x41; 16]);
+        assert_eq!(decoded.token_secret, [0x42; 32]);
+        write_server_response(
+            &mut stream,
+            &auth,
+            br#"{"session_id":"abababababababababababababababab","authenticated":true}"#,
+        );
+
+        let schemas = read_client_frame(&mut stream, &mut decoder);
+        assert_eq!(schemas.kind, 10);
+        assert!(
+            String::from_utf8(schemas.payload.clone())
+                .unwrap()
+                .contains(r#""operation":"metadata.schemas.list""#)
+        );
+        write_server_response(
+            &mut stream,
+            &schemas,
+            format!(
+                r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                "11".repeat(16)
+            )
+            .as_bytes(),
+        );
+
+        let prepare = read_client_frame(&mut stream, &mut decoder);
+        assert_eq!(prepare.kind, 10);
+        let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+        assert!(payload.contains(r#""operation":"tables.create""#));
+        assert!(payload.contains(r#""value":"1.20""#));
+        let operation_id = [0x22; 16];
+        write_server_response(
+            &mut stream,
+            &prepare,
+            format!(
+                r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                hex(&operation_id)
+            )
+            .as_bytes(),
+        );
+        let start = read_client_frame(&mut stream, &mut decoder);
+        assert_eq!(start.kind, 10);
+        write_server_response(
+            &mut stream,
+            &start,
+            format!(r#"{{"operation_id":"{}","outcome":"committed","table_id":"{}","column_ids":["{}","{}"],"commit_sequence":"77"}}"#, hex(&operation_id), "33".repeat(16), "44".repeat(16), "55".repeat(16)).as_bytes(),
+        );
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            credential_path.to_str().unwrap(),
+            "--sql-file",
+            sql_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "admin-sql failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains(&"33".repeat(16)));
+    assert!(stdout.contains("with 2 columns"));
+    assert!(stdout.contains("commit 77"));
+    server.join().unwrap();
+    fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
+fn admin_sql_cli_rejects_unsupported_ddl_before_credentials_or_network() {
+    let temp = unique_temp_dir();
+    fs::create_dir(&temp).unwrap();
+    let sql_path = temp.join("unsupported.sql");
+    fs::write(&sql_path, "DROP TABLE app.events").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            temp.join("missing.cred").to_str().unwrap(),
+            "--sql-file",
+            sql_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid administrative SQL"));
+    assert!(matches!(
+        listener.accept(),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
+    fs::remove_dir_all(temp).unwrap();
+}
+
+#[test]
 fn run_sql_local_failures_do_not_connect_and_gateway_failures_clean_workspace() {
     let temp = unique_temp_dir();
     fs::create_dir(&temp).unwrap();
@@ -1410,4 +1547,8 @@ fn write_server_response(stream: &mut TcpStream, request: &ClientFrame, payload:
         payload: payload.to_vec(),
     };
     stream.write_all(&response.encode().unwrap()).unwrap();
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

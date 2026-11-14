@@ -120,3 +120,12 @@
 - Specification: documented clearing of partial decoded strings and nested values on malformed parameter JSON.
 - Verification: the focused response-decoder unit test passed. Locked workspace build, format check, warning-denied Clippy, complete maintained TinyCC SDK suite, sandbox query fixture build, and release-profile validation (10 engine binaries and one query fixture) passed. The delegated cgroup probe reported a writable cgroup v2 parent with `cpu memory pids` available and enabled. The full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
 - Scope: this covers allocations owned by the shared bounded JSON parser and `ResponseValue` tree. The original input remains the caller's responsibility; `run-sql` owns its input in a zeroizing buffer.
+
+
+## Administrative SQL CLI: authenticated CREATE TABLE — verified
+
+- Contract: [client SQL command](../../specs/client-sql-command.md), [client SDK](../../specs/client-sdk.md), and [schema DDL](../../specs/ddl-schema.md). `prdb-client admin-sql` reads a bounded SQL file or stdin, parses supported CREATE TABLE syntax before credentials/network, and routes only the typed table definition over control mode. `run-sql` remains the confined query path.
+- Implementation: command dispatch validates via `parse_create_table`, keeps SQL bytes in a zeroizing owner, authenticates with `AdminClient`, then uses `execute_create_table_sql`. Success reports only generated IDs, column count, and commit sequence.
+- Regression: the process test drives HELLO/AUTH, paged schema lookup, `tables.create` PREPARE/START, and committed response through a mock TCP control service and verifies the CLI summary.
+- Verification: `nix develop -c cargo test -p prdb-engine --test client_package admin_sql_cli --locked --offline` passed both CLI tests. `nix develop -c cargo fmt --all -- --check`, warning-denied workspace Clippy, locked workspace build, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+- Next smallest behavior: expose CREATE SCHEMA SQL with an explicit owner clause and the same pre-network parser validation.

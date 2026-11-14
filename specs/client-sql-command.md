@@ -23,6 +23,10 @@ prdb-client run-sql --address IP:PORT --credentials FILE \
 
 `--schema NAME` is a required normalized schema identifier used to resolve unqualified table names. It is explicit query context, not a default silently inferred by the client. The schema must be included in the PSC1 scope and currently authorized for the principal. `run-sql` v1 supports the SQL ABI v2 single-relation SELECT grammar (projection, bounded Boolean predicates, and optional LIMIT); DML and later SQL ABI extensions are rejected until explicitly supported by a later dispatcher version. It does not translate SQL, rewrite identifiers, or infer administrator authority. The SQL statement is embedded as bytes in generated C data, never interpolated into generated C source text. The generated wrapper uses query ABI v3 and invokes the versioned C SDK statement entry point, passes typed parameters, and uses the SDK SQLR result writer for row output. The client does not load or execute a client-selected SDK library to pre-parse SQL; syntax and statement support are determined by the SDK inside the confined executor.
 
+## Administrative DDL Input
+
+`prdb-client admin-sql --address IP:PORT --credentials ADMIN_FILE --sql-file FILE|-` executes the bounded administrative SQL subset implemented by `AdminClient::execute_create_table_sql`. The command accepts one qualified CREATE TABLE statement, reads at most 65,536 UTF-8 bytes without NUL, and rejects malformed or unsupported syntax before reading credentials or connecting. It uses the authenticated control channel, resolves the schema through control metadata, and sends the existing typed `tables.create` operation; SQL text is not sent to the gateway. On success it prints the generated table ID, column count, operation ID, and commit sequence. It does not run through `run-sql`, query artifacts, or user invocation transactions. This first version supports scalar columns, optional NOT NULL, and the typed DEFAULT forms listed in [schema DDL](ddl-schema.md); generated identity syntax and inline constraints remain unsupported.
+
 ## Parameters
 
 The optional `--parameters FILE` is a UTF-8 JSON file with this canonical shape:
