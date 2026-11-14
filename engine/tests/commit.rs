@@ -262,6 +262,78 @@ fn executor_ipc_scan_cells(
     Ok(page.rows.into_iter().map(|row| row.cells).collect())
 }
 
+fn executor_ipc_rejects_forged_handles(
+    invocation: &mut prdb_engine::transaction::InvocationTransaction<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::executor_ipc::{
+        OpenScanRequest, StageDeleteRequest, StageInsertRequest, StageUpdateRequest,
+        dispatch_executor_request,
+    };
+    use prdb_engine::ipc::{IpcFrame, Operation, ServiceRole};
+    use prdb_engine::metadata_discovery::{ExecutorRowHandle, ResolvedRelationHandle};
+    use prdb_engine::transaction::InsertInput;
+    use prdb_engine::tuple::FieldPatch;
+
+    let mut connection = invocation.open_executor_metadata_connection();
+    let forged_relation =
+        ResolvedRelationHandle::from_bytes(&[6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+            .ok_or("invalid forged relation test handle")?;
+    let forged_row =
+        ExecutorRowHandle::from_bytes(&[8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+            .ok_or("invalid forged row test handle")?;
+    let requests = [
+        (
+            Operation::OpenScan,
+            OpenScanRequest {
+                relation: forged_relation.clone(),
+                column_ids: Vec::new(),
+            }
+            .encode()?,
+        ),
+        (
+            Operation::StageInsert,
+            StageInsertRequest {
+                relation: forged_relation,
+                values: vec![InsertInput::Value(Some(ScalarValue::Bytea(Vec::new())))],
+            }
+            .encode()?,
+        ),
+        (
+            Operation::StageDelete,
+            StageDeleteRequest {
+                handle: forged_row.clone(),
+            }
+            .encode(),
+        ),
+        (
+            Operation::StageUpdate,
+            StageUpdateRequest {
+                handle: forged_row,
+                patches: vec![FieldPatch {
+                    ordinal: 0,
+                    value: None,
+                }],
+            }
+            .encode()?,
+        ),
+    ];
+    for (request_id, (operation, payload)) in requests.into_iter().enumerate() {
+        let result = dispatch_executor_request(
+            ServiceRole::Executor,
+            &mut connection,
+            &IpcFrame {
+                operation: operation as u16,
+                request_id: request_id as u64 + 1,
+                payload,
+            },
+        );
+        if result.is_ok() {
+            return Err(format!("executor accepted forged {operation:?} handle").into());
+        }
+    }
+    Ok(())
+}
+
 fn executor_ipc_probe_unique(
     invocation: &mut prdb_engine::transaction::InvocationTransaction<'_>,
     schema_name: &str,
@@ -22651,6 +22723,17 @@ fn gateway_service_listener_authenticates_control_admin_over_socket()
                 vec![column_id_bytes]
             )?,
             vec![vec![prdb_engine::authorization::SanitizedCell::Redacted]],
+        );
+        executor_ipc_rejects_forged_handles(&mut restricted)?;
+        assert_eq!(
+            executor_ipc_scan_cells(
+                &mut restricted,
+                "socket_policy_schema",
+                "socket_policy_table",
+                vec![column_id_bytes]
+            )?,
+            vec![vec![prdb_engine::authorization::SanitizedCell::Redacted]],
+            "forged IPC attempts must not widen the restricted principal's cell view"
         );
         reader.abort()?;
         restricted.abort()?;
