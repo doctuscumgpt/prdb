@@ -1017,3 +1017,10 @@
 - Regression confirms pinned redb 4.4.0 read-only open returns `UpgradeRequired(2)` and leaves the fixture bytes unchanged. A disposable copy was upgraded with redb 2.6.4 `Database::upgrade()`, then opened read/write and read-only by redb 4.4.0 with both original table values intact.
 - Verification: the focused `bootstrap_binary` regression passed. The redb 2.6.4 generator verified and recreated the fixture byte-for-byte; its `Database::upgrade()` converted a disposable copy, which redb 4.4.0 then recovered read/write and reopened read-only with both values intact. Formatting, locked workspace build, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed; sandbox and process tests were enabled and none were ignored. `git diff --check` passed.
 - Remaining: this is a small physical-format fixture, not a populated PRDB file or a supported operator upgrade command. Add application-data fixtures and an offline workflow before claiming redb-format upgrade support.
+
+## SM-1 / CL-4 redb physical format v2-to-v3 reopen — verified follow-up
+
+- Added an archived v3 physical-format fixture made by copying the v2 image and running redb 2.6.4 `Database::upgrade()`. Its hash and reproduction steps are recorded with the fixtures.
+- Regression opens a copy read/write with pinned redb 4.4.0 to perform recovery, checks both original table entries, closes it, then reopens read-only and confirms the entries remain present. Together with the v2 rejection test, this records the supported redb API transition boundary in the repository.
+- Verification: the focused `bootstrap_binary` regression passed. Broader workspace validation is not recorded in this follow-up.
+- Remaining: the fixture still does not contain a populated PRDB logical catalog, and no operator-facing offline physical-format upgrade workflow exists.

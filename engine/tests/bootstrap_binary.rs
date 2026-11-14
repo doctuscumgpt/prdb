@@ -8,7 +8,8 @@ use prdb_engine::metadata::EngineMetadata;
 use prdb_engine::schema::{AUDIT, CATALOG, ENGINE_META, POLICIES, ROWS, STATS};
 use prdb_engine::startup::StartupError;
 use redb::{
-    Database, ReadOnlyDatabase, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableHandle,
+    Database, ReadOnlyDatabase, ReadableDatabase, ReadableTable, ReadableTableMetadata,
+    TableDefinition, TableHandle,
 };
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::process::Command;
@@ -614,6 +615,46 @@ fn pinned_redb_rejects_file_format_v2_read_only_without_changing_the_fixture() {
         before,
         "read-only rejection must leave the unsupported file unchanged"
     );
+}
+
+#[test]
+fn pinned_redb_opens_and_reads_fixture_after_redb_v2_to_v3_upgrade() {
+    const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("compatibility_fixture_v1");
+
+    let fixture = Fixture::new();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/redb-file-formats/redb-2.6.4-v3-upgraded.redb");
+    let database_path = fixture.0.join("redb-v3-upgraded.redb");
+    std::fs::copy(source, &database_path).expect("copy upgraded redb v3 fixture");
+
+    {
+        let database = Database::open(&database_path).expect("recover upgraded v3 fixture");
+        let read = database.begin_read().expect("read upgraded v3 fixture");
+        let table = read.open_table(TABLE).expect("open fixture table");
+        assert_eq!(table.len().expect("count fixture rows"), 2);
+        assert_eq!(
+            table
+                .get(&b"catalog-version"[..])
+                .expect("read catalog version")
+                .expect("catalog version exists")
+                .value(),
+            b"1"
+        );
+        assert_eq!(
+            table
+                .get(&b"payload"[..])
+                .expect("read payload")
+                .expect("payload exists")
+                .value(),
+            b"redb-file-format-v2-fixture"
+        );
+    }
+
+    let database =
+        ReadOnlyDatabase::open(&database_path).expect("open recovered upgraded fixture read-only");
+    let read = database.begin_read().expect("read recovered fixture");
+    let table = read.open_table(TABLE).expect("reopen fixture table");
+    assert_eq!(table.len().expect("count recovered fixture rows"), 2);
 }
 
 #[test]
