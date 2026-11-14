@@ -311,3 +311,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: `process_crash_during_table_rename_recovers_all_or_none` creates a real schema/table, then exits a child process at the backend write boundary or immediately after `rename_table` returns. Reopen validates the database and checks old/new name resolution, audit, durable outcome, and commit sequence for either the complete old state or complete new state.
 - Verification: focused two-boundary process-crash test passed. Workspace build, format check, warning-denied Clippy, TinyCC SDK tests and sandbox fixture, release-profile validation, and the delegated cgroup probe passed. The full serial delegated-cgroup workspace suite passed with 224 library tests, 155 commit tests, 75 transaction tests, and zero ignored tests across all targets. `git diff --check` passed.
 - Scope: process exit tests atomic backend recovery and durable API completion; it does not simulate power loss or extend redb's filesystem durability guarantee.
+
+## DS-6 / DS-7: DROP COLUMN process-crash recovery — verified
+
+- Contract: [schema DDL](../../specs/ddl-schema.md) requires the new table/column catalog, rewritten rows, audit event, outcome, and commit sequence to publish atomically.
+- Regression: `process_crash_during_drop_column_recovers_all_or_none` creates a two-column table with a row, exits a child at the backend write boundary or after `drop_column` returns, then reopens and checks schema version, column presence/ordinal, row tuple shape/value, audit, outcome, and commit sequence.
+- Verification: focused two-boundary process-crash test passed. Workspace format check, warning-denied Clippy, and full serial delegated-cgroup suite passed; the suite included 224 library tests, 156 commit tests, and 75 transaction tests, with zero ignored tests across all targets. TinyCC SDK tests and sandbox fixtures, release-profile validation (10 binaries and one query fixture), delegated cgroup probe, and `git diff --check` passed.
+- Scope: process exit covers redb atomic recovery for one row rewrite. It does not simulate power loss or validate larger rewrite limits.
