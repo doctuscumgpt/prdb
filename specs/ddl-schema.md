@@ -136,6 +136,6 @@ Built-in `information_schema` relations are fixed filtered storage interfaces de
 
 ## Validation and References
 
-Test duplicate definitions, dependency rejection, default/null semantics, simultaneous duplicate keys, both directions of foreign-key races, failed constraint validation, DDL versus pending writers, old snapshots after drop, crash during index and table creation, table rename, ADD COLUMN and DROP COLUMN rewrites, DROP TABLE publication, and inaccessible catalog diagnostics.
+Test duplicate definitions, dependency rejection, default/null semantics, simultaneous duplicate keys, both directions of foreign-key races, failed constraint validation, DDL versus pending writers, old snapshots after drop, crash during index, table, and unique-constraint publication, table rename, ADD COLUMN and DROP COLUMN rewrites, DROP TABLE publication, and inaccessible catalog diagnostics.
 
 Conventional syntax references: [PostgreSQL CREATE TABLE](https://www.postgresql.org/docs/current/sql-createtable.html) and [CREATE INDEX](https://www.postgresql.org/docs/current/sql-createindex.html). Engine-specific authorization and concurrency semantics above take precedence.
