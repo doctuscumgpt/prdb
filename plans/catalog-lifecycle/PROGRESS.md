@@ -196,3 +196,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression covers missing acknowledgment, in-instance backup refusal, interrupted staging rebuild, backup byte identity and permissions, retained source bytes, populated READY data, idempotent retry, and refusal under a live instance lock.
 - Verification: final-source formatting, locked offline workspace build, warning-denied all-target Clippy, the focused serial `bootstrap_binary` suite (31 passed), TinyCC SDK `make test`, release-profile generation/validation, and the full serial workspace suite inside the delegated `systemd --user` service passed. The cgroup probe reported writable `cpu memory pids`; sandbox and process tests were enabled and the full suite completed with zero ignored tests. `git diff --check` passed.
 - Limits: process-crash and ordinary filesystem tests do not establish power-loss durability; add filesystem-level fault injection before making that claim.
+
+## CL-4 physical upgrade process-exit recovery — verified
+
+- Red evidence: `maintenance_redb_physical_upgrade_recovers_after_process_exit_at_exchange` failed because the maintenance process returned success instead of stopping at the selected publication boundary.
+- A debug-build-only failpoint exits immediately after `RENAME_EXCHANGE` and before directory sync. The process regression verifies that the new active image opens READY, the old v2 bytes remain in the sidecar, and a fresh maintenance invocation validates both generations and returns `already-current`.
+- Verification: the failpoint regression passed after observing the initial failure; formatting and `git diff --check` passed. This is process-exit/restart evidence with the same live kernel and filesystem, not a power-loss test.
