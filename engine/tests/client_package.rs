@@ -1,6 +1,7 @@
+use prdb_engine::client_credentials::write_client_credentials;
 use prdb_engine::client_protocol::{
-    CLIENT_FRAME_HEADER_BYTES, ClientFrame, ClientFrameDecoder, decode_client_chunk,
-    decode_client_credentials, decode_client_prepare,
+    CLIENT_FRAME_HEADER_BYTES, ClientCredentials, ClientFrame, ClientFrameDecoder,
+    decode_client_chunk, decode_client_credentials, decode_client_prepare,
 };
 use prdb_engine::client_submit::SubmissionClient;
 use prdb_engine::submission_manifest::{
@@ -73,6 +74,86 @@ fn client_frame_decoder_accepts_every_split_of_a_golden_frame() {
         assert_eq!(first.into_iter().chain(second).next().unwrap(), expected);
         decoder.finish().unwrap();
     }
+}
+
+#[test]
+fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
+    let temp = unique_temp_dir();
+    fs::create_dir(&temp).unwrap();
+    let credentials = temp.join("client.cred");
+    write_client_credentials(
+        &credentials,
+        &ClientCredentials {
+            token_id: [0x41; 16],
+            token_secret: [0x42; 32],
+        },
+    )
+    .unwrap();
+
+    for (case, sql, parameters, expected_error) in [
+        ("empty-sql", b" \n\t".as_slice(), None, "nonempty UTF-8"),
+        (
+            "malformed-parameters",
+            b"SELECT 1".as_slice(),
+            Some(br#"{"format":"PDB-SQL-PARAMETERS-1","values":[],"extra":true}"#.as_slice()),
+            "invalid SQL parameter file",
+        ),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let sql_path = temp.join(format!("{case}.sql"));
+        fs::write(&sql_path, sql).unwrap();
+        let parameter_path = temp.join(format!("{case}.json"));
+        if let Some(parameters) = parameters {
+            fs::write(&parameter_path, parameters).unwrap();
+        }
+
+        let mut command = Command::new(env!("CARGO_BIN_EXE_prdb-client"));
+        command.args([
+            "run-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            credentials.to_str().unwrap(),
+            "--sql-file",
+            sql_path.to_str().unwrap(),
+            "--schema",
+            "public",
+            "--scope",
+            temp.join("missing-scope.psc1").to_str().unwrap(),
+            "--receipt",
+            temp.join("receipt").to_str().unwrap(),
+            "--sdk-library",
+            temp.join("missing-sdk.so").to_str().unwrap(),
+            "--include-dir",
+            temp.join("missing-include").to_str().unwrap(),
+            "--sdk-release",
+            "1",
+            "--cpu-baseline",
+            "x86_64-v1",
+            "--runtime-profile",
+            "test-runtime",
+            "--compiler-identity",
+            "run-sql local validation test",
+        ]);
+        if parameters.is_some() {
+            command.args(["--parameters", parameter_path.to_str().unwrap()]);
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success(), "{case} unexpectedly succeeded");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected_error),
+            "{case} returned an unexpected error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "{case} opened a gateway connection before local validation completed"
+        );
+    }
+
+    fs::remove_dir_all(temp).unwrap();
 }
 
 #[test]

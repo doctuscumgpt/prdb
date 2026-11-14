@@ -34,3 +34,10 @@
 - Red/green: the first process run failed during packaging because the installed release-profile SDK predated the SQL dispatcher symbol. Rebuilding `release-profile` refreshed the SDK; the same acceptance then passed through the confined executor and durable storage path.
 - Verification: the focused delegated production-process test passed (`1 passed, 0 failed, 0 ignored`). Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, release-profile validation (10 engine binaries and one query fixture), and the delegated cgroup probe passed. The full serial delegated-cgroup workspace suite passed with sandbox and process tests enabled; no tests were ignored.
 - Scope: covers one authorized information-schema SELECT with one TEXT parameter, malformed-SQL abort, and lost START acceptance reconciliation on the pinned Linux x86_64 profile. SQL DML remains deferred by the v1 contract; broader command-specific failure cases remain open.
+
+## SQLCLI-1 local failures do not connect — verified follow-up
+
+- Contract: invalid SQL input and malformed parameter files fail before credentials are used or a gateway connection is opened.
+- Regression: a real `prdb-client run-sql` subprocess is pointed at a live local listener with valid credentials and otherwise complete CLI options. Whitespace-only SQL and a parameter file with an unknown key each fail with the expected validation diagnostic; the listener confirms neither invocation attempted a TCP connection.
+- Verification: the focused `client_package` process test passed. Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, release-profile validation, sandbox fixture build, delegated cgroup capability probe, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
+- Scope: covers the empty-SQL and strict-parameter-object failures at the CLI/network boundary. Scalar-canonicalization failures and compiler/package failures remain covered by their lower-level tests or need further command-level coverage.
