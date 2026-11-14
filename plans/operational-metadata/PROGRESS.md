@@ -235,3 +235,10 @@
 - Regression: the monitoring pressure loop now performs at least 512 `get_invocation_status` lookups for the cancellation target, accepting either its live phase or retained terminal status. The same run continues bounded owner/admin page reads and denied requests while committing another invocation and confirming the cancellation outcome.
 - Verification: the focused delegated-cgroup regression passed; workspace build, format check, warning-denied all-target Clippy, TinyCC SDK suite, sandbox fixture, release-profile validation (10 binaries and one query fixture), delegated cgroup probe, and full serial delegated-cgroup workspace suite passed with zero ignored tests. `git diff --check` passed.
 - Remaining: broader pressure coverage for other monitoring APIs and OM-2 registry families; exact redb retained-byte/cache telemetry remains unavailable, and there is no asynchronous job API to monitor.
+
+## OM-7 cross-owner status under pressure — verified
+
+- Contract: point status for another owner's invocation remains non-disclosing during repeated monitoring requests and concurrent commit/cancellation work.
+- Regression: the pressure loop now performs at least 512 cross-owner `get_invocation_status` calls and requires `None` for the same live/terminal cancellation target. Owner point lookups continue to return a valid live or retained status in the same loop.
+- Verification: focused delegated-cgroup pressure test, workspace build, format check, warning-denied all-target Clippy, TinyCC SDK suite and sandbox fixture, release-profile validation (10 binaries and one query fixture), and delegated cgroup probe passed. The full serial delegated-cgroup workspace suite passed with zero ignored tests; it reported 233 engine unit tests, 172 commit tests, and all other targets passing. `git diff --check` passed.
+- Remaining: broader pressure coverage for other monitoring APIs and OM-2 registry families; exact redb retained-byte/cache telemetry remains unavailable, and there is no asynchronous job API to monitor.
