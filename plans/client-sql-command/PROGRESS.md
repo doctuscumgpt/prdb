@@ -78,7 +78,7 @@
 - Regression: the `run_sql_local_failures_do_not_connect_and_gateway_failures_clean_workspace` process test injects a sentinel into the CLI environment and uses a failing shared-linker shim to record whether it inherits that sentinel. It also requires the expected `CompilerFailed` diagnostic, no gateway connection, and an empty private workspace. Removing `env_clear()` from the linker invocation made the regression fail with the captured value `leaked`; restoring it made the test pass.
 - Specification: clarified that TinyCC, the shared linker, and `patchelf` run with inherited environment variables cleared.
 - Verification: focused process test passed. Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, sandbox fixture build, release-profile validation (10 engine binaries and one query fixture), and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
-- Scope: verifies the shared linker subprocess against one inherited environment sentinel. Dedicated secret-sentinel checks for TinyCC and `patchelf` remain separate coverage gaps.
+- Scope: verifies the shared linker subprocess against one inherited environment sentinel. TinyCC environment isolation is covered in the parameter/compiler isolation entry above; `patchelf` environment isolation is covered in the next entry.
 
 ## SQLCLI-3 `patchelf` environment isolation — verified follow-up
 
