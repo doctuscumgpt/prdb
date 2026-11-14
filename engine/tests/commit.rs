@@ -22260,12 +22260,13 @@ fn gateway_service_listener_authenticates_control_admin_over_socket()
     };
     let executor_path = std::env::current_exe()?;
     let cgroup_parent = fixture.path().parent().unwrap().to_path_buf();
+    let service_storage = &storage;
     std::thread::scope(|scope| {
         let shutdown_server = Arc::clone(&shutdown);
         let server = scope.spawn(move || {
             serve_gateway_service_listener(
                 listener,
-                &storage,
+                service_storage,
                 &staging,
                 prdb_engine::supervisor_ipc::GatewayServiceRuntimeConfig {
                     admission,
@@ -22499,11 +22500,160 @@ fn gateway_service_listener_authenticates_control_admin_over_socket()
         )?;
         assert!(policy_result.contains("\"outcome\":\"committed\""));
         assert!(policy_result.contains("\"policy_id\":"));
+
+        let restricted_result = admin_execute(
+            br#"{"phase":"prepare","operation_version":1,"operation":"users.create","arguments":{"name":"socket_restricted_user"}}"#.to_vec(),
+        )?;
+        let restricted_user_id = restricted_result
+            .split("\"user_id\":\"")
+            .nth(1)
+            .ok_or("missing socket-created restricted user ID")?
+            .get(..32)
+            .ok_or("invalid socket-created restricted user ID")?
+            .to_owned();
+        for grantee_id in [user_id.as_str(), restricted_user_id.as_str()] {
+            for (object_id, privilege, target_scope, target_id) in [
+                (schema_id.as_str(), "usage", "object", schema_id.as_str()),
+                (table_id.as_str(), "select", "object", table_id.as_str()),
+                (table_id.as_str(), "select", "column", column_id.as_str()),
+            ] {
+                let grant_result = admin_execute(
+                    format!(
+                        "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"objects.grant\",\"arguments\":{{\"grantee_id\":\"{grantee_id}\",\"object_id\":\"{object_id}\",\"privilege\":\"{privilege}\",\"target_scope\":\"{target_scope}\",\"target_id\":\"{target_id}\"}}}}"
+                    )
+                    .into_bytes(),
+                )?;
+                assert!(grant_result.contains("\"outcome\":\"committed\""));
+            }
+        }
+        for (recipient, policy_name) in [
+            (user_id.as_str(), "socket_reader_row_policy"),
+            (restricted_user_id.as_str(), "socket_restricted_row_policy"),
+        ] {
+            let row_policy = admin_execute(
+                format!(
+                    "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"policies.create\",\"arguments\":{{\"table_id\":\"{table_id}\",\"name\":\"{policy_name}\",\"kind\":\"row\",\"policy_operation\":\"select\",\"effect\":\"allow\",\"recipients\":[\"user:{recipient}\"],\"target_column_ids\":[],\"using_expression_eir1\":\"{expression}\",\"with_check_expression_eir1\":null}}}}"
+                )
+                .into_bytes(),
+            )?;
+            assert!(row_policy.contains("\"outcome\":\"committed\""));
+        }
+        let reader_token = admin_execute(
+            format!(
+                "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tokens.issue\",\"arguments\":{{\"user_id\":\"{user_id}\",\"label\":\"socket reader\",\"expires_at_us\":\"{}\"}}}}",
+                now + 3_600_000_000
+            )
+            .into_bytes(),
+        )?;
+        let restricted_token = admin_execute(
+            format!(
+                "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tokens.issue\",\"arguments\":{{\"user_id\":\"{restricted_user_id}\",\"label\":\"socket restricted\",\"expires_at_us\":\"{}\"}}}}",
+                now + 3_600_000_000
+            )
+            .into_bytes(),
+        )?;
+        let id_bytes = |value: &str| -> Result<[u8; 16], Box<dyn std::error::Error>> {
+            let mut parsed = [0; 16];
+            if value.len() != 32 {
+                return Err("invalid 16-byte identifier".into());
+            }
+            for (index, byte) in parsed.iter_mut().enumerate() {
+                *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)?;
+            }
+            Ok(parsed)
+        };
+        let table_id_bytes = id_bytes(&table_id)?;
+        let column_id_bytes = id_bytes(&column_id)?;
         drop(gateway);
         shutdown.store(true, Ordering::Release);
         server
             .join()
             .map_err(|_| std::io::Error::other("gateway service listener panicked"))??;
+
+        let decode_token = |response: &str| -> Result<
+            prdb_engine::client_protocol::ClientCredentials,
+            Box<dyn std::error::Error>,
+        > {
+            let token_id = response
+                .split("\"token_id\":\"")
+                .nth(1)
+                .ok_or("missing socket-issued token ID")?
+                .get(..32)
+                .ok_or("invalid socket-issued token ID")?;
+            let secret = response
+                .split("\"token_secret\":\"")
+                .nth(1)
+                .ok_or("missing socket-issued token secret")?
+                .get(..44)
+                .ok_or("invalid socket-issued token secret")?;
+            let credentials = prdb_engine::client_protocol::decode_client_credentials(
+                format!("{{\"token_id\":\"{token_id}\",\"token_secret\":\"{secret}\"}}").as_bytes(),
+            )?;
+            Ok(credentials)
+        };
+        let reader_credentials = decode_token(&reader_token)?;
+        let restricted_credentials = decode_token(&restricted_token)?;
+        let payload = encode_tuple(
+            &[ColumnSchema {
+                scalar_type: ScalarType::Bytea,
+                nullable: false,
+            }],
+            1,
+            &[Some(ScalarValue::Bytea(vec![
+                0x73, 0x65, 0x63, 0x72, 0x65, 0x74,
+            ]))],
+        )?;
+        commit_rows(
+            &database,
+            id(0x97),
+            admin_id,
+            now + 3_600_000_000,
+            &[RowWrite {
+                key: table_row_key(table_id_bytes, id(0x98)),
+                expected_version: None,
+                payload: Some(payload),
+            }],
+        )?;
+        let (mut reader, roles) = storage.begin_token_authenticated_invocation(
+            id(0x99),
+            reader_credentials.token_id,
+            &reader_credentials.token_secret,
+            now + 3_600_000_000,
+            4,
+            4096,
+        )?;
+        assert!(roles.is_empty());
+        let (mut restricted, roles) = storage.begin_token_authenticated_invocation(
+            id(0x9a),
+            restricted_credentials.token_id,
+            &restricted_credentials.token_secret,
+            now + 3_600_000_000,
+            4,
+            4096,
+        )?;
+        assert!(roles.is_empty());
+        assert_eq!(
+            executor_ipc_scan_cells(
+                &mut reader,
+                "socket_policy_schema",
+                "socket_policy_table",
+                vec![column_id_bytes]
+            )?,
+            vec![vec![prdb_engine::authorization::SanitizedCell::Value(
+                ScalarValue::Bytea(b"secret".to_vec())
+            )]],
+        );
+        assert_eq!(
+            executor_ipc_scan_cells(
+                &mut restricted,
+                "socket_policy_schema",
+                "socket_policy_table",
+                vec![column_id_bytes]
+            )?,
+            vec![vec![prdb_engine::authorization::SanitizedCell::Redacted]],
+        );
+        reader.abort()?;
+        restricted.abort()?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     std::fs::remove_file(socket_path)?;
