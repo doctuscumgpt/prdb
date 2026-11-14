@@ -40,6 +40,14 @@ The pinned redb release handles physical recovery independently of this logical 
 
 Family-17 identity tombstones are immutable. A tombstoned identity ID cannot coexist with a family-2 object or family-10 principal. Family-16 verifier rows may refer to a tombstoned user only when revoked; live credentials require a login-enabled family-10 user.
 
+### Operator-Certified Catalog-v1 Identity History
+
+Catalog v1 predates family-17 identity tombstones. A v1-to-v2 migration therefore requires an operator-certified complete history file; the migration must never infer deleted identities from the bounded or prunable AUD1 table. The operator is responsible for obtaining every previously deleted user and role ID from a trusted source. The file is an explicit trust input, not cryptographic proof of completeness; without it, migration remains unavailable.
+
+The canonical UTF-8 file format is `PRDB-IDENTITY-HISTORY-1`, followed by `database_id=<32 lowercase hex digits>`, `commit_sequence=<canonical unsigned decimal>`, `complete=true`, `tombstone_count=<canonical unsigned decimal>`, one line per tombstone ID as 32 lowercase hex digits in strictly increasing byte order, and `sha256=<64 lowercase hex digits>`. Every line, including the last, ends in LF. SHA-256 covers all bytes before the `sha256=` line and detects accidental corruption only. The file must be an owner-owned mode-0600 regular file, opened without following symlinks, and no larger than the format's 65,536-ID bound. Migration requires an explicit `--confirm-complete-identity-history` acknowledgement in addition to the file.
+
+The database ID and committed sequence must match the independently verified migration backup and locked active source. IDs must be nonzero and unique. Conversion rejects any listed ID that is still used by a family-2 object, family-10 principal, or existing family-17 tombstone. It writes every listed ID as an immutable family-17 tombstone in the target image before target validation. The operator-certified list is the complete tombstone set for pre-v2 deletions; future identity deletions continue to be reserved transactionally by family 17.
+
 Catalog-v1 source validation uses its historical verifier rule: every verifier, including revoked records, must reference an existing family-10 user. The v2 tombstone exception does not apply to v1 images.
 
 Startup also checks FK action/match/state values and requires identical built-in scalar types, including declared parameters, on each ordered column pair. After index membership validation, it verifies every non-NULL persisted source tuple against the referenced unique index; NULL source tuples follow MATCH SIMPLE. The initial implementation accepts at most 256 FK constraints and bounds combined child-row visits to 65,536. Invalid references or exceeding either bound keeps the database unavailable.

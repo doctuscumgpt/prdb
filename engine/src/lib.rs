@@ -20,6 +20,7 @@ pub mod executor_ipc;
 pub mod executor_launcher;
 pub mod expression;
 pub mod gateway;
+pub mod identity_history;
 pub mod index_key;
 pub mod index_locator;
 pub mod ipc;
