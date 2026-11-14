@@ -571,8 +571,25 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
         "parameter data appeared in generated compiler source"
     );
 
+    let patchelf_environment_capture = temp.join("patchelf-environment.capture");
+    let fake_patchelf = temp.join("capture-patchelf-env");
+    fs::write(
+        &fake_patchelf,
+        format!(
+            "#!/bin/sh\nif [ \"${{PRDB_TEST_PATCHELF_SECRET_SENTINEL+x}}\" = x ]; then printf leaked > '{}'; else printf clean > '{}'; fi\nexit 1\n",
+            patchelf_environment_capture.display(),
+            patchelf_environment_capture.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake_patchelf, fs::Permissions::from_mode(0o700)).unwrap();
+
     let output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .env("TMPDIR", &sql_workspace_root)
+        .env(
+            "PRDB_TEST_PATCHELF_SECRET_SENTINEL",
+            "credential-secret-sentinel",
+        )
         .args([
             "run-sql",
             "--address",
@@ -606,7 +623,7 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
             "--shared-linker",
             "cc",
             "--patchelf",
-            "false",
+            fake_patchelf.to_str().unwrap(),
         ])
         .output()
         .unwrap();
@@ -618,6 +635,11 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
         String::from_utf8_lossy(&output.stderr).contains("CompilerFailed"),
         "unexpected patchelf failure: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&patchelf_environment_capture).unwrap(),
+        "clean",
+        "patchelf inherited a parent environment secret"
     );
     assert!(
         matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),

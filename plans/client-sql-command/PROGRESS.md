@@ -79,3 +79,10 @@
 - Specification: clarified that TinyCC, the shared linker, and `patchelf` run with inherited environment variables cleared.
 - Verification: focused process test passed. Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, sandbox fixture build, release-profile validation (10 engine binaries and one query fixture), and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
 - Scope: verifies the shared linker subprocess against one inherited environment sentinel. Dedicated secret-sentinel checks for TinyCC and `patchelf` remain separate coverage gaps.
+
+## SQLCLI-3 `patchelf` environment isolation — verified follow-up
+
+- Contract: the ELF rpath adjustment tool receives no inherited credentials or other parent environment variables; failure remains local and temporary output is cleaned.
+- Regression: the existing `run_sql_rejects_local_input_errors_before_opening_a_gateway_connection` process test now injects a sentinel and uses a failing `patchelf` shim to record its environment. It requires the sentinel to be absent, the `CompilerFailed` diagnostic, no gateway connection, and no private workspace artifacts. Removing `env_clear()` from the `patchelf` command made the test fail with captured value `leaked`; restoring it made the test pass.
+- Verification: focused process test passed. Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, sandbox fixture build, release-profile validation (10 engine binaries and one query fixture), delegated cgroup probe, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
+- Scope: verifies `patchelf` against one inherited environment sentinel. Other environment sources and host-specific tool behavior remain outside this check.
