@@ -687,3 +687,10 @@
 - Regression: maintained parser/binder fixture covers `INT64_MIN`, rejects `-9223372036854775809`, and confirms signed metadata survives binding. The grouped runner fixture executes `SUM(score) >= -1` and verifies all three non-NULL groups are emitted. The v18 fuzz corpus now includes the signed minimum boundary.
 - Verification: focused v18 parser and grouped runner fixtures passed. `make -f engine/sdk/Makefile test sandbox-query-fixture` passed. `make -f engine/sdk/Makefile fuzz-sql-v18` completed 10,000 runs from five checked-in seeds without sanitizer findings (1,219 coverage counters). Locked workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed; the suite reported 233 library tests, 172 commit tests, and 75 transaction tests, with no ignored tests. `git diff --check` passed.
 - Historical status at this checkpoint: fractional and exponent HAVING literals were unsupported; the v21 implementation above addresses that gap. Broader analytical stress and measurement work remains open.
+
+## SQL DDL boundary follow-up: CREATE TABLE stays on the admin channel — implemented
+
+- Contract: [SQL library](../../specs/sql-library.md) and [schema DDL](../../specs/ddl-schema.md). SQL DDL text must not enter the user invocation dispatcher, executor callbacks, or query gateway. The first supported SQL DDL convenience method is `AdminClient::execute_create_table_sql`, which translates locally to the established typed control operation.
+- Implementation/evidence: the bounded parser and authenticated control-session integration test are recorded in the owning [schema DDL progress](../ddl-schema/PROGRESS.md). This SQL-library entry records the boundary and keeps query-execution DDL rejected.
+- Verification: see DS-8 targeted parser and mock TCP control-session test results in the schema DDL progress entry.
+- Next smallest behavior: keep the query dispatcher rejection regression aligned as SQL administrative syntax coverage expands.

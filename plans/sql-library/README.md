@@ -21,7 +21,7 @@ Specify grammar/parameter syntax, AST and physical-plan formats, SQL API and res
 | SQL-7 | Small authorized-view join/group/sort fixtures match independently calculated results | Add required inner equijoins (including aliases and qualified filters), GROUP BY, COUNT/SUM/MIN/MAX/AVG, ORDER BY and HAVING one operator at a time with optimizer support and precise null/overflow/redaction rules |
 | SQL-8 | Hash/sort/aggregate budget exhaustion and cancellation fail without uncontrolled spill or partial commit | Bounded operator memory/output; COUNT(*) counts visible rows; required redacted operands fail rather than silently disappearing |
 
-SQL-7's HAVING type coverage proceeds through separately versioned SDK increments. V21 adds exact signed integer, fractional, and exponent literals for compound grouped HAVING, with decimal scale coercion checked before scans; earlier parser and binding ABIs remain frozen. Its acceptance evidence belongs in [`PROGRESS.md`](PROGRESS.md), and broader analytical type/workload and spill evidence remains open.
+SQL-7's HAVING type coverage proceeds through separately versioned SDK increments. V21 adds exact signed integer, fractional, and exponent literals for compound grouped HAVING, with decimal scale coercion checked before scans; earlier parser and binding ABIs remain frozen. Its acceptance evidence belongs in [`PROGRESS.md`](PROGRESS.md), and broader analytical type/workload and spill evidence remains open. Administrative SQL DDL is owned by the schema DDL plan and uses the separate authenticated control client; it is not added to the query-invocation SQL dispatcher.
 
 ## Acceptance and Handoff
 

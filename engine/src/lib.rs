@@ -15,6 +15,7 @@ pub mod client_submit;
 pub mod commit;
 pub mod credentials;
 pub mod ddl_fence;
+pub mod ddl_sql;
 pub mod executor_ipc;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod executor_launcher;

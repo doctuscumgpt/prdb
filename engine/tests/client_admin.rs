@@ -1320,6 +1320,71 @@ fn admin_client_creates_table_with_typed_columns_and_defaults() {
 }
 
 #[test]
+fn admin_client_executes_create_table_sql_on_authenticated_control_channel() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let schemas = read_frame(&mut stream, &mut decoder);
+        assert!(
+            String::from_utf8(schemas.payload.clone())
+                .unwrap()
+                .contains(r#""operation":"metadata.schemas.list""#)
+        );
+        respond(
+            &mut stream,
+            &schemas,
+            format!(
+                r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                "01".repeat(16)
+            )
+            .as_bytes(),
+        );
+        let prepare = read_frame(&mut stream, &mut decoder);
+        let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+        assert!(payload.contains(r#""operation":"tables.create""#));
+        assert!(payload.contains(r#""name":"events""#));
+        assert!(payload.contains(r#""type":"decimal(8,2)""#));
+        let operation_id = [0x81; 16];
+        respond(
+            &mut stream,
+            &prepare,
+            format!(
+                r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                hex(&operation_id)
+            )
+            .as_bytes(),
+        );
+        let start = read_frame(&mut stream, &mut decoder);
+        respond(
+            &mut stream,
+            &start,
+            format!(r#"{{"operation_id":"{}","outcome":"committed","table_id":"{}","column_ids":["{}","{}"],"commit_sequence":"62"}}"#, hex(&operation_id), "a5".repeat(16), "b1".repeat(16), "b2".repeat(16)).as_bytes(),
+        );
+    });
+
+    let mut secret = [5; 32];
+    let mut client = AdminClient::connect_authenticated_with_timeout(
+        address,
+        [6; 16],
+        &mut secret,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let created = client
+        .execute_create_table_sql(
+            "CREATE TABLE app.events (id UUID NOT NULL, amount DECIMAL(8, 2));",
+        )
+        .unwrap();
+    assert_eq!(created.table_id, [0xa5; 16]);
+    assert_eq!(created.column_ids, [[0xb1; 16], [0xb2; 16]]);
+    assert_eq!(created.commit_sequence, 62);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_adds_renames_and_drops_columns() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

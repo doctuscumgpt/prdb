@@ -2690,6 +2690,34 @@ impl AdminClient {
         })
     }
 
+    /// Execute the supported SQL `CREATE TABLE` subset through the
+    /// authenticated administrative control channel. The SQL is parsed locally
+    /// into the same typed operation as `create_table`; storage remains the
+    /// authority for authorization and catalog validation.
+    pub fn execute_create_table_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminTableResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_create_table(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let mut cursor = None;
+        let mut schema = None;
+        loop {
+            let page = self.list_schemas_page(DEFAULT_METADATA_PAGE_SIZE, cursor.as_deref())?;
+            for visible in page.records {
+                if visible.name == statement.schema && schema.replace(visible).is_some() {
+                    return Err(ClientSubmitError::InvalidResponse);
+                }
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let schema = schema.ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
+        self.create_table(schema.schema_id, &statement.table, &statement.columns)
+    }
+
     pub fn add_column(
         &mut self,
         table_id: [u8; 16],

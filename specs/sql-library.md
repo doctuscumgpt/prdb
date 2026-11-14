@@ -19,7 +19,7 @@ Support a single-table read/write subset from the initial implementation:
 
 For example: `SELECT name FROM employees WHERE department_id = $1 LIMIT 100`.
 
-[Schema DDL](ddl-schema.md) defines initial scalar types and identifier rules. ABI v1 is the first deliberately narrow parser slice; the separately versioned APIs below add the required analytical operators and define their current expression, coercion, and wire behavior. Reject syntax not listed for a specific version. General subqueries, explicit transaction-control statements, and user-defined SQL functions remain deferred. Schema/user/permission DDL is supported through the separate administrative SDK channel and is rejected inside user invocations.
+[Schema DDL](ddl-schema.md) defines initial scalar types and identifier rules. ABI v1 is the first deliberately narrow parser slice; the separately versioned APIs below add the required analytical operators and define their current expression, coercion, and wire behavior. Reject syntax not listed for a specific version. General subqueries, explicit transaction-control statements, and user-defined SQL functions remain deferred. Schema/user/permission DDL is supported through the separate administrative SDK channel and is rejected inside user invocations. `AdminClient::execute_create_table_sql` parses one bounded CREATE TABLE subset locally and translates it to the existing typed control request; SQL text is not sent to the query gateway or trusted storage.
 
 SQL ABI v1 accepts this deliberately narrow grammar:
 

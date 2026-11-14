@@ -38,6 +38,8 @@ Unquoted identifiers fold to lowercase; double-quoted identifiers preserve case.
 Initial scalar types: `BOOLEAN`, `SMALLINT`, `INTEGER`, `BIGINT`, `DECIMAL(p,s)` with `1 <= p <= 38` and `0 <= s <= p`, `TEXT`, `VARCHAR(n)`, `BYTEA`, `UUID`, `DATE`, and `TIMESTAMP WITH TIME ZONE`. Integers are signed with checked overflow. Decimal is exact; implicit lossy conversions fail. Text is valid UTF-8 with a deterministic binary collation initially; `VARCHAR(n)` limits Unicode scalar count. Timestamps normalize to UTC at microsecond precision. [redb storage](redb-storage.md) defines storage scalar encodings and supported DATE/TIMESTAMPTZ ranges; tuple encoding and SQL SDK value/parameter validation enforce those ranges, while storage continues to validate independently. Arrays, JSON, enums, custom types, and locale collations are deferred.
 
 ## Tables, Defaults, and Constraints
+The authenticated `AdminClient::execute_create_table_sql` convenience method accepts a restricted SQL form: schema-qualified `CREATE TABLE` with one or more columns, supported scalar types (including bounded `DECIMAL(p,s)` and `VARCHAR(n)`), optional `NOT NULL`, and an optional final semicolon. It resolves the schema on the same control connection and uses the typed `tables.create` PREPARE/START operation. Omitted nullability means nullable. This SQL path does not accept defaults, generated identities, inline constraints, quoted identifiers, or multiple statements; the query-library SQL dispatcher continues to reject all DDL.
+
 
 ```sql
 CREATE TABLE app.employees (
