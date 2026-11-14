@@ -8189,6 +8189,10 @@ fn authorized_patch_checks_changed_cells_and_freezes_policy_dependencies()
     ];
     let column_ids = [[51; 16], [52; 16], [53; 16]];
     let row_id = id(50);
+    let second_row_id = prdb_engine::overlay::RowId {
+        table: row_id.table,
+        row: [0x51; 16],
+    };
     let original = [
         Some(ScalarValue::Text("Alice".to_owned())),
         Some(ScalarValue::Uuid([9; 16])),
@@ -8199,11 +8203,18 @@ fn authorized_patch_checks_changed_cells_and_freezes_policy_dependencies()
         [54; 16],
         [9; 16],
         9_999,
-        &[RowWrite {
-            key: key(row_id),
-            expected_version: None,
-            payload: Some(encode_tuple(&columns, 1, &original)?),
-        }],
+        &[
+            RowWrite {
+                key: key(row_id),
+                expected_version: None,
+                payload: Some(encode_tuple(&columns, 1, &original)?),
+            },
+            RowWrite {
+                key: key(second_row_id),
+                expected_version: None,
+                payload: Some(encode_tuple(&columns, 1, &original)?),
+            },
+        ],
     )?;
     let table_target = AccessTarget::Table(row_id.table);
     let name_target = AccessTarget::Column {
@@ -8351,16 +8362,50 @@ fn authorized_patch_checks_changed_cells_and_freezes_policy_dependencies()
 
     let mut constraint_denied =
         InvocationTransaction::begin(&database, [58; 16], [9; 16], 9_999, 2, 128)?;
-    assert!(matches!(
-        constraint_denied.stage_patch_authorized(
+    let first_constraint_error = constraint_denied
+        .stage_patch_authorized(
             row_id,
             &projection,
             &[FieldPatch {
                 ordinal: 0,
                 value: Some(ScalarValue::Text("forbidden".to_owned())),
-            }]
-        ),
-        Err(TransactionError::ConstraintViolation)
+            }],
+        )
+        .expect_err("the CHECK expression must reject its first forbidden value");
+    let alternate_checks = [Expr::NotEqual(
+        Box::new(Expr::Field(0)),
+        Box::new(Expr::Literal(Some(ScalarValue::Text(
+            "classified".to_owned(),
+        )))),
+    )];
+    let alternate_projection = AuthorizedProjection {
+        checks: &alternate_checks,
+        ..projection
+    };
+    let mut second_constraint_denied =
+        InvocationTransaction::begin(&database, [0x5a; 16], [9; 16], 9_999, 2, 128)?;
+    let second_constraint_error = second_constraint_denied
+        .stage_patch_authorized(
+            second_row_id,
+            &alternate_projection,
+            &[FieldPatch {
+                ordinal: 0,
+                value: Some(ScalarValue::Text("classified".to_owned())),
+            }],
+        )
+        .expect_err("the CHECK expression must reject its second forbidden value");
+    assert_eq!(
+        format!("{first_constraint_error:?}"),
+        format!("{second_constraint_error:?}"),
+        "CHECK diagnostics must not include rejected values or row identities"
+    );
+    assert!(matches!(
+        first_constraint_error,
+        TransactionError::ConstraintViolation
+    ));
+    assert!(matches!(
+        second_constraint_error,
+        TransactionError::ConstraintViolation
     ));
 
     let mut denied = InvocationTransaction::begin(&database, [57; 16], [9; 16], 9_999, 2, 128)?;
