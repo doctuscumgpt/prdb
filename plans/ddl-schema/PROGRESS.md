@@ -336,14 +336,14 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Contract: schema ownership, object version, authority dependencies, audit, durable outcome, and commit sequence recover as one serialized publication.
 - Regression: `process_crash_during_schema_owner_transfer_recovers_all_or_none` transfers a populated schema's owner in a child process and exits at the backend write boundary or after the API returns. Reopen through `StorageManager` validates startup and verifies the previous owner/version on the interrupted write, or the new built-in role owner with one version/sequence advance, audit, and committed outcome after completion.
-- Verification: formatting, locked offline workspace build, and warning-denied all-target Clippy passed. The focused two-boundary process-crash test passed both directly and inside the delegated user service (`1 passed, 0 ignored`). A broader commit-target run from the desktop scope failed its 12 cgroup-dependent cases because the required delegation and fixture/runtime variables were not configured; that run is not accepted as suite evidence. The focused delegated test is the relevant result for this increment.
-- Scope: this adds recovery evidence for the implemented transfer path; it does not simulate power loss or validate every commit-target acceptance.
+- Verification: formatting, locked offline workspace build, and warning-denied all-target Clippy passed. The focused two-boundary process-crash test passed both directly and inside the delegated user service. An initial broad commit-target run from the desktop scope failed its 12 cgroup-dependent cases because delegation and fixture/runtime variables were not configured. The subsequent full serial workspace suite passed inside the delegated user service; the commit target reported 171 passed, sandbox/process tests ran enabled, and no tests were ignored.
+- Scope: this adds recovery evidence for the implemented transfer path; it does not simulate power loss.
 
 ## DS-5: schema owner transfer preserves pinned readers — verified
 
 - Regression: `storage_manager_creates_schema_atomically_for_privileged_actor` now retains a redb reader across ownership transfer. That reader continues to report the original owner and object version, while a reader opened after publication reports the successor role and incremented version.
 - Test-fixture correction: an initial run retained the original redb value guard beyond the assertion and triggered redb's freed-page reference assertion on a later fixture commit. The test now drops that guard while keeping the read transaction pinned, then passes the old-reader check and the full lifecycle.
-- Verification: the focused lifecycle test passed (`1 passed, 0 ignored`), formatting passed, warning-denied Clippy for the commit integration target passed, and `git diff --check` passed.
+- Verification: the focused lifecycle test passed (`1 passed, 0 ignored`), formatting passed, warning-denied Clippy for the commit integration target passed, and the full serial workspace suite passed inside the delegated user service with all sandbox/process tests enabled and zero ignored tests.
 - Implementation note: the storage behavior was already implemented; this increment adds explicit old-reader evidence.
 
 ## DS-6 / DS-7: DROP COLUMN process-crash recovery — verified
