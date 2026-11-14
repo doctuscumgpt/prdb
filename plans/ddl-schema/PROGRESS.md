@@ -324,6 +324,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Contract: [schema DDL](../../specs/ddl-schema.md) requires schema/table/column names, their catalog/object records, affected table epoch, audit event, operation outcome, and commit sequence to recover as one atomic publication.
 - Regression: `process_crash_during_table_rename_recovers_all_or_none` creates a real schema/table and exits child processes at the backend write boundary or immediately after `rename_schema`, `rename_table`, or `rename_column` returns. Reopen validates startup and requires old or new name resolution, stable schema/table/column IDs and column ordinal, audit, durable outcome, and commit sequence to agree at both outcomes.
 - Verification: focused six-case real-redb process-crash test passed. Workspace build, format check, warning-denied Clippy, TinyCC SDK tests and sandbox fixture, release-profile validation, delegated cgroup probe, and the complete serial delegated-cgroup workspace suite passed with 224 library tests, 168 commit integration tests, and 75 transaction tests; all other integration targets passed and no tests were ignored. `git diff --check` passed.
+
+## DS-6 / DS-7: schema create/drop process-crash recovery — verified
+
+- Contract: [schema DDL](../../specs/ddl-schema.md) requires creation and removal of the schema record and owned object record to publish atomically with the audit event, durable outcome, and commit sequence.
+- Regression: `process_crash_during_schema_create_or_drop_recovers_all_or_none` exercises create and empty-schema drop at the backend-write and post-commit boundaries. Reopen validates startup and requires both catalog records, name lookup, audit, outcome, and sequence to reflect either the full pre-DDL or committed state.
+- Verification: focused four-case real-redb process-crash test passed. Workspace build, format check, warning-denied Clippy, TinyCC SDK tests, release-profile validation, delegated cgroup probe, and the complete serial delegated-cgroup workspace suite passed; counts are recorded in the current handoff. `git diff --check` passed.
 - Scope: process exit tests atomic backend recovery and durable API completion; it does not simulate power loss or extend redb's filesystem durability guarantee.
 
 ## DS-6 / DS-7: DROP COLUMN process-crash recovery — verified

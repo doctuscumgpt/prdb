@@ -23224,6 +23224,198 @@ fn process_crash_during_table_rename_recovers_all_or_none() -> Result<(), Box<dy
 }
 
 #[test]
+fn process_crash_during_schema_create_or_drop_recovers_all_or_none()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
+
+    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_CRASH_DURING_SCHEMA_DDL_DATABASE";
+    const CHILD_BOUNDARY_ENV: &str = "PRDB_TEST_CRASH_DURING_SCHEMA_DDL_BOUNDARY";
+    const CHILD_OPERATION_ENV: &str = "PRDB_TEST_CRASH_DURING_SCHEMA_DDL_OPERATION";
+    const CHILD_EXIT_CODE: i32 = 87;
+    const POST_COMMIT_EXIT_CODE: i32 = 88;
+    const ACTOR_ID: [u8; 16] = [0xe1; 16];
+    const SCHEMA_INVOCATION_ID: [u8; 16] = [0xe2; 16];
+    const SCHEMA_AUDIT_ID: [u8; 16] = [0xe3; 16];
+    const PREPARE_INVOCATION_ID: [u8; 16] = [0xe4; 16];
+    const PREPARE_AUDIT_ID: [u8; 16] = [0xe5; 16];
+
+    if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
+        let database_path = std::path::PathBuf::from(database_path);
+        let database = initialize(&database_path)?;
+        let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+        let admin_role = builtin_owner_id();
+        let setup = [
+            principal_write_with_name(ACTOR_ID, 1, 1, "schema_crash_actor"),
+            object_write_with_name(ACTOR_ID, 8, "schema_crash_actor"),
+            membership_write(ACTOR_ID, admin_role),
+            dependency_write(ACTOR_ID, admin_role, 5),
+        ];
+        let mut setup_audit = identity_audit_event(0xe6, admin_role, id(0xe7));
+        setup_audit.action = AuditAction::AuthorityChange;
+        storage.commit_catalog_and_audit(id(0xe7), admin_role, i64::MAX, &setup, &[setup_audit])?;
+
+        let operation = std::env::var(CHILD_OPERATION_ENV)?;
+        let prepared_schema_id = if operation == "drop" {
+            let mut prepare_audit = identity_audit_event(PREPARE_AUDIT_ID[0], ACTOR_ID, id(0xe8));
+            prepare_audit.event_id = PREPARE_AUDIT_ID;
+            prepare_audit.correlation_id = PREPARE_INVOCATION_ID;
+            Some(
+                storage
+                    .create_schema(
+                        PREPARE_INVOCATION_ID,
+                        ACTOR_ID,
+                        "schema_crash_name",
+                        ACTOR_ID,
+                        i64::MAX,
+                        prepare_audit,
+                    )?
+                    .schema_id,
+            )
+        } else if operation == "create" {
+            None
+        } else {
+            return Err(format!("unknown schema DDL operation {operation}").into());
+        };
+        let before_ddl_sequence = commit_sequence(&database)?;
+        let metadata_path = database_path.with_extension("schema-ddl-crash-metadata");
+        let mut metadata = Vec::with_capacity(24);
+        metadata.extend_from_slice(&before_ddl_sequence.to_le_bytes());
+        metadata.extend_from_slice(&prepared_schema_id.unwrap_or([0; 16]));
+        std::fs::write(&metadata_path, metadata)?;
+        drop(storage);
+        drop(database);
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&database_path)?;
+        let armed = Arc::new(AtomicBool::new(false));
+        let instrumented = Database::builder().create_with_backend(ExitAfterNextWriteBackend {
+            inner: redb::backends::FileBackend::new(file)?,
+            armed: armed.clone(),
+            exit_code: CHILD_EXIT_CODE,
+        })?;
+        let storage = StorageManager::new(&instrumented, Duration::from_millis(100))?;
+        let metadata = std::fs::read(&metadata_path)?;
+        let prepared_schema_id: [u8; 16] = metadata[8..24].try_into()?;
+        let mut schema_audit = identity_audit_event(SCHEMA_AUDIT_ID[0], ACTOR_ID, id(0xe9));
+        schema_audit.event_id = SCHEMA_AUDIT_ID;
+        schema_audit.correlation_id = SCHEMA_INVOCATION_ID;
+        let boundary = std::env::var(CHILD_BOUNDARY_ENV)?;
+        if boundary == "write" {
+            armed.store(true, Ordering::SeqCst);
+        } else if boundary != "after_commit" {
+            return Err(format!("unknown schema DDL crash boundary {boundary}").into());
+        }
+        let result = if operation == "create" {
+            storage
+                .create_schema(
+                    SCHEMA_INVOCATION_ID,
+                    ACTOR_ID,
+                    "schema_crash_name",
+                    ACTOR_ID,
+                    i64::MAX,
+                    schema_audit,
+                )
+                .map(|_| ())
+        } else {
+            storage
+                .drop_schema(
+                    SCHEMA_INVOCATION_ID,
+                    ACTOR_ID,
+                    prepared_schema_id,
+                    i64::MAX,
+                    schema_audit,
+                )
+                .map(|_| ())
+        };
+        if boundary == "write" {
+            return Err(format!(
+                "schema {operation} returned without injected backend-write exit: {result:?}"
+            )
+            .into());
+        }
+        result?;
+        std::process::exit(POST_COMMIT_EXIT_CODE);
+    }
+
+    for operation in ["create", "drop"] {
+        for (boundary, expected_exit) in [
+            ("write", CHILD_EXIT_CODE),
+            ("after_commit", POST_COMMIT_EXIT_CODE),
+        ] {
+            let fixture = Fixture::new();
+            let database_path = fixture.path();
+            let child_status = Command::new(std::env::current_exe()?)
+                .arg("--exact")
+                .arg("process_crash_during_schema_create_or_drop_recovers_all_or_none")
+                .arg("--nocapture")
+                .env(CHILD_DATABASE_ENV, &database_path)
+                .env(CHILD_BOUNDARY_ENV, boundary)
+                .env(CHILD_OPERATION_ENV, operation)
+                .status()?;
+            assert_eq!(
+                child_status.code(),
+                Some(expected_exit),
+                "schema {operation} child missed the {boundary} crash boundary: {child_status}"
+            );
+
+            let metadata =
+                std::fs::read(database_path.with_extension("schema-ddl-crash-metadata"))?;
+            assert_eq!(metadata.len(), 24);
+            let before_ddl_sequence = u64::from_le_bytes(metadata[0..8].try_into()?);
+            let prepared_schema_id: [u8; 16] = metadata[8..24].try_into()?;
+            let reopened = Database::open(&database_path)?;
+            let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+            let read = reopened.begin_read()?;
+            let published_schema_id = lookup_schema_id_by_name(&read, "schema_crash_name")?;
+            let committed = boundary == "after_commit";
+            let should_exist = if operation == "create" {
+                committed
+            } else {
+                !committed
+            };
+            assert_eq!(published_schema_id.is_some(), should_exist);
+            let schema_id = published_schema_id.unwrap_or(prepared_schema_id);
+            if schema_id != [0; 16] {
+                assert_eq!(
+                    read.open_table(CATALOG)?
+                        .get(id_catalog_key(3, schema_id).as_slice())?
+                        .is_some(),
+                    should_exist
+                );
+                assert_eq!(
+                    read.open_table(CATALOG)?
+                        .get(id_catalog_key(2, schema_id).as_slice())?
+                        .is_some(),
+                    should_exist
+                );
+            }
+            let sequence = commit_sequence(&reopened)?;
+            assert_eq!(sequence, before_ddl_sequence + u64::from(committed));
+            let outcome = read
+                .open_table(schema::OUTCOMES)?
+                .get(&SCHEMA_INVOCATION_ID[..])?
+                .map(|value| InvocationOutcome::decode(value.value()))
+                .transpose()?;
+            let audit_exists = read
+                .open_table(schema::AUDIT)?
+                .get(&SCHEMA_AUDIT_ID[..])?
+                .is_some();
+            assert_eq!(audit_exists, committed);
+            if committed {
+                let outcome = outcome.ok_or("committed schema DDL outcome was not recovered")?;
+                assert_eq!(outcome.status, OutcomeStatus::Committed);
+                assert_eq!(outcome.commit_sequence, sequence);
+            } else {
+                assert_eq!(outcome, None);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn process_crash_during_drop_column_recovers_all_or_none() -> Result<(), Box<dyn std::error::Error>>
 {
     use prdb_engine::storage_manager::{CreateTableRequest, TableColumnDefinition};
