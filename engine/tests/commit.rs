@@ -13779,10 +13779,20 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
     let fixture = Fixture::new();
     let database = initialize(&fixture.path())?;
     let storage = StorageManager::new(&database, Duration::from_millis(100))?;
-    let admin_id = builtin_owner_id();
+    let admin_id = [0xd4; 16];
     let ordinary_id = [0xd3; 16];
     let cancel_id = [0xd1; 16];
     let commit_id = [0xd2; 16];
+    let admin_role = builtin_owner_id();
+    let admin_records = [
+        principal_write_with_name(admin_id, 1, 1, "monitoring_pressure_admin"),
+        object_write_with_name(admin_id, 8, "monitoring_pressure_admin"),
+        membership_write_with_grantor(admin_id, admin_role, admin_role),
+        dependency_write(admin_id, admin_role, 5),
+    ];
+    let mut setup_audit = audit_event(230);
+    setup_audit.actor_id = Some(admin_role);
+    storage.commit_catalog_and_audit(id(230), admin_role, 9_999, &admin_records, &[setup_audit])?;
     let now_us = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_micros() as i64;
@@ -13792,6 +13802,9 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
     let stop_pressure = std::sync::atomic::AtomicBool::new(false);
     let denied_runtime_requests = std::sync::atomic::AtomicUsize::new(0);
     let denied_audit_requests = std::sync::atomic::AtomicUsize::new(0);
+    let own_status_requests = std::sync::atomic::AtomicUsize::new(0);
+    let admin_runtime_requests = std::sync::atomic::AtomicUsize::new(0);
+    let admin_audit_requests = std::sync::atomic::AtomicUsize::new(0);
 
     std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
         let (started_tx, started_rx) = std::sync::mpsc::channel();
@@ -13799,8 +13812,11 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
         let pressure_stop = &stop_pressure;
         let runtime_count = &denied_runtime_requests;
         let audit_count = &denied_audit_requests;
+        let own_count = &own_status_requests;
+        let admin_runtime_count = &admin_runtime_requests;
+        let admin_audit_count = &admin_audit_requests;
         let pressure = scope.spawn(move || {
-            started_tx.send(()).expect("signal denial pressure started");
+            let mut signaled_started = false;
             loop {
                 assert!(matches!(
                     pressure_storage.list_runtime_invocations(ordinary_id, now_us, 1, None),
@@ -13813,9 +13829,31 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
                 let runtime_total =
                     runtime_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 let audit_total = audit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let own_page = pressure_storage
+                    .list_own_invocations(ordinary_id, now_us, 1, None)
+                    .expect("owner status page remains available under pressure");
+                assert!(own_page.invocations.len() <= 1);
+                own_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                pressure_storage
+                    .list_runtime_invocations(admin_id, now_us, 1, None)
+                    .expect("authorized runtime page remains available under pressure");
+                admin_runtime_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                pressure_storage
+                    .list_audit_events(admin_id, 1, None)
+                    .expect("authorized audit page remains available under pressure");
+                admin_audit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if !signaled_started {
+                    started_tx
+                        .send(())
+                        .expect("signal monitoring pressure started");
+                    signaled_started = true;
+                }
                 if pressure_stop.load(std::sync::atomic::Ordering::Acquire)
                     && runtime_total >= 512
                     && audit_total >= 512
+                    && own_count.load(std::sync::atomic::Ordering::Relaxed) >= 512
+                    && admin_runtime_count.load(std::sync::atomic::Ordering::Relaxed) >= 512
+                    && admin_audit_count.load(std::sync::atomic::Ordering::Relaxed) >= 512
                 {
                     break;
                 }
@@ -13845,6 +13883,9 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
 
     assert!(denied_runtime_requests.load(std::sync::atomic::Ordering::Relaxed) >= 512);
     assert!(denied_audit_requests.load(std::sync::atomic::Ordering::Relaxed) >= 512);
+    assert!(own_status_requests.load(std::sync::atomic::Ordering::Relaxed) >= 512);
+    assert!(admin_runtime_requests.load(std::sync::atomic::Ordering::Relaxed) >= 512);
+    assert!(admin_audit_requests.load(std::sync::atomic::Ordering::Relaxed) >= 512);
     assert!(matches!(
         storage.lookup_invocation_outcome(cancel_id, ordinary_id, now_us + 2)?,
         Some(outcome) if outcome.status == OutcomeStatus::Aborted

@@ -220,3 +220,11 @@
 - Contract: the optional sink must be usable under the maintained supervisor units without weakening their default filesystem confinement; alternate locations require matching systemd and Landlock write grants.
 - Documentation: the user and system installation examples now configure a mode-0600 sink in their existing writable state directory. They explain that the parent must exist and that external paths need `ReadWritePaths=`, a supervisor `--writable-env PRDB_AUDIT_JSONL_PATH` grant, and traversal permission for missing ancestors.
 - Verification: checked the documented default locations against both supervisor unit `ReadWritePaths` entries and `prdb-landlock-run --writable` arguments; `git diff --check` passed. This is deployment documentation, not a new runtime behavior.
+
+## OM-7 authorized monitoring pressure — extended
+
+- Contract: authorized own-invocation, administrator runtime, and administrator audit pages remain bounded and available while writes and cancellation proceed; repeated denied monitoring requests also cannot starve those operations.
+- Regression: extended `denied_monitoring_pressure_does_not_starve_commit_or_cancellation` to issue at least 512 calls on each of five paths: owner invocation pages, authorized administrator runtime pages, authorized administrator audit pages, and denied runtime/audit pages. A durable invocation commit and managed cancellation complete during the pressure loop, and the cancellation outcome is confirmed ABORTED.
+- Red/green: the first run correctly rejected the test's use of the built-in owner role ID as an administrator principal. The fixture now creates a real administrator principal and membership; the focused test passes.
+- Verification: locked workspace build, rustfmt check, warning-denied all-target Clippy, TinyCC SDK tests and sandbox fixture, release-profile validation (10 engine binaries and one query fixture), delegated cgroup probe with writable `cpu memory pids`, and full serial delegated-cgroup workspace tests all passed with zero ignored tests. `git diff --check` passed.
+- Remaining: broader pressure coverage for other monitoring APIs and OM-2 registry families; exact redb retained-byte/cache telemetry remains unavailable, and there is no asynchronous job API to monitor.
