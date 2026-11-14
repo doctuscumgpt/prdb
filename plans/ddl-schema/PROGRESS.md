@@ -538,3 +538,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression evidence: composite-key parser coverage checks implied NOT NULL; the authenticated storage lifecycle regression creates a composite key and validates startup; protocol decoding accepts valid keys and rejects nullable or duplicate names; AdminClient and `admin-sql` control requests carry the structured column list.
 - Verification: focused parser, decoder, AdminClient, CLI, and storage tests passed. Locked workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests. `git diff --check` passed.
 - Next: add bounded table-level UNIQUE support to administrative CREATE TABLE SQL with the same atomic publication rules.
+
+## DS-3: atomic UNIQUE constraints in CREATE TABLE SQL — implemented
+
+- Contract: [schema DDL](../../specs/ddl-schema.md) and [client protocol](../../specs/client-protocol.md). The bounded administrative SQL form accepts multiple distinct final table-level `UNIQUE (columns...)` clauses, optionally alongside one PRIMARY KEY. UNIQUE columns may be nullable; NULL-containing tuples remain distinct. Each definition and owned unique index publishes with the new table in one authorized commit.
+- Implementation: [SQL parser](../../engine/src/ddl_sql.rs), [table creation](../../engine/src/storage_manager.rs), and create-table DDL validation in [commit.rs](../../engine/src/commit.rs).
+- Regression evidence: parser coverage handles multiple composite keys and rejects duplicate, unknown, or repeated columns. The authenticated storage regression atomically creates a composite PRIMARY KEY plus nullable UNIQUE constraint and validates persisted catalog startup. Decoder, AdminClient, and CLI tests assert nested typed arrays.
+- Verification: focused parser, decoder, AdminClient, CLI, and storage tests passed. Locked workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
+- Next: add bounded table-level CHECK support to administrative CREATE TABLE SQL, retaining the same atomic publication and binding checks.

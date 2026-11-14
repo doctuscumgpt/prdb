@@ -714,3 +714,9 @@
 - Contract: [client SDK](../../specs/client-sdk.md) and [schema DDL](../../specs/ddl-schema.md). `AdminClient::execute_create_table_sql` parses an optional table-level PK, implies NOT NULL on its columns, and sends ordered names in the existing typed `tables.create` PREPARE request. `AdminClient::create_table_with_primary_key` is also available for structured callers and validates the supplied columns before sending.
 - Regression: authenticated TCP coverage asserts the typed `primary_key_columns` field; SQL parser and strict decoder tests cover composite ordering, implied nullability, nullable rejection, and duplicates.
 - Verification: focused parser/decoder/AdminClient tests, locked workspace build, format check, warning-denied Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.
+
+## SDK-5: CREATE TABLE SQL with table-level UNIQUE — implemented
+
+- Contract: [client SDK](../../specs/client-sdk.md) and [schema DDL](../../specs/ddl-schema.md). SQL parsing accepts multiple final table-level UNIQUE clauses; `AdminClient` serializes them in the typed `tables.create` request, and `create_table_with_constraints` supports structured callers.
+- Regression: authenticated TCP coverage checks nested UNIQUE arrays alongside a PRIMARY KEY; parser tests cover composite/multiple definitions, while decoder tests cover structure and invalid references.
+- Verification: focused parser/decoder/AdminClient tests, locked workspace build, format check, warning-denied Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.

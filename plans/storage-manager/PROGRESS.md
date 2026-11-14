@@ -1046,3 +1046,10 @@
 - Validation: the commit DDL authority guard permits and validates exactly one optional PK/index pair, verifies source columns are non-nullable members of the created table, checks the owned index metadata/object records and dependency, and keeps the audit target on the table ID.
 - Regression: `storage_manager_creates_primary_key_with_owned_unique_index` now creates a composite-key table through the new path and validates the reopened catalog. The focused test and full 173-test commit integration target passed.
 - Verification: locked workspace build, format check, warning-denied Clippy, full serial delegated-cgroup workspace suite (sandbox/process tests enabled, zero ignored), and `git diff --check` passed.
+
+## Atomic table-level UNIQUE creation — implemented
+
+- Contract: [schema DDL](../../specs/ddl-schema.md). `StorageManager::create_table_with_constraints` accepts one optional PRIMARY KEY plus multiple ordered UNIQUE column lists. It generates each constraint/index identity and publishes family-8 constraint, family-9 unique index, object records, and kind-4 dependency with the table, columns, audit, and outcome. Nullable UNIQUE columns are accepted and inherit NULLS DISTINCT semantics.
+- Validation: the table-create commit guard verifies one-to-one constraint/index ownership, table membership, ordered source/index columns, the unique index shape, object identity/owner/version, dependency edges, and the single-primary-key maximum.
+- Regression: the atomic table lifecycle regression creates composite PRIMARY KEY and nullable UNIQUE constraints together and validates startup. The full 173-test commit target passed.
+- Verification: locked workspace build, format check, warning-denied Clippy, full serial delegated-cgroup workspace suite (sandbox/process tests enabled, zero ignored), and `git diff --check` passed.

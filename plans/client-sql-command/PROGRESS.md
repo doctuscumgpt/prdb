@@ -159,3 +159,9 @@
 - Contract: [client SQL command](../../specs/client-sql-command.md), [client SDK](../../specs/client-sdk.md), and [schema DDL](../../specs/ddl-schema.md). `admin-sql` accepts a final table-level `PRIMARY KEY (columns...)` in CREATE TABLE, validates it before credentials/network, and sends the structured column names through authenticated control mode.
 - Regression: the process-level CLI test verifies the PK field in PREPARE; parser regressions cover composite keys and rejection of unknown/duplicate columns.
 - Verification: focused CLI test, locked workspace build, format check, warning-denied Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.
+
+## Administrative SQL CLI: table-level UNIQUE — implemented
+
+- Contract: [client SQL command](../../specs/client-sql-command.md), [client SDK](../../specs/client-sdk.md), and [schema DDL](../../specs/ddl-schema.md). `admin-sql` accepts multiple final table-level UNIQUE clauses, rejects unknown or repeated columns before credentials/network, and sends nested typed name arrays over authenticated control mode.
+- Regression: the CLI process test checks the nested UNIQUE request alongside its PRIMARY KEY; parser coverage verifies nullable/composite UNIQUE and rejects malformed definitions.
+- Verification: focused CLI test, locked workspace build, format check, warning-denied Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.

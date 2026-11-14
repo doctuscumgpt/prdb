@@ -94,7 +94,7 @@ fn admin_sql_cli_runs_create_table_over_authenticated_control_mode() {
     let sql_path = temp.join("create.sql");
     fs::write(
         &sql_path,
-        "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY, amount DECIMAL(5,2) DEFAULT 1.20, PRIMARY KEY (id));",
+        "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY, amount DECIMAL(5,2) DEFAULT 1.20, PRIMARY KEY (id), UNIQUE (amount));",
     )
     .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -142,6 +142,7 @@ fn admin_sql_cli_runs_create_table_over_authenticated_control_mode() {
         assert!(payload.contains(r#""operation":"tables.create""#));
         assert!(payload.contains(r#""generated_uuid_identity":true"#));
         assert!(payload.contains(r#""primary_key_columns":["id"]"#));
+        assert!(payload.contains(r#""unique_constraints":[["amount"]]"#));
         assert!(payload.contains(r#""value":"1.20""#));
         let operation_id = [0x22; 16];
         write_server_response(

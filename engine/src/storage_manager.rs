@@ -5706,7 +5706,7 @@ impl<'db> StorageManager<'db> {
         &self,
         request: CreateTableRequest,
     ) -> Result<CreatedTable, TableLifecycleError> {
-        self.create_table_inner(request, None)
+        self.create_table_inner(request, None, &[])
     }
 
     /// Create a table and its primary key catalog/index records atomically.
@@ -5715,13 +5715,37 @@ impl<'db> StorageManager<'db> {
         request: CreateTableRequest,
         primary_key_columns: &[String],
     ) -> Result<CreatedTable, TableLifecycleError> {
-        self.create_table_inner(request, Some(primary_key_columns.to_vec()))
+        self.create_table_inner(request, Some(primary_key_columns.to_vec()), &[])
+    }
+
+    /// Create a table and its table-level UNIQUE constraints and indexes atomically.
+    pub fn create_table_with_unique_constraints(
+        &self,
+        request: CreateTableRequest,
+        unique_constraints: &[Vec<String>],
+    ) -> Result<CreatedTable, TableLifecycleError> {
+        self.create_table_inner(request, None, unique_constraints)
+    }
+
+    /// Create a table with a primary key and table-level UNIQUE constraints atomically.
+    pub fn create_table_with_constraints(
+        &self,
+        request: CreateTableRequest,
+        primary_key_columns: Option<&[String]>,
+        unique_constraints: &[Vec<String>],
+    ) -> Result<CreatedTable, TableLifecycleError> {
+        self.create_table_inner(
+            request,
+            primary_key_columns.map(<[String]>::to_vec),
+            unique_constraints,
+        )
     }
 
     fn create_table_inner(
         &self,
         request: CreateTableRequest,
         primary_key_columns: Option<Vec<String>>,
+        unique_constraints: &[Vec<String>],
     ) -> Result<CreatedTable, TableLifecycleError> {
         let CreateTableRequest {
             invocation_id,
@@ -5795,6 +5819,22 @@ impl<'db> StorageManager<'db> {
         {
             return Err(TableLifecycleError::InvalidRequest);
         }
+        if unique_constraints.len() > crate::tuple::MAX_COLUMNS
+            || unique_constraints.iter().any(|key_columns| {
+                key_columns.is_empty()
+                    || key_columns.len() > columns.len()
+                    || key_columns.iter().collect::<HashSet<_>>().len() != key_columns.len()
+                    || key_columns
+                        .iter()
+                        .any(|name| !columns.iter().any(|column| &column.name == name))
+            })
+            || unique_constraints
+                .iter()
+                .enumerate()
+                .any(|(index, columns)| unique_constraints[..index].contains(columns))
+        {
+            return Err(TableLifecycleError::InvalidRequest);
+        }
 
         let type_definitions = load_builtin_type_definitions(self.database)?;
         let table_id = self.generate_table_object_id()?;
@@ -5809,16 +5849,17 @@ impl<'db> StorageManager<'db> {
             }
             column_ids.push(column_id);
         }
-        let mut primary_key_ids = Vec::new();
-        let mut primary_key_constraint_id = None;
-        let mut primary_key_index_id = None;
+        let mut key_constraints = Vec::with_capacity(
+            unique_constraints.len() + usize::from(primary_key_columns.is_some()),
+        );
         if let Some(key_columns) = &primary_key_columns {
+            let mut key_column_ids = Vec::with_capacity(key_columns.len());
             for name in key_columns {
                 let ordinal = columns
                     .iter()
                     .position(|column| &column.name == name)
                     .ok_or(TableLifecycleError::InvalidRequest)?;
-                primary_key_ids.push(column_ids[ordinal]);
+                key_column_ids.push(column_ids[ordinal]);
             }
             let mut constraint_id = self.generate_table_object_id()?;
             if !used_ids.insert(constraint_id) {
@@ -5830,8 +5871,30 @@ impl<'db> StorageManager<'db> {
                 index_id.zeroize();
                 return Err(TableLifecycleError::ObjectIdGenerationFailed);
             }
-            primary_key_constraint_id = Some(constraint_id);
-            primary_key_index_id = Some(index_id);
+            key_constraints.push((2u16, key_column_ids, constraint_id, index_id));
+        }
+        for columns_for_key in unique_constraints {
+            let key_column_ids = columns_for_key
+                .iter()
+                .map(|name| {
+                    let ordinal = columns
+                        .iter()
+                        .position(|column| &column.name == name)
+                        .ok_or(TableLifecycleError::InvalidRequest)?;
+                    Ok(column_ids[ordinal])
+                })
+                .collect::<Result<Vec<_>, TableLifecycleError>>()?;
+            let mut constraint_id = self.generate_table_object_id()?;
+            if !used_ids.insert(constraint_id) {
+                constraint_id.zeroize();
+                return Err(TableLifecycleError::ObjectIdGenerationFailed);
+            }
+            let mut index_id = self.generate_table_object_id()?;
+            if !used_ids.insert(index_id) {
+                index_id.zeroize();
+                return Err(TableLifecycleError::ObjectIdGenerationFailed);
+            }
+            key_constraints.push((3u16, key_column_ids, constraint_id, index_id));
         }
         let mut default_expression_ids = Vec::with_capacity(columns.len());
         for column in &columns {
@@ -6106,15 +6169,13 @@ impl<'db> StorageManager<'db> {
             writes.push(new_dependency_write(*column_id, table_id, 1)?);
         }
 
-        if let (Some(constraint_id), Some(index_id)) =
-            (primary_key_constraint_id, primary_key_index_id)
-        {
-            let encode_ids = |ids: &[[u8; 16]]| {
-                let mut payload = (ids.len() as u32).to_le_bytes().to_vec();
-                payload.extend(ids.iter().flatten());
-                payload
-            };
-            let constraint_key = id_catalog_key(8, constraint_id);
+        let encode_ids = |ids: &[[u8; 16]]| {
+            let mut payload = (ids.len() as u32).to_le_bytes().to_vec();
+            payload.extend(ids.iter().flatten());
+            payload
+        };
+        for (constraint_kind, key_column_ids, constraint_id, index_id) in &key_constraints {
+            let constraint_key = id_catalog_key(8, *constraint_id);
             let constraint_fields = [
                 CatalogField {
                     tag: 1,
@@ -6124,12 +6185,12 @@ impl<'db> StorageManager<'db> {
                 CatalogField {
                     tag: 2,
                     wire_type: WireType::U16,
-                    payload: 2u16.to_le_bytes().to_vec(),
+                    payload: constraint_kind.to_le_bytes().to_vec(),
                 },
                 CatalogField {
                     tag: 3,
                     wire_type: WireType::Ids,
-                    payload: encode_ids(&primary_key_ids),
+                    payload: encode_ids(key_column_ids),
                 },
                 CatalogField {
                     tag: 6,
@@ -6174,9 +6235,15 @@ impl<'db> StorageManager<'db> {
                     .map_err(|_| TableLifecycleError::InvalidRequest)?,
                 ),
             });
+            let (constraint_kind_object, index_kind_object, constraint_prefix, index_prefix) =
+                if *constraint_kind == 2 {
+                    (6u16, 7u16, "primary_key_constraint", "primary_key_index")
+                } else {
+                    (6u16, 7u16, "unique_constraint", "unique_index")
+                };
             for (object_id, kind, prefix) in [
-                (constraint_id, 6u16, "primary_key_constraint"),
-                (index_id, 7u16, "primary_key_index"),
+                (*constraint_id, constraint_kind_object, constraint_prefix),
+                (*index_id, index_kind_object, index_prefix),
             ] {
                 let key = id_catalog_key(2, object_id);
                 let name = format!(
@@ -6224,7 +6291,7 @@ impl<'db> StorageManager<'db> {
                     payload: Some(payload),
                 });
             }
-            let index_key = id_catalog_key(9, index_id);
+            let index_key = id_catalog_key(9, *index_id);
             let index_fields = [
                 CatalogField {
                     tag: 1,
@@ -6234,7 +6301,7 @@ impl<'db> StorageManager<'db> {
                 CatalogField {
                     tag: 2,
                     wire_type: WireType::Ids,
-                    payload: encode_ids(&primary_key_ids),
+                    payload: encode_ids(key_column_ids),
                 },
                 CatalogField {
                     tag: 3,
@@ -6289,7 +6356,7 @@ impl<'db> StorageManager<'db> {
                     .map_err(|_| TableLifecycleError::InvalidRequest)?,
                 ),
             });
-            writes.push(new_dependency_write(constraint_id, index_id, 4)?);
+            writes.push(new_dependency_write(*constraint_id, *index_id, 4)?);
         }
         audit_event.target_ids = vec![table_id];
         let commit_sequence = commit_authorized_table_create_ddl_with_fences(

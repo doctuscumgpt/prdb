@@ -297,6 +297,7 @@ enum PendingAdminAction {
         name: String,
         columns: Vec<crate::storage_manager::TableColumnDefinition>,
         primary_key_columns: Option<Vec<String>>,
+        unique_constraints: Vec<Vec<String>>,
     },
     RenameIdentity {
         identity_id: [u8; 16],
@@ -686,6 +687,7 @@ pub enum ClientAdminCommand {
         name: String,
         columns: Vec<crate::storage_manager::TableColumnDefinition>,
         primary_key_columns: Option<Vec<String>>,
+        unique_constraints: Vec<Vec<String>>,
     },
     PrepareRenameIdentity {
         identity_id: [u8; 16],
@@ -855,6 +857,7 @@ pub fn decode_client_admin_command(
     let mut arguments = None;
     let mut table_columns = None;
     let mut primary_key_columns = None;
+    let mut unique_constraints = None;
     let mut foreign_key_source_columns = None;
     let mut constraint_column_ids = None;
     let mut index_unique = None;
@@ -905,6 +908,11 @@ pub fn decode_client_admin_command(
                     {
                         primary_key_columns = Some(parser.parse_string_array()?);
                         args.insert(arg, "<structured-names>".to_owned());
+                    } else if arg == "unique_constraints"
+                        && parser.text.get(parser.offset) == Some(&b'[')
+                    {
+                        unique_constraints = Some(parser.parse_string_array_array()?);
+                        args.insert(arg, "<structured-name-arrays>".to_owned());
                     } else if arg == "source_column_ids"
                         && parser.text.get(parser.offset) == Some(&b'[')
                     {
@@ -1974,7 +1982,7 @@ pub fn decode_client_admin_command(
             })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("tables.create") => {
-            if operation_id.is_some() || !(seen.len() == 4 || seen.len() == 5) {
+            if operation_id.is_some() || !(4..=6).contains(&seen.len()) {
                 return Err(ClientControlError::UnknownKey);
             }
             let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
@@ -1994,6 +2002,15 @@ pub fn decode_client_admin_command(
             {
                 return Err(ClientControlError::InvalidPrepare);
             }
+            let unique_marker = args.remove("unique_constraints");
+            if unique_marker.as_deref()
+                != unique_constraints
+                    .as_ref()
+                    .map(|_| "<structured-name-arrays>")
+            {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            let unique_constraints = unique_constraints.unwrap_or_default();
             if columns_value != "<structured-columns>"
                 || !is_canonical_admin_principal_name(&name)
                 || columns.is_empty()
@@ -2011,6 +2028,20 @@ pub fn decode_client_admin_command(
                                 })
                         })))
                 || !args.is_empty()
+                || unique_constraints.len() > crate::tuple::MAX_COLUMNS
+                || unique_constraints.iter().any(|names| {
+                    names.is_empty()
+                        || names.len() > columns.len()
+                        || names.iter().collect::<std::collections::HashSet<_>>().len()
+                            != names.len()
+                        || names
+                            .iter()
+                            .any(|name| !columns.iter().any(|column| column.name == *name))
+                })
+                || unique_constraints
+                    .iter()
+                    .enumerate()
+                    .any(|(index, names)| unique_constraints[..index].contains(names))
             {
                 return Err(ClientControlError::InvalidPrepare);
             }
@@ -2019,6 +2050,7 @@ pub fn decode_client_admin_command(
                 name,
                 columns,
                 primary_key_columns,
+                unique_constraints,
             })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("users.rename") => {
@@ -2820,6 +2852,27 @@ impl JsonStringObjectParser<'_> {
                 return Err(ClientControlError::InvalidPrepare);
             }
             values.push(self.parse_string()?);
+            self.skip_whitespace();
+            if self.consume(b']') {
+                break;
+            }
+            self.expect(b',')?;
+        }
+        Ok(values)
+    }
+
+    fn parse_string_array_array(&mut self) -> Result<Vec<Vec<String>>, ClientControlError> {
+        self.expect(b'[')?;
+        self.skip_whitespace();
+        let mut values = Vec::new();
+        if self.consume(b']') {
+            return Ok(values);
+        }
+        loop {
+            if values.len() >= crate::tuple::MAX_COLUMNS {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            values.push(self.parse_string_array()?);
             self.skip_whitespace();
             if self.consume(b']') {
                 break;
@@ -5024,6 +5077,7 @@ impl ClientConnectionSession {
                 name,
                 columns,
                 primary_key_columns,
+                unique_constraints,
             } => {
                 if self.pending_admin_operation.is_some() {
                     return Err(ClientSessionError::WrongMode);
@@ -5044,6 +5098,7 @@ impl ClientConnectionSession {
                         name,
                         columns,
                         primary_key_columns,
+                        unique_constraints,
                     },
                 });
                 self.json_response(
@@ -6200,6 +6255,7 @@ impl ClientConnectionSession {
                         name,
                         columns,
                         primary_key_columns,
+                        unique_constraints,
                     } => {
                         let create_request = crate::storage_manager::CreateTableRequest {
                             invocation_id: operation_id,
@@ -6218,14 +6274,13 @@ impl ClientConnectionSession {
                                 target_ids: Vec::new(),
                             },
                         };
-                        let created = match primary_key_columns {
-                            Some(primary_key_columns) => storage.create_table_with_primary_key(
+                        let created = storage
+                            .create_table_with_constraints(
                                 create_request,
-                                &primary_key_columns,
-                            ),
-                            None => storage.create_table(create_request),
-                        }
-                        .map_err(ClientSessionError::TableLifecycle)?;
+                                primary_key_columns.as_deref(),
+                                &unique_constraints,
+                            )
+                            .map_err(ClientSessionError::TableLifecycle)?;
                         let mut payload = format!(
                             "{{\"operation_id\":\"{}\",\"outcome\":\"committed\",\"table_id\":\"{}\",\"column_ids\":[",
                             encode_lower_hex_id(operation_id),

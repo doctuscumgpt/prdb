@@ -13,13 +13,14 @@ use std::time::Duration;
 
 #[test]
 fn admin_create_table_decoder_accepts_only_valid_inline_primary_keys() {
-    let valid = br#"{"phase":"prepare","operation_version":1,"operation":"tables.create","arguments":{"schema_id":"11111111111111111111111111111111","name":"events","columns":[{"name":"id","type":"uuid","nullable":false,"generated_uuid_identity":true}],"primary_key_columns":["id"]}}"#;
+    let valid = br#"{"phase":"prepare","operation_version":1,"operation":"tables.create","arguments":{"schema_id":"11111111111111111111111111111111","name":"events","columns":[{"name":"id","type":"uuid","nullable":false,"generated_uuid_identity":true}],"primary_key_columns":["id"],"unique_constraints":[["id"]]}}"#;
     assert!(matches!(
         decode_client_admin_command(valid),
         Ok(ClientAdminCommand::PrepareCreateTable {
             primary_key_columns: Some(names),
+            unique_constraints,
             ..
-        }) if names == ["id"]
+        }) if names == ["id"] && unique_constraints == [vec!["id"]]
     ));
 
     let nullable = br#"{"phase":"prepare","operation_version":1,"operation":"tables.create","arguments":{"schema_id":"11111111111111111111111111111111","name":"events","columns":[{"name":"id","type":"uuid","nullable":true,"generated_uuid_identity":false}],"primary_key_columns":["id"]}}"#;
@@ -30,6 +31,11 @@ fn admin_create_table_decoder_accepts_only_valid_inline_primary_keys() {
     let duplicate = br#"{"phase":"prepare","operation_version":1,"operation":"tables.create","arguments":{"schema_id":"11111111111111111111111111111111","name":"events","columns":[{"name":"id","type":"uuid","nullable":false,"generated_uuid_identity":true}],"primary_key_columns":["id","id"]}}"#;
     assert_eq!(
         decode_client_admin_command(duplicate),
+        Err(ClientControlError::InvalidPrepare)
+    );
+    let invalid_unique = br#"{"phase":"prepare","operation_version":1,"operation":"tables.create","arguments":{"schema_id":"11111111111111111111111111111111","name":"events","columns":[{"name":"id","type":"uuid","nullable":false,"generated_uuid_identity":true}],"unique_constraints":[["unknown"]]}}"#;
+    assert_eq!(
+        decode_client_admin_command(invalid_unique),
         Err(ClientControlError::InvalidPrepare)
     );
 }
@@ -1547,6 +1553,7 @@ fn admin_client_executes_create_table_sql_on_authenticated_control_channel() {
         assert!(payload.contains(r#""name":"events""#));
         assert!(payload.contains(r#""generated_uuid_identity":true"#));
         assert!(payload.contains(r#""primary_key_columns":["id"]"#));
+        assert!(payload.contains(r#""unique_constraints":[["amount"]]"#));
         assert!(payload.contains(r#""type":"decimal(8,2)""#));
         assert!(payload.contains(r#""default":{"kind":"literal","value":"-1.20"}"#));
         assert!(payload.contains(r#""value":"hello 'sql'""#));
@@ -1578,7 +1585,7 @@ fn admin_client_executes_create_table_sql_on_authenticated_control_channel() {
     .unwrap();
     let created = client
         .execute_create_table_sql(
-            "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY, amount DECIMAL(8, 2) DEFAULT -1.20, title TEXT DEFAULT 'hello ''sql''', owner UUID DEFAULT CURRENT_PRINCIPAL_ID(), PRIMARY KEY (id));",
+            "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY, amount DECIMAL(8, 2) DEFAULT -1.20, title TEXT DEFAULT 'hello ''sql''', owner UUID DEFAULT CURRENT_PRINCIPAL_ID(), PRIMARY KEY (id), UNIQUE (amount));",
         )
         .unwrap();
     assert_eq!(created.table_id, [0xa5; 16]);

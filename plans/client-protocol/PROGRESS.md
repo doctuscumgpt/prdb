@@ -229,3 +229,9 @@
 - Contract: [client protocol](../../specs/client-protocol.md). PREPARE accepts optional `primary_key_columns` as an ordered string array. Decoder validation requires a non-empty, distinct list of declared non-nullable columns; START routes the list to the atomic storage table-create path.
 - Regression: the decoder accepts a valid key and rejects nullable or repeated key columns; the full protocol decoder and commit integration targets passed.
 - Verification: locked workspace build, format check, warning-denied Clippy, complete serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.
+
+## `tables.create` optional UNIQUE constraint arrays — implemented
+
+- Contract: [client protocol](../../specs/client-protocol.md). PREPARE accepts optional `unique_constraints` as an array of ordered name arrays. It validates non-empty distinct members against declared columns; nullable columns are permitted. START routes the optional primary key and all UNIQUE definitions to atomic storage creation.
+- Regression: decoder coverage accepts a valid nested array and rejects an unknown column; the full protocol and commit test targets passed.
+- Verification: locked workspace build, format check, warning-denied Clippy, complete serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.

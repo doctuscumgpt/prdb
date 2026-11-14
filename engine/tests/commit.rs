@@ -9510,7 +9510,7 @@ fn storage_manager_creates_primary_key_with_owned_unique_index()
     let mut atomic_create_audit = identity_audit_event(0xc2, actor, id(0xc3));
     atomic_create_audit.correlation_id = atomic_create_invocation;
     let created_table = storage
-        .create_table_with_primary_key(
+        .create_table_with_constraints(
             prdb_engine::storage_manager::CreateTableRequest {
                 invocation_id: atomic_create_invocation,
                 authenticated_actor_id: actor,
@@ -9542,33 +9542,37 @@ fn storage_manager_creates_primary_key_with_owned_unique_index()
                 retention_deadline_us: 9_999,
                 audit_event: atomic_create_audit,
             },
-            &["tenant".to_owned(), "event_id".to_owned()],
+            Some(&["tenant".to_owned(), "event_id".to_owned()]),
+            &[vec!["label".to_owned()]],
         )
-        .map_err(|error| format!("atomic table and PRIMARY KEY create failed: {error:?}"))?;
+        .map_err(|error| {
+            format!("atomic table with PRIMARY KEY and UNIQUE create failed: {error:?}")
+        })?;
     assert_eq!(created_table.commit_sequence, 4);
     assert_eq!(created_table.column_ids.len(), 3);
     let atomic_reader = database.begin_read()?;
     let atomic_constraint_ids = prdb_engine::catalog_index::scan_constraint_ids_for_table(
         &atomic_reader,
         created_table.table_id,
-        1,
+        2,
     )?;
-    assert_eq!(atomic_constraint_ids.len(), 1);
+    assert_eq!(atomic_constraint_ids.len(), 2);
     let atomic_catalog = atomic_reader.open_table(CATALOG)?;
-    let atomic_constraint = atomic_catalog
-        .get(id_catalog_key(8, atomic_constraint_ids[0]).as_slice())?
-        .ok_or("atomic PRIMARY KEY record missing")?;
-    let atomic_constraint = decode_registered_envelope(atomic_constraint.value())?;
-    let primary_key_kind = atomic_constraint
-        .fields
-        .iter()
-        .find(|field| field.tag == 2)
-        .ok_or("atomic PRIMARY KEY kind missing")?;
-    assert_eq!(
-        u16::from_le_bytes(primary_key_kind.payload.as_slice().try_into()?),
-        2
-    );
-    drop(atomic_constraint);
+    let mut constraint_kinds = Vec::new();
+    for constraint_id in &atomic_constraint_ids {
+        let atomic_constraint = atomic_catalog
+            .get(id_catalog_key(8, *constraint_id).as_slice())?
+            .ok_or("atomic key constraint record missing")?;
+        let atomic_constraint = decode_registered_envelope(atomic_constraint.value())?;
+        let kind = atomic_constraint
+            .fields
+            .iter()
+            .find(|field| field.tag == 2)
+            .ok_or("atomic key constraint kind missing")?;
+        constraint_kinds.push(u16::from_le_bytes(kind.payload.as_slice().try_into()?));
+    }
+    constraint_kinds.sort_unstable();
+    assert_eq!(constraint_kinds, [2, 3]);
     drop(atomic_catalog);
     drop(atomic_reader);
     prdb_engine::startup::validate_persisted_records(&database)?;

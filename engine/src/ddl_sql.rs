@@ -17,6 +17,7 @@ pub struct CreateTableSql {
     pub table: String,
     pub columns: Vec<AdminColumnDefinition>,
     pub primary_key_columns: Option<Vec<String>>,
+    pub unique_constraints: Vec<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -74,10 +75,19 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
     parser.take(Token::LeftParen)?;
     let mut columns = Vec::new();
     let mut primary_key_columns = None;
+    let mut unique_constraints = Vec::new();
+    let mut saw_table_constraint = false;
     loop {
-        if parser.peek_word("primary") {
-            parser.word("primary")?;
-            parser.word("key")?;
+        if parser.peek_word("primary") || parser.peek_word("unique") {
+            saw_table_constraint = true;
+            let kind = if parser.peek_word("primary") {
+                parser.word("primary")?;
+                parser.word("key")?;
+                2
+            } else {
+                parser.word("unique")?;
+                3
+            };
             parser.take(Token::LeftParen)?;
             let mut names = vec![parser.identifier()?];
             while parser.peek() == Some(&Token::Comma) {
@@ -90,8 +100,26 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
             {
                 return Err(DdlSqlError::InvalidStatement);
             }
-            primary_key_columns = Some(names);
+            if kind == 2 {
+                if primary_key_columns.replace(names).is_some() {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
+            } else {
+                if unique_constraints.len() >= crate::tuple::MAX_COLUMNS
+                    || unique_constraints.contains(&names)
+                {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
+                unique_constraints.push(names);
+            }
+            if parser.peek() == Some(&Token::Comma) {
+                parser.position += 1;
+                continue;
+            }
             break;
+        }
+        if saw_table_constraint {
+            return Err(DdlSqlError::InvalidStatement);
         }
         if columns.len() == 4096 {
             return Err(DdlSqlError::InvalidStatement);
@@ -159,11 +187,19 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
             column.nullable = false;
         }
     }
+    if unique_constraints.iter().any(|key_columns| {
+        key_columns
+            .iter()
+            .any(|name| !columns.iter().any(|column| &column.name == name))
+    }) {
+        return Err(DdlSqlError::InvalidStatement);
+    }
     Ok(CreateTableSql {
         schema,
         table,
         columns,
         primary_key_columns,
+        unique_constraints,
     })
 }
 
@@ -754,6 +790,31 @@ mod tests {
             "CREATE TABLE app.t (id UUID, PRIMARY KEY (id, id))",
             "CREATE TABLE app.t (id UUID, PRIMARY KEY (id), extra INTEGER)",
             "CREATE TABLE app.t (id UUID PRIMARY KEY)",
+        ] {
+            assert!(parse_create_table(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_multiple_table_unique_constraints() {
+        let parsed = parse_create_table(
+            "CREATE TABLE app.events (id UUID NOT NULL, email TEXT, tenant UUID, PRIMARY KEY (id), UNIQUE (email), UNIQUE (tenant, email));",
+        )
+        .unwrap();
+        assert_eq!(parsed.primary_key_columns, Some(vec!["id".into()]));
+        assert_eq!(
+            parsed.unique_constraints,
+            vec![
+                vec!["email".to_owned()],
+                vec!["tenant".to_owned(), "email".to_owned()],
+            ]
+        );
+        assert!(!parsed.columns[0].nullable);
+        assert!(parsed.columns[1].nullable);
+        for sql in [
+            "CREATE TABLE app.events (id UUID, UNIQUE (missing))",
+            "CREATE TABLE app.events (id UUID, UNIQUE (id, id))",
+            "CREATE TABLE app.events (id UUID, UNIQUE (id), UNIQUE (id))",
         ] {
             assert!(parse_create_table(sql).is_err(), "accepted {sql}");
         }
