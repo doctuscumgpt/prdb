@@ -747,3 +747,9 @@
 - The SQL path rejects generated identities and context-dependent backfill defaults; NOT NULL requires a non-null literal. The storage path remains authoritative for row limits, index/locator rewrites, fencing, and authorization.
 - Parser, authenticated TCP, and CLI pre-credential recognition regressions added.
 - Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.
+
+## Administrative SQL: RENAME COLUMN — implemented
+
+- `execute_rename_column_sql` parses the qualified form, resolves schema/table/column using authenticated metadata, and submits `tables.rename_column` with the stable column ID.
+- Added parser, TCP binding/typed-operation, and CLI pre-credential recognition regressions.
+- Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.

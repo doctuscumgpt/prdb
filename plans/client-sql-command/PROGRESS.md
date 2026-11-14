@@ -190,3 +190,9 @@
 - `admin-sql` accepts one qualified `ADD COLUMN` with supported scalar type, optional NOT NULL, and optional typed literal default.
 - Parser checks nullability/default rules and fail-closed statement boundaries. Authenticated client coverage verifies table lookup and typed `tables.add_column` dispatch; CLI process coverage verifies local recognition.
 - Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.
+
+## Administrative SQL: RENAME COLUMN — implemented
+
+- `admin-sql` accepts qualified `ALTER TABLE schema.table RENAME COLUMN old_name TO new_name` and dispatches the existing typed operation after metadata resolution.
+- Parser tests reject malformed and multiple statements; AdminClient TCP coverage checks ID binding; CLI process coverage verifies syntax recognition before credentials/network.
+- Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.

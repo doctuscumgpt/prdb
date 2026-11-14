@@ -76,6 +76,14 @@ pub struct AddColumnSql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RenameColumnSql {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
+    pub new_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckExpressionSql {
     Column(String),
     IsNull(String),
@@ -470,6 +478,28 @@ pub fn parse_add_column(sql: &str) -> Result<AddColumnSql, DdlSqlError> {
             generated_uuid_identity: false,
             default,
         },
+    })
+}
+
+/// Parse `ALTER TABLE schema.table RENAME COLUMN name TO new_name`.
+pub fn parse_rename_column(sql: &str) -> Result<RenameColumnSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("table")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("rename")?;
+    parser.word("column")?;
+    let column = parser.identifier()?;
+    parser.word("to")?;
+    let new_name = parser.identifier()?;
+    finish_statement(&mut parser)?;
+    Ok(RenameColumnSql {
+        schema,
+        table,
+        column,
+        new_name,
     })
 }
 
@@ -1134,6 +1164,28 @@ mod tests {
             "ALTER TABLE app.events ADD COLUMN label TEXT; ALTER TABLE app.events ADD COLUMN extra TEXT",
         ] {
             assert!(parse_add_column(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_qualified_column_rename_only() {
+        assert_eq!(
+            parse_rename_column("ALTER TABLE app.events RENAME COLUMN old_name TO new_name;")
+                .unwrap(),
+            RenameColumnSql {
+                schema: "app".into(),
+                table: "events".into(),
+                column: "old_name".into(),
+                new_name: "new_name".into()
+            }
+        );
+        for sql in [
+            "ALTER TABLE events RENAME COLUMN old_name TO new_name",
+            "ALTER TABLE app.events RENAME old_name TO new_name",
+            "ALTER TABLE app.events RENAME COLUMN old_name new_name",
+            "ALTER TABLE app.events RENAME COLUMN old_name TO new_name; ALTER TABLE app.events RENAME COLUMN x TO y",
+        ] {
+            assert!(parse_rename_column(sql).is_err(), "accepted {sql}");
         }
     }
 
