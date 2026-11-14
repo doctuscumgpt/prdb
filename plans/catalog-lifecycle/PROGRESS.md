@@ -182,3 +182,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - A separate collision regression confirms an unrelated private staging image causes restore to fail without changing either the active image or the staging bytes.
 - Startup regression confirms a private partial `.prdb-restore.copying` file is tolerated while `storage.redb` remains active, but rejects that file when permissions are broadened and continues to reject unknown files.
 - Verification: the focused restore regression against the newer active generation passed. The preceding implementation revision passed formatting, locked workspace build, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite; all sandbox and process tests were enabled with zero ignored tests. The cgroup probe reported writable `cpu memory pids` controllers, and `git diff --check` passed.
+
+## CL-4 populated redb physical-format compatibility — verified slice
+
+- Added archived redb-2.6.4 physical v2 and upgraded v3 images containing a READY PRDB catalog, a user schema/table, a stored default expression, and one application row. The generator starts from a current engine image and copies all 20 byte-oriented logical tables into redb 2.6.4.
+- The pinned opener rejects the populated v2 image with `UpgradeRequired(2)` and no byte changes. After the upstream 2.6.4 `Database::upgrade()` and redb 4.4 recovery, current READY validation accepts the full image and the application row remains intact.
+- Verification: generator create/verify reported 20 tables and one row; the focused rejection and upgraded-image regressions passed. The separate redb operator workflow, including backup binding and interruption-safe publication, remains open.

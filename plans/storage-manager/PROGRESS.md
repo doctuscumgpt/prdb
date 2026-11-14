@@ -1024,3 +1024,10 @@
 - Regression opens a copy read/write with pinned redb 4.4.0 to perform recovery, checks both original table entries, closes it, then reopens read-only and confirms the entries remain present. Together with the v2 rejection test, this records the supported redb API transition boundary in the repository.
 - Verification: the focused `bootstrap_binary` regression passed. Broader workspace validation is not recorded in this follow-up.
 - Remaining: the fixture still does not contain a populated PRDB logical catalog, and no operator-facing offline physical-format upgrade workflow exists.
+
+## SM-1 / CL-4 populated PRDB redb-v2 compatibility — verified slice
+
+- Extended the isolated generator to initialize a real READY instance through the current engine, add a schema/table/default expression and one application row, then transcribe all 20 byte-oriented logical engine tables into a redb 2.6.4 physical v2 file. The companion v3 file is that populated image after `Database::upgrade()`.
+- Regression confirms pinned redb 4.4 rejects the populated v2 file with `UpgradeRequired(2)` without changing its bytes. After upgrading a copy, redb 4.4 recovery and read-only READY validation accept the complete populated catalog and preserve the application row payload.
+- Verification: the generator passed warning-denied all-target Clippy; its create and verify operations reported 20 engine tables and one application row. Both focused `bootstrap_binary` regressions passed. Formatting, targeted test compilation, and `git diff --check` passed.
+- Remaining: this establishes populated data compatibility but is not an operator-facing offline upgrade workflow; byte backup, interruption recovery, path-level atomic publication, and complete operator instructions remain open.

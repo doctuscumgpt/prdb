@@ -1,5 +1,5 @@
 use prdb_engine::audit::{AuditAction, AuditEvent, AuditResult};
-use prdb_engine::bootstrap::{BootstrapError, StorageInstance};
+use prdb_engine::bootstrap::{BootstrapError, ReadOnlyStorageInstance, StorageInstance};
 use prdb_engine::catalog::{
     CatalogField, WireType, decode_registered_envelope, encode_envelope, family_schema,
 };
@@ -655,6 +655,78 @@ fn pinned_redb_opens_and_reads_fixture_after_redb_v2_to_v3_upgrade() {
     let read = database.begin_read().expect("read recovered fixture");
     let table = read.open_table(TABLE).expect("reopen fixture table");
     assert_eq!(table.len().expect("count recovered fixture rows"), 2);
+}
+
+#[test]
+fn pinned_redb_rejects_populated_prdb_v2_without_mutating_the_file() {
+    let fixture = Fixture::new();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/redb-file-formats/prdb-redb-2.6.4-v2.redb");
+    let database_path = fixture.0.join("populated-prdb-v2.redb");
+    std::fs::copy(source, &database_path).expect("copy populated PRDB v2 fixture");
+    let before = std::fs::read(&database_path).expect("read populated PRDB v2 bytes");
+
+    let error = match ReadOnlyDatabase::open(&database_path) {
+        Ok(_) => panic!("redb 4.4 must reject the populated v2 physical format"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, redb::DatabaseError::UpgradeRequired(2)),
+        "unexpected populated PRDB physical-format result: {error:?}"
+    );
+    assert_eq!(
+        std::fs::read(&database_path).expect("read populated v2 bytes after rejection"),
+        before,
+        "rejected open must leave the populated source unchanged"
+    );
+}
+
+#[test]
+fn populated_prdb_logical_records_survive_redb_v2_to_v3_upgrade() {
+    let fixture = Fixture::new();
+    let instance_dir = fixture.instance_dir();
+    std::fs::create_dir(&instance_dir).expect("create upgraded fixture instance");
+    std::fs::set_permissions(&instance_dir, std::fs::Permissions::from_mode(0o700))
+        .expect("set fixture directory permissions");
+    let marker_path = instance_dir.join(".prdb-bootstrap");
+    std::fs::write(&marker_path, b"PRDB-LOCAL-SETUP-1\n").expect("write managed instance marker");
+    std::fs::set_permissions(&marker_path, std::fs::Permissions::from_mode(0o600))
+        .expect("set marker permissions");
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/redb-file-formats/prdb-redb-2.6.4-v3-upgraded.redb");
+    let database_path = instance_dir.join("storage.redb");
+    std::fs::copy(source, &database_path).expect("copy upgraded populated PRDB fixture");
+    std::fs::set_permissions(&database_path, std::fs::Permissions::from_mode(0o600))
+        .expect("set fixture file permissions");
+    drop(Database::open(&database_path).expect("recover upgraded populated redb image"));
+
+    let instance = ReadOnlyStorageInstance::open(&instance_dir)
+        .expect("validate populated PRDB after physical redb upgrade");
+    let report = prdb_engine::startup::validate_persisted_records_read_only(instance.database())
+        .expect("validate migrated logical PRDB records");
+    assert_eq!(report.metadata.catalog_version, 2);
+    assert!(report.catalog_records > 31);
+    assert_eq!(report.rows, 1);
+
+    let read = instance
+        .database()
+        .begin_read()
+        .expect("read upgraded application rows");
+    let rows = read.open_table(ROWS).expect("open upgraded rows table");
+    let (_, value) = rows
+        .iter()
+        .expect("iterate upgraded rows")
+        .next()
+        .expect("one application row")
+        .expect("decode application row");
+    let row = prdb_engine::row_record::RowRecord::decode(value.value())
+        .expect("decode upgraded application row");
+    assert!(
+        row.payload
+            .windows(b"persisted redb v2 row".len())
+            .any(|window| window == b"persisted redb v2 row"),
+        "upgraded row retains its application payload"
+    );
 }
 
 #[test]

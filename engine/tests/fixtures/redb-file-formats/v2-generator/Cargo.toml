@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-redb = "=2.6.4"
+redb_v2 = { package = "redb", version = "=2.6.4" }
+redb_v4 = { package = "redb", version = "=4.4.0" }
+prdb-engine = { path = "../../../../../engine" }
+zeroize = "=1.9.1"
 
 [workspace]
