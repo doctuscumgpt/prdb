@@ -135,6 +135,9 @@ pub fn upgrade_redb_v2_instance(
         ));
     }
 
+    if test_exit_before_exchange() {
+        std::process::exit(85);
+    }
     super::exchange_files(&active_path, &staging_path)?;
     if test_exit_after_exchange() {
         std::process::exit(86);
@@ -172,6 +175,17 @@ pub fn upgrade_redb_v2_instance(
             ));
         },
     })
+}
+
+#[cfg(debug_assertions)]
+fn test_exit_before_exchange() -> bool {
+    std::env::var_os("PRDB_TEST_REDB_UPGRADE_EXIT_BEFORE_EXCHANGE").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+}
+
+#[cfg(not(debug_assertions))]
+fn test_exit_before_exchange() -> bool {
+    false
 }
 
 #[cfg(debug_assertions)]

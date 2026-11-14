@@ -202,3 +202,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Red evidence: `maintenance_redb_physical_upgrade_recovers_after_process_exit_at_exchange` failed because the maintenance process returned success instead of stopping at the selected publication boundary.
 - A debug-build-only failpoint exits immediately after `RENAME_EXCHANGE` and before directory sync. The process regression verifies that the new active image opens READY, the old v2 bytes remain in the sidecar, and a fresh maintenance invocation validates both generations and returns `already-current`.
 - Verification: the failpoint regression passed after observing the initial failure; formatting and `git diff --check` passed. This is process-exit/restart evidence with the same live kernel and filesystem, not a power-loss test.
+
+## CL-4 physical upgrade pre-publication process exit — verified
+
+- Red evidence: `maintenance_redb_physical_upgrade_rebuilds_valid_stage_after_process_exit` failed because the command returned success instead of exiting before filename exchange.
+- A second debug-build-only failpoint exits after the staging image has passed logical digest and READY validation but immediately before exchange. The regression proves the active v2 bytes and independent backup remain identical, the completed staged v3 image is valid, and a fresh retry rebuilds staging and publishes successfully while retaining the v2 source.
+- Verification: all 33 serial `bootstrap_binary` tests passed, including both sides of the exchange process-exit cases. Formatting, locked offline workspace build, warning-denied all-target Clippy, and `git diff --check` passed.
+- Limit: these abrupt process exits run with the same live kernel and filesystem and do not simulate power loss.

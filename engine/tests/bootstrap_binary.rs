@@ -935,6 +935,72 @@ fn maintenance_redb_physical_upgrade_recovers_after_process_exit_at_exchange() {
 }
 
 #[test]
+fn maintenance_redb_physical_upgrade_rebuilds_valid_stage_after_process_exit() {
+    let fixture = Fixture::new();
+    let instance_dir = fixture.instance_dir();
+    std::fs::create_dir(&instance_dir).expect("create source instance directory");
+    std::fs::set_permissions(&instance_dir, std::fs::Permissions::from_mode(0o700))
+        .expect("set source directory permissions");
+    let marker_path = instance_dir.join(".prdb-bootstrap");
+    std::fs::write(&marker_path, b"PRDB-LOCAL-SETUP-1\n").expect("write source marker");
+    std::fs::set_permissions(&marker_path, std::fs::Permissions::from_mode(0o600))
+        .expect("set source marker permissions");
+    let source_fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/redb-file-formats/prdb-redb-2.6.4-v2.redb");
+    let active_path = instance_dir.join("storage.redb");
+    std::fs::copy(source_fixture, &active_path).expect("copy populated physical v2 source");
+    std::fs::set_permissions(&active_path, std::fs::Permissions::from_mode(0o600))
+        .expect("set active database permissions");
+    let source_bytes = std::fs::read(&active_path).expect("read source database bytes");
+    let backup_path = fixture.0.join("redb-v2-independent-backup.redb");
+    let crash = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .arg("redb-format-upgrade")
+        .arg("--instance-dir")
+        .arg(&instance_dir)
+        .arg("--backup-file")
+        .arg(&backup_path)
+        .arg("--confirm-redb-v2")
+        .env("PRDB_TEST_REDB_UPGRADE_EXIT_BEFORE_EXCHANGE", "1")
+        .output()
+        .expect("run crash-injected physical upgrade");
+    assert_eq!(crash.status.code(), Some(85));
+    assert_eq!(
+        std::fs::read(&active_path).expect("read active v2 source after exit"),
+        source_bytes
+    );
+    assert_eq!(
+        std::fs::read(&backup_path).expect("read independent v2 backup after exit"),
+        source_bytes
+    );
+    let staged = ReadOnlyDatabase::open(instance_dir.join(".prdb-redb-upgrade.next"))
+        .expect("open complete staged v3 image after process exit");
+    prdb_engine::startup::validate_persisted_records_read_only(&staged)
+        .expect("validate staged READY records");
+    drop(staged);
+
+    let retry = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .arg("redb-format-upgrade")
+        .arg("--instance-dir")
+        .arg(&instance_dir)
+        .arg("--backup-file")
+        .arg(&backup_path)
+        .arg("--confirm-redb-v2")
+        .output()
+        .expect("retry physical upgrade after pre-publication process exit");
+    assert!(
+        retry.status.success(),
+        "upgrade retry failed: {}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    assert!(String::from_utf8_lossy(&retry.stdout).contains("physical_format=upgraded"));
+    assert_eq!(
+        std::fs::read(instance_dir.join(".prdb-redb-upgrade.next"))
+            .expect("read retained v2 source after retry"),
+        source_bytes
+    );
+}
+
+#[test]
 fn v1_source_validator_checks_legacy_ready_images_without_admitting_them() {
     let fixture = Fixture::new();
     let mut session =
