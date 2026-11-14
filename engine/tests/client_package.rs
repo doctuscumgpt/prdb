@@ -872,7 +872,10 @@ fn generated_query_artifact_is_independent_of_parameter_values() {
         artifact_bytes.push(fs::read(package_path.join("query.so")).unwrap());
     }
 
-    assert_ne!(parameter_blocks[0], parameter_blocks[1]);
+    assert_ne!(
+        parameter_blocks[0].as_slice(),
+        parameter_blocks[1].as_slice()
+    );
     assert_eq!(artifact_bytes[0], artifact_bytes[1]);
     for (index, artifact) in artifact_bytes.iter().enumerate() {
         assert!(

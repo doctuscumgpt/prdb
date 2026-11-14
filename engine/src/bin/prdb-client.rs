@@ -1647,9 +1647,7 @@ fn read_sql_parameters(path: Option<&Path>) -> Result<Zeroizing<Vec<u8>>, String
     if input.len() > MAX_SQL_PARAMETER_BYTES {
         return Err("SQL parameter input exceeds 1 MiB".to_owned());
     }
-    encode_parameter_file(input.as_slice())
-        .map(Zeroizing::new)
-        .map_err(|error| error.to_string())
+    encode_parameter_file(input.as_slice()).map_err(|error| error.to_string())
 }
 
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {

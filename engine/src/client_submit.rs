@@ -4184,6 +4184,28 @@ pub(crate) enum ResponseValue {
     Null,
 }
 
+impl Zeroize for ResponseValue {
+    fn zeroize(&mut self) {
+        match self {
+            Self::String(value) => value.zeroize(),
+            Self::Object(fields) => {
+                let mut fields = std::mem::take(fields);
+                for (mut key, mut value) in fields.drain() {
+                    key.zeroize();
+                    value.zeroize();
+                }
+            }
+            Self::Array(values) => {
+                for value in values.iter_mut() {
+                    value.zeroize();
+                }
+                values.clear();
+            }
+            Self::Number(_) | Self::Boolean(_) | Self::Null => {}
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum AdminExpectedResponseField<'a> {
     Id(&'a str, [u8; 16]),

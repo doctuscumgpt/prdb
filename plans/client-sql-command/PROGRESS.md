@@ -102,3 +102,12 @@
 - Specification: documented the PSP1 buffer's all-return-path zeroization behavior.
 - Verification: the focused `run-sql` local/package/gateway-failure process test passed. Locked workspace build, format check, warning-denied Clippy, complete maintained TinyCC suite, sandbox fixture build, release-profile validation (10 engine binaries and one query fixture), and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
 - Scope: covers the PSP1 byte buffer and raw JSON file buffer owned by `run_sql`. It does not claim to wipe parser-internal temporary string allocations.
+
+## SQLCLI-3 zeroize parameter-encoding intermediates — implemented
+
+- Contract: parameter values remain runtime-only data, including while the client parses and converts canonical JSON into PSP1; temporary encoded copies are cleared if a later value fails validation.
+- Red evidence: the new `parsed_parameter_json_tree_zeroizes_nested_strings` regression first failed to compile because `ResponseValue` had no `Zeroize` implementation.
+- Implementation: `ResponseValue` recursively zeroizes strings and object keys and clears nested arrays/maps. The SQL encoder owns the parsed tree, per-value payloads, and partial record bytes through `Zeroizing`; it now returns the final PSP1 vector in a zeroizing owner too. `run_sql` retains zeroizing raw-JSON and PSP1 ownership across every local and submission return path.
+- Specification: documented zeroization of the parsed tree and temporary payload/record buffers after valid JSON parsing.
+- Verification: all 10 `client_sql` unit tests passed; the parameter-independent artifact process test and the local/package/gateway-failure process test passed. Workspace build, format check, warning-denied Clippy, complete maintained TinyCC suite, sandbox fixture build, release-profile validation (10 engine binaries and one query fixture), delegated cgroup probe, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
+- Scope: covers owned parameter buffers after successful JSON parsing and the final encoded block. Temporary allocations made internally while malformed JSON is being parsed are not claimed to be wiped.

@@ -6,6 +6,7 @@ use std::fs::OpenOptions;
 use std::io::{self, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use zeroize::Zeroizing;
 
 pub const MAX_SQL_BYTES: usize = 65_536;
 pub const MAX_SQL_PARAMETER_BYTES: usize = 1024 * 1024;
@@ -115,13 +116,15 @@ fn append_c_bytes(output: &mut String, bytes: &[u8]) {
     }
 }
 
-pub fn encode_parameter_file(input: &[u8]) -> Result<Vec<u8>, SqlInputError> {
+pub fn encode_parameter_file(input: &[u8]) -> Result<Zeroizing<Vec<u8>>, SqlInputError> {
     if input.len() > MAX_SQL_PARAMETER_BYTES {
         return Err(SqlInputError::TooLarge);
     }
-    let root = parse_bounded_json_value(input, MAX_SQL_PARAMETER_BYTES)
-        .map_err(|_| SqlInputError::InvalidFormat)?;
-    let root = root.as_object().ok_or(SqlInputError::InvalidFormat)?;
+    let parsed = Zeroizing::new(
+        parse_bounded_json_value(input, MAX_SQL_PARAMETER_BYTES)
+            .map_err(|_| SqlInputError::InvalidFormat)?,
+    );
+    let root = parsed.as_object().ok_or(SqlInputError::InvalidFormat)?;
     if root.len() != 2 || string_field(root, "format")? != "PDB-SQL-PARAMETERS-1" {
         return Err(SqlInputError::InvalidFormat);
     }
@@ -133,7 +136,7 @@ pub fn encode_parameter_file(input: &[u8]) -> Result<Vec<u8>, SqlInputError> {
         return Err(SqlInputError::TooLarge);
     }
 
-    let mut records = Vec::new();
+    let mut records = Zeroizing::new(Vec::new());
     for value in values {
         let fields = value.as_object().ok_or(SqlInputError::InvalidFormat)?;
         if fields.len() != 2 {
@@ -143,6 +146,7 @@ pub fn encode_parameter_file(input: &[u8]) -> Result<Vec<u8>, SqlInputError> {
         let raw_value = fields.get("value").ok_or(SqlInputError::InvalidFormat)?;
         let (type_code, precision, scale, state, payload) =
             encode_typed_value(type_name, raw_value)?;
+        let payload = Zeroizing::new(payload);
         let payload_len: u32 = payload
             .len()
             .try_into()
@@ -153,9 +157,8 @@ pub fn encode_parameter_file(input: &[u8]) -> Result<Vec<u8>, SqlInputError> {
         records.push(state);
         records.push(0);
         records.extend_from_slice(&payload_len.to_be_bytes());
-        records.extend_from_slice(&payload);
+        records.extend_from_slice(payload.as_slice());
         if records.len() + PSP1_HEADER_BYTES > MAX_SQL_PARAMETER_BYTES {
-            records.fill(0);
             return Err(SqlInputError::TooLarge);
         }
     }
@@ -164,12 +167,11 @@ pub fn encode_parameter_file(input: &[u8]) -> Result<Vec<u8>, SqlInputError> {
         .len()
         .try_into()
         .map_err(|_| SqlInputError::TooLarge)?;
-    let mut output = Vec::with_capacity(PSP1_HEADER_BYTES + records.len());
+    let mut output = Zeroizing::new(Vec::with_capacity(PSP1_HEADER_BYTES + records.len()));
     output.extend_from_slice(b"PSP1");
     output.extend_from_slice(&value_count.to_be_bytes());
     output.extend_from_slice(&0u16.to_be_bytes());
-    output.extend_from_slice(&records);
-    records.fill(0);
+    output.extend_from_slice(records.as_slice());
     Ok(output)
 }
 
@@ -391,7 +393,32 @@ mod tests {
         MAX_SQL_BYTES, SqlInputError, encode_parameter_file, generate_query_source, read_sql_from,
         validate_schema_name,
     };
+    use crate::client_submit::ResponseValue;
+    use std::collections::HashMap;
     use std::io::Cursor;
+    use zeroize::Zeroize;
+
+    #[test]
+    fn parsed_parameter_json_tree_zeroizes_nested_strings() {
+        let mut nested = HashMap::new();
+        nested.insert(
+            "private-field".to_owned(),
+            ResponseValue::String("parameter-secret".to_owned()),
+        );
+        let mut fields = HashMap::new();
+        fields.insert(
+            "values".to_owned(),
+            ResponseValue::Array(vec![
+                ResponseValue::String("text".to_owned()),
+                ResponseValue::Object(nested),
+            ]),
+        );
+        let mut value = ResponseValue::Object(fields);
+
+        value.zeroize();
+
+        assert_eq!(value, ResponseValue::Object(HashMap::new()));
+    }
 
     #[test]
     fn parameter_file_encodes_typed_values_and_null_as_psp1() {
@@ -401,7 +428,7 @@ mod tests {
             0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4, 42, 0, 0, 0, // integer 42
             0, 0, 0, 6, 0, 0, 1, 0, 0, 0, 0, 0, // typed NULL text
         ];
-        assert_eq!(encode_parameter_file(input).unwrap(), expected);
+        assert_eq!(encode_parameter_file(input).unwrap().as_slice(), expected);
     }
 
     #[test]
@@ -409,14 +436,16 @@ mod tests {
         assert_eq!(
             encode_parameter_file(
                 br#"{"format":"PDB-SQL-PARAMETERS-1","format":"PDB-SQL-PARAMETERS-1","values":[]}"#
-            ),
-            Err(SqlInputError::InvalidFormat)
+            )
+            .err(),
+            Some(SqlInputError::InvalidFormat)
         );
         assert_eq!(
             encode_parameter_file(
                 br#"{"format":"PDB-SQL-PARAMETERS-1","values":[{"type":"integer","value":"042"}]}"#
-            ),
-            Err(SqlInputError::InvalidFormat)
+            )
+            .err(),
+            Some(SqlInputError::InvalidFormat)
         );
     }
 
@@ -428,7 +457,7 @@ mod tests {
         expected.extend_from_slice(&[5, 2, 0, 0]);
         expected.extend_from_slice(&16u32.to_be_bytes());
         expected.extend_from_slice(&(-1230i128).to_le_bytes());
-        assert_eq!(encode_parameter_file(input).unwrap(), expected);
+        assert_eq!(encode_parameter_file(input).unwrap().as_slice(), expected);
         assert!(encode_parameter_file(
             br#"{"format":"PDB-SQL-PARAMETERS-1","values":[{"type":"decimal(2,3)","value":"1"}]}"#
         )
@@ -467,7 +496,10 @@ mod tests {
             expected.extend_from_slice(&payload);
         }
 
-        assert_eq!(encode_parameter_file(input.as_bytes()).unwrap(), expected);
+        assert_eq!(
+            encode_parameter_file(input.as_bytes()).unwrap().as_slice(),
+            expected
+        );
     }
 
     #[test]
@@ -492,8 +524,8 @@ mod tests {
                 "{{\"format\":\"PDB-SQL-PARAMETERS-1\",\"values\":[{{\"type\":\"{type_name}\",\"value\":\"{value}\"}}]}}"
             );
             assert_eq!(
-                encode_parameter_file(input.as_bytes()),
-                Err(SqlInputError::InvalidFormat),
+                encode_parameter_file(input.as_bytes()).err(),
+                Some(SqlInputError::InvalidFormat),
                 "accepted invalid {type_name} value {value:?}"
             );
         }
@@ -528,8 +560,8 @@ mod tests {
     fn parameter_file_enforces_the_one_mibibyte_input_limit() {
         let oversized = vec![b' '; super::MAX_SQL_PARAMETER_BYTES + 1];
         assert_eq!(
-            encode_parameter_file(&oversized),
-            Err(SqlInputError::TooLarge)
+            encode_parameter_file(&oversized).err(),
+            Some(SqlInputError::TooLarge)
         );
     }
 
