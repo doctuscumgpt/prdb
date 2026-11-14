@@ -185,8 +185,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: both focused real-redb transaction tests passed. Workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests and sandbox fixture, and the full serial delegated-cgroup workspace suite passed with zero ignored tests; the suite reported 233 engine unit tests, 172 commit tests, and 75 transaction tests. `git diff --check` passed.
 - Scope: verifies the storage staging errors for UPDATE and DELETE under one row policy. It does not claim constant-time behavior, external IPC byte equivalence, or equivalent diagnostics for constraint failures.
 
-## AU-2 / AU-7: CHECK failure diagnostics omit row and value details — verified
+## AU-2 / AU-7: constraint failure diagnostics omit row and value details — verified
 
-- Contract: rejected CHECK-constrained updates return a generic diagnostic that does not include the target row identity or attempted value. Constraint success/failure may still reveal information; this check covers diagnostic contents only.
-- Regression: `authorized_patch_checks_changed_cells_and_freezes_policy_dependencies` now submits two CHECK-failing updates on distinct rows with distinct rejected values and asserts identical `TransactionError` diagnostics.
-- Remaining: global unique and foreign-key constraint outcomes can still reveal hidden key existence, as specified; broader hostile IPC sequences and timing inference remain open.
+- Contract: rejected CHECK, unique-index, and foreign-key mutations return generic diagnostics that do not include the target row identity or attempted/conflicting value. Constraint success/failure may still reveal information; these checks cover diagnostic contents only.
+- Regression: `authorized_patch_checks_changed_cells_and_freezes_policy_dependencies` compares CHECK-failing updates on distinct rows and values. `unique_constraint_uses_its_backing_index_for_invocation_writes` compares conflicts for distinct unique values and rows. `catalog_foreign_keys_check_child_and_parent_mutations` compares missing parent references for distinct values and rows.
+- Remaining: global constraint success/failure may still reveal hidden key existence, as specified; broader hostile IPC sequences and timing inference remain open.

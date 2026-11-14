@@ -6463,8 +6463,8 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         [241; 16],
         [9; 16],
         9_999,
-        index_profile_rows as usize + 1,
-        (index_profile_rows as usize + 1) * 2_048,
+        index_profile_rows as usize + 2,
+        (index_profile_rows as usize + 2) * 2_048,
     )?;
     let seed_schema = seed.load_catalog_table_schema(table_id)?;
     seed.load_catalog_indexes(&seed_schema)?;
@@ -6474,6 +6474,12 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         &[Some(ScalarValue::Bytea(b"duplicate".to_vec()))],
     )?;
     seed.stage_put(id(243), &payload)?;
+    let alternate_payload = encode_tuple(
+        &seed_schema.columns,
+        seed_schema.schema_version,
+        &[Some(ScalarValue::Bytea(b"alternate duplicate".to_vec()))],
+    )?;
+    seed.stage_put(id(245), &alternate_payload)?;
     for number in 0..index_profile_rows {
         let value = format!("key-{number:05}");
         let payload = encode_tuple(
@@ -6960,9 +6966,31 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         )?,
         prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
     );
+    let first_unique_error = invocation
+        .commit()
+        .expect_err("duplicate indexed values must fail the first commit");
     assert!(matches!(
-        invocation.commit(),
-        Err(TransactionError::Commit(CommitError::UniqueViolation))
+        &first_unique_error,
+        TransactionError::Commit(CommitError::UniqueViolation)
+    ));
+
+    let mut alternate_invocation =
+        InvocationTransaction::begin(&database, [0x47; 16], [9; 16], 9_999, 8, 512)?;
+    let alternate_schema = alternate_invocation.load_catalog_table_schema(table_id)?;
+    alternate_invocation.load_catalog_check_constraints(&alternate_schema)?;
+    alternate_invocation.load_catalog_indexes(&alternate_schema)?;
+    alternate_invocation.stage_put(id(246), &alternate_payload)?;
+    let alternate_unique_error = alternate_invocation
+        .commit()
+        .expect_err("the second duplicate indexed value must fail its commit");
+    assert_eq!(
+        format!("{first_unique_error:?}"),
+        format!("{alternate_unique_error:?}"),
+        "unique diagnostics must not include conflicting values or row identities"
+    );
+    assert!(matches!(
+        alternate_unique_error,
+        TransactionError::Commit(CommitError::UniqueViolation)
     ));
 
     let read = database.begin_read()?;
@@ -7203,9 +7231,40 @@ fn catalog_foreign_keys_check_child_and_parent_mutations() -> Result<(), Box<dyn
     child.load_catalog_check_constraints(&child_schema)?;
     child.load_catalog_indexes(&child_schema)?;
     child.stage_put(child_row_id, &missing_payload)?;
+    let first_foreign_key_error = child
+        .commit()
+        .expect_err("a child reference without a parent must fail commit");
     assert!(matches!(
-        child.commit(),
-        Err(TransactionError::Commit(CommitError::ForeignKeyViolation))
+        &first_foreign_key_error,
+        TransactionError::Commit(CommitError::ForeignKeyViolation)
+    ));
+
+    let alternate_child_row_id = id(37);
+    let alternate_missing_payload = encode_tuple(
+        &[ColumnSchema {
+            scalar_type: ScalarType::Bytea,
+            nullable: true,
+        }],
+        1,
+        &[Some(ScalarValue::Bytea(b"another missing key".to_vec()))],
+    )?;
+    let mut alternate_child =
+        InvocationTransaction::begin(&database, [0x39; 16], [9; 16], 9_999, 8, 512)?;
+    let alternate_child_schema = alternate_child.load_catalog_table_schema(source_table_id)?;
+    alternate_child.load_catalog_check_constraints(&alternate_child_schema)?;
+    alternate_child.load_catalog_indexes(&alternate_child_schema)?;
+    alternate_child.stage_put(alternate_child_row_id, &alternate_missing_payload)?;
+    let alternate_foreign_key_error = alternate_child
+        .commit()
+        .expect_err("a different missing child key must fail commit");
+    assert_eq!(
+        format!("{first_foreign_key_error:?}"),
+        format!("{alternate_foreign_key_error:?}"),
+        "foreign-key diagnostics must not include rejected values or row identities"
+    );
+    assert!(matches!(
+        alternate_foreign_key_error,
+        TransactionError::Commit(CommitError::ForeignKeyViolation)
     ));
     {
         let read = database.begin_read()?;
