@@ -897,6 +897,72 @@ fn v1_source_validator_checks_legacy_ready_images_without_admitting_them() {
         source_before_backup,
         "migration backup must not modify the legacy source"
     );
+
+    let populated_instance = fixture.0.join("populated-v1-instance");
+    std::fs::create_dir(&populated_instance).expect("create populated migration instance");
+    std::fs::set_permissions(&populated_instance, std::fs::Permissions::from_mode(0o700))
+        .expect("restrict populated migration instance");
+    for file_name in [".prdb-bootstrap", ".prdb.lock", "storage.redb"] {
+        let source_file = fixture.instance_dir().join(file_name);
+        let copied_file = populated_instance.join(file_name);
+        std::fs::copy(source_file, &copied_file).expect("copy populated migration file");
+        std::fs::set_permissions(&copied_file, std::fs::Permissions::from_mode(0o600))
+            .expect("restrict copied migration file");
+    }
+    let populated_backup = fixture.0.join("populated-v1-backup");
+    prdb_engine::offline_backup::create_verified_migration_backup(
+        &populated_instance,
+        &populated_backup,
+    )
+    .expect("back up populated v1 migration instance");
+    let populated_history_path = fixture.0.join("populated-identity-history.txt");
+    let populated_history = prdb_engine::identity_history::IdentityHistory {
+        database_id: report.metadata.database_id,
+        commit_sequence: report.metadata.commit_sequence,
+        tombstone_ids: vec![[0xfd; 16]],
+    };
+    std::fs::write(
+        &populated_history_path,
+        populated_history
+            .encode()
+            .expect("encode populated history"),
+    )
+    .expect("write populated identity history");
+    std::fs::set_permissions(
+        &populated_history_path,
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .expect("restrict populated identity history");
+    let populated_apply = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-apply", "--instance-dir"])
+        .arg(&populated_instance)
+        .arg("--backup-dir")
+        .arg(&populated_backup)
+        .arg("--identity-history")
+        .arg(&populated_history_path)
+        .arg("--confirm-complete-identity-history")
+        .output()
+        .expect("migrate populated v1 instance");
+    assert!(
+        populated_apply.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&populated_apply.stdout),
+        String::from_utf8_lossy(&populated_apply.stderr)
+    );
+    let populated_migrated =
+        StorageInstance::open(&populated_instance).expect("open populated migrated instance");
+    let populated_report =
+        prdb_engine::startup::validate_persisted_records(populated_migrated.database())
+            .expect("validate populated v2 migration result");
+    assert_eq!(populated_report.metadata.catalog_version, 2);
+    assert_eq!(populated_report.rows, report.rows);
+    assert_eq!(populated_report.audit_events, report.audit_events);
+    assert_eq!(
+        populated_report.catalog_records,
+        report.catalog_records + populated_history.tombstone_ids.len()
+    );
+    drop(populated_migrated);
+
     let orphan_user_id = [0x61; 16];
     let token_id = [0x62; 16];
     let mut token_key = 16u16.to_be_bytes().to_vec();
@@ -1107,6 +1173,84 @@ fn migration_apply_requires_complete_history_ack_and_publishes_validated_v2() {
         )
         .expect("compare retained source with backup")
     );
+}
+
+#[test]
+fn migration_apply_resumes_a_fully_validated_v2_staging_image() {
+    let fixture = Fixture::new();
+    let mut session = prdb_engine::bootstrap::initialize(
+        fixture.instance_dir(),
+        "migration_resume_admin",
+        i64::MAX,
+    )
+    .expect("initialize migration source");
+    let mut secret = session.take_secret().expect("bootstrap secret");
+    use zeroize::Zeroize;
+    secret.zeroize();
+    drop(session.acknowledge().expect("publish source READY"));
+
+    let source_path = fixture.instance_dir().join("storage.redb");
+    let metadata = downgrade_ready_fixture_to_v1(&source_path);
+    let backup_path = fixture.0.join("resume-v1-backup");
+    prdb_engine::offline_backup::create_verified_migration_backup(
+        fixture.instance_dir(),
+        &backup_path,
+    )
+    .expect("create verified v1 backup");
+    let history_path = fixture.0.join("resume-identity-history.txt");
+    let history = prdb_engine::identity_history::IdentityHistory {
+        database_id: metadata.database_id,
+        commit_sequence: metadata.commit_sequence,
+        tombstone_ids: vec![[0xfc; 16]],
+    };
+    std::fs::write(
+        &history_path,
+        history.encode().expect("encode identity history"),
+    )
+    .expect("write identity history");
+    std::fs::set_permissions(&history_path, std::fs::Permissions::from_mode(0o600))
+        .expect("restrict identity history permissions");
+
+    let staging_path = fixture.instance_dir().join(".prdb-migration.next");
+    std::fs::copy(&source_path, &staging_path).expect("copy source into staging");
+    let staging = Database::open(&staging_path).expect("open staging source copy");
+    prdb_engine::migration::upgrade_v1_staging_database(&staging, &history)
+        .expect("prepare fully converted staging image");
+    drop(staging);
+    let prepared = ReadOnlyDatabase::open(&staging_path).expect("open prepared v2 staging image");
+    let prepared_report = prdb_engine::migration::validate_v2_staging_history(
+        &ReadOnlyDatabase::open(&source_path).expect("open locked v1 source image"),
+        &prepared,
+        &history,
+    )
+    .expect("validate resumable staging image");
+    assert_eq!(prepared_report.metadata.catalog_version, 2);
+    drop(prepared);
+
+    let applied = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-apply", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--backup-dir")
+        .arg(&backup_path)
+        .arg("--identity-history")
+        .arg(&history_path)
+        .arg("--confirm-complete-identity-history")
+        .output()
+        .expect("resume and publish v2 staging image");
+    assert!(
+        applied.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&applied.stdout),
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    let migrated = StorageInstance::open(fixture.instance_dir())
+        .expect("open instance published from resumed staging");
+    let report = prdb_engine::startup::validate_persisted_records(migrated.database())
+        .expect("validate resumed v2 image");
+    assert_eq!(report.metadata.catalog_version, 2);
+    assert_eq!(report.metadata.database_id, metadata.database_id);
+    assert_eq!(report.metadata.commit_sequence, metadata.commit_sequence);
+    drop(migrated);
 }
 
 #[test]
