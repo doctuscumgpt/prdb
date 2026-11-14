@@ -147,3 +147,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: four unit tests cover canonical round-trip, noncanonical/zero/duplicate/truncated inputs, digest corruption, file privacy, symlink rejection, and mismatched source identity.
 - Verification: the initial test compile failed because the codec was absent; after implementation, all four focused tests passed. Workspace formatting, build, warning-denied Clippy, and `git diff --check` passed.
 - Remaining: the acknowledgment flag, verified-backup binding at the CLI, conversion of logical tables and tombstones into a bounded v2 staging image, staged-target validation/publication, and interruption recovery are not implemented. Catalog v1 remains rejected for service admission and no migration is yet executable.
+
+## CL-5 identity-history collision guard — implemented slice
+
+- Added `IdentityHistory::validate_tombstones_unoccupied`, which validates the canonical history before checking candidate IDs against a caller-supplied scan of source family 2, 10, and 17 records. It rejects any historical deletion ID that is still occupied by an object, principal, or tombstone.
+- Regression covers a colliding source ID and a collision-free set. The migration executor must still supply the validated source-family scan and bind it to a verified backup before conversion.
+- Verification: all five focused identity-history tests passed; formatting, the locked workspace build, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed. Sandbox/process tests ran enabled with zero ignored tests. The delegated probe reported a writable cgroup v2 parent with `cpu memory pids` available and enabled. `git diff --check` passed.

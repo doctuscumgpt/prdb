@@ -26,6 +26,7 @@ pub enum IdentityHistoryError {
     InvalidHistory,
     IntegrityMismatch,
     TooLarge,
+    TombstoneIdAlreadyUsed,
 }
 
 #[derive(Debug)]
@@ -50,6 +51,27 @@ impl std::fmt::Display for IdentityHistoryFileError {
 impl std::error::Error for IdentityHistoryFileError {}
 
 impl IdentityHistory {
+    /// Reject history IDs that are still reserved by a live catalog identity
+    /// or by an existing tombstone in the source image.
+    ///
+    /// The caller supplies IDs from family 2, 10, and 17 after validating the
+    /// source image. Keeping this check separate from the file codec lets the
+    /// migration executor scan those bounded catalog families without making
+    /// the history format depend on redb.
+    pub fn validate_tombstones_unoccupied(
+        &self,
+        occupied_ids: impl IntoIterator<Item = [u8; 16]>,
+    ) -> Result<(), IdentityHistoryError> {
+        self.validate()?;
+        if occupied_ids
+            .into_iter()
+            .any(|id| self.tombstone_ids.binary_search(&id).is_ok())
+        {
+            return Err(IdentityHistoryError::TombstoneIdAlreadyUsed);
+        }
+        Ok(())
+    }
+
     /// Read an operator-certified history from an owner-owned mode-0600 file
     /// without following symlinks, then bind it to a verified source frontier.
     pub fn read_file(
@@ -326,6 +348,19 @@ mod tests {
         assert_eq!(
             IdentityHistory::decode(&encoded),
             Err(IdentityHistoryError::IntegrityMismatch)
+        );
+    }
+
+    #[test]
+    fn identity_history_rejects_tombstones_that_are_still_occupied() {
+        let history = history();
+        assert_eq!(
+            history.validate_tombstones_unoccupied([[0x21; 16]]),
+            Err(IdentityHistoryError::TombstoneIdAlreadyUsed)
+        );
+        assert_eq!(
+            history.validate_tombstones_unoccupied([[0x20; 16], [0x23; 16]]),
+            Ok(())
         );
     }
 
