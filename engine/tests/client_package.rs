@@ -79,7 +79,7 @@ fn client_frame_decoder_accepts_every_split_of_a_golden_frame() {
 }
 
 #[test]
-fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
+fn run_sql_local_failures_do_not_connect_and_gateway_failures_clean_workspace() {
     let temp = unique_temp_dir();
     fs::create_dir(&temp).unwrap();
     let credentials = temp.join("client.cred");
@@ -725,6 +725,61 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
     assert!(
         fs::read_dir(&sql_workspace_root).unwrap().next().is_none(),
         "run-sql left temporary build artifacts after linking failed"
+    );
+
+    let gateway_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let gateway_address = gateway_listener.local_addr().unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .env("TMPDIR", &sql_workspace_root)
+        .args([
+            "run-sql",
+            "--address",
+            &gateway_address.to_string(),
+            "--credentials",
+            credentials.to_str().unwrap(),
+            "--sql-file",
+            sql_path.to_str().unwrap(),
+            "--schema",
+            "public",
+            "--scope",
+            scope_path.to_str().unwrap(),
+            "--receipt",
+            temp.join("gateway-failure.receipt").to_str().unwrap(),
+            "--sdk-library",
+            sdk_release.join("libprdb_sql.so.1").to_str().unwrap(),
+            "--include-dir",
+            root.join("engine/include").to_str().unwrap(),
+            "--sdk-release",
+            "1",
+            "--cpu-baseline",
+            "x86_64-v1",
+            "--runtime-profile",
+            "test-runtime",
+            "--compiler-identity",
+            "run-sql gateway failure test",
+            "--parameters",
+            parameter_path.to_str().unwrap(),
+            "--tcc",
+            "tcc",
+            "--shared-linker",
+            "cc",
+            "--patchelf",
+            "patchelf",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (gateway_stream, _) = gateway_listener.accept().unwrap();
+    drop(gateway_stream);
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        !output.status.success(),
+        "run-sql unexpectedly succeeded after the gateway closed the connection"
+    );
+    assert!(
+        fs::read_dir(&sql_workspace_root).unwrap().next().is_none(),
+        "run-sql left temporary build artifacts after gateway submission failed"
     );
 
     fs::remove_dir_all(temp).unwrap();
