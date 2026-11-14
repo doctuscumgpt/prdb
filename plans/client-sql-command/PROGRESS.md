@@ -71,3 +71,11 @@
 - Regression: the `run_sql_rejects_local_input_errors_before_opening_a_gateway_connection` process test supplies valid SQL, parameters, scope, and SDK inputs, then injects a failing `patchelf` executable after TinyCC compilation/linking. It requires a `CompilerFailed` diagnostic, confirms the listener received no connection, and checks the private workspace is empty.
 - Verification: the focused process test passed. Locked workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, sandbox fixture build, release-profile validation (10 engine binaries and one query fixture), delegated cgroup probe, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
 - Scope: covers one post-link package finalization failure and confirms cleanup/no-connect behavior. Other packaging error paths remain open for command-level coverage.
+
+## SQLCLI-3 shared linker environment isolation — verified follow-up
+
+- Contract: client credentials and SQL parameter values stay out of every local build tool's inherited environment; shared-link failure remains local and cleans temporary output.
+- Regression: the `run_sql_rejects_local_input_errors_before_opening_a_gateway_connection` process test injects a sentinel into the CLI environment and uses a failing shared-linker shim to record whether it inherits that sentinel. It also requires the expected `CompilerFailed` diagnostic, no gateway connection, and an empty private workspace. Removing `env_clear()` from the linker invocation made the regression fail with the captured value `leaked`; restoring it made the test pass.
+- Specification: clarified that TinyCC, the shared linker, and `patchelf` run with inherited environment variables cleared.
+- Verification: focused process test passed. Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, sandbox fixture build, release-profile validation (10 engine binaries and one query fixture), and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
+- Scope: verifies the shared linker subprocess against one inherited environment sentinel. Dedicated secret-sentinel checks for TinyCC and `patchelf` remain separate coverage gaps.

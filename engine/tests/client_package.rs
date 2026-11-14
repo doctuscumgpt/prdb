@@ -628,6 +628,83 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
         "run-sql left temporary build artifacts after patchelf failed"
     );
 
+    let linker_environment_capture = temp.join("linker-environment.capture");
+    let fake_linker = temp.join("capture-linker-env");
+    fs::write(
+        &fake_linker,
+        format!(
+            "#!/bin/sh\nif [ \"${{PRDB_TEST_LINKER_SECRET_SENTINEL+x}}\" = x ]; then printf leaked > '{}'; else printf clean > '{}'; fi\nexit 1\n",
+            linker_environment_capture.display(),
+            linker_environment_capture.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake_linker, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .env("TMPDIR", &sql_workspace_root)
+        .env(
+            "PRDB_TEST_LINKER_SECRET_SENTINEL",
+            "credential-secret-sentinel",
+        )
+        .args([
+            "run-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            credentials.to_str().unwrap(),
+            "--sql-file",
+            sql_path.to_str().unwrap(),
+            "--schema",
+            "public",
+            "--scope",
+            scope_path.to_str().unwrap(),
+            "--receipt",
+            temp.join("linker-failure.receipt").to_str().unwrap(),
+            "--sdk-library",
+            sdk_release.join("libprdb_sql.so.1").to_str().unwrap(),
+            "--include-dir",
+            root.join("engine/include").to_str().unwrap(),
+            "--sdk-release",
+            "1",
+            "--cpu-baseline",
+            "x86_64-v1",
+            "--runtime-profile",
+            "test-runtime",
+            "--compiler-identity",
+            "run-sql linker failure test",
+            "--tcc",
+            "tcc",
+            "--shared-linker",
+            fake_linker.to_str().unwrap(),
+            "--patchelf",
+            "patchelf",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "shared linker failure unexpectedly succeeded"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("CompilerFailed"),
+        "unexpected shared linker failure: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&linker_environment_capture).unwrap(),
+        "clean",
+        "shared linker inherited a parent environment secret"
+    );
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "run-sql opened a gateway connection after linking failed"
+    );
+    assert!(
+        fs::read_dir(&sql_workspace_root).unwrap().next().is_none(),
+        "run-sql left temporary build artifacts after linking failed"
+    );
+
     fs::remove_dir_all(temp).unwrap();
 }
 
