@@ -177,3 +177,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: `unique_constraint_uses_its_backing_index_for_invocation_writes` now submits both a matching and a differently sized non-matching value under hidden and conditional cell projections. Each pair returns the same `Unavailable` result; the existing readable projection still returns the sanitized row for a matching key and reconciles staged updates/deletes.
 - Verification: the focused real-redb test passed. Locked workspace build, rustfmt check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed; the commit and transaction targets reported 148 and 74 passing tests.
 - Remaining: the probe is not routed through SQL/optimizer plans; broader reference-scan equivalence, range access, and error equivalence for complex predicates remain open.
+
+## AU-2 / AU-7: hidden-row DELETE matches absent-row diagnostics — verified
+
+- Contract: authorization must not reveal whether a row exists when the caller's row policy hides it; denied DELETE against a hidden row and against an absent row return the same non-disclosing diagnostic.
+- Regression: `authorized_delete_requires_visibility_and_an_explicit_delete_grant` now gives both attempts the same SELECT/DELETE scope, grants, and DELETE policy. One stored row is hidden by its SELECT policy; the other target has no stored row. Both authorized staging calls return `TransactionError::NotFound` with identical debug diagnostics.
+- Verification: the focused real-redb transaction test passed. Workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests and sandbox fixture, and the full serial delegated-cgroup workspace suite passed with zero ignored tests; the suite reported 233 engine unit tests, 172 commit tests, and 75 transaction tests. `git diff --check` passed.
+- Scope: verifies the storage staging error for DELETE under one row policy. It does not claim constant-time behavior, external IPC byte equivalence, or equivalent diagnostics for UPDATE and constraint failures.

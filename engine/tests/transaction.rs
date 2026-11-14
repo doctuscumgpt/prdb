@@ -8478,6 +8478,45 @@ fn authorized_delete_requires_visibility_and_an_explicit_delete_grant()
         policy_driving_columns: &[],
         dependencies: &[],
     };
+
+    let hidden_row_policies = [
+        Policy {
+            using: Some(Expr::Literal(Some(ScalarValue::Boolean(false)))),
+            ..allowed_policies[0].clone()
+        },
+        allowed_policies[1].clone(),
+        allowed_policies[2].clone(),
+    ];
+    let hidden_row_projection = AuthorizedProjection {
+        policies: &hidden_row_policies,
+        ..allowed_projection
+    };
+    let hidden_row_id = prdb_engine::overlay::RowId {
+        table: row_id.table,
+        row: row_id.row,
+    };
+    let absent_row_id = prdb_engine::overlay::RowId {
+        table: row_id.table,
+        row: [0xee; 16],
+    };
+    let mut hidden_row_delete =
+        InvocationTransaction::begin(&database, [66; 16], [9; 16], 9_999, 2, 64)?;
+    let hidden_row_error = hidden_row_delete
+        .stage_delete_authorized(hidden_row_id, &hidden_row_projection)
+        .expect_err("a row hidden by its SELECT policy cannot be deleted");
+    let mut absent_row_delete =
+        InvocationTransaction::begin(&database, [67; 16], [9; 16], 9_999, 2, 64)?;
+    let absent_row_error = absent_row_delete
+        .stage_delete_authorized(absent_row_id, &hidden_row_projection)
+        .expect_err("an absent row cannot be deleted");
+    assert_eq!(
+        format!("{hidden_row_error:?}"),
+        format!("{absent_row_error:?}"),
+        "DELETE diagnostics must not distinguish a policy-hidden row from an absent row"
+    );
+    assert!(matches!(hidden_row_error, TransactionError::NotFound));
+    assert!(matches!(absent_row_error, TransactionError::NotFound));
+
     allowed.stage_delete_authorized(row_id, &allowed_projection)?;
     allowed.commit()?;
     let read = database.begin_read()?;
