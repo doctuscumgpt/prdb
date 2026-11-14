@@ -23395,6 +23395,271 @@ fn process_crash_during_add_column_recovers_all_or_none() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn std::error::Error>>
+{
+    use prdb_engine::storage_manager::{
+        CreateIndexRequest, CreateTableRequest, TableColumnDefinition,
+    };
+    use std::process::Command;
+
+    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_CRASH_DURING_DROP_TABLE_DATABASE";
+    const CHILD_BOUNDARY_ENV: &str = "PRDB_TEST_CRASH_DURING_DROP_TABLE_BOUNDARY";
+    const CHILD_EXIT_CODE: i32 = 87;
+    const POST_COMMIT_EXIT_CODE: i32 = 88;
+    const ACTOR_ID: [u8; 16] = [0xf1; 16];
+    const INDEX_INVOCATION_ID: [u8; 16] = [0xf2; 16];
+    const DROP_INVOCATION_ID: [u8; 16] = [0xf3; 16];
+    const DROP_AUDIT_ID: [u8; 16] = [0xf4; 16];
+    const ROW_ID: [u8; 16] = [0xf5; 16];
+
+    if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
+        let database_path = std::path::PathBuf::from(database_path);
+        let database = initialize(&database_path)?;
+        let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+        let admin_role = builtin_owner_id();
+        let mut setup_audit = identity_audit_event(0xf6, admin_role, id(0xf7));
+        setup_audit.action = AuditAction::AuthorityChange;
+        storage.commit_catalog_and_audit(
+            id(0xf7),
+            admin_role,
+            i64::MAX,
+            &[
+                principal_write_with_name(ACTOR_ID, 1, 1, "drop_table_crash_actor"),
+                object_write_with_name(ACTOR_ID, 8, "drop_table_crash_actor"),
+                membership_write(ACTOR_ID, admin_role),
+                dependency_write(ACTOR_ID, admin_role, 5),
+            ],
+            &[setup_audit],
+        )?;
+        let schema_invocation = id(0xf8);
+        let mut schema_audit = identity_audit_event(0xf9, ACTOR_ID, id(0xfa));
+        schema_audit.correlation_id = schema_invocation;
+        let schema = storage.create_schema(
+            schema_invocation,
+            ACTOR_ID,
+            "drop_table_crash_schema",
+            ACTOR_ID,
+            i64::MAX,
+            schema_audit,
+        )?;
+        let table_invocation = id(0xfb);
+        let mut table_audit = identity_audit_event(0xfc, ACTOR_ID, id(0xfd));
+        table_audit.correlation_id = table_invocation;
+        let table = storage.create_table(CreateTableRequest {
+            invocation_id: table_invocation,
+            authenticated_actor_id: ACTOR_ID,
+            schema_id: schema.schema_id,
+            name: "drop_table_crash_table".to_owned(),
+            columns: vec![TableColumnDefinition {
+                name: "value".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            }],
+            retention_deadline_us: i64::MAX,
+            audit_event: table_audit,
+        })?;
+        let mut seed = storage.begin_invocation(id(0xfe), ACTOR_ID, i64::MAX, 1, 1024)?;
+        let table_schema = seed.load_catalog_table_schema(table.table_id)?;
+        seed.load_catalog_indexes(&table_schema)?;
+        let row_id = prdb_engine::overlay::RowId {
+            table: table.table_id,
+            row: ROW_ID,
+        };
+        seed.stage_put(
+            row_id,
+            &encode_tuple(
+                &table_schema.columns,
+                table_schema.schema_version,
+                &[Some(ScalarValue::Integer(23))],
+            )?,
+        )?;
+        seed.commit()?;
+        let mut index_audit = identity_audit_event(0xff, ACTOR_ID, id(0x10));
+        index_audit.correlation_id = INDEX_INVOCATION_ID;
+        let index = storage.create_index(CreateIndexRequest {
+            invocation_id: INDEX_INVOCATION_ID,
+            authenticated_actor_id: ACTOR_ID,
+            table_id: table.table_id,
+            name: "drop_table_crash_index".to_owned(),
+            column_ids: table.column_ids.clone(),
+            unique: false,
+            retention_deadline_us: i64::MAX,
+            audit_event: index_audit,
+        })?;
+        let before_drop_sequence = commit_sequence(&database)?;
+        let mut metadata = Vec::with_capacity(96);
+        metadata.extend_from_slice(&schema.schema_id);
+        metadata.extend_from_slice(&table.table_id);
+        metadata.extend_from_slice(&table.column_ids[0]);
+        metadata.extend_from_slice(&index.index_id);
+        metadata.extend_from_slice(&ROW_ID);
+        metadata.extend_from_slice(&table_schema.schema_version.to_le_bytes());
+        metadata.extend_from_slice(&before_drop_sequence.to_le_bytes());
+        std::fs::write(
+            database_path.with_extension("drop-table-crash-metadata"),
+            metadata,
+        )?;
+        drop(storage);
+        drop(database);
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&database_path)?;
+        let armed = Arc::new(AtomicBool::new(false));
+        let instrumented = Database::builder().create_with_backend(ExitAfterNextWriteBackend {
+            inner: redb::backends::FileBackend::new(file)?,
+            armed: armed.clone(),
+            exit_code: CHILD_EXIT_CODE,
+        })?;
+        let storage = StorageManager::new(&instrumented, Duration::from_millis(100))?;
+        let mut drop_audit = identity_audit_event(DROP_AUDIT_ID[0], ACTOR_ID, id(0x11));
+        drop_audit.event_id = DROP_AUDIT_ID;
+        drop_audit.correlation_id = DROP_INVOCATION_ID;
+        let boundary = std::env::var(CHILD_BOUNDARY_ENV)?;
+        if boundary == "write" {
+            armed.store(true, Ordering::SeqCst);
+        } else if boundary != "after_commit" {
+            return Err(format!("unknown DROP TABLE crash boundary {boundary}").into());
+        }
+        let drop_result = storage.drop_table(
+            DROP_INVOCATION_ID,
+            ACTOR_ID,
+            table.table_id,
+            i64::MAX,
+            drop_audit,
+        );
+        if boundary == "write" {
+            return Err(format!(
+                "DROP TABLE returned without injected backend-write exit: {drop_result:?}"
+            )
+            .into());
+        }
+        drop_result?;
+        std::process::exit(POST_COMMIT_EXIT_CODE);
+    }
+
+    for (boundary, expected_exit) in [
+        ("write", CHILD_EXIT_CODE),
+        ("after_commit", POST_COMMIT_EXIT_CODE),
+    ] {
+        let fixture = Fixture::new();
+        let database_path = fixture.path();
+        let child_status = Command::new(std::env::current_exe()?)
+            .arg("--exact")
+            .arg("process_crash_during_drop_table_recovers_all_or_none")
+            .arg("--nocapture")
+            .env(CHILD_DATABASE_ENV, &database_path)
+            .env(CHILD_BOUNDARY_ENV, boundary)
+            .status()?;
+        assert_eq!(
+            child_status.code(),
+            Some(expected_exit),
+            "DROP TABLE child missed the {boundary} crash boundary: {child_status}"
+        );
+
+        let metadata = std::fs::read(database_path.with_extension("drop-table-crash-metadata"))?;
+        assert_eq!(metadata.len(), 96);
+        let schema_id: [u8; 16] = metadata[0..16].try_into()?;
+        let table_id: [u8; 16] = metadata[16..32].try_into()?;
+        let column_id: [u8; 16] = metadata[32..48].try_into()?;
+        let index_id: [u8; 16] = metadata[48..64].try_into()?;
+        let row_id: [u8; 16] = metadata[64..80].try_into()?;
+        let schema_version = u64::from_le_bytes(metadata[80..88].try_into()?);
+        let before_drop_sequence = u64::from_le_bytes(metadata[88..96].try_into()?);
+        let reopened = Database::open(&database_path)?;
+        let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+        let read = reopened.begin_read()?;
+        let catalog = read.open_table(CATALOG)?;
+        let table_exists = catalog
+            .get(id_catalog_key(5, table_id).as_slice())?
+            .is_some();
+        let column_exists = catalog
+            .get(id_catalog_key(6, column_id).as_slice())?
+            .is_some();
+        let recovered_index = lookup_index_id_by_name(&read, schema_id, "drop_table_crash_index")?;
+        let relation = lookup_relation_id_by_name(&read, schema_id, "drop_table_crash_table")?;
+        let row_key = table_row_key(table_id, row_id);
+        let row_exists = row(&reopened, &row_key)?.is_some();
+        let row_payload = encode_tuple(
+            &[ColumnSchema {
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+            }],
+            schema_version,
+            &[Some(ScalarValue::Integer(23))],
+        )?;
+        let index_key = prdb_engine::index_key::derive_index_key(
+            index_id,
+            row_id,
+            schema_version,
+            &[column_id],
+            &[ColumnSchema {
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+            }],
+            &row_payload,
+            &[column_id],
+        )?;
+        let mut reverse_index_key = row_key.to_vec();
+        reverse_index_key.extend_from_slice(&index_key.key[..index_key.key.len() - 16]);
+        let forward_index_exists = read
+            .open_table(schema::INDEXES)?
+            .get(index_key.key.as_slice())?
+            .is_some();
+        let reverse_index_exists = read
+            .open_table(schema::ROW_INDEXES)?
+            .get(reverse_index_key.as_slice())?
+            .is_some();
+        let outcome = read
+            .open_table(schema::OUTCOMES)?
+            .get(&DROP_INVOCATION_ID[..])?
+            .map(|value| InvocationOutcome::decode(value.value()))
+            .transpose()?;
+        let audit_exists = read
+            .open_table(schema::AUDIT)?
+            .get(&DROP_AUDIT_ID[..])?
+            .is_some();
+        let sequence = commit_sequence(&reopened)?;
+
+        if boundary == "write" {
+            assert!(table_exists);
+            assert!(column_exists);
+            assert_eq!(recovered_index, Some(index_id));
+            assert_eq!(relation, Some(table_id));
+            assert!(row_exists);
+            assert!(forward_index_exists);
+            assert!(reverse_index_exists);
+            assert_eq!(sequence, before_drop_sequence);
+            assert_eq!(outcome, None);
+            assert!(!audit_exists);
+            assert_eq!(
+                row(&reopened, &row_key)?
+                    .ok_or("pre-drop row missing")?
+                    .payload,
+                row_payload
+            );
+        } else {
+            assert!(!table_exists);
+            assert!(!column_exists);
+            assert_eq!(recovered_index, None);
+            assert_eq!(relation, None);
+            assert!(!row_exists);
+            assert!(!forward_index_exists);
+            assert!(!reverse_index_exists);
+            assert_eq!(sequence, before_drop_sequence + 1);
+            let outcome = outcome.ok_or("committed DROP TABLE outcome was not recovered")?;
+            assert_eq!(outcome.status, OutcomeStatus::Committed);
+            assert_eq!(outcome.commit_sequence, sequence);
+            assert!(audit_exists);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn supervisor_drains_both_worker_channels_before_durable_finalize()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::executor_ipc::ResolveRelationRequest;
