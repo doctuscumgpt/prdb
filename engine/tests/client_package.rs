@@ -90,22 +90,47 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
     )
     .unwrap();
 
-    for (case, sql, parameters, expected_error) in [
-        ("empty-sql", b" \n\t".as_slice(), None, "nonempty UTF-8"),
+    let local_failures = [
+        (
+            "empty-sql",
+            b" \n\t".to_vec(),
+            None,
+            "nonempty UTF-8",
+        ),
+        (
+            "nul-sql",
+            b"SELECT\0 1".to_vec(),
+            None,
+            "nonempty UTF-8",
+        ),
+        (
+            "invalid-utf8-sql",
+            vec![0xff],
+            None,
+            "nonempty UTF-8",
+        ),
+        (
+            "oversized-sql",
+            vec![b'x'; 65_537],
+            None,
+            "exceed their size limit",
+        ),
         (
             "malformed-parameters",
-            b"SELECT 1".as_slice(),
-            Some(br#"{"format":"PDB-SQL-PARAMETERS-1","values":[],"extra":true}"#.as_slice()),
+            b"SELECT 1".to_vec(),
+            Some(br#"{"format":"PDB-SQL-PARAMETERS-1","values":[],"extra":true}"#.to_vec()),
             "invalid SQL parameter file",
         ),
-    ] {
+    ];
+
+    for (case, sql, parameters, expected_error) in local_failures {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let sql_path = temp.join(format!("{case}.sql"));
-        fs::write(&sql_path, sql).unwrap();
+        fs::write(&sql_path, &sql).unwrap();
         let parameter_path = temp.join(format!("{case}.json"));
-        if let Some(parameters) = parameters {
+        if let Some(parameters) = &parameters {
             fs::write(&parameter_path, parameters).unwrap();
         }
 
