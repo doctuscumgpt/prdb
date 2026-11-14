@@ -643,47 +643,53 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR is required for run-sql")?;
         let sql_sdk = sdk_release_dir.join("libprdb_sql.so.1");
         let include_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
-        let run_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
-            .args([
-                "run-sql",
-                "--address",
-                &sql_address,
-                "--credentials",
-                credentials_path
-                    .to_str()
-                    .ok_or("run-sql credentials path is not UTF-8")?,
-                "--sql-file",
-                sql_path.to_str().ok_or("run-sql SQL path is not UTF-8")?,
-                "--schema",
-                "information_schema",
-                "--scope",
-                requested_scope_path
-                    .to_str()
-                    .ok_or("run-sql scope path is not UTF-8")?,
-                "--receipt",
-                receipt_path
-                    .to_str()
-                    .ok_or("run-sql receipt path is not UTF-8")?,
-                "--sdk-library",
-                sql_sdk.to_str().ok_or("SQL SDK path is not UTF-8")?,
-                "--include-dir",
-                include_dir
-                    .to_str()
-                    .ok_or("SQL SDK include path is not UTF-8")?,
-                "--sdk-release",
-                "1",
-                "--cpu-baseline",
-                "x86_64-v1",
-                "--runtime-profile",
-                "test-runtime",
-                "--compiler-identity",
-                "TinyCC process integration fixture",
-                "--parameters",
-                parameters_path
-                    .to_str()
-                    .ok_or("run-sql parameter path is not UTF-8")?,
-            ])
-            .output()?;
+        let invoke_run_sql = |sql_path: &std::path::Path,
+                              parameters_path: &std::path::Path,
+                              receipt_path: &std::path::Path|
+         -> Result<std::process::Output, Box<dyn std::error::Error>> {
+            Ok(Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+                .args([
+                    "run-sql",
+                    "--address",
+                    &sql_address,
+                    "--credentials",
+                    credentials_path
+                        .to_str()
+                        .ok_or("run-sql credentials path is not UTF-8")?,
+                    "--sql-file",
+                    sql_path.to_str().ok_or("run-sql SQL path is not UTF-8")?,
+                    "--schema",
+                    "information_schema",
+                    "--scope",
+                    requested_scope_path
+                        .to_str()
+                        .ok_or("run-sql scope path is not UTF-8")?,
+                    "--receipt",
+                    receipt_path
+                        .to_str()
+                        .ok_or("run-sql receipt path is not UTF-8")?,
+                    "--sdk-library",
+                    sql_sdk.to_str().ok_or("SQL SDK path is not UTF-8")?,
+                    "--include-dir",
+                    include_dir
+                        .to_str()
+                        .ok_or("SQL SDK include path is not UTF-8")?,
+                    "--sdk-release",
+                    "1",
+                    "--cpu-baseline",
+                    "x86_64-v1",
+                    "--runtime-profile",
+                    "test-runtime",
+                    "--compiler-identity",
+                    "TinyCC process integration fixture",
+                    "--parameters",
+                    parameters_path
+                        .to_str()
+                        .ok_or("run-sql parameter path is not UTF-8")?,
+                ])
+                .output()?)
+        };
+        let run_sql = invoke_run_sql(&sql_path, &parameters_path, &receipt_path)?;
         assert!(
             run_sql.status.success(),
             "run-sql failed: {}",
@@ -725,6 +731,41 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         assert_eq!(
             status_client.status(receipt_id)?,
             InvocationStatus::Committed
+        );
+
+        let invalid_sql_path = root.join("run-sql-invalid.sql");
+        std::fs::write(&invalid_sql_path, "SELECT FROM schemata")?;
+        std::fs::set_permissions(&invalid_sql_path, std::fs::Permissions::from_mode(0o600))?;
+        let empty_parameters_path = root.join("run-sql-empty.parameters.json");
+        std::fs::write(
+            &empty_parameters_path,
+            r#"{"format":"PDB-SQL-PARAMETERS-1","values":[]}"#,
+        )?;
+        std::fs::set_permissions(
+            &empty_parameters_path,
+            std::fs::Permissions::from_mode(0o600),
+        )?;
+        let aborted_receipt_path = root.join("run-sql-aborted.receipt");
+        let aborted_run_sql = invoke_run_sql(
+            &invalid_sql_path,
+            &empty_parameters_path,
+            &aborted_receipt_path,
+        )?;
+        assert!(
+            !aborted_run_sql.status.success(),
+            "malformed SQL unexpectedly succeeded: {}",
+            String::from_utf8_lossy(&aborted_run_sql.stderr)
+        );
+        assert!(aborted_run_sql.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&aborted_run_sql.stderr).contains("outcome=Aborted"));
+        let aborted_receipt_text = std::fs::read_to_string(&aborted_receipt_path)?;
+        let aborted_receipt_id = aborted_receipt_text
+            .strip_prefix("PDBR1 ")
+            .and_then(|value| decode_id_hex(value.trim()))
+            .ok_or("aborted run-sql wrote a malformed invocation receipt")?;
+        assert_eq!(
+            status_client.status(aborted_receipt_id)?,
+            InvocationStatus::Aborted
         );
         remove_client_credentials(&credentials_path)?;
 
