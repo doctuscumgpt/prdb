@@ -178,3 +178,9 @@
 - The bounded parser accepts Boolean column references, `IS [NOT] NULL`, `NOT`, `AND`, `OR`, and parentheses, rejecting comparison/literal syntax and multiple statements.
 - Parser regressions cover precedence and fail-closed syntax; CLI process coverage confirms supported syntax passes local recognition without making a network request when credentials are absent.
 - Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite (sandbox/process tests enabled), and `git diff --check` passed.
+
+## Administrative SQL: ALTER COLUMN SET/DROP NOT NULL — implemented
+
+- `admin-sql` accepts qualified `ALTER TABLE ... ALTER COLUMN ... SET NOT NULL` and `DROP NOT NULL`, resolving the column before typed dispatch.
+- Parser, authenticated AdminClient TCP, and CLI pre-credential recognition coverage added; malformed and multi-statement input fails closed.
+- Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.

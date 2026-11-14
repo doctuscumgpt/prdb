@@ -2966,6 +2966,38 @@ impl AdminClient {
         )
     }
 
+    /// Set or drop NOT NULL using qualified SQL names and the existing typed
+    /// column-alteration operation.
+    pub fn execute_alter_column_nullability_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_alter_column_nullability(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
+        let mut cursor = None;
+        let mut visible_columns = Vec::new();
+        loop {
+            let page = self.list_columns_page(
+                schema_id,
+                table_id,
+                DEFAULT_METADATA_PAGE_SIZE,
+                cursor.as_deref(),
+            )?;
+            visible_columns.extend(page.records);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let column = visible_columns
+            .iter()
+            .find(|column| column.name == statement.column)
+            .ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
+        self.alter_column_nullability(table_id, column.column_id, statement.nullable)
+    }
+
     pub fn execute_rename_table_sql(
         &mut self,
         sql: &str,

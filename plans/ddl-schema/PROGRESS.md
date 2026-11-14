@@ -561,3 +561,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: parser coverage verifies precedence/grouping and rejects comparisons, named constraints, unknown forms, unqualified names, and multiple statements. CLI coverage verifies valid CHECK syntax is recognized before credentials/network.
 - Limit: this SQL form does not yet accept comparisons or literals; the existing typed CHECK API still supports validated row-local EIR1 expressions.
 - Verification: focused parser, authenticated AdminClient TCP binding, and CLI pre-credential recognition tests passed. Locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled; `git diff --check` passed.
+
+## DS-8: ALTER COLUMN SET/DROP NOT NULL SQL — implemented
+
+- Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). Qualified `ALTER TABLE schema.table ALTER COLUMN column SET NOT NULL` and `DROP NOT NULL` bind the named column through authenticated metadata and call the existing typed nullability operation. Storage continues to validate existing rows, enforce DDL authority, and advance the table write epoch under its fence.
+- Regression: parser tests cover both operations and reject unqualified tables, malformed actions, and multiple statements. Authenticated TCP coverage checks metadata resolution, stable column ID submission, and committed response; the CLI process test checks pre-credential recognition.
+- Limit: validation and storage mutation remain the existing typed path; SQL only adds name resolution and dispatch.
+- Verification: parser, authenticated AdminClient TCP, and CLI pre-credential recognition regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.

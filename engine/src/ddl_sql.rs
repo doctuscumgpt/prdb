@@ -61,6 +61,14 @@ pub struct AddCheckConstraintSql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AlterColumnNullabilitySql {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
+    pub nullable: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckExpressionSql {
     Column(String),
     IsNull(String),
@@ -378,6 +386,37 @@ pub fn parse_add_check_constraint(sql: &str) -> Result<AddCheckConstraintSql, Dd
         schema,
         table,
         expression,
+    })
+}
+
+/// Parse `ALTER TABLE schema.table ALTER COLUMN name {SET|DROP} NOT NULL`.
+pub fn parse_alter_column_nullability(sql: &str) -> Result<AlterColumnNullabilitySql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("table")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("alter")?;
+    parser.word("column")?;
+    let column = parser.identifier()?;
+    let nullable = if parser.peek_word("set") {
+        parser.word("set")?;
+        parser.word("not")?;
+        parser.word("null")?;
+        false
+    } else {
+        parser.word("drop")?;
+        parser.word("not")?;
+        parser.word("null")?;
+        true
+    };
+    finish_statement(&mut parser)?;
+    Ok(AlterColumnNullabilitySql {
+        schema,
+        table,
+        column,
+        nullable,
     })
 }
 
@@ -977,6 +1016,40 @@ mod tests {
             "ALTER TABLE app.events ADD CHECK (missing IS NULL OR)",
         ] {
             assert!(parse_add_check_constraint(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_column_nullability_alterations_only() {
+        assert_eq!(
+            parse_alter_column_nullability(
+                "ALTER TABLE app.employees ALTER COLUMN active SET NOT NULL;"
+            )
+            .unwrap(),
+            AlterColumnNullabilitySql {
+                schema: "app".into(),
+                table: "employees".into(),
+                column: "active".into(),
+                nullable: false
+            }
+        );
+        assert!(
+            parse_alter_column_nullability(
+                "ALTER TABLE app.employees ALTER COLUMN active DROP NOT NULL"
+            )
+            .unwrap()
+            .nullable
+        );
+        for sql in [
+            "ALTER TABLE employees ALTER COLUMN active SET NOT NULL",
+            "ALTER TABLE app.employees ALTER active SET NOT NULL",
+            "ALTER TABLE app.employees ALTER COLUMN active SET NULL",
+            "ALTER TABLE app.employees ALTER COLUMN active SET NOT NULL; ALTER TABLE app.employees ALTER COLUMN active DROP NOT NULL",
+        ] {
+            assert!(
+                parse_alter_column_nullability(sql).is_err(),
+                "accepted {sql}"
+            );
         }
     }
 
