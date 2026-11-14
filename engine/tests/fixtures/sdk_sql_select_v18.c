@@ -13,6 +13,12 @@ int main(void) {
     static const uint8_t mismatch_sql[] =
         "SELECT a, b, SUM(c) FROM records GROUP BY a, b "
         "HAVING SUM(c) > 1 OR COUNT(*) = 2";
+    static const uint8_t signed_min_sql[] =
+        "SELECT a, b, SUM(c) FROM records GROUP BY a, b "
+        "HAVING SUM(c) >= -9223372036854775808";
+    static const uint8_t signed_overflow_sql[] =
+        "SELECT a, b, SUM(c) FROM records GROUP BY a, b "
+        "HAVING SUM(c) >= -9223372036854775809";
     prdb_sdk_sql_column_shape_v2 columns[3] = {
         {a, 1, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
         {b, 1, 1, PRDB_SDK_VALUE_TYPE_TEXT, 0, 0},
@@ -52,6 +58,22 @@ int main(void) {
            PRDB_SDK_SQL_V18_OPERAND_PARAMETER);
     assert(binding.having_nodes[1].parameter_index == 2);
     assert(binding.base.base.has_having == 0);
+
+    assert(prdb_sdk_sql_parse_select_v18(
+               signed_min_sql, sizeof(signed_min_sql) - 1, &statement,
+               sizeof(statement), &error_offset) == PRDB_SDK_SQL_OK);
+    assert(statement.having_nodes[0].literal ==
+           UINT64_C(0x8000000000000000));
+    assert(prdb_sdk_sql_bind_select_v18(
+               &statement, relation, sizeof(relation) - 1, columns, 3,
+               &binding, sizeof(binding)) == PRDB_SDK_SQL_BIND_OK);
+    assert(binding.having_nodes[0].literal ==
+           UINT64_C(0x8000000000000000));
+    assert(prdb_sdk_sql_parse_select_v18(
+               signed_overflow_sql, sizeof(signed_overflow_sql) - 1,
+               &statement, sizeof(statement), &error_offset) ==
+           PRDB_SDK_SQL_LIMIT_EXCEEDED);
+    assert(error_offset != 0);
 
     {
         static const uint8_t prefix[] =
@@ -112,7 +134,9 @@ int main(void) {
            PRDB_SDK_SQL_BIND_V17_LITERAL_TYPE_MISMATCH);
     assert(memcmp(&binding, &previous, sizeof(binding)) == 0);
 
-    statement.having_nodes[0].literal = UINT64_C(0x8000000000000000);
+    statement.having_nodes[0].operand_kind = PRDB_SDK_SQL_V18_OPERAND_PARAMETER;
+    statement.having_nodes[0].parameter_index = 0;
+    statement.having_nodes[0].literal = 0;
     assert(prdb_sdk_sql_bind_select_v18(
                &statement, relation, sizeof(relation) - 1, columns, 3,
                &binding, sizeof(binding)) ==

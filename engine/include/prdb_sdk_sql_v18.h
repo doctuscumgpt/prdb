@@ -11,6 +11,7 @@
 #define PRDB_SDK_SQL_V18_OPERAND_PARAMETER UINT32_C(1)
 #define PRDB_SDK_SQL_V18_OPERAND_BIGINT_LITERAL UINT32_C(2)
 
+/* BIGINT literal bits use canonical two's-complement signed encoding. */
 typedef struct prdb_sdk_sql_having_node_v18 {
     uint32_t node_kind;
     uint32_t left_child;

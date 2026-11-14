@@ -38,6 +38,7 @@ typedef enum token_kind {
     TOKEN_LESS_EQUAL,
     TOKEN_GREATER,
     TOKEN_GREATER_EQUAL,
+    TOKEN_MINUS,
     TOKEN_LEFT_PAREN,
     TOKEN_RIGHT_PAREN,
     TOKEN_DOT
@@ -174,6 +175,9 @@ static int32_t next_token(parser *state) {
         } else {
             state->current = (token){TOKEN_GREATER, start, 1};
         }
+        return PRDB_SDK_SQL_OK;
+    case '-':
+        state->current = (token){TOKEN_MINUS, start, 1};
         return PRDB_SDK_SQL_OK;
     default:
         break;
@@ -6023,6 +6027,36 @@ static int32_t parse_nonnegative_bigint_literal(parser *state, uint64_t *out) {
     return PRDB_SDK_SQL_OK;
 }
 
+static int32_t parse_signed_bigint_literal_v18(parser *state, uint64_t *out) {
+    uint64_t magnitude = 0;
+    uint64_t limit;
+    uint32_t start, sign_offset = state->current.offset;
+    int negative = state->current.kind == TOKEN_MINUS;
+    int32_t status;
+
+    if (negative) {
+        status = advance(state);
+        if (status != PRDB_SDK_SQL_OK) return status;
+    }
+    if (state->current.kind != TOKEN_NUMBER) {
+        state->error_offset = negative ? sign_offset : state->current.offset;
+        return PRDB_SDK_SQL_SYNTAX_ERROR;
+    }
+    start = state->current.offset;
+    limit = negative ? UINT64_C(0x8000000000000000)
+                     : UINT64_C(0x7fffffffffffffff);
+    for (uint32_t index = 0; index < state->current.length; ++index) {
+        uint32_t digit = (uint32_t)(state->sql[start + index] - '0');
+        if (magnitude > (limit - digit) / 10) {
+            state->error_offset = negative ? sign_offset : start;
+            return PRDB_SDK_SQL_LIMIT_EXCEEDED;
+        }
+        magnitude = magnitude * 10 + digit;
+    }
+    *out = negative ? UINT64_C(0) - magnitude : magnitude;
+    return PRDB_SDK_SQL_OK;
+}
+
 int32_t prdb_sdk_sql_parse_select_v17(const uint8_t *sql, uint64_t sql_len,
                                       prdb_sdk_select_v17 *out,
                                       uint32_t out_capacity,
@@ -6379,7 +6413,7 @@ static int32_t parse_having_primary_v18(parser *state,
                                 &node.parameter_index);
     } else {
         node.operand_kind = PRDB_SDK_SQL_V18_OPERAND_BIGINT_LITERAL;
-        status = parse_nonnegative_bigint_literal(state, &node.literal);
+        status = parse_signed_bigint_literal_v18(state, &node.literal);
     }
     if (status != PRDB_SDK_SQL_OK) return status;
     status = advance(state);
@@ -6592,8 +6626,8 @@ static int validate_having_node_v18(
                node->literal == 0;
     }
     if (node->operand_kind == PRDB_SDK_SQL_V18_OPERAND_BIGINT_LITERAL) {
-        return node->parameter_index == 0 &&
-               node->literal <= UINT64_C(0x7fffffffffffffff);
+        /* The literal field is the two's-complement BIGINT bit pattern. */
+        return node->parameter_index == 0;
     }
     return 0;
 }

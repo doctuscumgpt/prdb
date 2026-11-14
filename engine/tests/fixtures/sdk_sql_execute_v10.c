@@ -760,7 +760,9 @@ static int32_t on_group_v18(void *context,
     int32_t key = 0, second_key = 0;
     int64_t sum = 0;
     assert(binding->abi_version == PRDB_SDK_SQL_ABI_V18_VERSION);
-    assert(binding->having_node_count == 6 && binding->having_root == 5);
+    assert(binding->having_node_count ==
+           (capture->expect_having_literal ? 1u : 6u));
+    assert(binding->having_root == binding->having_node_count - 1);
     assert(binding->having_type_code == PRDB_SDK_VALUE_TYPE_BIGINT);
     assert(binding->base.base.has_having == 0);
     assert(binding->base.base.base.group_key_count == 2 &&
@@ -919,6 +921,9 @@ int main(void) {
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
         "HAVING (SUM(score) >= 9 OR SUM(score) = $1) AND "
         "NOT SUM(score) < 3 ORDER BY score DESC LIMIT 2";
+    static const uint8_t v18_negative_literal_sql[] =
+        "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
+        "HAVING SUM(score) >= -1";
     static const uint8_t v13_many_groups_sql[] =
         "SELECT id, score, COUNT(*) FROM widgets GROUP BY id, score";
     static const uint8_t parameter_bytes[] = {0, 0, 0, 5};
@@ -1241,6 +1246,16 @@ int main(void) {
                    capture.aggregates[0] == 9 && capture.keys[1] == 1 &&
                    capture.second_keys[1] == 3 &&
                    capture.aggregates[1] == 3 && mock.statement_failed == 0);
+
+        reset_scan(&mock, &capture, 1);
+        capture.expect_having_literal = 1;
+        assert(run_query_v18(&mock, v18_negative_literal_sql,
+                             sizeof(v18_negative_literal_sql) - 1, NULL,
+                             &capture) == PRDB_SDK_SQL_EXEC_OK);
+        assert(capture.calls == 3 && capture.aggregates[0] == 9 &&
+               capture.aggregates[1] == 3 && capture.aggregates[2] == 5 &&
+               mock.statement_failed == 0);
+        capture.expect_having_literal = 0;
         }
         {
             const int32_t one_key[] = {1};
