@@ -2700,22 +2700,8 @@ impl AdminClient {
     ) -> Result<AdminTableResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_create_table(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
-        let mut cursor = None;
-        let mut schema = None;
-        loop {
-            let page = self.list_schemas_page(DEFAULT_METADATA_PAGE_SIZE, cursor.as_deref())?;
-            for visible in page.records {
-                if visible.name == statement.schema && schema.replace(visible).is_some() {
-                    return Err(ClientSubmitError::InvalidResponse);
-                }
-            }
-            cursor = page.next_cursor;
-            if cursor.is_none() {
-                break;
-            }
-        }
-        let schema = schema.ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
-        self.create_table(schema.schema_id, &statement.table, &statement.columns)
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        self.create_table(schema_id, &statement.table, &statement.columns)
     }
 
     /// Execute bounded CREATE SCHEMA SQL with an explicit UUID owner through
@@ -2727,6 +2713,44 @@ impl AdminClient {
         let statement = crate::ddl_sql::parse_create_schema(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
         self.create_schema(&statement.schema, statement.owner_id)
+    }
+
+    pub fn execute_rename_schema_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_rename_schema(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        self.rename_schema(schema_id, &statement.new_name)
+    }
+
+    pub fn execute_drop_schema_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let schema_name = crate::ddl_sql::parse_drop_schema(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let schema_id = self.resolve_schema_sql_name(&schema_name)?;
+        self.drop_schema(schema_id)
+    }
+
+    fn resolve_schema_sql_name(&mut self, name: &str) -> Result<[u8; 16], ClientSubmitError> {
+        let mut cursor = None;
+        let mut schema_id = None;
+        loop {
+            let page = self.list_schemas_page(DEFAULT_METADATA_PAGE_SIZE, cursor.as_deref())?;
+            for visible in page.records {
+                if visible.name == name && schema_id.replace(visible.schema_id).is_some() {
+                    return Err(ClientSubmitError::InvalidResponse);
+                }
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        schema_id.ok_or(ClientSubmitError::InvalidAdministrativeRequest)
     }
 
     pub fn add_column(

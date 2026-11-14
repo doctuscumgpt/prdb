@@ -220,7 +220,13 @@ fn admin_sql(
         std::str::from_utf8(&sql_bytes).map_err(|_| "SQL input must be valid UTF-8".to_owned())?;
     let table_statement = prdb_engine::ddl_sql::parse_create_table(sql).ok();
     let schema_statement = prdb_engine::ddl_sql::parse_create_schema(sql).ok();
-    if table_statement.is_none() && schema_statement.is_none() {
+    let rename_schema_statement = prdb_engine::ddl_sql::parse_rename_schema(sql).ok();
+    let drop_schema_statement = prdb_engine::ddl_sql::parse_drop_schema(sql).ok();
+    if table_statement.is_none()
+        && schema_statement.is_none()
+        && rename_schema_statement.is_none()
+        && drop_schema_statement.is_none()
+    {
         return Err("invalid administrative SQL: unsupported statement".to_owned());
     }
 
@@ -243,13 +249,31 @@ fn admin_sql(
             lower_hex(&result.operation_id),
             result.commit_sequence
         );
-    } else {
+    } else if schema_statement.is_some() {
         let result = client
             .execute_create_schema_sql(sql)
             .map_err(|error| error.to_string())?;
         println!(
             "created schema {} (operation {}, commit {})",
             lower_hex(&result.identity_id),
+            lower_hex(&result.operation_id),
+            result.commit_sequence
+        );
+    } else if rename_schema_statement.is_some() {
+        let result = client
+            .execute_rename_schema_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "renamed schema (operation {}, commit {})",
+            lower_hex(&result.operation_id),
+            result.commit_sequence
+        );
+    } else {
+        let result = client
+            .execute_drop_schema_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "dropped schema (operation {}, commit {})",
             lower_hex(&result.operation_id),
             result.commit_sequence
         );

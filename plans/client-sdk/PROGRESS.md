@@ -696,3 +696,9 @@
 - Contract: [client SDK](../../specs/client-sdk.md), [schema DDL](../../specs/ddl-schema.md), and [client SQL command](../../specs/client-sql-command.md). `AdminClient::execute_create_schema_sql` maps bounded local SQL to the existing authenticated `schemas.create` operation.
 - Regression: mock control-session coverage verifies UUID owner text becomes the same typed owner ID used by `create_schema`; the CLI process test verifies authenticated PREPARE/START and the committed schema ID.
 - Verification: the authenticated AdminClient schema lifecycle control-session test passed with SQL owner UUID mapped to the expected typed owner ID. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. Details are in [schema DDL progress](../ddl-schema/PROGRESS.md).
+
+## SDK-5 follow-up: schema rename and drop through SQL — implemented
+
+- Contract: [client SDK](../../specs/client-sdk.md) and [schema DDL](../../specs/ddl-schema.md). SQL entry points resolve only schemas visible through the authenticated control metadata API and dispatch the existing typed operations.
+- Regression: mock authenticated control coverage resolves the schema twice, verifies `schemas.rename` and `schemas.drop` arguments, and checks their committed outcomes.
+- Verification: the authenticated AdminClient TCP rename/drop regression passed. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. Details are in [schema DDL progress](../ddl-schema/PROGRESS.md).

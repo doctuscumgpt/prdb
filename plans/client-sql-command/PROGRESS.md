@@ -141,3 +141,9 @@
 - Contract: [client SQL command](../../specs/client-sql-command.md), [client SDK](../../specs/client-sdk.md), and [schema DDL](../../specs/ddl-schema.md). `admin-sql` accepts one bounded `CREATE SCHEMA name AUTHORIZATION 'uuid'` statement and forwards only `schemas.create` over authenticated control mode.
 - Regression: process coverage authenticates, verifies the typed schema name and owner ID in PREPARE, completes START, and checks successful CLI output. Unsupported SQL remains rejected before credential access/network.
 - Verification: all three `admin-sql` process tests passed, including explicit-owner schema creation and rejection before network. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. Parser and AdminClient evidence is in [schema DDL progress](../ddl-schema/PROGRESS.md).
+
+## Administrative SQL CLI: schema rename and restricted drop — implemented
+
+- Contract: [client SQL command](../../specs/client-sql-command.md), [client SDK](../../specs/client-sdk.md), and [schema DDL](../../specs/ddl-schema.md). The command accepts schema rename and `DROP ... RESTRICT` statements and sends only typed authenticated control operations.
+- Regression: parser cases cover both statements and fail-closed handling of CASCADE and multiple statements. AdminClient process-boundary protocol tests cover metadata resolution, PREPARE/START, and committed results.
+- Verification: all seven parser tests and the authenticated AdminClient TCP rename/drop regression passed. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. See [schema DDL progress](../ddl-schema/PROGRESS.md).

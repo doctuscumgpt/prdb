@@ -1168,6 +1168,88 @@ fn admin_client_creates_and_drops_schemas() {
 }
 
 #[test]
+fn admin_client_executes_schema_rename_and_drop_sql_through_control_protocol() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        for (operation, arguments, operation_id, result) in [
+            (
+                "schemas.rename",
+                r#"{"schema_id":"a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3","name":"application"}"#,
+                [0x67; 16],
+                format!(
+                    r#"{{"operation_id":"{}","outcome":"committed","schema_id":"{}","name":"application","commit_sequence":"45"}}"#,
+                    hex(&[0x67; 16]),
+                    "a3".repeat(16)
+                ),
+            ),
+            (
+                "schemas.drop",
+                r#"{"schema_id":"a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3"}"#,
+                [0x68; 16],
+                format!(
+                    r#"{{"operation_id":"{}","outcome":"committed","schema_id":"{}","commit_sequence":"46"}}"#,
+                    hex(&[0x68; 16]),
+                    "a3".repeat(16)
+                ),
+            ),
+        ] {
+            let schemas = read_frame(&mut stream, &mut decoder);
+            assert!(
+                String::from_utf8(schemas.payload.clone())
+                    .unwrap()
+                    .contains(r#""operation":"metadata.schemas.list""#)
+            );
+            respond(
+                &mut stream,
+                &schemas,
+                format!(
+                    r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                    "a3".repeat(16)
+                )
+                .as_bytes(),
+            );
+            let prepare = read_frame(&mut stream, &mut decoder);
+            let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+            assert!(payload.contains(&format!("\"operation\":\"{operation}\"")));
+            assert!(payload.contains(&format!("\"arguments\":{arguments}")));
+            respond(
+                &mut stream,
+                &prepare,
+                format!(
+                    r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                    hex(&operation_id)
+                )
+                .as_bytes(),
+            );
+            let start = read_frame(&mut stream, &mut decoder);
+            respond(&mut stream, &start, result.as_bytes());
+        }
+    });
+
+    let mut secret = [5; 32];
+    let mut client = AdminClient::connect_authenticated_with_timeout(
+        address,
+        [6; 16],
+        &mut secret,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let renamed = client
+        .execute_rename_schema_sql("ALTER SCHEMA app RENAME TO application")
+        .unwrap();
+    assert_eq!(renamed.commit_sequence, 45);
+    let dropped = client
+        .execute_drop_schema_sql("DROP SCHEMA app RESTRICT")
+        .unwrap();
+    assert_eq!(dropped.commit_sequence, 46);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_renames_and_drops_tables() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

@@ -24,6 +24,12 @@ pub struct CreateSchemaSql {
     pub owner_id: [u8; 16],
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RenameSchemaSql {
+    pub schema: String,
+    pub new_name: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DdlSqlError {
     InvalidStatement,
@@ -153,6 +159,48 @@ pub fn parse_create_schema(sql: &str) -> Result<CreateSchemaSql, DdlSqlError> {
         return Err(DdlSqlError::InvalidStatement);
     }
     Ok(CreateSchemaSql { schema, owner_id })
+}
+
+pub fn parse_rename_schema(sql: &str) -> Result<RenameSchemaSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("schema")?;
+    let schema = parser.identifier()?;
+    parser.word("rename")?;
+    parser.word("to")?;
+    let new_name = parser.identifier()?;
+    finish_statement(&mut parser)?;
+    Ok(RenameSchemaSql { schema, new_name })
+}
+
+pub fn parse_drop_schema(sql: &str) -> Result<String, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("drop")?;
+    parser.word("schema")?;
+    let schema = parser.identifier()?;
+    parser.word("restrict")?;
+    finish_statement(&mut parser)?;
+    Ok(schema)
+}
+
+fn statement_parser(sql: &str) -> Result<Parser, DdlSqlError> {
+    if sql.is_empty() || sql.len() > MAX_DDL_BYTES || sql.as_bytes().contains(&0) {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    Ok(Parser {
+        tokens: tokenize(sql)?,
+        position: 0,
+    })
+}
+
+fn finish_statement(parser: &mut Parser) -> Result<(), DdlSqlError> {
+    if parser.peek() == Some(&Token::Semicolon) {
+        parser.position += 1;
+    }
+    if parser.peek().is_some() {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    Ok(())
 }
 
 struct Parser {
@@ -563,6 +611,33 @@ mod tests {
             "CREATE SCHEMA app AUTHORIZATION '00112233445566778899aabbccddeeff'; CREATE SCHEMA b AUTHORIZATION '00112233445566778899aabbccddeeff'",
         ] {
             assert!(parse_create_schema(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_schema_rename_and_restrict_drop_only() {
+        assert_eq!(
+            parse_rename_schema("ALTER SCHEMA app RENAME TO application;").unwrap(),
+            RenameSchemaSql {
+                schema: "app".into(),
+                new_name: "application".into(),
+            }
+        );
+        assert_eq!(
+            parse_drop_schema("DROP SCHEMA app RESTRICT").unwrap(),
+            "app"
+        );
+        for sql in [
+            "ALTER SCHEMA app RENAME application",
+            "ALTER SCHEMA app RENAME TO \"Mixed\"",
+            "DROP SCHEMA app",
+            "DROP SCHEMA app CASCADE",
+            "DROP SCHEMA app RESTRICT; DROP SCHEMA b RESTRICT",
+        ] {
+            assert!(
+                parse_rename_schema(sql).is_err() && parse_drop_schema(sql).is_err(),
+                "accepted {sql}"
+            );
         }
     }
 

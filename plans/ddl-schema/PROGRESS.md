@@ -514,3 +514,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: parser tests cover valid UUID form, missing/invalid owner, zero owner, and multiple statements. The authenticated AdminClient test checks typed schema creation followed by rename/owner/drop. A process test drives HELLO/AUTH, typed `schemas.create` PREPARE/START, and committed response.
 - Verification: six parser unit tests, the authenticated AdminClient schema lifecycle control-session test, and all three `admin-sql` process tests passed. Workspace formatting, locked offline build, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests.
 - Next smallest behavior: add inline constraints to CREATE TABLE only after defining an atomic typed composite operation; unsupported forms continue to fail before network access.
+
+## DS-8 follow-up: schema rename and restricted drop SQL — implemented
+
+- Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). SQL names resolve through authenticated visible-schema metadata; storage remains authoritative for ownership, RESTRICT dependencies, and publication.
+- Implementation: `ALTER SCHEMA name RENAME TO new_name` and `DROP SCHEMA name RESTRICT` parse as single statements and map to existing `schemas.rename` and `schemas.drop` operations. Resolution uses the same control connection and preserves opaque metadata cursors.
+- Regression: parser tests reject incomplete clauses, quoted names, CASCADE, and multi-statement input. The authenticated AdminClient TCP integration renames then drops a schema via SQL and verifies the typed operation arguments and committed results.
+- Verification: all seven parser tests and the authenticated AdminClient TCP rename/drop regression passed. Workspace formatting, locked offline build, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests.
+- Next smallest behavior: add SQL `CREATE TABLE ... PRIMARY KEY` only after extending the typed create operation and storage commit to atomically publish the key and backing index with the table.
