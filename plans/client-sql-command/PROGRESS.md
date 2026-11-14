@@ -93,3 +93,12 @@
 - Regression: `run_sql_local_failures_do_not_connect_and_gateway_failures_clean_workspace` starts `run-sql` with valid SQL, parameters, scope, credentials, and SDK inputs. A local TCP listener accepts and immediately closes the authenticated submission connection, forcing a post-packaging failure; the command exits unsuccessfully and the test requires the private workspace to be empty. The same process test retains the earlier no-connect and cleanup assertions for local input/package failures.
 - Verification: focused process test passed. Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, sandbox fixture build, release-profile validation (10 engine binaries and one query fixture), and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
 - Scope: covers workspace removal after a connection closes during submission. It does not simulate process termination or signals.
+
+## SQLCLI-3 zeroize PSP1 parameters on local errors — implemented
+
+- Contract: SQL parameter bytes are invocation data, never compiler input; the client clears its PSP1 buffer after submission and when any earlier packaging or workspace error returns.
+- Finding: `submit_package_and_stream` cleared the mutable parameter slice, but `run_sql` used `?` for workspace creation and package compilation before entering that function. Those local errors dropped a plain `Vec<u8>` without zeroization.
+- Implementation: `read_sql_parameters` now returns `Zeroizing<Vec<u8>>`; its temporary raw JSON input is also zeroizing. The PSP1 buffer is therefore cleared on submission completion and on every earlier return path, while `submit_package_and_stream` retains its explicit clear after network use.
+- Specification: documented the PSP1 buffer's all-return-path zeroization behavior.
+- Verification: the focused `run-sql` local/package/gateway-failure process test passed. Locked workspace build, format check, warning-denied Clippy, complete maintained TinyCC suite, sandbox fixture build, release-profile validation (10 engine binaries and one query fixture), and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
+- Scope: covers the PSP1 byte buffer and raw JSON file buffer owned by `run_sql`. It does not claim to wipe parser-internal temporary string allocations.

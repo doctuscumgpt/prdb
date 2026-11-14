@@ -25,6 +25,7 @@ use std::net::SocketAddr;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use zeroize::Zeroizing;
 
 const USAGE: &str = "Usage:\n\
   prdb-client submit --address IP:PORT --credentials FILE --package DIR --receipt FILE \\\n    [--parameters FILE] [--deadline-ms N] [--workload operational|analytical]\n\
@@ -1583,7 +1584,7 @@ fn run_sql(
         credentials_path,
         &package_dir,
         &receipt,
-        &mut parameters,
+        parameters.as_mut_slice(),
         deadline_ms,
         workload,
     )
@@ -1623,9 +1624,9 @@ impl Drop for SqlWorkspace {
     }
 }
 
-fn read_sql_parameters(path: Option<&Path>) -> Result<Vec<u8>, String> {
+fn read_sql_parameters(path: Option<&Path>) -> Result<Zeroizing<Vec<u8>>, String> {
     let Some(path) = path else {
-        return Ok(Vec::new());
+        return Ok(Zeroizing::new(Vec::new()));
     };
     let mut file = OpenOptions::new()
         .read(true)
@@ -1639,17 +1640,16 @@ fn read_sql_parameters(path: Option<&Path>) -> Result<Vec<u8>, String> {
     {
         return Err("SQL parameter input must be a regular file".to_owned());
     }
-    let mut input = Vec::new();
+    let mut input = Zeroizing::new(Vec::new());
     Read::take(&mut file, (MAX_SQL_PARAMETER_BYTES + 1) as u64)
         .read_to_end(&mut input)
         .map_err(|error| error.to_string())?;
     if input.len() > MAX_SQL_PARAMETER_BYTES {
-        input.fill(0);
         return Err("SQL parameter input exceeds 1 MiB".to_owned());
     }
-    let encoded = encode_parameter_file(&input).map_err(|error| error.to_string());
-    input.fill(0);
-    encoded.map_err(|error| error.to_string())
+    encode_parameter_file(input.as_slice())
+        .map(Zeroizing::new)
+        .map_err(|error| error.to_string())
 }
 
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
