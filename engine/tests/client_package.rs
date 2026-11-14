@@ -153,6 +153,88 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
         );
     }
 
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let sdk_build = temp.join("sql-sdk");
+    let build = Command::new("make")
+        .current_dir(&root)
+        .args([
+            "-f",
+            "engine/sdk/Makefile",
+            &format!("BUILD_DIR={}", sdk_build.display()),
+            "SDK_RUNTIME_PROFILE=test-runtime",
+            "sdk-shared-release",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "SQL SDK build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let sdk_release =
+        sdk_build.join("releases/linux-x86_64/x86_64-v1/test-runtime/sdk-1-abis1,2,3,4,5");
+    let scope_path = temp.join("valid-scope.psc1");
+    let mut scope = b"PSC1\0\x01\x01\x01".to_vec();
+    scope.extend_from_slice(&[0x51; 16]);
+    fs::write(&scope_path, scope).unwrap();
+    let sql_path = temp.join("valid.sql");
+    fs::write(&sql_path, "SELECT 1").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "run-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            credentials.to_str().unwrap(),
+            "--sql-file",
+            sql_path.to_str().unwrap(),
+            "--schema",
+            "public",
+            "--scope",
+            scope_path.to_str().unwrap(),
+            "--receipt",
+            temp.join("compiler-failure.receipt").to_str().unwrap(),
+            "--sdk-library",
+            sdk_release.join("libprdb_sql.so.1").to_str().unwrap(),
+            "--include-dir",
+            root.join("engine/include").to_str().unwrap(),
+            "--sdk-release",
+            "1",
+            "--cpu-baseline",
+            "x86_64-v1",
+            "--runtime-profile",
+            "test-runtime",
+            "--compiler-identity",
+            "run-sql compiler failure test",
+            "--tcc",
+            "false",
+            "--shared-linker",
+            "cc",
+            "--patchelf",
+            "patchelf",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "compiler failure unexpectedly succeeded"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("CompilerFailed"),
+        "unexpected compiler failure: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "run-sql opened a gateway connection after compilation failed"
+    );
+
     fs::remove_dir_all(temp).unwrap();
 }
 
