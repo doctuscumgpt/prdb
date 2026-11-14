@@ -74,6 +74,8 @@ int main(void) {
         "(salary >= $2 OR active IS NULL) LIMIT 25";
     static const uint8_t malformed[] =
         "SELECT id FROM t WHERE id = $1 AND";
+    static const uint8_t multiple_statements[] =
+        "SELECT id FROM t; SELECT id FROM t";
     static const uint8_t not_query[] =
         "SELECT id FROM t WHERE NOT active IS NULL";
     static const uint8_t precedence_query[] =
@@ -161,6 +163,8 @@ int main(void) {
     size_t too_deep_len = 0;
     uint32_t error_offset;
     prdb_sdk_select_v2 statement = {0};
+    prdb_sdk_select_v2 failed_statement;
+    prdb_sdk_select_v2 failed_statement_before;
     prdb_sdk_select_v2 unknown_statement = {0};
     prdb_sdk_select_v2 no_predicate_statement = {0};
     prdb_sdk_select_v2 bind_statement = {0};
@@ -221,6 +225,15 @@ int main(void) {
     assert(statement.predicates[4].node_kind == PRDB_SDK_SQL_PREDICATE_AND);
     assert(statement.predicates[4].left_child == 0);
     assert(statement.predicates[4].right_child == 3);
+
+    memset(&failed_statement, 0xa5, sizeof(failed_statement));
+    failed_statement_before = failed_statement;
+    assert(prdb_sdk_sql_parse_select_v2(
+               multiple_statements, sizeof(multiple_statements) - 1,
+               &failed_statement, sizeof(failed_statement), &error_offset) ==
+           PRDB_SDK_SQL_SYNTAX_ERROR);
+    assert(memcmp(&failed_statement, &failed_statement_before,
+                  sizeof(failed_statement)) == 0);
 
     assert(prdb_sdk_sql_parse_select_v2(
                not_query, sizeof(not_query) - 1, &statement,

@@ -910,6 +910,44 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             InvocationStatus::Aborted
         );
 
+        let multiple_statement_sql_path = root.join("run-sql-multiple-statements.sql");
+        std::fs::write(
+            &multiple_statement_sql_path,
+            "SELECT schema_name FROM schemata; SELECT schema_name FROM schemata",
+        )?;
+        std::fs::set_permissions(
+            &multiple_statement_sql_path,
+            std::fs::Permissions::from_mode(0o600),
+        )?;
+        let multiple_statement_receipt_path = root.join("run-sql-multiple-statements.receipt");
+        let multiple_statement_run_sql = invoke_run_sql(
+            &sql_address,
+            &credentials_path,
+            "information_schema",
+            &multiple_statement_sql_path,
+            &empty_parameters_path,
+            &multiple_statement_receipt_path,
+        )?;
+        assert!(
+            !multiple_statement_run_sql.status.success(),
+            "multiple SQL statements unexpectedly succeeded: {}",
+            String::from_utf8_lossy(&multiple_statement_run_sql.stderr)
+        );
+        assert!(multiple_statement_run_sql.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&multiple_statement_run_sql.stderr).contains("outcome=Aborted")
+        );
+        let multiple_statement_receipt_text =
+            std::fs::read_to_string(&multiple_statement_receipt_path)?;
+        let multiple_statement_receipt_id = multiple_statement_receipt_text
+            .strip_prefix("PDBR1 ")
+            .and_then(|value| decode_id_hex(value.trim()))
+            .ok_or("multiple-statement run-sql wrote a malformed invocation receipt")?;
+        assert_eq!(
+            status_client.status(multiple_statement_receipt_id)?,
+            InvocationStatus::Aborted
+        );
+
         let scope_reader_credentials_path = root.join("run-sql-scope-reader.cred");
         write_client_credentials(
             &scope_reader_credentials_path,
