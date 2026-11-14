@@ -133,6 +133,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: focused `bootstrap_binary` regression, `cargo fmt --all -- --check`, locked workspace build, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed with zero ignored tests. `git diff --check` passed.
 - Scope: covers the current binary's compatibility gate for one known legacy and one unknown future catalog version; it does not substitute for testing an archived older binary against a directory produced by a future release.
 
+## CL-4 historical catalog-v1 runtime probe — partial evidence
+
+- Built the engine from historical commit `295caee7^`, whose `EngineMetadata::supports_current_formats` accepts catalog v1, in a temporary source tree. Its real `StorageManager::new` path rejected a freshly initialized catalog-v2 instance with `Startup(UnsupportedFormat)`.
+- A second probe performed only `redb::Database::open` and close on a byte-identical copy; that alone changed the database-file digest. The historical startup validator also rejects with `UnsupportedFormat`. Current read-only inspection of the rejected images reported the same READY metadata and record counts as the source, but exact logical-table equivalence was not measured. No archived binary or database fixture was added to the repository.
+- Remaining: specify whether redb's open-time byte changes are acceptable for an unsupported image, compare logical records across the probe, then add repeatable archived runtime/data fixtures. Do not treat an `UnsupportedFormat` result alone as byte-preserving old-binary rejection.
+
 ## CL-4 / CL-5 source fixture: populated v2 and v1 images — verified slice
 
 - Fixture: the bootstrap binary integration test now uses real storage DDL to add a user schema, table, and stored default expression, then persists a schema-encoded row. It validates that populated catalog as current v2 before converting only the engine metadata and database descriptor to the exact v1 shape.
