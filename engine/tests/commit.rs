@@ -8998,8 +8998,8 @@ fn storage_manager_creates_primary_key_with_owned_unique_index()
             .status,
         OutcomeStatus::Aborted
     );
-    let read = database.begin_read()?;
-    let catalog = read.open_table(CATALOG)?;
+    let old_read = database.begin_read()?;
+    let catalog = old_read.open_table(CATALOG)?;
     let constraint = catalog
         .get(id_catalog_key(8, created.constraint_id).as_slice())?
         .ok_or("missing created PRIMARY KEY")?;
@@ -9018,9 +9018,17 @@ fn storage_manager_creates_primary_key_with_owned_unique_index()
             .get(id_catalog_key(9, created.index_id).as_slice())?
             .is_some()
     );
+    assert!(
+        catalog
+            .get(
+                dependency_write(created.constraint_id, created.index_id, 4)
+                    .key
+                    .as_slice()
+            )?
+            .is_some()
+    );
     drop(constraint);
     drop(catalog);
-    drop(read);
     prdb_engine::startup::validate_persisted_records(&database)?;
     let drop_invocation_id = id(0xe4);
     let mut drop_audit = identity_audit_event(0xe5, actor, created.constraint_id);
@@ -9037,6 +9045,37 @@ fn storage_manager_creates_primary_key_with_owned_unique_index()
             .map_err(|error| format!("PRIMARY KEY drop failed: {error:?}"))?,
         3
     );
+    let old_catalog = old_read.open_table(CATALOG)?;
+    for key in [
+        id_catalog_key(8, created.constraint_id),
+        id_catalog_key(9, created.index_id),
+        id_catalog_key(2, created.constraint_id),
+        id_catalog_key(2, created.index_id),
+        dependency_write(created.constraint_id, created.index_id, 4).key,
+    ] {
+        assert!(
+            old_catalog.get(key.as_slice())?.is_some(),
+            "pre-drop snapshot lost PRIMARY KEY record {key:?}"
+        );
+    }
+    drop(old_catalog);
+    drop(old_read);
+    let current_read = database.begin_read()?;
+    let current_catalog = current_read.open_table(CATALOG)?;
+    for key in [
+        id_catalog_key(8, created.constraint_id),
+        id_catalog_key(9, created.index_id),
+        id_catalog_key(2, created.constraint_id),
+        id_catalog_key(2, created.index_id),
+        dependency_write(created.constraint_id, created.index_id, 4).key,
+    ] {
+        assert!(
+            current_catalog.get(key.as_slice())?.is_none(),
+            "new snapshot retained dropped PRIMARY KEY record {key:?}"
+        );
+    }
+    drop(current_catalog);
+    drop(current_read);
     prdb_engine::startup::validate_persisted_records(&database)?;
     Ok(())
 }
