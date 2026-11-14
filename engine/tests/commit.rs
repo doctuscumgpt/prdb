@@ -8900,6 +8900,7 @@ fn storage_manager_creates_unique_constraint_and_backfills_existing_rows()
     let drop_invocation_id = id(0xe2);
     let mut drop_audit = identity_audit_event(0xe3, actor, created.constraint_id);
     drop_audit.correlation_id = drop_invocation_id;
+    let old_read = database.begin_read()?;
     assert_eq!(
         storage
             .drop_unique_constraint(
@@ -8912,6 +8913,21 @@ fn storage_manager_creates_unique_constraint_and_backfills_existing_rows()
             .map_err(|error| format!("UNIQUE drop failed: {error:?}"))?,
         4
     );
+    assert_eq!(
+        prdb_engine::catalog_index::scan_constraint_ids_for_table(&old_read, id(82), 1)?,
+        vec![created.constraint_id]
+    );
+    let old_catalog = old_read.open_table(CATALOG)?;
+    for key in [
+        id_catalog_key(8, created.constraint_id),
+        id_catalog_key(9, created.index_id),
+        id_catalog_key(2, created.constraint_id),
+        id_catalog_key(2, created.index_id),
+        dependency_write(created.constraint_id, created.index_id, 4).key,
+    ] {
+        assert!(old_catalog.get(key.as_slice())?.is_some());
+    }
+    drop(old_catalog);
     assert!(matches!(
         stale_drop_writer.commit(),
         Err(prdb_engine::transaction::TransactionError::Commit(
@@ -8928,6 +8944,9 @@ fn storage_manager_creates_unique_constraint_and_backfills_existing_rows()
     let read = database.begin_read()?;
     let catalog = read.open_table(CATALOG)?;
     assert!(
+        prdb_engine::catalog_index::scan_constraint_ids_for_table(&read, id(82), 1)?.is_empty()
+    );
+    assert!(
         catalog
             .get(id_catalog_key(8, created.constraint_id).as_slice())?
             .is_none()
@@ -8939,6 +8958,7 @@ fn storage_manager_creates_unique_constraint_and_backfills_existing_rows()
     );
     drop(catalog);
     drop(read);
+    drop(old_read);
     prdb_engine::startup::validate_persisted_records(&database)?;
     Ok(())
 }

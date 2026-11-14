@@ -382,6 +382,13 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: the focused real-redb lifecycle test passed. Workspace build, format check, warning-denied Clippy, TinyCC SDK tests, release-profile validation, and the full serial delegated-cgroup workspace suite passed: 224 library tests, 162 commit tests, and 75 transaction tests, with sandbox/process acceptance enabled and no ignored tests. `git diff --check` passed.
 - Scope: this verifies retained catalog snapshots for PRIMARY KEY removal. It does not add physical index membership rows to this fixture or simulate power loss.
 
+## DS-5 / DS-7: UNIQUE constraint drop preserves reader snapshots — verified
+
+- Contract: [schema DDL](../../specs/ddl-schema.md) requires a reader pinned before UNIQUE removal to retain the constraint, owned index, catalog objects, and ownership edge; new readers see the removed set.
+- Regression: `storage_manager_creates_unique_constraint_and_backfills_existing_rows` now holds a redb snapshot across `drop_unique_constraint`. The old reader retains the UNIQUE/index records and the new reader reports no constraint or surviving records.
+- Verification: the focused real-redb lifecycle test passed (`1 passed, 0 ignored`). Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, sandbox-query fixture, and release-profile validation (10 binaries and one query fixture) passed. The full serial delegated-cgroup workspace suite passed with 224 library tests, 164 commit tests, and 75 transaction tests, plus all other integration suites; no tests were ignored. `git diff --check` passed.
+- Scope: covers one single-column UNIQUE constraint; it does not simulate process crash or power loss.
+
 ## DS-4 / DS-7: key-constraint drop process-crash recovery — verified
 
 - Contract: [schema DDL](../../specs/ddl-schema.md) requires removal of a PRIMARY KEY or UNIQUE constraint, its owned index, both object records, ownership dependency and physical index memberships to publish atomically with the table write epoch, audit, outcome, and commit sequence.
