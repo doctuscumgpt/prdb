@@ -5,7 +5,7 @@ use prdb_engine::bootstrap::initialize;
 use prdb_engine::client_credentials::{
     read_client_credentials, remove_client_credentials, write_client_credentials,
 };
-use prdb_engine::client_protocol::ClientCredentials;
+use prdb_engine::client_protocol::{ClientCredentials, ClientFrame, ClientFrameDecoder};
 use prdb_engine::client_submit::{
     AdminClient, AdminColumnDefinition, AdminCreatePolicyRequest, AdminObjectGrantTarget,
     AdminObjectPrivilege, AdminPolicyEffect, AdminPolicyKind, AdminPolicyOperation,
@@ -20,12 +20,69 @@ use prdb_engine::submission_manifest::{encode_manifest_v1, manifest_v1_from_elf}
 use prdb_engine::supervisor::WorkloadClass;
 use prdb_engine::tuple::ScalarType;
 use sha2::{Digest, Sha256};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 struct ChildGuard(Option<Child>);
+
+fn read_client_frame(stream: &mut std::net::TcpStream) -> std::io::Result<Option<ClientFrame>> {
+    let mut decoder = ClientFrameDecoder::default();
+    let mut input = [0u8; 8192];
+    loop {
+        let bytes = stream.read(&mut input)?;
+        if bytes == 0 {
+            return Ok(None);
+        }
+        let mut frames = decoder
+            .push(&input[..bytes])
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        if !frames.is_empty() {
+            return Ok(Some(frames.remove(0)));
+        }
+    }
+}
+
+fn start_response_dropping_proxy(
+    gateway_address: std::net::SocketAddr,
+) -> std::io::Result<(
+    std::net::SocketAddr,
+    std::thread::JoinHandle<std::io::Result<usize>>,
+)> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let proxy_address = listener.local_addr()?;
+    let handle =
+        std::thread::spawn(move || {
+            let (mut client, _) = listener.accept()?;
+            let mut gateway = std::net::TcpStream::connect(gateway_address)?;
+            client.set_read_timeout(Some(Duration::from_secs(10)))?;
+            client.set_write_timeout(Some(Duration::from_secs(10)))?;
+            gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
+            gateway.set_write_timeout(Some(Duration::from_secs(10)))?;
+            let mut starts = 0;
+            while let Some(request) = read_client_frame(&mut client)? {
+                if request.kind == 7 {
+                    starts += 1;
+                }
+                gateway.write_all(&request.encode().map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+                })?)?;
+                let Some(response) = read_client_frame(&mut gateway)? else {
+                    break;
+                };
+                if request.kind == 7 && response.kind == 100 {
+                    // The gateway accepted START, but the client loses its reply.
+                    return Ok(starts);
+                }
+                client.write_all(&response.encode().map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+                })?)?;
+            }
+            Ok(starts)
+        });
+    Ok((proxy_address, handle))
+}
 
 impl ChildGuard {
     fn child(&mut self) -> &mut Child {
@@ -643,7 +700,8 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR is required for run-sql")?;
         let sql_sdk = sdk_release_dir.join("libprdb_sql.so.1");
         let include_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
-        let invoke_run_sql = |sql_path: &std::path::Path,
+        let invoke_run_sql = |address: &str,
+                              sql_path: &std::path::Path,
                               parameters_path: &std::path::Path,
                               receipt_path: &std::path::Path|
          -> Result<std::process::Output, Box<dyn std::error::Error>> {
@@ -651,7 +709,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 .args([
                     "run-sql",
                     "--address",
-                    &sql_address,
+                    address,
                     "--credentials",
                     credentials_path
                         .to_str()
@@ -689,7 +747,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 ])
                 .output()?)
         };
-        let run_sql = invoke_run_sql(&sql_path, &parameters_path, &receipt_path)?;
+        let run_sql = invoke_run_sql(&sql_address, &sql_path, &parameters_path, &receipt_path)?;
         assert!(
             run_sql.status.success(),
             "run-sql failed: {}",
@@ -747,6 +805,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         )?;
         let aborted_receipt_path = root.join("run-sql-aborted.receipt");
         let aborted_run_sql = invoke_run_sql(
+            &sql_address,
             &invalid_sql_path,
             &empty_parameters_path,
             &aborted_receipt_path,
@@ -767,6 +826,56 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             status_client.status(aborted_receipt_id)?,
             InvocationStatus::Aborted
         );
+
+        let uncertain_receipt_path = root.join("run-sql-uncertain.receipt");
+        let (proxy_address, proxy) = start_response_dropping_proxy(address)?;
+        let uncertain_run_sql = invoke_run_sql(
+            &proxy_address.to_string(),
+            &sql_path,
+            &parameters_path,
+            &uncertain_receipt_path,
+        )?;
+        assert!(
+            !uncertain_run_sql.status.success(),
+            "run-sql reported success after its START response was dropped"
+        );
+        assert!(uncertain_run_sql.stdout.is_empty());
+        let start_count = proxy
+            .join()
+            .map_err(|_| "START response proxy panicked")??;
+        assert_eq!(start_count, 1, "run-sql must send START exactly once");
+        let uncertain_receipt_text = std::fs::read_to_string(&uncertain_receipt_path)?;
+        let uncertain_receipt_id = uncertain_receipt_text
+            .strip_prefix("PDBR1 ")
+            .and_then(|value| decode_id_hex(value.trim()))
+            .ok_or("uncertain run-sql did not preserve its START receipt")?;
+        let mut uncertain_status_secret = restricted_secret;
+        let mut uncertain_status_client = SubmissionClient::connect_authenticated(
+            address,
+            restricted_token,
+            &mut uncertain_status_secret,
+        )?;
+        assert_eq!(uncertain_status_secret, [0; 32]);
+        let status_deadline = Instant::now() + Duration::from_secs(5);
+        let uncertain_status = loop {
+            let status = uncertain_status_client.status(uncertain_receipt_id)?;
+            if matches!(
+                status,
+                InvocationStatus::Committed | InvocationStatus::Aborted
+            ) {
+                break status;
+            }
+            if Instant::now() >= status_deadline {
+                return Err(
+                    format!("lost START outcome did not become terminal: {status:?}").into(),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(matches!(
+            uncertain_status,
+            InvocationStatus::Committed | InvocationStatus::Aborted
+        ));
         remove_client_credentials(&credentials_path)?;
 
         let cancel_credentials_path = root.join("cancel-owner.cred");
