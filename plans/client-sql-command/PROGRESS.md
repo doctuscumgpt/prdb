@@ -196,3 +196,9 @@
 - `admin-sql` accepts qualified `ALTER TABLE schema.table RENAME COLUMN old_name TO new_name` and dispatches the existing typed operation after metadata resolution.
 - Parser tests reject malformed and multiple statements; AdminClient TCP coverage checks ID binding; CLI process coverage verifies syntax recognition before credentials/network.
 - Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.
+
+## Administrative SQL: DROP COLUMN RESTRICT — implemented
+
+- `admin-sql` accepts qualified `ALTER TABLE schema.table DROP COLUMN column RESTRICT`; CASCADE and implicit drop modes remain rejected.
+- Parser, AdminClient TCP binding, and CLI pre-credential recognition coverage added.
+- Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.

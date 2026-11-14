@@ -230,6 +230,7 @@ fn admin_sql(
         prdb_engine::ddl_sql::parse_alter_column_nullability(sql).ok();
     let add_column_statement = prdb_engine::ddl_sql::parse_add_column(sql).ok();
     let rename_column_statement = prdb_engine::ddl_sql::parse_rename_column(sql).ok();
+    let drop_column_statement = prdb_engine::ddl_sql::parse_drop_column(sql).ok();
     if table_statement.is_none()
         && schema_statement.is_none()
         && rename_schema_statement.is_none()
@@ -241,6 +242,7 @@ fn admin_sql(
         && alter_column_nullability_statement.is_none()
         && add_column_statement.is_none()
         && rename_column_statement.is_none()
+        && drop_column_statement.is_none()
     {
         return Err("invalid administrative SQL: unsupported statement".to_owned());
     }
@@ -338,6 +340,16 @@ fn admin_sql(
             .map_err(|error| error.to_string())?;
         println!(
             "renamed column {} (operation {}, commit {})",
+            lower_hex(&result.column_id),
+            lower_hex(&result.operation_id),
+            result.commit_sequence
+        );
+    } else if drop_column_statement.is_some() {
+        let result = client
+            .execute_drop_column_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "dropped column {} (operation {}, commit {})",
             lower_hex(&result.column_id),
             lower_hex(&result.operation_id),
             result.commit_sequence

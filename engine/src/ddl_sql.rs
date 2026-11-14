@@ -84,6 +84,13 @@ pub struct RenameColumnSql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DropColumnSql {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckExpressionSql {
     Column(String),
     IsNull(String),
@@ -500,6 +507,26 @@ pub fn parse_rename_column(sql: &str) -> Result<RenameColumnSql, DdlSqlError> {
         table,
         column,
         new_name,
+    })
+}
+
+/// Parse `ALTER TABLE schema.table DROP COLUMN name RESTRICT`.
+pub fn parse_drop_column(sql: &str) -> Result<DropColumnSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("table")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("drop")?;
+    parser.word("column")?;
+    let column = parser.identifier()?;
+    parser.word("restrict")?;
+    finish_statement(&mut parser)?;
+    Ok(DropColumnSql {
+        schema,
+        table,
+        column,
     })
 }
 
@@ -1186,6 +1213,26 @@ mod tests {
             "ALTER TABLE app.events RENAME COLUMN old_name TO new_name; ALTER TABLE app.events RENAME COLUMN x TO y",
         ] {
             assert!(parse_rename_column(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_restricted_column_drop_only() {
+        assert_eq!(
+            parse_drop_column("ALTER TABLE app.events DROP COLUMN obsolete RESTRICT;").unwrap(),
+            DropColumnSql {
+                schema: "app".into(),
+                table: "events".into(),
+                column: "obsolete".into()
+            }
+        );
+        for sql in [
+            "ALTER TABLE events DROP COLUMN obsolete RESTRICT",
+            "ALTER TABLE app.events DROP obsolete RESTRICT",
+            "ALTER TABLE app.events DROP COLUMN obsolete CASCADE",
+            "ALTER TABLE app.events DROP COLUMN obsolete RESTRICT; ALTER TABLE app.events DROP COLUMN other RESTRICT",
+        ] {
+            assert!(parse_drop_column(sql).is_err(), "accepted {sql}");
         }
     }
 
