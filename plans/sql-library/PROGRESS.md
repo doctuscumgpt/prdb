@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-4 follow-up: multi-row DELETE staging past the two-row case — verified
+
+- Contract: the bounded DELETE runner retains every matching row handle through the scan, closes the cursor, and only then stages mutations. The three-row regression uses distinct handles and requires all three delete operations after the terminal scan page.
+- Regression: `sdk_sql_execute_v2.c` now builds a three-row continued batch, verifies the request carries the matching candidate bound, requires scan completion before each stage call, and checks all three distinct handles are deleted with the returned count set to three.
+- Verification: the focused TinyCC fixture and complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` suite passed with TinyCC 0.9.27-unstable-2025-01-06.
+- Scope: extends runner coverage beyond two targets; the 128-row bound, larger adversarial storage fixtures, and broader live permission cases remain open.
+
 ## SQL-7 follow-up: exact fractional and exponent HAVING literals — verified
 
 - Contract: [SQL library](../../specs/sql-library.md). V21 extends compound grouped HAVING with exact signed integer, fractional, and exponent numeric literals while preserving v1-v20 layouts and parser behavior.
@@ -194,7 +201,7 @@
 - Implementation: `prdb_sdk_sql_parse_delete_v1` parses the grammar. `prdb_sdk_sql_execute_delete_v1` compares planner/executor relation shapes, binds typed predicate parameters, evaluates authorized full-shape scan rows, retains at most the caller capacity (maximum 128) of opaque row handles, closes the scan, and then stages deletes. Materialization or 256-request budget failures happen before staging; all execution failures latch the v3 statement-failure callback.
 - Regression: [`sdk_sql_dml_v1.c`](../../engine/tests/fixtures/sdk_sql_dml_v1.c) covers a Boolean/NULL predicate and rejects missing WHERE. [`sdk_sql_execute_v2.c`](../../engine/tests/fixtures/sdk_sql_execute_v2.c) covers successful one-row deletion, successful deletion of two distinct matching rows after scan completion, and target-capacity overflow; the overflow case confirms scan closure, unchanged output count, sticky failure, and no delete request.
 - Verification: focused TinyCC parser and SQL execution fixtures pass; the full maintained TinyCC SDK fixture suite passes. Rust 1.95.0 build, `cargo fmt --all -- --check`, Clippy with warnings denied, and serial workspace tests pass. The combined SQL DML artifact has passed the confined executor and durable commit acceptance.
-- Limits/next: more-than-two-row DELETE stress and adversarial live storage coverage remain open.
+- Limits/next: three-row DELETE staging is covered by the follow-up above. The 128-row boundary and adversarial live storage coverage remain open.
 
 ## SQL-4 sandboxed SQL DML sequence acceptance — verified
 
