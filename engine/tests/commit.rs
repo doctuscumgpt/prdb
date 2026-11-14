@@ -22549,19 +22549,22 @@ fn process_exit_after_atomic_row_index_commit_preserves_publication()
 }
 
 #[test]
-fn process_crash_during_authorized_index_ddl_recovers_all_or_none()
+fn process_crash_during_authorized_index_changes_recovers_all_or_none()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{CreateTableRequest, TableColumnDefinition};
     use std::process::Command;
 
     const CHILD_DATABASE_ENV: &str = "PRDB_TEST_CRASH_DURING_INDEX_DDL_DATABASE";
     const CHILD_BOUNDARY_ENV: &str = "PRDB_TEST_CRASH_DURING_INDEX_DDL_BOUNDARY";
+    const CHILD_OPERATION_ENV: &str = "PRDB_TEST_CRASH_DURING_INDEX_DDL_OPERATION";
     const CHILD_EXIT_CODE: i32 = 87;
     const POST_COMMIT_EXIT_CODE: i32 = 88;
     const ACTOR_ID: [u8; 16] = [0xa5; 16];
     const SEED_INVOCATION_ID: [u8; 16] = [0xa6; 16];
     const INDEX_INVOCATION_ID: [u8; 16] = [0xa7; 16];
     const INDEX_AUDIT_ID: [u8; 16] = [0xa8; 16];
+    const PREPARE_INDEX_INVOCATION_ID: [u8; 16] = [0xb3; 16];
+    const PREPARE_INDEX_AUDIT_ID: [u8; 16] = [0xb4; 16];
     const ROW_ID: [u8; 16] = [0xa9; 16];
 
     if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
@@ -22622,16 +22625,60 @@ fn process_crash_during_authorized_index_ddl_recovers_all_or_none()
         )?;
         seed.stage_put(row, &row_payload)?;
         seed.commit()?;
+        let operation = std::env::var(CHILD_OPERATION_ENV)?;
+        let prepared_index_id = if operation == "drop" {
+            let mut prepare_audit =
+                identity_audit_event(PREPARE_INDEX_AUDIT_ID[0], ACTOR_ID, table.table_id);
+            prepare_audit.event_id = PREPARE_INDEX_AUDIT_ID;
+            prepare_audit.correlation_id = PREPARE_INDEX_INVOCATION_ID;
+            Some(
+                storage
+                    .create_index(prdb_engine::storage_manager::CreateIndexRequest {
+                        invocation_id: PREPARE_INDEX_INVOCATION_ID,
+                        authenticated_actor_id: ACTOR_ID,
+                        table_id: table.table_id,
+                        name: "crash_index".to_owned(),
+                        column_ids: table.column_ids.clone(),
+                        unique: false,
+                        retention_deadline_us: i64::MAX,
+                        audit_event: prepare_audit,
+                    })?
+                    .index_id,
+            )
+        } else if operation == "create" {
+            None
+        } else {
+            return Err(format!("unknown index DDL operation {operation}").into());
+        };
         let before_ddl_sequence = commit_sequence(&database)?;
         let metadata_path = database_path.with_extension("index-crash-metadata");
-        let mut metadata = Vec::with_capacity(80);
+        let mut metadata = Vec::with_capacity(104);
         metadata.extend_from_slice(&schema.schema_id);
         metadata.extend_from_slice(&table.table_id);
         metadata.extend_from_slice(&table.column_ids[0]);
         metadata.extend_from_slice(&ROW_ID);
         metadata.extend_from_slice(&table_schema.schema_version.to_le_bytes());
         metadata.extend_from_slice(&before_ddl_sequence.to_le_bytes());
-        std::fs::write(metadata_path, metadata)?;
+        metadata.extend_from_slice(&prepared_index_id.unwrap_or([0; 16]));
+        let before_table_epoch = {
+            let read = database.begin_read()?;
+            let catalog = read.open_table(CATALOG)?;
+            let table_record = catalog
+                .get(id_catalog_key(5, table.table_id).as_slice())?
+                .ok_or("index crash table missing before DDL")?;
+            u64::from_le_bytes(
+                decode_registered_envelope(table_record.value())?
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 3)
+                    .ok_or("index crash table epoch missing before DDL")?
+                    .payload
+                    .as_slice()
+                    .try_into()?,
+            )
+        };
+        metadata.extend_from_slice(&before_table_epoch.to_le_bytes());
+        std::fs::write(&metadata_path, metadata)?;
         drop(storage);
         drop(database);
 
@@ -22646,6 +22693,8 @@ fn process_crash_during_authorized_index_ddl_recovers_all_or_none()
             exit_code: CHILD_EXIT_CODE,
         })?;
         let storage = StorageManager::new(&instrumented, Duration::from_millis(100))?;
+        let prepared_index_id: [u8; 16] = std::fs::read(&metadata_path)?[80..96].try_into()?;
+        let operation = std::env::var(CHILD_OPERATION_ENV)?;
         let mut index_audit = identity_audit_event(INDEX_AUDIT_ID[0], ACTOR_ID, id(0xb2));
         index_audit.event_id = INDEX_AUDIT_ID;
         index_audit.correlation_id = INDEX_INVOCATION_ID;
@@ -22655,8 +22704,8 @@ fn process_crash_during_authorized_index_ddl_recovers_all_or_none()
         } else if boundary != "after_commit" {
             return Err(format!("unknown index DDL crash boundary {boundary}").into());
         }
-        let create_result =
-            storage.create_index(prdb_engine::storage_manager::CreateIndexRequest {
+        if operation == "create" {
+            let result = storage.create_index(prdb_engine::storage_manager::CreateIndexRequest {
                 invocation_id: INDEX_INVOCATION_ID,
                 authenticated_actor_id: ACTOR_ID,
                 table_id: table.table_id,
@@ -22666,82 +22715,132 @@ fn process_crash_during_authorized_index_ddl_recovers_all_or_none()
                 retention_deadline_us: i64::MAX,
                 audit_event: index_audit,
             });
-        if boundary == "write" {
-            return Err(format!(
-                "index DDL returned without the injected backend-write exit: {create_result:?}"
-            )
-            .into());
+            if boundary == "write" {
+                return Err(format!(
+                    "index creation returned without injected backend-write exit: {result:?}"
+                )
+                .into());
+            }
+            result?;
+        } else {
+            let result = storage.drop_index(prdb_engine::storage_manager::DropIndexRequest {
+                invocation_id: INDEX_INVOCATION_ID,
+                authenticated_actor_id: ACTOR_ID,
+                index_id: prepared_index_id,
+                retention_deadline_us: i64::MAX,
+                audit_event: index_audit,
+            });
+            if boundary == "write" {
+                return Err(format!(
+                    "index removal returned without injected backend-write exit: {result:?}"
+                )
+                .into());
+            }
+            result?;
         }
-        create_result?;
         std::process::exit(POST_COMMIT_EXIT_CODE);
     }
 
-    for (boundary, expected_exit) in [
-        ("write", CHILD_EXIT_CODE),
-        ("after_commit", POST_COMMIT_EXIT_CODE),
-    ] {
-        let fixture = Fixture::new();
-        let database_path = fixture.path();
-        let child_status = Command::new(std::env::current_exe()?)
-            .arg("--exact")
-            .arg("process_crash_during_authorized_index_ddl_recovers_all_or_none")
-            .arg("--nocapture")
-            .env(CHILD_DATABASE_ENV, &database_path)
-            .env(CHILD_BOUNDARY_ENV, boundary)
-            .status()?;
-        assert_eq!(
-            child_status.code(),
-            Some(expected_exit),
-            "index DDL child missed the {boundary} crash boundary: {child_status}"
-        );
+    for operation in ["create", "drop"] {
+        for (boundary, expected_exit) in [
+            ("write", CHILD_EXIT_CODE),
+            ("after_commit", POST_COMMIT_EXIT_CODE),
+        ] {
+            let fixture = Fixture::new();
+            let database_path = fixture.path();
+            let child_status = Command::new(std::env::current_exe()?)
+                .arg("--exact")
+                .arg("process_crash_during_authorized_index_changes_recovers_all_or_none")
+                .arg("--nocapture")
+                .env(CHILD_DATABASE_ENV, &database_path)
+                .env(CHILD_BOUNDARY_ENV, boundary)
+                .env(CHILD_OPERATION_ENV, operation)
+                .status()?;
+            assert_eq!(
+                child_status.code(),
+                Some(expected_exit),
+                "index DDL child missed the {boundary} crash boundary: {child_status}"
+            );
 
-        let metadata = std::fs::read(database_path.with_extension("index-crash-metadata"))?;
-        assert_eq!(metadata.len(), 80);
-        let schema_id: [u8; 16] = metadata[0..16].try_into()?;
-        let table_id: [u8; 16] = metadata[16..32].try_into()?;
-        let column_id: [u8; 16] = metadata[32..48].try_into()?;
-        let row_id: [u8; 16] = metadata[48..64].try_into()?;
-        let schema_version = u64::from_le_bytes(metadata[64..72].try_into()?);
-        let before_ddl_sequence = u64::from_le_bytes(metadata[72..80].try_into()?);
-        let reopened = Database::open(&database_path)?;
-        let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
-        let read = reopened.begin_read()?;
-        let published_index = lookup_index_id_by_name(&read, schema_id, "crash_index")?;
-        let recovered_sequence = commit_sequence(&reopened)?;
-        let outcome = read
-            .open_table(schema::OUTCOMES)?
-            .get(&INDEX_INVOCATION_ID[..])?
-            .map(|value| InvocationOutcome::decode(value.value()))
-            .transpose()?;
-        let audit_exists = read
-            .open_table(schema::AUDIT)?
-            .get(&INDEX_AUDIT_ID[..])?
-            .is_some();
-        let row_key = table_row_key(table_id, row_id);
-        assert_eq!(
-            row(&reopened, &row_key)?.unwrap().payload,
-            encode_tuple(
-                &[ColumnSchema {
-                    scalar_type: ScalarType::Integer,
-                    nullable: false
-                }],
-                schema_version,
-                &[Some(ScalarValue::Integer(7))],
-            )?
-        );
+            let metadata = std::fs::read(database_path.with_extension("index-crash-metadata"))?;
+            assert_eq!(metadata.len(), 104);
+            let schema_id: [u8; 16] = metadata[0..16].try_into()?;
+            let table_id: [u8; 16] = metadata[16..32].try_into()?;
+            let column_id: [u8; 16] = metadata[32..48].try_into()?;
+            let row_id: [u8; 16] = metadata[48..64].try_into()?;
+            let schema_version = u64::from_le_bytes(metadata[64..72].try_into()?);
+            let before_ddl_sequence = u64::from_le_bytes(metadata[72..80].try_into()?);
+            let prepared_index_id: [u8; 16] = metadata[80..96].try_into()?;
+            let before_table_epoch = u64::from_le_bytes(metadata[96..104].try_into()?);
+            let reopened = Database::open(&database_path)?;
+            let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+            let read = reopened.begin_read()?;
+            let published_index = lookup_index_id_by_name(&read, schema_id, "crash_index")?;
+            let recovered_sequence = commit_sequence(&reopened)?;
+            let outcome = read
+                .open_table(schema::OUTCOMES)?
+                .get(&INDEX_INVOCATION_ID[..])?
+                .map(|value| InvocationOutcome::decode(value.value()))
+                .transpose()?;
+            let audit_exists = read
+                .open_table(schema::AUDIT)?
+                .get(&INDEX_AUDIT_ID[..])?
+                .is_some();
+            let row_key = table_row_key(table_id, row_id);
+            assert_eq!(
+                row(&reopened, &row_key)?.unwrap().payload,
+                encode_tuple(
+                    &[ColumnSchema {
+                        scalar_type: ScalarType::Integer,
+                        nullable: false
+                    }],
+                    schema_version,
+                    &[Some(ScalarValue::Integer(7))],
+                )?
+            );
 
-        let recovered_commit = match (published_index, outcome, audit_exists, recovered_sequence) {
-            (Some(index_id), Some(outcome), true, sequence)
-                if sequence == before_ddl_sequence + 1
-                    && outcome.status == OutcomeStatus::Committed
-                    && outcome.commit_sequence == sequence =>
-            {
-                let table_columns = [column_id];
+            let committed = boundary == "after_commit";
+            let should_index_exist = if operation == "create" {
+                committed
+            } else {
+                !committed
+            };
+            assert_eq!(published_index.is_some(), should_index_exist);
+            assert_eq!(audit_exists, committed);
+            assert_eq!(
+                recovered_sequence,
+                before_ddl_sequence + u64::from(committed)
+            );
+            if committed {
+                let outcome = outcome.ok_or("committed index DDL outcome missing")?;
+                assert_eq!(outcome.status, OutcomeStatus::Committed);
+                assert_eq!(outcome.commit_sequence, recovered_sequence);
+            } else {
+                assert_eq!(outcome, None);
+            }
+            let table = read
+                .open_table(CATALOG)?
+                .get(id_catalog_key(5, table_id).as_slice())?
+                .ok_or("index crash table missing after reopen")?;
+            let table_epoch = u64::from_le_bytes(
+                decode_registered_envelope(table.value())?
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 3)
+                    .ok_or("index crash table epoch missing after reopen")?
+                    .payload
+                    .as_slice()
+                    .try_into()?,
+            );
+            assert_eq!(table_epoch, before_table_epoch + u64::from(committed));
+
+            let index_id = published_index.unwrap_or(prepared_index_id);
+            if index_id != [0; 16] {
                 let index_key = prdb_engine::index_key::derive_index_key(
                     index_id,
                     row_id,
                     schema_version,
-                    &table_columns,
+                    &[column_id],
                     &[ColumnSchema {
                         scalar_type: ScalarType::Integer,
                         nullable: false,
@@ -22754,33 +22853,48 @@ fn process_crash_during_authorized_index_ddl_recovers_all_or_none()
                         schema_version,
                         &[Some(ScalarValue::Integer(7))],
                     )?,
-                    &table_columns,
+                    &[column_id],
                 )?;
                 let locator = read
                     .open_table(schema::INDEXES)?
                     .get(index_key.key.as_slice())?
-                    .ok_or("committed DDL index locator was not recovered")?
-                    .value()
-                    .to_vec();
-                assert_eq!(
-                    IndexLocator::decode_for_key(&index_key.key, &locator)?.row_version,
-                    before_ddl_sequence
-                );
+                    .map(|value| value.value().to_vec());
                 let mut reverse_key = row_key.to_vec();
                 reverse_key.extend_from_slice(&index_key.key[..index_key.key.len() - 16]);
-                assert!(
-                    read.open_table(schema::ROW_INDEXES)?
-                        .get(reverse_key.as_slice())?
-                        .is_some()
+                let reverse_exists = read
+                    .open_table(schema::ROW_INDEXES)?
+                    .get(reverse_key.as_slice())?
+                    .is_some();
+                assert_eq!(locator.is_some(), should_index_exist);
+                assert_eq!(reverse_exists, should_index_exist);
+                assert_eq!(
+                    read.open_table(CATALOG)?
+                        .get(id_catalog_key(9, index_id).as_slice())?
+                        .is_some(),
+                    should_index_exist
                 );
-                true
+                assert_eq!(
+                    read.open_table(CATALOG)?
+                        .get(id_catalog_key(2, index_id).as_slice())?
+                        .is_some(),
+                    should_index_exist
+                );
+                assert_eq!(
+                    read.open_table(CATALOG)?
+                        .get(dependency_write(index_id, schema_id, 1).key.as_slice())?
+                        .is_some(),
+                    should_index_exist
+                );
+                if let Some(locator) = locator {
+                    assert_eq!(
+                        IndexLocator::decode_for_key(&index_key.key, &locator)?.row_version,
+                        row(&reopened, &row_key)?
+                            .ok_or("index DDL row missing")?
+                            .row_version
+                    );
+                }
             }
-            (None, None, false, sequence) if sequence == before_ddl_sequence => false,
-            state => {
-                return Err(format!("recovered a partial index DDL publication: {state:?}").into());
-            }
-        };
-        assert_eq!(recovered_commit, boundary == "after_commit");
+        }
     }
     Ok(())
 }
