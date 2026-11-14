@@ -353,6 +353,14 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: focused two-boundary process-crash test passed. Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, release-profile validation (10 binaries and one query fixture), and delegated cgroup probe passed. The complete serial workspace suite passed in the delegated `systemd --user` service: 224 library tests, 169 commit tests, and 75 transaction tests, including confined SQL and process integration tests.
 - Scope: process exit checks atomic recovery for one table with one row, two owned key constraints, one self-referential FK, one CHECK, one additional index, one row policy, and REFERENCES/SELECT grants. It does not simulate power loss, cover incoming external-FK rejection at the crash boundary, or every owned-object combination.
 
+## DS-6: rejected DROP TABLE outcome survives process exit — verified
+
+- Contract: [schema DDL](../../specs/ddl-schema.md) requires an incoming foreign-key dependency to reject `DROP TABLE ... RESTRICT` without removing either table or the FK edge; failed DDL records a durable ABORTED outcome.
+- Regression: `process_exit_after_rejected_table_drop_preserves_dependencies` seeds the real catalog with a target table, source table, and FK dependency, then has a child process attempt the restricted drop and exit immediately after the expected error. Reopen verifies both tables, both constraint records, and the FK target edge remain, the outcome is ABORTED, the commit sequence did not advance, and startup validation passes.
+- Red/green: lifecycle coverage already demonstrated the rejection and durable abort; this increment adds the missing process-exit and reopen evidence for that failure path.
+- Verification: the focused child-process regression passed. Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, release-profile validation (10 engine binaries and one query fixture), and delegated cgroup probe passed. The complete serial workspace suite passed in the delegated `systemd --user` service: 224 library tests, 170 commit tests, and 75 transaction tests, including sandbox and process integration tests; no tests were ignored.
+- Scope: the child exits after `drop_table` returns the durable dependency error. It does not inject a process exit during the aborted-outcome write or simulate power loss.
+
 ## DS-3 / DS-7: CREATE TABLE process-crash recovery — verified
 
 - Contract: [schema DDL](../../specs/ddl-schema.md) requires a table definition and its typed columns/name indexes to publish with the audit event, durable outcome, and commit sequence as one transaction.

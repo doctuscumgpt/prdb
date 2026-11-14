@@ -26629,6 +26629,97 @@ fn process_crash_during_key_constraint_drop_recovers_all_or_none()
 }
 
 #[test]
+fn process_exit_after_rejected_table_drop_preserves_dependencies()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::TableLifecycleError;
+    use std::process::Command;
+
+    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_REJECTED_DROP_TABLE_DATABASE";
+    const ACTOR_ID: [u8; 16] = [0xb4; 16];
+    const DROP_INVOCATION_ID: [u8; 16] = [0xb2; 16];
+    const DROP_AUDIT_ID: [u8; 16] = [0xb3; 16];
+    const CHILD_EXIT_CODE: i32 = 89;
+
+    if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
+        let database = Database::open(std::path::PathBuf::from(database_path))?;
+        let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+        let mut drop_audit = identity_audit_event(DROP_AUDIT_ID[0], ACTOR_ID, id(81));
+        drop_audit.event_id = DROP_AUDIT_ID;
+        drop_audit.correlation_id = DROP_INVOCATION_ID;
+        match storage.drop_table(DROP_INVOCATION_ID, ACTOR_ID, id(81), 9_999, drop_audit) {
+            Err(TableLifecycleError::Commit(CommitError::TableHasDependencies)) => {
+                std::process::exit(CHILD_EXIT_CODE);
+            }
+            result => {
+                return Err(format!(
+                    "expected external foreign-key RESTRICT after restart, received {result:?}"
+                )
+                .into());
+            }
+        }
+    }
+
+    let fixture = Fixture::new();
+    let database_path = fixture.path();
+    let database = initialize(&database_path)?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let admin_role = builtin_owner_id();
+    let mut setup_writes = foreign_key_catalog_writes(true, true);
+    setup_writes.extend([
+        principal_write_with_name(ACTOR_ID, 1, 1, "rejected_drop_process_admin"),
+        object_write_with_name(ACTOR_ID, 8, "rejected_drop_process_admin"),
+        membership_write(ACTOR_ID, admin_role),
+        dependency_write(ACTOR_ID, admin_role, 5),
+    ]);
+    let mut setup_audit = identity_audit_event(0xb0, admin_role, id(80));
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0xb1), admin_role, 9_999, &setup_writes, &[setup_audit])?;
+    let before_drop_sequence = commit_sequence(&database)?;
+    drop(storage);
+    drop(database);
+
+    let child_status = Command::new(std::env::current_exe()?)
+        .arg("--exact")
+        .arg("process_exit_after_rejected_table_drop_preserves_dependencies")
+        .arg("--nocapture")
+        .env(CHILD_DATABASE_ENV, &database_path)
+        .status()?;
+    assert_eq!(
+        child_status.code(),
+        Some(CHILD_EXIT_CODE),
+        "restricted DROP TABLE child did not exit after durable rejection: {child_status}"
+    );
+
+    let reopened = Database::open(&database_path)?;
+    let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+    assert_eq!(commit_sequence(&reopened)?, before_drop_sequence);
+    assert_eq!(
+        lookup_outcome(&reopened, DROP_INVOCATION_ID, ACTOR_ID, 1)?
+            .ok_or("missing rejected DROP TABLE outcome after process exit")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    let read = reopened.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    for key in [
+        id_catalog_key(5, id(81)),
+        id_catalog_key(5, id(82)),
+        id_catalog_key(8, id(85)),
+        id_catalog_key(8, id(86)),
+        dependency_write(id(86), id(85), 3).key,
+    ] {
+        assert!(
+            catalog.get(key.as_slice())?.is_some(),
+            "process exit removed restricted-drop dependency {key:?}"
+        );
+    }
+    drop(catalog);
+    drop(read);
+    prdb_engine::startup::validate_persisted_records(&reopened)?;
+    Ok(())
+}
+
+#[test]
 fn process_crash_during_foreign_key_creation_recovers_all_or_none()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{
