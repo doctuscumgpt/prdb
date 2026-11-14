@@ -1297,6 +1297,7 @@ fn restore_requires_data_loss_ack_and_recovers_an_unreadable_newer_active_image(
     let mut session =
         prdb_engine::bootstrap::initialize(fixture.instance_dir(), "restore_admin", i64::MAX)
             .expect("initialize restore instance");
+    let admin_id = session.admin_user_id();
     let mut secret = session.take_secret().expect("bootstrap secret");
     use zeroize::Zeroize;
     secret.zeroize();
@@ -1304,35 +1305,42 @@ fn restore_requires_data_loss_ack_and_recovers_an_unreadable_newer_active_image(
 
     let active_path = fixture.instance_dir().join("storage.redb");
     let backup_path = fixture.0.join("restore-backup");
-    prdb_engine::offline_backup::create_verified_backup(fixture.instance_dir(), &backup_path)
-        .expect("create verified restore backup");
+    let backup =
+        prdb_engine::offline_backup::create_verified_backup(fixture.instance_dir(), &backup_path)
+            .expect("create verified restore backup");
     let expected_bytes = std::fs::read(&active_path).expect("read original active image");
     {
-        let instance =
-            StorageInstance::open(fixture.instance_dir()).expect("open newer generation");
-        let write = instance
-            .database()
-            .begin_write()
-            .expect("begin newer durable write");
-        let event = AuditEvent {
-            event_id: [0x51; 16],
-            actor_id: Some([0x10; 16]),
-            correlation_id: [0x52; 16],
-            occurred_at_us: 81,
-            action: AuditAction::Ddl,
-            result: AuditResult::Succeeded,
-            target_ids: vec![[0x30; 16]],
-        };
-        write
-            .open_table(AUDIT)
-            .expect("open audit table")
-            .insert(
-                event.event_id.as_slice(),
-                event.encode().expect("encode event").as_slice(),
+        let instance = StorageInstance::open(fixture.instance_dir()).expect("open active instance");
+        let storage = prdb_engine::storage_manager::StorageManager::new(
+            instance.database(),
+            std::time::Duration::from_millis(100),
+        )
+        .expect("create storage manager");
+        storage
+            .create_schema(
+                [0x51; 16],
+                admin_id,
+                "restore_newer_generation",
+                admin_id,
+                i64::MAX,
+                AuditEvent {
+                    event_id: [0x52; 16],
+                    actor_id: Some(admin_id),
+                    correlation_id: [0x51; 16],
+                    occurred_at_us: 81,
+                    action: AuditAction::Ddl,
+                    result: AuditResult::Succeeded,
+                    target_ids: Vec::new(),
+                },
             )
-            .expect("persist newer audit event");
-        write.commit().expect("commit newer durable write");
+            .expect("commit newer schema generation");
     }
+    let newer_report = {
+        let current = ReadOnlyDatabase::open(&active_path).expect("open newer image read-only");
+        prdb_engine::startup::validate_persisted_records_read_only(&current)
+            .expect("validate newer image")
+    };
+    assert!(newer_report.metadata.commit_sequence > backup.commit_sequence);
     let newer_generation = std::fs::read(&active_path).expect("read newer active image");
     assert_ne!(newer_generation, expected_bytes);
     let mut corrupted_bytes = newer_generation;
