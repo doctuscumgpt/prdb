@@ -1044,6 +1044,7 @@ fn storage_manager_creates_schema_atomically_for_privileged_actor()
             .status,
         OutcomeStatus::Committed
     );
+    drop(object);
     let transfer_invocation = id(0xc1);
     let mut transfer_audit = identity_audit_event(0xc2, actor, created.schema_id);
     transfer_audit.correlation_id = transfer_invocation;
@@ -1060,6 +1061,36 @@ fn storage_manager_creates_schema_atomically_for_privileged_actor()
         "schema ownership transfer failed: {transfer_result:?}"
     );
     assert_eq!(transfer_result?, 3);
+    let retained_object = decode_registered_envelope(
+        catalog
+            .get(object_key.as_slice())?
+            .ok_or("schema object disappeared from retained owner snapshot")?
+            .value(),
+    )?;
+    assert_eq!(
+        retained_object
+            .fields
+            .iter()
+            .find(|field| field.tag == 4)
+            .unwrap()
+            .payload,
+        actor,
+        "the pre-transfer reader must retain the old schema owner"
+    );
+    assert_eq!(
+        u64::from_le_bytes(
+            retained_object
+                .fields
+                .iter()
+                .find(|field| field.tag == 5)
+                .unwrap()
+                .payload
+                .as_slice()
+                .try_into()?
+        ),
+        1,
+        "the pre-transfer reader must retain the old object version"
+    );
     {
         let read = database.begin_read()?;
         let object = decode_registered_envelope(
@@ -1091,6 +1122,8 @@ fn storage_manager_creates_schema_atomically_for_privileged_actor()
             2
         );
     }
+    drop(catalog);
+    drop(read);
     let owned_table_invocation = id(0xc5);
     let mut owned_table_audit = identity_audit_event(0xc6, successor_owner, id(0xc7));
     owned_table_audit.correlation_id = owned_table_invocation;

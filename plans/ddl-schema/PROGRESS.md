@@ -339,6 +339,13 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: formatting, locked offline workspace build, and warning-denied all-target Clippy passed. The focused two-boundary process-crash test passed both directly and inside the delegated user service (`1 passed, 0 ignored`). A broader commit-target run from the desktop scope failed its 12 cgroup-dependent cases because the required delegation and fixture/runtime variables were not configured; that run is not accepted as suite evidence. The focused delegated test is the relevant result for this increment.
 - Scope: this adds recovery evidence for the implemented transfer path; it does not simulate power loss or validate every commit-target acceptance.
 
+## DS-5: schema owner transfer preserves pinned readers — verified
+
+- Regression: `storage_manager_creates_schema_atomically_for_privileged_actor` now retains a redb reader across ownership transfer. That reader continues to report the original owner and object version, while a reader opened after publication reports the successor role and incremented version.
+- Test-fixture correction: an initial run retained the original redb value guard beyond the assertion and triggered redb's freed-page reference assertion on a later fixture commit. The test now drops that guard while keeping the read transaction pinned, then passes the old-reader check and the full lifecycle.
+- Verification: the focused lifecycle test passed (`1 passed, 0 ignored`), formatting passed, warning-denied Clippy for the commit integration target passed, and `git diff --check` passed.
+- Implementation note: the storage behavior was already implemented; this increment adds explicit old-reader evidence.
+
 ## DS-6 / DS-7: DROP COLUMN process-crash recovery — verified
 
 - Contract: [schema DDL](../../specs/ddl-schema.md) requires the new table/column catalog, rewritten rows, audit event, outcome, and commit sequence to publish atomically.
