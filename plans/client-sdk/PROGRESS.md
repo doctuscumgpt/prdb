@@ -690,3 +690,9 @@
 - Contract: [client SDK](../../specs/client-sdk.md) and [schema DDL](../../specs/ddl-schema.md). The SQL helper represents storage-owned identity using the existing typed `tables.create` field.
 - Regression: the authenticated mock control session checks `generated_uuid_identity: true` in PREPARE arguments, and the CLI process test now uses an identity column while verifying the committed four-column result.
 - Verification: the authenticated AdminClient control-session regression passed and asserted the identity flag in the typed PREPARE request. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. Component-level SQL parser and storage boundaries are recorded in [schema DDL progress](../ddl-schema/PROGRESS.md).
+
+## SDK-5 follow-up: explicit-owner CREATE SCHEMA SQL — implemented
+
+- Contract: [client SDK](../../specs/client-sdk.md), [schema DDL](../../specs/ddl-schema.md), and [client SQL command](../../specs/client-sql-command.md). `AdminClient::execute_create_schema_sql` maps bounded local SQL to the existing authenticated `schemas.create` operation.
+- Regression: mock control-session coverage verifies UUID owner text becomes the same typed owner ID used by `create_schema`; the CLI process test verifies authenticated PREPARE/START and the committed schema ID.
+- Verification: the authenticated AdminClient schema lifecycle control-session test passed with SQL owner UUID mapped to the expected typed owner ID. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. Details are in [schema DDL progress](../ddl-schema/PROGRESS.md).

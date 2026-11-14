@@ -1151,7 +1151,11 @@ fn admin_client_creates_and_drops_schemas() {
         Duration::from_secs(3),
     )
     .unwrap();
-    let schema = client.create_schema("analytics", [1; 16]).unwrap();
+    let schema = client
+        .execute_create_schema_sql(
+            "CREATE SCHEMA analytics AUTHORIZATION '01010101-0101-0101-0101-010101010101';",
+        )
+        .unwrap();
     assert_eq!(schema.identity_id, [0xa3; 16]);
     client
         .rename_schema(schema.identity_id, "insights")

@@ -18,6 +18,12 @@ pub struct CreateTableSql {
     pub columns: Vec<AdminColumnDefinition>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateSchemaSql {
+    pub schema: String,
+    pub owner_id: [u8; 16],
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DdlSqlError {
     InvalidStatement,
@@ -116,6 +122,37 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
         table,
         columns,
     })
+}
+
+/// Parse the bounded SQL form `CREATE SCHEMA name AUTHORIZATION 'uuid'`.
+pub fn parse_create_schema(sql: &str) -> Result<CreateSchemaSql, DdlSqlError> {
+    if sql.is_empty() || sql.len() > MAX_DDL_BYTES || sql.as_bytes().contains(&0) {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    let mut parser = Parser {
+        tokens: tokenize(sql)?,
+        position: 0,
+    };
+    parser.word("create")?;
+    parser.word("schema")?;
+    let schema = parser.identifier()?;
+    parser.word("authorization")?;
+    let owner = match parser.peek() {
+        Some(Token::String(value)) => value.clone(),
+        _ => return Err(DdlSqlError::InvalidStatement),
+    };
+    parser.position += 1;
+    let owner_id = parse_uuid(&owner)?;
+    if owner_id == [0; 16] {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    if parser.peek() == Some(&Token::Semicolon) {
+        parser.position += 1;
+    }
+    if parser.peek().is_some() {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    Ok(CreateSchemaSql { schema, owner_id })
 }
 
 struct Parser {
@@ -503,6 +540,30 @@ mod tests {
             parsed.columns[2].scalar_type,
             ScalarType::Varchar { max_chars: 80 }
         );
+    }
+
+    #[test]
+    fn parses_create_schema_with_explicit_uuid_owner() {
+        let parsed = parse_create_schema(
+            "CREATE SCHEMA app AUTHORIZATION '00112233-4455-6677-8899-aabbccddeeff';",
+        )
+        .unwrap();
+        assert_eq!(parsed.schema, "app");
+        assert_eq!(
+            parsed.owner_id,
+            [
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff,
+            ]
+        );
+        for sql in [
+            "CREATE SCHEMA app",
+            "CREATE SCHEMA app AUTHORIZATION app_owner",
+            "CREATE SCHEMA app AUTHORIZATION '00000000-0000-0000-0000-000000000000'",
+            "CREATE SCHEMA app AUTHORIZATION '00112233445566778899aabbccddeeff'; CREATE SCHEMA b AUTHORIZATION '00112233445566778899aabbccddeeff'",
+        ] {
+            assert!(parse_create_schema(sql).is_err(), "accepted {sql}");
+        }
     }
 
     #[test]

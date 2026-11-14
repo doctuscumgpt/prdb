@@ -218,8 +218,11 @@ fn admin_sql(
     let sql_bytes = Zeroizing::new(read_sql_input(&sql_path).map_err(|error| error.to_string())?);
     let sql =
         std::str::from_utf8(&sql_bytes).map_err(|_| "SQL input must be valid UTF-8".to_owned())?;
-    let statement = prdb_engine::ddl_sql::parse_create_table(sql)
-        .map_err(|error| format!("invalid administrative SQL: {error:?}"))?;
+    let table_statement = prdb_engine::ddl_sql::parse_create_table(sql).ok();
+    let schema_statement = prdb_engine::ddl_sql::parse_create_schema(sql).ok();
+    if table_statement.is_none() && schema_statement.is_none() {
+        return Err("invalid administrative SQL: unsupported statement".to_owned());
+    }
 
     let mut administrator =
         read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
@@ -229,16 +232,28 @@ fn admin_sql(
         &mut administrator.token_secret,
     )
     .map_err(|error| error.to_string())?;
-    let result = client
-        .execute_create_table_sql(sql)
-        .map_err(|error| error.to_string())?;
-    println!(
-        "created table {} with {} columns (operation {}, commit {})",
-        lower_hex(&result.table_id),
-        statement.columns.len(),
-        lower_hex(&result.operation_id),
-        result.commit_sequence
-    );
+    if let Some(statement) = table_statement {
+        let result = client
+            .execute_create_table_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "created table {} with {} columns (operation {}, commit {})",
+            lower_hex(&result.table_id),
+            statement.columns.len(),
+            lower_hex(&result.operation_id),
+            result.commit_sequence
+        );
+    } else {
+        let result = client
+            .execute_create_schema_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "created schema {} (operation {}, commit {})",
+            lower_hex(&result.identity_id),
+            lower_hex(&result.operation_id),
+            result.commit_sequence
+        );
+    }
     Ok(())
 }
 

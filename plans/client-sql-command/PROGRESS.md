@@ -135,3 +135,9 @@
 - Contract: [client SQL command](../../specs/client-sql-command.md), [client SDK](../../specs/client-sdk.md), and [schema DDL](../../specs/ddl-schema.md). Identity remains a typed control operation and does not alter the confined query path.
 - Regression: the CLI process test submits `UUID GENERATED ALWAYS AS IDENTITY`, asserts the typed request flag, and receives a committed four-column table result.
 - Verification: both `admin-sql` process tests passed, including authenticated typed identity submission and pre-auth rejection of unsupported SQL. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. Parser and AdminClient coverage is recorded in [schema DDL progress](../ddl-schema/PROGRESS.md).
+
+## Administrative SQL CLI: explicit-owner CREATE SCHEMA — implemented
+
+- Contract: [client SQL command](../../specs/client-sql-command.md), [client SDK](../../specs/client-sdk.md), and [schema DDL](../../specs/ddl-schema.md). `admin-sql` accepts one bounded `CREATE SCHEMA name AUTHORIZATION 'uuid'` statement and forwards only `schemas.create` over authenticated control mode.
+- Regression: process coverage authenticates, verifies the typed schema name and owner ID in PREPARE, completes START, and checks successful CLI output. Unsupported SQL remains rejected before credential access/network.
+- Verification: all three `admin-sql` process tests passed, including explicit-owner schema creation and rejection before network. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. Parser and AdminClient evidence is in [schema DDL progress](../ddl-schema/PROGRESS.md).

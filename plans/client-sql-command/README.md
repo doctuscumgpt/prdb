@@ -37,4 +37,4 @@ For each SQLCLI increment record the spec sections, observed failing assertion, 
 
 ## Separate Administrative DDL Command
 
-`prdb-client admin-sql` is a distinct control-mode command for the bounded administrative CREATE TABLE SQL subset. It reuses the bounded local SQL file reader and typed `AdminClient` control operation. It is not a SQLCLI run-sql feature, does not use an invocation package, and does not send SQL to the gateway. Track its acceptance in this component's `PROGRESS.md` while broader DDL syntax grows under the schema DDL plan.
+`prdb-client admin-sql` is a distinct control-mode command for bounded administrative CREATE SCHEMA and CREATE TABLE SQL. It reuses the bounded local SQL file reader and typed `AdminClient` control operations. It is not a SQLCLI run-sql feature, does not use an invocation package, and does not send SQL to the gateway. Track its acceptance in this component's `PROGRESS.md` while broader DDL syntax grows under the schema DDL plan.

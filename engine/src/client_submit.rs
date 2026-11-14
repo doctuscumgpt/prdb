@@ -2718,6 +2718,17 @@ impl AdminClient {
         self.create_table(schema.schema_id, &statement.table, &statement.columns)
     }
 
+    /// Execute bounded CREATE SCHEMA SQL with an explicit UUID owner through
+    /// the authenticated administrative control channel.
+    pub fn execute_create_schema_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminIdentityResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_create_schema(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        self.create_schema(&statement.schema, statement.owner_id)
+    }
+
     pub fn add_column(
         &mut self,
         table_id: [u8; 16],
