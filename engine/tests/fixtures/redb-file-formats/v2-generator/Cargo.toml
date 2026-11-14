@@ -1,0 +1,9 @@
+[package]
+name = "prdb-redb-v2-fixture"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+redb = "=2.6.4"
+
+[workspace]

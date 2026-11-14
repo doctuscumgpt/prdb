@@ -1010,3 +1010,10 @@
 - Cause: when the staged INSERT won the barrier race, cleanup used drop invocation ID `0xd5` with an audit event whose helper-default correlation ID was `0xd7`. The drop API correctly rejected the mismatched event.
 - Fix: the race-winning cleanup branch now sets the audit correlation ID to the actual drop invocation ID before calling `drop_check_constraint`.
 - Verification: default-parallel `cargo test --locked --test commit` passed (129 passed, 3 cgroup-dependent ignored), followed by `cargo test --workspace --locked`, which passed across all targets. Rust formatting passed; warning-denied workspace Clippy is recorded with this fix's handoff.
+
+## SM-1 / CL-4 redb physical format v2 fixture — verified slice
+
+- Added an archived two-entry physical redb-v2 fixture generated and independently checked by a separate, locked redb 2.6.4 crate. Its source and reproduction steps are in [`redb-file-formats`](../../engine/tests/fixtures/redb-file-formats/README.md).
+- Regression confirms pinned redb 4.4.0 read-only open returns `UpgradeRequired(2)` and leaves the fixture bytes unchanged. A disposable copy was upgraded with redb 2.6.4 `Database::upgrade()`, then opened read/write and read-only by redb 4.4.0 with both original table values intact.
+- Verification: the focused `bootstrap_binary` regression passed. The redb 2.6.4 generator verified and recreated the fixture byte-for-byte; its `Database::upgrade()` converted a disposable copy, which redb 4.4.0 then recovered read/write and reopened read-only with both values intact. Formatting, locked workspace build, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed; sandbox and process tests were enabled and none were ignored. `git diff --check` passed.
+- Remaining: this is a small physical-format fixture, not a populated PRDB file or a supported operator upgrade command. Add application-data fixtures and an offline workflow before claiming redb-format upgrade support.

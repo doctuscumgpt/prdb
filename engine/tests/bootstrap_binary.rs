@@ -593,6 +593,30 @@ fn unsupported_catalog_versions_are_rejected_before_derived_index_rebuild() {
 }
 
 #[test]
+fn pinned_redb_rejects_file_format_v2_read_only_without_changing_the_fixture() {
+    let fixture = Fixture::new();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/redb-file-formats/redb-2.6.4-v2.redb");
+    let database_path = fixture.0.join("redb-v2.redb");
+    std::fs::copy(source, &database_path).expect("copy archived redb v2 fixture");
+    let before = std::fs::read(&database_path).expect("read original v2 fixture bytes");
+
+    let open_error = match ReadOnlyDatabase::open(&database_path) {
+        Ok(_) => panic!("redb 4.4 must reject the old physical file format"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(open_error, redb::DatabaseError::UpgradeRequired(2)),
+        "unexpected physical-format compatibility result: {open_error:?}"
+    );
+    assert_eq!(
+        std::fs::read(&database_path).expect("read v2 fixture after rejected open"),
+        before,
+        "read-only rejection must leave the unsupported file unchanged"
+    );
+}
+
+#[test]
 fn v1_source_validator_checks_legacy_ready_images_without_admitting_them() {
     let fixture = Fixture::new();
     let mut session =
