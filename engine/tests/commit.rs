@@ -7866,6 +7866,7 @@ fn storage_manager_drops_foreign_key_and_advances_both_table_epochs()
     let invocation_id = id(0xcf);
     let mut audit = identity_audit_event(0xd0, actor, id(86));
     audit.correlation_id = invocation_id;
+    let pinned_reader = database.begin_read()?;
     assert_eq!(
         storage.drop_foreign_key(invocation_id, actor, id(86), 9_999, audit)?,
         2
@@ -7890,6 +7891,22 @@ fn storage_manager_drops_foreign_key_and_advances_both_table_epochs()
     ));
     let read = database.begin_read()?;
     let catalog = read.open_table(CATALOG)?;
+    assert_eq!(
+        prdb_engine::catalog_index::scan_constraint_ids_for_table(&pinned_reader, id(82), 5)?,
+        vec![id(86)]
+    );
+    assert!(
+        prdb_engine::catalog_index::scan_constraint_ids_for_table(&read, id(82), 5)?.is_empty()
+    );
+    let pinned_catalog = pinned_reader.open_table(CATALOG)?;
+    for key in [
+        id_catalog_key(8, id(86)),
+        id_catalog_key(2, id(86)),
+        dependency_write(id(86), id(85), 3).key,
+    ] {
+        assert!(pinned_catalog.get(key.as_slice())?.is_some());
+    }
+    drop(pinned_catalog);
     for key in [
         id_catalog_key(8, id(86)),
         id_catalog_key(2, id(86)),

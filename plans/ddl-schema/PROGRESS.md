@@ -184,6 +184,13 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: the focused real-redb FK authority regression passed in the configured Nix shell.
 - Remaining: separate supervisor/gateway process integration and broader DDL acceptance evidence remain open.
 
+## DS-5 / DS-7: FOREIGN KEY removal preserves reader snapshots — verified
+
+- Contract: [schema DDL](../../specs/ddl-schema.md) requires a reader pinned before FK removal to retain the relationship, object, and target-dependency records; readers opened after publication see the complete removal.
+- Regression: `storage_manager_drops_foreign_key_and_advances_both_table_epochs` now keeps a real redb snapshot across `drop_foreign_key`. The pinned reader retains the FK in the source table's constraint index and all three catalog records, while a fresh reader sees no constraint or records.
+- Verification: the focused real-redb FK lifecycle test passed (`1 passed, 0 ignored`). Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, sandbox-query fixture, and release-profile validation (10 binaries and one query fixture) passed. The full serial delegated-cgroup workspace suite passed with 224 library tests, 164 commit tests, and 75 transaction tests, plus all other integration suites; no tests were ignored. `git diff --check` passed.
+- Scope: covers one FK over the existing fixture tables; it does not simulate process crash or power loss.
+
 ## DS-5: role-owned table authority follows current membership — verified
 
 - Behavior: a role member can use owner-derived table DDL while membership is active, then loses that authority after an administrator revokes the membership.
