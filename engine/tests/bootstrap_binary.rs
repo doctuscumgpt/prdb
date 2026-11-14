@@ -5,7 +5,7 @@ use prdb_engine::catalog::{
 };
 use prdb_engine::client_credentials::read_client_credentials;
 use prdb_engine::metadata::EngineMetadata;
-use prdb_engine::schema::{AUDIT, CATALOG, ENGINE_META, POLICIES, ROWS};
+use prdb_engine::schema::{AUDIT, CATALOG, ENGINE_META, POLICIES, ROWS, STATS};
 use prdb_engine::startup::StartupError;
 use redb::{
     Database, ReadOnlyDatabase, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableHandle,
@@ -61,6 +61,69 @@ fn initialize_command(fixture: &Fixture, resume: bool) -> std::process::Output {
     command.output().expect("run prdb-init")
 }
 
+fn downgrade_ready_fixture_to_v1(database_path: &std::path::Path) -> EngineMetadata {
+    let database = Database::open(database_path).expect("open fixture for v1 conversion");
+    let mut metadata = {
+        let read = database.begin_read().expect("read fixture metadata");
+        let table = read.open_table(ENGINE_META).expect("open metadata table");
+        let encoded = table.get(&b"format"[..]).expect("read metadata").unwrap();
+        EngineMetadata::decode(encoded.value()).expect("decode fixture metadata")
+    };
+    metadata.catalog_version = 1;
+    let encoded_metadata = metadata.encode().expect("encode v1 metadata");
+    let mut database_key = 1u16.to_be_bytes().to_vec();
+    database_key.push(1);
+    database_key.extend_from_slice(&metadata.database_id);
+    let mut fields = {
+        let read = database.begin_read().expect("read fixture descriptor");
+        let table = read.open_table(CATALOG).expect("open catalog table");
+        decode_registered_envelope(
+            table
+                .get(database_key.as_slice())
+                .expect("read database record")
+                .unwrap()
+                .value(),
+        )
+        .expect("decode database record")
+        .fields
+    };
+    for field in &mut fields {
+        if field.tag == 2 {
+            field.payload = 1u32.to_le_bytes().to_vec();
+        }
+        if field.tag == 3 {
+            assert_eq!(
+                u32::from_le_bytes(field.payload[..4].try_into().unwrap()),
+                31
+            );
+            field.payload[..4].copy_from_slice(&30u32.to_le_bytes());
+            field.payload.truncate(4 + 30 * 20);
+        }
+    }
+    let encoded_database = encode_envelope(
+        &family_schema(1).expect("database family schema"),
+        &database_key,
+        &fields,
+    )
+    .expect("encode v1 database descriptor");
+    {
+        let write = database.begin_write().expect("begin v1 fixture conversion");
+        write
+            .open_table(CATALOG)
+            .expect("open fixture catalog")
+            .insert(database_key.as_slice(), encoded_database.as_slice())
+            .expect("write v1 database descriptor");
+        write
+            .open_table(ENGINE_META)
+            .expect("open fixture metadata")
+            .insert(&b"format"[..], &encoded_metadata[..])
+            .expect("write v1 metadata");
+        write.commit().expect("commit v1 fixture conversion");
+    }
+    drop(database);
+    metadata
+}
+
 #[test]
 fn init_help_lists_required_bootstrap_inputs_cleanly() {
     let output = Command::new(env!("CARGO_BIN_EXE_prdb-init"))
@@ -94,6 +157,7 @@ fn maintenance_help_lists_offline_audit_archival() {
     assert!(help.contains("backup --instance-dir PATH --output-dir PATH"));
     assert!(help.contains("backup-verify --backup-dir PATH"));
     assert!(help.contains("migration-backup --instance-dir PATH --output-dir PATH"));
+    assert!(help.contains("migration-apply --instance-dir PATH --backup-dir PATH"));
     assert!(help.contains("inspect --instance-dir PATH"));
     assert!(help.contains("migration-inspect --instance-dir PATH"));
     assert!(help.contains("migration-discard-stage --instance-dir PATH --backup-dir PATH"));
@@ -917,6 +981,132 @@ fn v1_source_validator_checks_legacy_ready_images_without_admitting_them() {
         StorageInstance::open(fixture.instance_dir()),
         Err(BootstrapError::Startup(StartupError::UnsupportedFormat))
     ));
+}
+
+#[test]
+fn migration_apply_requires_complete_history_ack_and_publishes_validated_v2() {
+    let fixture = Fixture::new();
+    let mut session = prdb_engine::bootstrap::initialize(
+        fixture.instance_dir(),
+        "migration_apply_admin",
+        i64::MAX,
+    )
+    .expect("initialize migration source");
+    let mut secret = session.take_secret().expect("bootstrap secret");
+    use zeroize::Zeroize;
+    secret.zeroize();
+    drop(session.acknowledge().expect("publish source READY"));
+
+    let source_path = fixture.instance_dir().join("storage.redb");
+    let metadata = downgrade_ready_fixture_to_v1(&source_path);
+    let backup_path = fixture.0.join("verified-v1-backup");
+    prdb_engine::offline_backup::create_verified_migration_backup(
+        fixture.instance_dir(),
+        &backup_path,
+    )
+    .expect("create verified v1 backup");
+    let history_path = fixture.0.join("identity-history.txt");
+    let history = prdb_engine::identity_history::IdentityHistory {
+        database_id: metadata.database_id,
+        commit_sequence: metadata.commit_sequence,
+        tombstone_ids: vec![[0xfe; 16]],
+    };
+    std::fs::write(
+        &history_path,
+        history.encode().expect("encode identity history"),
+    )
+    .expect("write identity history");
+    std::fs::set_permissions(&history_path, std::fs::Permissions::from_mode(0o600))
+        .expect("restrict identity history permissions");
+
+    let rejected = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-apply", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--backup-dir")
+        .arg(&backup_path)
+        .arg("--identity-history")
+        .arg(&history_path)
+        .output()
+        .expect("run migration without explicit complete-history acknowledgment");
+    assert!(!rejected.status.success());
+    assert!(!fixture.instance_dir().join(".prdb-migration.next").exists());
+
+    let interrupted_stage = fixture.instance_dir().join(".prdb-migration.next");
+    std::fs::copy(&source_path, &interrupted_stage).expect("copy v1 source into staging");
+    let interrupted_target = Database::open(&interrupted_stage).expect("open v1 staging copy");
+    prdb_engine::migration::upgrade_v1_staging_database(&interrupted_target, &history)
+        .expect("convert interrupted target before publication");
+    {
+        let write = interrupted_target
+            .begin_write()
+            .expect("begin target corruption fixture");
+        write
+            .open_table(STATS)
+            .expect("open statistics table")
+            .insert(&b"unexpected-migration-state"[..], &b"not-from-source"[..])
+            .expect("add data not present in the active source");
+        write.commit().expect("commit target-only change");
+    }
+    drop(interrupted_target);
+
+    let applied = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-apply", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--backup-dir")
+        .arg(&backup_path)
+        .arg("--identity-history")
+        .arg(&history_path)
+        .arg("--confirm-complete-identity-history")
+        .output()
+        .expect("run v1-to-v2 migration");
+    assert!(
+        applied.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&applied.stdout),
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    assert!(String::from_utf8_lossy(&applied.stdout).contains("migration=published"));
+
+    let active = StorageInstance::open(fixture.instance_dir()).expect("open migrated instance");
+    let active_report =
+        prdb_engine::startup::validate_persisted_records(active.database()).expect("validate v2");
+    assert_eq!(active_report.metadata.catalog_version, 2);
+    assert_eq!(active_report.metadata.database_id, metadata.database_id);
+    assert_eq!(
+        active_report.metadata.commit_sequence,
+        metadata.commit_sequence
+    );
+    let read = active
+        .database()
+        .begin_read()
+        .expect("read published stats");
+    assert!(
+        read.open_table(STATS)
+            .expect("open published stats")
+            .get(&b"unexpected-migration-state"[..])
+            .expect("check target-only state")
+            .is_none()
+    );
+    drop(read);
+    drop(active);
+
+    let retained = ReadOnlyDatabase::open(fixture.instance_dir().join(".prdb-migration.next"))
+        .expect("open retained v1 source");
+    let retained_report = prdb_engine::startup::validate_v1_migration_source_read_only(&retained)
+        .expect("validate retained source generation");
+    assert_eq!(retained_report.metadata.database_id, metadata.database_id);
+    assert_eq!(
+        retained_report.metadata.commit_sequence,
+        metadata.commit_sequence
+    );
+    drop(retained);
+    assert!(
+        prdb_engine::offline_backup::database_image_matches_backup(
+            fixture.instance_dir().join(".prdb-migration.next"),
+            &prdb_engine::offline_backup::verify_backup(&backup_path).expect("verify backup")
+        )
+        .expect("compare retained source with backup")
+    );
 }
 
 #[test]

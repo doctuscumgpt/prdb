@@ -31,13 +31,15 @@ fn print_help() {
          Verifies the backup manifest, file digests, and supported READY catalog.\n\
          prdb-maintain migration-backup --instance-dir PATH --output-dir PATH\n\
          Copies a v1 migration source under its exclusive lock and verifies it.\n\
+         prdb-maintain migration-apply --instance-dir PATH --backup-dir PATH --identity-history PATH --confirm-complete-identity-history\n\
+         Converts a verified v1 source and atomically publishes its v2 target.\n\
          prdb-maintain inspect --instance-dir PATH\n\
          Read-only READY validation and bounded engine metadata diagnostics.\n\
          prdb-maintain migration-inspect --instance-dir PATH [--backup-dir PATH]\n\
          Validates the active READY image and any private staged image.\n\
          prdb-maintain migration-discard-stage --instance-dir PATH --backup-dir PATH\n\
          Discards staging only when active bytes match the verified backup.\n\
-         Stop gateway and supervisor services before compact, audit-archive, backup, migration-backup, or migration-discard-stage."
+         Stop gateway and supervisor services before compact, audit-archive, backup, migration-backup, migration-apply, or migration-discard-stage."
     );
 }
 
@@ -53,7 +55,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut args = std::env::args_os().skip(1);
     let operation = args.next().ok_or(
-        "operation is required: compact, audit-archive, audit-verify, backup, backup-verify, migration-backup, inspect, migration-inspect, or migration-discard-stage",
+        "operation is required: compact, audit-archive, audit-verify, backup, backup-verify, migration-backup, migration-apply, inspect, migration-inspect, or migration-discard-stage",
     )?;
     if operation == "audit-verify" {
         if args.next().as_deref() != Some(std::ffi::OsStr::new("--archive")) {
@@ -130,6 +132,48 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>()
+        );
+        return Ok(());
+    }
+    if operation == "migration-apply" {
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--instance-dir")) {
+            return Err("--instance-dir PATH is required".into());
+        }
+        let instance_dir = PathBuf::from(args.next().ok_or("instance directory is required")?);
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--backup-dir")) {
+            return Err("--backup-dir PATH is required".into());
+        }
+        let backup_dir = PathBuf::from(args.next().ok_or("backup directory is required")?);
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--identity-history")) {
+            return Err("--identity-history PATH is required".into());
+        }
+        let history_path = PathBuf::from(args.next().ok_or("identity history path is required")?);
+        if args.next().as_deref()
+            != Some(std::ffi::OsStr::new("--confirm-complete-identity-history"))
+        {
+            return Err("--confirm-complete-identity-history is required".into());
+        }
+        if args.next().is_some() {
+            return Err("unexpected trailing arguments".into());
+        }
+        let report = prdb_engine::bootstrap::migrate_catalog_v1(
+            &instance_dir,
+            &backup_dir,
+            &history_path,
+            true,
+        )?;
+        println!(
+            "migration=published catalog_version={} database_id={} commit_sequence={} catalog_records={} rows={}",
+            report.metadata.catalog_version,
+            report
+                .metadata
+                .database_id
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+            report.metadata.commit_sequence,
+            report.catalog_records,
+            report.rows,
         );
         return Ok(());
     }
