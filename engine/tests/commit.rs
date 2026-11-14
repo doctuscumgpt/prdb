@@ -22601,13 +22601,22 @@ fn process_crash_during_authorized_index_changes_recovers_all_or_none()
             authenticated_actor_id: ACTOR_ID,
             schema_id: schema.schema_id,
             name: "index_crash_table".to_owned(),
-            columns: vec![TableColumnDefinition {
-                name: "value".to_owned(),
-                scalar_type: ScalarType::Integer,
-                nullable: false,
-                generated_uuid_identity: false,
-                default: None,
-            }],
+            columns: vec![
+                TableColumnDefinition {
+                    name: "value".to_owned(),
+                    scalar_type: ScalarType::Integer,
+                    nullable: false,
+                    generated_uuid_identity: false,
+                    default: None,
+                },
+                TableColumnDefinition {
+                    name: "alternate".to_owned(),
+                    scalar_type: ScalarType::Integer,
+                    nullable: false,
+                    generated_uuid_identity: false,
+                    default: None,
+                },
+            ],
             retention_deadline_us: i64::MAX,
             audit_event: table_audit,
         })?;
@@ -22621,12 +22630,12 @@ fn process_crash_during_authorized_index_changes_recovers_all_or_none()
         let row_payload = encode_tuple(
             &table_schema.columns,
             table_schema.schema_version,
-            &[Some(ScalarValue::Integer(7))],
+            &[Some(ScalarValue::Integer(7)), Some(ScalarValue::Integer(8))],
         )?;
         seed.stage_put(row, &row_payload)?;
         seed.commit()?;
         let operation = std::env::var(CHILD_OPERATION_ENV)?;
-        let prepared_index_id = if operation == "drop" {
+        let prepared_index_id = if operation == "drop" || operation == "rebuild" {
             let mut prepare_audit =
                 identity_audit_event(PREPARE_INDEX_AUDIT_ID[0], ACTOR_ID, table.table_id);
             prepare_audit.event_id = PREPARE_INDEX_AUDIT_ID;
@@ -22638,7 +22647,7 @@ fn process_crash_during_authorized_index_changes_recovers_all_or_none()
                         authenticated_actor_id: ACTOR_ID,
                         table_id: table.table_id,
                         name: "crash_index".to_owned(),
-                        column_ids: table.column_ids.clone(),
+                        column_ids: vec![table.column_ids[0]],
                         unique: false,
                         retention_deadline_us: i64::MAX,
                         audit_event: prepare_audit,
@@ -22652,10 +22661,11 @@ fn process_crash_during_authorized_index_changes_recovers_all_or_none()
         };
         let before_ddl_sequence = commit_sequence(&database)?;
         let metadata_path = database_path.with_extension("index-crash-metadata");
-        let mut metadata = Vec::with_capacity(104);
+        let mut metadata = Vec::with_capacity(120);
         metadata.extend_from_slice(&schema.schema_id);
         metadata.extend_from_slice(&table.table_id);
         metadata.extend_from_slice(&table.column_ids[0]);
+        metadata.extend_from_slice(&table.column_ids[1]);
         metadata.extend_from_slice(&ROW_ID);
         metadata.extend_from_slice(&table_schema.schema_version.to_le_bytes());
         metadata.extend_from_slice(&before_ddl_sequence.to_le_bytes());
@@ -22693,7 +22703,7 @@ fn process_crash_during_authorized_index_changes_recovers_all_or_none()
             exit_code: CHILD_EXIT_CODE,
         })?;
         let storage = StorageManager::new(&instrumented, Duration::from_millis(100))?;
-        let prepared_index_id: [u8; 16] = std::fs::read(&metadata_path)?[80..96].try_into()?;
+        let prepared_index_id: [u8; 16] = std::fs::read(&metadata_path)?[96..112].try_into()?;
         let operation = std::env::var(CHILD_OPERATION_ENV)?;
         let mut index_audit = identity_audit_event(INDEX_AUDIT_ID[0], ACTOR_ID, id(0xb2));
         index_audit.event_id = INDEX_AUDIT_ID;
@@ -22710,7 +22720,7 @@ fn process_crash_during_authorized_index_changes_recovers_all_or_none()
                 authenticated_actor_id: ACTOR_ID,
                 table_id: table.table_id,
                 name: "crash_index".to_owned(),
-                column_ids: table.column_ids,
+                column_ids: vec![table.column_ids[0]],
                 unique: false,
                 retention_deadline_us: i64::MAX,
                 audit_event: index_audit,
@@ -22722,7 +22732,7 @@ fn process_crash_during_authorized_index_changes_recovers_all_or_none()
                 .into());
             }
             result?;
-        } else {
+        } else if operation == "drop" {
             let result = storage.drop_index(prdb_engine::storage_manager::DropIndexRequest {
                 invocation_id: INDEX_INVOCATION_ID,
                 authenticated_actor_id: ACTOR_ID,
@@ -22737,11 +22747,28 @@ fn process_crash_during_authorized_index_changes_recovers_all_or_none()
                 .into());
             }
             result?;
+        } else {
+            let result = storage.rebuild_index(prdb_engine::storage_manager::RebuildIndexRequest {
+                invocation_id: INDEX_INVOCATION_ID,
+                authenticated_actor_id: ACTOR_ID,
+                index_id: prepared_index_id,
+                column_ids: vec![table.column_ids[1]],
+                unique: false,
+                retention_deadline_us: i64::MAX,
+                audit_event: index_audit,
+            });
+            if boundary == "write" {
+                return Err(format!(
+                    "index rebuild returned without injected backend-write exit: {result:?}"
+                )
+                .into());
+            }
+            result?;
         }
         std::process::exit(POST_COMMIT_EXIT_CODE);
     }
 
-    for operation in ["create", "drop"] {
+    for operation in ["create", "drop", "rebuild"] {
         for (boundary, expected_exit) in [
             ("write", CHILD_EXIT_CODE),
             ("after_commit", POST_COMMIT_EXIT_CODE),
@@ -22763,15 +22790,16 @@ fn process_crash_during_authorized_index_changes_recovers_all_or_none()
             );
 
             let metadata = std::fs::read(database_path.with_extension("index-crash-metadata"))?;
-            assert_eq!(metadata.len(), 104);
+            assert_eq!(metadata.len(), 120);
             let schema_id: [u8; 16] = metadata[0..16].try_into()?;
             let table_id: [u8; 16] = metadata[16..32].try_into()?;
             let column_id: [u8; 16] = metadata[32..48].try_into()?;
-            let row_id: [u8; 16] = metadata[48..64].try_into()?;
-            let schema_version = u64::from_le_bytes(metadata[64..72].try_into()?);
-            let before_ddl_sequence = u64::from_le_bytes(metadata[72..80].try_into()?);
-            let prepared_index_id: [u8; 16] = metadata[80..96].try_into()?;
-            let before_table_epoch = u64::from_le_bytes(metadata[96..104].try_into()?);
+            let alternate_column_id: [u8; 16] = metadata[48..64].try_into()?;
+            let row_id: [u8; 16] = metadata[64..80].try_into()?;
+            let schema_version = u64::from_le_bytes(metadata[80..88].try_into()?);
+            let before_ddl_sequence = u64::from_le_bytes(metadata[88..96].try_into()?);
+            let prepared_index_id: [u8; 16] = metadata[96..112].try_into()?;
+            let before_table_epoch = u64::from_le_bytes(metadata[112..120].try_into()?);
             let reopened = Database::open(&database_path)?;
             let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
             let read = reopened.begin_read()?;
@@ -22790,18 +22818,26 @@ fn process_crash_during_authorized_index_changes_recovers_all_or_none()
             assert_eq!(
                 row(&reopened, &row_key)?.unwrap().payload,
                 encode_tuple(
-                    &[ColumnSchema {
-                        scalar_type: ScalarType::Integer,
-                        nullable: false
-                    }],
+                    &[
+                        ColumnSchema {
+                            scalar_type: ScalarType::Integer,
+                            nullable: false,
+                        },
+                        ColumnSchema {
+                            scalar_type: ScalarType::Integer,
+                            nullable: false,
+                        },
+                    ],
                     schema_version,
-                    &[Some(ScalarValue::Integer(7))],
+                    &[Some(ScalarValue::Integer(7)), Some(ScalarValue::Integer(8)),],
                 )?
             );
 
             let committed = boundary == "after_commit";
             let should_index_exist = if operation == "create" {
                 committed
+            } else if operation == "rebuild" {
+                true
             } else {
                 !committed
             };
@@ -22836,24 +22872,41 @@ fn process_crash_during_authorized_index_changes_recovers_all_or_none()
 
             let index_id = published_index.unwrap_or(prepared_index_id);
             if index_id != [0; 16] {
+                let indexed_column_id = if operation == "rebuild" && committed {
+                    alternate_column_id
+                } else {
+                    column_id
+                };
                 let index_key = prdb_engine::index_key::derive_index_key(
                     index_id,
                     row_id,
                     schema_version,
-                    &[column_id],
-                    &[ColumnSchema {
-                        scalar_type: ScalarType::Integer,
-                        nullable: false,
-                    }],
-                    &encode_tuple(
-                        &[ColumnSchema {
+                    &[column_id, alternate_column_id],
+                    &[
+                        ColumnSchema {
                             scalar_type: ScalarType::Integer,
                             nullable: false,
-                        }],
+                        },
+                        ColumnSchema {
+                            scalar_type: ScalarType::Integer,
+                            nullable: false,
+                        },
+                    ],
+                    &encode_tuple(
+                        &[
+                            ColumnSchema {
+                                scalar_type: ScalarType::Integer,
+                                nullable: false,
+                            },
+                            ColumnSchema {
+                                scalar_type: ScalarType::Integer,
+                                nullable: false,
+                            },
+                        ],
                         schema_version,
-                        &[Some(ScalarValue::Integer(7))],
+                        &[Some(ScalarValue::Integer(7)), Some(ScalarValue::Integer(8))],
                     )?,
-                    &[column_id],
+                    &[indexed_column_id],
                 )?;
                 let locator = read
                     .open_table(schema::INDEXES)?
@@ -22892,6 +22945,51 @@ fn process_crash_during_authorized_index_changes_recovers_all_or_none()
                             .ok_or("index DDL row missing")?
                             .row_version
                     );
+                }
+                if operation == "rebuild" {
+                    let old_key = prdb_engine::index_key::derive_index_key(
+                        index_id,
+                        row_id,
+                        schema_version,
+                        &[column_id, alternate_column_id],
+                        &[
+                            ColumnSchema {
+                                scalar_type: ScalarType::Integer,
+                                nullable: false,
+                            },
+                            ColumnSchema {
+                                scalar_type: ScalarType::Integer,
+                                nullable: false,
+                            },
+                        ],
+                        &encode_tuple(
+                            &[
+                                ColumnSchema {
+                                    scalar_type: ScalarType::Integer,
+                                    nullable: false,
+                                },
+                                ColumnSchema {
+                                    scalar_type: ScalarType::Integer,
+                                    nullable: false,
+                                },
+                            ],
+                            schema_version,
+                            &[Some(ScalarValue::Integer(7)), Some(ScalarValue::Integer(8))],
+                        )?,
+                        &[column_id],
+                    )?;
+                    let old_locator_exists = read
+                        .open_table(schema::INDEXES)?
+                        .get(old_key.key.as_slice())?
+                        .is_some();
+                    let mut old_reverse_key = row_key.to_vec();
+                    old_reverse_key.extend_from_slice(&old_key.key[..old_key.key.len() - 16]);
+                    let old_reverse_exists = read
+                        .open_table(schema::ROW_INDEXES)?
+                        .get(old_reverse_key.as_slice())?
+                        .is_some();
+                    assert_eq!(old_locator_exists, !committed);
+                    assert_eq!(old_reverse_exists, !committed);
                 }
             }
         }
