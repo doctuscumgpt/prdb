@@ -16973,6 +16973,360 @@ fn identity_ddl_refuses_to_reuse_a_tombstoned_id() -> Result<(), Box<dyn std::er
 }
 
 #[test]
+fn identity_drop_aborts_a_role_authorized_staged_update() -> Result<(), Box<dyn std::error::Error>>
+{
+    use prdb_engine::authorization::{Effect, Expr, Operation, Subject};
+    use prdb_engine::storage_manager::{
+        CreatePolicyRequest, CreateTableRequest, ObjectGrantPrivilege, ObjectGrantTarget,
+        PolicyKind, SetObjectGrantRequest, TableColumnDefinition,
+    };
+    use prdb_engine::transaction::TransactionError;
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let admin_user = id(0xb0);
+    let role_manager = id(0xb1);
+    let token_id = id(0xb3);
+    let token_secret = [0xb4; 32];
+    let admin_role = builtin_owner_id();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_micros() as i64;
+    let mut setup_audit = identity_audit_event(0xb5, admin_role, admin_user);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(
+        id(0xb5),
+        admin_role,
+        now + 3_600_000_000,
+        &[
+            principal_write_with_name(admin_user, 1, 1, "drop_writer_admin"),
+            object_write_with_name(admin_user, 8, "drop_writer_admin"),
+            principal_write_with_name(role_manager, 1, 1, "drop_writer_role_manager"),
+            object_write_with_name(role_manager, 8, "drop_writer_role_manager"),
+            grant_write(role_manager, id(0x33), 13, 1, id(0x33), admin_role),
+            dependency_write(role_manager, id(0x33), 5),
+            membership_write_with_grantor(admin_user, admin_role, admin_role),
+            dependency_write(admin_user, admin_role, 5),
+            credential_verifier_write(id(0xb2), admin_user, &[0xb2; 32], 1, i64::MAX, None, 1),
+        ],
+        &[setup_audit],
+    )?;
+    let mut create_user_audit = identity_audit_event(0xb6, admin_user, admin_user);
+    create_user_audit.correlation_id = id(0xb6);
+    let created_user = storage
+        .create_user(
+            id(0xb6),
+            admin_user,
+            "drop_writer",
+            now + 3_600_000_000,
+            create_user_audit,
+        )
+        .map_err(|error| format!("create user for stale drop writer: {error:?}"))?;
+    let writer_user = created_user.user_id;
+    let mut create_role_audit = identity_audit_event(0xb7, admin_user, admin_user);
+    create_role_audit.correlation_id = id(0xb7);
+    let created_role = storage
+        .create_role(
+            id(0xb7),
+            admin_user,
+            "drop_writer_role",
+            now + 3_600_000_000,
+            create_role_audit,
+        )
+        .map_err(|error| format!("create role for stale drop writer: {error:?}"))?;
+    let writer_role = created_role.role_id;
+    assert_ne!(writer_role, admin_role);
+    let mut token_audit = identity_audit_event(0xb8, admin_user, writer_user);
+    token_audit.action = AuditAction::TokenLifecycle;
+    storage
+        .commit_catalog_and_audit(
+            id(0xb8),
+            admin_user,
+            now + 3_600_000_000,
+            &[credential_verifier_write(
+                token_id,
+                writer_user,
+                &token_secret,
+                now - 1_000_000,
+                now + 3_600_000_000,
+                None,
+                1,
+            )],
+            &[token_audit],
+        )
+        .map_err(|error| format!("issue token for stale drop writer: {error:?}"))?;
+    let mut membership_audit = identity_audit_event(0xb9, role_manager, writer_user);
+    membership_audit.correlation_id = id(0xb9);
+    membership_audit.action = AuditAction::AuthorityChange;
+    storage
+        .set_role_membership(
+            id(0xb9),
+            role_manager,
+            prdb_engine::storage_manager::RoleMembershipChange {
+                member_id: writer_user,
+                role_id: writer_role,
+                grant: true,
+            },
+            now + 3_600_000_000,
+            membership_audit,
+        )
+        .map_err(|error| format!("grant role membership for stale drop writer: {error:?}"))?;
+
+    let mut schema_audit = identity_audit_event(0xba, admin_user, admin_user);
+    schema_audit.correlation_id = id(0xba);
+    schema_audit.action = AuditAction::Ddl;
+    let schema = storage
+        .create_schema(
+            id(0xba),
+            admin_user,
+            "drop_writer_schema",
+            admin_user,
+            now + 3_600_000_000,
+            schema_audit,
+        )
+        .map_err(|error| format!("create schema for stale drop writer: {error:?}"))?;
+    let mut table_audit = identity_audit_event(0xbb, admin_user, schema.schema_id);
+    table_audit.correlation_id = id(0xbb);
+    table_audit.action = AuditAction::Ddl;
+    let table = storage
+        .create_table(CreateTableRequest {
+            invocation_id: id(0xbb),
+            authenticated_actor_id: admin_user,
+            schema_id: schema.schema_id,
+            name: "drop_writer_table".to_owned(),
+            columns: vec![TableColumnDefinition {
+                name: "value".to_owned(),
+                scalar_type: ScalarType::Bytea,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            }],
+            retention_deadline_us: now + 3_600_000_000,
+            audit_event: table_audit,
+        })
+        .map_err(|error| format!("create table for stale drop writer: {error:?}"))?;
+    let column_id = table.column_ids[0];
+    for (offset, (object_id, privilege, target)) in [
+        (
+            schema.schema_id,
+            ObjectGrantPrivilege::Usage,
+            ObjectGrantTarget::Object,
+        ),
+        (
+            table.table_id,
+            ObjectGrantPrivilege::Select,
+            ObjectGrantTarget::Object,
+        ),
+        (
+            table.table_id,
+            ObjectGrantPrivilege::Update,
+            ObjectGrantTarget::Object,
+        ),
+        (
+            table.table_id,
+            ObjectGrantPrivilege::Select,
+            ObjectGrantTarget::Column(column_id),
+        ),
+        (
+            table.table_id,
+            ObjectGrantPrivilege::Update,
+            ObjectGrantTarget::Column(column_id),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let invocation_id = id(0xbc + offset as u8);
+        let mut grant_audit = identity_audit_event(0xbc + offset as u8, admin_user, object_id);
+        grant_audit.correlation_id = invocation_id;
+        grant_audit.action = AuditAction::AuthorityChange;
+        storage
+            .set_object_grant(SetObjectGrantRequest {
+                invocation_id,
+                authenticated_actor_id: admin_user,
+                grantee_id: writer_role,
+                object_id,
+                privilege,
+                target,
+                grant: true,
+                retention_deadline_us: now + 3_600_000_000,
+                audit_event: grant_audit,
+            })
+            .map_err(|error| format!("grant role table access for stale drop writer: {error:?}"))?;
+    }
+    let allow = Some(Expr::Literal(Some(ScalarValue::Boolean(true))));
+    for (offset, (name, kind, operation, columns)) in [
+        (
+            "drop_writer_select_row",
+            PolicyKind::Row,
+            Operation::Select,
+            Vec::new(),
+        ),
+        (
+            "drop_writer_update_row",
+            PolicyKind::Row,
+            Operation::Update,
+            Vec::new(),
+        ),
+        (
+            "drop_writer_select_cell",
+            PolicyKind::Cell,
+            Operation::Select,
+            vec![column_id],
+        ),
+        (
+            "drop_writer_update_cell",
+            PolicyKind::Cell,
+            Operation::Update,
+            vec![column_id],
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let invocation_id = id(0xc1 + offset as u8);
+        let mut policy_audit =
+            identity_audit_event(0xc1 + offset as u8, admin_user, table.table_id);
+        policy_audit.correlation_id = invocation_id;
+        policy_audit.action = AuditAction::Ddl;
+        storage
+            .create_policy(CreatePolicyRequest {
+                invocation_id,
+                authenticated_actor_id: admin_user,
+                table_id: table.table_id,
+                name: name.to_owned(),
+                kind,
+                operation,
+                effect: Effect::Allow,
+                recipients: vec![Subject::Role(writer_role)],
+                target_column_ids: columns,
+                using_expression: matches!(operation, Operation::Select | Operation::Update)
+                    .then(|| allow.clone())
+                    .flatten(),
+                with_check_expression: (operation == Operation::Update)
+                    .then(|| allow.clone())
+                    .flatten(),
+                retention_deadline_us: now + 3_600_000_000,
+                audit_event: policy_audit,
+            })
+            .map_err(|error| format!("create role policy for stale drop writer: {error:?}"))?;
+    }
+    let row_id = id(0xc5);
+    let row_key = table_row_key(table.table_id, row_id);
+    let columns = [ColumnSchema {
+        scalar_type: ScalarType::Bytea,
+        nullable: false,
+    }];
+    let original_value = ScalarValue::Bytea(b"before identity drop".to_vec());
+    commit_rows(
+        &database,
+        id(0xc6),
+        admin_user,
+        now + 3_600_000_000,
+        &[RowWrite {
+            key: row_key,
+            expected_version: None,
+            payload: Some(encode_tuple(&columns, 1, &[Some(original_value.clone())])?),
+        }],
+    )?;
+
+    let invocation_id = id(0xc7);
+    let (mut stale_writer, roles) = storage.begin_token_authenticated_invocation(
+        invocation_id,
+        token_id,
+        &token_secret,
+        now + 3_600_000_000,
+        4,
+        4096,
+    )?;
+    assert_eq!(roles.len(), 1);
+    assert!(roles.contains(&writer_role));
+    {
+        let mut executor = stale_writer.open_executor_metadata_connection();
+        let (relation, _) = executor
+            .resolve_relation("drop_writer_schema", "drop_writer_table")?
+            .ok_or("role-authorized relation was not visible")?;
+        let cursor = executor.open_relation_scan(&relation, &[column_id])?;
+        let page = executor.next_relation_scan_batch(&cursor, 4, 4096)?;
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(
+            page.rows[0].1,
+            vec![prdb_engine::authorization::SanitizedCell::Value(
+                original_value.clone()
+            )]
+        );
+        executor.stage_update(
+            &page.rows[0].0,
+            &[FieldPatch {
+                ordinal: 0,
+                value: Some(ScalarValue::Bytea(b"after identity drop".to_vec())),
+            }],
+        )?;
+    }
+
+    let mut revoke_membership_audit = identity_audit_event(0xc8, role_manager, writer_user);
+    revoke_membership_audit.correlation_id = id(0xc8);
+    revoke_membership_audit.action = AuditAction::AuthorityChange;
+    storage.set_role_membership(
+        id(0xc8),
+        role_manager,
+        prdb_engine::storage_manager::RoleMembershipChange {
+            member_id: writer_user,
+            role_id: writer_role,
+            grant: false,
+        },
+        now + 3_600_000_000,
+        revoke_membership_audit,
+    )?;
+    let mut drop_audit = identity_audit_event(0xc9, admin_user, writer_user);
+    drop_audit.correlation_id = id(0xc9);
+    drop_audit.action = AuditAction::Ddl;
+    storage.drop_identity(
+        id(0xc9),
+        admin_user,
+        writer_user,
+        now + 3_600_000_000,
+        drop_audit,
+    )?;
+    assert!(matches!(
+        stale_writer.commit(),
+        Err(TransactionError::Commit(CommitError::Conflict))
+    ));
+    assert_eq!(
+        decode_tuple(
+            &columns,
+            1,
+            &row(&database, &row_key)?
+                .ok_or("row disappeared after identity drop")?
+                .payload,
+        )?
+        .values,
+        [Some(original_value)],
+        "dropped identity's stale row update was published"
+    );
+    assert_eq!(
+        lookup_outcome(&database, invocation_id, writer_user, now)?
+            .ok_or("missing identity-drop stale writer outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    assert!(matches!(
+        storage.begin_token_authenticated_invocation(
+            id(0xca),
+            token_id,
+            &token_secret,
+            now + 3_600_000_000,
+            4,
+            4096,
+        ),
+        Err(TransactionError::AuthenticationFailed)
+    ));
+    assert_eq!(lookup_outcome(&database, id(0xca), writer_user, now)?, None);
+    Ok(())
+}
+
+#[test]
 fn identity_ddl_drops_unreferenced_user_and_revokes_tokens_atomically()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

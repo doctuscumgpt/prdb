@@ -190,3 +190,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Contract: rejected CHECK, unique-index, and foreign-key mutations return generic diagnostics that do not include the target row identity or attempted/conflicting value. Constraint success/failure may still reveal information; these checks cover diagnostic contents only.
 - Regression: `authorized_patch_checks_changed_cells_and_freezes_policy_dependencies` compares CHECK-failing updates on distinct rows and values. `unique_constraint_uses_its_backing_index_for_invocation_writes` compares conflicts for distinct unique values and rows. `catalog_foreign_keys_check_child_and_parent_mutations` compares missing parent references for distinct values and rows.
 - Remaining: global constraint success/failure may still reveal hidden key existence, as specified; broader hostile IPC sequences and timing inference remain open.
+
+## SM-5 / AU-6: identity drop aborts a role-authorized staged write — verified
+
+- Contract: dropping an identity revokes token admission and invalidates authorization state so an invocation admitted before the drop cannot publish its staged write.
+- Regression: `identity_drop_aborts_a_role_authorized_staged_update` creates a user and role, admits the user by token through that role, scans and stages a real row update under role grants and row/cell policies, revokes membership, and drops the user. The stale invocation conflicts and records ABORTED, the original row remains, the drop commits, and later use of the dropped user's token fails without recording an invocation outcome.
+- Implementation: no production change was needed; membership and identity guards reject the stale finalization, while identity drop revokes the token atomically.
+- Verification: focused regression passed. Locked workspace build, rustfmt check, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed in the pinned Rust/Cargo 1.95.0 Nix shell. The suite reported 233 engine unit tests, 173 commit integration tests, 75 transaction integration tests, all remaining workspace targets green, and zero ignored tests. The fixture includes a usable login-enabled administrator credential required by final-admin validation.
+- Remaining: repeat races for identity and other authority-changing DDL, and broader concurrent schedules.
