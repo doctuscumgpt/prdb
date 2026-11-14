@@ -23099,7 +23099,8 @@ fn process_crash_during_table_rename_recovers_all_or_none() -> Result<(), Box<dy
                     i64::MAX,
                     rename_audit,
                 )
-                .map(|_| ()),
+                .map(|_| ())
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>),
             "column" => storage
                 .rename_column(
                     RENAME_INVOCATION_ID,
@@ -23110,7 +23111,19 @@ fn process_crash_during_table_rename_recovers_all_or_none() -> Result<(), Box<dy
                     i64::MAX,
                     rename_audit,
                 )
-                .map(|_| ()),
+                .map(|_| ())
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>),
+            "schema" => storage
+                .rename_schema(
+                    RENAME_INVOCATION_ID,
+                    ACTOR_ID,
+                    schema.schema_id,
+                    "after_rename",
+                    i64::MAX,
+                    rename_audit,
+                )
+                .map(|_| ())
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>),
             _ => return Err(format!("unknown rename crash operation {operation}").into()),
         };
         if boundary == "write" {
@@ -23123,7 +23136,7 @@ fn process_crash_during_table_rename_recovers_all_or_none() -> Result<(), Box<dy
         std::process::exit(POST_COMMIT_EXIT_CODE);
     }
 
-    for operation in ["table", "column"] {
+    for operation in ["schema", "table", "column"] {
         for (boundary, expected_exit) in [
             ("write", CHILD_EXIT_CODE),
             ("after_commit", POST_COMMIT_EXIT_CODE),
@@ -23164,7 +23177,16 @@ fn process_crash_during_table_rename_recovers_all_or_none() -> Result<(), Box<dy
                 .get(&RENAME_AUDIT_ID[..])?
                 .is_some();
             let committed = boundary == "after_commit";
-            if operation == "table" {
+            if operation == "schema" {
+                assert_eq!(
+                    lookup_schema_id_by_name(&read, "rename_crash_schema")?,
+                    (!committed).then_some(schema_id)
+                );
+                assert_eq!(
+                    lookup_schema_id_by_name(&read, "after_rename")?,
+                    committed.then_some(schema_id)
+                );
+            } else if operation == "table" {
                 assert_eq!(
                     lookup_relation_id_by_name(&read, schema_id, "before_rename")?,
                     (!committed).then_some(table_id)
