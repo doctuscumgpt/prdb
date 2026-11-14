@@ -8434,11 +8434,13 @@ fn table_create_ddl_authority_guards(
     catalog_writes: &[CatalogWrite],
     audit_events: &[AuditEvent],
 ) -> Result<Vec<CatalogGuard>, CommitError> {
+    const MAX_TABLE_CREATE_CATALOG_WRITES: usize =
+        crate::tuple::MAX_COLUMNS * (crate::tuple::MAX_COLUMNS + 16) + 8;
     if principal_id == [0; 16] {
         return Err(CommitError::DdlAuthorizationDenied);
     }
     if catalog_writes.len() < 6
-        || catalog_writes.len() > crate::tuple::MAX_COLUMNS * 6 + 3
+        || catalog_writes.len() > MAX_TABLE_CREATE_CATALOG_WRITES
         || audit_events.is_empty()
         || audit_events.iter().any(|event| {
             event.actor_id != Some(principal_id)
@@ -8790,7 +8792,17 @@ fn table_create_ddl_authority_guards(
         )
         .map_err(|_| CommitError::InvalidCatalog)?;
     }
-    let key_constraint_count = constraint_writes.len();
+    let key_constraint_count = constraint_writes
+        .values()
+        .filter(|write| {
+            write
+                .payload
+                .as_deref()
+                .and_then(|bytes| catalog_field_u16(&write.key, bytes, 8, 2).ok())
+                .is_some_and(|kind| matches!(kind, 2 | 3))
+        })
+        .count();
+    let check_constraint_count = constraint_writes.len() - key_constraint_count;
     if key_constraint_count != index_writes.len() {
         return Err(CommitError::InvalidCatalog);
     }
@@ -8804,6 +8816,9 @@ fn table_create_ddl_authority_guards(
             .ok_or(CommitError::InvalidCatalog)?;
         validate_constraint_shape(&constraint_key, constraint_bytes)?;
         let kind = catalog_field_u16(&constraint_key, constraint_bytes, 8, 2)?;
+        if kind == 4 {
+            continue;
+        }
         if !matches!(kind, 2 | 3)
             || constraint_table_id(&constraint_key, constraint_bytes)? != table_id
         {
@@ -8915,11 +8930,155 @@ fn table_create_ddl_authority_guards(
     {
         return Err(CommitError::InvalidCatalog);
     }
+    let mut check_bindings = Vec::with_capacity(check_constraint_count);
+    for (&constraint_id, constraint_write) in &constraint_writes {
+        let constraint_key = id_catalog_key(8, constraint_id);
+        let constraint_bytes = constraint_write
+            .payload
+            .as_deref()
+            .ok_or(CommitError::InvalidCatalog)?;
+        let kind = catalog_field_u16(&constraint_key, constraint_bytes, 8, 2)?;
+        if kind != 4 {
+            continue;
+        }
+        validate_constraint_shape(&constraint_key, constraint_bytes)?;
+        if constraint_table_id(&constraint_key, constraint_bytes)? != table_id
+            || !catalog_id_list_field(&constraint_key, constraint_bytes, 8, 3)?.is_empty()
+            || !catalog_id_list_field(&constraint_key, constraint_bytes, 8, 6)?.is_empty()
+            || catalog_field_u16(&constraint_key, constraint_bytes, 8, 7)? != 0
+            || catalog_field_u16(&constraint_key, constraint_bytes, 8, 8)? != 0
+            || catalog_field_u16(&constraint_key, constraint_bytes, 8, 9)? != 0
+            || catalog_field_u16(&constraint_key, constraint_bytes, 8, 10)? != 1
+        {
+            return Err(CommitError::InvalidCatalog);
+        }
+        let expression_id: [u8; 16] = catalog_field_bytes(&constraint_key, constraint_bytes, 8, 4)?
+            .try_into()
+            .map_err(|_| CommitError::InvalidCatalog)?;
+        let expression_write = expression_writes
+            .get(&expression_id)
+            .ok_or(CommitError::InvalidCatalog)?;
+        let expression_key = id_catalog_key(7, expression_id);
+        let expression_bytes = expression_write
+            .payload
+            .as_deref()
+            .ok_or(CommitError::InvalidCatalog)?;
+        let expression = decode_catalog_expression_record(&decode_catalog_record(
+            &expression_key,
+            expression_bytes,
+        )?)
+        .map_err(|_| CommitError::InvalidCatalog)?;
+        let result_type_key = id_catalog_key(4, expression.result_type_id);
+        let result_type_bytes = catalog
+            .get(result_type_key.as_slice())
+            .map_err(storage_error)?
+            .map(|value| value.value().to_vec())
+            .ok_or(CommitError::InvalidCatalog)?;
+        let result_type_record = decode_catalog_record(&result_type_key, &result_type_bytes)?;
+        add_catalog_guard(
+            &mut guards,
+            result_type_key.clone(),
+            Some(result_type_bytes),
+        );
+        if expression.expression_id != expression_id
+            || expression.purpose != ExpressionPurpose::Check
+            || expression.result_parameters != [0; 8]
+            || decode_builtin_scalar_type(&result_type_record, &expression.result_parameters)
+                .map_err(|_| CommitError::InvalidCatalog)?
+                != crate::tuple::ScalarType::Boolean
+            || !is_row_local_expression(&expression.expression)
+            || !dependencies.contains(&(constraint_id, expression_id, 2))
+        {
+            return Err(CommitError::InvalidCatalog);
+        }
+        let dependency_ids = expression
+            .dependencies
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        if dependency_ids.len() != expression.dependencies.len()
+            || dependency_ids.iter().any(|column_id| {
+                !column_ids.contains(column_id)
+                    || !dependencies.contains(&(expression_id, *column_id, 2))
+            })
+            || dependencies
+                .iter()
+                .any(|(dependent, referenced, edge_kind)| {
+                    *dependent == expression_id
+                        && *edge_kind == 2
+                        && !dependency_ids.contains(referenced)
+                })
+        {
+            return Err(CommitError::InvalidCatalog);
+        }
+        validate_expression_binding(
+            &expression,
+            &column_schemas,
+            &ordered_column_ids,
+            expression.result_type_id,
+            crate::tuple::ScalarType::Boolean,
+        )
+        .map_err(|_| CommitError::InvalidCatalog)?;
+        let constraint_object_key = id_catalog_key(2, constraint_id);
+        let expression_object_key = id_catalog_key(2, expression_id);
+        let constraint_object = object_writes
+            .get(&constraint_id)
+            .and_then(|write| write.payload.as_deref())
+            .ok_or(CommitError::InvalidCatalog)?;
+        let expression_object = object_writes
+            .get(&expression_id)
+            .and_then(|write| write.payload.as_deref())
+            .ok_or(CommitError::InvalidCatalog)?;
+        for (key, bytes, object_id, kind, prefix) in [
+            (
+                &constraint_object_key,
+                constraint_object,
+                constraint_id,
+                6,
+                "check_constraint",
+            ),
+            (
+                &expression_object_key,
+                expression_object,
+                expression_id,
+                5,
+                "check_expression",
+            ),
+        ] {
+            let expected_name = format!(
+                "{prefix}_{}",
+                object_id
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            );
+            if catalog_field_u16(key, bytes, 2, 1)? != kind
+                || catalog_field_bytes(key, bytes, 2, 3)? != expected_name.as_bytes()
+                || catalog_field_bytes(key, bytes, 2, 4)? != principal_id
+                || catalog_field_u64(key, bytes, 2, 5)? != 1
+                || catalog_field_u16(key, bytes, 2, 6)? != 1
+            {
+                return Err(CommitError::InvalidCatalog);
+            }
+        }
+        check_bindings.push((constraint_id, expression_id, dependency_ids));
+    }
     if object_writes.len()
-        != column_ids.len() + default_bindings.len() + 1 + 2 * key_constraint_count
-        || expression_writes.len() != default_bindings.len()
+        != column_ids.len()
+            + default_bindings.len()
+            + 1
+            + 2 * key_constraint_count
+            + 2 * check_bindings.len()
+        || expression_writes.len() != default_bindings.len() + check_bindings.len()
         || dependencies.len()
-            != column_ids.len() + 1 + default_bindings.len() + key_constraint_count
+            != column_ids.len()
+                + 1
+                + default_bindings.len()
+                + key_constraint_count
+                + check_bindings
+                    .iter()
+                    .map(|(_, _, dependencies)| dependencies.len() + 1)
+                    .sum::<usize>()
         || default_bindings
             .iter()
             .any(|(expression_id, column_id, _, _, _)| {

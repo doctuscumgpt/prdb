@@ -18,6 +18,7 @@ pub struct CreateTableSql {
     pub columns: Vec<AdminColumnDefinition>,
     pub primary_key_columns: Option<Vec<String>>,
     pub unique_constraints: Vec<Vec<String>>,
+    pub check_constraints: Vec<CheckExpressionSql>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,41 +138,47 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
     let mut columns = Vec::new();
     let mut primary_key_columns = None;
     let mut unique_constraints = Vec::new();
+    let mut check_constraints = Vec::new();
     let mut saw_table_constraint = false;
     loop {
-        if parser.peek_word("primary") || parser.peek_word("unique") {
+        if parser.peek_word("primary") || parser.peek_word("unique") || parser.peek_word("check") {
             saw_table_constraint = true;
-            let kind = if parser.peek_word("primary") {
-                parser.word("primary")?;
-                parser.word("key")?;
-                2
+            if parser.peek_word("check") {
+                let expression = parser.check_constraint_expression()?;
+                check_constraints.push(expression);
             } else {
-                parser.word("unique")?;
-                3
-            };
-            parser.take(Token::LeftParen)?;
-            let mut names = vec![parser.identifier()?];
-            while parser.peek() == Some(&Token::Comma) {
-                parser.position += 1;
-                names.push(parser.identifier()?);
-            }
-            parser.take(Token::RightParen)?;
-            if names.len() > crate::tuple::MAX_COLUMNS
-                || names.iter().collect::<std::collections::HashSet<_>>().len() != names.len()
-            {
-                return Err(DdlSqlError::InvalidStatement);
-            }
-            if kind == 2 {
-                if primary_key_columns.replace(names).is_some() {
-                    return Err(DdlSqlError::InvalidStatement);
+                let kind = if parser.peek_word("primary") {
+                    parser.word("primary")?;
+                    parser.word("key")?;
+                    2
+                } else {
+                    parser.word("unique")?;
+                    3
+                };
+                parser.take(Token::LeftParen)?;
+                let mut names = vec![parser.identifier()?];
+                while parser.peek() == Some(&Token::Comma) {
+                    parser.position += 1;
+                    names.push(parser.identifier()?);
                 }
-            } else {
-                if unique_constraints.len() >= crate::tuple::MAX_COLUMNS
-                    || unique_constraints.contains(&names)
+                parser.take(Token::RightParen)?;
+                if names.len() > crate::tuple::MAX_COLUMNS
+                    || names.iter().collect::<std::collections::HashSet<_>>().len() != names.len()
                 {
                     return Err(DdlSqlError::InvalidStatement);
                 }
-                unique_constraints.push(names);
+                if kind == 2 {
+                    if primary_key_columns.replace(names).is_some() {
+                        return Err(DdlSqlError::InvalidStatement);
+                    }
+                } else {
+                    if unique_constraints.len() >= crate::tuple::MAX_COLUMNS
+                        || unique_constraints.contains(&names)
+                    {
+                        return Err(DdlSqlError::InvalidStatement);
+                    }
+                    unique_constraints.push(names);
+                }
             }
             if parser.peek() == Some(&Token::Comma) {
                 parser.position += 1;
@@ -255,12 +262,16 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
     }) {
         return Err(DdlSqlError::InvalidStatement);
     }
+    for expression in &check_constraints {
+        validate_check_columns(expression, &columns)?;
+    }
     Ok(CreateTableSql {
         schema,
         table,
         columns,
         primary_key_columns,
         unique_constraints,
+        check_constraints,
     })
 }
 
@@ -399,16 +410,42 @@ pub fn parse_add_check_constraint(sql: &str) -> Result<AddCheckConstraintSql, Dd
     parser.take(Token::Dot)?;
     let table = parser.identifier()?;
     parser.word("add")?;
-    parser.word("check")?;
-    parser.take(Token::LeftParen)?;
-    let expression = parser.check_or()?;
-    parser.take(Token::RightParen)?;
+    let expression = parser.check_constraint_expression()?;
     finish_statement(&mut parser)?;
     Ok(AddCheckConstraintSql {
         schema,
         table,
         expression,
     })
+}
+
+fn validate_check_columns(
+    expression: &CheckExpressionSql,
+    columns: &[AdminColumnDefinition],
+) -> Result<(), DdlSqlError> {
+    match expression {
+        CheckExpressionSql::Column(name) => {
+            let column = columns
+                .iter()
+                .find(|column| &column.name == name)
+                .ok_or(DdlSqlError::InvalidStatement)?;
+            if column.scalar_type != ScalarType::Boolean {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+        }
+        CheckExpressionSql::IsNull(name) | CheckExpressionSql::IsNotNull(name) => {
+            if !columns.iter().any(|column| &column.name == name) {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+        }
+        CheckExpressionSql::Not(inner) => validate_check_columns(inner, columns)?,
+        CheckExpressionSql::And(items) | CheckExpressionSql::Or(items) => {
+            for item in items {
+                validate_check_columns(item, columns)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Parse `ALTER TABLE schema.table ALTER COLUMN name {SET|DROP} NOT NULL`.
@@ -638,6 +675,14 @@ impl Parser {
         } else {
             Ok(CheckExpressionSql::Column(column))
         }
+    }
+
+    fn check_constraint_expression(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
+        self.word("check")?;
+        self.take(Token::LeftParen)?;
+        let expression = self.check_or()?;
+        self.take(Token::RightParen)?;
+        Ok(expression)
     }
 
     fn identifier(&mut self) -> Result<String, DdlSqlError> {
@@ -1099,6 +1144,27 @@ mod tests {
             "ALTER TABLE app.events ADD UNIQUE (id); ALTER TABLE app.events ADD UNIQUE (id)",
         ] {
             assert!(parse_add_key_constraint(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_table_level_check_constraints_and_binds_column_names() {
+        let parsed = parse_create_table(
+            "CREATE TABLE app.events (id UUID NOT NULL, active BOOLEAN, deleted_at TIMESTAMPTZ, PRIMARY KEY (id), CHECK (active OR deleted_at IS NULL));",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.check_constraints,
+            vec![CheckExpressionSql::Or(vec![
+                CheckExpressionSql::Column("active".into()),
+                CheckExpressionSql::IsNull("deleted_at".into()),
+            ])]
+        );
+        for sql in [
+            "CREATE TABLE app.events (id INTEGER, CHECK (missing IS NULL))",
+            "CREATE TABLE app.events (id INTEGER, CHECK (id))",
+        ] {
+            assert!(parse_create_table(sql).is_err(), "accepted {sql}");
         }
     }
 

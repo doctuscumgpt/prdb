@@ -2609,7 +2609,7 @@ impl AdminClient {
         name: &str,
         columns: &[AdminColumnDefinition],
     ) -> Result<AdminTableResult, ClientSubmitError> {
-        self.create_table_internal(schema_id, name, columns, None, &[])
+        self.create_table_internal(schema_id, name, columns, None, &[], &[])
     }
 
     pub fn create_table_with_primary_key(
@@ -2619,7 +2619,14 @@ impl AdminClient {
         columns: &[AdminColumnDefinition],
         primary_key_columns: &[String],
     ) -> Result<AdminTableResult, ClientSubmitError> {
-        self.create_table_internal(schema_id, name, columns, Some(primary_key_columns), &[])
+        self.create_table_internal(
+            schema_id,
+            name,
+            columns,
+            Some(primary_key_columns),
+            &[],
+            &[],
+        )
     }
 
     pub fn create_table_with_constraints(
@@ -2636,6 +2643,26 @@ impl AdminClient {
             columns,
             primary_key_columns,
             unique_constraints,
+            &[],
+        )
+    }
+
+    pub fn create_table_with_checks_and_constraints(
+        &mut self,
+        schema_id: [u8; 16],
+        name: &str,
+        columns: &[AdminColumnDefinition],
+        primary_key_columns: Option<&[String]>,
+        unique_constraints: &[Vec<String>],
+        check_constraints: &[crate::authorization::Expr],
+    ) -> Result<AdminTableResult, ClientSubmitError> {
+        self.create_table_internal(
+            schema_id,
+            name,
+            columns,
+            primary_key_columns,
+            unique_constraints,
+            check_constraints,
         )
     }
 
@@ -2646,6 +2673,7 @@ impl AdminClient {
         columns: &[AdminColumnDefinition],
         primary_key_columns: Option<&[String]>,
         unique_constraints: &[Vec<String>],
+        check_constraints: &[crate::authorization::Expr],
     ) -> Result<AdminTableResult, ClientSubmitError> {
         validate_admin_id(schema_id)?;
         validate_admin_name(name)?;
@@ -2707,8 +2735,30 @@ impl AdminClient {
                 .join(",");
             format!(",\"unique_constraints\":[{constraints}]")
         };
+        if check_constraints.len() > crate::tuple::MAX_COLUMNS
+            || check_constraints.iter().any(|expression| {
+                !crate::expression::is_row_local_expression(expression)
+                    || crate::expression::encode_expression(expression).is_err()
+            })
+        {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let checks_json = if check_constraints.is_empty() {
+            String::new()
+        } else {
+            let checks = check_constraints
+                .iter()
+                .map(|expression| {
+                    crate::expression::encode_expression(expression)
+                        .map(|bytes| format!("\"{}\"", lower_hex(&bytes)))
+                        .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join(",");
+            format!(",\"check_expressions_eir1\":[{checks}]")
+        };
         let prepare = format!(
-            "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tables.create\",\"arguments\":{{\"schema_id\":\"{}\",\"name\":\"{name}\",\"columns\":{encoded_columns}{primary_key_json}{unique_json}}}}}",
+            "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tables.create\",\"arguments\":{{\"schema_id\":\"{}\",\"name\":\"{name}\",\"columns\":{encoded_columns}{primary_key_json}{unique_json}{checks_json}}}}}",
             lower_hex(&schema_id)
         );
         let prepared = self.transport.exchange(10, prepare.into_bytes())?;
@@ -2796,26 +2846,50 @@ impl AdminClient {
         let statement = crate::ddl_sql::parse_create_table(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
         let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
-        match (
-            statement.primary_key_columns,
-            statement.unique_constraints.is_empty(),
-        ) {
-            (Some(primary_key_columns), _) => self.create_table_with_constraints(
-                schema_id,
-                &statement.table,
-                &statement.columns,
-                Some(&primary_key_columns),
-                &statement.unique_constraints,
-            ),
-            (None, false) => self.create_table_with_constraints(
-                schema_id,
-                &statement.table,
-                &statement.columns,
-                None,
-                &statement.unique_constraints,
-            ),
-            (None, true) => self.create_table(schema_id, &statement.table, &statement.columns),
+        fn bind(
+            expression: &crate::ddl_sql::CheckExpressionSql,
+            columns: &[AdminColumnDefinition],
+        ) -> Result<crate::authorization::Expr, ClientSubmitError> {
+            use crate::{authorization::Expr, ddl_sql::CheckExpressionSql as Sql};
+            let field = |name: &str| {
+                columns
+                    .iter()
+                    .position(|column| column.name == name)
+                    .map(Expr::Field)
+                    .ok_or(ClientSubmitError::InvalidAdministrativeRequest)
+            };
+            Ok(match expression {
+                Sql::Column(name) => field(name)?,
+                Sql::IsNull(name) => Expr::IsNull(Box::new(field(name)?)),
+                Sql::IsNotNull(name) => Expr::Not(Box::new(Expr::IsNull(Box::new(field(name)?)))),
+                Sql::Not(inner) => Expr::Not(Box::new(bind(inner, columns)?)),
+                Sql::And(items) => Expr::And(
+                    items
+                        .iter()
+                        .map(|item| bind(item, columns))
+                        .collect::<Result<_, _>>()?,
+                ),
+                Sql::Or(items) => Expr::Or(
+                    items
+                        .iter()
+                        .map(|item| bind(item, columns))
+                        .collect::<Result<_, _>>()?,
+                ),
+            })
         }
+        let checks = statement
+            .check_constraints
+            .iter()
+            .map(|expression| bind(expression, &statement.columns))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.create_table_with_checks_and_constraints(
+            schema_id,
+            &statement.table,
+            &statement.columns,
+            statement.primary_key_columns.as_deref(),
+            &statement.unique_constraints,
+            &checks,
+        )
     }
 
     /// Execute bounded CREATE SCHEMA SQL with an explicit UUID owner through

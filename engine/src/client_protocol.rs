@@ -298,6 +298,7 @@ enum PendingAdminAction {
         columns: Vec<crate::storage_manager::TableColumnDefinition>,
         primary_key_columns: Option<Vec<String>>,
         unique_constraints: Vec<Vec<String>>,
+        check_expressions: Vec<crate::authorization::Expr>,
     },
     RenameIdentity {
         identity_id: [u8; 16],
@@ -688,6 +689,7 @@ pub enum ClientAdminCommand {
         columns: Vec<crate::storage_manager::TableColumnDefinition>,
         primary_key_columns: Option<Vec<String>>,
         unique_constraints: Vec<Vec<String>>,
+        check_expressions: Vec<crate::authorization::Expr>,
     },
     PrepareRenameIdentity {
         identity_id: [u8; 16],
@@ -858,6 +860,7 @@ pub fn decode_client_admin_command(
     let mut table_columns = None;
     let mut primary_key_columns = None;
     let mut unique_constraints = None;
+    let mut check_expressions = None;
     let mut foreign_key_source_columns = None;
     let mut constraint_column_ids = None;
     let mut index_unique = None;
@@ -913,6 +916,27 @@ pub fn decode_client_admin_command(
                     {
                         unique_constraints = Some(parser.parse_string_array_array()?);
                         args.insert(arg, "<structured-name-arrays>".to_owned());
+                    } else if arg == "check_expressions_eir1"
+                        && parser.text.get(parser.offset) == Some(&b'[')
+                    {
+                        let encoded = parser.parse_string_array()?;
+                        let expressions = encoded
+                            .into_iter()
+                            .map(|value| {
+                                let bytes = decode_lower_hex_bytes(
+                                    &value,
+                                    crate::expression::MAX_EXPRESSION_BYTES,
+                                )?;
+                                let expression = crate::expression::decode_expression(&bytes)
+                                    .map_err(|_| ClientControlError::InvalidPrepare)?;
+                                if !crate::expression::is_row_local_expression(&expression) {
+                                    return Err(ClientControlError::InvalidPrepare);
+                                }
+                                Ok(expression)
+                            })
+                            .collect::<Result<Vec<_>, ClientControlError>>()?;
+                        check_expressions = Some(expressions);
+                        args.insert(arg, "<structured-check-expressions>".to_owned());
                     } else if arg == "source_column_ids"
                         && parser.text.get(parser.offset) == Some(&b'[')
                     {
@@ -1982,7 +2006,7 @@ pub fn decode_client_admin_command(
             })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("tables.create") => {
-            if operation_id.is_some() || !(4..=6).contains(&seen.len()) {
+            if operation_id.is_some() || !(4..=7).contains(&seen.len()) {
                 return Err(ClientControlError::UnknownKey);
             }
             let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
@@ -2011,6 +2035,15 @@ pub fn decode_client_admin_command(
                 return Err(ClientControlError::InvalidPrepare);
             }
             let unique_constraints = unique_constraints.unwrap_or_default();
+            let check_marker = args.remove("check_expressions_eir1");
+            if check_marker.as_deref()
+                != check_expressions
+                    .as_ref()
+                    .map(|_| "<structured-check-expressions>")
+            {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            let check_expressions = check_expressions.unwrap_or_default();
             if columns_value != "<structured-columns>"
                 || !is_canonical_admin_principal_name(&name)
                 || columns.is_empty()
@@ -2042,6 +2075,7 @@ pub fn decode_client_admin_command(
                     .iter()
                     .enumerate()
                     .any(|(index, names)| unique_constraints[..index].contains(names))
+                || check_expressions.len() > crate::tuple::MAX_COLUMNS
             {
                 return Err(ClientControlError::InvalidPrepare);
             }
@@ -2051,6 +2085,7 @@ pub fn decode_client_admin_command(
                 columns,
                 primary_key_columns,
                 unique_constraints,
+                check_expressions,
             })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("users.rename") => {
@@ -5078,6 +5113,7 @@ impl ClientConnectionSession {
                 columns,
                 primary_key_columns,
                 unique_constraints,
+                check_expressions,
             } => {
                 if self.pending_admin_operation.is_some() {
                     return Err(ClientSessionError::WrongMode);
@@ -5099,6 +5135,7 @@ impl ClientConnectionSession {
                         columns,
                         primary_key_columns,
                         unique_constraints,
+                        check_expressions,
                     },
                 });
                 self.json_response(
@@ -6256,6 +6293,7 @@ impl ClientConnectionSession {
                         columns,
                         primary_key_columns,
                         unique_constraints,
+                        check_expressions,
                     } => {
                         let create_request = crate::storage_manager::CreateTableRequest {
                             invocation_id: operation_id,
@@ -6275,10 +6313,11 @@ impl ClientConnectionSession {
                             },
                         };
                         let created = storage
-                            .create_table_with_constraints(
+                            .create_table_with_checks_and_constraints(
                                 create_request,
                                 primary_key_columns.as_deref(),
                                 &unique_constraints,
+                                &check_expressions,
                             )
                             .map_err(ClientSessionError::TableLifecycle)?;
                         let mut payload = format!(

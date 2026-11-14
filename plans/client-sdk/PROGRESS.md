@@ -759,3 +759,9 @@
 - `execute_drop_column_sql` parses qualified RESTRICT syntax, resolves the stable column ID on the authenticated control connection, and calls `tables.drop_column`.
 - Added parser, authenticated TCP, and CLI pre-credential recognition regressions. Dependency validation and bounded rewrites remain in storage.
 - Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.
+
+## Administrative SQL: atomic CREATE TABLE CHECK — implemented
+
+- `execute_create_table_sql` now accepts bounded final table-level CHECK clauses, validates referenced names against declared columns, binds them to column ordinals, and encodes EIR1 in the existing typed `tables.create` operation. Storage writes check objects and dependency edges in the same atomic create commit.
+- Added parser, client protocol, authenticated AdminClient, CLI, and storage regressions. Comparisons and literals remain outside this SQL subset.
+- Focused regressions, locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace tests (including sandbox/process tests with zero ignored), maintained TinyCC SDK tests, sandbox fixture build, and `git diff --check` passed.

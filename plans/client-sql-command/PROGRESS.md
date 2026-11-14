@@ -202,3 +202,9 @@
 - `admin-sql` accepts qualified `ALTER TABLE schema.table DROP COLUMN column RESTRICT`; CASCADE and implicit drop modes remain rejected.
 - Parser, AdminClient TCP binding, and CLI pre-credential recognition coverage added.
 - Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.
+
+## Administrative SQL: CREATE TABLE CHECK — implemented
+
+- `admin-sql` accepts table-level CHECK clauses using Boolean column references, `IS [NOT] NULL`, `NOT`, `AND`, `OR`, and parentheses; it rejects comparisons and literals before authentication.
+- SQL names bind to declared columns and the typed create request carries canonical EIR1 so table and CHECK catalog records publish atomically.
+- Parser, control decoder, AdminClient, CLI, and storage regressions passed; locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace tests (including sandbox/process tests with zero ignored), maintained TinyCC SDK tests, sandbox fixture build, and `git diff --check` passed.

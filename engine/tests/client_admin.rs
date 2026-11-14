@@ -12,15 +12,16 @@ use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
 #[test]
-fn admin_create_table_decoder_accepts_only_valid_inline_primary_keys() {
-    let valid = br#"{"phase":"prepare","operation_version":1,"operation":"tables.create","arguments":{"schema_id":"11111111111111111111111111111111","name":"events","columns":[{"name":"id","type":"uuid","nullable":false,"generated_uuid_identity":true}],"primary_key_columns":["id"],"unique_constraints":[["id"]]}}"#;
+fn admin_create_table_decoder_validates_constraints_and_check_expressions() {
+    let valid = br#"{"phase":"prepare","operation_version":1,"operation":"tables.create","arguments":{"schema_id":"11111111111111111111111111111111","name":"events","columns":[{"name":"id","type":"uuid","nullable":false,"generated_uuid_identity":true}],"primary_key_columns":["id"],"unique_constraints":[["id"]],"check_expressions_eir1":["4549523101000000020000"]}}"#;
     assert!(matches!(
         decode_client_admin_command(valid),
         Ok(ClientAdminCommand::PrepareCreateTable {
             primary_key_columns: Some(names),
             unique_constraints,
+            check_expressions,
             ..
-        }) if names == ["id"] && unique_constraints == [vec!["id"]]
+        }) if names == ["id"] && unique_constraints == [vec!["id"]] && check_expressions == [prdb_engine::authorization::Expr::Field(0)]
     ));
 
     let nullable = br#"{"phase":"prepare","operation_version":1,"operation":"tables.create","arguments":{"schema_id":"11111111111111111111111111111111","name":"events","columns":[{"name":"id","type":"uuid","nullable":true,"generated_uuid_identity":false}],"primary_key_columns":["id"]}}"#;

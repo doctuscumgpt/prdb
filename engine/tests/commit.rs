@@ -1770,7 +1770,7 @@ fn schema_drop_racing_table_creation_never_leaves_an_orphan()
 }
 
 #[test]
-fn storage_manager_creates_typed_table_for_schema_create_grant()
+fn storage_manager_creates_typed_table_with_atomic_check_constraint()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{
         CreateTableRequest, TableColumnDefault, TableColumnDefinition, TableLifecycleError,
@@ -1849,39 +1849,46 @@ fn storage_manager_creates_typed_table_for_schema_create_grant()
     let mut audit = identity_audit_event(0xd7, actor, id(0xd8));
     audit.correlation_id = invocation_id;
     let created = storage
-        .create_table(CreateTableRequest {
-            invocation_id,
-            authenticated_actor_id: actor,
-            schema_id,
-            name: "ledger".to_owned(),
-            columns: vec![
-                TableColumnDefinition {
-                    name: "id".to_owned(),
-                    scalar_type: ScalarType::Uuid,
-                    nullable: false,
-                    generated_uuid_identity: true,
-                    default: None,
-                },
-                TableColumnDefinition {
-                    name: "label".to_owned(),
-                    scalar_type: ScalarType::Text,
-                    nullable: true,
-                    generated_uuid_identity: false,
-                    default: Some(TableColumnDefault::Literal(Some(ScalarValue::Text(
-                        "untitled".to_owned(),
-                    )))),
-                },
-                TableColumnDefinition {
-                    name: "created_by".to_owned(),
-                    scalar_type: ScalarType::Uuid,
-                    nullable: false,
-                    generated_uuid_identity: false,
-                    default: Some(TableColumnDefault::CurrentPrincipalId),
-                },
-            ],
-            retention_deadline_us: 9_999,
-            audit_event: audit,
-        })
+        .create_table_with_checks_and_constraints(
+            CreateTableRequest {
+                invocation_id,
+                authenticated_actor_id: actor,
+                schema_id,
+                name: "ledger".to_owned(),
+                columns: vec![
+                    TableColumnDefinition {
+                        name: "id".to_owned(),
+                        scalar_type: ScalarType::Uuid,
+                        nullable: false,
+                        generated_uuid_identity: true,
+                        default: None,
+                    },
+                    TableColumnDefinition {
+                        name: "label".to_owned(),
+                        scalar_type: ScalarType::Text,
+                        nullable: true,
+                        generated_uuid_identity: false,
+                        default: Some(TableColumnDefault::Literal(Some(ScalarValue::Text(
+                            "untitled".to_owned(),
+                        )))),
+                    },
+                    TableColumnDefinition {
+                        name: "created_by".to_owned(),
+                        scalar_type: ScalarType::Uuid,
+                        nullable: false,
+                        generated_uuid_identity: false,
+                        default: Some(TableColumnDefault::CurrentPrincipalId),
+                    },
+                ],
+                retention_deadline_us: 9_999,
+                audit_event: audit,
+            },
+            None,
+            &[],
+            &[prdb_engine::authorization::Expr::IsNull(Box::new(
+                prdb_engine::authorization::Expr::Field(1),
+            ))],
+        )
         .map_err(|error| format!("table creation failed: {error:?}"))?;
     assert_eq!(created.column_ids.len(), 3);
     assert_eq!(created.commit_sequence, 2);
@@ -1927,6 +1934,58 @@ fn storage_manager_creates_typed_table_for_schema_create_grant()
             ordinal as u32
         );
     }
+    let mut check_constraints = 0;
+    for entry in catalog.iter()? {
+        let (key, value) = entry?;
+        let key = key.value();
+        if key.len() != 19 || key[..2] != 8u16.to_be_bytes() || key[2] != 1 {
+            continue;
+        }
+        let constraint = decode_registered_envelope(value.value())?;
+        let constraint_table: [u8; 16] = constraint
+            .fields
+            .iter()
+            .find(|field| field.tag == 1)
+            .ok_or("missing check table id")?
+            .payload
+            .as_slice()
+            .try_into()?;
+        let kind: [u8; 2] = constraint
+            .fields
+            .iter()
+            .find(|field| field.tag == 2)
+            .ok_or("missing check kind")?
+            .payload
+            .as_slice()
+            .try_into()?;
+        if constraint_table != created.table_id || u16::from_le_bytes(kind) != 4 {
+            continue;
+        }
+        check_constraints += 1;
+        let expression_id: [u8; 16] = constraint
+            .fields
+            .iter()
+            .find(|field| field.tag == 4)
+            .ok_or("missing check expression id")?
+            .payload
+            .as_slice()
+            .try_into()?;
+        assert!(
+            catalog
+                .get(id_catalog_key(7, expression_id).as_slice())?
+                .is_some()
+        );
+        assert!(
+            catalog
+                .get(
+                    dependency_write(expression_id, created.column_ids[1], 2)
+                        .key
+                        .as_slice()
+                )?
+                .is_some()
+        );
+    }
+    assert_eq!(check_constraints, 1);
     assert_eq!(
         lookup_outcome(&database, invocation_id, actor, 1)?
             .unwrap()

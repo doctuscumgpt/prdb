@@ -5706,7 +5706,7 @@ impl<'db> StorageManager<'db> {
         &self,
         request: CreateTableRequest,
     ) -> Result<CreatedTable, TableLifecycleError> {
-        self.create_table_inner(request, None, &[])
+        self.create_table_inner(request, None, &[], &[])
     }
 
     /// Create a table and its primary key catalog/index records atomically.
@@ -5715,7 +5715,7 @@ impl<'db> StorageManager<'db> {
         request: CreateTableRequest,
         primary_key_columns: &[String],
     ) -> Result<CreatedTable, TableLifecycleError> {
-        self.create_table_inner(request, Some(primary_key_columns.to_vec()), &[])
+        self.create_table_inner(request, Some(primary_key_columns.to_vec()), &[], &[])
     }
 
     /// Create a table and its table-level UNIQUE constraints and indexes atomically.
@@ -5724,7 +5724,7 @@ impl<'db> StorageManager<'db> {
         request: CreateTableRequest,
         unique_constraints: &[Vec<String>],
     ) -> Result<CreatedTable, TableLifecycleError> {
-        self.create_table_inner(request, None, unique_constraints)
+        self.create_table_inner(request, None, unique_constraints, &[])
     }
 
     /// Create a table with a primary key and table-level UNIQUE constraints atomically.
@@ -5738,6 +5738,22 @@ impl<'db> StorageManager<'db> {
             request,
             primary_key_columns.map(<[String]>::to_vec),
             unique_constraints,
+            &[],
+        )
+    }
+
+    pub fn create_table_with_checks_and_constraints(
+        &self,
+        request: CreateTableRequest,
+        primary_key_columns: Option<&[String]>,
+        unique_constraints: &[Vec<String>],
+        check_expressions: &[crate::authorization::Expr],
+    ) -> Result<CreatedTable, TableLifecycleError> {
+        self.create_table_inner(
+            request,
+            primary_key_columns.map(<[String]>::to_vec),
+            unique_constraints,
+            check_expressions,
         )
     }
 
@@ -5746,6 +5762,7 @@ impl<'db> StorageManager<'db> {
         request: CreateTableRequest,
         primary_key_columns: Option<Vec<String>>,
         unique_constraints: &[Vec<String>],
+        check_expressions: &[crate::authorization::Expr],
     ) -> Result<CreatedTable, TableLifecycleError> {
         let CreateTableRequest {
             invocation_id,
@@ -5763,6 +5780,11 @@ impl<'db> StorageManager<'db> {
             || !is_normalized_principal_name(&name)
             || columns.is_empty()
             || columns.len() > crate::tuple::MAX_COLUMNS
+            || check_expressions.len() > crate::tuple::MAX_COLUMNS
+            || check_expressions.iter().any(|expression| {
+                !crate::expression::is_row_local_expression(expression)
+                    || crate::expression::encode_expression(expression).is_err()
+            })
         {
             return Err(TableLifecycleError::InvalidRequest);
         }
@@ -5895,6 +5917,20 @@ impl<'db> StorageManager<'db> {
                 return Err(TableLifecycleError::ObjectIdGenerationFailed);
             }
             key_constraints.push((3u16, key_column_ids, constraint_id, index_id));
+        }
+        let mut check_constraints = Vec::with_capacity(check_expressions.len());
+        for expression in check_expressions {
+            let mut constraint_id = self.generate_table_object_id()?;
+            if !used_ids.insert(constraint_id) {
+                constraint_id.zeroize();
+                return Err(TableLifecycleError::ObjectIdGenerationFailed);
+            }
+            let mut expression_id = self.generate_table_object_id()?;
+            if !used_ids.insert(expression_id) {
+                expression_id.zeroize();
+                return Err(TableLifecycleError::ObjectIdGenerationFailed);
+            }
+            check_constraints.push((expression.clone(), constraint_id, expression_id));
         }
         let mut default_expression_ids = Vec::with_capacity(columns.len());
         for column in &columns {
@@ -6357,6 +6393,228 @@ impl<'db> StorageManager<'db> {
                 ),
             });
             writes.push(new_dependency_write(*constraint_id, *index_id, 4)?);
+        }
+        let boolean_type_id = type_definitions
+            .get(&1)
+            .map(|(type_id, _)| *type_id)
+            .ok_or(TableLifecycleError::Storage)?;
+        fn collect_check_dependencies(
+            expression: &crate::authorization::Expr,
+            column_ids: &[[u8; 16]],
+            dependencies: &mut std::collections::BTreeSet<[u8; 16]>,
+        ) -> Result<(), TableLifecycleError> {
+            use crate::authorization::Expr;
+            match expression {
+                Expr::Field(ordinal) => {
+                    let id = column_ids
+                        .get(*ordinal)
+                        .copied()
+                        .ok_or(TableLifecycleError::InvalidRequest)?;
+                    dependencies.insert(id);
+                }
+                Expr::Equal(left, right)
+                | Expr::NotEqual(left, right)
+                | Expr::Less(left, right)
+                | Expr::LessEqual(left, right)
+                | Expr::Greater(left, right)
+                | Expr::GreaterEqual(left, right) => {
+                    collect_check_dependencies(left, column_ids, dependencies)?;
+                    collect_check_dependencies(right, column_ids, dependencies)?;
+                }
+                Expr::And(items) | Expr::Or(items) => {
+                    for item in items {
+                        collect_check_dependencies(item, column_ids, dependencies)?;
+                    }
+                }
+                Expr::Not(inner) | Expr::IsNull(inner) => {
+                    collect_check_dependencies(inner, column_ids, dependencies)?;
+                }
+                Expr::Literal(_) => {}
+                Expr::CurrentPrincipalId | Expr::HasRole(_) => {
+                    return Err(TableLifecycleError::InvalidRequest);
+                }
+            }
+            Ok(())
+        }
+        for (expression, constraint_id, expression_id) in &check_constraints {
+            let mut dependency_ids = std::collections::BTreeSet::new();
+            collect_check_dependencies(expression, &column_ids, &mut dependency_ids)?;
+            let dependency_ids = dependency_ids.into_iter().collect::<Vec<_>>();
+            let catalog_expression = crate::expression::CatalogExpression {
+                expression_id: *expression_id,
+                purpose: crate::expression::ExpressionPurpose::Check,
+                result_type_id: boolean_type_id,
+                result_parameters: [0; 8],
+                dependencies: dependency_ids.clone(),
+                expression: expression.clone(),
+            };
+            crate::expression::validate_expression_binding(
+                &catalog_expression,
+                &table_columns,
+                &column_ids,
+                boolean_type_id,
+                ScalarType::Boolean,
+            )
+            .map_err(|_| TableLifecycleError::InvalidRequest)?;
+            let expression_bytes = crate::expression::encode_expression(expression)
+                .map_err(|_| TableLifecycleError::InvalidRequest)?;
+            let expression_key = id_catalog_key(7, *expression_id);
+            let expression_payload = encode_envelope(
+                &family_schema(7).ok_or(TableLifecycleError::Storage)?,
+                &expression_key,
+                &[
+                    CatalogField {
+                        tag: 1,
+                        wire_type: WireType::U16,
+                        payload: 2u16.to_le_bytes().to_vec(),
+                    },
+                    CatalogField {
+                        tag: 2,
+                        wire_type: WireType::U32,
+                        payload: 1u32.to_le_bytes().to_vec(),
+                    },
+                    CatalogField {
+                        tag: 3,
+                        wire_type: WireType::Id,
+                        payload: boolean_type_id.to_vec(),
+                    },
+                    CatalogField {
+                        tag: 4,
+                        wire_type: WireType::Bytes,
+                        payload: vec![0; 8],
+                    },
+                    CatalogField {
+                        tag: 5,
+                        wire_type: WireType::Bytes,
+                        payload: expression_bytes,
+                    },
+                    CatalogField {
+                        tag: 6,
+                        wire_type: WireType::Ids,
+                        payload: encode_ids(&dependency_ids),
+                    },
+                ],
+            )
+            .map_err(|_| TableLifecycleError::InvalidRequest)?;
+            let constraint_key = id_catalog_key(8, *constraint_id);
+            let constraint_payload = encode_envelope(
+                &family_schema(8).ok_or(TableLifecycleError::Storage)?,
+                &constraint_key,
+                &[
+                    CatalogField {
+                        tag: 1,
+                        wire_type: WireType::Id,
+                        payload: table_id.to_vec(),
+                    },
+                    CatalogField {
+                        tag: 2,
+                        wire_type: WireType::U16,
+                        payload: 4u16.to_le_bytes().to_vec(),
+                    },
+                    CatalogField {
+                        tag: 3,
+                        wire_type: WireType::Ids,
+                        payload: 0u32.to_le_bytes().to_vec(),
+                    },
+                    CatalogField {
+                        tag: 4,
+                        wire_type: WireType::Id,
+                        payload: expression_id.to_vec(),
+                    },
+                    CatalogField {
+                        tag: 6,
+                        wire_type: WireType::Ids,
+                        payload: 0u32.to_le_bytes().to_vec(),
+                    },
+                    CatalogField {
+                        tag: 7,
+                        wire_type: WireType::U16,
+                        payload: 0u16.to_le_bytes().to_vec(),
+                    },
+                    CatalogField {
+                        tag: 8,
+                        wire_type: WireType::U16,
+                        payload: 0u16.to_le_bytes().to_vec(),
+                    },
+                    CatalogField {
+                        tag: 9,
+                        wire_type: WireType::U16,
+                        payload: 0u16.to_le_bytes().to_vec(),
+                    },
+                    CatalogField {
+                        tag: 10,
+                        wire_type: WireType::U16,
+                        payload: 1u16.to_le_bytes().to_vec(),
+                    },
+                ],
+            )
+            .map_err(|_| TableLifecycleError::InvalidRequest)?;
+            for (object_id, kind, prefix) in [
+                (*constraint_id, 6u16, "check_constraint"),
+                (*expression_id, 5u16, "check_expression"),
+            ] {
+                let object_key = id_catalog_key(2, object_id);
+                let object_name = format!(
+                    "{prefix}_{}",
+                    object_id
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                );
+                let object_payload = encode_envelope(
+                    &family_schema(2).ok_or(TableLifecycleError::Storage)?,
+                    &object_key,
+                    &[
+                        CatalogField {
+                            tag: 1,
+                            wire_type: WireType::U16,
+                            payload: kind.to_le_bytes().to_vec(),
+                        },
+                        CatalogField {
+                            tag: 3,
+                            wire_type: WireType::Text,
+                            payload: object_name.into_bytes(),
+                        },
+                        CatalogField {
+                            tag: 4,
+                            wire_type: WireType::Id,
+                            payload: authenticated_actor_id.to_vec(),
+                        },
+                        CatalogField {
+                            tag: 5,
+                            wire_type: WireType::U64,
+                            payload: 1u64.to_le_bytes().to_vec(),
+                        },
+                        CatalogField {
+                            tag: 6,
+                            wire_type: WireType::U16,
+                            payload: 1u16.to_le_bytes().to_vec(),
+                        },
+                    ],
+                )
+                .map_err(|_| TableLifecycleError::InvalidRequest)?;
+                writes.push(CatalogWrite {
+                    key: object_key,
+                    expected_value: None,
+                    payload: Some(object_payload),
+                });
+            }
+            writes.extend([
+                CatalogWrite {
+                    key: constraint_key,
+                    expected_value: None,
+                    payload: Some(constraint_payload),
+                },
+                CatalogWrite {
+                    key: expression_key,
+                    expected_value: None,
+                    payload: Some(expression_payload),
+                },
+                new_dependency_write(*constraint_id, *expression_id, 2)?,
+            ]);
+            for dependency_id in dependency_ids {
+                writes.push(new_dependency_write(*expression_id, dependency_id, 2)?);
+            }
         }
         audit_event.target_ids = vec![table_id];
         let commit_sequence = commit_authorized_table_create_ddl_with_fences(

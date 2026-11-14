@@ -921,6 +921,7 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
             name: "events".into(),
             primary_key_columns: None,
             unique_constraints: vec![],
+            check_expressions: vec![],
             columns: vec![
                 prdb_engine::storage_manager::TableColumnDefinition {
                     name: "event_id".into(),

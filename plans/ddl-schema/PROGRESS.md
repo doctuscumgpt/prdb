@@ -545,7 +545,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Implementation: [SQL parser](../../engine/src/ddl_sql.rs), [table creation](../../engine/src/storage_manager.rs), and create-table DDL validation in [commit.rs](../../engine/src/commit.rs).
 - Regression evidence: parser coverage handles multiple composite keys and rejects duplicate, unknown, or repeated columns. The authenticated storage regression atomically creates a composite PRIMARY KEY plus nullable UNIQUE constraint and validates persisted catalog startup. Decoder, AdminClient, and CLI tests assert nested typed arrays.
 - Verification: focused parser, decoder, AdminClient, CLI, and storage tests passed. Locked workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
-- Next: add bounded table-level CHECK support to administrative CREATE TABLE SQL, retaining the same atomic publication and binding checks.
+- Next: extend the CHECK SQL subset with typed comparisons and literals while preserving row-local EIR1 binding and validation.
 
 ## DS-8: ALTER TABLE SQL for PRIMARY KEY and UNIQUE — implemented
 
@@ -553,7 +553,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Implementation: bounded statement parsing in [ddl_sql.rs](../../engine/src/ddl_sql.rs), metadata resolution and typed dispatch in [client_submit.rs](../../engine/src/client_submit.rs), and `admin-sql` routing in [prdb-client.rs](../../engine/src/bin/prdb-client.rs). Named constraints remain unsupported because the current typed APIs generate catalog identities.
 - Regression: parser tests accept composite key forms and reject unqualified, empty, duplicate, named, and multi-statement input. The authenticated TCP test resolves schema, relation, and columns, then verifies the typed `constraints.create_unique` request and returned IDs. The CLI process test confirms recognized SQL reaches credential loading before network access.
 - Verification: focused parser, AdminClient TCP, and CLI tests passed. Locked workspace build, format check, warning-denied Clippy, complete serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.
-- Next: extend the CHECK SQL subset with typed comparisons/literals and atomic CREATE TABLE CHECK support.
+- Next: extend the CHECK SQL subset with typed comparisons and literals while preserving row-local EIR1 binding and validation.
 
 ## DS-8: bounded ALTER TABLE CHECK SQL — implemented
 
@@ -586,3 +586,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). Qualified `ALTER TABLE schema.table DROP COLUMN column RESTRICT` resolves the stable column ID through authenticated metadata and invokes the typed `tables.drop_column` operation. Storage remains authoritative for dependency checks, row/index rewrite bounds, DDL fencing, audit, and durable outcome.
 - Regression: parser coverage rejects missing RESTRICT, CASCADE, unqualified names, and multiple statements. AdminClient TCP coverage verifies column ID binding and committed result; CLI coverage checks recognition before credential/network access.
 - Verification: parser, authenticated AdminClient TCP binding, and CLI pre-credential recognition tests passed. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed.
+
+## DS-9: Atomic table-level CHECK in CREATE TABLE SQL — implemented
+
+- Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). CREATE TABLE accepts final table-level CHECK clauses in the bounded Boolean subset (Boolean column references, `IS [NOT] NULL`, `NOT`, `AND`, `OR`, and parentheses). The client resolves names against the declared columns, binds stable IDs/ordinals, and sends canonical EIR1. Storage publishes constraints, expression objects, dependencies, columns, keys, and owned indexes atomically and validates catalog shape and expression bindings.
+- Regression: parser name binding, client EIR1 decoding, authenticated AdminClient SQL submission, CLI recognition, and storage catalog publication are covered.
+- Limit: comparisons and literals are not accepted in CREATE TABLE or ALTER TABLE CHECK SQL; typed EIR1 APIs retain the broader validated row-local language.
+- Validation: parser, control decoder, authenticated AdminClient, CLI, and storage regressions; locked workspace build; format check; warning-denied all-target Clippy; the full serial delegated-cgroup workspace suite including sandbox/process tests (zero ignored); maintained TinyCC SDK tests; sandbox fixture build; and `git diff --check` passed.
