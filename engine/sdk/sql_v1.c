@@ -18,6 +18,7 @@
 #include "prdb_sdk_sql_v18.h"
 #include "prdb_sdk_sql_v19.h"
 #include "prdb_sdk_sql_v20.h"
+#include "prdb_sdk_sql_v21.h"
 #include "prdb_sdk_sql_dml_v1.h"
 #include "prdb_sdk_sql_dml_v2.h"
 
@@ -39,6 +40,7 @@ typedef enum token_kind {
     TOKEN_GREATER,
     TOKEN_GREATER_EQUAL,
     TOKEN_MINUS,
+    TOKEN_PLUS,
     TOKEN_LEFT_PAREN,
     TOKEN_RIGHT_PAREN,
     TOKEN_DOT
@@ -104,6 +106,35 @@ static int32_t next_token(parser *state) {
                state->sql[state->position] >= '0' &&
                state->sql[state->position] <= '9') {
             ++state->position;
+        }
+        if (state->position < state->length &&
+            state->sql[state->position] == '.') {
+            ++state->position;
+            while (state->position < state->length &&
+                   state->sql[state->position] >= '0' &&
+                   state->sql[state->position] <= '9') {
+                ++state->position;
+            }
+        }
+        if (state->position < state->length &&
+            (state->sql[state->position] == 'e' ||
+             state->sql[state->position] == 'E')) {
+            uint32_t exponent_offset = state->position++;
+            if (state->position < state->length &&
+                (state->sql[state->position] == '+' ||
+                 state->sql[state->position] == '-')) {
+                ++state->position;
+            }
+            uint32_t exponent_digits = state->position;
+            while (state->position < state->length &&
+                   state->sql[state->position] >= '0' &&
+                   state->sql[state->position] <= '9') {
+                ++state->position;
+            }
+            if (state->position == exponent_digits) {
+                state->error_offset = exponent_offset;
+                return PRDB_SDK_SQL_SYNTAX_ERROR;
+            }
         }
         state->current = (token){TOKEN_NUMBER, start,
                                  state->position - start};
@@ -179,6 +210,9 @@ static int32_t next_token(parser *state) {
     case '-':
         state->current = (token){TOKEN_MINUS, start, 1};
         return PRDB_SDK_SQL_OK;
+    case '+':
+        state->current = (token){TOKEN_PLUS, start, 1};
+        return PRDB_SDK_SQL_OK;
     default:
         break;
     }
@@ -220,7 +254,13 @@ static int32_t parse_unsigned(parser *state, token token, uint32_t maximum,
         return PRDB_SDK_SQL_SYNTAX_ERROR;
     }
     for (uint32_t index = 0; index < token.length; ++index) {
-        uint32_t digit = (uint32_t)(state->sql[token.offset + index] - '0');
+        uint8_t byte = state->sql[token.offset + index];
+        uint32_t digit;
+        if (byte < '0' || byte > '9') {
+            state->error_offset = token.offset + index;
+            return PRDB_SDK_SQL_SYNTAX_ERROR;
+        }
+        digit = (uint32_t)(byte - '0');
         if (value > (maximum - digit) / 10) {
             state->error_offset = token.offset;
             return PRDB_SDK_SQL_LIMIT_EXCEEDED;
@@ -6015,8 +6055,13 @@ static int32_t parse_nonnegative_bigint_literal(parser *state, uint64_t *out) {
         return PRDB_SDK_SQL_SYNTAX_ERROR;
     }
     for (uint32_t index = 0; index < state->current.length; ++index) {
-        uint32_t digit =
-            (uint32_t)(state->sql[state->current.offset + index] - '0');
+        uint8_t byte = state->sql[state->current.offset + index];
+        uint32_t digit;
+        if (byte < '0' || byte > '9') {
+            state->error_offset = state->current.offset + index;
+            return PRDB_SDK_SQL_SYNTAX_ERROR;
+        }
+        digit = (uint32_t)(byte - '0');
         if (value > (UINT64_C(0x7fffffffffffffff) - digit) / 10) {
             state->error_offset = state->current.offset;
             return PRDB_SDK_SQL_LIMIT_EXCEEDED;
@@ -6046,7 +6091,13 @@ static int32_t parse_signed_bigint_literal_v18(parser *state, uint64_t *out) {
     limit = negative ? UINT64_C(0x8000000000000000)
                      : UINT64_C(0x7fffffffffffffff);
     for (uint32_t index = 0; index < state->current.length; ++index) {
-        uint32_t digit = (uint32_t)(state->sql[start + index] - '0');
+        uint8_t byte = state->sql[start + index];
+        uint32_t digit;
+        if (byte < '0' || byte > '9') {
+            state->error_offset = start + index;
+            return PRDB_SDK_SQL_SYNTAX_ERROR;
+        }
+        digit = (uint32_t)(byte - '0');
         if (magnitude > (limit - digit) / 10) {
             state->error_offset = negative ? sign_offset : start;
             return PRDB_SDK_SQL_LIMIT_EXCEEDED;
@@ -6702,6 +6753,431 @@ int32_t prdb_sdk_sql_bind_select_v18(
            sizeof(result.having_nodes));
     result.struct_size = sizeof(result);
     result.abi_version = PRDB_SDK_SQL_ABI_V18_VERSION;
+    *out = result;
+    return PRDB_SDK_SQL_BIND_OK;
+}
+
+typedef struct numeric_literal_v21 {
+    uint8_t coefficient[16];
+    uint8_t scale;
+    uint32_t offset;
+} numeric_literal_v21;
+
+static int decimal_multiply_add_digit_v21(uint8_t magnitude[16],
+                                          uint8_t digit) {
+    uint16_t carry = digit;
+    for (size_t index = 16; index > 0; --index) {
+        uint16_t value = (uint16_t)magnitude[index - 1] * 10 + carry;
+        magnitude[index - 1] = (uint8_t)value;
+        carry = value >> 8;
+    }
+    return carry == 0;
+}
+
+static int32_t parse_numeric_literal_v21(const uint8_t *sql, uint32_t start,
+                                         uint32_t end,
+                                         numeric_literal_v21 *out) {
+    uint8_t digits[PRDB_SDK_SQL_MAX_QUERY_BYTES];
+    uint8_t magnitude[16] = {0};
+    uint32_t position = start, digit_count = 0, fraction_digits = 0;
+    uint32_t leading_zeroes = 0, exponent_offset = 0;
+    int exponent = 0, exponent_negative = 0, negative = 0, saw_dot = 0;
+    int saw_exponent = 0;
+    int64_t scale;
+
+    if (out == NULL || start >= end || end > PRDB_SDK_SQL_MAX_QUERY_BYTES)
+        return PRDB_SDK_SQL_SYNTAX_ERROR;
+    if (sql[position] == '-' || sql[position] == '+') {
+        negative = sql[position] == '-';
+        ++position;
+        while (position < end && is_space(sql[position])) ++position;
+    }
+    while (position < end) {
+        uint8_t byte = sql[position];
+        if (byte >= '0' && byte <= '9') {
+            if (digit_count >= sizeof(digits))
+                return PRDB_SDK_SQL_LIMIT_EXCEEDED;
+            digits[digit_count++] = (uint8_t)(byte - '0');
+            if (saw_dot) ++fraction_digits;
+            ++position;
+            continue;
+        }
+        if (byte == '.' && !saw_dot && !saw_exponent) {
+            saw_dot = 1;
+            ++position;
+            continue;
+        }
+        if ((byte == 'e' || byte == 'E') && !saw_exponent) {
+            saw_exponent = 1;
+            exponent_offset = position++;
+            if (position < end && (sql[position] == '+' || sql[position] == '-')) {
+                exponent_negative = sql[position] == '-';
+                ++position;
+            }
+            if (position == end) return PRDB_SDK_SQL_SYNTAX_ERROR;
+            for (; position < end; ++position) {
+                uint8_t exponent_byte = sql[position];
+                uint32_t digit;
+                if (exponent_byte < '0' || exponent_byte > '9')
+                    return PRDB_SDK_SQL_SYNTAX_ERROR;
+                digit = (uint32_t)(exponent_byte - '0');
+                if (exponent > 1000 ||
+                    (exponent == 1000 && digit != 0))
+                    return PRDB_SDK_SQL_LIMIT_EXCEEDED;
+                exponent = exponent * 10 + (int)digit;
+            }
+            break;
+        }
+        return PRDB_SDK_SQL_SYNTAX_ERROR;
+    }
+    if (digit_count == 0) return PRDB_SDK_SQL_SYNTAX_ERROR;
+    if (exponent_negative) exponent = -exponent;
+    scale = (int64_t)fraction_digits - exponent;
+    while (leading_zeroes < digit_count && digits[leading_zeroes] == 0)
+        ++leading_zeroes;
+    if (leading_zeroes == digit_count) {
+        memset(out->coefficient, 0, sizeof(out->coefficient));
+        out->scale = 0;
+        out->offset = start;
+        return PRDB_SDK_SQL_OK;
+    }
+    if (scale < 0) {
+        uint64_t appended = (uint64_t)(-scale);
+        if (appended > 38 || digit_count - leading_zeroes + appended > 38)
+            return PRDB_SDK_SQL_LIMIT_EXCEEDED;
+        if ((uint64_t)digit_count + appended > sizeof(digits))
+            return PRDB_SDK_SQL_LIMIT_EXCEEDED;
+        while (appended-- != 0) digits[digit_count++] = 0;
+        scale = 0;
+    }
+    while (scale > 0 && digit_count > leading_zeroes &&
+           digits[digit_count - 1] == 0) {
+        --digit_count;
+        --scale;
+    }
+    if (scale > 38 || digit_count - leading_zeroes > 38)
+        return PRDB_SDK_SQL_LIMIT_EXCEEDED;
+    for (uint32_t index = leading_zeroes; index < digit_count; ++index) {
+        if (!decimal_multiply_add_digit_v21(magnitude, digits[index]))
+            return PRDB_SDK_SQL_LIMIT_EXCEEDED;
+    }
+    if (!decimal_fits_precision(magnitude, 38))
+        return PRDB_SDK_SQL_LIMIT_EXCEEDED;
+    if (negative) {
+        uint16_t carry = 1;
+        for (size_t index = sizeof(magnitude); index > 0; --index) {
+            uint16_t value = (uint16_t)(uint8_t)~magnitude[index - 1] + carry;
+            magnitude[index - 1] = (uint8_t)value;
+            carry = value >> 8;
+        }
+    }
+    memcpy(out->coefficient, magnitude, sizeof(out->coefficient));
+    out->scale = (uint8_t)scale;
+    out->offset = start;
+    (void)exponent_offset;
+    return PRDB_SDK_SQL_OK;
+}
+
+static int32_t scan_and_mask_having_literals_v21(
+    const uint8_t *sql, uint32_t sql_len, uint8_t *masked_sql,
+    numeric_literal_v21 *literals, uint32_t *literal_count,
+    uint32_t *error_offset) {
+    parser scan = {sql, sql_len, 0, {TOKEN_END, 0, 0}, 0,
+                   PRDB_SDK_SQL_OK};
+    int in_having = 0;
+    token previous = {TOKEN_END, 0, 0};
+    int32_t status = advance(&scan);
+    *literal_count = 0;
+    if (status != PRDB_SDK_SQL_OK) {
+        *error_offset = scan.error_offset;
+        return status;
+    }
+    while (scan.current.kind != TOKEN_END &&
+           scan.current.kind != TOKEN_SEMICOLON) {
+        if (token_is_keyword(&scan, "HAVING")) in_having = 1;
+        else if (in_having &&
+                 (token_is_keyword(&scan, "ORDER") ||
+                  token_is_keyword(&scan, "LIMIT")))
+            in_having = 0;
+        if (in_having && scan.current.kind == TOKEN_NUMBER) {
+            uint32_t start = scan.current.offset;
+            uint32_t end = start + scan.current.length;
+            int is_negative = previous.kind == TOKEN_MINUS;
+            int is_positive = previous.kind == TOKEN_PLUS;
+            if ((is_negative || is_positive) && previous.offset < start) {
+                uint32_t gap = start - (previous.offset + previous.length);
+                int only_space = 1;
+                for (uint32_t index = 0; index < gap; ++index)
+                    if (!is_space(sql[previous.offset + previous.length + index]))
+                        only_space = 0;
+                if (only_space) start = previous.offset;
+            }
+            if (*literal_count >= PRDB_SDK_SQL_V18_MAX_HAVING_NODES) {
+                *error_offset = start;
+                return PRDB_SDK_SQL_LIMIT_EXCEEDED;
+            }
+            status = parse_numeric_literal_v21(sql, start, end,
+                                               &literals[*literal_count]);
+            if (status != PRDB_SDK_SQL_OK) {
+                *error_offset = start;
+                return status;
+            }
+            ++*literal_count;
+            masked_sql[start] = '0';
+            memset(masked_sql + start + 1, ' ', end - start - 1);
+        }
+        previous = scan.current;
+        status = advance(&scan);
+        if (status != PRDB_SDK_SQL_OK) {
+            *error_offset = scan.error_offset;
+            return status;
+        }
+    }
+    return PRDB_SDK_SQL_OK;
+}
+
+int32_t prdb_sdk_sql_parse_select_v21(const uint8_t *sql, uint64_t sql_len,
+                                      prdb_sdk_select_v21 *out,
+                                      uint32_t out_capacity,
+                                      uint32_t *error_offset_out) {
+    uint8_t masked_sql[PRDB_SDK_SQL_MAX_QUERY_BYTES];
+    numeric_literal_v21 literals[PRDB_SDK_SQL_V18_MAX_HAVING_NODES];
+    prdb_sdk_select_v21 result = {0};
+    uint32_t literal_count = 0, literal_index = 0, error_offset = 0;
+    int32_t status;
+
+    if (error_offset_out != NULL) *error_offset_out = 0;
+    if (sql == NULL || out == NULL || out_capacity < sizeof(*out))
+        return PRDB_SDK_SQL_INVALID_ARGUMENT;
+    if (sql_len == 0) return PRDB_SDK_SQL_SYNTAX_ERROR;
+    if (sql_len > PRDB_SDK_SQL_MAX_QUERY_BYTES) {
+        if (error_offset_out != NULL)
+            *error_offset_out = (uint32_t)PRDB_SDK_SQL_MAX_QUERY_BYTES;
+        return PRDB_SDK_SQL_LIMIT_EXCEEDED;
+    }
+    memcpy(masked_sql, sql, (size_t)sql_len);
+    status = scan_and_mask_having_literals_v21(
+        sql, (uint32_t)sql_len, masked_sql, literals, &literal_count,
+        &error_offset);
+    if (status != PRDB_SDK_SQL_OK) {
+        if (error_offset_out != NULL) *error_offset_out = error_offset;
+        return status;
+    }
+    status = prdb_sdk_sql_parse_select_v18(
+        masked_sql, sql_len, &result.base, sizeof(result.base),
+        &error_offset);
+    if (status != PRDB_SDK_SQL_OK) {
+        if (error_offset_out != NULL) *error_offset_out = error_offset;
+        return status;
+    }
+    result.base.base.base.base.base.base.sql = sql;
+    for (uint32_t index = 0; index < result.base.having_node_count; ++index) {
+        prdb_sdk_sql_having_node_v18 *base_node =
+            &result.base.having_nodes[index];
+        prdb_sdk_sql_having_node_v21 *node = &result.having_nodes[index];
+        node->base = *base_node;
+        if (base_node->node_kind == PRDB_SDK_SQL_PREDICATE_COMPARE &&
+            base_node->operand_kind == PRDB_SDK_SQL_V18_OPERAND_BIGINT_LITERAL) {
+            if (literal_index >= literal_count) {
+                if (error_offset_out != NULL)
+                    *error_offset_out = literals[0].offset;
+                return PRDB_SDK_SQL_SYNTAX_ERROR;
+            }
+            node->base.operand_kind =
+                PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL;
+            node->base.literal = 0;
+            node->base.parameter_index = 0;
+            memcpy(node->coefficient, literals[literal_index].coefficient,
+                   sizeof(node->coefficient));
+            node->scale = literals[literal_index].scale;
+            ++literal_index;
+        }
+    }
+    if (literal_index != literal_count) {
+        if (error_offset_out != NULL)
+            *error_offset_out = literals[literal_index].offset;
+        return PRDB_SDK_SQL_SYNTAX_ERROR;
+    }
+    result.struct_size = sizeof(result);
+    result.abi_version = PRDB_SDK_SQL_ABI_V21_VERSION;
+    *out = result;
+    return PRDB_SDK_SQL_OK;
+}
+
+static void decimal_magnitude_v21(const uint8_t coefficient[16],
+                                  uint8_t magnitude[16], int *negative) {
+    *negative = (coefficient[0] & 0x80) != 0;
+    memcpy(magnitude, coefficient, 16);
+    if (*negative) {
+        uint16_t carry = 1;
+        for (size_t index = 16; index > 0; --index) {
+            uint16_t value = (uint16_t)(uint8_t)~magnitude[index - 1] + carry;
+            magnitude[index - 1] = (uint8_t)value;
+            carry = value >> 8;
+        }
+    }
+}
+
+static int bytes_are_zero(const uint8_t *bytes, size_t length) {
+    for (size_t index = 0; index < length; ++index)
+        if (bytes[index] != 0) return 0;
+    return 1;
+}
+
+static int numeric_literal_is_canonical_v21(
+    const prdb_sdk_sql_having_node_v21 *node) {
+    uint8_t magnitude[16];
+    int negative;
+    uint16_t remainder = 0;
+    int is_zero = 1;
+    decimal_magnitude_v21(node->coefficient, magnitude, &negative);
+    (void)negative;
+    if (node->scale > 38 || !decimal_fits_precision(node->coefficient, 38))
+        return 0;
+    for (size_t index = 0; index < sizeof(magnitude); ++index) {
+        if (magnitude[index] != 0) is_zero = 0;
+        uint16_t value = (uint16_t)remainder * 256 + magnitude[index];
+        remainder = (uint16_t)(value % 10);
+    }
+    return is_zero ? node->scale == 0
+                   : node->scale == 0 || remainder != 0;
+}
+
+static int32_t rescale_numeric_literal_v21(
+    const prdb_sdk_sql_having_node_v21 *node, uint32_t target_type,
+    uint8_t target_scale, uint8_t coefficient_out[16]) {
+    uint8_t magnitude[16];
+    uint32_t source_scale = node->scale;
+    int negative;
+    decimal_magnitude_v21(node->coefficient, magnitude, &negative);
+    if (target_type != PRDB_SDK_VALUE_TYPE_BIGINT &&
+        target_type != PRDB_SDK_VALUE_TYPE_DECIMAL)
+        return 0;
+    if (target_type == PRDB_SDK_VALUE_TYPE_BIGINT) target_scale = 0;
+    if (source_scale < target_scale) {
+        for (uint32_t step = source_scale; step < target_scale; ++step) {
+            uint16_t carry = 0;
+            for (size_t index = sizeof(magnitude); index > 0; --index) {
+                uint16_t value = (uint16_t)magnitude[index - 1] * 10 + carry;
+                magnitude[index - 1] = (uint8_t)value;
+                carry = value >> 8;
+            }
+            if (carry != 0) return 0;
+        }
+    } else {
+        for (uint32_t step = target_scale; step < source_scale; ++step) {
+            uint16_t remainder = 0;
+            for (size_t index = 0; index < sizeof(magnitude); ++index) {
+                uint16_t value = (uint16_t)remainder * 256 + magnitude[index];
+                magnitude[index] = (uint8_t)(value / 10);
+                remainder = (uint16_t)(value % 10);
+            }
+            if (remainder != 0) return 0;
+        }
+    }
+    if (negative) {
+        uint16_t carry = 1;
+        for (size_t index = sizeof(magnitude); index > 0; --index) {
+            uint16_t value = (uint16_t)(uint8_t)~magnitude[index - 1] + carry;
+            magnitude[index - 1] = (uint8_t)value;
+            carry = value >> 8;
+        }
+    }
+    if (target_type == PRDB_SDK_VALUE_TYPE_BIGINT) {
+        uint8_t fill = negative ? 0xff : 0;
+        for (size_t index = 0; index < 8; ++index)
+            if (magnitude[index] != fill) return 0;
+    } else if (!decimal_fits_precision(magnitude, 38)) {
+        return 0;
+    }
+    memcpy(coefficient_out, magnitude, 16);
+    return 1;
+}
+
+int32_t prdb_sdk_sql_bind_select_v21(
+    const prdb_sdk_select_v21 *statement, const uint8_t *relation_name,
+    uint32_t relation_name_len,
+    const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
+    prdb_sdk_select_binding_v21 *out, uint32_t out_capacity) {
+    prdb_sdk_select_v18 base_statement;
+    prdb_sdk_select_binding_v21 result = {0};
+    int32_t status;
+    if (statement == NULL || out == NULL || out_capacity < sizeof(*out))
+        return PRDB_SDK_SQL_BIND_INVALID_ARGUMENT;
+    if (statement->struct_size < sizeof(*statement) ||
+        statement->abi_version != PRDB_SDK_SQL_ABI_V21_VERSION)
+        return PRDB_SDK_SQL_BIND_INVALID_STATEMENT;
+    base_statement = statement->base;
+    for (uint32_t index = 0; index < PRDB_SDK_SQL_V18_MAX_HAVING_NODES;
+         ++index) {
+        const prdb_sdk_sql_having_node_v21 *node =
+            &statement->having_nodes[index];
+        if (index >= statement->base.having_node_count) {
+            const prdb_sdk_sql_having_node_v21 zero = {0};
+            if (memcmp(node, &zero, sizeof(zero)) != 0)
+                return PRDB_SDK_SQL_BIND_INVALID_STATEMENT;
+            continue;
+        }
+        if (node->base.node_kind != statement->base.having_nodes[index].node_kind ||
+            node->base.left_child != statement->base.having_nodes[index].left_child ||
+            node->base.right_child != statement->base.having_nodes[index].right_child ||
+            node->base.comparison != statement->base.having_nodes[index].comparison ||
+            node->base.operand_kind !=
+                (statement->base.having_nodes[index].node_kind ==
+                         PRDB_SDK_SQL_PREDICATE_COMPARE &&
+                         statement->base.having_nodes[index].operand_kind ==
+                             PRDB_SDK_SQL_V18_OPERAND_BIGINT_LITERAL
+                     ? PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL
+                     : statement->base.having_nodes[index].operand_kind) ||
+            (node->base.operand_kind == PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL &&
+             (node->base.parameter_index != 0 || node->base.literal != 0 ||
+              !numeric_literal_is_canonical_v21(node))) ||
+            (node->base.operand_kind !=
+                 PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL &&
+             (node->scale != 0 ||
+              !bytes_are_zero(node->coefficient,
+                              sizeof(node->coefficient))))
+            ) return PRDB_SDK_SQL_BIND_INVALID_STATEMENT;
+        for (size_t reserved = 0; reserved < sizeof(node->reserved); ++reserved)
+            if (node->reserved[reserved] != 0)
+                return PRDB_SDK_SQL_BIND_INVALID_STATEMENT;
+        base_statement.having_nodes[index] = node->base;
+        if (node->base.operand_kind == PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL) {
+            base_statement.having_nodes[index].operand_kind =
+                PRDB_SDK_SQL_V18_OPERAND_PARAMETER;
+            base_statement.having_nodes[index].parameter_index = 1;
+        }
+    }
+    status = prdb_sdk_sql_bind_select_v18(
+        &base_statement, relation_name, relation_name_len, columns, column_count,
+        &result.base, sizeof(result.base));
+    if (status != PRDB_SDK_SQL_BIND_OK) return status;
+    for (uint32_t index = 0; index < statement->base.having_node_count; ++index) {
+        const prdb_sdk_sql_having_node_v21 *input =
+            &statement->having_nodes[index];
+        prdb_sdk_sql_having_node_v21 *bound = &result.having_nodes[index];
+        bound->base = result.base.having_nodes[index];
+        if (input->base.node_kind == PRDB_SDK_SQL_PREDICATE_COMPARE &&
+            input->base.operand_kind == PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL) {
+            uint32_t type = result.base.having_type_code;
+            uint8_t scale = type == PRDB_SDK_VALUE_TYPE_DECIMAL
+                                ? result.base.having_decimal_scale
+                                : 0;
+            if (!rescale_numeric_literal_v21(input, type, scale,
+                                             bound->coefficient))
+                return PRDB_SDK_SQL_BIND_V21_LITERAL_TYPE_MISMATCH;
+            bound->base.operand_kind = PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL;
+            bound->base.parameter_index = 0;
+            bound->base.literal = 0;
+            bound->scale = scale;
+        } else {
+            memcpy(bound->coefficient, input->coefficient,
+                   sizeof(bound->coefficient));
+            bound->scale = input->scale;
+        }
+    }
+    result.struct_size = sizeof(result);
+    result.abi_version = PRDB_SDK_SQL_ABI_V21_VERSION;
     *out = result;
     return PRDB_SDK_SQL_BIND_OK;
 }

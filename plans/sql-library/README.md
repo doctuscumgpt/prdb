@@ -21,6 +21,8 @@ Specify grammar/parameter syntax, AST and physical-plan formats, SQL API and res
 | SQL-7 | Small authorized-view join/group/sort fixtures match independently calculated results | Add required inner equijoins (including aliases and qualified filters), GROUP BY, COUNT/SUM/MIN/MAX/AVG, ORDER BY and HAVING one operator at a time with optimizer support and precise null/overflow/redaction rules |
 | SQL-8 | Hash/sort/aggregate budget exhaustion and cancellation fail without uncontrolled spill or partial commit | Bounded operator memory/output; COUNT(*) counts visible rows; required redacted operands fail rather than silently disappearing |
 
+SQL-7's HAVING type coverage proceeds through separately versioned SDK increments. V21 adds exact signed integer, fractional, and exponent literals for compound grouped HAVING, with decimal scale coercion checked before scans; earlier parser and binding ABIs remain frozen. Its acceptance evidence belongs in [`PROGRESS.md`](PROGRESS.md), and broader analytical type/workload and spill evidence remains open.
+
 ## Acceptance and Handoff
 
 Maintain a feature/type/operator matrix against specs and compare interpreter results/errors with small independent authorized-view fixtures. Fuzz the C parser separately from Rust query/plan decoders. C unit executables are maintained SDK tests; query artifacts run only through the sandbox harness. Initial SQL completion does not complete analytical support. First behavior: one supported SELECT parse fixture and one unsupported-statement error, once grammar and bounds are specified.

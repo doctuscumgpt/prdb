@@ -6,6 +6,7 @@
 #include "prdb_sdk_sql_exec_v15.h"
 #include "prdb_sdk_sql_exec_v17.h"
 #include "prdb_sdk_sql_exec_v18.h"
+#include "prdb_sdk_sql_exec_v21.h"
 
 #include <assert.h>
 #include <string.h>
@@ -91,12 +92,51 @@ static uint32_t make_relation(uint8_t *p, uint8_t handle_kind,
     return offset;
 }
 
+static uint32_t make_decimal_relation(uint8_t *p, uint8_t handle_kind,
+                                     uint8_t handle_fill) {
+    uint32_t offset = 0;
+    put_u16(p, &offset, 1);
+    p[offset++] = 0;
+    memset(p + offset, 0x11, 16); offset += 16;
+    p[offset++] = handle_kind;
+    memset(p + offset, handle_fill, 15); offset += 15;
+    put_name(p, &offset, "widgets");
+    put_u16(p, &offset, 2);
+    for (uint32_t index = 0; index < 2; ++index) {
+        memset(p + offset, (int)(0x33 + index), 16); offset += 16;
+        put_u32(p, &offset, index);
+        p[offset++] = 1;
+        p[offset++] = index == 0 ? PRDB_SDK_VALUE_TYPE_INTEGER
+                                 : PRDB_SDK_VALUE_TYPE_DECIMAL;
+        p[offset++] = index == 0 ? 0 : 10;
+        p[offset++] = index == 0 ? 0 : 2;
+        p[offset++] = 0;
+        p[offset++] = 0;
+        put_name(p, &offset, index == 0 ? "id" : "score");
+    }
+    return offset;
+}
+
 static void append_integer_cell(uint8_t *p, uint32_t *offset, int32_t value) {
     uint32_t bits = (uint32_t)value;
     p[(*offset)++] = PRDB_SDK_VALUE_STATE_VALUE;
     p[(*offset)++] = PRDB_SDK_VALUE_TYPE_INTEGER;
     put_u32(p, offset, 4);
     put_u32(p, offset, bits);
+}
+
+static void append_decimal_cell(uint8_t *p, uint32_t *offset,
+                                int64_t coefficient) {
+    uint64_t bits = (uint64_t)coefficient;
+    p[(*offset)++] = PRDB_SDK_VALUE_STATE_VALUE;
+    p[(*offset)++] = PRDB_SDK_VALUE_TYPE_DECIMAL;
+    put_u32(p, offset, 16);
+    memset(p + *offset, coefficient < 0 ? 0xff : 0, 16);
+    for (uint32_t index = 0; index < 8; ++index) {
+        p[*offset + 15 - index] = (uint8_t)bits;
+        bits >>= 8;
+    }
+    *offset += 16;
 }
 
 static void append_text_cell(uint8_t *p, uint32_t *offset,
@@ -156,6 +196,28 @@ static uint32_t make_rows(uint8_t *p, uint32_t finished,
         } else {
             p[offset++] = score_states[index];
         }
+    }
+    return offset;
+}
+
+static uint32_t make_decimal_rows(uint8_t *p, uint32_t finished,
+                                 const int32_t *keys,
+                                 const int64_t *coefficients,
+                                 uint16_t row_count) {
+    uint32_t offset = 0;
+    put_u16(p, &offset, 1);
+    p[offset++] = (uint8_t)finished;
+    if (!finished) {
+        p[offset++] = 7;
+        memset(p + offset, 0x55, 15); offset += 15;
+    }
+    put_u16(p, &offset, row_count);
+    for (uint32_t index = 0; index < row_count; ++index) {
+        p[offset++] = 8;
+        memset(p + offset, (int)(index + 1), 15); offset += 15;
+        put_u16(p, &offset, 2);
+        append_integer_cell(p, &offset, keys[index]);
+        append_decimal_cell(p, &offset, coefficients[index]);
     }
     return offset;
 }
@@ -817,6 +879,70 @@ static int32_t run_query_v18(mock_state *mock, const uint8_t *sql,
         materialized_bytes, sizeof(materialized_bytes), on_group_v18, capture);
 }
 
+static int32_t on_group_v21_decimal(
+    void *context, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v21 *binding) {
+    group_capture *capture = (group_capture *)context;
+    int32_t key = 0;
+    uint64_t aggregate_bits = 0;
+    int64_t aggregate_coefficient;
+    assert(binding->abi_version == PRDB_SDK_SQL_ABI_V21_VERSION);
+    assert(binding->base.having_type_code == PRDB_SDK_VALUE_TYPE_DECIMAL);
+    assert(binding->base.having_decimal_scale == 2);
+    assert(binding->base.having_node_count == 1);
+    assert(binding->having_nodes[0].scale == 2);
+    assert(binding->having_nodes[0].base.operand_kind ==
+           PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL);
+    assert(binding->having_nodes[0].coefficient[14] == 1 &&
+           binding->having_nodes[0].coefficient[15] == 0xc2);
+    assert(group_key_count == 2 && aggregate_value != NULL);
+    assert(matching_row_count == 1 && capture->mock->batch_finished != 0);
+    assert(prdb_sdk_value_get_integer_v1(&group_keys[0], &key) ==
+           PRDB_SDK_VALUE_ACCESS_OK);
+    assert(aggregate_value->type_code == PRDB_SDK_VALUE_TYPE_DECIMAL &&
+           aggregate_value->data_len == 16);
+    for (uint32_t index = 0; index < 8; ++index)
+        assert(aggregate_value->data[index] == 0);
+    for (uint32_t index = 0; index < 8; ++index)
+        aggregate_bits = (aggregate_bits << 8) | aggregate_value->data[index + 8];
+    aggregate_coefficient = (int64_t)aggregate_bits;
+    capture->keys[capture->calls] = key;
+    capture->aggregates[capture->calls] = (int32_t)(aggregate_coefficient / 100);
+    ++capture->calls;
+    return 0;
+}
+
+static int32_t run_query_v21_decimal(mock_state *mock, const uint8_t *sql,
+                                     uint64_t sql_len,
+                                     group_capture *capture) {
+    static const uint8_t schema[] = "app";
+    static const uint8_t id_name[] = "id";
+    static const uint8_t score_name[] = "score";
+    uint8_t planner_response[256] = {0};
+    uint8_t executor_response[256] = {0};
+    uint8_t batch_response[512] = {0};
+    uint8_t materialized_bytes[2048] = {0};
+    prdb_sdk_sql_column_shape_v2 planner_columns[2] = {
+        {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
+        {score_name, 5, 1, PRDB_SDK_VALUE_TYPE_DECIMAL, 10, 2}};
+    prdb_sdk_sql_column_shape_v2 executor_columns[2] = {
+        {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
+        {score_name, 5, 1, PRDB_SDK_VALUE_TYPE_DECIMAL, 10, 2}};
+    prdb_sdk_value_v1 cell_scratch[2] = {{0}};
+    prdb_host_api_v3 host = {sizeof(host), PRDB_QUERY_ABI_V3_VERSION,
+                             mock, executor_request, planner_request, NULL,
+                             statement_failure};
+    return prdb_sdk_sql_execute_group_v21(
+        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0, 4, 512,
+        planner_response, sizeof(planner_response), executor_response,
+        sizeof(executor_response), batch_response, sizeof(batch_response),
+        planner_columns, 2, executor_columns, 2, cell_scratch, 2,
+        materialized_bytes, sizeof(materialized_bytes), on_group_v21_decimal,
+        capture);
+}
+
 static void reset_scan(mock_state *mock, group_capture *capture,
                        uint32_t finished) {
     mock->executor_calls = 0;
@@ -924,6 +1050,9 @@ int main(void) {
     static const uint8_t v18_negative_literal_sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
         "HAVING SUM(score) >= -1";
+    static const uint8_t v21_decimal_literal_sql[] =
+        "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
+        "HAVING SUM(score) >= 4.50e0";
     static const uint8_t v13_many_groups_sql[] =
         "SELECT id, score, COUNT(*) FROM widgets GROUP BY id, score";
     static const uint8_t parameter_bytes[] = {0, 0, 0, 5};
@@ -1539,5 +1668,22 @@ int main(void) {
                      &capture) == PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
     assert(capture.calls == 0 && mock.next_calls == 1 &&
            mock.executor_calls == 4 && mock.statement_failed == 1);
+
+    {
+        const int64_t decimal_coefficients[] = {900, 300, 500};
+        mock.planner_len = make_decimal_relation(
+            mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99);
+        mock.executor_len = make_decimal_relation(mock.executor, 6, 0x22);
+        mock.batch_len = make_decimal_rows(mock.batch, 1, keys,
+                                           decimal_coefficients, 3);
+        reset_scan(&mock, &capture, 1);
+        assert(run_query_v21_decimal(
+                   &mock, v21_decimal_literal_sql,
+                   sizeof(v21_decimal_literal_sql) - 1, &capture) ==
+               PRDB_SDK_SQL_EXEC_OK);
+        assert(capture.calls == 2 && capture.keys[0] == 1 &&
+               capture.aggregates[0] == 9 && capture.keys[1] == 2 &&
+               capture.aggregates[1] == 5 && mock.statement_failed == 0);
+    }
     return 0;
 }

@@ -1,5 +1,13 @@
 # SQL Library Progress
 
+## SQL-7 follow-up: exact fractional and exponent HAVING literals — verified
+
+- Contract: [SQL library](../../specs/sql-library.md). V21 extends compound grouped HAVING with exact signed integer, fractional, and exponent numeric literals while preserving v1-v20 layouts and parser behavior.
+- Implementation: the new v21 parser stores normalized signed decimal coefficients and scale; binding requires exact conversion to BIGINT or the selected DECIMAL result scale before scans. The v21 runner carries those canonical bytes through the bounded v18 grouping, validation, ordering, and callback path.
+- Regression: maintained TinyCC parser/binder coverage exercises signed and exponent forms, exact decimal rescaling, inexact BIGINT rejection, malformed exponents, and frozen v18 rejection. The executor fixture checks Decimal SUM filtering with `4.50e0`; the ASan/UBSan/libFuzzer harness checks parser and binding invariants.
+- Verification: maintained TinyCC SDK suite, shared-library ABI fixture, sandbox query artifact build, and 10,000 ASan/UBSan/libFuzzer runs passed. Locked workspace build, format check, warning-denied Clippy, and the full serial locked workspace test suite passed inside the delegated service with all confined/process tests enabled. `git diff --check` passed.
+- Remaining: broader analytical type/workload coverage, spill support, and end-to-end pressure testing remain open.
+
 ## SQL-5 follow-up: confined indexed-range equivalence — verified
 
 - Contract: [SQL library](../../specs/sql-library.md) and [planner/compiler](../../specs/planner-compiler.md). A validated two-sided leading-key range over an authorized non-unique index must return the same projected rows as the normal authorized SQL scan on the invocation snapshot.
@@ -664,4 +672,4 @@
 - Implementation: the shared lexer recognizes a unary minus token, and the v18 literal parser bounds positive and negative magnitudes separately before storing a canonical two's-complement bit pattern in the existing `uint64_t` node field. V18 binding accepts the full signed bit range while retaining the BIGINT aggregate type requirement. The v18 grouped runner already serializes the stored bits as canonical big-endian BIGINT bytes, so negative thresholds use the normal typed comparison path without changing the AST layout.
 - Regression: maintained parser/binder fixture covers `INT64_MIN`, rejects `-9223372036854775809`, and confirms signed metadata survives binding. The grouped runner fixture executes `SUM(score) >= -1` and verifies all three non-NULL groups are emitted. The v18 fuzz corpus now includes the signed minimum boundary.
 - Verification: focused v18 parser and grouped runner fixtures passed. `make -f engine/sdk/Makefile test sandbox-query-fixture` passed. `make -f engine/sdk/Makefile fuzz-sql-v18` completed 10,000 runs from five checked-in seeds without sanitizer findings (1,219 coverage counters). Locked workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed; the suite reported 233 library tests, 172 commit tests, and 75 transaction tests, with no ignored tests. `git diff --check` passed.
-- Remaining: fractional and exponent HAVING literals remain unsupported; broader analytical stress and measurement work remains open.
+- Historical status at this checkpoint: fractional and exponent HAVING literals were unsupported; the v21 implementation above addresses that gap. Broader analytical stress and measurement work remains open.
