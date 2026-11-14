@@ -24990,6 +24990,228 @@ fn process_crash_during_column_default_change_recovers_all_or_none()
 }
 
 #[test]
+fn process_crash_during_not_null_change_recovers_all_or_none()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
+
+    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_CRASH_DURING_NOT_NULL_DATABASE";
+    const CHILD_BOUNDARY_ENV: &str = "PRDB_TEST_CRASH_DURING_NOT_NULL_BOUNDARY";
+    const CHILD_OPERATION_ENV: &str = "PRDB_TEST_CRASH_DURING_NOT_NULL_OPERATION";
+    const CHILD_EXIT_CODE: i32 = 87;
+    const POST_COMMIT_EXIT_CODE: i32 = 88;
+    const ACTOR_ID: [u8; 16] = [0xe6; 16];
+    const TABLE_ID: [u8; 16] = [82; 16];
+    const COLUMN_ID: [u8; 16] = [84; 16];
+    const INVOCATION_ID: [u8; 16] = [0xe7; 16];
+    const AUDIT_ID: [u8; 16] = [0xe8; 16];
+
+    if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
+        let database_path = std::path::PathBuf::from(database_path);
+        let boundary = std::env::var(CHILD_BOUNDARY_ENV)?;
+        let operation = std::env::var(CHILD_OPERATION_ENV)?;
+        let nullable = match operation.as_str() {
+            "set" => false,
+            "drop" => true,
+            _ => return Err(format!("unknown NOT NULL operation {operation}").into()),
+        };
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&database_path)?;
+        let armed = Arc::new(AtomicBool::new(false));
+        let instrumented = Database::builder().create_with_backend(ExitAfterNextWriteBackend {
+            inner: redb::backends::FileBackend::new(file)?,
+            armed: armed.clone(),
+            exit_code: CHILD_EXIT_CODE,
+        })?;
+        let storage = StorageManager::new(&instrumented, Duration::from_millis(100))?;
+        let mut audit = identity_audit_event(AUDIT_ID[0], ACTOR_ID, COLUMN_ID);
+        audit.event_id = AUDIT_ID;
+        audit.correlation_id = INVOCATION_ID;
+        if boundary == "write" {
+            armed.store(true, Ordering::SeqCst);
+        } else if boundary != "after_commit" {
+            return Err(format!("unknown NOT NULL crash boundary {boundary}").into());
+        }
+        let result = storage.set_column_nullable(
+            INVOCATION_ID,
+            ACTOR_ID,
+            TABLE_ID,
+            COLUMN_ID,
+            nullable,
+            i64::MAX,
+            audit,
+        );
+        if boundary == "write" {
+            return Err(format!(
+                "NOT NULL change returned without injected backend-write exit: {result:?}"
+            )
+            .into());
+        }
+        result?;
+        std::process::exit(POST_COMMIT_EXIT_CODE);
+    }
+
+    for operation in ["set", "drop"] {
+        for (boundary, expected_exit) in [
+            ("write", CHILD_EXIT_CODE),
+            ("after_commit", POST_COMMIT_EXIT_CODE),
+        ] {
+            let fixture = Fixture::new();
+            let database_path = fixture.path();
+            let database = initialize(&database_path)?;
+            let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+            let admin_role = builtin_owner_id();
+            let mut setup_writes = foreign_key_catalog_writes(false, true)
+                .into_iter()
+                .filter(|write| {
+                    write.key != id_catalog_key(8, id(86))
+                        && write.key != id_catalog_key(2, id(86))
+                        && write.key != dependency_write(id(86), id(85), 3).key
+                })
+                .collect::<Vec<_>>();
+            setup_writes.extend([
+                principal_write_with_name(ACTOR_ID, 1, 1, "not_null_crash_actor"),
+                object_write_with_name(ACTOR_ID, 8, "not_null_crash_actor"),
+                membership_write(ACTOR_ID, admin_role),
+                dependency_write(ACTOR_ID, admin_role, 5),
+            ]);
+            let mut setup_audit = identity_audit_event(0xe9, admin_role, id(0xea));
+            setup_audit.action = AuditAction::AuthorityChange;
+            storage.commit_catalog_and_audit(
+                id(0xea),
+                admin_role,
+                i64::MAX,
+                &setup_writes,
+                &[setup_audit],
+            )?;
+            if operation == "drop" {
+                let mut seed_audit = identity_audit_event(0xeb, ACTOR_ID, COLUMN_ID);
+                seed_audit.correlation_id = id(0xec);
+                storage.set_column_nullable(
+                    id(0xec),
+                    ACTOR_ID,
+                    TABLE_ID,
+                    COLUMN_ID,
+                    false,
+                    i64::MAX,
+                    seed_audit,
+                )?;
+            }
+            let before_sequence = commit_sequence(&database)?;
+            let before_epoch = {
+                let read = database.begin_read()?;
+                let catalog = read.open_table(CATALOG)?;
+                let table = catalog
+                    .get(id_catalog_key(5, TABLE_ID).as_slice())?
+                    .ok_or("NOT NULL table missing before DDL")?;
+                u64::from_le_bytes(
+                    decode_registered_envelope(table.value())?
+                        .fields
+                        .iter()
+                        .find(|field| field.tag == 3)
+                        .ok_or("NOT NULL table epoch missing before DDL")?
+                        .payload
+                        .as_slice()
+                        .try_into()?,
+                )
+            };
+            drop(storage);
+            drop(database);
+
+            let child_status = Command::new(std::env::current_exe()?)
+                .arg("--exact")
+                .arg("process_crash_during_not_null_change_recovers_all_or_none")
+                .arg("--nocapture")
+                .env(CHILD_DATABASE_ENV, &database_path)
+                .env(CHILD_BOUNDARY_ENV, boundary)
+                .env(CHILD_OPERATION_ENV, operation)
+                .status()?;
+            assert_eq!(
+                child_status.code(),
+                Some(expected_exit),
+                "NOT NULL {operation} child missed the {boundary} crash boundary: {child_status}"
+            );
+
+            let reopened = Database::open(&database_path)?;
+            let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+            let read = reopened.begin_read()?;
+            let catalog = read.open_table(CATALOG)?;
+            let column = catalog
+                .get(id_catalog_key(6, COLUMN_ID).as_slice())?
+                .ok_or("NOT NULL column missing after reopen")?;
+            let column_record = decode_registered_envelope(column.value())?;
+            let nullable_field = column_record
+                .fields
+                .iter()
+                .find(|field| field.tag == 6)
+                .ok_or("NOT NULL nullable flag missing after reopen")?
+                .payload
+                .as_slice();
+            let nullable = match nullable_field {
+                [0] => false,
+                [1] => true,
+                _ => return Err("invalid recovered nullable flag".into()),
+            };
+            let committed = boundary == "after_commit";
+            let expected_nullable = if operation == "set" {
+                !committed
+            } else {
+                committed
+            };
+            assert_eq!(nullable, expected_nullable);
+            let constraint_ids =
+                prdb_engine::catalog_index::scan_constraint_ids_for_table(&read, TABLE_ID, 1)?;
+            assert_eq!(constraint_ids.len(), usize::from(!expected_nullable));
+            if let Some(constraint_id) = constraint_ids.first() {
+                assert!(
+                    catalog
+                        .get(id_catalog_key(2, *constraint_id).as_slice())?
+                        .is_some()
+                );
+            }
+            let table = catalog
+                .get(id_catalog_key(5, TABLE_ID).as_slice())?
+                .ok_or("NOT NULL table missing after reopen")?;
+            let epoch = u64::from_le_bytes(
+                decode_registered_envelope(table.value())?
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 3)
+                    .ok_or("NOT NULL table epoch missing after reopen")?
+                    .payload
+                    .as_slice()
+                    .try_into()?,
+            );
+            assert_eq!(epoch, before_epoch + u64::from(committed));
+            let sequence = commit_sequence(&reopened)?;
+            assert_eq!(sequence, before_sequence + u64::from(committed));
+            let audit_exists = read
+                .open_table(schema::AUDIT)?
+                .get(&AUDIT_ID[..])?
+                .is_some();
+            assert_eq!(audit_exists, committed);
+            let outcome = read
+                .open_table(schema::OUTCOMES)?
+                .get(&INVOCATION_ID[..])?
+                .map(|value| InvocationOutcome::decode(value.value()))
+                .transpose()?;
+            if committed {
+                let outcome = outcome.ok_or("committed NOT NULL outcome missing")?;
+                assert_eq!(outcome.status, OutcomeStatus::Committed);
+                assert_eq!(outcome.commit_sequence, sequence);
+            } else {
+                assert_eq!(outcome, None);
+            }
+            drop(catalog);
+            drop(read);
+            prdb_engine::startup::validate_persisted_records(&reopened)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn process_crash_during_primary_key_creation_recovers_all_or_none()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{
