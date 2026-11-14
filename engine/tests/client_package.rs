@@ -121,6 +121,18 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
             Some(br#"{"format":"PDB-SQL-PARAMETERS-1","values":[],"extra":true}"#.to_vec()),
             "invalid SQL parameter file",
         ),
+        (
+            "noncanonical-integer-parameter",
+            b"SELECT $1".to_vec(),
+            Some(br#"{"format":"PDB-SQL-PARAMETERS-1","values":[{"type":"integer","value":"042"}]}"#.to_vec()),
+            "invalid SQL parameter file",
+        ),
+        (
+            "malformed-bytea-parameter",
+            b"SELECT $1".to_vec(),
+            Some(br#"{"format":"PDB-SQL-PARAMETERS-1","values":[{"type":"bytea","value":"hex:0G"}]}"#.to_vec()),
+            "invalid SQL parameter file",
+        ),
     ];
 
     for (case, sql, parameters, expected_error) in local_failures {
