@@ -4184,6 +4184,31 @@ pub(crate) enum ResponseValue {
     Null,
 }
 
+struct ZeroizingResponseFields(HashMap<String, ResponseValue>);
+
+impl Zeroize for ZeroizingResponseFields {
+    fn zeroize(&mut self) {
+        for (mut key, mut value) in self.0.drain() {
+            key.zeroize();
+            value.zeroize();
+        }
+    }
+}
+
+impl std::ops::Deref for ZeroizingResponseFields {
+    type Target = HashMap<String, ResponseValue>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ZeroizingResponseFields {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 impl Zeroize for ResponseValue {
     fn zeroize(&mut self) {
         match self {
@@ -4298,11 +4323,12 @@ pub(crate) fn parse_bounded_json_value(
         offset: 0,
     };
     parser.skip_whitespace();
-    let value = parse_response_value(&mut parser, 0)?;
+    let mut value = Zeroizing::new(parse_response_value(&mut parser, 0)?);
     parser.skip_whitespace();
-    (parser.offset == parser.text.len())
-        .then_some(value)
-        .ok_or(ClientSubmitError::InvalidResponse)
+    if parser.offset != parser.text.len() {
+        return Err(ClientSubmitError::InvalidResponse);
+    }
+    Ok(std::mem::replace(&mut *value, ResponseValue::Null))
 }
 
 fn parse_response_object(
@@ -4316,28 +4342,33 @@ fn parse_response_object(
     parser
         .expect(b'{')
         .map_err(|_| ClientSubmitError::InvalidResponse)?;
-    let mut fields = HashMap::new();
+    let mut fields = Zeroizing::new(ZeroizingResponseFields(HashMap::new()));
     parser.skip_whitespace();
     if parser.consume(b'}') {
-        return Ok(fields);
+        return Ok(std::mem::take(&mut fields.0));
     }
     loop {
         parser.skip_whitespace();
-        let key = parser
-            .parse_string()
-            .map_err(|_| ClientSubmitError::InvalidResponse)?;
+        let mut key = Zeroizing::new(
+            parser
+                .parse_string()
+                .map_err(|_| ClientSubmitError::InvalidResponse)?,
+        );
         parser.skip_whitespace();
         parser
             .expect(b':')
             .map_err(|_| ClientSubmitError::InvalidResponse)?;
         parser.skip_whitespace();
-        let value = parse_response_value(parser, depth + 1)?;
-        if fields.insert(key, value).is_some() {
+        let mut value = Zeroizing::new(parse_response_value(parser, depth + 1)?);
+        if fields.contains_key(key.as_str()) {
             return Err(ClientSubmitError::InvalidResponse);
         }
+        let key = std::mem::take(&mut *key);
+        let value = std::mem::replace(&mut *value, ResponseValue::Null);
+        fields.insert(key, value);
         parser.skip_whitespace();
         if parser.consume(b'}') {
-            return Ok(fields);
+            return Ok(std::mem::take(&mut fields.0));
         }
         parser
             .expect(b',')
@@ -4364,16 +4395,16 @@ fn parse_response_value(
             parser
                 .expect(b'[')
                 .map_err(|_| ClientSubmitError::InvalidResponse)?;
-            let mut values = Vec::new();
+            let mut values = Zeroizing::new(Vec::new());
             parser.skip_whitespace();
             if parser.consume(b']') {
-                return Ok(ResponseValue::Array(values));
+                return Ok(ResponseValue::Array(std::mem::take(&mut *values)));
             }
             loop {
                 values.push(parse_response_value(parser, depth + 1)?);
                 parser.skip_whitespace();
                 if parser.consume(b']') {
-                    return Ok(ResponseValue::Array(values));
+                    return Ok(ResponseValue::Array(std::mem::take(&mut *values)));
                 }
                 parser
                     .expect(b',')
@@ -4463,9 +4494,10 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClientSubmitError, ResponseValue, decode_hex_array, decode_token_secret,
-        encode_admin_table_columns, is_normalized_index_name, parse_canonical_positive_u64,
-        parse_flat_response, validate_admin_id, validate_admin_name, validate_index_request,
+        CLIENT_MAX_CONTROL_BYTES, ClientSubmitError, ResponseValue, decode_hex_array,
+        decode_token_secret, encode_admin_table_columns, is_normalized_index_name,
+        parse_bounded_json_value, parse_canonical_positive_u64, parse_flat_response,
+        validate_admin_id, validate_admin_name, validate_index_request,
     };
 
     #[test]
@@ -4581,7 +4613,15 @@ mod tests {
             ResponseValue::Array(vec![])
         );
         assert!(parse_flat_response(br#"{"nested":{"a":1,"a":2}}"#).is_err());
+        assert!(
+            parse_bounded_json_value(
+                br#"{"outer":["parameter-secret",{"inner":"partial"},"unterminated"#,
+                CLIENT_MAX_CONTROL_BYTES,
+            )
+            .is_err()
+        );
         assert!(parse_flat_response(br#"{"value":01}"#).is_err());
+        assert!(parse_flat_response(br#"{"value":"partial\uD800"}"#).is_err());
         assert_eq!(
             parse_flat_response(br#"{"value":"\u0061"}"#).unwrap()["value"],
             ResponseValue::String("a".to_owned())

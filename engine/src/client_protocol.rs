@@ -2686,7 +2686,7 @@ impl JsonStringObjectParser<'_> {
 
     pub(crate) fn parse_string(&mut self) -> Result<String, ClientControlError> {
         self.expect(b'"')?;
-        let mut output = Vec::new();
+        let mut output = Zeroizing::new(Vec::new());
         loop {
             let byte = *self
                 .text
@@ -2695,7 +2695,12 @@ impl JsonStringObjectParser<'_> {
             self.offset += 1;
             match byte {
                 b'"' => {
-                    return String::from_utf8(output).map_err(|_| ClientControlError::InvalidJson);
+                    let bytes = std::mem::take(&mut *output);
+                    return String::from_utf8(bytes).map_err(|error| {
+                        let mut bytes = error.into_bytes();
+                        bytes.zeroize();
+                        ClientControlError::InvalidJson
+                    });
                 }
                 b'\\' => {
                     let escaped = *self
