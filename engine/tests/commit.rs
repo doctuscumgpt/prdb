@@ -26181,6 +26181,7 @@ fn process_crash_during_column_default_change_recovers_all_or_none()
         }
         let default = match operation.as_str() {
             "replace" => Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(43)))),
+            "principal" => Some(TableColumnDefault::CurrentPrincipalId),
             "drop" => None,
             _ => return Err(format!("unknown default operation {operation}").into()),
         };
@@ -26203,7 +26204,7 @@ fn process_crash_during_column_default_change_recovers_all_or_none()
         std::process::exit(POST_COMMIT_EXIT_CODE);
     }
 
-    for operation in ["replace", "drop"] {
+    for operation in ["replace", "principal", "drop"] {
         for (boundary, expected_exit) in [
             ("write", CHILD_EXIT_CODE),
             ("after_commit", POST_COMMIT_EXIT_CODE),
@@ -26241,6 +26242,17 @@ fn process_crash_during_column_default_change_recovers_all_or_none()
             let table_invocation = id(0xe9);
             let mut table_audit = identity_audit_event(0xea, ACTOR_ID, id(0xeb));
             table_audit.correlation_id = table_invocation;
+            let (column_type, initial_default) = if operation == "principal" {
+                (
+                    ScalarType::Uuid,
+                    TableColumnDefault::Literal(Some(ScalarValue::Uuid([0x42; 16]))),
+                )
+            } else {
+                (
+                    ScalarType::Integer,
+                    TableColumnDefault::Literal(Some(ScalarValue::Integer(42))),
+                )
+            };
             let table = storage.create_table(CreateTableRequest {
                 invocation_id: table_invocation,
                 authenticated_actor_id: ACTOR_ID,
@@ -26248,10 +26260,10 @@ fn process_crash_during_column_default_change_recovers_all_or_none()
                 name: "defaults".to_owned(),
                 columns: vec![TableColumnDefinition {
                     name: "value".to_owned(),
-                    scalar_type: ScalarType::Integer,
+                    scalar_type: column_type,
                     nullable: true,
                     generated_uuid_identity: false,
-                    default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(42)))),
+                    default: Some(initial_default),
                 }],
                 retention_deadline_us: i64::MAX,
                 audit_event: table_audit,
@@ -26335,10 +26347,12 @@ fn process_crash_during_column_default_change_recovers_all_or_none()
                 .map(|field| field.payload.as_slice().try_into())
                 .transpose()?;
             match (operation, committed, current_default_id) {
-                ("replace", true, Some(current_id)) => {
+                ("replace", true, Some(current_id)) | ("principal", true, Some(current_id)) => {
                     assert_ne!(current_id, old_default_id);
                 }
-                ("replace", false, Some(current_id)) | ("drop", false, Some(current_id)) => {
+                ("replace", false, Some(current_id))
+                | ("principal", false, Some(current_id))
+                | ("drop", false, Some(current_id)) => {
                     assert_eq!(current_id, old_default_id);
                 }
                 ("drop", true, None) => {}
@@ -26357,11 +26371,26 @@ fn process_crash_during_column_default_change_recovers_all_or_none()
                 let current_object_key = id_catalog_key(2, current_default_id);
                 let current_dependency_key = dependency_write(column_id, current_default_id, 2).key;
                 for key in [
-                    current_expression_key,
-                    current_object_key,
-                    current_dependency_key,
+                    &current_expression_key,
+                    &current_object_key,
+                    &current_dependency_key,
                 ] {
                     assert!(catalog.get(key.as_slice())?.is_some());
+                }
+                if operation == "principal" && committed {
+                    let expression = catalog
+                        .get(current_expression_key.as_slice())?
+                        .ok_or("committed principal default expression missing")?;
+                    let decoded =
+                        prdb_engine::expression::decode_catalog_expression(expression.value())?;
+                    assert_eq!(
+                        decoded.purpose,
+                        prdb_engine::expression::ExpressionPurpose::Default
+                    );
+                    assert_eq!(
+                        decoded.expression,
+                        prdb_engine::authorization::Expr::CurrentPrincipalId
+                    );
                 }
             }
             let table = catalog
