@@ -113,8 +113,8 @@ pub enum InsertInput {
 }
 
 /// Schema and stable column/type identities resolved from one pinned catalog
-/// snapshot. The containing table and every referenced column/type record are
-/// added to the invocation's final-commit catalog guards by the loader.
+/// snapshot. The containing table and referenced column/type records are
+/// retained as commit guards when the invocation publishes row or index writes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogTableSchema {
     pub table_id: [u8; 16],
@@ -7899,6 +7899,18 @@ impl<'db> InvocationTransaction<'db> {
         let catalog_guards = self
             .catalog_guards
             .into_iter()
+            .filter(|(key, _)| {
+                // A rename changes the family-2 display-name object and the
+                // family-5 table epoch while preserving the pinned schema.
+                // Those guards must not prevent a read-only outcome from
+                // completing; other catalog guards still revalidate.
+                !writes.is_empty()
+                    || !index_writes.is_empty()
+                    || key
+                        .get(..2)
+                        .map(|prefix| u16::from_be_bytes([prefix[0], prefix[1]]))
+                        .is_some_and(|family| !matches!(family, 2 | 5))
+            })
             .map(|(key, expected_value)| CatalogGuard {
                 key,
                 expected_value,

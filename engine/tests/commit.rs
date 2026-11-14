@@ -3694,6 +3694,9 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
         ],
     )?;
     stale_writer.stage_put(stale_row_id, &stale_payload)?;
+    let mut old_name_reader = storage.begin_invocation(id(0xf1), actor, 9_999, 1, 1024)?;
+    let old_name_schema = old_name_reader.load_catalog_table_schema(table.table_id)?;
+    assert_eq!(old_name_schema.table_id, table.table_id);
     let rename_invocation = id(0x76);
     let mut rename_audit = identity_audit_event(0x77, actor, id(0x78));
     rename_audit.correlation_id = rename_invocation;
@@ -3727,6 +3730,21 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
         )?,
         Some(table.table_id)
     );
+    let old_name_schema_after_rename = old_name_reader.load_catalog_table_schema(table.table_id)?;
+    assert_eq!(old_name_schema_after_rename, old_name_schema);
+    let mut renamed_name_reader = storage.begin_invocation(id(0xf2), actor, 9_999, 1, 1024)?;
+    assert_eq!(
+        renamed_name_reader
+            .load_catalog_table_schema(table.table_id)?
+            .table_id,
+        table.table_id
+    );
+    old_name_reader
+        .commit()
+        .map_err(|error| format!("old-name reader commit after rename: {error:?}"))?;
+    renamed_name_reader
+        .commit()
+        .map_err(|error| format!("new-name reader commit after rename: {error:?}"))?;
     let stale_result = stale_writer.commit();
     assert!(
         matches!(

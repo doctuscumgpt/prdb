@@ -46,7 +46,7 @@ Read access remains pinned for the bounded invocation lifetime, so already deliv
 
 ## Concurrent Catalog Changes
 
-Administrative schema and permission transactions use the same durable publication order as data commits. Table changes, constraints, and index builds use DDL fences and schema/write epochs as defined in [schema DDL](ddl-schema.md). Old writers cannot publish against superseded definitions; old readers retain their pinned catalog/data until reclamation. User/role/grant/policy changes advance authority epochs and prevent stale write authorization without rewriting all data.
+Administrative schema and permission transactions use the same durable publication order as data commits. Table changes, constraints, and index builds use DDL fences and schema/write epochs as defined in [schema DDL](ddl-schema.md). Old writers cannot publish against superseded definitions; old readers retain their pinned catalog/data until reclamation. A read-only invocation may record its terminal outcome against that snapshot after a table rename; the changed table epoch and display-name object do not invalidate its pinned table definition. Other catalog guards, including token and identity guards, still revalidate at commit. User/role/grant/policy changes advance authority epochs and prevent stale write authorization without rewriting all data.
 
 ## Errors, Cancellation, and Retry
 
