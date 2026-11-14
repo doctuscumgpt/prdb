@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use zeroize::Zeroize;
@@ -116,6 +117,18 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
             "exceed their size limit",
         ),
         (
+            "missing-sql-file",
+            Vec::new(),
+            None,
+            "could not read SQL input",
+        ),
+        (
+            "symlink-sql-file",
+            b"SELECT 1".to_vec(),
+            None,
+            "could not read SQL input",
+        ),
+        (
             "malformed-parameters",
             b"SELECT 1".to_vec(),
             Some(br#"{"format":"PDB-SQL-PARAMETERS-1","values":[],"extra":true}"#.to_vec()),
@@ -140,7 +153,15 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let sql_path = temp.join(format!("{case}.sql"));
-        fs::write(&sql_path, &sql).unwrap();
+        match case {
+            "missing-sql-file" => {}
+            "symlink-sql-file" => {
+                let target_path = temp.join("symlink-target.sql");
+                fs::write(&target_path, &sql).unwrap();
+                symlink(&target_path, &sql_path).unwrap();
+            }
+            _ => fs::write(&sql_path, &sql).unwrap(),
+        }
         let parameter_path = temp.join(format!("{case}.json"));
         if let Some(parameters) = &parameters {
             fs::write(&parameter_path, parameters).unwrap();
@@ -249,6 +270,66 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
         matches!(stdin_listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
         "run-sql opened a gateway connection after stdin validation failed"
     );
+
+    let stdin_failures = [
+        ("empty", Vec::new(), "nonempty UTF-8"),
+        ("nul", b"SELECT\0 1".to_vec(), "nonempty UTF-8"),
+        ("invalid-utf8", vec![0xff], "nonempty UTF-8"),
+        ("oversized", vec![b'x'; 65_537], "exceed their size limit"),
+    ];
+    for (case, sql, expected_error) in stdin_failures {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "run-sql",
+                "--address",
+                &address.to_string(),
+                "--credentials",
+                credentials.to_str().unwrap(),
+                "--sql-file",
+                "-",
+                "--schema",
+                "public",
+                "--scope",
+                temp.join("missing-stdin-scope.psc1").to_str().unwrap(),
+                "--receipt",
+                temp.join("stdin-error-receipt").to_str().unwrap(),
+                "--sdk-library",
+                temp.join("missing-stdin-sdk.so").to_str().unwrap(),
+                "--include-dir",
+                temp.join("missing-stdin-include").to_str().unwrap(),
+                "--sdk-release",
+                "1",
+                "--cpu-baseline",
+                "x86_64-v1",
+                "--runtime-profile",
+                "test-runtime",
+                "--compiler-identity",
+                "run-sql stdin error test",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&sql).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            !output.status.success(),
+            "stdin {case} unexpectedly succeeded"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected_error),
+            "stdin {case} returned an unexpected error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "run-sql opened a gateway connection after stdin {case} validation failed"
+        );
+    }
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
