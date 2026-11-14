@@ -59,6 +59,18 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
         }
         let name = parser.identifier()?;
         let scalar_type = parser.scalar_type()?;
+        let generated_uuid_identity = if parser.peek_word("generated") {
+            parser.word("generated")?;
+            parser.word("always")?;
+            parser.word("as")?;
+            parser.word("identity")?;
+            if scalar_type != ScalarType::Uuid {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+            true
+        } else {
+            false
+        };
         let mut nullable = true;
         let mut default = None;
         loop {
@@ -73,11 +85,17 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
                 break;
             }
         }
+        if generated_uuid_identity {
+            if default.is_some() {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+            nullable = false;
+        }
         columns.push(AdminColumnDefinition {
             name,
             scalar_type,
             nullable,
-            generated_uuid_identity: false,
+            generated_uuid_identity,
             default,
         });
         if parser.peek() == Some(&Token::Comma) {
@@ -550,6 +568,25 @@ mod tests {
             ])))
         );
         assert_eq!(parsed.columns[6].default, Some(AdminColumnDefault::Null));
+    }
+
+    #[test]
+    fn parses_storage_generated_uuid_identity_and_rejects_conflicts() {
+        let parsed = parse_create_table(
+            "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY, other UUID GENERATED ALWAYS AS IDENTITY NOT NULL)",
+        )
+        .unwrap();
+        assert!(parsed.columns.iter().all(|column| {
+            column.generated_uuid_identity && !column.nullable && column.default.is_none()
+        }));
+
+        for sql in [
+            "CREATE TABLE app.t (id INTEGER GENERATED ALWAYS AS IDENTITY)",
+            "CREATE TABLE app.t (id UUID GENERATED ALWAYS AS IDENTITY DEFAULT NULL)",
+            "CREATE TABLE app.t (id UUID GENERATED AS IDENTITY)",
+        ] {
+            assert!(parse_create_table(sql).is_err(), "accepted {sql}");
+        }
     }
 
     #[test]

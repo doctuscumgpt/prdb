@@ -129,3 +129,9 @@
 - Regression: the process test drives HELLO/AUTH, paged schema lookup, `tables.create` PREPARE/START, and committed response through a mock TCP control service and verifies the CLI summary.
 - Verification: `nix develop -c cargo test -p prdb-engine --test client_package admin_sql_cli --locked --offline` passed both CLI tests. `nix develop -c cargo fmt --all -- --check`, warning-denied workspace Clippy, locked workspace build, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
 - Next smallest behavior: expose CREATE SCHEMA SQL with an explicit owner clause and the same pre-network parser validation.
+
+## Administrative SQL CLI: generated UUID identity — implemented
+
+- Contract: [client SQL command](../../specs/client-sql-command.md), [client SDK](../../specs/client-sdk.md), and [schema DDL](../../specs/ddl-schema.md). Identity remains a typed control operation and does not alter the confined query path.
+- Regression: the CLI process test submits `UUID GENERATED ALWAYS AS IDENTITY`, asserts the typed request flag, and receives a committed four-column table result.
+- Verification: both `admin-sql` process tests passed, including authenticated typed identity submission and pre-auth rejection of unsupported SQL. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. Parser and AdminClient coverage is recorded in [schema DDL progress](../ddl-schema/PROGRESS.md).

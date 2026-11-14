@@ -498,3 +498,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - CLI follow-up: `prdb-client admin-sql` now exposes this parser over the authenticated control path; process tests prove committed typed CREATE TABLE and pre-auth rejection of unsupported DDL.
 - Remaining: user-defined checks/keys/foreign keys are not composable atomically with CREATE TABLE yet; generated identity SQL syntax and quoted identifiers remain unsupported.
 - Next smallest behavior: SQL generated UUID identity column syntax, translated through the existing storage-owned identity feature.
+
+## DS-8 follow-up: SQL generated UUID identity columns — implemented
+
+- Contract: [schema DDL](../../specs/ddl-schema.md). `UUID GENERATED ALWAYS AS IDENTITY` maps to the existing typed `generated_uuid_identity` table-create field; storage owns allocation and INSERT override checks.
+- Regression: parser cases verify identity is non-null with no default and reject non-UUID identity, a combined DEFAULT, and incomplete clauses. The authenticated AdminClient control-session test asserts the typed identity flag in `tables.create`; the CLI process test exercises the same syntax through HELLO/AUTH, schema lookup, PREPARE/START, and commit.
+- Implementation: the bounded parser accepts the exact four-token identity clause following UUID and infers NOT NULL while allowing a redundant explicit NOT NULL.
+- Verification: all five parser unit tests, the authenticated AdminClient control-session regression, and both `admin-sql` process tests passed. Workspace formatting, locked offline build, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests.
+- Next smallest behavior: add atomic inline key syntax or CREATE SCHEMA SQL after reviewing composition with typed DDL operations.

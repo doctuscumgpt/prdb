@@ -1346,6 +1346,7 @@ fn admin_client_executes_create_table_sql_on_authenticated_control_channel() {
         let payload = String::from_utf8(prepare.payload.clone()).unwrap();
         assert!(payload.contains(r#""operation":"tables.create""#));
         assert!(payload.contains(r#""name":"events""#));
+        assert!(payload.contains(r#""generated_uuid_identity":true"#));
         assert!(payload.contains(r#""type":"decimal(8,2)""#));
         assert!(payload.contains(r#""default":{"kind":"literal","value":"-1.20"}"#));
         assert!(payload.contains(r#""value":"hello 'sql'""#));
@@ -1363,7 +1364,7 @@ fn admin_client_executes_create_table_sql_on_authenticated_control_channel() {
         respond(
             &mut stream,
             &start,
-            format!(r#"{{"operation_id":"{}","outcome":"committed","table_id":"{}","column_ids":["{}","{}","{}"],"commit_sequence":"62"}}"#, hex(&operation_id), "a5".repeat(16), "b1".repeat(16), "b2".repeat(16), "b3".repeat(16)).as_bytes(),
+            format!(r#"{{"operation_id":"{}","outcome":"committed","table_id":"{}","column_ids":["{}","{}","{}","{}"],"commit_sequence":"62"}}"#, hex(&operation_id), "a5".repeat(16), "b1".repeat(16), "b2".repeat(16), "b3".repeat(16), "b4".repeat(16)).as_bytes(),
         );
     });
 
@@ -1377,11 +1378,14 @@ fn admin_client_executes_create_table_sql_on_authenticated_control_channel() {
     .unwrap();
     let created = client
         .execute_create_table_sql(
-            "CREATE TABLE app.events (id UUID NOT NULL, amount DECIMAL(8, 2) DEFAULT -1.20, title TEXT DEFAULT 'hello ''sql''');",
+            "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY, amount DECIMAL(8, 2) DEFAULT -1.20, title TEXT DEFAULT 'hello ''sql''', owner UUID DEFAULT CURRENT_PRINCIPAL_ID());",
         )
         .unwrap();
     assert_eq!(created.table_id, [0xa5; 16]);
-    assert_eq!(created.column_ids, [[0xb1; 16], [0xb2; 16], [0xb3; 16]]);
+    assert_eq!(
+        created.column_ids,
+        [[0xb1; 16], [0xb2; 16], [0xb3; 16], [0xb4; 16]]
+    );
     assert_eq!(created.commit_sequence, 62);
     server.join().unwrap();
 }

@@ -684,3 +684,9 @@
 - Implementation/evidence: `AdminClient::execute_create_table_sql` maps exact typed SQL defaults to `AdminColumnDefinition` and uses the existing PREPARE/START client method. The owning schema DDL progress records parser and control-session coverage.
 - Verification: workspace build, formatting, warning-denied Clippy, maintained TinyCC tests, release-profile validation, delegated-cgroup preflight, and the complete serial delegated-cgroup workspace suite passed; zero tests were ignored.
 - Follow-up: `prdb-client admin-sql` now exposes the bounded helper through a local SQL-file/stdin command. Its process tests verify typed control-mode PREPARE/START and reject unsupported SQL before credentials or network; see [client SQL command progress](../client-sql-command/PROGRESS.md).
+
+## SDK-5 follow-up: generated UUID identity through SQL DDL — implemented
+
+- Contract: [client SDK](../../specs/client-sdk.md) and [schema DDL](../../specs/ddl-schema.md). The SQL helper represents storage-owned identity using the existing typed `tables.create` field.
+- Regression: the authenticated mock control session checks `generated_uuid_identity: true` in PREPARE arguments, and the CLI process test now uses an identity column while verifying the committed four-column result.
+- Verification: the authenticated AdminClient control-session regression passed and asserted the identity flag in the typed PREPARE request. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. Component-level SQL parser and storage boundaries are recorded in [schema DDL progress](../ddl-schema/PROGRESS.md).
