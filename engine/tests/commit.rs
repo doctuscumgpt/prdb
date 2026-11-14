@@ -22688,6 +22688,171 @@ fn process_crash_during_authorized_index_ddl_recovers_all_or_none()
 }
 
 #[test]
+fn process_crash_during_table_rename_recovers_all_or_none() -> Result<(), Box<dyn std::error::Error>>
+{
+    use prdb_engine::storage_manager::{CreateTableRequest, TableColumnDefinition};
+    use std::process::Command;
+
+    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_CRASH_DURING_RENAME_DATABASE";
+    const CHILD_BOUNDARY_ENV: &str = "PRDB_TEST_CRASH_DURING_RENAME_BOUNDARY";
+    const CHILD_EXIT_CODE: i32 = 87;
+    const POST_COMMIT_EXIT_CODE: i32 = 88;
+    const ACTOR_ID: [u8; 16] = [0xc1; 16];
+    const RENAME_INVOCATION_ID: [u8; 16] = [0xc2; 16];
+    const RENAME_AUDIT_ID: [u8; 16] = [0xc3; 16];
+
+    if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
+        let database_path = std::path::PathBuf::from(database_path);
+        let database = initialize(&database_path)?;
+        let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+        let admin_role = builtin_owner_id();
+        let setup = [
+            principal_write_with_name(ACTOR_ID, 1, 1, "rename_crash_actor"),
+            object_write_with_name(ACTOR_ID, 8, "rename_crash_actor"),
+            membership_write(ACTOR_ID, admin_role),
+            dependency_write(ACTOR_ID, admin_role, 5),
+        ];
+        let mut setup_audit = identity_audit_event(0xcb, admin_role, id(0xcc));
+        setup_audit.action = AuditAction::AuthorityChange;
+        storage.commit_catalog_and_audit(id(0xcc), admin_role, i64::MAX, &setup, &[setup_audit])?;
+        let schema_invocation = id(0xc4);
+        let mut schema_audit = identity_audit_event(0xc5, ACTOR_ID, id(0xc6));
+        schema_audit.correlation_id = schema_invocation;
+        let schema = storage.create_schema(
+            schema_invocation,
+            ACTOR_ID,
+            "rename_crash_schema",
+            ACTOR_ID,
+            i64::MAX,
+            schema_audit,
+        )?;
+        let table_invocation = id(0xc7);
+        let mut table_audit = identity_audit_event(0xc8, ACTOR_ID, id(0xc9));
+        table_audit.correlation_id = table_invocation;
+        let table = storage.create_table(CreateTableRequest {
+            invocation_id: table_invocation,
+            authenticated_actor_id: ACTOR_ID,
+            schema_id: schema.schema_id,
+            name: "before_rename".to_owned(),
+            columns: vec![TableColumnDefinition {
+                name: "value".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            }],
+            retention_deadline_us: i64::MAX,
+            audit_event: table_audit,
+        })?;
+        let before_rename_sequence = commit_sequence(&database)?;
+        let mut metadata = Vec::with_capacity(40);
+        metadata.extend_from_slice(&schema.schema_id);
+        metadata.extend_from_slice(&table.table_id);
+        metadata.extend_from_slice(&before_rename_sequence.to_le_bytes());
+        std::fs::write(
+            database_path.with_extension("rename-crash-metadata"),
+            metadata,
+        )?;
+        drop(storage);
+        drop(database);
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&database_path)?;
+        let armed = Arc::new(AtomicBool::new(false));
+        let instrumented = Database::builder().create_with_backend(ExitAfterNextWriteBackend {
+            inner: redb::backends::FileBackend::new(file)?,
+            armed: armed.clone(),
+            exit_code: CHILD_EXIT_CODE,
+        })?;
+        let storage = StorageManager::new(&instrumented, Duration::from_millis(100))?;
+        let mut rename_audit = identity_audit_event(RENAME_AUDIT_ID[0], ACTOR_ID, id(0xca));
+        rename_audit.event_id = RENAME_AUDIT_ID;
+        rename_audit.correlation_id = RENAME_INVOCATION_ID;
+        let boundary = std::env::var(CHILD_BOUNDARY_ENV)?;
+        if boundary == "write" {
+            armed.store(true, Ordering::SeqCst);
+        } else if boundary != "after_commit" {
+            return Err(format!("unknown table rename crash boundary {boundary}").into());
+        }
+        let rename_result = storage.rename_table(
+            RENAME_INVOCATION_ID,
+            ACTOR_ID,
+            table.table_id,
+            "after_rename",
+            i64::MAX,
+            rename_audit,
+        );
+        if boundary == "write" {
+            return Err(format!(
+                "table rename returned without injected backend-write exit: {rename_result:?}"
+            )
+            .into());
+        }
+        rename_result?;
+        std::process::exit(POST_COMMIT_EXIT_CODE);
+    }
+
+    for (boundary, expected_exit) in [
+        ("write", CHILD_EXIT_CODE),
+        ("after_commit", POST_COMMIT_EXIT_CODE),
+    ] {
+        let fixture = Fixture::new();
+        let database_path = fixture.path();
+        let child_status = Command::new(std::env::current_exe()?)
+            .arg("--exact")
+            .arg("process_crash_during_table_rename_recovers_all_or_none")
+            .arg("--nocapture")
+            .env(CHILD_DATABASE_ENV, &database_path)
+            .env(CHILD_BOUNDARY_ENV, boundary)
+            .status()?;
+        assert_eq!(
+            child_status.code(),
+            Some(expected_exit),
+            "table rename child missed the {boundary} crash boundary: {child_status}"
+        );
+
+        let metadata = std::fs::read(database_path.with_extension("rename-crash-metadata"))?;
+        assert_eq!(metadata.len(), 40);
+        let schema_id: [u8; 16] = metadata[0..16].try_into()?;
+        let table_id: [u8; 16] = metadata[16..32].try_into()?;
+        let before_rename_sequence = u64::from_le_bytes(metadata[32..40].try_into()?);
+        let reopened = Database::open(&database_path)?;
+        let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+        let read = reopened.begin_read()?;
+        let before_name = lookup_relation_id_by_name(&read, schema_id, "before_rename")?;
+        let after_name = lookup_relation_id_by_name(&read, schema_id, "after_rename")?;
+        let sequence = commit_sequence(&reopened)?;
+        let outcome = read
+            .open_table(schema::OUTCOMES)?
+            .get(&RENAME_INVOCATION_ID[..])?
+            .map(|value| InvocationOutcome::decode(value.value()))
+            .transpose()?;
+        let audit_exists = read
+            .open_table(schema::AUDIT)?
+            .get(&RENAME_AUDIT_ID[..])?
+            .is_some();
+        if boundary == "write" {
+            assert_eq!(before_name, Some(table_id));
+            assert_eq!(after_name, None);
+            assert_eq!(sequence, before_rename_sequence);
+            assert_eq!(outcome, None);
+            assert!(!audit_exists);
+        } else {
+            assert_eq!(before_name, None);
+            assert_eq!(after_name, Some(table_id));
+            assert_eq!(sequence, before_rename_sequence + 1);
+            let outcome = outcome.ok_or("committed rename outcome was not recovered")?;
+            assert_eq!(outcome.status, OutcomeStatus::Committed);
+            assert_eq!(outcome.commit_sequence, sequence);
+            assert!(audit_exists);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn supervisor_drains_both_worker_channels_before_durable_finalize()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::executor_ipc::ResolveRelationRequest;
