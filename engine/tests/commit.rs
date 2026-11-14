@@ -23660,6 +23660,172 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn process_crash_during_create_table_recovers_all_or_none() -> Result<(), Box<dyn std::error::Error>>
+{
+    use prdb_engine::storage_manager::{CreateTableRequest, TableColumnDefinition};
+    use std::process::Command;
+
+    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_CRASH_DURING_CREATE_TABLE_DATABASE";
+    const CHILD_BOUNDARY_ENV: &str = "PRDB_TEST_CRASH_DURING_CREATE_TABLE_BOUNDARY";
+    const CHILD_EXIT_CODE: i32 = 87;
+    const POST_COMMIT_EXIT_CODE: i32 = 88;
+    const ACTOR_ID: [u8; 16] = [0xd1; 16];
+    const CREATE_INVOCATION_ID: [u8; 16] = [0xd2; 16];
+    const CREATE_AUDIT_ID: [u8; 16] = [0xd3; 16];
+
+    if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
+        let database_path = std::path::PathBuf::from(database_path);
+        let database = initialize(&database_path)?;
+        let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+        let admin_role = builtin_owner_id();
+        let mut setup_audit = identity_audit_event(0xd4, admin_role, id(0xd5));
+        setup_audit.action = AuditAction::AuthorityChange;
+        storage.commit_catalog_and_audit(
+            id(0xd5),
+            admin_role,
+            i64::MAX,
+            &[
+                principal_write_with_name(ACTOR_ID, 1, 1, "create_table_crash_actor"),
+                object_write_with_name(ACTOR_ID, 8, "create_table_crash_actor"),
+                membership_write(ACTOR_ID, admin_role),
+                dependency_write(ACTOR_ID, admin_role, 5),
+            ],
+            &[setup_audit],
+        )?;
+        let schema_invocation = id(0xd6);
+        let mut schema_audit = identity_audit_event(0xd7, ACTOR_ID, id(0xd8));
+        schema_audit.correlation_id = schema_invocation;
+        let schema = storage.create_schema(
+            schema_invocation,
+            ACTOR_ID,
+            "create_table_crash_schema",
+            ACTOR_ID,
+            i64::MAX,
+            schema_audit,
+        )?;
+        let before_create_sequence = commit_sequence(&database)?;
+        let mut metadata = Vec::with_capacity(24);
+        metadata.extend_from_slice(&schema.schema_id);
+        metadata.extend_from_slice(&before_create_sequence.to_le_bytes());
+        std::fs::write(
+            database_path.with_extension("create-table-crash-metadata"),
+            metadata,
+        )?;
+        drop(storage);
+        drop(database);
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&database_path)?;
+        let armed = Arc::new(AtomicBool::new(false));
+        let instrumented = Database::builder().create_with_backend(ExitAfterNextWriteBackend {
+            inner: redb::backends::FileBackend::new(file)?,
+            armed: armed.clone(),
+            exit_code: CHILD_EXIT_CODE,
+        })?;
+        let storage = StorageManager::new(&instrumented, Duration::from_millis(100))?;
+        let mut create_audit = identity_audit_event(CREATE_AUDIT_ID[0], ACTOR_ID, id(0xd9));
+        create_audit.event_id = CREATE_AUDIT_ID;
+        create_audit.correlation_id = CREATE_INVOCATION_ID;
+        let boundary = std::env::var(CHILD_BOUNDARY_ENV)?;
+        if boundary == "write" {
+            armed.store(true, Ordering::SeqCst);
+        } else if boundary != "after_commit" {
+            return Err(format!("unknown CREATE TABLE crash boundary {boundary}").into());
+        }
+        let create_result = storage.create_table(CreateTableRequest {
+            invocation_id: CREATE_INVOCATION_ID,
+            authenticated_actor_id: ACTOR_ID,
+            schema_id: schema.schema_id,
+            name: "crash_table".to_owned(),
+            columns: vec![TableColumnDefinition {
+                name: "payload".to_owned(),
+                scalar_type: ScalarType::Text,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            }],
+            retention_deadline_us: i64::MAX,
+            audit_event: create_audit,
+        });
+        if boundary == "write" {
+            return Err(format!(
+                "CREATE TABLE returned without injected backend-write exit: {create_result:?}"
+            )
+            .into());
+        }
+        create_result?;
+        std::process::exit(POST_COMMIT_EXIT_CODE);
+    }
+
+    for (boundary, expected_exit) in [
+        ("write", CHILD_EXIT_CODE),
+        ("after_commit", POST_COMMIT_EXIT_CODE),
+    ] {
+        let fixture = Fixture::new();
+        let database_path = fixture.path();
+        let child_status = Command::new(std::env::current_exe()?)
+            .arg("--exact")
+            .arg("process_crash_during_create_table_recovers_all_or_none")
+            .arg("--nocapture")
+            .env(CHILD_DATABASE_ENV, &database_path)
+            .env(CHILD_BOUNDARY_ENV, boundary)
+            .status()?;
+        assert_eq!(
+            child_status.code(),
+            Some(expected_exit),
+            "CREATE TABLE child missed the {boundary} crash boundary: {child_status}"
+        );
+
+        let metadata = std::fs::read(database_path.with_extension("create-table-crash-metadata"))?;
+        assert_eq!(metadata.len(), 24);
+        let schema_id: [u8; 16] = metadata[0..16].try_into()?;
+        let before_create_sequence = u64::from_le_bytes(metadata[16..24].try_into()?);
+        let reopened = Database::open(&database_path)?;
+        let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+        let read = reopened.begin_read()?;
+        let table_id = lookup_relation_id_by_name(&read, schema_id, "crash_table")?;
+        let sequence = commit_sequence(&reopened)?;
+        let outcome = read
+            .open_table(schema::OUTCOMES)?
+            .get(&CREATE_INVOCATION_ID[..])?
+            .map(|value| InvocationOutcome::decode(value.value()))
+            .transpose()?;
+        let audit_exists = read
+            .open_table(schema::AUDIT)?
+            .get(&CREATE_AUDIT_ID[..])?
+            .is_some();
+
+        if boundary == "write" {
+            assert_eq!(table_id, None);
+            assert_eq!(sequence, before_create_sequence);
+            assert_eq!(outcome, None);
+            assert!(!audit_exists);
+        } else {
+            let table_id = table_id.ok_or("committed table name was not recovered")?;
+            let column_id = lookup_column_id_by_name(&read, table_id, "payload")?
+                .ok_or("committed table column name was not recovered")?;
+            let catalog = read.open_table(CATALOG)?;
+            let table_record = catalog
+                .get(id_catalog_key(5, table_id).as_slice())?
+                .ok_or("committed table record was not recovered")?;
+            let column_record = catalog
+                .get(id_catalog_key(6, column_id).as_slice())?
+                .ok_or("committed column record was not recovered")?;
+            decode_registered_envelope(table_record.value())?;
+            decode_registered_envelope(column_record.value())?;
+            assert_eq!(sequence, before_create_sequence + 1);
+            let outcome = outcome.ok_or("committed CREATE TABLE outcome was not recovered")?;
+            assert_eq!(outcome.status, OutcomeStatus::Committed);
+            assert_eq!(outcome.commit_sequence, sequence);
+            assert!(audit_exists);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn supervisor_drains_both_worker_channels_before_durable_finalize()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::executor_ipc::ResolveRelationRequest;
