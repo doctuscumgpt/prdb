@@ -9,6 +9,7 @@ protocol-fuzzing = []
 
 [dependencies]
 redb = "=4.4.0"
+redb_v2 = { package = "redb", version = "=2.6.4" }
 getrandom = "=0.4.3"
 libc = "=0.2.191"
 sha2 = "=0.11.1"

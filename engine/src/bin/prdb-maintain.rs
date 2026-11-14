@@ -31,6 +31,8 @@ fn print_help() {
          Verifies the backup manifest, file digests, and supported READY catalog.\n\
          prdb-maintain restore --instance-dir PATH --backup-dir PATH --confirm-data-loss\n\
          Atomically restores a verified v2 backup and retains the previous active file.\n\
+         prdb-maintain redb-format-upgrade --instance-dir PATH --backup-file PATH --confirm-redb-v2\n\
+         Backs up and upgrades a redb-v2 READY instance, retaining the source generation.\n\
          prdb-maintain migration-backup --instance-dir PATH --output-dir PATH\n\
          Copies a v1 migration source under its exclusive lock and verifies it.\n\
          prdb-maintain migration-apply --instance-dir PATH --backup-dir PATH --identity-history PATH --confirm-complete-identity-history\n\
@@ -41,7 +43,7 @@ fn print_help() {
          Validates the active READY image and any private staged image.\n\
          prdb-maintain migration-discard-stage --instance-dir PATH --backup-dir PATH\n\
          Discards staging only when active bytes match the verified backup.\n\
-         Stop gateway and supervisor services before compact, audit-archive, backup, restore, migration-backup, migration-apply, or migration-discard-stage."
+         Stop gateway and supervisor services before compact, audit-archive, backup, restore, redb-format-upgrade, migration-backup, migration-apply, or migration-discard-stage."
     );
 }
 
@@ -57,7 +59,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut args = std::env::args_os().skip(1);
     let operation = args.next().ok_or(
-        "operation is required: compact, audit-archive, audit-verify, backup, backup-verify, restore, migration-backup, migration-apply, inspect, migration-inspect, or migration-discard-stage",
+        "operation is required: compact, audit-archive, audit-verify, backup, backup-verify, restore, redb-format-upgrade, migration-backup, migration-apply, inspect, migration-inspect, or migration-discard-stage",
     )?;
     if operation == "audit-verify" {
         if args.next().as_deref() != Some(std::ffi::OsStr::new("--archive")) {
@@ -144,6 +146,52 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             report.metadata.commit_sequence,
             report.rows,
             report.catalog_records,
+        );
+        return Ok(());
+    }
+    if operation == "redb-format-upgrade" {
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--instance-dir")) {
+            return Err("--instance-dir PATH is required".into());
+        }
+        let instance_dir = PathBuf::from(args.next().ok_or("instance directory is required")?);
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--backup-file")) {
+            return Err("--backup-file PATH is required".into());
+        }
+        let backup_file = PathBuf::from(args.next().ok_or("backup file is required")?);
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--confirm-redb-v2")) {
+            return Err("--confirm-redb-v2 is required".into());
+        }
+        if args.next().is_some() {
+            return Err("unexpected trailing arguments".into());
+        }
+        let report = prdb_engine::bootstrap::physical_upgrade::upgrade_redb_v2_instance(
+            instance_dir,
+            backup_file,
+            true,
+        )?;
+        println!(
+            "physical_format={} database_bytes={} sha256={} database_id={} catalog_version={} commit_sequence={} catalog_records={} rows={} index_entries={} outcomes={} audit_events={}",
+            report.status,
+            report.database_bytes,
+            report
+                .database_sha256
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+            report
+                .health
+                .metadata
+                .database_id
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+            report.health.metadata.catalog_version,
+            report.health.metadata.commit_sequence,
+            report.health.catalog_records,
+            report.health.rows,
+            report.health.index_entries,
+            report.health.outcomes,
+            report.health.audit_events,
         );
         return Ok(());
     }

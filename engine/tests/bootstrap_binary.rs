@@ -160,6 +160,11 @@ fn maintenance_help_lists_offline_audit_archival() {
     assert!(help.contains("migration-backup --instance-dir PATH --output-dir PATH"));
     assert!(help.contains("migration-apply --instance-dir PATH --backup-dir PATH"));
     assert!(help.contains("restore --instance-dir PATH --backup-dir PATH --confirm-data-loss"));
+    assert!(
+        help.contains(
+            "redb-format-upgrade --instance-dir PATH --backup-file PATH --confirm-redb-v2"
+        )
+    );
     assert!(help.contains("inspect --instance-dir PATH"));
     assert!(help.contains("migration-inspect --instance-dir PATH"));
     assert!(help.contains("migration-discard-stage --instance-dir PATH --backup-dir PATH"));
@@ -727,6 +732,150 @@ fn populated_prdb_logical_records_survive_redb_v2_to_v3_upgrade() {
             .any(|window| window == b"persisted redb v2 row"),
         "upgraded row retains its application payload"
     );
+}
+
+#[test]
+fn maintenance_redb_v2_upgrade_backs_up_and_atomically_publishes_ready_instance() {
+    let fixture = Fixture::new();
+    let instance_dir = fixture.instance_dir();
+    std::fs::create_dir(&instance_dir).expect("create source instance directory");
+    std::fs::set_permissions(&instance_dir, std::fs::Permissions::from_mode(0o700))
+        .expect("set source directory permissions");
+    let marker_path = instance_dir.join(".prdb-bootstrap");
+    std::fs::write(&marker_path, b"PRDB-LOCAL-SETUP-1\n").expect("write source marker");
+    std::fs::set_permissions(&marker_path, std::fs::Permissions::from_mode(0o600))
+        .expect("set source marker permissions");
+    let source_fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/redb-file-formats/prdb-redb-2.6.4-v2.redb");
+    let active_path = instance_dir.join("storage.redb");
+    std::fs::copy(source_fixture, &active_path).expect("copy populated physical v2 source");
+    std::fs::set_permissions(&active_path, std::fs::Permissions::from_mode(0o600))
+        .expect("set active database permissions");
+    let source_bytes = std::fs::read(&active_path).expect("read source database bytes");
+    let backup_path = fixture.0.join("redb-v2-independent-backup.redb");
+    let missing_ack = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .arg("redb-format-upgrade")
+        .arg("--instance-dir")
+        .arg(&instance_dir)
+        .arg("--backup-file")
+        .arg(&backup_path)
+        .output()
+        .expect("check upgrade acknowledgment");
+    assert!(!missing_ack.status.success());
+    assert_eq!(std::fs::read(&active_path).unwrap(), source_bytes);
+    assert!(!backup_path.exists());
+
+    let internal_backup = instance_dir.join("unsafe-backup.redb");
+    let internal_backup = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .arg("redb-format-upgrade")
+        .arg("--instance-dir")
+        .arg(&instance_dir)
+        .arg("--backup-file")
+        .arg(&internal_backup)
+        .arg("--confirm-redb-v2")
+        .output()
+        .expect("check backup path restriction");
+    assert!(!internal_backup.status.success());
+    assert_eq!(std::fs::read(&active_path).unwrap(), source_bytes);
+    assert!(!instance_dir.join("unsafe-backup.redb").exists());
+
+    let staging_path = instance_dir.join(".prdb-redb-upgrade.next");
+    std::fs::write(&staging_path, b"interrupted physical-format staging")
+        .expect("seed interrupted staging image");
+    std::fs::set_permissions(&staging_path, std::fs::Permissions::from_mode(0o600))
+        .expect("set interrupted staging permissions");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .arg("redb-format-upgrade")
+        .arg("--instance-dir")
+        .arg(&instance_dir)
+        .arg("--backup-file")
+        .arg(&backup_path)
+        .arg("--confirm-redb-v2")
+        .output()
+        .expect("run redb physical-format upgrade");
+    assert!(
+        output.status.success(),
+        "redb physical upgrade failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(backup_path.is_file(), "independent byte backup exists");
+    assert_eq!(
+        std::fs::read(&backup_path).expect("read independent source backup"),
+        source_bytes,
+        "backup preserves the exact physical-v2 source"
+    );
+    assert_eq!(
+        std::fs::metadata(&backup_path)
+            .expect("stat source backup")
+            .mode()
+            & 0o777,
+        0o600,
+        "source backup is private"
+    );
+    assert_eq!(
+        std::fs::read(&staging_path).expect("read retained v2 source generation"),
+        source_bytes,
+        "atomic publication retains the original physical-v2 generation"
+    );
+    let instance = ReadOnlyStorageInstance::open(&instance_dir)
+        .expect("open published physical-v3 READY instance");
+    let report = prdb_engine::startup::validate_persisted_records_read_only(instance.database())
+        .expect("validate published PRDB image");
+    assert_eq!(report.rows, 1);
+    assert!(report.catalog_records > 31);
+    drop(instance);
+
+    let active_bytes = std::fs::read(&active_path).expect("read published database");
+    let retry = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .arg("redb-format-upgrade")
+        .arg("--instance-dir")
+        .arg(&instance_dir)
+        .arg("--backup-file")
+        .arg(&backup_path)
+        .arg("--confirm-redb-v2")
+        .output()
+        .expect("retry physical-format upgrade");
+    assert!(
+        retry.status.success(),
+        "idempotent retry failed: {}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    assert!(String::from_utf8_lossy(&retry.stdout).contains("physical_format=already-current"));
+    assert_eq!(
+        std::fs::read(&active_path).expect("read database after idempotent retry"),
+        active_bytes,
+        "retry leaves the published database unchanged"
+    );
+}
+
+#[test]
+fn maintenance_redb_physical_upgrade_refuses_a_live_instance_lock() {
+    let fixture = Fixture::new();
+    let mut session =
+        prdb_engine::bootstrap::initialize(fixture.instance_dir(), "upgrade_lock_admin", i64::MAX)
+            .expect("initialize locked instance");
+    if let Some(mut secret) = session.take_secret() {
+        use zeroize::Zeroize;
+        secret.zeroize();
+    }
+    drop(session.acknowledge().expect("publish locked instance"));
+    let instance = StorageInstance::open(fixture.instance_dir()).expect("hold instance lock");
+    let backup_path = fixture.0.join("must-not-exist.redb");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .arg("redb-format-upgrade")
+        .arg("--instance-dir")
+        .arg(fixture.instance_dir())
+        .arg("--backup-file")
+        .arg(&backup_path)
+        .arg("--confirm-redb-v2")
+        .output()
+        .expect("run physical upgrade while service lock is held");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("InstanceLocked"));
+    assert!(!backup_path.exists());
+    drop(instance);
 }
 
 #[test]

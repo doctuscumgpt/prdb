@@ -37,6 +37,30 @@ pub const OUTCOMES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("outcom
 pub const AUDIT: TableDefinition<&[u8], &[u8]> = TableDefinition::new("audit_v1");
 pub const STATS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("stats_v1");
 
+/// Stable set of engine-owned logical tables used by offline image checks.
+pub const ENGINE_TABLE_NAMES: [&str; 20] = [
+    "engine_meta_v1",
+    "rows_v1",
+    "indexes_v1",
+    "row_indexes_v1",
+    "catalog_v1",
+    "principal_names_v1",
+    "schema_names_v1",
+    "relation_names_v1",
+    "column_lookups_v1",
+    "index_names_v1",
+    "table_indexes_v1",
+    "table_constraints_v1",
+    "object_owners_v1",
+    "memberships_v1",
+    "grants_v1",
+    "policies_v1",
+    "dependencies_v1",
+    "outcomes_v1",
+    "audit_v1",
+    "stats_v1",
+];
+
 /// Create every logical engine table in the caller's redb write transaction.
 /// The caller must commit or abort this transaction as one atomic unit.
 pub fn create_tables(write: &WriteTransaction) -> Result<(), Box<dyn std::error::Error>> {

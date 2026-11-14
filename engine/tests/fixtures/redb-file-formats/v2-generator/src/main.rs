@@ -18,28 +18,7 @@ use zeroize::Zeroize;
 
 const FIXTURE_TABLE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("compatibility_fixture_v1");
-const ENGINE_TABLES: [&str; 20] = [
-    "engine_meta_v1",
-    "rows_v1",
-    "indexes_v1",
-    "row_indexes_v1",
-    "catalog_v1",
-    "principal_names_v1",
-    "schema_names_v1",
-    "relation_names_v1",
-    "column_lookups_v1",
-    "index_names_v1",
-    "table_indexes_v1",
-    "table_constraints_v1",
-    "object_owners_v1",
-    "memberships_v1",
-    "grants_v1",
-    "policies_v1",
-    "dependencies_v1",
-    "outcomes_v1",
-    "audit_v1",
-    "stats_v1",
-];
+const ENGINE_TABLES: [&str; 20] = prdb_engine::schema::ENGINE_TABLE_NAMES;
 
 struct TemporaryDirectory(PathBuf);
 

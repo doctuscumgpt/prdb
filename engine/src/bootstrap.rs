@@ -34,9 +34,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 use zeroize::Zeroize;
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[path = "bootstrap/physical_upgrade.rs"]
+pub mod physical_upgrade;
+
 const DATABASE_FILE: &str = "storage.redb";
 const MIGRATION_STAGING_FILE: &str = ".prdb-migration.next";
 const RESTORE_COPY_FILE: &str = ".prdb-restore.copying";
+const REDB_UPGRADE_STAGING_FILE: &str = ".prdb-redb-upgrade.next";
 const LOCK_FILE: &str = ".prdb.lock";
 const MARKER_FILE: &str = ".prdb-bootstrap";
 const SETUP_SOCKET_FILE: &str = ".prdb-setup.sock";
@@ -2254,6 +2259,7 @@ fn validate_managed_directory(
             }
             Some(MIGRATION_STAGING_FILE) => validate_private_file(&entry.path())?,
             Some(RESTORE_COPY_FILE) => validate_private_file(&entry.path())?,
+            Some(REDB_UPGRADE_STAGING_FILE) => validate_private_file(&entry.path())?,
             Some(SETUP_SOCKET_FILE) => validate_private_socket(&entry.path())?,
             _ => return Err(BootstrapError::NotPrivate),
         }
