@@ -30609,6 +30609,43 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         retention_deadline_us: now + 3_600_000_000,
         audit_event: composite_table_audit,
     })?;
+    let decimal_table_invocation = id(0xf0);
+    let mut decimal_table_audit = identity_audit_event(0xf1, user_id, schema.schema_id);
+    decimal_table_audit.correlation_id = decimal_table_invocation;
+    let decimal_table = storage.create_table(CreateTableRequest {
+        invocation_id: decimal_table_invocation,
+        authenticated_actor_id: user_id,
+        schema_id: schema.schema_id,
+        name: "decimal_grouped_records".to_owned(),
+        columns: vec![
+            TableColumnDefinition {
+                name: "left_key".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            },
+            TableColumnDefinition {
+                name: "right_key".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            },
+            TableColumnDefinition {
+                name: "decimal_value".to_owned(),
+                scalar_type: ScalarType::Decimal {
+                    precision: 4,
+                    scale: 2,
+                },
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            },
+        ],
+        retention_deadline_us: now + 3_600_000_000,
+        audit_event: decimal_table_audit,
+    })?;
     let pressure_table_invocation = id(0xe1);
     let mut pressure_table_audit = identity_audit_event(0xe2, user_id, schema.schema_id);
     pressure_table_audit.correlation_id = pressure_table_invocation;
@@ -30668,6 +30705,54 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         builtin_owner_id(),
         now + 3_600_000_000,
         &composite_rows,
+    )?;
+    let decimal_schema = [
+        ColumnSchema {
+            scalar_type: ScalarType::Integer,
+            nullable: false,
+        },
+        ColumnSchema {
+            scalar_type: ScalarType::Integer,
+            nullable: false,
+        },
+        ColumnSchema {
+            scalar_type: ScalarType::Decimal {
+                precision: 4,
+                scale: 2,
+            },
+            nullable: false,
+        },
+    ];
+    let decimal_rows = [
+        (0xf3, 1, 7, 100),
+        (0xf4, 1, 7, 125),
+        (0xf5, 2, 9, 100),
+        (0xf6, 2, 9, 125),
+        (0xf7, 2, 9, 225),
+    ]
+    .into_iter()
+    .map(|(row_id, left, right, decimal_value)| {
+        Ok(RowWrite {
+            key: table_row_key(decimal_table.table_id, id(row_id)),
+            expected_version: None,
+            payload: Some(encode_tuple(
+                &decimal_schema,
+                1,
+                &[
+                    Some(ScalarValue::Integer(left)),
+                    Some(ScalarValue::Integer(right)),
+                    Some(ScalarValue::Decimal(decimal_value)),
+                ],
+            )?),
+        })
+    })
+    .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    commit_rows(
+        &database,
+        id(0xf2),
+        builtin_owner_id(),
+        now + 3_600_000_000,
+        &decimal_rows,
     )?;
     let pressure_schema = [ColumnSchema {
         scalar_type: ScalarType::Text,
@@ -30923,6 +31008,10 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         dependency_write(user_id, composite_table.table_id, 5),
         dependency_write(user_id, composite_table.column_ids[0], 5),
         dependency_write(user_id, composite_table.column_ids[1], 5),
+        dependency_write(user_id, decimal_table.table_id, 5),
+        dependency_write(user_id, decimal_table.column_ids[0], 5),
+        dependency_write(user_id, decimal_table.column_ids[1], 5),
+        dependency_write(user_id, decimal_table.column_ids[2], 5),
         dependency_write(user_id, pressure_table.table_id, 5),
         dependency_write(user_id, pressure_table.column_ids[0], 5),
         dependency_write(user_id, operational_pressure_table.table_id, 5),
@@ -30988,6 +31077,14 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             2,
             1,
             composite_table.table_id,
+            user_id,
+        ),
+        grant_write(
+            user_id,
+            decimal_table.table_id,
+            2,
+            1,
+            decimal_table.table_id,
             user_id,
         ),
         grant_write(
@@ -31058,6 +31155,11 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     authority_writes.extend(composite_table.column_ids.iter().map(|column_id| {
         grant_write(user_id, composite_table.table_id, 2, 2, *column_id, user_id)
     }));
+    authority_writes.extend(
+        decimal_table.column_ids.iter().map(|column_id| {
+            grant_write(user_id, decimal_table.table_id, 2, 2, *column_id, user_id)
+        }),
+    );
     authority_writes.push(grant_write(
         user_id,
         composite_table.table_id,
@@ -31069,6 +31171,11 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     authority_writes.extend(composite_table.column_ids.iter().map(|column_id| {
         grant_write(user_id, composite_table.table_id, 4, 2, *column_id, user_id)
     }));
+    authority_writes.extend(
+        decimal_table.column_ids.iter().map(|column_id| {
+            grant_write(user_id, decimal_table.table_id, 4, 2, *column_id, user_id)
+        }),
+    );
     let (
         old_user_record,
         old_token_record,
@@ -31312,6 +31419,17 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             .value()
             .to_vec(),
     );
+    let mut decimal_policy_table_epoch =
+        table_write_with_versions(decimal_table.table_id, schema.schema_id, 1, 2);
+    decimal_policy_table_epoch.expected_value = Some(
+        database
+            .begin_read()?
+            .open_table(CATALOG)?
+            .get(id_catalog_key(5, decimal_table.table_id).as_slice())?
+            .ok_or("sandbox Decimal table record missing")?
+            .value()
+            .to_vec(),
+    );
     let mut pressure_policy_table_epoch =
         table_write_with_versions(pressure_table.table_id, schema.schema_id, 1, 2);
     pressure_policy_table_epoch.expected_value = Some(
@@ -31380,6 +31498,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         insert_policy_table_epoch,
         joined_policy_table_epoch,
         composite_policy_table_epoch,
+        decimal_policy_table_epoch,
         pressure_policy_table_epoch,
     ];
     let make_using_expression = |expression_id: [u8; 16], name: &str| {
@@ -31650,6 +31769,44 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         "sandbox_composite_right_select_policy",
     )?;
     add_table_policy(
+        decimal_table.table_id,
+        decimal_table.column_ids[0],
+        id(0xfb),
+        1,
+        Some(select_using_id),
+        None,
+        false,
+        "sandbox_decimal_group_select_policy",
+    )?;
+    for (column_id, policy_id, name) in [
+        (
+            decimal_table.column_ids[0],
+            id(0xfc),
+            "sandbox_decimal_group_left_cell_policy",
+        ),
+        (
+            decimal_table.column_ids[1],
+            id(0xfd),
+            "sandbox_decimal_group_right_cell_policy",
+        ),
+        (
+            decimal_table.column_ids[2],
+            id(0xfe),
+            "sandbox_decimal_group_value_cell_policy",
+        ),
+    ] {
+        add_table_policy(
+            decimal_table.table_id,
+            column_id,
+            policy_id,
+            1,
+            Some(select_using_id),
+            None,
+            true,
+            name,
+        )?;
+    }
+    add_table_policy(
         pressure_table.table_id,
         pressure_table.column_ids[0],
         id(0xe4),
@@ -31877,6 +32034,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 &records_table,
                 &joined_table,
                 &composite_table,
+                &decimal_table,
                 &pressure_table,
             ]
         } else if operation == 4 {
@@ -33584,6 +33742,29 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 0, 0, 0, 0, 4, 0, 0, 0, 2, 0, 9, b'r', b'i', b'g', b'h', b't', b'_', b'k', b'e',
                 b'y', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 9, 0, 5, b'c', b'o', b'u', b'n',
                 b't', 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 3,
+            ][..],
+        ]
+        .concat()
+    );
+    let grouped_composite_sum_numeric_v21 =
+        read_frame(&mut gateway)?.ok_or("missing Decimal SUM v21 numeric HAVING SQLR result")?;
+    assert_eq!(
+        grouped_composite_sum_numeric_v21.operation,
+        Operation::GatewayResultData as u16
+    );
+    assert_eq!(
+        grouped_composite_sum_numeric_v21.request_id,
+        accepted.request_id
+    );
+    assert_eq!(
+        grouped_composite_sum_numeric_v21.payload,
+        [
+            b"SQLR".as_slice(),
+            &[
+                0, 1, 0, 3, 0, 8, b'l', b'e', b'f', b't', b'_', b'k', b'e', b'y', 0, 0, 0, 3, 0, 0,
+                0, 0, 0, 0, 4, 0, 0, 0, 2, 0, 9, b'r', b'i', b'g', b'h', b't', b'_', b'k', b'e',
+                b'y', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 9, 0, 3, b's', b'u', b'm', 0, 0, 0,
+                5, 38, 2, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 194,
             ][..],
         ]
         .concat()
