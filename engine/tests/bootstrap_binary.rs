@@ -1415,6 +1415,49 @@ fn restore_requires_data_loss_ack_and_recovers_an_unreadable_newer_active_image(
 }
 
 #[test]
+fn restore_refuses_to_overwrite_an_unrelated_staging_image() {
+    let fixture = Fixture::new();
+    let mut session =
+        prdb_engine::bootstrap::initialize(fixture.instance_dir(), "restore_admin", i64::MAX)
+            .expect("initialize restore instance");
+    let mut secret = session.take_secret().expect("bootstrap secret");
+    use zeroize::Zeroize;
+    secret.zeroize();
+    drop(session.acknowledge().expect("publish READY"));
+
+    let active_path = fixture.instance_dir().join("storage.redb");
+    let backup_path = fixture.0.join("restore-backup");
+    prdb_engine::offline_backup::create_verified_backup(fixture.instance_dir(), &backup_path)
+        .expect("create verified restore backup");
+    let mut active_bytes = std::fs::read(&active_path).expect("read active image");
+    active_bytes[0] ^= 0xff;
+    std::fs::write(&active_path, &active_bytes).expect("make active image differ from backup");
+    let staging_path = fixture.instance_dir().join(".prdb-migration.next");
+    let staging_bytes = b"unrelated private staging data";
+    std::fs::write(&staging_path, staging_bytes).expect("write unrelated staging image");
+    std::fs::set_permissions(&staging_path, std::fs::Permissions::from_mode(0o600))
+        .expect("restrict unrelated staging image");
+
+    let rejected = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["restore", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--backup-dir")
+        .arg(&backup_path)
+        .arg("--confirm-data-loss")
+        .output()
+        .expect("refuse unrelated staging image");
+    assert!(!rejected.status.success());
+    assert_eq!(
+        std::fs::read(&active_path).expect("read unchanged active image"),
+        active_bytes
+    );
+    assert_eq!(
+        std::fs::read(&staging_path).expect("read preserved staging image"),
+        staging_bytes
+    );
+}
+
+#[test]
 fn startup_uses_active_image_and_only_tolerates_private_migration_staging_file() {
     let fixture = Fixture::new();
     let mut session =
