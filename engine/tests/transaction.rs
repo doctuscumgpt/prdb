@@ -8299,6 +8299,45 @@ fn authorized_patch_checks_changed_cells_and_freezes_policy_dependencies()
         policy_driving_columns: &[column_ids[1]],
         dependencies: &[],
     };
+    let hidden_row_policies = [
+        Policy {
+            using: Some(Expr::Literal(Some(ScalarValue::Boolean(false)))),
+            ..policies[0].clone()
+        },
+        policies[1].clone(),
+        policies[2].clone(),
+        policies[3].clone(),
+    ];
+    let hidden_row_projection = AuthorizedProjection {
+        policies: &hidden_row_policies,
+        ..projection
+    };
+    let absent_row_id = prdb_engine::overlay::RowId {
+        table: row_id.table,
+        row: [0xef; 16],
+    };
+    let update_patch = [FieldPatch {
+        ordinal: 0,
+        value: Some(ScalarValue::Text("attempted update".to_owned())),
+    }];
+    let mut hidden_row_update =
+        InvocationTransaction::begin(&database, [59; 16], [9; 16], 9_999, 2, 128)?;
+    let hidden_update_error = hidden_row_update
+        .stage_patch_authorized(row_id, &hidden_row_projection, &update_patch)
+        .expect_err("a row hidden by its SELECT policy cannot be updated");
+    let mut absent_row_update =
+        InvocationTransaction::begin(&database, [60; 16], [9; 16], 9_999, 2, 128)?;
+    let absent_update_error = absent_row_update
+        .stage_patch_authorized(absent_row_id, &hidden_row_projection, &update_patch)
+        .expect_err("an absent row cannot be updated");
+    assert_eq!(
+        format!("{hidden_update_error:?}"),
+        format!("{absent_update_error:?}"),
+        "UPDATE diagnostics must not distinguish a policy-hidden row from an absent row"
+    );
+    assert!(matches!(hidden_update_error, TransactionError::NotFound));
+    assert!(matches!(absent_update_error, TransactionError::NotFound));
+
     let mut invocation = InvocationTransaction::begin(&database, [56; 16], [9; 16], 9_999, 2, 128)?;
     invocation.stage_patch_authorized(
         row_id,
