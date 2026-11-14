@@ -128,7 +128,7 @@ Old read snapshots retain compatible catalog definitions and physical versions u
 
 Physical key/value limits come from the pinned [redb API](redb-storage.md). Keep the logical column/scalar limits only after validating they fit that API. Index key ordering follows [key encoding](index-key-encoding.md), adapted to the chosen redb key type. Oversize values reject atomically; never truncate keys.
 
-Policy and membership changes need epoch publication and write revalidation, not full-table scans. A policy change taking a policy-driving field into use also freezes that field for future query updates. Durable recovery must restore the catalog, constraints, index validity, and data at one committed state.
+Policy and membership changes need epoch publication and write revalidation, not full-table scans. A policy change taking a policy-driving field into use also freezes that field for future query updates. Durable recovery must restore the catalog, constraints, index validity, and data at one committed state. Constraint creation and removal publish or remove their definitions, expressions, dependency edges, table write epochs, audit events, outcomes, and commit sequence atomically; recovery must expose either the complete pre-DDL state or the complete committed state.
 
 ## Discovery and Format Evolution
 
