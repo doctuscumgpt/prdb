@@ -94,11 +94,36 @@ pub struct DropColumnSql {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckExpressionSql {
     Column(String),
+    Literal(CheckLiteralSql),
     IsNull(String),
     IsNotNull(String),
+    Compare {
+        operator: CheckComparisonOperator,
+        left: Box<CheckExpressionSql>,
+        right: Box<CheckExpressionSql>,
+    },
     Not(Box<CheckExpressionSql>),
     And(Vec<CheckExpressionSql>),
     Or(Vec<CheckExpressionSql>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CheckComparisonOperator {
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CheckLiteralSql {
+    Null,
+    Boolean(bool),
+    Number(String),
+    String(String),
+    Bytea(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,6 +143,12 @@ enum Token {
     LeftParen,
     RightParen,
     Semicolon,
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
 }
 
 pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
@@ -401,7 +432,7 @@ pub fn parse_add_key_constraint(sql: &str) -> Result<AddKeyConstraintSql, DdlSql
 }
 
 /// Parse `ALTER TABLE schema.table ADD CHECK (expression)` using a bounded
-/// boolean grammar over column truth values and `IS [NOT] NULL` predicates.
+/// Boolean grammar over columns, typed comparisons, literals, and NULL tests.
 pub fn parse_add_check_constraint(sql: &str) -> Result<AddCheckConstraintSql, DdlSqlError> {
     let mut parser = statement_parser(sql)?;
     parser.word("alter")?;
@@ -423,29 +454,253 @@ fn validate_check_columns(
     expression: &CheckExpressionSql,
     columns: &[AdminColumnDefinition],
 ) -> Result<(), DdlSqlError> {
-    match expression {
-        CheckExpressionSql::Column(name) => {
-            let column = columns
-                .iter()
-                .find(|column| &column.name == name)
-                .ok_or(DdlSqlError::InvalidStatement)?;
-            if column.scalar_type != ScalarType::Boolean {
-                return Err(DdlSqlError::InvalidStatement);
-            }
-        }
-        CheckExpressionSql::IsNull(name) | CheckExpressionSql::IsNotNull(name) => {
-            if !columns.iter().any(|column| &column.name == name) {
-                return Err(DdlSqlError::InvalidStatement);
-            }
-        }
-        CheckExpressionSql::Not(inner) => validate_check_columns(inner, columns)?,
-        CheckExpressionSql::And(items) | CheckExpressionSql::Or(items) => {
-            for item in items {
-                validate_check_columns(item, columns)?;
-            }
+    bind_check_expression(expression, |name| {
+        columns
+            .iter()
+            .position(|column| column.name == name)
+            .map(|ordinal| (ordinal, columns[ordinal].scalar_type))
+    })?;
+    Ok(())
+}
+
+/// Bind SQL CHECK names and context-typed literals to a row-local EIR1 tree.
+pub fn bind_check_expression(
+    expression: &CheckExpressionSql,
+    lookup: impl Fn(&str) -> Option<(usize, ScalarType)>,
+) -> Result<crate::authorization::Expr, DdlSqlError> {
+    fn scalar_compatible(left: ScalarType, right: ScalarType) -> bool {
+        match (left, right) {
+            (ScalarType::Decimal { scale: a, .. }, ScalarType::Decimal { scale: b, .. }) => a == b,
+            (ScalarType::Varchar { .. }, ScalarType::Varchar { .. }) => true,
+            _ => left == right,
         }
     }
-    Ok(())
+
+    fn comparison_hint(
+        expression: &CheckExpressionSql,
+        lookup: &impl Fn(&str) -> Option<(usize, ScalarType)>,
+    ) -> Option<ScalarType> {
+        match expression {
+            CheckExpressionSql::Column(name) => lookup(name).map(|(_, scalar_type)| scalar_type),
+            CheckExpressionSql::Literal(CheckLiteralSql::Boolean(_)) => Some(ScalarType::Boolean),
+            CheckExpressionSql::Literal(CheckLiteralSql::String(_)) => Some(ScalarType::Text),
+            CheckExpressionSql::Literal(CheckLiteralSql::Bytea(_)) => Some(ScalarType::Bytea),
+            CheckExpressionSql::Literal(CheckLiteralSql::Number(number)) => {
+                if number.contains('.') {
+                    let scale = number.split_once('.')?.1.len();
+                    (scale <= 38).then_some(ScalarType::Decimal {
+                        precision: 38,
+                        scale: scale as u8,
+                    })
+                } else {
+                    Some(ScalarType::BigInt)
+                }
+            }
+            CheckExpressionSql::IsNull(_)
+            | CheckExpressionSql::IsNotNull(_)
+            | CheckExpressionSql::Compare { .. }
+            | CheckExpressionSql::Not(_)
+            | CheckExpressionSql::And(_)
+            | CheckExpressionSql::Or(_) => Some(ScalarType::Boolean),
+            CheckExpressionSql::Literal(CheckLiteralSql::Null) => None,
+        }
+    }
+
+    fn common_numeric_literal_type(
+        left: &CheckExpressionSql,
+        right: &CheckExpressionSql,
+    ) -> Option<ScalarType> {
+        let (
+            CheckExpressionSql::Literal(CheckLiteralSql::Number(left)),
+            CheckExpressionSql::Literal(CheckLiteralSql::Number(right)),
+        ) = (left, right)
+        else {
+            return None;
+        };
+        let left_scale = left.split_once('.').map_or(0, |(_, scale)| scale.len());
+        let right_scale = right.split_once('.').map_or(0, |(_, scale)| scale.len());
+        let scale = left_scale.max(right_scale);
+        if scale == 0 {
+            Some(ScalarType::BigInt)
+        } else if scale <= 38 {
+            Some(ScalarType::Decimal {
+                precision: 38,
+                scale: scale as u8,
+            })
+        } else {
+            None
+        }
+    }
+
+    fn number_value(literal: &str, scalar_type: ScalarType) -> Result<ScalarValue, DdlSqlError> {
+        match scalar_type {
+            ScalarType::SmallInt if !literal.contains('.') => {
+                Ok(ScalarValue::SmallInt(literal.parse().map_err(invalid)?))
+            }
+            ScalarType::Integer if !literal.contains('.') => {
+                Ok(ScalarValue::Integer(literal.parse().map_err(invalid)?))
+            }
+            ScalarType::BigInt if !literal.contains('.') => {
+                Ok(ScalarValue::BigInt(literal.parse().map_err(invalid)?))
+            }
+            ScalarType::Decimal { precision, scale } => Ok(ScalarValue::Decimal(
+                parse_decimal_coefficient(literal, precision, scale)?,
+            )),
+            ScalarType::Date if !literal.contains('.') => {
+                Ok(ScalarValue::Date(literal.parse().map_err(invalid)?))
+            }
+            ScalarType::TimestampTz if !literal.contains('.') => {
+                Ok(ScalarValue::TimestampTz(literal.parse().map_err(invalid)?))
+            }
+            _ => Err(DdlSqlError::InvalidStatement),
+        }
+    }
+
+    fn bind(
+        expression: &CheckExpressionSql,
+        expected: Option<ScalarType>,
+        lookup: &impl Fn(&str) -> Option<(usize, ScalarType)>,
+    ) -> Result<(crate::authorization::Expr, Option<ScalarType>), DdlSqlError> {
+        use crate::authorization::Expr;
+        use CheckExpressionSql as Sql;
+        let bound = match expression {
+            Sql::Column(name) => {
+                let (ordinal, scalar_type) = lookup(name).ok_or(DdlSqlError::InvalidStatement)?;
+                (Expr::Field(ordinal), Some(scalar_type))
+            }
+            Sql::Literal(literal) => {
+                let (value, scalar_type) = match literal {
+                    CheckLiteralSql::Null => (None, None),
+                    CheckLiteralSql::Boolean(value) => (
+                        Some(ScalarValue::Boolean(*value)),
+                        Some(ScalarType::Boolean),
+                    ),
+                    CheckLiteralSql::Number(number) => {
+                        let scalar_type = expected
+                            .or_else(|| comparison_hint(expression, lookup))
+                            .unwrap_or_else(|| {
+                                if number.contains('.') {
+                                    let scale = number
+                                        .split_once('.')
+                                        .map_or(0, |(_, fraction)| fraction.len());
+                                    ScalarType::Decimal {
+                                        precision: 38,
+                                        scale: scale as u8,
+                                    }
+                                } else {
+                                    ScalarType::BigInt
+                                }
+                            });
+                        (Some(number_value(number, scalar_type)?), Some(scalar_type))
+                    }
+                    CheckLiteralSql::String(value) => {
+                        let scalar_type = expected.unwrap_or(ScalarType::Text);
+                        let value = match scalar_type {
+                            ScalarType::Text => ScalarValue::Text(value.clone()),
+                            ScalarType::Varchar { max_chars }
+                                if value.chars().count() <= max_chars as usize =>
+                            {
+                                ScalarValue::Varchar(value.clone())
+                            }
+                            ScalarType::Uuid => ScalarValue::Uuid(parse_uuid(value)?),
+                            _ => return Err(DdlSqlError::InvalidStatement),
+                        };
+                        (Some(value), Some(scalar_type))
+                    }
+                    CheckLiteralSql::Bytea(value) => {
+                        if expected.is_some_and(|scalar_type| scalar_type != ScalarType::Bytea) {
+                            return Err(DdlSqlError::InvalidStatement);
+                        }
+                        (
+                            Some(ScalarValue::Bytea(decode_hex(value)?)),
+                            Some(ScalarType::Bytea),
+                        )
+                    }
+                };
+                (Expr::Literal(value), scalar_type)
+            }
+            Sql::IsNull(name) | Sql::IsNotNull(name) => {
+                let (ordinal, _) = lookup(name).ok_or(DdlSqlError::InvalidStatement)?;
+                let is_null = Expr::IsNull(Box::new(Expr::Field(ordinal)));
+                let expression = if matches!(expression, Sql::IsNotNull(_)) {
+                    Expr::Not(Box::new(is_null))
+                } else {
+                    is_null
+                };
+                (expression, Some(ScalarType::Boolean))
+            }
+            Sql::Compare {
+                operator,
+                left,
+                right,
+            } => {
+                let (left_hint, right_hint) =
+                    if let Some(scalar_type) = common_numeric_literal_type(left, right) {
+                        (Some(scalar_type), Some(scalar_type))
+                    } else {
+                        (
+                            comparison_hint(left, lookup),
+                            comparison_hint(right, lookup),
+                        )
+                    };
+                let (left, left_type) = bind(left, right_hint, lookup)?;
+                let (right, right_type) =
+                    bind(right, left_hint.or(right_hint).or(left_type), lookup)?;
+                if let (Some(left_type), Some(right_type)) = (left_type, right_type)
+                    && !scalar_compatible(left_type, right_type)
+                {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
+                let expression = match operator {
+                    CheckComparisonOperator::Equal => Expr::Equal(Box::new(left), Box::new(right)),
+                    CheckComparisonOperator::NotEqual => {
+                        Expr::NotEqual(Box::new(left), Box::new(right))
+                    }
+                    CheckComparisonOperator::Less => Expr::Less(Box::new(left), Box::new(right)),
+                    CheckComparisonOperator::LessEqual => {
+                        Expr::LessEqual(Box::new(left), Box::new(right))
+                    }
+                    CheckComparisonOperator::Greater => {
+                        Expr::Greater(Box::new(left), Box::new(right))
+                    }
+                    CheckComparisonOperator::GreaterEqual => {
+                        Expr::GreaterEqual(Box::new(left), Box::new(right))
+                    }
+                };
+                (expression, Some(ScalarType::Boolean))
+            }
+            Sql::Not(inner) => {
+                let (inner, scalar_type) = bind(inner, Some(ScalarType::Boolean), lookup)?;
+                if scalar_type.is_some_and(|scalar_type| scalar_type != ScalarType::Boolean) {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
+                (Expr::Not(Box::new(inner)), Some(ScalarType::Boolean))
+            }
+            Sql::And(items) | Sql::Or(items) => {
+                let mut expressions = Vec::with_capacity(items.len());
+                for item in items {
+                    let (item, scalar_type) = bind(item, Some(ScalarType::Boolean), lookup)?;
+                    if scalar_type.is_some_and(|scalar_type| scalar_type != ScalarType::Boolean) {
+                        return Err(DdlSqlError::InvalidStatement);
+                    }
+                    expressions.push(item);
+                }
+                let expression = if matches!(expression, Sql::And(_)) {
+                    Expr::And(expressions)
+                } else {
+                    Expr::Or(expressions)
+                };
+                (expression, Some(ScalarType::Boolean))
+            }
+        };
+        Ok(bound)
+    }
+
+    let (expression, scalar_type) = bind(expression, Some(ScalarType::Boolean), &lookup)?;
+    if scalar_type.is_some_and(|scalar_type| scalar_type != ScalarType::Boolean) {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    Ok(expression)
 }
 
 /// Parse `ALTER TABLE schema.table ALTER COLUMN name {SET|DROP} NOT NULL`.
@@ -657,8 +912,15 @@ impl Parser {
             self.take(Token::RightParen)?;
             return Ok(expression);
         }
-        let column = self.identifier()?;
+        self.check_predicate()
+    }
+
+    fn check_predicate(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
+        let left = self.check_value_atom()?;
         if self.peek_word("is") {
+            let CheckExpressionSql::Column(column) = left else {
+                return Err(DdlSqlError::InvalidStatement);
+            };
             self.position += 1;
             let is_not = if self.peek_word("not") {
                 self.position += 1;
@@ -673,8 +935,78 @@ impl Parser {
                 CheckExpressionSql::IsNull(column)
             })
         } else {
-            Ok(CheckExpressionSql::Column(column))
+            let operator = match self.peek() {
+                Some(Token::Equal) => Some(CheckComparisonOperator::Equal),
+                Some(Token::NotEqual) => Some(CheckComparisonOperator::NotEqual),
+                Some(Token::Less) => Some(CheckComparisonOperator::Less),
+                Some(Token::LessEqual) => Some(CheckComparisonOperator::LessEqual),
+                Some(Token::Greater) => Some(CheckComparisonOperator::Greater),
+                Some(Token::GreaterEqual) => Some(CheckComparisonOperator::GreaterEqual),
+                _ => None,
+            };
+            if let Some(operator) = operator {
+                self.position += 1;
+                let right = self.check_value_atom()?;
+                Ok(CheckExpressionSql::Compare {
+                    operator,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                })
+            } else {
+                Ok(left)
+            }
         }
+    }
+
+    fn check_value_atom(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
+        if self.peek_word("null") {
+            self.position += 1;
+            return Ok(CheckExpressionSql::Literal(CheckLiteralSql::Null));
+        }
+        if self.peek_word("true") || self.peek_word("false") {
+            let value = self.peek_word("true");
+            self.position += 1;
+            return Ok(CheckExpressionSql::Literal(CheckLiteralSql::Boolean(value)));
+        }
+        if self.peek_word("x")
+            && matches!(self.tokens.get(self.position + 1), Some(Token::String(_)))
+        {
+            self.position += 1;
+            let Some(Token::String(value)) = self.peek() else {
+                return Err(DdlSqlError::InvalidStatement);
+            };
+            let value = value.clone();
+            decode_hex(&value)?;
+            self.position += 1;
+            return Ok(CheckExpressionSql::Literal(CheckLiteralSql::Bytea(value)));
+        }
+        if matches!(
+            self.peek(),
+            Some(Token::Number(_) | Token::Minus | Token::Plus)
+        ) {
+            let value = self.signed_number()?;
+            if value
+                .split_once('.')
+                .is_some_and(|(_, fraction)| fraction.len() > 38)
+            {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+            if self
+                .peek()
+                .is_some_and(|token| matches!(token, Token::Minus | Token::Plus))
+            {
+                self.position += 2;
+            } else {
+                self.position += 1;
+            }
+            return Ok(CheckExpressionSql::Literal(CheckLiteralSql::Number(value)));
+        }
+        if let Some(Token::String(value)) = self.peek() {
+            let value = value.clone();
+            self.position += 1;
+            return Ok(CheckExpressionSql::Literal(CheckLiteralSql::String(value)));
+        }
+        Ok(CheckExpressionSql::Column(self.identifier()?))
     }
 
     fn check_constraint_expression(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
@@ -944,6 +1276,34 @@ fn tokenize(sql: &str) -> Result<Vec<Token>, DdlSqlError> {
                 tokens.push(Token::Semicolon);
                 cursor += 1;
             }
+            b'=' => {
+                tokens.push(Token::Equal);
+                cursor += 1;
+            }
+            b'!' if bytes.get(cursor + 1) == Some(&b'=') => {
+                tokens.push(Token::NotEqual);
+                cursor += 2;
+            }
+            b'<' if bytes.get(cursor + 1) == Some(&b'=') => {
+                tokens.push(Token::LessEqual);
+                cursor += 2;
+            }
+            b'<' if bytes.get(cursor + 1) == Some(&b'>') => {
+                tokens.push(Token::NotEqual);
+                cursor += 2;
+            }
+            b'<' => {
+                tokens.push(Token::Less);
+                cursor += 1;
+            }
+            b'>' if bytes.get(cursor + 1) == Some(&b'=') => {
+                tokens.push(Token::GreaterEqual);
+                cursor += 2;
+            }
+            b'>' => {
+                tokens.push(Token::Greater);
+                cursor += 1;
+            }
             b'-' => {
                 tokens.push(Token::Minus);
                 cursor += 1;
@@ -1150,21 +1510,94 @@ mod tests {
     #[test]
     fn parses_table_level_check_constraints_and_binds_column_names() {
         let parsed = parse_create_table(
-            "CREATE TABLE app.events (id UUID NOT NULL, active BOOLEAN, deleted_at TIMESTAMPTZ, PRIMARY KEY (id), CHECK (active OR deleted_at IS NULL));",
+            "CREATE TABLE app.events (id UUID NOT NULL, active BOOLEAN, deleted_at TIMESTAMPTZ, amount DECIMAL(8,2), PRIMARY KEY (id), CHECK (active OR deleted_at IS NULL), CHECK (amount >= -1.25));",
         )
         .unwrap();
         assert_eq!(
             parsed.check_constraints,
-            vec![CheckExpressionSql::Or(vec![
-                CheckExpressionSql::Column("active".into()),
-                CheckExpressionSql::IsNull("deleted_at".into()),
-            ])]
+            vec![
+                CheckExpressionSql::Or(vec![
+                    CheckExpressionSql::Column("active".into()),
+                    CheckExpressionSql::IsNull("deleted_at".into()),
+                ]),
+                CheckExpressionSql::Compare {
+                    operator: CheckComparisonOperator::GreaterEqual,
+                    left: Box::new(CheckExpressionSql::Column("amount".into())),
+                    right: Box::new(CheckExpressionSql::Literal(CheckLiteralSql::Number(
+                        "-1.25".into(),
+                    ))),
+                },
+            ]
         );
         for sql in [
             "CREATE TABLE app.events (id INTEGER, CHECK (missing IS NULL))",
             "CREATE TABLE app.events (id INTEGER, CHECK (id))",
+            "CREATE TABLE app.events (amount DECIMAL(8,2), CHECK (amount >= 0.001))",
+            "CREATE TABLE app.events (amount TEXT, CHECK (amount >= 0))",
         ] {
             assert!(parse_create_table(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn binds_check_comparison_literals_to_column_types() {
+        use crate::authorization::Expr;
+
+        let expression = CheckExpressionSql::Compare {
+            operator: CheckComparisonOperator::GreaterEqual,
+            left: Box::new(CheckExpressionSql::Column("amount".into())),
+            right: Box::new(CheckExpressionSql::Literal(CheckLiteralSql::Number(
+                "-1.25".into(),
+            ))),
+        };
+        let bound = bind_check_expression(&expression, |name| {
+            (name == "amount").then_some((
+                0,
+                ScalarType::Decimal {
+                    precision: 8,
+                    scale: 2,
+                },
+            ))
+        })
+        .unwrap();
+        assert_eq!(
+            bound,
+            Expr::GreaterEqual(
+                Box::new(Expr::Field(0)),
+                Box::new(Expr::Literal(Some(ScalarValue::Decimal(-125)))),
+            )
+        );
+
+        let string_check = parse_create_table(
+            "CREATE TABLE app.events (label VARCHAR(8), CHECK (label = 'ready'))",
+        )
+        .unwrap();
+        assert_eq!(string_check.check_constraints.len(), 1);
+        assert!(
+            parse_create_table(
+                "CREATE TABLE app.events (active BOOLEAN, CHECK (active = 'ready'))"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_create_table("CREATE TABLE app.events (amount INTEGER, CHECK (amount >= '0'))")
+                .is_err()
+        );
+
+        for (operator, expected) in [
+            ("=", CheckComparisonOperator::Equal),
+            ("!=", CheckComparisonOperator::NotEqual),
+            ("<>", CheckComparisonOperator::NotEqual),
+            ("<", CheckComparisonOperator::Less),
+            ("<=", CheckComparisonOperator::LessEqual),
+            (">", CheckComparisonOperator::Greater),
+            (">=", CheckComparisonOperator::GreaterEqual),
+        ] {
+            let statement = format!("ALTER TABLE app.events ADD CHECK (amount {operator} 0)");
+            assert!(matches!(
+                parse_add_check_constraint(&statement).unwrap().expression,
+                CheckExpressionSql::Compare { operator, .. } if operator == expected
+            ));
         }
     }
 
@@ -1185,7 +1618,6 @@ mod tests {
             }
         );
         for sql in [
-            "ALTER TABLE app.events ADD CHECK (amount >= 0)",
             "ALTER TABLE app.events ADD CHECK (active); ALTER TABLE app.events ADD CHECK (active)",
             "ALTER TABLE events ADD CHECK (active)",
             "ALTER TABLE app.events ADD CONSTRAINT c CHECK (active)",
@@ -1193,6 +1625,9 @@ mod tests {
         ] {
             assert!(parse_add_check_constraint(sql).is_err(), "accepted {sql}");
         }
+        assert!(
+            parse_add_check_constraint("ALTER TABLE app.events ADD CHECK (amount >= 0)").is_ok()
+        );
     }
 
     #[test]

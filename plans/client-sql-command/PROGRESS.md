@@ -205,6 +205,13 @@
 
 ## Administrative SQL: CREATE TABLE CHECK — implemented
 
-- `admin-sql` accepts table-level CHECK clauses using Boolean column references, `IS [NOT] NULL`, `NOT`, `AND`, `OR`, and parentheses; it rejects comparisons and literals before authentication.
+- `admin-sql` accepts table-level CHECK clauses using Boolean column references, `IS [NOT] NULL`, Boolean operators, parentheses, all six comparison operators, and typed scalar literals. It rejects type mismatches and lossy DECIMAL rescaling.
 - SQL names bind to declared columns and the typed create request carries canonical EIR1 so table and CHECK catalog records publish atomically.
 - Parser, control decoder, AdminClient, CLI, and storage regressions passed; locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace tests (including sandbox/process tests with zero ignored), maintained TinyCC SDK tests, sandbox fixture build, and `git diff --check` passed.
+
+
+## Administrative SQL: typed CHECK comparisons and literals — implemented
+
+- `admin-sql` accepts typed comparisons and literals in CREATE TABLE and ALTER TABLE CHECK clauses and rejects incompatible types before PREPARE.
+- Literals are contextual to compared columns; DECIMAL coefficients are rescaled exactly to the column scale.
+- Focused parser, authenticated client, CLI, expression, and storage regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed.

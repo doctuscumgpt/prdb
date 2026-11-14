@@ -2846,41 +2846,19 @@ impl AdminClient {
         let statement = crate::ddl_sql::parse_create_table(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
         let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
-        fn bind(
-            expression: &crate::ddl_sql::CheckExpressionSql,
-            columns: &[AdminColumnDefinition],
-        ) -> Result<crate::authorization::Expr, ClientSubmitError> {
-            use crate::{authorization::Expr, ddl_sql::CheckExpressionSql as Sql};
-            let field = |name: &str| {
-                columns
-                    .iter()
-                    .position(|column| column.name == name)
-                    .map(Expr::Field)
-                    .ok_or(ClientSubmitError::InvalidAdministrativeRequest)
-            };
-            Ok(match expression {
-                Sql::Column(name) => field(name)?,
-                Sql::IsNull(name) => Expr::IsNull(Box::new(field(name)?)),
-                Sql::IsNotNull(name) => Expr::Not(Box::new(Expr::IsNull(Box::new(field(name)?)))),
-                Sql::Not(inner) => Expr::Not(Box::new(bind(inner, columns)?)),
-                Sql::And(items) => Expr::And(
-                    items
-                        .iter()
-                        .map(|item| bind(item, columns))
-                        .collect::<Result<_, _>>()?,
-                ),
-                Sql::Or(items) => Expr::Or(
-                    items
-                        .iter()
-                        .map(|item| bind(item, columns))
-                        .collect::<Result<_, _>>()?,
-                ),
-            })
-        }
         let checks = statement
             .check_constraints
             .iter()
-            .map(|expression| bind(expression, &statement.columns))
+            .map(|expression| {
+                crate::ddl_sql::bind_check_expression(expression, |name| {
+                    statement
+                        .columns
+                        .iter()
+                        .position(|column| column.name == name)
+                        .map(|ordinal| (ordinal, statement.columns[ordinal].scalar_type))
+                })
+                .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         self.create_table_with_checks_and_constraints(
             schema_id,
@@ -2995,44 +2973,52 @@ impl AdminClient {
             }
         }
         let mut dependencies = std::collections::BTreeSet::new();
-        fn bind(
-            expression: &crate::ddl_sql::CheckExpressionSql,
+        let expression = crate::ddl_sql::bind_check_expression(&statement.expression, |name| {
+            visible_columns
+                .iter()
+                .find(|column| column.name == name)
+                .map(|column| (column.ordinal as usize, column.scalar_type))
+        })
+        .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        fn collect_fields(
+            expression: &crate::authorization::Expr,
             columns: &[crate::metadata_discovery::VisibleColumn],
             dependencies: &mut std::collections::BTreeSet<[u8; 16]>,
-        ) -> Result<crate::authorization::Expr, ClientSubmitError> {
-            use crate::{authorization::Expr, ddl_sql::CheckExpressionSql as Sql};
-            let field = |name: &str,
-                         dependencies: &mut std::collections::BTreeSet<[u8; 16]>|
-             -> Result<Expr, ClientSubmitError> {
-                let column = columns
-                    .iter()
-                    .find(|column| column.name == name)
-                    .ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
-                dependencies.insert(column.column_id);
-                Ok(Expr::Field(column.ordinal as usize))
-            };
-            Ok(match expression {
-                Sql::Column(name) => field(name, dependencies)?,
-                Sql::IsNull(name) => Expr::IsNull(Box::new(field(name, dependencies)?)),
-                Sql::IsNotNull(name) => {
-                    Expr::Not(Box::new(Expr::IsNull(Box::new(field(name, dependencies)?))))
+        ) -> Result<(), ClientSubmitError> {
+            use crate::authorization::Expr;
+            match expression {
+                Expr::Field(ordinal) => {
+                    let column = columns
+                        .iter()
+                        .find(|column| column.ordinal as usize == *ordinal)
+                        .ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
+                    dependencies.insert(column.column_id);
                 }
-                Sql::Not(inner) => Expr::Not(Box::new(bind(inner, columns, dependencies)?)),
-                Sql::And(items) => Expr::And(
-                    items
-                        .iter()
-                        .map(|item| bind(item, columns, dependencies))
-                        .collect::<Result<_, _>>()?,
-                ),
-                Sql::Or(items) => Expr::Or(
-                    items
-                        .iter()
-                        .map(|item| bind(item, columns, dependencies))
-                        .collect::<Result<_, _>>()?,
-                ),
-            })
+                Expr::Equal(left, right)
+                | Expr::NotEqual(left, right)
+                | Expr::Less(left, right)
+                | Expr::LessEqual(left, right)
+                | Expr::Greater(left, right)
+                | Expr::GreaterEqual(left, right) => {
+                    collect_fields(left, columns, dependencies)?;
+                    collect_fields(right, columns, dependencies)?;
+                }
+                Expr::And(expressions) | Expr::Or(expressions) => {
+                    for expression in expressions {
+                        collect_fields(expression, columns, dependencies)?;
+                    }
+                }
+                Expr::Not(inner) | Expr::IsNull(inner) => {
+                    collect_fields(inner, columns, dependencies)?;
+                }
+                Expr::Literal(_) => {}
+                Expr::CurrentPrincipalId | Expr::HasRole(_) => {
+                    return Err(ClientSubmitError::InvalidAdministrativeRequest);
+                }
+            }
+            Ok(())
         }
-        let expression = bind(&statement.expression, &visible_columns, &mut dependencies)?;
+        collect_fields(&expression, &visible_columns, &mut dependencies)?;
         self.create_check_constraint(
             table_id,
             &expression,

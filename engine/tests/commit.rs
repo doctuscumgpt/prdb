@@ -1885,9 +1885,12 @@ fn storage_manager_creates_typed_table_with_atomic_check_constraint()
             },
             None,
             &[],
-            &[prdb_engine::authorization::Expr::IsNull(Box::new(
-                prdb_engine::authorization::Expr::Field(1),
-            ))],
+            &[prdb_engine::authorization::Expr::GreaterEqual(
+                Box::new(prdb_engine::authorization::Expr::Field(1)),
+                Box::new(prdb_engine::authorization::Expr::Literal(Some(
+                    ScalarValue::Text("a".to_owned()),
+                ))),
+            )],
         )
         .map_err(|error| format!("table creation failed: {error:?}"))?;
     assert_eq!(created.column_ids.len(), 3);

@@ -291,3 +291,35 @@ fn schema_binding_checks_type_parameters_and_boolean_policy_purposes() {
             .is_err()
     );
 }
+
+#[test]
+fn check_decimal_literals_bind_at_the_compared_column_scale() {
+    let column_id = [41; 16];
+    let expression = CatalogExpression {
+        expression_id: [42; 16],
+        purpose: ExpressionPurpose::Check,
+        result_type_id: [43; 16],
+        result_parameters: [0; 8],
+        dependencies: vec![column_id],
+        expression: Expr::GreaterEqual(
+            Box::new(Expr::Field(0)),
+            Box::new(Expr::Literal(Some(ScalarValue::Decimal(-125)))),
+        ),
+    };
+    assert!(
+        validate_expression_binding(
+            &expression,
+            &[ColumnSchema {
+                scalar_type: ScalarType::Decimal {
+                    precision: 8,
+                    scale: 2,
+                },
+                nullable: true,
+            }],
+            &[column_id],
+            [43; 16],
+            ScalarType::Boolean,
+        )
+        .is_ok()
+    );
+}

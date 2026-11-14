@@ -1499,6 +1499,25 @@ fn admin_client_binds_check_sql_names_to_eir_dependencies() {
             "c6".repeat(16)
         )));
         assert!(payload.contains(r#""expression_eir1":""#));
+        assert!(matches!(
+            decode_client_admin_command(&prepare.payload),
+            Ok(ClientAdminCommand::PrepareCreateCheckConstraint {
+                expression,
+                dependency_column_ids,
+                ..
+            }) if expression == prdb_engine::authorization::Expr::And(vec![
+                prdb_engine::authorization::Expr::Field(0),
+                prdb_engine::authorization::Expr::Or(vec![
+                    prdb_engine::authorization::Expr::GreaterEqual(
+                        Box::new(prdb_engine::authorization::Expr::Field(1)),
+                        Box::new(prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Integer(-2)))),
+                    ),
+                    prdb_engine::authorization::Expr::IsNull(Box::new(
+                        prdb_engine::authorization::Expr::Field(1),
+                    )),
+                ]),
+            ]) && dependency_column_ids == [[0xc5; 16], [0xc6; 16]]
+        ));
         respond(
             &mut stream,
             &prepare,
@@ -1522,7 +1541,7 @@ fn admin_client_binds_check_sql_names_to_eir_dependencies() {
     .unwrap();
     let created = client
         .execute_add_check_constraint_sql(
-            "ALTER TABLE app.events ADD CHECK (enabled AND deleted IS NULL)",
+            "ALTER TABLE app.events ADD CHECK (enabled AND (deleted >= -2 OR deleted IS NULL))",
         )
         .unwrap();
     assert_eq!(created.constraint_id, [0xe8; 16]);
@@ -2015,6 +2034,15 @@ fn admin_client_executes_create_table_sql_on_authenticated_control_channel() {
         assert!(payload.contains(r#""type":"decimal(8,2)""#));
         assert!(payload.contains(r#""default":{"kind":"literal","value":"-1.20"}"#));
         assert!(payload.contains(r#""value":"hello 'sql'""#));
+        let decoded = decode_client_admin_command(&prepare.payload).unwrap();
+        assert!(matches!(
+            decoded,
+            ClientAdminCommand::PrepareCreateTable { check_expressions, .. }
+                if check_expressions == [prdb_engine::authorization::Expr::GreaterEqual(
+                    Box::new(prdb_engine::authorization::Expr::Field(1)),
+                    Box::new(prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Decimal(-120)))),
+                )]
+        ));
         let operation_id = [0x81; 16];
         respond(
             &mut stream,
@@ -2043,7 +2071,7 @@ fn admin_client_executes_create_table_sql_on_authenticated_control_channel() {
     .unwrap();
     let created = client
         .execute_create_table_sql(
-            "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY, amount DECIMAL(8, 2) DEFAULT -1.20, title TEXT DEFAULT 'hello ''sql''', owner UUID DEFAULT CURRENT_PRINCIPAL_ID(), PRIMARY KEY (id), UNIQUE (amount));",
+            "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY, amount DECIMAL(8, 2) DEFAULT -1.20, title TEXT DEFAULT 'hello ''sql''', owner UUID DEFAULT CURRENT_PRINCIPAL_ID(), PRIMARY KEY (id), UNIQUE (amount), CHECK (amount >= -1.20));",
         )
         .unwrap();
     assert_eq!(created.table_id, [0xa5; 16]);

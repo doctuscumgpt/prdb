@@ -545,7 +545,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Implementation: [SQL parser](../../engine/src/ddl_sql.rs), [table creation](../../engine/src/storage_manager.rs), and create-table DDL validation in [commit.rs](../../engine/src/commit.rs).
 - Regression evidence: parser coverage handles multiple composite keys and rejects duplicate, unknown, or repeated columns. The authenticated storage regression atomically creates a composite PRIMARY KEY plus nullable UNIQUE constraint and validates persisted catalog startup. Decoder, AdminClient, and CLI tests assert nested typed arrays.
 - Verification: focused parser, decoder, AdminClient, CLI, and storage tests passed. Locked workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
-- Next: extend the CHECK SQL subset with typed comparisons and literals while preserving row-local EIR1 binding and validation.
+- Next: add bounded SQL FOREIGN KEY creation and ALTER CONSTRAINT lifecycle coverage; named constraints and broader expression forms remain deferred.
 
 ## DS-8: ALTER TABLE SQL for PRIMARY KEY and UNIQUE — implemented
 
@@ -553,13 +553,13 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Implementation: bounded statement parsing in [ddl_sql.rs](../../engine/src/ddl_sql.rs), metadata resolution and typed dispatch in [client_submit.rs](../../engine/src/client_submit.rs), and `admin-sql` routing in [prdb-client.rs](../../engine/src/bin/prdb-client.rs). Named constraints remain unsupported because the current typed APIs generate catalog identities.
 - Regression: parser tests accept composite key forms and reject unqualified, empty, duplicate, named, and multi-statement input. The authenticated TCP test resolves schema, relation, and columns, then verifies the typed `constraints.create_unique` request and returned IDs. The CLI process test confirms recognized SQL reaches credential loading before network access.
 - Verification: focused parser, AdminClient TCP, and CLI tests passed. Locked workspace build, format check, warning-denied Clippy, complete serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.
-- Next: extend the CHECK SQL subset with typed comparisons and literals while preserving row-local EIR1 binding and validation.
+- Next: add bounded SQL FOREIGN KEY creation and ALTER CONSTRAINT lifecycle coverage; named constraints remain deferred.
 
 ## DS-8: bounded ALTER TABLE CHECK SQL — implemented
 
-- Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). `ALTER TABLE schema.table ADD CHECK (...)` accepts Boolean column references, `IS [NOT] NULL`, `NOT`, `AND`, `OR`, and parentheses. Names bind through authenticated column metadata to EIR1 field ordinals and stable dependency IDs; typed storage validation, authorization, backfill, write fencing, audit, and durable outcome remain authoritative.
-- Regression: parser coverage verifies precedence/grouping and rejects comparisons, named constraints, unknown forms, unqualified names, and multiple statements. CLI coverage verifies valid CHECK syntax is recognized before credentials/network.
-- Limit: this SQL form does not yet accept comparisons or literals; the existing typed CHECK API still supports validated row-local EIR1 expressions.
+- Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). `ALTER TABLE schema.table ADD CHECK (...)` accepts Boolean column references, `IS [NOT] NULL`, `NOT`, `AND`, `OR`, parentheses, and typed scalar comparisons. Names bind through authenticated column metadata to EIR1 field ordinals and stable dependency IDs; typed storage validation, authorization, backfill, write fencing, audit, and durable outcome remain authoritative.
+- Regression: parser coverage verifies precedence/grouping, typed literal binding and type mismatch rejection, named constraints, unknown forms, unqualified names, and multiple statements. CLI coverage verifies valid CHECK syntax is recognized before credentials/network.
+- Limit: CHECK SQL remains row-local and excludes named constraints and FOREIGN KEY definitions; typed APIs retain the same validated EIR1 boundary.
 - Verification: focused parser, authenticated AdminClient TCP binding, and CLI pre-credential recognition tests passed. Locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled; `git diff --check` passed.
 
 ## DS-8: ALTER COLUMN SET/DROP NOT NULL SQL — implemented
@@ -589,7 +589,15 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 ## DS-9: Atomic table-level CHECK in CREATE TABLE SQL — implemented
 
-- Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). CREATE TABLE accepts final table-level CHECK clauses in the bounded Boolean subset (Boolean column references, `IS [NOT] NULL`, `NOT`, `AND`, `OR`, and parentheses). The client resolves names against the declared columns, binds stable IDs/ordinals, and sends canonical EIR1. Storage publishes constraints, expression objects, dependencies, columns, keys, and owned indexes atomically and validates catalog shape and expression bindings.
+- Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). CREATE TABLE accepts final table-level CHECK clauses with Boolean column references, `IS [NOT] NULL`, `NOT`, `AND`, `OR`, parentheses, typed comparisons, and context-typed scalar literals. The client resolves names against the declared columns, binds stable IDs/ordinals, and sends canonical EIR1. Storage publishes constraints, expression objects, dependencies, columns, keys, and owned indexes atomically and validates catalog shape and expression bindings.
 - Regression: parser name binding, client EIR1 decoding, authenticated AdminClient SQL submission, CLI recognition, and storage catalog publication are covered.
-- Limit: comparisons and literals are not accepted in CREATE TABLE or ALTER TABLE CHECK SQL; typed EIR1 APIs retain the broader validated row-local language.
+- Limit: named constraints and FOREIGN KEY definitions remain unsupported in CREATE TABLE SQL. CHECK expressions remain bounded to deterministic row-local EIR1.
 - Validation: parser, control decoder, authenticated AdminClient, CLI, and storage regressions; locked workspace build; format check; warning-denied all-target Clippy; the full serial delegated-cgroup workspace suite including sandbox/process tests (zero ignored); maintained TinyCC SDK tests; sandbox fixture build; and `git diff --check` passed.
+
+
+## DS-10: Typed comparisons and literals in CHECK SQL — implemented
+
+- Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). CREATE TABLE and ALTER TABLE CHECK accept `=`, `!=`, `<>`, `<`, `<=`, `>`, and `>=`; operands bind compatible columns or typed scalar literals. Integer, exact DECIMAL, boolean, string/VARCHAR/UUID, BYTEA, epoch DATE/TIMESTAMPTZ, and NULL literals are contextually validated. DECIMAL literal coefficients use the compared column scale.
+- Regression: parser and binder tests cover DECIMAL coefficient scaling, VARCHAR and Boolean typing, type mismatch/loss rejection, ALTER metadata binding/dependency IDs, CREATE TABLE EIR1 decoding, CLI recognition, expression validation, and atomic storage publication.
+- Limit: CHECK remains deterministic and row-local; named constraints and FOREIGN KEY SQL are deferred.
+- Validation: focused parser, EIR binding, authenticated AdminClient, CLI, and storage regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed.

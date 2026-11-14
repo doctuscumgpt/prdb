@@ -218,9 +218,18 @@ fn infer_type(
         | Expr::LessEqual(left, right)
         | Expr::Greater(left, right)
         | Expr::GreaterEqual(left, right) => {
-            let left = child(left, dependencies, remaining)?;
-            let right = child(right, dependencies, remaining)?;
-            if !types_comparable(left, right) {
+            let left_expression = left;
+            let right_expression = right;
+            let left = child(left_expression, dependencies, remaining)?;
+            let right = child(right_expression, dependencies, remaining)?;
+            let contextual_decimal_literal = |literal: &Expr, actual: InferredType| {
+                matches!(literal, Expr::Literal(Some(ScalarValue::Decimal(_))))
+                    && matches!(actual, InferredType::Known(ScalarType::Decimal { .. }))
+            };
+            if !types_comparable(left, right)
+                && !contextual_decimal_literal(left_expression, right)
+                && !contextual_decimal_literal(right_expression, left)
+            {
                 return Err(ExpressionCodecError::TypeMismatch);
             }
             Ok(InferredType::Known(ScalarType::Boolean))
