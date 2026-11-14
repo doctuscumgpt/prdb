@@ -146,6 +146,12 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
             Some(br#"{"format":"PDB-SQL-PARAMETERS-1","values":[{"type":"bytea","value":"hex:0G"}]}"#.to_vec()),
             "invalid SQL parameter file",
         ),
+        (
+            "oversized-parameter-file",
+            b"SELECT 1".to_vec(),
+            Some(vec![b' '; 1024 * 1024 + 1]),
+            "SQL parameter input exceeds 1 MiB",
+        ),
     ];
 
     for (case, sql, parameters, expected_error) in local_failures {
