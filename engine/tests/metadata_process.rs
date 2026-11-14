@@ -144,6 +144,8 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let committed_invocation_id = [0xa3; 16];
     let restricted_token;
     let mut restricted_secret;
+    let scope_reader_token;
+    let scope_reader_secret;
     let owner_token;
     let mut owner_secret;
     let restricted_schema_id;
@@ -180,6 +182,21 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 event_id: [0xad; 16],
                 actor_id: Some(admin_user_id),
                 correlation_id: [0xac; 16],
+                occurred_at_us: now_us,
+                action: AuditAction::Ddl,
+                result: AuditResult::Succeeded,
+                target_ids: Vec::new(),
+            },
+        )?;
+        let scope_reader = storage.create_user(
+            [0xc0; 16],
+            admin_user_id,
+            "sql_scope_reader",
+            retention_deadline_us,
+            AuditEvent {
+                event_id: [0xc1; 16],
+                actor_id: Some(admin_user_id),
+                correlation_id: [0xc0; 16],
                 occurred_at_us: now_us,
                 action: AuditAction::Ddl,
                 result: AuditResult::Succeeded,
@@ -302,6 +319,40 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             },
         })?;
         restricted_table_id = private_table.table_id;
+        for (invocation_id, event_id, object_id, privilege) in [
+            (
+                [0xc2; 16],
+                [0xc3; 16],
+                restricted_schema_id,
+                ObjectGrantPrivilege::Usage,
+            ),
+            (
+                [0xc4; 16],
+                [0xc5; 16],
+                private_table.table_id,
+                ObjectGrantPrivilege::Select,
+            ),
+        ] {
+            storage.set_object_grant(SetObjectGrantRequest {
+                invocation_id,
+                authenticated_actor_id: admin_user_id,
+                grantee_id: scope_reader.user_id,
+                object_id,
+                privilege,
+                target: ObjectGrantTarget::Object,
+                grant: true,
+                retention_deadline_us,
+                audit_event: AuditEvent {
+                    event_id,
+                    actor_id: Some(admin_user_id),
+                    correlation_id: invocation_id,
+                    occurred_at_us: now_us,
+                    action: AuditAction::AuthorityChange,
+                    result: AuditResult::Succeeded,
+                    target_ids: vec![scope_reader.user_id, object_id],
+                },
+            })?;
+        }
         let index_invocation = [0x8a; 16];
         let mut index_audit = AuditEvent {
             event_id: [0x8b; 16],
@@ -367,6 +418,27 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         owner_secret = owner_issued
             .take_secret()
             .ok_or("schema owner token secret missing")?;
+        let mut scope_reader_issued = storage.issue_token(TokenIssueRequest {
+            invocation_id: [0xc6; 16],
+            authenticated_actor_id: admin_user_id,
+            user_id: scope_reader.user_id,
+            label: "SQL scope reader",
+            expires_at_us: now_us.saturating_add(1_800_000_000),
+            retention_deadline_us,
+            audit_event: AuditEvent {
+                event_id: [0xc7; 16],
+                actor_id: Some(admin_user_id),
+                correlation_id: [0xc6; 16],
+                occurred_at_us: now_us,
+                action: AuditAction::TokenLifecycle,
+                result: AuditResult::Succeeded,
+                target_ids: vec![scope_reader.user_id],
+            },
+        })?;
+        scope_reader_token = scope_reader_issued.token_id;
+        scope_reader_secret = scope_reader_issued
+            .take_secret()
+            .ok_or("SQL scope reader token secret missing")?;
 
         let (mut admin_query, _) = storage.begin_token_authenticated_invocation(
             [0xb2; 16],
@@ -701,6 +773,8 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         let sql_sdk = sdk_release_dir.join("libprdb_sql.so.1");
         let include_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
         let invoke_run_sql = |address: &str,
+                              credentials: &std::path::Path,
+                              schema: &str,
                               sql_path: &std::path::Path,
                               parameters_path: &std::path::Path,
                               receipt_path: &std::path::Path|
@@ -711,13 +785,13 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                     "--address",
                     address,
                     "--credentials",
-                    credentials_path
+                    credentials
                         .to_str()
                         .ok_or("run-sql credentials path is not UTF-8")?,
                     "--sql-file",
                     sql_path.to_str().ok_or("run-sql SQL path is not UTF-8")?,
                     "--schema",
-                    "information_schema",
+                    schema,
                     "--scope",
                     requested_scope_path
                         .to_str()
@@ -747,7 +821,14 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 ])
                 .output()?)
         };
-        let run_sql = invoke_run_sql(&sql_address, &sql_path, &parameters_path, &receipt_path)?;
+        let run_sql = invoke_run_sql(
+            &sql_address,
+            &credentials_path,
+            "information_schema",
+            &sql_path,
+            &parameters_path,
+            &receipt_path,
+        )?;
         assert!(
             run_sql.status.success(),
             "run-sql failed: {}",
@@ -806,6 +887,8 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         let aborted_receipt_path = root.join("run-sql-aborted.receipt");
         let aborted_run_sql = invoke_run_sql(
             &sql_address,
+            &credentials_path,
+            "information_schema",
             &invalid_sql_path,
             &empty_parameters_path,
             &aborted_receipt_path,
@@ -827,10 +910,61 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             InvocationStatus::Aborted
         );
 
+        let scope_reader_credentials_path = root.join("run-sql-scope-reader.cred");
+        write_client_credentials(
+            &scope_reader_credentials_path,
+            &ClientCredentials {
+                token_id: scope_reader_token,
+                token_secret: scope_reader_secret,
+            },
+        )?;
+        let outside_scope_sql_path = root.join("run-sql-outside-scope.sql");
+        std::fs::write(
+            &outside_scope_sql_path,
+            "SELECT payload FROM private_records LIMIT 1",
+        )?;
+        std::fs::set_permissions(
+            &outside_scope_sql_path,
+            std::fs::Permissions::from_mode(0o600),
+        )?;
+        let outside_scope_receipt_path = root.join("run-sql-outside-scope.receipt");
+        let outside_scope_run_sql = invoke_run_sql(
+            &sql_address,
+            &scope_reader_credentials_path,
+            "admin_private",
+            &outside_scope_sql_path,
+            &empty_parameters_path,
+            &outside_scope_receipt_path,
+        )?;
+        assert!(
+            !outside_scope_run_sql.status.success(),
+            "run-sql widened PSC1 to include a separately authorized schema"
+        );
+        assert!(outside_scope_run_sql.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&outside_scope_run_sql.stderr).contains("outcome=Aborted"));
+        let outside_scope_receipt_text = std::fs::read_to_string(&outside_scope_receipt_path)?;
+        let outside_scope_receipt_id = outside_scope_receipt_text
+            .strip_prefix("PDBR1 ")
+            .and_then(|value| decode_id_hex(value.trim()))
+            .ok_or("out-of-scope run-sql wrote a malformed invocation receipt")?;
+        let mut scope_status_secret = scope_reader_secret;
+        let mut scope_status_client = SubmissionClient::connect_authenticated(
+            address,
+            scope_reader_token,
+            &mut scope_status_secret,
+        )?;
+        assert_eq!(scope_status_secret, [0; 32]);
+        assert_eq!(
+            scope_status_client.status(outside_scope_receipt_id)?,
+            InvocationStatus::Aborted
+        );
+
         let uncertain_receipt_path = root.join("run-sql-uncertain.receipt");
         let (proxy_address, proxy) = start_response_dropping_proxy(address)?;
         let uncertain_run_sql = invoke_run_sql(
             &proxy_address.to_string(),
+            &credentials_path,
+            "information_schema",
             &sql_path,
             &parameters_path,
             &uncertain_receipt_path,
