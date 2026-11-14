@@ -24205,6 +24205,271 @@ fn process_crash_during_unique_constraint_creation_recovers_all_or_none()
 }
 
 #[test]
+fn process_crash_during_check_constraint_creation_recovers_all_or_none()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::CreateCheckConstraintRequest;
+    use std::process::Command;
+
+    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_CRASH_DURING_CHECK_CONSTRAINT_DATABASE";
+    const CHILD_BOUNDARY_ENV: &str = "PRDB_TEST_CRASH_DURING_CHECK_CONSTRAINT_BOUNDARY";
+    const CHILD_EXIT_CODE: i32 = 87;
+    const POST_COMMIT_EXIT_CODE: i32 = 88;
+    const ACTOR_ID: [u8; 16] = [0xc7; 16];
+    const CONSTRAINT_INVOCATION_ID: [u8; 16] = [0xc8; 16];
+    const CONSTRAINT_AUDIT_ID: [u8; 16] = [0xc9; 16];
+    const ROW_ID: [u8; 16] = [0xca; 16];
+    const TABLE_ID: [u8; 16] = [82; 16];
+
+    if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
+        let database_path = std::path::PathBuf::from(database_path);
+        let metadata = std::fs::read(database_path.with_extension("check-constraint-crash-meta"))?;
+        if metadata.len() != 56 {
+            return Err(format!(
+                "invalid CHECK constraint crash metadata length: {}",
+                metadata.len()
+            )
+            .into());
+        }
+        let boundary = std::env::var(CHILD_BOUNDARY_ENV)?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&database_path)?;
+        let armed = Arc::new(AtomicBool::new(false));
+        let instrumented = Database::builder().create_with_backend(ExitAfterNextWriteBackend {
+            inner: redb::backends::FileBackend::new(file)?,
+            armed: armed.clone(),
+            exit_code: CHILD_EXIT_CODE,
+        })?;
+        let storage = StorageManager::new(&instrumented, Duration::from_millis(100))?;
+        let mut audit = identity_audit_event(CONSTRAINT_AUDIT_ID[0], ACTOR_ID, TABLE_ID);
+        audit.event_id = CONSTRAINT_AUDIT_ID;
+        audit.correlation_id = CONSTRAINT_INVOCATION_ID;
+        if boundary == "write" {
+            armed.store(true, Ordering::SeqCst);
+        } else if boundary != "after_commit" {
+            return Err(format!("unknown CHECK constraint crash boundary {boundary}").into());
+        }
+        let create_result = storage.create_check_constraint(CreateCheckConstraintRequest {
+            invocation_id: CONSTRAINT_INVOCATION_ID,
+            authenticated_actor_id: ACTOR_ID,
+            table_id: TABLE_ID,
+            expression: prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Boolean(true))),
+            dependency_column_ids: vec![],
+            retention_deadline_us: i64::MAX,
+            audit_event: audit,
+        });
+        if boundary == "write" {
+            return Err(format!(
+                "CHECK constraint creation returned without injected backend-write exit: {create_result:?}"
+            )
+            .into());
+        }
+        create_result?;
+        std::process::exit(POST_COMMIT_EXIT_CODE);
+    }
+
+    for (boundary, expected_exit) in [
+        ("write", CHILD_EXIT_CODE),
+        ("after_commit", POST_COMMIT_EXIT_CODE),
+    ] {
+        let fixture = Fixture::new();
+        let database_path = fixture.path();
+        let database = initialize(&database_path)?;
+        let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+        let admin_role = builtin_owner_id();
+        let mut setup_writes = foreign_key_catalog_writes(false, true)
+            .into_iter()
+            .filter(|write| {
+                write.key != id_catalog_key(8, id(86))
+                    && write.key != id_catalog_key(2, id(86))
+                    && write.key != dependency_write(id(86), id(85), 3).key
+            })
+            .collect::<Vec<_>>();
+        setup_writes.extend([
+            principal_write_with_name(ACTOR_ID, 1, 1, "check_crash_actor"),
+            object_write_with_name(ACTOR_ID, 8, "check_crash_actor"),
+            membership_write(ACTOR_ID, admin_role),
+            dependency_write(ACTOR_ID, admin_role, 5),
+        ]);
+        let mut setup_audit = identity_audit_event(0xcb, admin_role, id(0xcc));
+        setup_audit.action = AuditAction::AuthorityChange;
+        storage.commit_catalog_and_audit(
+            id(0xcc),
+            admin_role,
+            i64::MAX,
+            &setup_writes,
+            &[setup_audit],
+        )?;
+
+        let mut seed = storage.begin_invocation(id(0xcd), ACTOR_ID, i64::MAX, 1, 1024)?;
+        let table_schema = seed.load_catalog_table_schema(TABLE_ID)?;
+        seed.load_catalog_indexes(&table_schema)?;
+        let row_payload = encode_tuple(
+            &table_schema.columns,
+            table_schema.schema_version,
+            &[Some(ScalarValue::Bytea(b"CHECK crash row".to_vec()))],
+        )?;
+        seed.stage_put(
+            prdb_engine::overlay::RowId {
+                table: TABLE_ID,
+                row: ROW_ID,
+            },
+            &row_payload,
+        )?;
+        seed.commit()?;
+        let before_sequence = commit_sequence(&database)?;
+        let before_epoch = {
+            let read = database.begin_read()?;
+            let catalog = read.open_table(CATALOG)?;
+            let table = catalog
+                .get(id_catalog_key(5, TABLE_ID).as_slice())?
+                .ok_or("CHECK crash table missing before DDL")?;
+            let epoch = decode_registered_envelope(table.value())?
+                .fields
+                .iter()
+                .find(|field| field.tag == 3)
+                .ok_or("CHECK crash table epoch missing before DDL")?
+                .payload
+                .as_slice()
+                .try_into()?;
+            u64::from_le_bytes(epoch)
+        };
+        let mut metadata = Vec::with_capacity(56);
+        metadata.extend_from_slice(&TABLE_ID);
+        metadata.extend_from_slice(&ROW_ID);
+        metadata.extend_from_slice(&table_schema.schema_version.to_le_bytes());
+        metadata.extend_from_slice(&before_sequence.to_le_bytes());
+        metadata.extend_from_slice(&before_epoch.to_le_bytes());
+        std::fs::write(
+            database_path.with_extension("check-constraint-crash-meta"),
+            metadata,
+        )?;
+        drop(storage);
+        drop(database);
+
+        let child_status = Command::new(std::env::current_exe()?)
+            .arg("--exact")
+            .arg("process_crash_during_check_constraint_creation_recovers_all_or_none")
+            .arg("--nocapture")
+            .env(CHILD_DATABASE_ENV, &database_path)
+            .env(CHILD_BOUNDARY_ENV, boundary)
+            .status()?;
+        assert_eq!(
+            child_status.code(),
+            Some(expected_exit),
+            "CHECK constraint child missed the {boundary} crash boundary: {child_status}"
+        );
+
+        let metadata = std::fs::read(database_path.with_extension("check-constraint-crash-meta"))?;
+        assert_eq!(metadata.len(), 56);
+        let table_id: [u8; 16] = metadata[0..16].try_into()?;
+        let row_id: [u8; 16] = metadata[16..32].try_into()?;
+        let schema_version = u64::from_le_bytes(metadata[32..40].try_into()?);
+        let before_sequence = u64::from_le_bytes(metadata[40..48].try_into()?);
+        let before_epoch = u64::from_le_bytes(metadata[48..56].try_into()?);
+        let reopened = Database::open(&database_path)?;
+        let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+        let read = reopened.begin_read()?;
+        let constraint_ids =
+            prdb_engine::catalog_index::scan_constraint_ids_for_table(&read, table_id, 4)?;
+        let catalog = read.open_table(CATALOG)?;
+        let row_payload = encode_tuple(
+            &[ColumnSchema {
+                scalar_type: ScalarType::Bytea,
+                nullable: true,
+            }],
+            schema_version,
+            &[Some(ScalarValue::Bytea(b"CHECK crash row".to_vec()))],
+        )?;
+        assert_eq!(
+            row(&reopened, &table_row_key(table_id, row_id))?
+                .ok_or("CHECK crash seed row missing")?
+                .payload,
+            row_payload
+        );
+        let sequence = commit_sequence(&reopened)?;
+        let audit_exists = read
+            .open_table(schema::AUDIT)?
+            .get(&CONSTRAINT_AUDIT_ID[..])?
+            .is_some();
+        let outcome = read
+            .open_table(schema::OUTCOMES)?
+            .get(&CONSTRAINT_INVOCATION_ID[..])?
+            .map(|value| InvocationOutcome::decode(value.value()))
+            .transpose()?;
+        let table = catalog
+            .get(id_catalog_key(5, table_id).as_slice())?
+            .ok_or("CHECK crash table missing after reopen")?;
+        let epoch = u64::from_le_bytes(
+            decode_registered_envelope(table.value())?
+                .fields
+                .iter()
+                .find(|field| field.tag == 3)
+                .ok_or("CHECK crash table epoch missing after reopen")?
+                .payload
+                .as_slice()
+                .try_into()?,
+        );
+
+        if boundary == "write" {
+            assert!(constraint_ids.is_empty());
+            assert_eq!(epoch, before_epoch);
+            assert_eq!(sequence, before_sequence);
+            assert_eq!(outcome, None);
+            assert!(!audit_exists);
+        } else {
+            assert_eq!(constraint_ids.len(), 1);
+            let constraint_id = constraint_ids[0];
+            let constraint_record = decode_registered_envelope(
+                catalog
+                    .get(id_catalog_key(8, constraint_id).as_slice())?
+                    .ok_or("CHECK constraint record missing after commit")?
+                    .value(),
+            )?;
+            assert_eq!(
+                u16::from_le_bytes(
+                    constraint_record
+                        .fields
+                        .iter()
+                        .find(|field| field.tag == 2)
+                        .ok_or("CHECK constraint kind missing")?
+                        .payload
+                        .as_slice()
+                        .try_into()?
+                ),
+                4
+            );
+            let expression_id: [u8; 16] = constraint_record
+                .fields
+                .iter()
+                .find(|field| field.tag == 4)
+                .ok_or("CHECK expression ID missing")?
+                .payload
+                .as_slice()
+                .try_into()?;
+            for key in [
+                id_catalog_key(2, constraint_id),
+                id_catalog_key(7, expression_id),
+                dependency_write(constraint_id, expression_id, 2).key,
+            ] {
+                assert!(catalog.get(key.as_slice())?.is_some());
+            }
+            assert_eq!(epoch, before_epoch + 1);
+            assert_eq!(sequence, before_sequence + 1);
+            assert!(audit_exists);
+            let outcome = outcome.ok_or("committed CHECK outcome missing")?;
+            assert_eq!(outcome.status, OutcomeStatus::Committed);
+            assert_eq!(outcome.commit_sequence, sequence);
+        }
+        drop(catalog);
+        drop(read);
+        prdb_engine::startup::validate_persisted_records(&reopened)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn process_crash_during_primary_key_creation_recovers_all_or_none()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{

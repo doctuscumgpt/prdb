@@ -361,6 +361,13 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: focused two-boundary process-crash test passed. Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, release-profile validation (10 binaries and one query fixture), delegated cgroup probe, and the complete serial delegated-cgroup workspace suite passed: 224 library tests, 160 commit tests, and 75 transaction tests, including confined SQL and process integration tests.
 - Scope: process exit covers one UNIQUE constraint over one non-null integer column and one row. It does not simulate power loss or cover composite keys, duplicate rejection, or PRIMARY KEY publication.
 
+## DS-4 / DS-7: CHECK constraint process-crash recovery — verified
+
+- Contract: [schema DDL](../../specs/ddl-schema.md) requires a CHECK constraint, its private expression and dependency edge, table write epoch, audit event, durable outcome, and sequence to publish atomically.
+- Regression: `process_crash_during_check_constraint_creation_recovers_all_or_none` exits a child at the backend-write boundary or after `create_check_constraint` returns. Reopen and startup validation require either no CHECK and unchanged epoch/sequence/audit/outcome, or the complete CHECK/expression/dependency set with one epoch and sequence advance, preserved row, audit, and committed outcome.
+- Verification: the focused two-boundary process-crash test passed (`1 passed, 0 ignored`). Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, sandbox-query fixture, and release-profile validation (10 binaries and one query fixture) passed. The full serial delegated-cgroup workspace suite passed with 224 library tests, 165 commit tests, and 75 transaction tests, plus all other integration suites; no tests were ignored. `git diff --check` passed.
+- Scope: process exit covers a true literal CHECK on one existing fixture table; it does not simulate power loss or cover dependent-column expressions.
+
 ## DS-4 / DS-7: FOREIGN KEY process-crash recovery — verified
 
 - Contract: [schema DDL](../../specs/ddl-schema.md) requires the FK constraint, target dependency, source and target table epochs, audit event, durable outcome, and commit sequence to publish atomically after validating existing rows and REFERENCES authority.
