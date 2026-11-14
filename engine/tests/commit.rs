@@ -23961,8 +23961,10 @@ fn process_crash_during_add_column_recovers_all_or_none() -> Result<(), Box<dyn 
 fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn std::error::Error>>
 {
     use prdb_engine::storage_manager::{
-        CreateCheckConstraintRequest, CreateIndexRequest, CreatePrimaryKeyRequest,
-        CreateTableRequest, CreateUniqueConstraintRequest, TableColumnDefinition,
+        CreateCheckConstraintRequest, CreateIndexRequest, CreatePolicyRequest,
+        CreatePrimaryKeyRequest, CreateTableRequest, CreateUniqueConstraintRequest,
+        ObjectGrantPrivilege, ObjectGrantTarget, PolicyKind, SetObjectGrantRequest,
+        TableColumnDefinition,
     };
     use std::process::Command;
 
@@ -23971,6 +23973,7 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
     const CHILD_EXIT_CODE: i32 = 87;
     const POST_COMMIT_EXIT_CODE: i32 = 88;
     const ACTOR_ID: [u8; 16] = [0xf1; 16];
+    const GRANTEE_ID: [u8; 16] = [0x18; 16];
     const INDEX_INVOCATION_ID: [u8; 16] = [0xf2; 16];
     const DROP_INVOCATION_ID: [u8; 16] = [0xf3; 16];
     const DROP_AUDIT_ID: [u8; 16] = [0xf4; 16];
@@ -23990,6 +23993,8 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
             &[
                 principal_write_with_name(ACTOR_ID, 1, 1, "drop_table_crash_actor"),
                 object_write_with_name(ACTOR_ID, 8, "drop_table_crash_actor"),
+                principal_write_with_name(GRANTEE_ID, 1, 1, "drop_table_crash_grantee"),
+                object_write_with_name(GRANTEE_ID, 8, "drop_table_crash_grantee"),
                 membership_write(ACTOR_ID, admin_role),
                 dependency_write(ACTOR_ID, admin_role, 5),
             ],
@@ -24083,8 +24088,41 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
             retention_deadline_us: i64::MAX,
             audit_event: check_audit,
         })?;
+        let mut policy_audit = identity_audit_event(0x1a, ACTOR_ID, table.table_id);
+        policy_audit.correlation_id = id(0x1b);
+        let policy = storage.create_policy(CreatePolicyRequest {
+            invocation_id: id(0x1b),
+            authenticated_actor_id: ACTOR_ID,
+            table_id: table.table_id,
+            name: "drop_table_crash_policy".to_owned(),
+            kind: PolicyKind::Row,
+            operation: prdb_engine::authorization::Operation::Select,
+            effect: prdb_engine::authorization::Effect::Allow,
+            recipients: vec![prdb_engine::authorization::Subject::Principal(ACTOR_ID)],
+            target_column_ids: Vec::new(),
+            using_expression: Some(prdb_engine::authorization::Expr::Literal(Some(
+                ScalarValue::Boolean(true),
+            ))),
+            with_check_expression: None,
+            retention_deadline_us: i64::MAX,
+            audit_event: policy_audit,
+        })?;
+        let mut grant_audit = identity_audit_event(0x1c, ACTOR_ID, table.table_id);
+        grant_audit.action = AuditAction::AuthorityChange;
+        grant_audit.correlation_id = id(0x1d);
+        storage.set_object_grant(SetObjectGrantRequest {
+            invocation_id: id(0x1d),
+            authenticated_actor_id: ACTOR_ID,
+            grantee_id: GRANTEE_ID,
+            object_id: table.table_id,
+            privilege: ObjectGrantPrivilege::Select,
+            target: ObjectGrantTarget::Object,
+            grant: true,
+            retention_deadline_us: i64::MAX,
+            audit_event: grant_audit,
+        })?;
         let before_drop_sequence = commit_sequence(&database)?;
-        let mut metadata = Vec::with_capacity(192);
+        let mut metadata = Vec::with_capacity(224);
         metadata.extend_from_slice(&schema.schema_id);
         metadata.extend_from_slice(&table.table_id);
         metadata.extend_from_slice(&table.column_ids[0]);
@@ -24098,6 +24136,12 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
         metadata.extend_from_slice(&unique.index_id);
         metadata.extend_from_slice(&check.constraint_id);
         metadata.extend_from_slice(&check.expression_id);
+        metadata.extend_from_slice(&policy.policy_id);
+        metadata.extend_from_slice(
+            &policy
+                .using_expression_id
+                .ok_or("created row policy is missing its USING expression")?,
+        );
         std::fs::write(
             database_path.with_extension("drop-table-crash-metadata"),
             metadata,
@@ -24162,7 +24206,7 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
         );
 
         let metadata = std::fs::read(database_path.with_extension("drop-table-crash-metadata"))?;
-        assert_eq!(metadata.len(), 192);
+        assert_eq!(metadata.len(), 224);
         let schema_id: [u8; 16] = metadata[0..16].try_into()?;
         let table_id: [u8; 16] = metadata[16..32].try_into()?;
         let column_id: [u8; 16] = metadata[32..48].try_into()?;
@@ -24176,6 +24220,8 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
         let unique_index_id: [u8; 16] = metadata[144..160].try_into()?;
         let check_id: [u8; 16] = metadata[160..176].try_into()?;
         let check_expression_id: [u8; 16] = metadata[176..192].try_into()?;
+        let policy_id: [u8; 16] = metadata[192..208].try_into()?;
+        let policy_expression_id: [u8; 16] = metadata[208..224].try_into()?;
         let reopened = Database::open(&database_path)?;
         let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
         let read = reopened.begin_read()?;
@@ -24198,6 +24244,11 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
         recovered_constraints.sort_unstable();
         let mut expected_constraints = vec![primary_key_id, unique_id, check_id];
         expected_constraints.sort_unstable();
+        let grant_key = grant_write(GRANTEE_ID, table_id, 2, 1, table_id, ACTOR_ID).key;
+        let grant_dependency_key = dependency_write(GRANTEE_ID, table_id, 5).key;
+        let policy_expression_dependency_key =
+            dependency_write(policy_id, policy_expression_id, 2).key;
+        let policy_recipient_dependency_key = dependency_write(policy_id, ACTOR_ID, 5).key;
         let row_key = table_row_key(table_id, row_id);
         let row_exists = row(&reopened, &row_key)?.is_some();
         let row_payload = encode_tuple(
@@ -24273,6 +24324,31 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
             assert_eq!(recovered_index, Some(index_id));
             assert_eq!(recovered_indexes, expected_indexes);
             assert_eq!(recovered_constraints, expected_constraints);
+            for retained_id in [policy_id, policy_expression_id] {
+                assert!(
+                    catalog
+                        .get(id_catalog_key(2, retained_id).as_slice())?
+                        .is_some()
+                );
+            }
+            assert!(
+                catalog
+                    .get(id_catalog_key(13, policy_id).as_slice())?
+                    .is_some()
+            );
+            assert!(
+                catalog
+                    .get(id_catalog_key(7, policy_expression_id).as_slice())?
+                    .is_some()
+            );
+            for retained_key in [
+                grant_key.as_slice(),
+                grant_dependency_key.as_slice(),
+                policy_expression_dependency_key.as_slice(),
+                policy_recipient_dependency_key.as_slice(),
+            ] {
+                assert!(catalog.get(retained_key)?.is_some());
+            }
             for retained_index_id in &expected_indexes {
                 assert!(
                     catalog
@@ -24321,6 +24397,31 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
             assert_eq!(recovered_index, None);
             assert!(recovered_indexes.is_empty());
             assert!(recovered_constraints.is_empty());
+            for removed_id in [policy_id, policy_expression_id] {
+                assert!(
+                    catalog
+                        .get(id_catalog_key(2, removed_id).as_slice())?
+                        .is_none()
+                );
+            }
+            assert!(
+                catalog
+                    .get(id_catalog_key(13, policy_id).as_slice())?
+                    .is_none()
+            );
+            assert!(
+                catalog
+                    .get(id_catalog_key(7, policy_expression_id).as_slice())?
+                    .is_none()
+            );
+            for removed_key in [
+                grant_key.as_slice(),
+                grant_dependency_key.as_slice(),
+                policy_expression_dependency_key.as_slice(),
+                policy_recipient_dependency_key.as_slice(),
+            ] {
+                assert!(catalog.get(removed_key)?.is_none());
+            }
             for removed_id in expected_indexes {
                 assert!(
                     catalog
