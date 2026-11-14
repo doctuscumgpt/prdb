@@ -332,6 +332,13 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: focused four-case real-redb process-crash test passed. Workspace build, format check, warning-denied Clippy, TinyCC SDK tests, release-profile validation, delegated cgroup probe, and the complete serial delegated-cgroup workspace suite passed; counts are recorded in the current handoff. `git diff --check` passed.
 - Scope: process exit tests atomic backend recovery and durable API completion; it does not simulate power loss or extend redb's filesystem durability guarantee.
 
+## DS-6 / DS-7: schema owner-transfer process-crash recovery — verified
+
+- Contract: schema ownership, object version, authority dependencies, audit, durable outcome, and commit sequence recover as one serialized publication.
+- Regression: `process_crash_during_schema_owner_transfer_recovers_all_or_none` transfers a populated schema's owner in a child process and exits at the backend write boundary or after the API returns. Reopen through `StorageManager` validates startup and verifies the previous owner/version on the interrupted write, or the new built-in role owner with one version/sequence advance, audit, and committed outcome after completion.
+- Verification: formatting, locked offline workspace build, and warning-denied all-target Clippy passed. The focused two-boundary process-crash test passed both directly and inside the delegated user service (`1 passed, 0 ignored`). A broader commit-target run from the desktop scope failed its 12 cgroup-dependent cases because the required delegation and fixture/runtime variables were not configured; that run is not accepted as suite evidence. The focused delegated test is the relevant result for this increment.
+- Scope: this adds recovery evidence for the implemented transfer path; it does not simulate power loss or validate every commit-target acceptance.
+
 ## DS-6 / DS-7: DROP COLUMN process-crash recovery — verified
 
 - Contract: [schema DDL](../../specs/ddl-schema.md) requires the new table/column catalog, rewritten rows, audit event, outcome, and commit sequence to publish atomically.
