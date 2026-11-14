@@ -24107,6 +24107,394 @@ fn process_crash_during_unique_constraint_creation_recovers_all_or_none()
 }
 
 #[test]
+fn process_crash_during_foreign_key_creation_recovers_all_or_none()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{
+        CreateForeignKeyRequest, CreatePrimaryKeyRequest, CreateTableRequest, TableColumnDefinition,
+    };
+    use std::process::Command;
+
+    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_CRASH_DURING_FOREIGN_KEY_DATABASE";
+    const CHILD_BOUNDARY_ENV: &str = "PRDB_TEST_CRASH_DURING_FOREIGN_KEY_BOUNDARY";
+    const CHILD_EXIT_CODE: i32 = 87;
+    const POST_COMMIT_EXIT_CODE: i32 = 88;
+    const ACTOR_ID: [u8; 16] = [0xb1; 16];
+    const FK_INVOCATION_ID: [u8; 16] = [0xb2; 16];
+    const FK_AUDIT_ID: [u8; 16] = [0xb3; 16];
+    const SOURCE_ROW_ID: [u8; 16] = [0xb4; 16];
+    const TARGET_ROW_ID: [u8; 16] = [0xb5; 16];
+
+    if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
+        let database_path = std::path::PathBuf::from(database_path);
+        let database = initialize(&database_path)?;
+        let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+        let admin_role = builtin_owner_id();
+        let mut setup_audit = identity_audit_event(0xb6, admin_role, id(0xb7));
+        setup_audit.action = AuditAction::AuthorityChange;
+        storage.commit_catalog_and_audit(
+            id(0xb7),
+            admin_role,
+            i64::MAX,
+            &[
+                principal_write_with_name(ACTOR_ID, 1, 1, "foreign_key_crash_actor"),
+                object_write_with_name(ACTOR_ID, 8, "foreign_key_crash_actor"),
+                membership_write(ACTOR_ID, admin_role),
+                dependency_write(ACTOR_ID, admin_role, 5),
+            ],
+            &[setup_audit],
+        )?;
+        let schema_invocation = id(0xb8);
+        let mut schema_audit = identity_audit_event(0xb9, ACTOR_ID, id(0xba));
+        schema_audit.correlation_id = schema_invocation;
+        let schema = storage.create_schema(
+            schema_invocation,
+            ACTOR_ID,
+            "foreign_key_crash_schema",
+            ACTOR_ID,
+            i64::MAX,
+            schema_audit,
+        )?;
+        let target_table_invocation = id(0xbb);
+        let mut target_table_audit = identity_audit_event(0xbc, ACTOR_ID, id(0xbd));
+        target_table_audit.correlation_id = target_table_invocation;
+        let target_table = storage.create_table(CreateTableRequest {
+            invocation_id: target_table_invocation,
+            authenticated_actor_id: ACTOR_ID,
+            schema_id: schema.schema_id,
+            name: "foreign_key_target".to_owned(),
+            columns: vec![TableColumnDefinition {
+                name: "id".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            }],
+            retention_deadline_us: i64::MAX,
+            audit_event: target_table_audit,
+        })?;
+        let target_pk_invocation = id(0xbe);
+        let mut target_pk_audit = identity_audit_event(0xbf, ACTOR_ID, id(0xc0));
+        target_pk_audit.correlation_id = target_pk_invocation;
+        let target_pk = storage.create_primary_key(CreatePrimaryKeyRequest {
+            invocation_id: target_pk_invocation,
+            authenticated_actor_id: ACTOR_ID,
+            table_id: target_table.table_id,
+            column_ids: target_table.column_ids.clone(),
+            retention_deadline_us: i64::MAX,
+            audit_event: target_pk_audit,
+        })?;
+        let source_table_invocation = id(0xc1);
+        let mut source_table_audit = identity_audit_event(0xc2, ACTOR_ID, id(0xc3));
+        source_table_audit.correlation_id = source_table_invocation;
+        let source_table = storage.create_table(CreateTableRequest {
+            invocation_id: source_table_invocation,
+            authenticated_actor_id: ACTOR_ID,
+            schema_id: schema.schema_id,
+            name: "foreign_key_source".to_owned(),
+            columns: vec![TableColumnDefinition {
+                name: "target_id".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            }],
+            retention_deadline_us: i64::MAX,
+            audit_event: source_table_audit,
+        })?;
+
+        let mut references_audit = identity_audit_event(0xc4, admin_role, id(0xc5));
+        references_audit.action = AuditAction::AuthorityChange;
+        let mut references_actor_epoch =
+            principal_write_with_name(ACTOR_ID, 1, 2, "foreign_key_crash_actor");
+        references_actor_epoch.expected_value =
+            principal_write_with_name(ACTOR_ID, 1, 1, "foreign_key_crash_actor").payload;
+        storage
+            .commit_catalog_and_audit(
+                id(0xc5),
+                admin_role,
+                i64::MAX,
+                &[
+                    grant_write(
+                        ACTOR_ID,
+                        target_table.table_id,
+                        6,
+                        1,
+                        target_table.table_id,
+                        admin_role,
+                    ),
+                    dependency_write(ACTOR_ID, target_table.table_id, 5),
+                    references_actor_epoch,
+                ],
+                &[references_audit],
+            )
+            .map_err(|error| format!("REFERENCES grant setup failed: {error:?}"))?;
+
+        for (invocation_id, table_id, row_id) in [
+            (id(0xc6), target_table.table_id, TARGET_ROW_ID),
+            (id(0xc7), source_table.table_id, SOURCE_ROW_ID),
+        ] {
+            let mut seed = storage.begin_invocation(invocation_id, ACTOR_ID, i64::MAX, 1, 1024)?;
+            let table_schema = seed.load_catalog_table_schema(table_id)?;
+            seed.load_catalog_indexes(&table_schema)?;
+            seed.stage_put(
+                prdb_engine::overlay::RowId {
+                    table: table_id,
+                    row: row_id,
+                },
+                &encode_tuple(
+                    &table_schema.columns,
+                    table_schema.schema_version,
+                    &[Some(ScalarValue::Integer(37))],
+                )?,
+            )?;
+            seed.commit()?;
+        }
+
+        let read = database.begin_read()?;
+        let catalog = read.open_table(CATALOG)?;
+        let table_epoch = |table_id: [u8; 16]| -> Result<u64, Box<dyn std::error::Error>> {
+            let record = catalog
+                .get(id_catalog_key(5, table_id).as_slice())?
+                .ok_or("foreign-key participant table missing")?;
+            let record = decode_registered_envelope(record.value())?;
+            Ok(u64::from_le_bytes(
+                record
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 3)
+                    .ok_or("foreign-key participant epoch missing")?
+                    .payload
+                    .as_slice()
+                    .try_into()?,
+            ))
+        };
+        let source_epoch = table_epoch(source_table.table_id)?;
+        let target_epoch = table_epoch(target_table.table_id)?;
+        drop(catalog);
+        drop(read);
+        let before_fk_sequence = commit_sequence(&database)?;
+        let mut source_schema = storage.begin_invocation(id(0xc8), ACTOR_ID, i64::MAX, 1, 1024)?;
+        let source_table_schema = source_schema.load_catalog_table_schema(source_table.table_id)?;
+        let source_schema_version = source_table_schema.schema_version;
+        drop(source_schema);
+        let mut target_schema = storage.begin_invocation(id(0xc9), ACTOR_ID, i64::MAX, 1, 1024)?;
+        let target_table_schema = target_schema.load_catalog_table_schema(target_table.table_id)?;
+        let target_schema_version = target_table_schema.schema_version;
+        drop(target_schema);
+        let mut metadata = Vec::with_capacity(152);
+        metadata.extend_from_slice(&source_table.table_id);
+        metadata.extend_from_slice(&target_table.table_id);
+        metadata.extend_from_slice(&source_table.column_ids[0]);
+        metadata.extend_from_slice(&target_table.column_ids[0]);
+        metadata.extend_from_slice(&target_pk.constraint_id);
+        metadata.extend_from_slice(&SOURCE_ROW_ID);
+        metadata.extend_from_slice(&TARGET_ROW_ID);
+        metadata.extend_from_slice(&source_schema_version.to_le_bytes());
+        metadata.extend_from_slice(&target_schema_version.to_le_bytes());
+        metadata.extend_from_slice(&source_epoch.to_le_bytes());
+        metadata.extend_from_slice(&target_epoch.to_le_bytes());
+        metadata.extend_from_slice(&before_fk_sequence.to_le_bytes());
+        std::fs::write(
+            database_path.with_extension("foreign-key-crash-metadata"),
+            metadata,
+        )?;
+        drop(storage);
+        drop(database);
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&database_path)?;
+        let armed = Arc::new(AtomicBool::new(false));
+        let instrumented = Database::builder().create_with_backend(ExitAfterNextWriteBackend {
+            inner: redb::backends::FileBackend::new(file)?,
+            armed: armed.clone(),
+            exit_code: CHILD_EXIT_CODE,
+        })?;
+        let storage = StorageManager::new(&instrumented, Duration::from_millis(100))?;
+        let mut fk_audit = identity_audit_event(FK_AUDIT_ID[0], ACTOR_ID, id(0xca));
+        fk_audit.event_id = FK_AUDIT_ID;
+        fk_audit.correlation_id = FK_INVOCATION_ID;
+        let boundary = std::env::var(CHILD_BOUNDARY_ENV)?;
+        if boundary == "write" {
+            armed.store(true, Ordering::SeqCst);
+        } else if boundary != "after_commit" {
+            return Err(format!("unknown FOREIGN KEY crash boundary {boundary}").into());
+        }
+        let create_result = storage.create_foreign_key(CreateForeignKeyRequest {
+            invocation_id: FK_INVOCATION_ID,
+            authenticated_actor_id: ACTOR_ID,
+            source_table_id: source_table.table_id,
+            source_column_ids: source_table.column_ids,
+            target_constraint_id: target_pk.constraint_id,
+            retention_deadline_us: i64::MAX,
+            audit_event: fk_audit,
+        });
+        if boundary == "write" {
+            return Err(format!(
+                "FOREIGN KEY creation returned without injected backend-write exit: {create_result:?}"
+            )
+            .into());
+        }
+        create_result.map_err(|error| format!("create_foreign_key failed: {error:?}"))?;
+        std::process::exit(POST_COMMIT_EXIT_CODE);
+    }
+
+    for (boundary, expected_exit) in [
+        ("write", CHILD_EXIT_CODE),
+        ("after_commit", POST_COMMIT_EXIT_CODE),
+    ] {
+        let fixture = Fixture::new();
+        let database_path = fixture.path();
+        let child_status = Command::new(std::env::current_exe()?)
+            .arg("--exact")
+            .arg("process_crash_during_foreign_key_creation_recovers_all_or_none")
+            .arg("--nocapture")
+            .env(CHILD_DATABASE_ENV, &database_path)
+            .env(CHILD_BOUNDARY_ENV, boundary)
+            .status()?;
+        assert_eq!(
+            child_status.code(),
+            Some(expected_exit),
+            "FOREIGN KEY child missed the {boundary} crash boundary: {child_status}"
+        );
+
+        let metadata = std::fs::read(database_path.with_extension("foreign-key-crash-metadata"))?;
+        assert_eq!(metadata.len(), 152);
+        let source_table_id: [u8; 16] = metadata[0..16].try_into()?;
+        let target_table_id: [u8; 16] = metadata[16..32].try_into()?;
+        let source_column_id: [u8; 16] = metadata[32..48].try_into()?;
+        let target_column_id: [u8; 16] = metadata[48..64].try_into()?;
+        let target_constraint_id: [u8; 16] = metadata[64..80].try_into()?;
+        let source_row_id: [u8; 16] = metadata[80..96].try_into()?;
+        let target_row_id: [u8; 16] = metadata[96..112].try_into()?;
+        let source_schema_version = u64::from_le_bytes(metadata[112..120].try_into()?);
+        let target_schema_version = u64::from_le_bytes(metadata[120..128].try_into()?);
+        let source_epoch = u64::from_le_bytes(metadata[128..136].try_into()?);
+        let target_epoch = u64::from_le_bytes(metadata[136..144].try_into()?);
+        let before_fk_sequence = u64::from_le_bytes(metadata[144..152].try_into()?);
+        let reopened = Database::open(&database_path)?;
+        let _validated_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+        let read = reopened.begin_read()?;
+        let fk_ids =
+            prdb_engine::catalog_index::scan_constraint_ids_for_table(&read, source_table_id, 5)?;
+        let audit_exists = read
+            .open_table(schema::AUDIT)?
+            .get(&FK_AUDIT_ID[..])?
+            .is_some();
+        let outcome = read
+            .open_table(schema::OUTCOMES)?
+            .get(&FK_INVOCATION_ID[..])?
+            .map(|value| InvocationOutcome::decode(value.value()))
+            .transpose()?;
+        let sequence = commit_sequence(&reopened)?;
+        let source_row = row(&reopened, &table_row_key(source_table_id, source_row_id))?
+            .ok_or("foreign-key source row missing")?;
+        let target_row = row(&reopened, &table_row_key(target_table_id, target_row_id))?
+            .ok_or("foreign-key target row missing")?;
+        assert_eq!(
+            source_row.payload,
+            encode_tuple(
+                &[ColumnSchema {
+                    scalar_type: ScalarType::Integer,
+                    nullable: false,
+                }],
+                source_schema_version,
+                &[Some(ScalarValue::Integer(37))],
+            )?
+        );
+        assert_eq!(
+            target_row.payload,
+            encode_tuple(
+                &[ColumnSchema {
+                    scalar_type: ScalarType::Integer,
+                    nullable: false,
+                }],
+                target_schema_version,
+                &[Some(ScalarValue::Integer(37))],
+            )?
+        );
+        let catalog = read.open_table(CATALOG)?;
+        let current_epoch = |table_id: [u8; 16]| -> Result<u64, Box<dyn std::error::Error>> {
+            let value = catalog
+                .get(id_catalog_key(5, table_id).as_slice())?
+                .ok_or("foreign-key participant table missing after reopen")?;
+            let record = decode_registered_envelope(value.value())?;
+            Ok(u64::from_le_bytes(
+                record
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 3)
+                    .ok_or("foreign-key participant epoch missing after reopen")?
+                    .payload
+                    .as_slice()
+                    .try_into()?,
+            ))
+        };
+        if boundary == "write" {
+            assert!(fk_ids.is_empty());
+            assert_eq!(current_epoch(source_table_id)?, source_epoch);
+            assert_eq!(current_epoch(target_table_id)?, target_epoch);
+            assert_eq!(sequence, before_fk_sequence);
+            assert_eq!(outcome, None);
+            assert!(!audit_exists);
+        } else {
+            assert_eq!(fk_ids.len(), 1);
+            let fk_id = fk_ids[0];
+            let fk_key = id_catalog_key(8, fk_id);
+            let fk_record = catalog
+                .get(fk_key.as_slice())?
+                .ok_or("foreign-key constraint record missing")?;
+            let fk_record = decode_registered_envelope(fk_record.value())?;
+            assert_eq!(
+                fk_record
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 1)
+                    .ok_or("foreign-key source table missing")?
+                    .payload
+                    .as_slice(),
+                source_table_id.as_slice()
+            );
+            assert_eq!(
+                fk_record
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 5)
+                    .ok_or("foreign-key target constraint missing")?
+                    .payload
+                    .as_slice(),
+                target_constraint_id.as_slice()
+            );
+            assert!(
+                catalog
+                    .get(
+                        dependency_write(fk_id, target_constraint_id, 3)
+                            .key
+                            .as_slice()
+                    )?
+                    .is_some()
+            );
+            assert!(catalog.get(id_catalog_key(2, fk_id).as_slice())?.is_some());
+            assert_eq!(current_epoch(source_table_id)?, source_epoch + 1);
+            assert_eq!(current_epoch(target_table_id)?, target_epoch + 1);
+            assert_eq!(sequence, before_fk_sequence + 1);
+            let outcome = outcome.ok_or("committed FOREIGN KEY outcome was not recovered")?;
+            assert_eq!(outcome.status, OutcomeStatus::Committed);
+            assert_eq!(outcome.commit_sequence, sequence);
+            assert!(audit_exists);
+            assert!(fk_record.fields.iter().any(|field| {
+                field.tag == 3 && field.payload.as_slice().ends_with(&source_column_id)
+            }));
+            assert!(fk_record.fields.iter().any(|field| {
+                field.tag == 6 && field.payload.as_slice().ends_with(&target_column_id)
+            }));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn supervisor_drains_both_worker_channels_before_durable_finalize()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::executor_ipc::ResolveRelationRequest;
