@@ -53,6 +53,23 @@ pub struct AddKeyConstraintSql {
     pub kind: KeyConstraintKind,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddCheckConstraintSql {
+    pub schema: String,
+    pub table: String,
+    pub expression: CheckExpressionSql,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CheckExpressionSql {
+    Column(String),
+    IsNull(String),
+    IsNotNull(String),
+    Not(Box<CheckExpressionSql>),
+    And(Vec<CheckExpressionSql>),
+    Or(Vec<CheckExpressionSql>),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DdlSqlError {
     InvalidStatement,
@@ -342,6 +359,28 @@ pub fn parse_add_key_constraint(sql: &str) -> Result<AddKeyConstraintSql, DdlSql
     })
 }
 
+/// Parse `ALTER TABLE schema.table ADD CHECK (expression)` using a bounded
+/// boolean grammar over column truth values and `IS [NOT] NULL` predicates.
+pub fn parse_add_check_constraint(sql: &str) -> Result<AddCheckConstraintSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("table")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("add")?;
+    parser.word("check")?;
+    parser.take(Token::LeftParen)?;
+    let expression = parser.check_or()?;
+    parser.take(Token::RightParen)?;
+    finish_statement(&mut parser)?;
+    Ok(AddCheckConstraintSql {
+        schema,
+        table,
+        expression,
+    })
+}
+
 fn statement_parser(sql: &str) -> Result<Parser, DdlSqlError> {
     if sql.is_empty() || sql.len() > MAX_DDL_BYTES || sql.as_bytes().contains(&0) {
         return Err(DdlSqlError::InvalidStatement);
@@ -393,6 +432,63 @@ impl Parser {
 
     fn peek_word(&self, expected: &str) -> bool {
         matches!(self.peek(), Some(Token::Word(word)) if word == expected)
+    }
+
+    fn check_or(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
+        let mut expressions = vec![self.check_and()?];
+        while self.peek_word("or") {
+            self.position += 1;
+            expressions.push(self.check_and()?);
+        }
+        Ok(if expressions.len() == 1 {
+            expressions.pop().unwrap()
+        } else {
+            CheckExpressionSql::Or(expressions)
+        })
+    }
+
+    fn check_and(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
+        let mut expressions = vec![self.check_unary()?];
+        while self.peek_word("and") {
+            self.position += 1;
+            expressions.push(self.check_unary()?);
+        }
+        Ok(if expressions.len() == 1 {
+            expressions.pop().unwrap()
+        } else {
+            CheckExpressionSql::And(expressions)
+        })
+    }
+
+    fn check_unary(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
+        if self.peek_word("not") {
+            self.position += 1;
+            return Ok(CheckExpressionSql::Not(Box::new(self.check_unary()?)));
+        }
+        if self.peek() == Some(&Token::LeftParen) {
+            self.position += 1;
+            let expression = self.check_or()?;
+            self.take(Token::RightParen)?;
+            return Ok(expression);
+        }
+        let column = self.identifier()?;
+        if self.peek_word("is") {
+            self.position += 1;
+            let is_not = if self.peek_word("not") {
+                self.position += 1;
+                true
+            } else {
+                false
+            };
+            self.word("null")?;
+            Ok(if is_not {
+                CheckExpressionSql::IsNotNull(column)
+            } else {
+                CheckExpressionSql::IsNull(column)
+            })
+        } else {
+            Ok(CheckExpressionSql::Column(column))
+        }
     }
 
     fn identifier(&mut self) -> Result<String, DdlSqlError> {
@@ -854,6 +950,33 @@ mod tests {
             "ALTER TABLE app.events ADD UNIQUE (id); ALTER TABLE app.events ADD UNIQUE (id)",
         ] {
             assert!(parse_add_key_constraint(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_bounded_check_alterations_and_rejects_other_expression_syntax() {
+        assert_eq!(
+            parse_add_check_constraint("ALTER TABLE app.events ADD CHECK (active AND (deleted IS NULL OR deleted IS NOT NULL));").unwrap(),
+            AddCheckConstraintSql {
+                schema: "app".into(),
+                table: "events".into(),
+                expression: CheckExpressionSql::And(vec![
+                    CheckExpressionSql::Column("active".into()),
+                    CheckExpressionSql::Or(vec![
+                        CheckExpressionSql::IsNull("deleted".into()),
+                        CheckExpressionSql::IsNotNull("deleted".into()),
+                    ]),
+                ]),
+            }
+        );
+        for sql in [
+            "ALTER TABLE app.events ADD CHECK (amount >= 0)",
+            "ALTER TABLE app.events ADD CHECK (active); ALTER TABLE app.events ADD CHECK (active)",
+            "ALTER TABLE events ADD CHECK (active)",
+            "ALTER TABLE app.events ADD CONSTRAINT c CHECK (active)",
+            "ALTER TABLE app.events ADD CHECK (missing IS NULL OR)",
+        ] {
+            assert!(parse_add_check_constraint(sql).is_err(), "accepted {sql}");
         }
     }
 

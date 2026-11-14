@@ -2895,6 +2895,77 @@ impl AdminClient {
         }
     }
 
+    /// Add a bounded CHECK expression using qualified SQL names and the
+    /// existing typed, separately authorized constraint operation.
+    pub fn execute_add_check_constraint_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminCheckConstraintResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_add_check_constraint(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
+        let mut cursor = None;
+        let mut visible_columns = Vec::new();
+        loop {
+            let page = self.list_columns_page(
+                schema_id,
+                table_id,
+                DEFAULT_METADATA_PAGE_SIZE,
+                cursor.as_deref(),
+            )?;
+            visible_columns.extend(page.records);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let mut dependencies = std::collections::BTreeSet::new();
+        fn bind(
+            expression: &crate::ddl_sql::CheckExpressionSql,
+            columns: &[crate::metadata_discovery::VisibleColumn],
+            dependencies: &mut std::collections::BTreeSet<[u8; 16]>,
+        ) -> Result<crate::authorization::Expr, ClientSubmitError> {
+            use crate::{authorization::Expr, ddl_sql::CheckExpressionSql as Sql};
+            let field = |name: &str,
+                         dependencies: &mut std::collections::BTreeSet<[u8; 16]>|
+             -> Result<Expr, ClientSubmitError> {
+                let column = columns
+                    .iter()
+                    .find(|column| column.name == name)
+                    .ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
+                dependencies.insert(column.column_id);
+                Ok(Expr::Field(column.ordinal as usize))
+            };
+            Ok(match expression {
+                Sql::Column(name) => field(name, dependencies)?,
+                Sql::IsNull(name) => Expr::IsNull(Box::new(field(name, dependencies)?)),
+                Sql::IsNotNull(name) => {
+                    Expr::Not(Box::new(Expr::IsNull(Box::new(field(name, dependencies)?))))
+                }
+                Sql::Not(inner) => Expr::Not(Box::new(bind(inner, columns, dependencies)?)),
+                Sql::And(items) => Expr::And(
+                    items
+                        .iter()
+                        .map(|item| bind(item, columns, dependencies))
+                        .collect::<Result<_, _>>()?,
+                ),
+                Sql::Or(items) => Expr::Or(
+                    items
+                        .iter()
+                        .map(|item| bind(item, columns, dependencies))
+                        .collect::<Result<_, _>>()?,
+                ),
+            })
+        }
+        let expression = bind(&statement.expression, &visible_columns, &mut dependencies)?;
+        self.create_check_constraint(
+            table_id,
+            &expression,
+            &dependencies.into_iter().collect::<Vec<_>>(),
+        )
+    }
+
     pub fn execute_rename_table_sql(
         &mut self,
         sql: &str,

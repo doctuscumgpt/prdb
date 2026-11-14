@@ -171,3 +171,10 @@
 - Contract: [client SQL command](../../specs/client-sql-command.md), [client SDK](../../specs/client-sdk.md), and [schema DDL](../../specs/ddl-schema.md). `admin-sql` accepts qualified `ADD PRIMARY KEY (...)` and `ADD UNIQUE (...)`, resolves columns through authenticated metadata, and submits typed constraint DDL.
 - Regression: parser tests reject unsupported `ADD CONSTRAINT name`, unqualified names, duplicate columns, and multiple statements. The CLI process boundary confirms this supported form passes syntax validation before credential loading/network; AdminClient TCP coverage verifies the typed operation and commit response.
 - Verification: focused parser, TCP, and CLI tests, locked workspace build, format check, warning-denied Clippy, full serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.
+
+## Administrative SQL: bounded ALTER TABLE CHECK — implemented
+
+- `admin-sql` recognizes one qualified `ALTER TABLE schema.table ADD CHECK (...)` statement before credential access and routes it to the authenticated typed CHECK control operation.
+- The bounded parser accepts Boolean column references, `IS [NOT] NULL`, `NOT`, `AND`, `OR`, and parentheses, rejecting comparison/literal syntax and multiple statements.
+- Parser regressions cover precedence and fail-closed syntax; CLI process coverage confirms supported syntax passes local recognition without making a network request when credentials are absent.
+- Verification: focused parser, AdminClient TCP, and CLI process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite (sandbox/process tests enabled), and `git diff --check` passed.

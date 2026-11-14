@@ -726,3 +726,10 @@
 - Contract: [client SDK](../../specs/client-sdk.md) and [schema DDL](../../specs/ddl-schema.md). `AdminClient::execute_add_key_constraint_sql` parses qualified names, resolves the visible relation and ordered columns on the same authenticated control connection, and dispatches existing typed PRIMARY KEY or UNIQUE creation.
 - Regression: the mock TCP integration verifies schema/relation/column discovery, ordered ID mapping, typed UNIQUE PREPARE arguments, and generated constraint/index IDs. Parser tests cover supported and rejected forms.
 - Verification: focused parser/AdminClient tests, locked workspace build, format check, warning-denied Clippy, complete serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests, and `git diff --check` passed.
+
+## Administrative SQL: bounded ALTER TABLE CHECK — implemented
+
+- Contract: qualified `ALTER TABLE schema.table ADD CHECK (...)` resolves names over authenticated metadata and submits EIR1 through the existing typed CHECK operation. The accepted expression subset includes Boolean fields, `IS [NOT] NULL`, `NOT`, `AND`, `OR`, and parentheses.
+- Binding: fields use the metadata column ordinal in EIR1 and their stable column IDs as dependency declarations. Storage continues to validate expression type, dependencies, authority, and existing rows.
+- Limit: comparisons and literals are deferred from this convenience parser; typed `create_check_constraint` remains available.
+- Verification: focused authenticated TCP coverage verified metadata resolution, ordinal binding, stable dependency IDs, typed CHECK PREPARE, and generated results. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite (sandbox/process tests enabled), and `git diff --check` passed.

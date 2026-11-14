@@ -225,6 +225,7 @@ fn admin_sql(
     let rename_table_statement = prdb_engine::ddl_sql::parse_rename_table(sql).ok();
     let drop_table_statement = prdb_engine::ddl_sql::parse_drop_table(sql).ok();
     let add_key_constraint_statement = prdb_engine::ddl_sql::parse_add_key_constraint(sql).ok();
+    let add_check_constraint_statement = prdb_engine::ddl_sql::parse_add_check_constraint(sql).ok();
     if table_statement.is_none()
         && schema_statement.is_none()
         && rename_schema_statement.is_none()
@@ -232,6 +233,7 @@ fn admin_sql(
         && rename_table_statement.is_none()
         && drop_table_statement.is_none()
         && add_key_constraint_statement.is_none()
+        && add_check_constraint_statement.is_none()
     {
         return Err("invalid administrative SQL: unsupported statement".to_owned());
     }
@@ -289,6 +291,16 @@ fn admin_sql(
             .map_err(|error| error.to_string())?;
         println!(
             "renamed table (operation {}, commit {})",
+            lower_hex(&result.operation_id),
+            result.commit_sequence
+        );
+    } else if add_check_constraint_statement.is_some() {
+        let result = client
+            .execute_add_check_constraint_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "created CHECK constraint {} (operation {}, commit {})",
+            lower_hex(&result.constraint_id),
             lower_hex(&result.operation_id),
             result.commit_sequence
         );
