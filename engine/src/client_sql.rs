@@ -542,15 +542,22 @@ mod tests {
     }
 
     #[test]
-    fn generated_wrapper_emits_query_as_numeric_data() {
-        let sql = b"SELECT 'x\\\"; #include <evil.h>'";
+    fn generated_wrapper_preserves_adversarial_utf8_sql_as_exact_numeric_data() {
+        let sql = "SELECT 'q\\\"; #include <evil.h> é'".as_bytes();
         let source = generate_query_source("public", sql).unwrap();
         let source = std::str::from_utf8(&source).unwrap();
-        assert!(source.contains("#include <stddef.h>"));
-        assert!(source.contains("prdb_query_main_v3"));
-        assert!(source.contains("prdb_sdk_sql_run_v1"));
-        assert!(source.contains("0x3b"));
+        assert!(
+            source.contains("static const uint8_t sql_schema[] = {0x70,0x75,0x62,0x6c,0x69,0x63};")
+        );
+        assert!(source.contains(
+            "static const uint8_t sql_text[] = {0x53,0x45,0x4c,0x45,0x43,0x54,0x20,0x27,0x71,0x5c,0x22,0x3b,0x20,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x65,0x76,0x69,0x6c,0x2e,0x68,0x3e,0x20,0xc3,0xa9,0x27};"
+        ));
+        assert!(source.contains("const prdb_query_descriptor_v3_record prdb_query_descriptor_v3"));
+        assert!(source.contains(
+            "prdb_sdk_sql_run_v1(host, sql_schema, sizeof(sql_schema), sql_text, sizeof(sql_text)"
+        ));
         assert!(!source.contains("#include <evil.h>"));
+        assert!(!source.contains('é'));
         assert!(generate_query_source("public", b"SELECT\\0 1").is_ok());
         assert_eq!(
             generate_query_source("public", b"SELECT\0 1"),
