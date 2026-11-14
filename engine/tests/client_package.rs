@@ -571,6 +571,63 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
         "parameter data appeared in generated compiler source"
     );
 
+    let output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .env("TMPDIR", &sql_workspace_root)
+        .args([
+            "run-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            credentials.to_str().unwrap(),
+            "--sql-file",
+            sql_path.to_str().unwrap(),
+            "--schema",
+            "public",
+            "--scope",
+            scope_path.to_str().unwrap(),
+            "--receipt",
+            temp.join("patchelf-failure.receipt").to_str().unwrap(),
+            "--sdk-library",
+            sdk_release.join("libprdb_sql.so.1").to_str().unwrap(),
+            "--include-dir",
+            root.join("engine/include").to_str().unwrap(),
+            "--sdk-release",
+            "1",
+            "--cpu-baseline",
+            "x86_64-v1",
+            "--runtime-profile",
+            "test-runtime",
+            "--compiler-identity",
+            "run-sql patchelf failure test",
+            "--parameters",
+            parameter_path.to_str().unwrap(),
+            "--tcc",
+            "tcc",
+            "--shared-linker",
+            "cc",
+            "--patchelf",
+            "false",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "patchelf failure unexpectedly succeeded"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("CompilerFailed"),
+        "unexpected patchelf failure: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "run-sql opened a gateway connection after patchelf failed"
+    );
+    assert!(
+        fs::read_dir(&sql_workspace_root).unwrap().next().is_none(),
+        "run-sql left temporary build artifacts after patchelf failed"
+    );
+
     fs::remove_dir_all(temp).unwrap();
 }
 

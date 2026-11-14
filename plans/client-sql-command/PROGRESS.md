@@ -64,3 +64,10 @@
 - Finding: the v2 parser already rejected trailing tokens after its optional semicolon; the gap was missing explicit acceptance coverage, not missing parser behavior.
 - Verification: the focused TinyCC parser fixture and focused delegated process test passed. Locked workspace build, format check, warning-denied Clippy, complete maintained TinyCC SDK suite, sandbox fixture build, release-profile validation, delegated cgroup probe, and the full serial delegated-cgroup workspace suite passed. The full suite included sandbox/process tests with zero ignored tests; `git diff --check` passed.
 - Scope: verifies a second statement is rejected within the confined v1 command path and cannot yield a committed result. It does not expand the SQL grammar.
+
+## SQLCLI-1 patchelf failure does not connect — verified follow-up
+
+- Contract: local packaging failures must finish before credentials are used or a gateway connection is opened, and temporary package output must be removed.
+- Regression: the `run_sql_rejects_local_input_errors_before_opening_a_gateway_connection` process test supplies valid SQL, parameters, scope, and SDK inputs, then injects a failing `patchelf` executable after TinyCC compilation/linking. It requires a `CompilerFailed` diagnostic, confirms the listener received no connection, and checks the private workspace is empty.
+- Verification: the focused process test passed. Locked workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, sandbox fixture build, release-profile validation (10 engine binaries and one query fixture), delegated cgroup probe, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
+- Scope: covers one post-link package finalization failure and confirms cleanup/no-connect behavior. Other packaging error paths remain open for command-level coverage.
