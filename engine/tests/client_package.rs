@@ -290,6 +290,55 @@ fn run_sql_rejects_local_input_errors_before_opening_a_gateway_connection() {
             "--scope",
             scope_path.to_str().unwrap(),
             "--receipt",
+            temp.join("invalid-sdk-profile.receipt").to_str().unwrap(),
+            "--sdk-library",
+            sdk_release.join("libprdb_sql.so.1").to_str().unwrap(),
+            "--include-dir",
+            root.join("engine/include").to_str().unwrap(),
+            "--sdk-release",
+            "2",
+            "--cpu-baseline",
+            "x86_64-v1",
+            "--runtime-profile",
+            "test-runtime",
+            "--compiler-identity",
+            "run-sql incompatible SDK test",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "incompatible SDK profile unexpectedly succeeded"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("InvalidConfiguration"),
+        "unexpected incompatible SDK profile error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "run-sql opened a gateway connection after SDK profile validation failed"
+    );
+    assert!(
+        fs::read_dir(&sql_workspace_root).unwrap().next().is_none(),
+        "run-sql left temporary build artifacts after SDK profile validation failed"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .env("TMPDIR", &sql_workspace_root)
+        .args([
+            "run-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            credentials.to_str().unwrap(),
+            "--sql-file",
+            sql_path.to_str().unwrap(),
+            "--schema",
+            "public",
+            "--scope",
+            scope_path.to_str().unwrap(),
+            "--receipt",
             temp.join("compiler-failure.receipt").to_str().unwrap(),
             "--sdk-library",
             sdk_release.join("libprdb_sql.so.1").to_str().unwrap(),
