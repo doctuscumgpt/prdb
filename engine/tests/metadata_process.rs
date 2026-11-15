@@ -2073,6 +2073,47 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&repeated_create_dependency_index.stdout)
             .contains("index already exists; no operation committed")
     );
+    let widen_column_sql_path = root.join("widen-varchar-column.sql");
+    std::fs::write(
+        &widen_column_sql_path,
+        "ALTER TABLE process_admin_schema.process_admin_table ALTER COLUMN label TYPE VARCHAR(60);",
+    )?;
+    let widen_column_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            widen_column_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        widen_column_cli.status.success(),
+        "admin-sql VARCHAR widening failed: {}",
+        String::from_utf8_lossy(&widen_column_cli.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&widen_column_cli.stdout)
+            .contains("widened VARCHAR column label to 60 characters")
+    );
+    let widened_columns =
+        admin.list_columns_page(created_schema.identity_id, created_table.table_id, 16, None)?;
+    let widened_label = widened_columns
+        .records
+        .iter()
+        .find(|column| column.name == "label")
+        .ok_or("widened column missing from authenticated metadata")?;
+    assert_eq!(widened_label.column_id, added_label.column_id);
+    assert_eq!(
+        widened_label.scalar_type,
+        ScalarType::Varchar { max_chars: 60 }
+    );
     let table_index_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
             "index-list",

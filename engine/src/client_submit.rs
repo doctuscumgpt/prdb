@@ -4645,6 +4645,42 @@ impl AdminClient {
         self.alter_column_nullability(table_id, column.column_id, statement.nullable)
     }
 
+    /// Widen a VARCHAR column through the existing authenticated typed DDL path.
+    pub fn execute_widen_varchar_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_widen_varchar(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
+        let mut cursor = None;
+        let mut visible_columns = Vec::new();
+        loop {
+            let page = self.list_columns_page(
+                schema_id,
+                table_id,
+                DEFAULT_METADATA_PAGE_SIZE,
+                cursor.as_deref(),
+            )?;
+            visible_columns.extend(page.records);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let column = visible_columns
+            .iter()
+            .find(|column| column.name == statement.column)
+            .ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
+        match column.scalar_type {
+            crate::tuple::ScalarType::Varchar { max_chars } if statement.max_chars > max_chars => {
+                self.widen_varchar_column(table_id, column.column_id, statement.max_chars)
+            }
+            _ => Err(ClientSubmitError::InvalidAdministrativeRequest),
+        }
+    }
+
     /// Set or drop a typed column default after resolving its declared type
     /// and nullability through authenticated metadata.
     pub fn execute_alter_column_default_sql(
@@ -5106,6 +5142,34 @@ impl AdminClient {
                 AdminExpectedResponseField::Id("table_id", table_id),
                 AdminExpectedResponseField::Id("column_id", column_id),
                 AdminExpectedResponseField::Boolean("nullable", nullable),
+            ],
+        )
+        .map(|(result, _)| result)
+    }
+
+    pub fn widen_varchar_column(
+        &mut self,
+        table_id: [u8; 16],
+        column_id: [u8; 16],
+        max_chars: u32,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        validate_admin_id(table_id)?;
+        validate_admin_id(column_id)?;
+        if max_chars == 0 {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        self.execute_admin_operation_with_fields(
+            "tables.widen_varchar_column",
+            format!(
+                "{{\"table_id\":\"{}\",\"column_id\":\"{}\",\"max_chars\":\"{max_chars}\"}}",
+                lower_hex(&table_id),
+                lower_hex(&column_id),
+            ),
+            None,
+            &[
+                AdminExpectedResponseField::Id("table_id", table_id),
+                AdminExpectedResponseField::Id("column_id", column_id),
+                AdminExpectedResponseField::String("max_chars", &max_chars.to_string()),
             ],
         )
         .map(|(result, _)| result)

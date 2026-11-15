@@ -5426,6 +5426,124 @@ impl<'db> StorageManager<'db> {
         })
     }
 
+    /// Widen a VARCHAR column without rewriting values or index key bytes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn widen_varchar_column(
+        &self,
+        invocation_id: [u8; 16],
+        authenticated_actor_id: [u8; 16],
+        table_id: [u8; 16],
+        column_id: [u8; 16],
+        max_chars: u32,
+        retention_deadline_us: i64,
+        mut audit_event: AuditEvent,
+    ) -> Result<u64, TableLifecycleError> {
+        if invocation_id == [0; 16]
+            || authenticated_actor_id == [0; 16]
+            || table_id == [0; 16]
+            || column_id == [0; 16]
+            || max_chars == 0
+            || retention_deadline_us <= 0
+        {
+            return Err(TableLifecycleError::InvalidRequest);
+        }
+        if audit_event.actor_id != Some(authenticated_actor_id)
+            || audit_event.correlation_id != invocation_id
+            || audit_event.action != AuditAction::Ddl
+            || audit_event.result != AuditResult::Succeeded
+        {
+            return Err(TableLifecycleError::InvalidAudit);
+        }
+        let read = self
+            .database
+            .begin_read()
+            .map_err(|_| TableLifecycleError::Storage)?;
+        let catalog = read
+            .open_table(CATALOG)
+            .map_err(|_| TableLifecycleError::Storage)?;
+        let table_key = id_catalog_key(5, table_id);
+        let column_key = id_catalog_key(6, column_id);
+        let table_bytes = catalog
+            .get(table_key.as_slice())
+            .map_err(|_| TableLifecycleError::Storage)?
+            .map(|value| value.value().to_vec())
+            .ok_or(TableLifecycleError::InvalidRequest)?;
+        let column_bytes = catalog
+            .get(column_key.as_slice())
+            .map_err(|_| TableLifecycleError::Storage)?
+            .map(|value| value.value().to_vec())
+            .ok_or(TableLifecycleError::InvalidRequest)?;
+        if read_catalog_id(&column_key, &column_bytes, 6, 1)? != table_id {
+            return Err(TableLifecycleError::InvalidRequest);
+        }
+        let type_id = read_catalog_id(&column_key, &column_bytes, 6, 4)?;
+        let old_parameters: [u8; 8] = read_catalog_field(&column_key, &column_bytes, 6, 5)?
+            .as_slice()
+            .try_into()
+            .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+        let type_key = id_catalog_key(4, type_id);
+        let type_bytes = catalog
+            .get(type_key.as_slice())
+            .map_err(|_| TableLifecycleError::Storage)?
+            .map(|value| value.value().to_vec())
+            .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+        let type_record = decode_registered_envelope(&type_bytes)
+            .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+        let old_type = decode_builtin_scalar_type(&type_record, &old_parameters)
+            .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+        let old_max_chars = match old_type {
+            ScalarType::Varchar {
+                max_chars: current_max_chars,
+            } => current_max_chars,
+            _ => return Err(TableLifecycleError::InvalidRequest),
+        };
+        if max_chars <= old_max_chars {
+            return Err(TableLifecycleError::InvalidRequest);
+        }
+        let new_parameters = scalar_type_parameters(ScalarType::Varchar { max_chars });
+        let next_write_epoch = read_catalog_u64(&table_key, &table_bytes, 5, 3)?
+            .checked_add(1)
+            .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+        let writes = vec![
+            CatalogWrite {
+                key: table_key.clone(),
+                expected_value: Some(table_bytes.clone()),
+                payload: Some(rewrite_catalog_u64_field(
+                    &table_key,
+                    &table_bytes,
+                    5,
+                    3,
+                    next_write_epoch,
+                )?),
+            },
+            CatalogWrite {
+                key: column_key.clone(),
+                expected_value: Some(column_bytes.clone()),
+                payload: Some(rewrite_catalog_fields(
+                    &column_key,
+                    &column_bytes,
+                    6,
+                    &[(5, WireType::Bytes, new_parameters.to_vec())],
+                )?),
+            },
+        ];
+        drop(catalog);
+        drop(read);
+        audit_event.target_ids = vec![table_id, column_id];
+        audit_event.target_ids.sort_unstable();
+        self.commit_authorized_constraint_ddl(
+            invocation_id,
+            authenticated_actor_id,
+            retention_deadline_us,
+            &writes,
+            &[audit_event],
+        )
+        .map_err(|error| match error {
+            CommitError::DdlAuthorizationDenied => TableLifecycleError::Unauthorized,
+            error => TableLifecycleError::Commit(error),
+        })
+    }
+
     /// Change an existing column's nullability through authorized constraint DDL.
     #[allow(clippy::too_many_arguments)]
     pub fn set_column_nullable(

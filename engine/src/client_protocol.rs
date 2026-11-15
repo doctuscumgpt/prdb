@@ -287,6 +287,11 @@ enum PendingAdminAction {
         column_id: [u8; 16],
         nullable: bool,
     },
+    WidenVarcharColumn {
+        table_id: [u8; 16],
+        column_id: [u8; 16],
+        max_chars: u32,
+    },
     AlterColumnDefault {
         table_id: [u8; 16],
         column_id: [u8; 16],
@@ -734,6 +739,11 @@ pub enum ClientAdminCommand {
         table_id: [u8; 16],
         column_id: [u8; 16],
         nullable: bool,
+    },
+    PrepareWidenVarcharColumn {
+        table_id: [u8; 16],
+        column_id: [u8; 16],
+        max_chars: u32,
     },
     PrepareAlterColumnDefault {
         table_id: [u8; 16],
@@ -2254,6 +2264,41 @@ pub fn decode_client_admin_command(
                 table_id,
                 column_id,
                 nullable,
+            })
+        }
+        Some("prepare")
+            if version == Some(1)
+                && operation.as_deref() == Some("tables.widen_varchar_column") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let table_id = decode_lower_hex_id(
+                &args
+                    .remove("table_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let column_id = decode_lower_hex_id(
+                &args
+                    .remove("column_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let max_chars_text = args
+                .remove("max_chars")
+                .ok_or(ClientControlError::MissingKey)?;
+            let max_chars = max_chars_text
+                .parse::<u32>()
+                .ok()
+                .filter(|value| *value > 0 && value.to_string() == max_chars_text)
+                .ok_or(ClientControlError::InvalidPrepare)?;
+            if !args.is_empty() {
+                return Err(ClientControlError::UnknownKey);
+            }
+            Ok(ClientAdminCommand::PrepareWidenVarcharColumn {
+                table_id,
+                column_id,
+                max_chars,
             })
         }
         Some("prepare")
@@ -5816,6 +5861,40 @@ impl ClientConnectionSession {
                     .into_bytes(),
                 )
             }
+            ClientAdminCommand::PrepareWidenVarcharColumn {
+                table_id,
+                column_id,
+                max_chars,
+            } => {
+                if self.pending_admin_operation.is_some() {
+                    return Err(ClientSessionError::WrongMode);
+                }
+                let mut operation_id = [0; 16];
+                getrandom::fill(&mut operation_id).map_err(|_| {
+                    ClientSessionError::Storage(TransactionError::RandomnessUnavailable)
+                })?;
+                if operation_id == [0; 16] {
+                    return Err(ClientSessionError::Storage(
+                        TransactionError::RandomnessUnavailable,
+                    ));
+                }
+                self.pending_admin_operation = Some(PendingAdminOperation {
+                    operation_id,
+                    action: PendingAdminAction::WidenVarcharColumn {
+                        table_id,
+                        column_id,
+                        max_chars,
+                    },
+                });
+                self.json_response(
+                    request.request_id,
+                    format!(
+                        "{{\"operation_id\":\"{}\",\"state\":\"prepared\"}}",
+                        encode_lower_hex_id(operation_id)
+                    )
+                    .into_bytes(),
+                )
+            }
             ClientAdminCommand::PrepareAlterColumnDefault {
                 table_id,
                 column_id,
@@ -7016,6 +7095,43 @@ impl ClientConnectionSession {
                                 encode_lower_hex_id(table_id),
                                 encode_lower_hex_id(column_id),
                                 nullable,
+                                commit_sequence,
+                            )
+                            .into_bytes(),
+                        )
+                    }
+                    PendingAdminAction::WidenVarcharColumn {
+                        table_id,
+                        column_id,
+                        max_chars,
+                    } => {
+                        let commit_sequence = storage
+                            .widen_varchar_column(
+                                operation_id,
+                                actor_id,
+                                table_id,
+                                column_id,
+                                max_chars,
+                                retention_deadline_us,
+                                crate::audit::AuditEvent {
+                                    event_id,
+                                    actor_id: Some(actor_id),
+                                    correlation_id: operation_id,
+                                    occurred_at_us: now_us,
+                                    action: crate::audit::AuditAction::Ddl,
+                                    result: crate::audit::AuditResult::Succeeded,
+                                    target_ids: Vec::new(),
+                                },
+                            )
+                            .map_err(ClientSessionError::TableLifecycle)?;
+                        self.json_response(
+                            request.request_id,
+                            format!(
+                                "{{\"operation_id\":\"{}\",\"outcome\":\"committed\",\"table_id\":\"{}\",\"column_id\":\"{}\",\"max_chars\":\"{}\",\"commit_sequence\":\"{}\"}}",
+                                encode_lower_hex_id(operation_id),
+                                encode_lower_hex_id(table_id),
+                                encode_lower_hex_id(column_id),
+                                max_chars,
                                 commit_sequence,
                             )
                             .into_bytes(),

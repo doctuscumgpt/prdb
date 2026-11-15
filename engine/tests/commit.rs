@@ -5067,6 +5067,311 @@ fn storage_manager_sets_and_drops_not_null_with_existing_row_validation()
 }
 
 #[test]
+fn storage_manager_widens_varchar_atomically_and_keeps_index_current()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{
+        CreateIndexRequest, CreateTableRequest, TableColumnDefinition,
+    };
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let actor = id(0x71);
+    let admin_role = builtin_owner_id();
+    let setup = vec![
+        principal_write_with_name(actor, 1, 1, "varchar_widen_owner"),
+        object_write_with_name(actor, 8, "varchar_widen_owner"),
+        membership_write(actor, admin_role),
+        dependency_write(actor, admin_role, 5),
+    ];
+    let mut setup_audit = identity_audit_event(0x72, admin_role, id(0x73));
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0x73), admin_role, 9_999, &setup, &[setup_audit])?;
+    let schema_invocation = id(0x74);
+    let mut schema_audit = identity_audit_event(0x75, actor, id(0x76));
+    schema_audit.correlation_id = schema_invocation;
+    let schema = storage.create_schema(
+        schema_invocation,
+        actor,
+        "varchar_widen_schema",
+        actor,
+        9_999,
+        schema_audit,
+    )?;
+    let create_invocation = id(0x77);
+    let mut create_audit = identity_audit_event(0x78, actor, id(0x79));
+    create_audit.correlation_id = create_invocation;
+    let table = storage.create_table(CreateTableRequest {
+        invocation_id: create_invocation,
+        authenticated_actor_id: actor,
+        schema_id: schema.schema_id,
+        name: "widened_table".to_owned(),
+        columns: vec![TableColumnDefinition {
+            name: "label".to_owned(),
+            scalar_type: ScalarType::Varchar { max_chars: 8 },
+            nullable: true,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+        retention_deadline_us: 9_999,
+        audit_event: create_audit,
+    })?;
+    let row_id = id(0x83);
+    let old_tuple = encode_tuple(
+        &[ColumnSchema {
+            scalar_type: ScalarType::Varchar { max_chars: 8 },
+            nullable: true,
+        }],
+        1,
+        &[Some(ScalarValue::Varchar("persist".to_owned()))],
+    )?;
+    let row_record_bytes = RowRecord {
+        row_version: table.commit_sequence,
+        payload: old_tuple.clone(),
+    }
+    .encode()?;
+    let write = database.begin_write()?;
+    write.open_table(ROWS)?.insert(
+        &table_row_key(table.table_id, row_id)[..],
+        &row_record_bytes[..],
+    )?;
+    write.commit()?;
+    let index_invocation = id(0x7a);
+    let mut index_audit = identity_audit_event(0x7b, actor, id(0x7c));
+    index_audit.correlation_id = index_invocation;
+    let index = storage.create_index(CreateIndexRequest {
+        invocation_id: index_invocation,
+        authenticated_actor_id: actor,
+        table_id: table.table_id,
+        name: "widened_label_idx".to_owned(),
+        column_ids: table.column_ids.clone(),
+        unique: false,
+        retention_deadline_us: 9_999,
+        audit_event: index_audit,
+    })?;
+    let stale_writer_invocation = id(0x84);
+    let mut stale_writer =
+        storage.begin_invocation(stale_writer_invocation, actor, 9_999, 1, 1024)?;
+    let stale_schema = stale_writer.load_catalog_table_schema(table.table_id)?;
+    stale_writer.load_catalog_indexes(&stale_schema)?;
+    let stale_tuple = encode_tuple(
+        &stale_schema.columns,
+        stale_schema.schema_version,
+        &[Some(ScalarValue::Varchar("stale".to_owned()))],
+    )?;
+    let stale_row_id = id(0x85);
+    stale_writer.stage_put(
+        prdb_engine::overlay::RowId {
+            table: table.table_id,
+            row: stale_row_id,
+        },
+        &stale_tuple,
+    )?;
+    let old_snapshot = database.begin_read()?;
+    let widen_invocation = id(0x7d);
+    let mut widen_audit = identity_audit_event(0x7e, actor, id(0x7f));
+    widen_audit.correlation_id = widen_invocation;
+    storage
+        .widen_varchar_column(
+            widen_invocation,
+            actor,
+            table.table_id,
+            table.column_ids[0],
+            64,
+            9_999,
+            widen_audit,
+        )
+        .map_err(|error| format!("VARCHAR widening rejected: {error:?}"))?;
+
+    let old_catalog = old_snapshot.open_table(CATALOG)?;
+    let old_column = decode_registered_envelope(
+        old_catalog
+            .get(id_catalog_key(6, table.column_ids[0]).as_slice())?
+            .ok_or("old snapshot lost the column")?
+            .value(),
+    )?;
+    assert_eq!(
+        old_column
+            .fields
+            .iter()
+            .find(|field| field.tag == 5)
+            .ok_or("old VARCHAR parameters missing")?
+            .payload,
+        [0, 0, 0, 0, 8, 0, 0, 0]
+    );
+    drop(old_catalog);
+    drop(old_snapshot);
+
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    let table_record = decode_registered_envelope(
+        catalog
+            .get(id_catalog_key(5, table.table_id).as_slice())?
+            .ok_or("table disappeared during VARCHAR widening")?
+            .value(),
+    )?;
+    assert_eq!(
+        u64::from_le_bytes(
+            table_record
+                .fields
+                .iter()
+                .find(|field| field.tag == 2)
+                .ok_or("table schema version missing")?
+                .payload
+                .as_slice()
+                .try_into()?
+        ),
+        1
+    );
+    assert_eq!(
+        u64::from_le_bytes(
+            table_record
+                .fields
+                .iter()
+                .find(|field| field.tag == 3)
+                .ok_or("table write epoch missing")?
+                .payload
+                .as_slice()
+                .try_into()?
+        ),
+        3
+    );
+    let column = decode_registered_envelope(
+        catalog
+            .get(id_catalog_key(6, table.column_ids[0]).as_slice())?
+            .ok_or("widened column missing")?
+            .value(),
+    )?;
+    assert_eq!(
+        column
+            .fields
+            .iter()
+            .find(|field| field.tag == 5)
+            .ok_or("widened VARCHAR parameters missing")?
+            .payload,
+        [0, 0, 0, 0, 64, 0, 0, 0]
+    );
+    let index_record = decode_registered_envelope(
+        catalog
+            .get(id_catalog_key(9, index.index_id).as_slice())?
+            .ok_or("index disappeared during VARCHAR widening")?
+            .value(),
+    )?;
+    assert_eq!(
+        u64::from_le_bytes(
+            index_record
+                .fields
+                .iter()
+                .find(|field| field.tag == 10)
+                .ok_or("index schema version missing")?
+                .payload
+                .as_slice()
+                .try_into()?
+        ),
+        1
+    );
+    let widened_row = decode_registered_envelope(
+        catalog
+            .get(id_catalog_key(6, table.column_ids[0]).as_slice())?
+            .ok_or("widened column missing")?
+            .value(),
+    )?;
+    let current_parameters = widened_row
+        .fields
+        .iter()
+        .find(|field| field.tag == 5)
+        .ok_or("current VARCHAR parameters missing")?
+        .payload
+        .clone();
+    assert_eq!(current_parameters, [0, 0, 0, 0, 64, 0, 0, 0]);
+    drop(catalog);
+    let rows = read.open_table(ROWS)?;
+    let stored_row = RowRecord::decode(
+        rows.get(table_row_key(table.table_id, row_id).as_slice())?
+            .ok_or("stored row disappeared during metadata-only widening")?
+            .value(),
+    )?;
+    assert_eq!(stored_row.payload, old_tuple);
+    assert_eq!(
+        decode_tuple(
+            &[ColumnSchema {
+                scalar_type: ScalarType::Varchar { max_chars: 64 },
+                nullable: true,
+            }],
+            1,
+            &stored_row.payload,
+        )?
+        .values,
+        [Some(ScalarValue::Varchar("persist".to_owned()))]
+    );
+    drop(rows);
+    drop(read);
+
+    assert!(matches!(
+        stale_writer.commit(),
+        Err(prdb_engine::transaction::TransactionError::Commit(
+            CommitError::Conflict
+        ))
+    ));
+    assert!(row(&database, &table_row_key(table.table_id, stale_row_id))?.is_none());
+
+    let before_rejected = commit_sequence(&database)?;
+    let reject_invocation = id(0x80);
+    let mut reject_audit = identity_audit_event(0x81, actor, id(0x82));
+    reject_audit.correlation_id = reject_invocation;
+    assert!(matches!(
+        storage.widen_varchar_column(
+            reject_invocation,
+            actor,
+            table.table_id,
+            table.column_ids[0],
+            64,
+            9_999,
+            reject_audit,
+        ),
+        Err(prdb_engine::storage_manager::TableLifecycleError::InvalidRequest)
+    ));
+    assert_eq!(commit_sequence(&database)?, before_rejected);
+
+    let denied_actor = id(0x86);
+    let denied_setup = vec![
+        principal_write_with_name(denied_actor, 1, 1, "varchar_widen_denied"),
+        object_write_with_name(denied_actor, 8, "varchar_widen_denied"),
+    ];
+    let mut denied_setup_audit = identity_audit_event(0x87, actor, id(0x88));
+    denied_setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(
+        id(0x88),
+        actor,
+        9_999,
+        &denied_setup,
+        &[denied_setup_audit],
+    )?;
+    let denied_invocation = id(0x89);
+    let mut denied_audit = identity_audit_event(0x8a, denied_actor, id(0x8b));
+    denied_audit.correlation_id = denied_invocation;
+    assert!(matches!(
+        storage.widen_varchar_column(
+            denied_invocation,
+            denied_actor,
+            table.table_id,
+            table.column_ids[0],
+            128,
+            9_999,
+            denied_audit,
+        ),
+        Err(prdb_engine::storage_manager::TableLifecycleError::Unauthorized)
+    ));
+    assert_eq!(
+        lookup_outcome(&database, denied_invocation, denied_actor, 1)?
+            .ok_or("missing denied VARCHAR widening outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    Ok(())
+}
+
+#[test]
 fn storage_manager_sets_replaces_and_drops_column_defaults()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{

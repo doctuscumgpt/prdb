@@ -134,6 +134,14 @@ pub struct AlterColumnNullabilitySql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WidenVarcharSql {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
+    pub max_chars: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AlterColumnDefaultSql {
     pub schema: String,
     pub table: String,
@@ -1916,6 +1924,34 @@ pub fn parse_alter_column_nullability(sql: &str) -> Result<AlterColumnNullabilit
     })
 }
 
+/// Parse the bounded, lossless `VARCHAR` widening form of `ALTER COLUMN TYPE`.
+pub fn parse_widen_varchar(sql: &str) -> Result<WidenVarcharSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("table")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("alter")?;
+    parser.word("column")?;
+    let column = parser.identifier()?;
+    parser.word("type")?;
+    parser.word("varchar")?;
+    parser.take(Token::LeftParen)?;
+    let max_chars = parser.number()?;
+    parser.take(Token::RightParen)?;
+    if max_chars == 0 {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    finish_statement(&mut parser)?;
+    Ok(WidenVarcharSql {
+        schema,
+        table,
+        column,
+        max_chars,
+    })
+}
+
 /// Parse `ALTER TABLE ... ALTER COLUMN ... SET|DROP DEFAULT` with a
 /// context-independent literal. The authenticated client binds it to the
 /// declared column type after metadata resolution.
@@ -3281,6 +3317,29 @@ mod tests {
                 parse_alter_column_nullability(sql).is_err(),
                 "accepted {sql}"
             );
+        }
+    }
+
+    #[test]
+    fn parses_bounded_varchar_widening_syntax() {
+        assert_eq!(
+            parse_widen_varchar("ALTER TABLE app.events ALTER COLUMN label TYPE VARCHAR(120);")
+                .unwrap(),
+            WidenVarcharSql {
+                schema: "app".into(),
+                table: "events".into(),
+                column: "label".into(),
+                max_chars: 120,
+            }
+        );
+        for sql in [
+            "ALTER TABLE app.events ALTER COLUMN label TYPE VARCHAR(0)",
+            "ALTER TABLE events ALTER COLUMN label TYPE VARCHAR(120)",
+            "ALTER TABLE app.events ALTER COLUMN label TYPE INTEGER",
+            "ALTER TABLE app.events ALTER COLUMN label TYPE VARCHAR(120) USING label",
+            "ALTER TABLE app.events ALTER COLUMN label TYPE VARCHAR(120); ALTER TABLE app.events ALTER COLUMN label TYPE VARCHAR(140)",
+        ] {
+            assert!(parse_widen_varchar(sql).is_err(), "accepted {sql}");
         }
     }
 

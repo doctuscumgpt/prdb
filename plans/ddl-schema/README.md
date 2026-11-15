@@ -20,6 +20,7 @@ Fix bounded DDL text/structured schemas, normalized identifier limits, scalar wi
 | DS-6 | Index versus reference scan agrees on visibility/errors; failed/crashed build exposes no usable partial index | Plain-column ascending nulls-last logical indexes with redb ordering fixtures, constraint-owned index restrictions and atomic VALID publication |
 | DS-7 | DDL fences block affected commits while unrelated writes/old readers continue; stale writers abort | Acquire ordered fences, capture latest build snapshot after fencing, avoid long redb writer holds, validate/publish atomically and retain old definitions/indexes until safe |
 | DS-8 | An authenticated administrator can express basic schema and table creation/lifecycle in SQL without sending DDL to query execution | Parse bounded schema/table create, rename, RESTRICT drop, and key-constraint ALTER statements in the client; expose through authenticated `admin-sql`; translate to existing typed operations and retain server-side authorization/catalog validation |
+| DS-9 | A VARCHAR column can be safely widened through authenticated SQL while preserving stable references and index usability | Add only `ALTER TABLE ... ALTER COLUMN ... TYPE VARCHAR(n)` widening (`n` strictly greater than the current limit); publish the column parameters and table write epoch atomically under table DDL authorization while preserving tuple/index schema versions and key bytes; reject shrink, same-width, and cross-type rewrites |
 
 ## Acceptance and Handoff
 
