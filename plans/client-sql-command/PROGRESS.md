@@ -383,5 +383,5 @@
 
 ## DS-SQL-26: column-level CREATE TABLE REFERENCES process coverage — verified
 
-- The authenticated gateway/supervisor lifecycle now creates `process_admin_inline_source` through `AdminClient::execute_create_table_sql` with column-level `REFERENCES`, then verifies the published foreign-key metadata through the same real control path.
+- The authenticated gateway/supervisor lifecycle creates `process_admin_inline_source` through `AdminClient::execute_create_table_sql` with column-level `REFERENCES`, then verifies the published foreign-key metadata. The same process lifecycle now creates a second FK through `admin-sql` `ALTER TABLE ... ADD FOREIGN KEY` and drops it through `ALTER TABLE ... DROP CONSTRAINT '<generated-id>'`.
 - The focused delegated-cgroup process test passed with writable `cpu memory pids` (1 passed, 0 failed). This complements the parser, authenticated AdminClient, and CLI request coverage recorded in [schema DDL progress](../ddl-schema/PROGRESS.md).

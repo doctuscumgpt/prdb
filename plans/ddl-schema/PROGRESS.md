@@ -718,6 +718,6 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 ### DS-SQL-26 production process follow-up — verified
 
-- The gateway/supervisor DDL lifecycle now creates a referencing table with column-level `REFERENCES`, then reads back its FK source column, target table, and referenced column through authenticated metadata.
+- The gateway/supervisor DDL lifecycle creates one referencing table with column-level `REFERENCES`, then reads back its FK source column, target table, and referenced column through authenticated metadata. It also exercises `ALTER TABLE ... ADD FOREIGN KEY` and generated-ID `DROP CONSTRAINT` through `admin-sql`, with authenticated metadata readback between operations.
 - The first run exposed the expected dependency guard when teardown tried to drop the referenced UNIQUE constraint before the new FK table. Teardown now drops the dependent table first.
-- Verification: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` passed inside the delegated cgroup service with `cpu memory pids` enabled (1 passed, 0 failed). The initial column-level FK implementation's full validation is recorded above; this follow-up changes only process integration coverage and progress evidence.
+- Verification: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` passed inside the delegated cgroup service with `cpu memory pids` enabled after both inline and ALTER foreign-key SQL paths were added (1 passed, 0 failed). The initial column-level FK implementation's full validation is recorded above; this follow-up changes process integration coverage and progress evidence.

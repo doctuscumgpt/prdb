@@ -2337,37 +2337,37 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let foreign_key_cli_credentials = admin_cancel_credentials_path
         .to_str()
         .ok_or("credential path is not UTF-8")?;
-    let foreign_key_cli_source_table = encode_id_hex(&source_table.table_id);
-    let foreign_key_cli_source_column = encode_id_hex(&source_table.column_ids[0]);
-    let foreign_key_cli_target_constraint = encode_id_hex(&unique_constraint.constraint_id);
+    let add_foreign_key_sql_path = root.join("add-foreign-key.sql");
+    std::fs::write(
+        &add_foreign_key_sql_path,
+        "ALTER TABLE process_admin_schema.process_admin_source ADD FOREIGN KEY (payload) REFERENCES process_admin_schema.process_admin_table (payload);",
+    )?;
     let create_foreign_key_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
-            "foreign-key-create",
+            "admin-sql",
             "--address",
             &foreign_key_cli_address,
             "--credentials",
             foreign_key_cli_credentials,
-            "--source-table-id",
-            &foreign_key_cli_source_table,
-            "--source-columns",
-            &foreign_key_cli_source_column,
-            "--target-constraint-id",
-            &foreign_key_cli_target_constraint,
+            "--sql-file",
+            add_foreign_key_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
         ])
         .output()?;
     assert!(
         create_foreign_key_cli.status.success(),
-        "foreign-key-create CLI failed: {}",
+        "admin-sql ADD FOREIGN KEY failed: {}",
         String::from_utf8_lossy(&create_foreign_key_cli.stderr)
     );
     let foreign_key_cli_output = String::from_utf8_lossy(&create_foreign_key_cli.stdout);
-    assert!(foreign_key_cli_output.contains("created foreign key "));
+    assert!(foreign_key_cli_output.contains("created FOREIGN KEY "));
     let foreign_key_cli_id = foreign_key_cli_output
         .split_whitespace()
         .nth(3)
-        .ok_or("foreign-key-create output omitted the generated ID")?;
+        .ok_or("admin-sql ADD FOREIGN KEY output omitted the generated ID")?;
     let foreign_key_id = decode_id_hex(foreign_key_cli_id)
-        .ok_or("foreign-key-create output contained an invalid ID")?;
+        .ok_or("admin-sql ADD FOREIGN KEY output contained an invalid ID")?;
     let listed_source_constraints = admin.list_constraints_page(
         created_schema.identity_id,
         source_table.table_id,
@@ -2489,23 +2489,40 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     assert!(redacted_foreign_key.referenced_column_ids.is_empty());
     drop(redacted_owner);
     admin.set_schema_owner(redacted_source_schema.identity_id, admin_user_id)?;
+    let constraint_uuid = format!(
+        "{}-{}-{}-{}-{}",
+        &foreign_key_cli_id[0..8],
+        &foreign_key_cli_id[8..12],
+        &foreign_key_cli_id[12..16],
+        &foreign_key_cli_id[16..20],
+        &foreign_key_cli_id[20..32]
+    );
+    let drop_constraint_sql_path = root.join("drop-foreign-key-constraint.sql");
+    std::fs::write(
+        &drop_constraint_sql_path,
+        format!(
+            "ALTER TABLE process_admin_schema.process_admin_source DROP CONSTRAINT '{constraint_uuid}';"
+        ),
+    )?;
     let drop_foreign_key_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
-            "foreign-key-drop",
+            "admin-sql",
             "--address",
             &foreign_key_cli_address,
             "--credentials",
             foreign_key_cli_credentials,
-            "--foreign-key-id",
-            foreign_key_cli_id,
+            "--sql-file",
+            drop_constraint_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
         ])
         .output()?;
     assert!(
         drop_foreign_key_cli.status.success(),
-        "foreign-key-drop CLI failed: {}",
+        "admin-sql DROP CONSTRAINT failed: {}",
         String::from_utf8_lossy(&drop_foreign_key_cli.stderr)
     );
-    assert!(String::from_utf8_lossy(&drop_foreign_key_cli.stdout).contains("dropped foreign key"));
+    assert!(String::from_utf8_lossy(&drop_foreign_key_cli.stdout).contains("dropped constraint"));
     let revoked_references = admin.revoke_object_privilege(
         admin_user_id,
         created_table.table_id,
