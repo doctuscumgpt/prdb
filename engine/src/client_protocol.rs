@@ -216,14 +216,17 @@ enum PendingAdminAction {
         source_table_id: [u8; 16],
         source_column_ids: Vec<[u8; 16]>,
         target_constraint_id: [u8; 16],
+        name: Option<String>,
     },
     CreateUniqueConstraint {
         table_id: [u8; 16],
         column_ids: Vec<[u8; 16]>,
+        name: Option<String>,
     },
     CreatePrimaryKey {
         table_id: [u8; 16],
         column_ids: Vec<[u8; 16]>,
+        name: Option<String>,
     },
     CreateCheckConstraint {
         table_id: [u8; 16],
@@ -677,14 +680,17 @@ pub enum ClientAdminCommand {
         source_table_id: [u8; 16],
         source_column_ids: Vec<[u8; 16]>,
         target_constraint_id: [u8; 16],
+        name: Option<String>,
     },
     PrepareCreateUniqueConstraint {
         table_id: [u8; 16],
         column_ids: Vec<[u8; 16]>,
+        name: Option<String>,
     },
     PrepareCreatePrimaryKey {
         table_id: [u8; 16],
         column_ids: Vec<[u8; 16]>,
+        name: Option<String>,
     },
     PrepareCreateCheckConstraint {
         table_id: [u8; 16],
@@ -1817,7 +1823,8 @@ pub fn decode_client_admin_command(
             Ok(ClientAdminCommand::PrepareDropForeignKey { foreign_key_id })
         }
         Some("prepare")
-            if version == Some(1) && operation.as_deref() == Some("foreign_keys.create") =>
+            if matches!(version, Some(1 | 2))
+                && operation.as_deref() == Some("foreign_keys.create") =>
         {
             if operation_id.is_some() || seen.len() != 4 {
                 return Err(ClientControlError::UnknownKey);
@@ -1833,6 +1840,15 @@ pub fn decode_client_admin_command(
                     .remove("target_constraint_id")
                     .ok_or(ClientControlError::MissingKey)?,
             )?;
+            let name = if version == Some(2) {
+                let name = args.remove("name").ok_or(ClientControlError::MissingKey)?;
+                if !is_canonical_admin_principal_name(&name) {
+                    return Err(ClientControlError::InvalidPrepare);
+                }
+                Some(name)
+            } else {
+                None
+            };
             args.remove("source_column_ids")
                 .ok_or(ClientControlError::MissingKey)?;
             let source_column_ids = foreign_key_source_columns
@@ -1845,10 +1861,12 @@ pub fn decode_client_admin_command(
                 source_table_id,
                 source_column_ids,
                 target_constraint_id,
+                name,
             })
         }
         Some("prepare")
-            if version == Some(1) && operation.as_deref() == Some("constraints.create_unique") =>
+            if matches!(version, Some(1 | 2))
+                && operation.as_deref() == Some("constraints.create_unique") =>
         {
             if operation_id.is_some() || seen.len() != 4 {
                 return Err(ClientControlError::UnknownKey);
@@ -1859,6 +1877,15 @@ pub fn decode_client_admin_command(
                     .remove("table_id")
                     .ok_or(ClientControlError::MissingKey)?,
             )?;
+            let name = if version == Some(2) {
+                let name = args.remove("name").ok_or(ClientControlError::MissingKey)?;
+                if !is_canonical_admin_principal_name(&name) {
+                    return Err(ClientControlError::InvalidPrepare);
+                }
+                Some(name)
+            } else {
+                None
+            };
             args.remove("column_ids")
                 .ok_or(ClientControlError::MissingKey)?;
             let column_ids = constraint_column_ids
@@ -1870,6 +1897,7 @@ pub fn decode_client_admin_command(
             Ok(ClientAdminCommand::PrepareCreateUniqueConstraint {
                 table_id,
                 column_ids,
+                name,
             })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("indexes.create") => {
@@ -1981,7 +2009,7 @@ pub fn decode_client_admin_command(
             })
         }
         Some("prepare")
-            if version == Some(1)
+            if matches!(version, Some(1 | 2))
                 && operation.as_deref() == Some("constraints.create_primary_key") =>
         {
             if operation_id.is_some() || seen.len() != 4 {
@@ -1993,6 +2021,15 @@ pub fn decode_client_admin_command(
                     .remove("table_id")
                     .ok_or(ClientControlError::MissingKey)?,
             )?;
+            let name = if version == Some(2) {
+                let name = args.remove("name").ok_or(ClientControlError::MissingKey)?;
+                if !is_canonical_admin_principal_name(&name) {
+                    return Err(ClientControlError::InvalidPrepare);
+                }
+                Some(name)
+            } else {
+                None
+            };
             args.remove("column_ids")
                 .ok_or(ClientControlError::MissingKey)?;
             let column_ids = constraint_column_ids
@@ -2004,6 +2041,7 @@ pub fn decode_client_admin_command(
             Ok(ClientAdminCommand::PrepareCreatePrimaryKey {
                 table_id,
                 column_ids,
+                name,
             })
         }
         Some("prepare")
@@ -5597,6 +5635,7 @@ impl ClientConnectionSession {
                 source_table_id,
                 source_column_ids,
                 target_constraint_id,
+                name,
             } => {
                 if self.pending_admin_operation.is_some() {
                     return Err(ClientSessionError::WrongMode);
@@ -5616,6 +5655,7 @@ impl ClientConnectionSession {
                         source_table_id,
                         source_column_ids,
                         target_constraint_id,
+                        name,
                     },
                 });
                 self.json_response(
@@ -5630,6 +5670,7 @@ impl ClientConnectionSession {
             ClientAdminCommand::PrepareCreateUniqueConstraint {
                 table_id,
                 column_ids,
+                name,
             } => {
                 if self.pending_admin_operation.is_some() {
                     return Err(ClientSessionError::WrongMode);
@@ -5648,6 +5689,7 @@ impl ClientConnectionSession {
                     action: PendingAdminAction::CreateUniqueConstraint {
                         table_id,
                         column_ids,
+                        name,
                     },
                 });
                 self.json_response(
@@ -5784,6 +5826,7 @@ impl ClientConnectionSession {
             ClientAdminCommand::PrepareCreatePrimaryKey {
                 table_id,
                 column_ids,
+                name,
             } => {
                 if self.pending_admin_operation.is_some() {
                     return Err(ClientSessionError::WrongMode);
@@ -5802,6 +5845,7 @@ impl ClientConnectionSession {
                     action: PendingAdminAction::CreatePrimaryKey {
                         table_id,
                         column_ids,
+                        name,
                     },
                 });
                 self.json_response(
@@ -6834,26 +6878,30 @@ impl ClientConnectionSession {
                         source_table_id,
                         source_column_ids,
                         target_constraint_id,
+                        name,
                     } => {
-                        let created = storage
-                            .create_foreign_key(crate::storage_manager::CreateForeignKeyRequest {
-                                invocation_id: operation_id,
-                                authenticated_actor_id: actor_id,
-                                source_table_id,
-                                source_column_ids,
-                                target_constraint_id,
-                                retention_deadline_us,
-                                audit_event: crate::audit::AuditEvent {
-                                    event_id,
-                                    actor_id: Some(actor_id),
-                                    correlation_id: operation_id,
-                                    occurred_at_us: now_us,
-                                    action: crate::audit::AuditAction::Ddl,
-                                    result: crate::audit::AuditResult::Succeeded,
-                                    target_ids: Vec::new(),
-                                },
-                            })
-                            .map_err(ClientSessionError::ForeignKeyCreateLifecycle)?;
+                        let create_request = crate::storage_manager::CreateForeignKeyRequest {
+                            invocation_id: operation_id,
+                            authenticated_actor_id: actor_id,
+                            source_table_id,
+                            source_column_ids,
+                            target_constraint_id,
+                            retention_deadline_us,
+                            audit_event: crate::audit::AuditEvent {
+                                event_id,
+                                actor_id: Some(actor_id),
+                                correlation_id: operation_id,
+                                occurred_at_us: now_us,
+                                action: crate::audit::AuditAction::Ddl,
+                                result: crate::audit::AuditResult::Succeeded,
+                                target_ids: Vec::new(),
+                            },
+                        };
+                        let created = match name {
+                            Some(name) => storage.create_named_foreign_key(create_request, name),
+                            None => storage.create_foreign_key(create_request),
+                        }
+                        .map_err(ClientSessionError::ForeignKeyCreateLifecycle)?;
                         self.json_response(
                             request.request_id,
                             format!(
@@ -6868,27 +6916,32 @@ impl ClientConnectionSession {
                     PendingAdminAction::CreateUniqueConstraint {
                         table_id,
                         column_ids,
+                        name,
                     } => {
-                        let created = storage
-                            .create_unique_constraint(
-                                crate::storage_manager::CreateUniqueConstraintRequest {
-                                    invocation_id: operation_id,
-                                    authenticated_actor_id: actor_id,
-                                    table_id,
-                                    column_ids,
-                                    retention_deadline_us,
-                                    audit_event: crate::audit::AuditEvent {
-                                        event_id,
-                                        actor_id: Some(actor_id),
-                                        correlation_id: operation_id,
-                                        occurred_at_us: now_us,
-                                        action: crate::audit::AuditAction::Ddl,
-                                        result: crate::audit::AuditResult::Succeeded,
-                                        target_ids: Vec::new(),
-                                    },
+                        let create_request =
+                            crate::storage_manager::CreateUniqueConstraintRequest {
+                                invocation_id: operation_id,
+                                authenticated_actor_id: actor_id,
+                                table_id,
+                                column_ids,
+                                retention_deadline_us,
+                                audit_event: crate::audit::AuditEvent {
+                                    event_id,
+                                    actor_id: Some(actor_id),
+                                    correlation_id: operation_id,
+                                    occurred_at_us: now_us,
+                                    action: crate::audit::AuditAction::Ddl,
+                                    result: crate::audit::AuditResult::Succeeded,
+                                    target_ids: Vec::new(),
                                 },
-                            )
-                            .map_err(ClientSessionError::ConstraintLifecycle)?;
+                            };
+                        let created = match name {
+                            Some(name) => {
+                                storage.create_named_unique_constraint(create_request, name)
+                            }
+                            None => storage.create_unique_constraint(create_request),
+                        }
+                        .map_err(ClientSessionError::ConstraintLifecycle)?;
                         self.json_response(
                             request.request_id,
                             format!(
@@ -7035,25 +7088,29 @@ impl ClientConnectionSession {
                     PendingAdminAction::CreatePrimaryKey {
                         table_id,
                         column_ids,
+                        name,
                     } => {
-                        let created = storage
-                            .create_primary_key(crate::storage_manager::CreatePrimaryKeyRequest {
-                                invocation_id: operation_id,
-                                authenticated_actor_id: actor_id,
-                                table_id,
-                                column_ids,
-                                retention_deadline_us,
-                                audit_event: crate::audit::AuditEvent {
-                                    event_id,
-                                    actor_id: Some(actor_id),
-                                    correlation_id: operation_id,
-                                    occurred_at_us: now_us,
-                                    action: crate::audit::AuditAction::Ddl,
-                                    result: crate::audit::AuditResult::Succeeded,
-                                    target_ids: Vec::new(),
-                                },
-                            })
-                            .map_err(ClientSessionError::ConstraintLifecycle)?;
+                        let create_request = crate::storage_manager::CreatePrimaryKeyRequest {
+                            invocation_id: operation_id,
+                            authenticated_actor_id: actor_id,
+                            table_id,
+                            column_ids,
+                            retention_deadline_us,
+                            audit_event: crate::audit::AuditEvent {
+                                event_id,
+                                actor_id: Some(actor_id),
+                                correlation_id: operation_id,
+                                occurred_at_us: now_us,
+                                action: crate::audit::AuditAction::Ddl,
+                                result: crate::audit::AuditResult::Succeeded,
+                                target_ids: Vec::new(),
+                            },
+                        };
+                        let created = match name {
+                            Some(name) => storage.create_named_primary_key(create_request, name),
+                            None => storage.create_primary_key(create_request),
+                        }
+                        .map_err(ClientSessionError::ConstraintLifecycle)?;
                         self.json_response(
                             request.request_id,
                             format!(

@@ -1153,3 +1153,9 @@
 
 - The atomic table-create path now accepts optional PRIMARY KEY, UNIQUE, and FOREIGN KEY names, validates alignment and statement-wide uniqueness with CHECK names, and persists each supplied label on the corresponding family-2 constraint object. Unnamed definitions retain generated labels.
 - Real-redb coverage creates a named PK, UNIQUE, and self-referencing FK atomically, alongside a named CHECK fixture, and confirms catalog object-name persistence. Workspace build, format check, warning-denied Clippy, and the complete serial delegated-cgroup workspace suite pass with zero ignored tests; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+
+## DS-SQL-52: named ALTER key/FK storage — implemented
+
+- Added named storage paths for PRIMARY KEY, UNIQUE, and FOREIGN KEY creation. Catalog objects retain normalized names; authorized commits reject per-table duplicates while preserving unnamed APIs and generated labels. Real-redb PK, UNIQUE, and FK regressions pass, including old-reader and DDL-fence behavior in the key tests.
+- The full serial delegated-cgroup workspace suite passes with zero ignored, along with workspace build, format check, warning-denied Clippy, and the production named ALTER lifecycle; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

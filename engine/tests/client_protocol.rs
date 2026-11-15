@@ -962,12 +962,19 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
             source_table_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             source_column_ids: vec![[16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]],
             target_constraint_id: [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47],
+            name: None,
         })
     );
     assert!(decode_client_admin_command(
         br#"{"phase":"prepare","operation_version":1,"operation":"foreign_keys.create","arguments":{"source_table_id":"000102030405060708090a0b0c0d0e0f","source_column_ids":["101112131415161718191a1b1c1d1e1f"],"target_constraint_id":"202122232425262728292a2b2c2d2e2f","cascade":"true"}}"#
     )
     .is_err());
+    assert!(matches!(
+        decode_client_admin_command(
+            br#"{"phase":"prepare","operation_version":2,"operation":"foreign_keys.create","arguments":{"source_table_id":"000102030405060708090a0b0c0d0e0f","source_column_ids":["101112131415161718191a1b1c1d1e1f"],"target_constraint_id":"202122232425262728292a2b2c2d2e2f","name":"tenant_fk"}}"#
+        ),
+        Ok(ClientAdminCommand::PrepareCreateForeignKey { name: Some(name), .. }) if name == "tenant_fk"
+    ));
     assert_eq!(
         decode_client_admin_command(
             br#"{"phase":"prepare","operation_version":1,"operation":"constraints.create_unique","arguments":{"table_id":"000102030405060708090a0b0c0d0e0f","column_ids":["101112131415161718191a1b1c1d1e1f","202122232425262728292a2b2c2d2e2f"]}}"#
@@ -978,8 +985,15 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
                 [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31],
                 [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47],
             ],
+            name: None,
         })
     );
+    assert!(matches!(
+        decode_client_admin_command(
+            br#"{"phase":"prepare","operation_version":2,"operation":"constraints.create_unique","arguments":{"table_id":"000102030405060708090a0b0c0d0e0f","column_ids":["101112131415161718191a1b1c1d1e1f"],"name":"email_key"}}"#
+        ),
+        Ok(ClientAdminCommand::PrepareCreateUniqueConstraint { name: Some(name), .. }) if name == "email_key"
+    ));
     assert_eq!(
         decode_client_admin_command(
             br#"{"phase":"prepare","operation_version":1,"operation":"indexes.create","arguments":{"table_id":"000102030405060708090a0b0c0d0e0f","name":"user_lookup","column_ids":["101112131415161718191a1b1c1d1e1f"],"unique":true}}"#
@@ -991,6 +1005,12 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
             unique: true,
         })
     );
+    assert!(matches!(
+        decode_client_admin_command(
+            br#"{"phase":"prepare","operation_version":2,"operation":"constraints.create_primary_key","arguments":{"table_id":"000102030405060708090a0b0c0d0e0f","column_ids":["101112131415161718191a1b1c1d1e1f"],"name":"account_pk"}}"#
+        ),
+        Ok(ClientAdminCommand::PrepareCreatePrimaryKey { name: Some(name), .. }) if name == "account_pk"
+    ));
     assert_eq!(
         decode_client_admin_command(
             br#"{"phase":"prepare","operation_version":1,"operation":"indexes.drop","arguments":{"index_id":"000102030405060708090a0b0c0d0e0f"}}"#
@@ -1020,6 +1040,7 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
         Ok(ClientAdminCommand::PrepareCreatePrimaryKey {
             table_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             column_ids: vec![[16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]],
+            name: None,
         })
     );
     assert_eq!(

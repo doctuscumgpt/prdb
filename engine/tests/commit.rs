@@ -1979,10 +1979,9 @@ fn storage_manager_creates_typed_table_with_atomic_check_constraint()
                 .fields
                 .iter()
                 .any(|field| field.tag == 1 && field.payload.as_slice() == 6u16.to_le_bytes())
+            && let Some(name) = object.fields.iter().find(|field| field.tag == 3)
         {
-            if let Some(name) = object.fields.iter().find(|field| field.tag == 3) {
-                keyed_constraint_names.push(name.payload.clone());
-            }
+            keyed_constraint_names.push(name.payload.clone());
         }
     }
     for expected_name in [
@@ -9320,15 +9319,18 @@ fn storage_manager_creates_foreign_key_and_advances_both_table_epochs()
     let mut audit = identity_audit_event(0xe8, actor, id(82));
     audit.correlation_id = invocation_id;
     let created = storage
-        .create_foreign_key(prdb_engine::storage_manager::CreateForeignKeyRequest {
-            invocation_id,
-            authenticated_actor_id: actor,
-            source_table_id: id(82),
-            source_column_ids: vec![id(84)],
-            target_constraint_id: id(85),
-            retention_deadline_us: 9_999,
-            audit_event: audit,
-        })
+        .create_named_foreign_key(
+            prdb_engine::storage_manager::CreateForeignKeyRequest {
+                invocation_id,
+                authenticated_actor_id: actor,
+                source_table_id: id(82),
+                source_column_ids: vec![id(84)],
+                target_constraint_id: id(85),
+                retention_deadline_us: 9_999,
+                audit_event: audit,
+            },
+            "orders_customer_fk".to_owned(),
+        )
         .map_err(|error| format!("foreign-key create failed: {error:?}"))?;
     assert_ne!(created.foreign_key_id, [0; 16]);
     assert_eq!(created.commit_sequence, 2);
@@ -9350,6 +9352,19 @@ fn storage_manager_creates_foreign_key_and_advances_both_table_epochs()
             "missing record: {key:?}"
         );
     }
+    let foreign_key_object = catalog
+        .get(id_catalog_key(2, created.foreign_key_id).as_slice())?
+        .ok_or("foreign-key object missing")?;
+    assert_eq!(
+        decode_registered_envelope(foreign_key_object.value())?
+            .fields
+            .iter()
+            .find(|field| field.tag == 3)
+            .ok_or("foreign-key object name missing")?
+            .payload,
+        b"orders_customer_fk"
+    );
+    drop(foreign_key_object);
     for table_id in [id(81), id(82)] {
         let key = id_catalog_key(5, table_id);
         let bytes = catalog
@@ -10326,7 +10341,7 @@ fn storage_manager_creates_unique_constraint_and_backfills_existing_rows()
     let mut audit = identity_audit_event(0xf1, actor, id(82));
     audit.correlation_id = invocation_id;
     let created = storage
-        .create_unique_constraint(
+        .create_named_unique_constraint(
             prdb_engine::storage_manager::CreateUniqueConstraintRequest {
                 invocation_id,
                 authenticated_actor_id: actor,
@@ -10335,6 +10350,7 @@ fn storage_manager_creates_unique_constraint_and_backfills_existing_rows()
                 retention_deadline_us: 9_999,
                 audit_event: audit,
             },
+            "unique_object_84_key".to_owned(),
         )
         .map_err(|error| format!("UNIQUE constraint creation failed: {error:?}"))?;
     assert_eq!(created.commit_sequence, 3);
@@ -10362,11 +10378,19 @@ fn storage_manager_creates_unique_constraint_and_backfills_existing_rows()
             .get(id_catalog_key(9, created.index_id).as_slice())?
             .is_some()
     );
-    assert!(
-        catalog
-            .get(id_catalog_key(2, created.constraint_id).as_slice())?
-            .is_some()
+    let constraint_object = catalog
+        .get(id_catalog_key(2, created.constraint_id).as_slice())?
+        .ok_or("missing UNIQUE constraint object")?;
+    assert_eq!(
+        decode_registered_envelope(constraint_object.value())?
+            .fields
+            .iter()
+            .find(|field| field.tag == 3)
+            .ok_or("missing UNIQUE constraint object name")?
+            .payload,
+        b"unique_object_84_key"
     );
+    drop(constraint_object);
     assert!(
         catalog
             .get(id_catalog_key(2, created.index_id).as_slice())?
@@ -10507,14 +10531,17 @@ fn storage_manager_creates_primary_key_with_owned_unique_index()
     let mut audit = identity_audit_event(0xf5, actor, id(82));
     audit.correlation_id = invocation_id;
     let created = storage
-        .create_primary_key(prdb_engine::storage_manager::CreatePrimaryKeyRequest {
-            invocation_id,
-            authenticated_actor_id: actor,
-            table_id: id(82),
-            column_ids: vec![id(84)],
-            retention_deadline_us: 9_999,
-            audit_event: audit,
-        })
+        .create_named_primary_key(
+            prdb_engine::storage_manager::CreatePrimaryKeyRequest {
+                invocation_id,
+                authenticated_actor_id: actor,
+                table_id: id(82),
+                column_ids: vec![id(84)],
+                retention_deadline_us: 9_999,
+                audit_event: audit,
+            },
+            "primary_object_84_pk".to_owned(),
+        )
         .map_err(|error| format!("PRIMARY KEY creation failed: {error:?}"))?;
     assert_eq!(created.commit_sequence, 2);
     assert!(matches!(
@@ -10545,6 +10572,19 @@ fn storage_manager_creates_primary_key_with_owned_unique_index()
         .as_slice()
         .try_into()?;
     assert_eq!(u16::from_le_bytes(kind), 2);
+    let constraint_object = catalog
+        .get(id_catalog_key(2, created.constraint_id).as_slice())?
+        .ok_or("missing PRIMARY KEY object")?;
+    assert_eq!(
+        decode_registered_envelope(constraint_object.value())?
+            .fields
+            .iter()
+            .find(|field| field.tag == 3)
+            .ok_or("missing PRIMARY KEY object name")?
+            .payload,
+        b"primary_object_84_pk"
+    );
+    drop(constraint_object);
     assert!(
         catalog
             .get(id_catalog_key(9, created.index_id).as_slice())?

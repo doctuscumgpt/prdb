@@ -1766,8 +1766,9 @@ fn admin_client_adds_key_constraint_from_qualified_sql_names() {
         let prepare = read_frame(&mut stream, &mut decoder);
         let payload = String::from_utf8(prepare.payload.clone()).unwrap();
         assert!(payload.contains(r#""operation":"constraints.create_unique""#));
+        assert!(payload.contains(r#""operation_version":2"#));
         assert!(payload.contains(&format!(
-            r#""arguments":{{"table_id":"{}","column_ids":["{}","{}"]}}"#,
+            r#""arguments":{{"table_id":"{}","column_ids":["{}","{}"],"name":"tenant_event_key"}}"#,
             "b4".repeat(16),
             "c5".repeat(16),
             "c6".repeat(16)
@@ -1798,7 +1799,9 @@ fn admin_client_adds_key_constraint_from_qualified_sql_names() {
     )
     .unwrap();
     let created = client
-        .execute_add_key_constraint_sql("ALTER TABLE app.events ADD UNIQUE (tenant, event_id)")
+        .execute_add_key_constraint_sql(
+            "ALTER TABLE app.events ADD CONSTRAINT tenant_event_key UNIQUE (tenant, event_id)",
+        )
         .unwrap();
     assert_eq!(created.constraint_id, [0xe8; 16]);
     assert_eq!(created.index_id, [0xe9; 16]);
@@ -1877,8 +1880,9 @@ fn admin_client_binds_foreign_key_sql_to_visible_columns_and_unique_target() {
         let prepare = read_frame(&mut stream, &mut decoder);
         let payload = String::from_utf8(prepare.payload.clone()).unwrap();
         assert!(payload.contains(r#""operation":"foreign_keys.create""#));
+        assert!(payload.contains(r#""operation_version":2"#));
         assert!(payload.contains(&format!(
-            r#""arguments":{{"source_table_id":"{}","source_column_ids":["{}"],"target_constraint_id":"{}"}}"#,
+            r#""arguments":{{"source_table_id":"{}","source_column_ids":["{}"],"target_constraint_id":"{}","name":"orders_customer_fk"}}"#,
             "b4".repeat(16),
             "c5".repeat(16),
             "d7".repeat(16)
@@ -1910,7 +1914,7 @@ fn admin_client_binds_foreign_key_sql_to_visible_columns_and_unique_target() {
     .unwrap();
     let created = client
         .execute_add_foreign_key_sql(
-            "ALTER TABLE app.orders ADD FOREIGN KEY (customer_id) REFERENCES app.customers (id)",
+            "ALTER TABLE app.orders ADD CONSTRAINT orders_customer_fk FOREIGN KEY (customer_id) REFERENCES app.customers (id)",
         )
         .unwrap();
     assert_eq!(created.foreign_key_id, [0xf9; 16]);

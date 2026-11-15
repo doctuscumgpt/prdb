@@ -9842,6 +9842,25 @@ impl<'db> StorageManager<'db> {
         &self,
         request: CreateForeignKeyRequest,
     ) -> Result<CreatedForeignKey, TableLifecycleError> {
+        self.create_foreign_key_named(request, None)
+    }
+
+    pub fn create_named_foreign_key(
+        &self,
+        request: CreateForeignKeyRequest,
+        name: String,
+    ) -> Result<CreatedForeignKey, TableLifecycleError> {
+        if !is_normalized_principal_name(&name) {
+            return Err(TableLifecycleError::InvalidRequest);
+        }
+        self.create_foreign_key_named(request, Some(name))
+    }
+
+    fn create_foreign_key_named(
+        &self,
+        request: CreateForeignKeyRequest,
+        name: Option<String>,
+    ) -> Result<CreatedForeignKey, TableLifecycleError> {
         let CreateForeignKeyRequest {
             invocation_id,
             authenticated_actor_id: authenticated_principal_id,
@@ -9993,13 +10012,15 @@ impl<'db> StorageManager<'db> {
             .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
         let owner_id = read_catalog_id(&source_object_key, &source_object_bytes, 2, 4)?;
         let object_key = id_catalog_key(2, foreign_key_id);
-        let name = format!(
-            "foreign_key_{}",
-            foreign_key_id
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        );
+        let name = name.unwrap_or_else(|| {
+            format!(
+                "foreign_key_{}",
+                foreign_key_id
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            )
+        });
         let object_payload = encode_envelope(
             &family_schema(2).ok_or(TableLifecycleError::Storage)?,
             &object_key,
@@ -11664,7 +11685,18 @@ impl<'db> StorageManager<'db> {
         &self,
         request: CreateUniqueConstraintRequest,
     ) -> Result<CreatedUniqueConstraint, TableLifecycleError> {
-        self.create_key_constraint(request, 3)
+        self.create_key_constraint(request, 3, None)
+    }
+
+    pub fn create_named_unique_constraint(
+        &self,
+        request: CreateUniqueConstraintRequest,
+        name: String,
+    ) -> Result<CreatedUniqueConstraint, TableLifecycleError> {
+        if !is_normalized_principal_name(&name) {
+            return Err(TableLifecycleError::InvalidRequest);
+        }
+        self.create_key_constraint(request, 3, Some(name))
     }
 
     /// Add a PRIMARY KEY and its owned unique index. Existing rows are
@@ -11683,6 +11715,34 @@ impl<'db> StorageManager<'db> {
                 audit_event: request.audit_event,
             },
             2,
+            None,
+        )?;
+        Ok(CreatedPrimaryKey {
+            constraint_id: created.constraint_id,
+            index_id: created.index_id,
+            commit_sequence: created.commit_sequence,
+        })
+    }
+
+    pub fn create_named_primary_key(
+        &self,
+        request: CreatePrimaryKeyRequest,
+        name: String,
+    ) -> Result<CreatedPrimaryKey, TableLifecycleError> {
+        if !is_normalized_principal_name(&name) {
+            return Err(TableLifecycleError::InvalidRequest);
+        }
+        let created = self.create_key_constraint(
+            CreateUniqueConstraintRequest {
+                invocation_id: request.invocation_id,
+                authenticated_actor_id: request.authenticated_actor_id,
+                table_id: request.table_id,
+                column_ids: request.column_ids,
+                retention_deadline_us: request.retention_deadline_us,
+                audit_event: request.audit_event,
+            },
+            2,
+            Some(name),
         )?;
         Ok(CreatedPrimaryKey {
             constraint_id: created.constraint_id,
@@ -11695,6 +11755,7 @@ impl<'db> StorageManager<'db> {
         &self,
         request: CreateUniqueConstraintRequest,
         constraint_kind: u16,
+        constraint_name: Option<String>,
     ) -> Result<CreatedUniqueConstraint, TableLifecycleError> {
         let CreateUniqueConstraintRequest {
             invocation_id,
@@ -11823,53 +11884,56 @@ impl<'db> StorageManager<'db> {
         )
         .map_err(|_| TableLifecycleError::InvalidRequest)?;
 
-        let make_object_write = |object_id: [u8; 16], kind: u16, prefix: &str| {
-            let key = id_catalog_key(2, object_id);
-            let name = format!(
-                "{prefix}_{}",
-                object_id
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>()
-            );
-            let payload = encode_envelope(
-                &family_schema(2).ok_or(TableLifecycleError::Storage)?,
-                &key,
-                &[
-                    CatalogField {
-                        tag: 1,
-                        wire_type: WireType::U16,
-                        payload: kind.to_le_bytes().to_vec(),
-                    },
-                    CatalogField {
-                        tag: 3,
-                        wire_type: WireType::Text,
-                        payload: name.into_bytes(),
-                    },
-                    CatalogField {
-                        tag: 4,
-                        wire_type: WireType::Id,
-                        payload: owner_id.to_vec(),
-                    },
-                    CatalogField {
-                        tag: 5,
-                        wire_type: WireType::U64,
-                        payload: 1u64.to_le_bytes().to_vec(),
-                    },
-                    CatalogField {
-                        tag: 6,
-                        wire_type: WireType::U16,
-                        payload: 1u16.to_le_bytes().to_vec(),
-                    },
-                ],
-            )
-            .map_err(|_| TableLifecycleError::InvalidRequest)?;
-            Ok::<_, TableLifecycleError>(CatalogWrite {
-                key,
-                expected_value: None,
-                payload: Some(payload),
-            })
-        };
+        let make_object_write =
+            |object_id: [u8; 16], kind: u16, prefix: &str, name: Option<&str>| {
+                let key = id_catalog_key(2, object_id);
+                let name = name.map(str::to_owned).unwrap_or_else(|| {
+                    format!(
+                        "{prefix}_{}",
+                        object_id
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>()
+                    )
+                });
+                let payload = encode_envelope(
+                    &family_schema(2).ok_or(TableLifecycleError::Storage)?,
+                    &key,
+                    &[
+                        CatalogField {
+                            tag: 1,
+                            wire_type: WireType::U16,
+                            payload: kind.to_le_bytes().to_vec(),
+                        },
+                        CatalogField {
+                            tag: 3,
+                            wire_type: WireType::Text,
+                            payload: name.into_bytes(),
+                        },
+                        CatalogField {
+                            tag: 4,
+                            wire_type: WireType::Id,
+                            payload: owner_id.to_vec(),
+                        },
+                        CatalogField {
+                            tag: 5,
+                            wire_type: WireType::U64,
+                            payload: 1u64.to_le_bytes().to_vec(),
+                        },
+                        CatalogField {
+                            tag: 6,
+                            wire_type: WireType::U16,
+                            payload: 1u16.to_le_bytes().to_vec(),
+                        },
+                    ],
+                )
+                .map_err(|_| TableLifecycleError::InvalidRequest)?;
+                Ok::<_, TableLifecycleError>(CatalogWrite {
+                    key,
+                    expected_value: None,
+                    payload: Some(payload),
+                })
+            };
         let index_key = id_catalog_key(9, index_id);
         let index_fields = [
             CatalogField {
@@ -11943,6 +12007,7 @@ impl<'db> StorageManager<'db> {
                 } else {
                     "unique_constraint"
                 },
+                constraint_name.as_deref(),
             )?,
             CatalogWrite {
                 key: index_key,
@@ -11957,6 +12022,7 @@ impl<'db> StorageManager<'db> {
                 } else {
                     "unique_index"
                 },
+                None,
             )?,
             new_dependency_write(constraint_id, index_id, 4)?,
             CatalogWrite {

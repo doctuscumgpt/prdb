@@ -214,3 +214,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## DS-SQL-51: normalized explicit constraint object names — verified
 
 - The serialized CREATE TABLE validator now accepts canonical explicit PK, UNIQUE, and FK object names while validating the normalized identifier profile; generated labels continue to pass. Real-redb persistence and the full delegated workspace suite pass; details are recorded in [schema DDL progress](../ddl-schema/PROGRESS.md).
+
+
+## DS-SQL-52: ALTER constraint name uniqueness — implemented
+
+- The authorized constraint commit checks PK/UNIQUE/CHECK names after ALTER authority and checks FK names after source ALTER plus REFERENCES authorization. Real-redb, process metadata, and name-based drop coverage passes. The full serial delegated-cgroup workspace suite passes with zero ignored; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

@@ -546,3 +546,9 @@
 
 - SQL CREATE TABLE now sends optional PK/UNIQUE/FK names and retains the existing CHECK names; constraint metadata can resolve each explicit name for DROP CONSTRAINT. Grammar, protocol, and metadata contracts are updated in the normative specs.
 - Parser and authenticated AdminClient request regressions cover named PK, UNIQUE, CHECK, and self-referencing FK SQL. The production self-reference process test and complete delegated-cgroup workspace suite pass with zero ignored tests; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+
+## DS-SQL-52: named ALTER key/FK SQL — implemented
+
+- `admin-sql` accepts `ADD CONSTRAINT name` before PRIMARY KEY, UNIQUE, and FOREIGN KEY clauses, resolves relation/column/target metadata, and submits named typed operations. Name-based DROP uses the existing authenticated constraint resolver. The production process lifecycle covers create, metadata readback, and drop for each kind.
+- The full serial delegated-cgroup workspace suite passes with zero ignored, including named ALTER create/read/drop across gateway and supervisor processes; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

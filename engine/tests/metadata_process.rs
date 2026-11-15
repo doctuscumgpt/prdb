@@ -5091,6 +5091,74 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
         vec![columns.records[0].column_id, columns.records[1].column_id]
     );
     assert!(constraints.next_cursor.is_none());
+
+    let customers = admin.execute_create_table_sql(
+        "CREATE TABLE selfref_app.customers (id INTEGER NOT NULL, email TEXT)",
+    )?;
+    for sql in [
+        "ALTER TABLE selfref_app.customers ADD CONSTRAINT customers_pk PRIMARY KEY (id)",
+        "ALTER TABLE selfref_app.customers ADD CONSTRAINT customers_email_key UNIQUE (email)",
+    ] {
+        let output = execute_admin_sql(sql)?;
+        assert!(
+            output.status.success(),
+            "named key ALTER failed for {sql}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let orders = admin.execute_create_table_sql(
+        "CREATE TABLE selfref_app.orders (id INTEGER NOT NULL, customer_id INTEGER)",
+    )?;
+    admin.grant_object_privilege(
+        admin_user_id,
+        customers.table_id,
+        prdb_engine::client_submit::AdminObjectPrivilege::References,
+        prdb_engine::client_submit::AdminObjectGrantTarget::Object,
+    )?;
+    for sql in [
+        "ALTER TABLE selfref_app.orders ADD CONSTRAINT orders_pk PRIMARY KEY (id)",
+        "ALTER TABLE selfref_app.orders ADD CONSTRAINT orders_customer_fk FOREIGN KEY (customer_id) REFERENCES selfref_app.customers (id)",
+    ] {
+        let output = execute_admin_sql(sql)?;
+        assert!(
+            output.status.success(),
+            "named key/FK ALTER failed for {sql}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let customer_constraints =
+        admin.list_constraints_page(created_schema.identity_id, customers.table_id, 16, None)?;
+    for name in ["customers_pk", "customers_email_key"] {
+        assert!(
+            customer_constraints
+                .records
+                .iter()
+                .any(|constraint| constraint.name == name)
+        );
+    }
+    let order_constraints =
+        admin.list_constraints_page(created_schema.identity_id, orders.table_id, 16, None)?;
+    for name in ["orders_pk", "orders_customer_fk"] {
+        assert!(
+            order_constraints
+                .records
+                .iter()
+                .any(|constraint| constraint.name == name)
+        );
+    }
+    for sql in [
+        "ALTER TABLE selfref_app.orders DROP CONSTRAINT orders_customer_fk",
+        "ALTER TABLE selfref_app.orders DROP CONSTRAINT orders_pk",
+        "ALTER TABLE selfref_app.customers DROP CONSTRAINT customers_email_key",
+        "ALTER TABLE selfref_app.customers DROP CONSTRAINT customers_pk",
+    ] {
+        let output = execute_admin_sql(sql)?;
+        assert!(
+            output.status.success(),
+            "name-based constraint drop failed for {sql}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     let schema_id_text = encode_id_hex(&created_schema.identity_id);
     let table_id_text = encode_id_hex(&table_id);
     let expected_foreign_key = format!(

@@ -107,6 +107,7 @@ pub enum KeyConstraintKind {
 pub struct AddKeyConstraintSql {
     pub schema: String,
     pub table: String,
+    pub name: Option<String>,
     pub columns: Vec<String>,
     pub kind: KeyConstraintKind,
 }
@@ -115,6 +116,7 @@ pub struct AddKeyConstraintSql {
 pub struct AddForeignKeySql {
     pub schema: String,
     pub table: String,
+    pub name: Option<String>,
     pub columns: Vec<String>,
     pub referenced_schema: String,
     pub referenced_table: String,
@@ -1398,6 +1400,12 @@ pub fn parse_add_key_constraint(sql: &str) -> Result<AddKeyConstraintSql, DdlSql
     parser.take(Token::Dot)?;
     let table = parser.identifier()?;
     parser.word("add")?;
+    let name = if parser.peek_word("constraint") {
+        parser.word("constraint")?;
+        Some(parser.identifier()?)
+    } else {
+        None
+    };
     let kind = if parser.peek_word("primary") {
         parser.word("primary")?;
         parser.word("key")?;
@@ -1426,6 +1434,7 @@ pub fn parse_add_key_constraint(sql: &str) -> Result<AddKeyConstraintSql, DdlSql
     Ok(AddKeyConstraintSql {
         schema,
         table,
+        name,
         columns,
         kind,
     })
@@ -1440,6 +1449,12 @@ pub fn parse_add_foreign_key(sql: &str) -> Result<AddForeignKeySql, DdlSqlError>
     parser.take(Token::Dot)?;
     let table = parser.identifier()?;
     parser.word("add")?;
+    let name = if parser.peek_word("constraint") {
+        parser.word("constraint")?;
+        Some(parser.identifier()?)
+    } else {
+        None
+    };
     parser.word("foreign")?;
     parser.word("key")?;
     let columns = parse_column_name_list(&mut parser)?;
@@ -1459,6 +1474,7 @@ pub fn parse_add_foreign_key(sql: &str) -> Result<AddForeignKeySql, DdlSqlError>
     Ok(AddForeignKeySql {
         schema,
         table,
+        name,
         columns,
         referenced_schema,
         referenced_table,
@@ -3126,6 +3142,7 @@ mod tests {
             AddKeyConstraintSql {
                 schema: "app".into(),
                 table: "events".into(),
+                name: None,
                 columns: vec!["tenant".into(), "event_id".into()],
                 kind: KeyConstraintKind::Unique,
             }
@@ -3136,9 +3153,17 @@ mod tests {
                 .kind,
             KeyConstraintKind::PrimaryKey
         );
+        assert_eq!(
+            parse_add_key_constraint(
+                "ALTER TABLE app.events ADD CONSTRAINT events_key UNIQUE (id)"
+            )
+            .unwrap()
+            .name
+            .as_deref(),
+            Some("events_key")
+        );
         for sql in [
             "ALTER TABLE events ADD UNIQUE (id)",
-            "ALTER TABLE app.events ADD CONSTRAINT key UNIQUE (id)",
             "ALTER TABLE app.events ADD UNIQUE ()",
             "ALTER TABLE app.events ADD UNIQUE (id, id)",
             "ALTER TABLE app.events ADD UNIQUE (id); ALTER TABLE app.events ADD UNIQUE (id)",
@@ -3157,11 +3182,21 @@ mod tests {
             AddForeignKeySql {
                 schema: "app".into(),
                 table: "events".into(),
+                name: None,
                 columns: vec!["tenant_id".into(), "event_id".into()],
                 referenced_schema: "core".into(),
                 referenced_table: "tenants".into(),
                 referenced_columns: vec!["tenant_id".into(), "id".into()],
             }
+        );
+        assert_eq!(
+            parse_add_foreign_key(
+                "ALTER TABLE app.events ADD CONSTRAINT events_tenant_fk FOREIGN KEY (tenant_id) REFERENCES core.tenants (id)"
+            )
+            .unwrap()
+            .name
+            .as_deref(),
+            Some("events_tenant_fk")
         );
         for sql in [
             "ALTER TABLE app.events ADD FOREIGN KEY (tenant_id) REFERENCES core.tenants (tenant_id, id)",

@@ -4524,10 +4524,18 @@ impl AdminClient {
         }
         match statement.kind {
             crate::ddl_sql::KeyConstraintKind::PrimaryKey => {
-                self.create_primary_key(table_id, &column_ids)
+                if let Some(name) = statement.name.as_deref() {
+                    self.create_named_primary_key(table_id, &column_ids, name)
+                } else {
+                    self.create_primary_key(table_id, &column_ids)
+                }
             }
             crate::ddl_sql::KeyConstraintKind::Unique => {
-                self.create_unique_constraint(table_id, &column_ids)
+                if let Some(name) = statement.name.as_deref() {
+                    self.create_named_unique_constraint(table_id, &column_ids, name)
+                } else {
+                    self.create_unique_constraint(table_id, &column_ids)
+                }
             }
         }
     }
@@ -4615,11 +4623,19 @@ impl AdminClient {
             .map(|constraint| constraint.constraint_id)
             .ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
 
-        self.create_foreign_key(source_table_id, &source_column_ids, target_constraint_id)
+        if let Some(name) = statement.name.as_deref() {
+            self.create_named_foreign_key(
+                source_table_id,
+                &source_column_ids,
+                target_constraint_id,
+                name,
+            )
+        } else {
+            self.create_foreign_key(source_table_id, &source_column_ids, target_constraint_id)
+        }
     }
 
-    /// Drop a generated constraint ID from the selected table.
-    /// Constraint names are not supported by the current typed catalog API.
+    /// Drop a constraint identified by its explicit name or generated ID.
     pub fn execute_drop_constraint_sql(
         &mut self,
         sql: &str,
@@ -5477,6 +5493,95 @@ impl AdminClient {
             operation_id: result.operation_id,
             constraint_id: generated_ids[0],
             index_id: generated_ids[1],
+            commit_sequence: result.commit_sequence,
+        })
+    }
+
+    pub fn create_named_unique_constraint(
+        &mut self,
+        table_id: [u8; 16],
+        column_ids: &[[u8; 16]],
+        name: &str,
+    ) -> Result<AdminKeyConstraintResult, ClientSubmitError> {
+        validate_admin_id(table_id)?;
+        validate_admin_id_list(column_ids, crate::tuple::MAX_COLUMNS)?;
+        validate_admin_name(name)?;
+        let (result, generated_ids) = self.execute_admin_operation_with_generated_ids_version(
+            2,
+            "constraints.create_unique",
+            format!(
+                "{{\"table_id\":\"{}\",\"column_ids\":{},\"name\":{}}}",
+                lower_hex(&table_id),
+                encode_id_array(column_ids),
+                json_quote(name),
+            ),
+            &["constraint_id", "index_id"],
+            &[],
+        )?;
+        Ok(AdminKeyConstraintResult {
+            operation_id: result.operation_id,
+            constraint_id: generated_ids[0],
+            index_id: generated_ids[1],
+            commit_sequence: result.commit_sequence,
+        })
+    }
+
+    pub fn create_named_primary_key(
+        &mut self,
+        table_id: [u8; 16],
+        column_ids: &[[u8; 16]],
+        name: &str,
+    ) -> Result<AdminKeyConstraintResult, ClientSubmitError> {
+        validate_admin_id(table_id)?;
+        validate_admin_id_list(column_ids, crate::tuple::MAX_COLUMNS)?;
+        validate_admin_name(name)?;
+        let (result, generated_ids) = self.execute_admin_operation_with_generated_ids_version(
+            2,
+            "constraints.create_primary_key",
+            format!(
+                "{{\"table_id\":\"{}\",\"column_ids\":{},\"name\":{}}}",
+                lower_hex(&table_id),
+                encode_id_array(column_ids),
+                json_quote(name),
+            ),
+            &["constraint_id", "index_id"],
+            &[],
+        )?;
+        Ok(AdminKeyConstraintResult {
+            operation_id: result.operation_id,
+            constraint_id: generated_ids[0],
+            index_id: generated_ids[1],
+            commit_sequence: result.commit_sequence,
+        })
+    }
+
+    pub fn create_named_foreign_key(
+        &mut self,
+        source_table_id: [u8; 16],
+        source_column_ids: &[[u8; 16]],
+        target_constraint_id: [u8; 16],
+        name: &str,
+    ) -> Result<AdminForeignKeyResult, ClientSubmitError> {
+        validate_admin_id(source_table_id)?;
+        validate_admin_id(target_constraint_id)?;
+        validate_admin_id_list(source_column_ids, crate::tuple::MAX_COLUMNS)?;
+        validate_admin_name(name)?;
+        let (result, generated_ids) = self.execute_admin_operation_with_generated_ids_version(
+            2,
+            "foreign_keys.create",
+            format!(
+                "{{\"source_table_id\":\"{}\",\"source_column_ids\":{},\"target_constraint_id\":\"{}\",\"name\":{}}}",
+                lower_hex(&source_table_id),
+                encode_id_array(source_column_ids),
+                lower_hex(&target_constraint_id),
+                json_quote(name),
+            ),
+            &["foreign_key_id"],
+            &[],
+        )?;
+        Ok(AdminForeignKeyResult {
+            operation_id: result.operation_id,
+            foreign_key_id: generated_ids[0],
             commit_sequence: result.commit_sequence,
         })
     }

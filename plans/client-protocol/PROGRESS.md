@@ -335,3 +335,9 @@
 
 - Added strict `tables.create` v4 decoding for the PK name and UNIQUE/FK name arrays, with alignment, canonical-name, and cross-kind uniqueness validation. Versions 1–3 remain accepted under their prior shapes.
 - Authenticated AdminClient serialization emits and decodes v4 names for PK, UNIQUE, CHECK, and self-referencing FK definitions. The complete serial delegated-cgroup workspace suite passes with zero ignored tests; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+
+## DS-SQL-52: named ALTER key/FK protocol — implemented
+
+- `constraints.create_primary_key`, `constraints.create_unique`, and `foreign_keys.create` version 2 accept a required normalized name; v1 remains unchanged. Pending actions carry names to the authorized storage paths. Decoder and authenticated request regressions pass.
+- The full serial delegated-cgroup workspace suite passes with zero ignored, including protocol v2 decoding and production process coverage; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

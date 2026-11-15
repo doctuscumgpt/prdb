@@ -952,3 +952,9 @@
 
 - The SQL binder passes parsed names in definition order to the typed CREATE TABLE request; self-referential named FKs retain the same atomic local-target binding behavior.
 - The authenticated request regression verifies the v4 names remain aligned with PK/UNIQUE/FK definitions and CHECK expressions. The complete serial delegated-cgroup workspace suite passes with zero ignored tests; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+
+## DS-SQL-52: named ALTER key/FK binding — implemented
+
+- Added AdminClient named create methods and SQL binding for PK, UNIQUE, and FK names. The protocol requests preserve existing v1 methods and use v2 only for names. Authenticated mock-session coverage passes; full production process coverage is recorded in [schema DDL progress](../ddl-schema/PROGRESS.md).
+- The full serial delegated-cgroup workspace suite passes with zero ignored, including authenticated v2 request binding and production process coverage; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

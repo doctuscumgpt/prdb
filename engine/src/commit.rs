@@ -14276,7 +14276,7 @@ fn constraint_ddl_authority_guards(
 
     let mut new_constraint_names = HashMap::<[u8; 16], HashSet<Vec<u8>>>::new();
     for (constraint_id, change) in &constraint_changes {
-        if change.kind != 4 || !change.adding {
+        if !matches!(change.kind, 2..=5) || !change.adding {
             continue;
         }
         let object_key = id_catalog_key(2, *constraint_id);
@@ -14851,6 +14851,73 @@ fn foreign_key_ddl_authority_guards(
             }
             if !has_column_references {
                 return Err(CommitError::DdlAuthorizationDenied);
+            }
+        }
+    }
+
+    let mut new_foreign_key_names = HashMap::<[u8; 16], HashSet<Vec<u8>>>::new();
+    for (constraint_id, (kind, was_present, is_present)) in &object_changes {
+        if *kind != 6 || *was_present || !*is_present {
+            continue;
+        }
+        if !changes.contains_key(constraint_id) {
+            return Err(CommitError::InvalidCatalog);
+        }
+        let source_table_id = catalog_writes
+            .iter()
+            .find(|write| write.key == id_catalog_key(8, *constraint_id))
+            .and_then(|write| write.payload.as_deref())
+            .map(|bytes| catalog_field_bytes(&id_catalog_key(8, *constraint_id), bytes, 8, 1))
+            .transpose()?
+            .ok_or(CommitError::InvalidCatalog)?
+            .as_slice()
+            .try_into()
+            .map_err(|_| CommitError::InvalidCatalog)?;
+        let object_key = id_catalog_key(2, *constraint_id);
+        let object_bytes = catalog_writes
+            .iter()
+            .find(|write| write.key == object_key)
+            .and_then(|write| write.payload.as_deref())
+            .ok_or(CommitError::InvalidCatalog)?;
+        let name = catalog_field_bytes(&object_key, object_bytes, 2, 3)?;
+        if !is_normalized_constraint_name(&name)
+            || !new_foreign_key_names
+                .entry(source_table_id)
+                .or_default()
+                .insert(name.clone())
+        {
+            return Err(CommitError::DuplicateConstraintName);
+        }
+        let constraint_prefix = 8u16.to_be_bytes();
+        for entry in catalog
+            .range(constraint_prefix.as_slice()..)
+            .map_err(storage_error)?
+        {
+            let (key, value) = entry.map_err(storage_error)?;
+            let key = key.value();
+            if !key.starts_with(&constraint_prefix) {
+                break;
+            }
+            if key.len() != 19 {
+                return Err(CommitError::InvalidCatalog);
+            }
+            let existing_id: [u8; 16] = key[3..]
+                .try_into()
+                .map_err(|_| CommitError::InvalidCatalog)?;
+            let existing_constraint_key = id_catalog_key(8, existing_id);
+            if catalog_field_bytes(&existing_constraint_key, value.value(), 8, 1)?
+                != source_table_id
+                || changes.contains_key(&existing_id)
+            {
+                continue;
+            }
+            let existing_object_key = id_catalog_key(2, existing_id);
+            let existing_object = catalog
+                .get(existing_object_key.as_slice())
+                .map_err(storage_error)?
+                .ok_or(CommitError::InvalidCatalog)?;
+            if catalog_field_bytes(&existing_object_key, existing_object.value(), 2, 3)? == name {
+                return Err(CommitError::DuplicateConstraintName);
             }
         }
     }
