@@ -3975,7 +3975,7 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
     let sql_path = root.join("selfref-create-table.sql");
     std::fs::write(
         &sql_path,
-        "CREATE TABLE selfref_app.nodes (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES selfref_app.nodes (id));",
+        "CREATE TABLE selfref_app.nodes (tenant_id INTEGER, id INTEGER, parent_tenant_id INTEGER, parent_id INTEGER, PRIMARY KEY (tenant_id, id), FOREIGN KEY (parent_tenant_id, parent_id) REFERENCES selfref_app.nodes (tenant_id, id));",
     )?;
     let cli_output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
@@ -4002,7 +4002,7 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
         .ok_or("admin-sql output omitted the created table ID")?;
     let table_id = decode_id_hex(table_id_text).ok_or("admin-sql returned an invalid table ID")?;
     let columns = admin.list_columns_page(created_schema.identity_id, table_id, 16, None)?;
-    assert_eq!(columns.records.len(), 2);
+    assert_eq!(columns.records.len(), 4);
     let constraints =
         admin.list_constraints_page(created_schema.identity_id, table_id, 16, None)?;
     let foreign_key = constraints
@@ -4014,10 +4014,13 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
         })
         .ok_or("self-referencing FK was absent from process metadata")?;
     assert_eq!(foreign_key.referenced_table_id, Some(table_id));
-    assert_eq!(foreign_key.column_ids, vec![columns.records[1].column_id]);
+    assert_eq!(
+        foreign_key.column_ids,
+        vec![columns.records[2].column_id, columns.records[3].column_id]
+    );
     assert_eq!(
         foreign_key.referenced_column_ids,
-        vec![columns.records[0].column_id]
+        vec![columns.records[0].column_id, columns.records[1].column_id]
     );
     assert!(constraints.next_cursor.is_none());
     drop(admin);

@@ -10,7 +10,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 ### DS-SQL-27 gateway/supervisor process follow-up — verified
 
-- `self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes` starts separate production gateway and supervisor binaries, creates a schema, invokes the actual `prdb-client admin-sql` command for a self-referencing table, then confirms the FK points to the new table and its declared PK column through authenticated metadata.
+- `self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes` starts separate production gateway and supervisor binaries, creates a schema, invokes the actual `prdb-client admin-sql` command for a table-level composite self-reference, then confirms the FK points to the new table and preserves source/target column order through authenticated metadata. Inline single-column coverage remains in the separate authenticated AdminClient regression.
 - Verification: the focused test and complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. Post-change `cargo fmt --all -- --check`, warning-denied Clippy, and `git diff --check` passed. This isolated acceptance keeps the earlier long metadata lifecycle's index and policy fixtures independent.
 
 ## DS-5 / SM-5: empty schema DROP RESTRICT — verified
