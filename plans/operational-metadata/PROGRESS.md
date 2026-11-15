@@ -296,4 +296,5 @@
 
 - `prdb-maintain audit-sink-status --instance-dir PATH` reports whether the optional JSONL sink is configured, the retained pending-event count, and the oldest pending-event age. It validates the bounded audit records and delivery markers from a read-only instance opened under the exclusive lock; it emits no event IDs, principals, sink path, or event contents.
 - The status scan is an explicit offline maintenance command rather than part of high-frequency runtime pages. With no sink identity installed, it reports an unconfigured sink and zero pending deliveries.
+- Integrity follow-up: status validation now rejects malformed sink identities/markers and delivery markers that reference pruned or absent audit events, including unexpected markers when no sink is configured.
 - Verification: workspace build, formatting check, warning-denied all-target Clippy, and `git diff --check` pass. No tests were added or run. Cargo.lock is unchanged.

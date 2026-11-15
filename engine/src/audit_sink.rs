@@ -8,6 +8,7 @@ use crate::audit::{AuditEvent, MAX_AUDIT_EVENTS};
 use crate::schema::{AUDIT, STATS};
 use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
@@ -69,24 +70,20 @@ pub fn status<D: ReadableDatabase>(
     let stats = read
         .open_table(STATS)
         .map_err(|_| AuditSinkError::Storage)?;
-    let sink_id = stats
+    let configured = match stats
         .get(SINK_ID_KEY)
-        .map_err(|_| AuditSinkError::Storage)?;
-    if sink_id.is_none() {
-        return Ok(AuditSinkStatus {
-            configured: false,
-            pending_events: 0,
-            oldest_pending_age_us: None,
-        });
-    }
-    if sink_id.is_some_and(|value| value.value().len() != 60) {
-        return Err(AuditSinkError::Storage);
-    }
+        .map_err(|_| AuditSinkError::Storage)?
+    {
+        Some(value) if value.value().len() == 60 => true,
+        Some(_) => return Err(AuditSinkError::Storage),
+        None => false,
+    };
     if audit.len().map_err(|_| AuditSinkError::Storage)? > MAX_AUDIT_EVENTS as u64 {
         return Err(AuditSinkError::Storage);
     }
     let mut pending_events = 0u64;
     let mut oldest_pending_at_us = None::<i64>;
+    let mut event_ids = HashSet::new();
     for entry in audit.iter().map_err(|_| AuditSinkError::Storage)? {
         let (key, value) = entry.map_err(|_| AuditSinkError::Storage)?;
         let event_id: [u8; 16] = key
@@ -97,6 +94,9 @@ pub fn status<D: ReadableDatabase>(
         if event.event_id != event_id {
             return Err(AuditSinkError::Storage);
         }
+        if !event_ids.insert(event_id) {
+            return Err(AuditSinkError::Storage);
+        }
         let mut marker_key = DELIVERED_PREFIX.to_vec();
         marker_key.extend_from_slice(&event_id);
         let marker = stats
@@ -104,21 +104,39 @@ pub fn status<D: ReadableDatabase>(
             .map_err(|_| AuditSinkError::Storage)?;
         match marker.as_ref().map(|value| value.value()) {
             None => {
-                pending_events = pending_events.saturating_add(1);
-                oldest_pending_at_us =
-                    Some(oldest_pending_at_us.map_or(event.occurred_at_us, |oldest| {
-                        oldest.min(event.occurred_at_us)
-                    }));
+                if configured {
+                    pending_events = pending_events.saturating_add(1);
+                    oldest_pending_at_us =
+                        Some(oldest_pending_at_us.map_or(event.occurred_at_us, |oldest| {
+                            oldest.min(event.occurred_at_us)
+                        }));
+                }
             }
             Some(b"1") => {}
             Some(_) => return Err(AuditSinkError::Storage),
+        }
+    }
+    for entry in stats.iter().map_err(|_| AuditSinkError::Storage)? {
+        let (key, value) = entry.map_err(|_| AuditSinkError::Storage)?;
+        let key = key.value();
+        if !key.starts_with(DELIVERED_PREFIX) {
+            continue;
+        }
+        if key.len() != DELIVERED_PREFIX.len() + 16 || value.value() != b"1" || !configured {
+            return Err(AuditSinkError::Storage);
+        }
+        let event_id: [u8; 16] = key[DELIVERED_PREFIX.len()..]
+            .try_into()
+            .map_err(|_| AuditSinkError::Storage)?;
+        if !event_ids.contains(&event_id) {
+            return Err(AuditSinkError::Storage);
         }
     }
     let oldest_pending_age_us = oldest_pending_at_us.map(|timestamp| {
         u64::try_from(now_us.saturating_sub(timestamp).max(0)).unwrap_or(u64::MAX)
     });
     Ok(AuditSinkStatus {
-        configured: true,
+        configured,
         pending_events,
         oldest_pending_age_us,
     })
