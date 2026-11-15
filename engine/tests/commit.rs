@@ -6150,6 +6150,22 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
     );
     let added = added_result?;
     assert_eq!(added.schema_version, 2);
+    for generation in 0..64u8 {
+        let churn_invocation = id(0x80 + generation);
+        let mut churn = storage.begin_invocation(churn_invocation, actor, 9_999, 2, 1024)?;
+        let churn_schema = churn.load_catalog_table_schema(table.table_id)?;
+        churn.load_catalog_indexes(&churn_schema)?;
+        let churn_tuple = prdb_engine::tuple::encode_tuple(
+            &churn_schema.columns,
+            churn_schema.schema_version,
+            &[
+                Some(ScalarValue::Integer(7)),
+                Some(ScalarValue::Text(format!("generation-{generation}"))),
+            ],
+        )?;
+        churn.stage_put(row_id, &churn_tuple)?;
+        churn.commit()?;
+    }
     assert_eq!(
         lookup_column_id_by_name(&retained_snapshot, table.table_id, "label")?,
         None
@@ -6203,7 +6219,7 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
         tuple.values,
         vec![
             Some(ScalarValue::Integer(7)),
-            Some(ScalarValue::Text("ready".to_owned())),
+            Some(ScalarValue::Text("generation-63".to_owned())),
         ]
     );
     let added_schema_ids = [table.column_ids[0], added.column_id];
@@ -6295,7 +6311,7 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
         nullable_tuple.values,
         vec![
             Some(ScalarValue::Integer(7)),
-            Some(ScalarValue::Text("ready".to_owned())),
+            Some(ScalarValue::Text("generation-63".to_owned())),
             None,
         ]
     );

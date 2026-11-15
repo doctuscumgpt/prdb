@@ -332,6 +332,11 @@
 - The complete serial delegated-cgroup workspace suite passed with zero ignored tests. Catalog wire-fixture coverage passed (22 tests), startup catalog/index integrity coverage passed (54 tests), and transaction catalog loading and retained-snapshot coverage passed (75 tests).
 - DD-5 long-reader reclamation pressure and continued fuzz campaigns remain open; this checkpoint does not change those plan statuses.
 
+## DD-5: retained row/schema across version pressure — verified slice
+
+- Extended `storage_manager_adds_column_and_backfills_existing_rows` to hold a pre-DDL redb snapshot while the current schema receives a defaulted column and 64 successive committed row versions. The old snapshot still decodes its original schema and row; the current view decodes the newest row, and a later nullable-column backfill preserves that row value.
+- Verification: the focused commit integration test passed. This covers retained-version pressure at the logical snapshot layer; physical compaction/reclamation behavior and long-duration reader pressure remain open.
+
 ## 2026-11 delegated acceptance checkpoint
 
 - The complete serial delegated-cgroup workspace suite passed with zero ignored tests. Catalog wire-fixture coverage passed (22 tests), startup catalog/index integrity coverage passed (54 tests), and transaction catalog loading and retained-snapshot coverage passed (75 tests).
