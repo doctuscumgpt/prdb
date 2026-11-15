@@ -289,7 +289,13 @@
 
 ## DP-SQL-2: single-column grant SQL
 
-- Extended table grant syntax to select one named column for SELECT, INSERT, UPDATE, or REFERENCES. The client resolves the column through authenticated metadata and submits the existing typed column grant. Multi-column forms remain a follow-up so the current single-target protocol preserves one-operation publication. Parser and delegated process grant/revoke tests pass; workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored.
+- The initial table grant syntax selected one named column for SELECT, INSERT, UPDATE, or REFERENCES, resolved it through authenticated metadata, and submitted the typed column grant. The follow-up below extends this route to atomic batches.
+
+## DP-SQL-2: atomic multi-column grant SQL — verified
+
+- GRANT/REVOKE accepts 1–64 distinct named columns for table SELECT, INSERT, UPDATE, and REFERENCES, resolving every column through authenticated metadata and sending one atomic typed operation.
+- The delegated process lifecycle verifies an overlapping grant is rejected without a partial write, then checks successful multi-column grant discovery and complete batch revoke.
+- Verification: focused protocol and cross-process metadata tests; locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, release-profile validation, cgroup probe, and complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored. `git diff --check` passed; Cargo.lock is unchanged.
 
 ## DS-SQL-17: schema and table OWNER SQL — implemented
 

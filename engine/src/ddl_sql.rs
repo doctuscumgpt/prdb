@@ -212,7 +212,7 @@ pub struct ObjectPrivilegeSql {
     pub privilege: String,
     pub schema_name: String,
     pub table_name: Option<String>,
-    pub column_name: Option<String>,
+    pub column_names: Vec<String>,
     pub grantee_name: String,
     pub grantee_is_role: bool,
 }
@@ -747,15 +747,23 @@ pub fn parse_object_privilege(sql: &str) -> Result<ObjectPrivilegeSql, DdlSqlErr
     ) {
         return Err(DdlSqlError::InvalidStatement);
     }
-    let column_name = if parser.peek() == Some(&Token::LeftParen) {
+    let mut column_names = Vec::new();
+    if parser.peek() == Some(&Token::LeftParen) {
         parser.take(Token::LeftParen)?;
-        let column = parser.identifier()?;
+        loop {
+            let column = parser.identifier()?;
+            if column_names.contains(&column) || column_names.len() == 64 {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+            column_names.push(column);
+            if parser.peek() != Some(&Token::Comma) {
+                break;
+            }
+            parser.take(Token::Comma)?;
+        }
         parser.take(Token::RightParen)?;
-        Some(column)
-    } else {
-        None
-    };
-    if column_name.is_some()
+    }
+    if !column_names.is_empty()
         && !matches!(
             privilege.as_str(),
             "select" | "insert" | "update" | "references"
@@ -787,7 +795,7 @@ pub fn parse_object_privilege(sql: &str) -> Result<ObjectPrivilegeSql, DdlSqlErr
     {
         return Err(DdlSqlError::InvalidStatement);
     }
-    if column_name.is_some() && !is_table {
+    if !column_names.is_empty() && !is_table {
         return Err(DdlSqlError::InvalidStatement);
     }
     let schema_name = parser.identifier()?;
@@ -816,7 +824,7 @@ pub fn parse_object_privilege(sql: &str) -> Result<ObjectPrivilegeSql, DdlSqlErr
         privilege,
         schema_name,
         table_name,
-        column_name,
+        column_names,
         grantee_name,
         grantee_is_role,
     })
@@ -3066,7 +3074,7 @@ mod tests {
                 privilege: "usage".into(),
                 schema_name: "app".into(),
                 table_name: None,
-                column_name: None,
+                column_names: vec![],
                 grantee_name: "managers".into(),
                 grantee_is_role: true,
             }
@@ -3079,7 +3087,7 @@ mod tests {
                 privilege: "select".into(),
                 schema_name: "app".into(),
                 table_name: Some("employees".into()),
-                column_name: None,
+                column_names: vec![],
                 grantee_name: "reader".into(),
                 grantee_is_role: false,
             }
@@ -3096,16 +3104,39 @@ mod tests {
         assert_eq!(
             parse_object_privilege("GRANT SELECT (salary) ON TABLE app.employees TO ROLE readers")
                 .unwrap()
-                .column_name,
-            Some("salary".into())
+                .column_names,
+            vec!["salary"]
         );
         for sql in [
-            "GRANT SELECT (a, b) ON TABLE app.t TO ROLE r",
             "GRANT DELETE (salary) ON TABLE app.t TO ROLE r",
             "GRANT SELECT (a) ON SCHEMA app TO ROLE r",
+            "GRANT SELECT () ON TABLE app.t TO ROLE r",
+            "GRANT SELECT (a, a) ON TABLE app.t TO ROLE r",
         ] {
             assert!(parse_object_privilege(sql).is_err(), "accepted {sql}");
         }
+    }
+
+    #[test]
+    fn parses_multiple_column_object_privilege_targets() {
+        assert_eq!(
+            parse_object_privilege(
+                "GRANT SELECT (first_name, last_name) ON TABLE app.people TO ROLE readers"
+            )
+            .unwrap()
+            .column_names,
+            vec!["first_name", "last_name"]
+        );
+        let too_many_columns = (0..65)
+            .map(|index| format!("column_{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert!(
+            parse_object_privilege(&format!(
+                "GRANT SELECT ({too_many_columns}) ON TABLE app.people TO ROLE readers"
+            ))
+            .is_err()
+        );
     }
 
     #[test]

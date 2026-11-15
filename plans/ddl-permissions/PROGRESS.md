@@ -8,8 +8,14 @@
 
 ## DP-SQL-2: single-column grant SQL
 
-- The bounded grammar now accepts one column target for table SELECT/INSERT/UPDATE/REFERENCES and binds it to an authenticated column ID before using the existing `objects.grant` or `objects.revoke` operation. Multiple column targets are still available only through typed APIs.
+- The bounded grammar first added one column target for table SELECT/INSERT/UPDATE/REFERENCES and bound it to an authenticated column ID before using the existing `objects.grant` or `objects.revoke` operation. The follow-up below extends this route to atomic batches.
 - Parser rejection and delegated process grant/revoke regressions pass. Locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed; Cargo.lock is unchanged.
+
+## DP-SQL-2: atomic multi-column grant SQL — verified
+
+- The bounded grammar and typed PREPARE/START request carry 2–64 distinct column IDs in one grant/revoke operation. Storage validates the full target set and prepares all grant/dependency writes with one grantee epoch update, audit event, and durable outcome.
+- Red/green: the parser regression first rejected `GRANT SELECT (first_name, last_name) ...`; the protocol regression verifies the array-shaped `target_ids` request. The delegated gateway/supervisor SQL lifecycle proves overlapping batch grants fail without granting their absent member, then verifies a successful batch grant and batch revoke.
+- Verification: focused protocol and cross-process metadata tests; locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, release-profile validation, cgroup capability probe, and full serial delegated-cgroup workspace suite all passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed; Cargo.lock is unchanged.
 
 ## DP-SQL-3: bounded CREATE ROW/CELL POLICY SQL — implemented
 

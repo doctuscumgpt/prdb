@@ -1280,13 +1280,22 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let ddl_table = admin.create_table(
         ddl_schema.identity_id,
         "records",
-        &[AdminColumnDefinition {
-            name: "key".to_owned(),
-            scalar_type: ScalarType::Integer,
-            nullable: true,
-            generated_uuid_identity: false,
-            default: None,
-        }],
+        &[
+            AdminColumnDefinition {
+                name: "key".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: true,
+                generated_uuid_identity: false,
+                default: None,
+            },
+            AdminColumnDefinition {
+                name: "label".to_owned(),
+                scalar_type: ScalarType::Text,
+                nullable: true,
+                generated_uuid_identity: false,
+                default: None,
+            },
+        ],
     )?;
     let ddl_constraint =
         admin.create_unique_constraint(ddl_table.table_id, &[ddl_table.column_ids[0]])?;
@@ -1544,6 +1553,90 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         &object_privilege_sql_path,
         "GRANT SELECT (key) ON TABLE process_ddl.records TO USER process_member_user;",
     )?;
+    let grant_existing_column = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            object_privilege_sql_path_text,
+        ])
+        .output()?;
+    assert!(
+        grant_existing_column.status.success(),
+        "single-column privilege GRANT SQL failed: {}",
+        String::from_utf8_lossy(&grant_existing_column.stderr)
+    );
+    std::fs::write(
+        &object_privilege_sql_path,
+        "GRANT SELECT (key, label) ON TABLE process_ddl.records TO USER process_member_user;",
+    )?;
+    let grant_column_privilege_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            object_privilege_sql_path_text,
+        ])
+        .output()?;
+    assert!(
+        !grant_column_privilege_sql.status.success(),
+        "overlapping multi-column privilege GRANT unexpectedly succeeded"
+    );
+    let after_overlapping_grant =
+        admin.list_grants_page(ddl_schema.identity_id, ddl_table.table_id, 128, None)?;
+    assert!(
+        ddl_table
+            .column_ids
+            .iter()
+            .enumerate()
+            .all(|(index, column_id)| {
+                let has_grant = after_overlapping_grant.records.iter().any(|grant| {
+                    grant.grantee_id == member_user.identity_id
+                && grant.privilege
+                    == prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Select
+                && grant.target_scope
+                    == prdb_engine::metadata_discovery::AdministrativeGrantTargetScope::Column
+                && grant.target_id == *column_id
+                });
+                has_grant == (index == 0)
+            })
+    );
+    std::fs::write(
+        &object_privilege_sql_path,
+        "REVOKE SELECT (key) ON TABLE process_ddl.records FROM USER process_member_user;",
+    )?;
+    let revoke_existing_column = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            object_privilege_sql_path_text,
+        ])
+        .output()?;
+    assert!(
+        revoke_existing_column.status.success(),
+        "single-column privilege REVOKE SQL failed: {}",
+        String::from_utf8_lossy(&revoke_existing_column.stderr)
+    );
+    std::fs::write(
+        &object_privilege_sql_path,
+        "GRANT SELECT (key, label) ON TABLE process_ddl.records TO USER process_member_user;",
+    )?;
     let grant_column_privilege_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
             "admin-sql",
@@ -1559,12 +1652,24 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         .output()?;
     assert!(
         grant_column_privilege_sql.status.success(),
-        "column privilege GRANT SQL failed: {}",
+        "multi-column privilege GRANT SQL failed: {}",
         String::from_utf8_lossy(&grant_column_privilege_sql.stderr)
     );
+    let multi_column_grants =
+        admin.list_grants_page(ddl_schema.identity_id, ddl_table.table_id, 128, None)?;
+    assert!(ddl_table.column_ids.iter().all(|column_id| {
+        multi_column_grants.records.iter().any(|grant| {
+            grant.grantee_id == member_user.identity_id
+                && grant.privilege
+                    == prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Select
+                && grant.target_scope
+                    == prdb_engine::metadata_discovery::AdministrativeGrantTargetScope::Column
+                && grant.target_id == *column_id
+        })
+    }));
     std::fs::write(
         &object_privilege_sql_path,
-        "REVOKE SELECT (key) ON TABLE process_ddl.records FROM USER process_member_user;",
+        "REVOKE SELECT (key, label) ON TABLE process_ddl.records FROM USER process_member_user;",
     )?;
     let revoke_column_privilege_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
@@ -1584,6 +1689,15 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         "column privilege REVOKE SQL failed: {}",
         String::from_utf8_lossy(&revoke_column_privilege_sql.stderr)
     );
+    let multi_column_revokes =
+        admin.list_grants_page(ddl_schema.identity_id, ddl_table.table_id, 128, None)?;
+    assert!(!multi_column_revokes.records.iter().any(|grant| {
+        grant.grantee_id == member_user.identity_id
+            && grant.privilege
+                == prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Select
+            && grant.target_scope
+                == prdb_engine::metadata_discovery::AdministrativeGrantTargetScope::Column
+    }));
     let dropped_table = admin.drop_table(ddl_table.table_id)?;
     assert!(dropped_table.commit_sequence > ddl_constraint.commit_sequence);
     assert!(

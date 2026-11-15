@@ -341,10 +341,11 @@ impl AdminObjectPrivilege {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdminObjectGrantTarget {
     Object,
     Column([u8; 16]),
+    Columns(Vec<[u8; 16]>),
 }
 
 impl AdminTokenResult {
@@ -2468,26 +2469,54 @@ impl AdminClient {
     ) -> Result<AdminOperationResult, ClientSubmitError> {
         validate_admin_id(grantee_id)?;
         validate_admin_id(object_id)?;
-        let (target_scope, target_id) = match target {
-            AdminObjectGrantTarget::Object => ("object", object_id),
-            AdminObjectGrantTarget::Column(column_id) => {
-                validate_admin_id(column_id)?;
-                ("column", column_id)
-            }
-        };
-        self.execute_admin_operation(
-            operation,
-            format!(
+        let arguments = match target {
+            AdminObjectGrantTarget::Object => format!(
                 "{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",\"privilege\":\"{}\",\"target_scope\":\"{}\",\"target_id\":\"{}\"}}",
                 lower_hex(&grantee_id),
                 lower_hex(&object_id),
                 privilege.as_wire_name(),
-                target_scope,
-                lower_hex(&target_id)
+                "object",
+                lower_hex(&object_id)
             ),
-            None,
-        )
-        .map(|(result, _)| result)
+            AdminObjectGrantTarget::Column(column_id) => {
+                validate_admin_id(column_id)?;
+                format!(
+                    "{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",\"privilege\":\"{}\",\"target_scope\":\"column\",\"target_id\":\"{}\"}}",
+                    lower_hex(&grantee_id),
+                    lower_hex(&object_id),
+                    privilege.as_wire_name(),
+                    lower_hex(&column_id)
+                )
+            }
+            AdminObjectGrantTarget::Columns(column_ids) => {
+                if !(2..=64).contains(&column_ids.len()) {
+                    return Err(ClientSubmitError::InvalidAdministrativeRequest);
+                }
+                let mut unique = HashSet::new();
+                let mut encoded_ids = Vec::with_capacity(column_ids.len());
+                for column_id in column_ids {
+                    validate_admin_id(column_id)?;
+                    if !unique.insert(column_id) {
+                        return Err(ClientSubmitError::InvalidAdministrativeRequest);
+                    }
+                    encoded_ids.push(lower_hex(&column_id));
+                }
+                let encoded_ids = encoded_ids
+                    .iter()
+                    .map(|column_id| format!("\"{column_id}\""))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",\"privilege\":\"{}\",\"target_scope\":\"columns\",\"target_ids\":[{}]}}",
+                    lower_hex(&grantee_id),
+                    lower_hex(&object_id),
+                    privilege.as_wire_name(),
+                    encoded_ids
+                )
+            }
+        };
+        self.execute_admin_operation(operation, arguments, None)
+            .map(|(result, _)| result)
     }
 
     fn change_system_privilege(
@@ -3190,33 +3219,39 @@ impl AdminClient {
         } else {
             schema_id
         };
-        let target = if let Some(column_name) = &statement.column_name {
+        let target = if !statement.column_names.is_empty() {
             let table_id = object_id;
-            let mut cursor = None;
-            let mut matched = None;
-            loop {
-                let page = self.list_columns_page(
-                    schema_id,
-                    table_id,
-                    DEFAULT_METADATA_PAGE_SIZE,
-                    cursor.as_deref(),
-                )?;
-                if let Some(column) = page
-                    .records
-                    .iter()
-                    .find(|column| column.name == *column_name)
-                {
-                    matched = Some(column.column_id);
-                    break;
+            let mut column_ids = Vec::with_capacity(statement.column_names.len());
+            for column_name in &statement.column_names {
+                let mut cursor = None;
+                let mut matched = None;
+                loop {
+                    let page = self.list_columns_page(
+                        schema_id,
+                        table_id,
+                        DEFAULT_METADATA_PAGE_SIZE,
+                        cursor.as_deref(),
+                    )?;
+                    if let Some(column) = page
+                        .records
+                        .iter()
+                        .find(|column| column.name == *column_name)
+                    {
+                        matched = Some(column.column_id);
+                        break;
+                    }
+                    cursor = page.next_cursor;
+                    if cursor.is_none() {
+                        break;
+                    }
                 }
-                cursor = page.next_cursor;
-                if cursor.is_none() {
-                    break;
-                }
+                column_ids.push(matched.ok_or(ClientSubmitError::InvalidAdministrativeRequest)?);
             }
-            AdminObjectGrantTarget::Column(
-                matched.ok_or(ClientSubmitError::InvalidAdministrativeRequest)?,
-            )
+            if column_ids.len() == 1 {
+                AdminObjectGrantTarget::Column(column_ids[0])
+            } else {
+                AdminObjectGrantTarget::Columns(column_ids)
+            }
         } else {
             AdminObjectGrantTarget::Object
         };

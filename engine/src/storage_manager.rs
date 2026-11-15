@@ -699,10 +699,11 @@ impl ObjectGrantPrivilege {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ObjectGrantTarget {
     Object,
     Column([u8; 16]),
+    Columns(Vec<[u8; 16]>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -11059,8 +11060,8 @@ impl<'db> StorageManager<'db> {
             .ok_or(CommitError::InvalidCatalog)?;
         let object_kind = read_catalog_u16(&object_key, &object_bytes, 2, 1)
             .map_err(table_lifecycle_commit_error)?;
-        let (scope, target_id) = match target {
-            ObjectGrantTarget::Object => (1u16, object_id),
+        let (scope, target_ids) = match target {
+            ObjectGrantTarget::Object => (1u16, vec![object_id]),
             ObjectGrantTarget::Column(column_id) => {
                 if object_kind != 3 || column_id == [0; 16] {
                     return Err(CommitError::InvalidCatalog);
@@ -11077,7 +11078,31 @@ impl<'db> StorageManager<'db> {
                 {
                     return Err(CommitError::InvalidCatalog);
                 }
-                (2, column_id)
+                (2, vec![column_id])
+            }
+            ObjectGrantTarget::Columns(column_ids) => {
+                if object_kind != 3
+                    || !(2..=64).contains(&column_ids.len())
+                    || column_ids.contains(&[0; 16])
+                    || column_ids.iter().copied().collect::<HashSet<_>>().len() != column_ids.len()
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
+                for column_id in &column_ids {
+                    let column_key = id_catalog_key(6, *column_id);
+                    let column_bytes = catalog
+                        .get(column_key.as_slice())
+                        .map_err(|error| CommitError::Storage(error.to_string()))?
+                        .map(|value| value.value().to_vec())
+                        .ok_or(CommitError::InvalidCatalog)?;
+                    if read_catalog_id(&column_key, &column_bytes, 6, 1)
+                        .map_err(table_lifecycle_commit_error)?
+                        != object_id
+                    {
+                        return Err(CommitError::InvalidCatalog);
+                    }
+                }
+                (2, column_ids)
             }
         };
         let code = privilege.code();
@@ -11089,27 +11114,32 @@ impl<'db> StorageManager<'db> {
             return Err(CommitError::InvalidCatalog);
         }
 
-        let grant_key = object_grant_catalog_key(grantee_id, object_id, code, scope, target_id);
-        let current_grant = catalog
-            .get(grant_key.as_slice())
-            .map_err(|error| CommitError::Storage(error.to_string()))?
-            .map(|value| value.value().to_vec());
-        if grant == current_grant.is_some() {
-            return Err(CommitError::InvalidWrite);
+        let grant_keys = target_ids
+            .iter()
+            .map(|target_id| {
+                object_grant_catalog_key(grantee_id, object_id, code, scope, *target_id)
+            })
+            .collect::<Vec<_>>();
+        let mut current_grants = Vec::with_capacity(grant_keys.len());
+        for grant_key in &grant_keys {
+            let current = catalog
+                .get(grant_key.as_slice())
+                .map_err(|error| CommitError::Storage(error.to_string()))?
+                .map(|value| value.value().to_vec());
+            if grant == current.is_some() {
+                return Err(CommitError::InvalidWrite);
+            }
+            current_grants.push(current);
         }
-        let dependency_key = dependency_catalog_key(grantee_id, target_id, 5);
-        let current_dependency = catalog
-            .get(dependency_key.as_slice())
-            .map_err(|error| CommitError::Storage(error.to_string()))?
-            .map(|value| value.value().to_vec());
-        let mut writes = vec![CatalogWrite {
-            key: grant_key,
-            expected_value: current_grant.clone(),
-            payload: if grant {
+        let mut writes = Vec::with_capacity(target_ids.len() * 2 + 1);
+        for ((target_id, grant_key), current_grant) in
+            target_ids.iter().zip(&grant_keys).zip(current_grants)
+        {
+            let payload = if grant {
                 Some(
                     encode_envelope(
                         &family_schema(12).ok_or(CommitError::InvalidCatalog)?,
-                        &object_grant_catalog_key(grantee_id, object_id, code, scope, target_id),
+                        grant_key,
                         &[
                             CatalogField {
                                 tag: 1,
@@ -11127,43 +11157,56 @@ impl<'db> StorageManager<'db> {
                 )
             } else {
                 None
-            },
-        }];
-
-        let needs_dependency = if grant {
-            current_dependency.is_none()
-        } else {
-            let prefix = 12u16.to_be_bytes();
-            let mut another_grant = false;
-            for entry in catalog
-                .range(prefix.as_slice()..)
-                .map_err(|error| CommitError::Storage(error.to_string()))?
-            {
-                let (key, _) = entry.map_err(|error| CommitError::Storage(error.to_string()))?;
-                let key = key.value();
-                if !key.starts_with(&prefix) {
-                    break;
-                }
-                if key.len() == 59
-                    && key[2] == 1
-                    && key[3..19] == grantee_id
-                    && key[43..59] == target_id
-                    && key != writes[0].key.as_slice()
-                {
-                    another_grant = true;
-                    break;
-                }
-            }
-            current_dependency.is_some() && !another_grant
-        };
-        if needs_dependency {
-            let edge = new_dependency_write(grantee_id, target_id, 5)
-                .map_err(table_lifecycle_commit_error)?;
+            };
             writes.push(CatalogWrite {
-                expected_value: current_dependency,
-                payload: if grant { edge.payload } else { None },
-                ..edge
+                key: grant_key.clone(),
+                expected_value: current_grant,
+                payload,
             });
+
+            let dependency_key = dependency_catalog_key(grantee_id, *target_id, 5);
+            let current_dependency = catalog
+                .get(dependency_key.as_slice())
+                .map_err(|error| CommitError::Storage(error.to_string()))?
+                .map(|value| value.value().to_vec());
+            let needs_dependency = if grant {
+                current_dependency.is_none()
+            } else {
+                let prefix = 12u16.to_be_bytes();
+                let mut another_grant = false;
+                for entry in catalog
+                    .range(prefix.as_slice()..)
+                    .map_err(|error| CommitError::Storage(error.to_string()))?
+                {
+                    let (key, _) =
+                        entry.map_err(|error| CommitError::Storage(error.to_string()))?;
+                    let key = key.value();
+                    if !key.starts_with(&prefix) {
+                        break;
+                    }
+                    if key.len() == 59
+                        && key[2] == 1
+                        && key[3..19] == grantee_id
+                        && key[43..59] == *target_id
+                        && !grant_keys
+                            .iter()
+                            .any(|grant_key| grant_key.as_slice() == key)
+                    {
+                        another_grant = true;
+                        break;
+                    }
+                }
+                current_dependency.is_some() && !another_grant
+            };
+            if needs_dependency {
+                let edge = new_dependency_write(grantee_id, *target_id, 5)
+                    .map_err(table_lifecycle_commit_error)?;
+                writes.push(CatalogWrite {
+                    expected_value: current_dependency,
+                    payload: if grant { edge.payload } else { None },
+                    ..edge
+                });
+            }
         }
         let updated_principal = rewrite_catalog_u64_field(
             &principal_key,
@@ -11181,7 +11224,8 @@ impl<'db> StorageManager<'db> {
         drop(catalog);
         drop(read);
 
-        audit_event.target_ids = vec![grantee_id, object_id, target_id];
+        audit_event.target_ids = vec![grantee_id, object_id];
+        audit_event.target_ids.extend(target_ids);
         audit_event.target_ids.sort_unstable();
         audit_event.target_ids.dedup();
         self.commit_authorized_object_grant_ddl(

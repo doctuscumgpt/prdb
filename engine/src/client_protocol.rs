@@ -5,7 +5,7 @@ use crate::storage_manager::{AuthenticatedQuerySession, StorageManager};
 use crate::supervisor::StagingOwner;
 use crate::transaction::TransactionError;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use zeroize::{Zeroize, Zeroizing};
 
 pub const CLIENT_FRAME_HEADER_BYTES: usize =
@@ -1017,6 +1017,12 @@ pub fn decode_client_admin_command(
                     {
                         policy_target_column_ids = Some(parser.parse_id_array()?);
                         args.insert(arg, "<structured-ids>".to_owned());
+                    } else if arg == "target_ids" && parser.text.get(parser.offset) == Some(&b'[') {
+                        let target_ids = parser.parse_string_array()?;
+                        if target_ids.len() > 64 {
+                            return Err(ClientControlError::InvalidPrepare);
+                        }
+                        args.insert(arg, target_ids.join(","));
                     } else if arg == "recipients" && parser.text.get(parser.offset) == Some(&b'[') {
                         policy_recipients = Some(parser.parse_policy_recipient_array()?);
                         args.insert(arg, "<structured-recipients>".to_owned());
@@ -2503,19 +2509,50 @@ fn decode_object_grant_prepare(
     let target_scope = args
         .remove("target_scope")
         .ok_or(ClientControlError::MissingKey)?;
-    let target_id = decode_lower_hex_id(
-        &args
-            .remove("target_id")
-            .ok_or(ClientControlError::MissingKey)?,
-    )?;
+    let target = match target_scope.as_str() {
+        "object" => {
+            let target_id = decode_lower_hex_id(
+                &args
+                    .remove("target_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            if target_id != object_id {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            crate::storage_manager::ObjectGrantTarget::Object
+        }
+        "column" => {
+            let target_id = decode_lower_hex_id(
+                &args
+                    .remove("target_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            crate::storage_manager::ObjectGrantTarget::Column(target_id)
+        }
+        "columns" => {
+            let encoded_ids = args
+                .remove("target_ids")
+                .ok_or(ClientControlError::MissingKey)?;
+            let encoded_ids = encoded_ids.split(',').collect::<Vec<_>>();
+            if !(2..=64).contains(&encoded_ids.len()) {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            let mut target_ids = Vec::with_capacity(encoded_ids.len());
+            let mut seen_ids = HashSet::with_capacity(encoded_ids.len());
+            for encoded_id in encoded_ids {
+                let target_id = decode_lower_hex_id(encoded_id)?;
+                if !seen_ids.insert(target_id) {
+                    return Err(ClientControlError::InvalidPrepare);
+                }
+                target_ids.push(target_id);
+            }
+            crate::storage_manager::ObjectGrantTarget::Columns(target_ids)
+        }
+        _ => return Err(ClientControlError::InvalidPrepare),
+    };
     if !args.is_empty() {
         return Err(ClientControlError::UnknownKey);
     }
-    let target = match target_scope.as_str() {
-        "object" if target_id == object_id => crate::storage_manager::ObjectGrantTarget::Object,
-        "column" => crate::storage_manager::ObjectGrantTarget::Column(target_id),
-        _ => return Err(ClientControlError::InvalidPrepare),
-    };
     Ok(ClientAdminCommand::PrepareObjectGrant {
         grantee_id,
         object_id,
