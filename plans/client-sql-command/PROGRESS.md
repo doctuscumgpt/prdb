@@ -586,8 +586,8 @@
 
 ## SQL CHECK integer arithmetic — implemented slice
 
-- `CREATE TABLE` and `ALTER TABLE ... ADD CHECK` expression parsing accepts integer `+`, `-`, `*`, and `%`, including grouped scalar expressions and normal multiplicative precedence shared by `*` and `%`. DDL SQL still uses the separately authenticated control path.
-- Parser/binder and arithmetic regression coverage, including arithmetic precedence, mixed-type rejection, SQL NULL, overflow, zero divisors, and signed modulo overflow, passed. The full serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process coverage enabled, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed; Cargo.lock is unchanged.
+- `CREATE TABLE` and `ALTER TABLE ... ADD CHECK` expression parsing accepts integer `+`, `-`, `*`, `/`, and `%`, including grouped scalar expressions and normal multiplicative precedence shared by `*`, `/`, and `%`. DDL SQL still uses the separately authenticated control path.
+- Parser/binder and arithmetic regression coverage, including arithmetic precedence, mixed-type rejection, SQL NULL, overflow, zero divisors, and signed modulo/division overflow, passed. The full serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process coverage enabled, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed; Cargo.lock is unchanged.
 
 ## Owner invocation usage output — implemented slice
 

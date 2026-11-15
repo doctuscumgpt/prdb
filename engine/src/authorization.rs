@@ -222,6 +222,7 @@ pub enum Expr {
     Subtract(Box<Expr>, Box<Expr>),
     Multiply(Box<Expr>, Box<Expr>),
     Modulo(Box<Expr>, Box<Expr>),
+    Divide(Box<Expr>, Box<Expr>),
     And(Vec<Expr>),
     Or(Vec<Expr>),
     Not(Box<Expr>),
@@ -627,7 +628,8 @@ fn eval(
         Expr::Add(left, right)
         | Expr::Subtract(left, right)
         | Expr::Multiply(left, right)
-        | Expr::Modulo(left, right) => {
+        | Expr::Modulo(left, right)
+        | Expr::Divide(left, right) => {
             let Value::Scalar(left) = child(left, remaining)?;
             let Value::Scalar(right) = child(right, remaining)?;
             let Some((left, right)) = left.zip(right) else {
@@ -658,6 +660,12 @@ fn eval(
                             .ok_or(AuthorizationError::EvaluationFailed)?,
                     )
                 }
+                (Expr::Divide(_, _), ScalarValue::SmallInt(a), ScalarValue::SmallInt(b)) => {
+                    ScalarValue::SmallInt(
+                        a.checked_div(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
                 (Expr::Add(_, _), ScalarValue::Integer(a), ScalarValue::Integer(b)) => {
                     ScalarValue::Integer(
                         a.checked_add(b)
@@ -682,6 +690,12 @@ fn eval(
                             .ok_or(AuthorizationError::EvaluationFailed)?,
                     )
                 }
+                (Expr::Divide(_, _), ScalarValue::Integer(a), ScalarValue::Integer(b)) => {
+                    ScalarValue::Integer(
+                        a.checked_div(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
                 (Expr::Add(_, _), ScalarValue::BigInt(a), ScalarValue::BigInt(b)) => {
                     ScalarValue::BigInt(
                         a.checked_add(b)
@@ -703,6 +717,12 @@ fn eval(
                 (Expr::Modulo(_, _), ScalarValue::BigInt(a), ScalarValue::BigInt(b)) => {
                     ScalarValue::BigInt(
                         a.checked_rem(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
+                (Expr::Divide(_, _), ScalarValue::BigInt(a), ScalarValue::BigInt(b)) => {
+                    ScalarValue::BigInt(
+                        a.checked_div(b)
                             .ok_or(AuthorizationError::EvaluationFailed)?,
                     )
                 }

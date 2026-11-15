@@ -1012,8 +1012,8 @@
 
 ## SQL CHECK integer arithmetic — implemented slice
 
-- The typed SQL CHECK binder accepts same-type SMALLINT, INTEGER, and BIGINT `+`, `-`, `*`, and `%` expressions and emits bounded EIR1 version 3 nodes (reading versions 1 and 2). NULL operands preserve SQL null propagation; overflow, modulo by zero, and signed modulo overflow fail closed during CHECK evaluation. The decoder remains compatible with EIR1 versions 1 and 2.
-- Regression coverage checks parser precedence/type binding, checked evaluation, NULL propagation, overflow failure, and EIR v1/v2 decode and v3 round-trip compatibility, including rejection of modulo under v2. Focused regressions and the full serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process coverage enabled, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed; Cargo.lock is unchanged.
+- The typed SQL CHECK binder accepts same-type SMALLINT, INTEGER, and BIGINT `+`, `-`, `*`, `/`, and `%` expressions and emits bounded EIR1 version 4 nodes (reading versions 1–3). NULL operands preserve SQL null propagation; overflow, zero divisors, and signed arithmetic overflow fail closed during CHECK evaluation. The decoder remains compatible with EIR1 versions 1–3.
+- Regression coverage checks parser precedence/type binding, checked evaluation, NULL propagation, overflow failure, and EIR v1–v3 decode and v4 round-trip compatibility, including rejection of modulo under v2 and division under v3. Focused regressions and the full serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process coverage enabled, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed; Cargo.lock is unchanged.
 
 ## Owner invocation usage fields — implemented slice
 

@@ -952,3 +952,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - SQL CHECK binding accepts `%` for same-type SMALLINT, INTEGER, and BIGINT operands at the same multiplicative precedence as `*`. NULL propagates; division by zero and signed minimum modulo `-1` fail closed as evaluation errors.
 - EIR1 now writes version 3 and decodes versions 1 and 2; modulo opcode 29 is version 3 only. Catalog expression metadata remains version 1. Focused SQL binding, evaluator, and codec regressions passed. The complete serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored); workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. Cargo.lock is unchanged.
+
+## DS-SQL-66: integer division in CHECK expressions — implemented
+
+- SQL CHECK binding accepts `/` for same-type SMALLINT, INTEGER, and BIGINT operands at multiplicative precedence with `*` and `%`. Division truncates toward zero; NULL propagates; zero divisors and signed minimum divided by `-1` fail closed. DECIMAL division remains unsupported.
+- EIR1 now writes version 4 and decodes versions 1–3; division opcode 30 is version 4 only. Catalog expression metadata remains version 1. Focused SQL binding, evaluator, and codec regressions passed. The complete serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored); workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. Cargo.lock is unchanged.

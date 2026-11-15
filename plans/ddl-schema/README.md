@@ -43,3 +43,4 @@ Fix bounded DDL text/structured schemas, normalized identifier limits, scalar wi
 ## Acceptance and Handoff
 
 Use actual administrative prepare/start/status operations and real redb data. Cover default changes versus backfill, duplicate/existence checks after authority, graph races, hidden constraint diagnostics, old readers after rename/drop and crash/reopen during publication. Initial scope is incomplete without unique/FK constraints and the supported DDL forms. First behavior: one authorized schema/table creation and a denied control request, once minimal identity/catalog plumbing exists.
+| DS-SQL-66 | CHECK constraints can express bounded integer quotients | Add same-type SMALLINT/INTEGER/BIGINT `/` expressions at multiplicative precedence, truncate toward zero, propagate NULL, fail closed on zero divisors and signed overflow, and extend EIR compatibility while keeping DECIMAL arithmetic out of scope |

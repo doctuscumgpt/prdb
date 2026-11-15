@@ -136,6 +136,52 @@ fn check_constraints_evaluate_checked_integer_arithmetic_and_propagate_null() {
         ),
         Err(AuthorizationError::EvaluationFailed)
     );
+
+    let integer_quotient = Expr::Equal(
+        Box::new(Expr::Divide(
+            Box::new(Expr::Field(0)),
+            Box::new(Expr::Literal(Some(ScalarValue::Integer(2)))),
+        )),
+        Box::new(Expr::Literal(Some(ScalarValue::Integer(2)))),
+    );
+    assert_eq!(
+        check_constraint_passes(&integer_quotient, &[Some(ScalarValue::Integer(5))], &ctx),
+        Ok(true)
+    );
+    assert_eq!(
+        check_constraint_passes(&integer_quotient, &[Some(ScalarValue::Integer(-5))], &ctx),
+        Ok(false)
+    );
+    assert_eq!(
+        check_constraint_passes(&integer_quotient, &[None], &ctx),
+        Ok(true)
+    );
+    let divide_by_zero = Expr::Equal(
+        Box::new(Expr::Divide(
+            Box::new(Expr::Field(0)),
+            Box::new(Expr::Literal(Some(ScalarValue::Integer(0)))),
+        )),
+        Box::new(Expr::Literal(Some(ScalarValue::Integer(0)))),
+    );
+    assert_eq!(
+        check_constraint_passes(&divide_by_zero, &[Some(ScalarValue::Integer(4))], &ctx),
+        Err(AuthorizationError::EvaluationFailed)
+    );
+    let signed_overflow = Expr::Equal(
+        Box::new(Expr::Divide(
+            Box::new(Expr::Field(0)),
+            Box::new(Expr::Literal(Some(ScalarValue::Integer(-1)))),
+        )),
+        Box::new(Expr::Literal(Some(ScalarValue::Integer(0)))),
+    );
+    assert_eq!(
+        check_constraint_passes(
+            &signed_overflow,
+            &[Some(ScalarValue::Integer(i32::MIN))],
+            &ctx
+        ),
+        Err(AuthorizationError::EvaluationFailed)
+    );
 }
 
 #[test]

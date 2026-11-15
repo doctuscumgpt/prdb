@@ -4,7 +4,7 @@ use crate::catalog::decode_registered_envelope;
 use crate::tuple::{ColumnSchema, ScalarType, ScalarValue, encode_tuple};
 
 const MAGIC: &[u8; 4] = b"EIR1";
-const VERSION: u16 = 3;
+const VERSION: u16 = 4;
 const CATALOG_VERSION: u32 = 1;
 const HEADER_LEN: usize = 8;
 pub const MAX_EXPRESSION_BYTES: usize = 256 * 1024;
@@ -66,7 +66,8 @@ pub fn is_row_local_expression(expression: &Expr) -> bool {
         | Expr::Add(left, right)
         | Expr::Subtract(left, right)
         | Expr::Multiply(left, right)
-        | Expr::Modulo(left, right) => {
+        | Expr::Modulo(left, right)
+        | Expr::Divide(left, right) => {
             is_row_local_expression(left) && is_row_local_expression(right)
         }
         Expr::And(expressions) | Expr::Or(expressions) => {
@@ -220,7 +221,8 @@ fn infer_type(
         Expr::Add(left, right)
         | Expr::Subtract(left, right)
         | Expr::Multiply(left, right)
-        | Expr::Modulo(left, right) => {
+        | Expr::Modulo(left, right)
+        | Expr::Divide(left, right) => {
             let left_type = child(left, dependencies, remaining)?;
             let right_type = child(right, dependencies, remaining)?;
             let arithmetic_type = match (left_type, right_type) {
@@ -571,6 +573,7 @@ impl Encoder {
             Expr::Subtract(left, right) => self.binary(27, left, right, depth),
             Expr::Multiply(left, right) => self.binary(28, left, right, depth),
             Expr::Modulo(left, right) => self.binary(29, left, right, depth),
+            Expr::Divide(left, right) => self.binary(30, left, right, depth),
             Expr::And(expressions) => self.children(22, expressions, depth),
             Expr::Or(expressions) => self.children(23, expressions, depth),
             Expr::Not(child) => {
@@ -747,6 +750,7 @@ impl Decoder<'_> {
             27 if self.version >= 2 => self.binary(Expr::Subtract, depth),
             28 if self.version >= 2 => self.binary(Expr::Multiply, depth),
             29 if self.version >= 3 => self.binary(Expr::Modulo, depth),
+            30 if self.version >= 4 => self.binary(Expr::Divide, depth),
             _ => Err(ExpressionCodecError::InvalidEncoding),
         }
     }

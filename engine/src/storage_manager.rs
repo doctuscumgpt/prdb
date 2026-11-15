@@ -7445,7 +7445,8 @@ impl<'db> StorageManager<'db> {
                 | Expr::Add(left, right)
                 | Expr::Subtract(left, right)
                 | Expr::Multiply(left, right)
-                | Expr::Modulo(left, right) => {
+                | Expr::Modulo(left, right)
+                | Expr::Divide(left, right) => {
                     collect_check_dependencies(left, column_ids, dependencies)?;
                     collect_check_dependencies(right, column_ids, dependencies)?;
                 }
@@ -13824,7 +13825,8 @@ fn policy_expression_dependencies(
             | Expr::Add(left, right)
             | Expr::Subtract(left, right)
             | Expr::Multiply(left, right)
-            | Expr::Modulo(left, right) => {
+            | Expr::Modulo(left, right)
+            | Expr::Divide(left, right) => {
                 visit(left, column_ids, dependencies)?;
                 visit(right, column_ids, dependencies)?;
             }
