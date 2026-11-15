@@ -457,8 +457,8 @@ pub enum ClientAdminRead {
         name: String,
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
     },
-    ResolveTableAlterIdentityName {
-        table_id: [u8; 16],
+    ResolveAlterIdentityName {
+        object_id: [u8; 16],
         name: String,
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
     },
@@ -543,8 +543,8 @@ pub enum ClientAdminCommand {
         name: String,
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
     },
-    ResolveTableAlterIdentityName {
-        table_id: [u8; 16],
+    ResolveAlterIdentityName {
+        object_id: [u8; 16],
         name: String,
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
     },
@@ -816,12 +816,12 @@ pub fn decode_client_admin_read(payload: &[u8]) -> Result<ClientAdminRead, Clien
             name,
             kind,
         }),
-        ClientAdminCommand::ResolveTableAlterIdentityName {
-            table_id,
+        ClientAdminCommand::ResolveAlterIdentityName {
+            object_id,
             name,
             kind,
-        } => Ok(ClientAdminRead::ResolveTableAlterIdentityName {
-            table_id,
+        } => Ok(ClientAdminRead::ResolveAlterIdentityName {
+            object_id,
             name,
             kind,
         }),
@@ -1191,7 +1191,7 @@ pub fn decode_client_admin_command(
         }
         Some("read")
             if version == Some(1)
-                && operation.as_deref() == Some("metadata.table_alter_identities.resolve") =>
+                && operation.as_deref() == Some("metadata.alter_identities.resolve") =>
         {
             if operation_id.is_some() || seen.len() != 4 {
                 return Err(ClientControlError::UnknownKey);
@@ -1200,22 +1200,23 @@ pub fn decode_client_admin_command(
             if args.len() != 3 {
                 return Err(ClientControlError::UnknownKey);
             }
-            let table_id = decode_lower_hex_id(
+            let object_id = decode_lower_hex_id(
                 &args
-                    .remove("table_id")
+                    .remove("object_id")
                     .ok_or(ClientControlError::MissingKey)?,
             )?;
             let name = args.remove("name").ok_or(ClientControlError::MissingKey)?;
             let kind = match args.remove("kind").as_deref() {
                 Some("user") => crate::metadata_discovery::AdministrativeIdentityKind::User,
                 Some("role") => crate::metadata_discovery::AdministrativeIdentityKind::Role,
+                Some("either") => crate::metadata_discovery::AdministrativeIdentityKind::Either,
                 _ => return Err(ClientControlError::InvalidPrepare),
             };
-            if !args.is_empty() || table_id == [0; 16] {
+            if !args.is_empty() || object_id == [0; 16] {
                 return Err(ClientControlError::InvalidPrepare);
             }
-            Ok(ClientAdminCommand::ResolveTableAlterIdentityName {
-                table_id,
+            Ok(ClientAdminCommand::ResolveAlterIdentityName {
+                object_id,
                 name,
                 kind,
             })
@@ -4428,8 +4429,8 @@ impl ClientConnectionSession {
                 };
                 self.json_response(request.request_id, payload.into_bytes())
             }
-            ClientAdminCommand::ResolveTableAlterIdentityName {
-                table_id,
+            ClientAdminCommand::ResolveAlterIdentityName {
+                object_id,
                 name,
                 kind,
             } => {
@@ -4443,10 +4444,10 @@ impl ClientConnectionSession {
                     .as_ref()
                     .ok_or(ClientSessionError::AuthenticationRequired)?;
                 let identity_id = storage
-                    .resolve_token_table_alter_identity_name(
+                    .resolve_token_alter_identity_name(
                         token_id,
                         token_secret,
-                        table_id,
+                        object_id,
                         &name,
                         kind,
                     )

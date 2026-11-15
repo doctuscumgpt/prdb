@@ -3683,22 +3683,20 @@ impl AdminClient {
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)
     }
 
-    fn resolve_table_alter_identity_sql_name(
+    fn resolve_alter_identity_sql_name(
         &mut self,
-        table_id: [u8; 16],
+        object_id: [u8; 16],
         name: &str,
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
     ) -> Result<[u8; 16], ClientSubmitError> {
         let kind = match kind {
             crate::metadata_discovery::AdministrativeIdentityKind::User => "user",
             crate::metadata_discovery::AdministrativeIdentityKind::Role => "role",
-            crate::metadata_discovery::AdministrativeIdentityKind::Either => {
-                return Err(ClientSubmitError::InvalidAdministrativeRequest);
-            }
+            crate::metadata_discovery::AdministrativeIdentityKind::Either => "either",
         };
         let payload = format!(
-            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"metadata.table_alter_identities.resolve\",\"arguments\":{{\"table_id\":\"{}\",\"name\":\"{name}\",\"kind\":\"{kind}\"}}}}",
-            lower_hex(&table_id)
+            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"metadata.alter_identities.resolve\",\"arguments\":{{\"object_id\":\"{}\",\"name\":\"{name}\",\"kind\":\"{kind}\"}}}}",
+            lower_hex(&object_id)
         );
         let response = self.transport.exchange(10, payload.into_bytes())?;
         let fields = parse_flat_response(&response.payload)?;
@@ -4219,7 +4217,8 @@ impl AdminClient {
                 crate::metadata_discovery::AdministrativeIdentityKind::Either
             }
         };
-        let owner_id = self.resolve_identity_sql_name(&statement.owner_name, kind)?;
+        let owner_id =
+            self.resolve_alter_identity_sql_name(schema_id, &statement.owner_name, kind)?;
         self.set_schema_owner(schema_id, owner_id)
     }
 
@@ -4819,7 +4818,7 @@ impl AdminClient {
             }
         };
         let owner_id =
-            self.resolve_table_alter_identity_sql_name(table_id, &statement.owner_name, kind)?;
+            self.resolve_alter_identity_sql_name(table_id, &statement.owner_name, kind)?;
         self.set_table_owner(table_id, owner_id)
     }
 

@@ -827,11 +827,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 ## DS-SQL-43: ALTER-authorized table owner-name binding — verified
 
-- Added a request-scoped `metadata.table_alter_identities.resolve` lookup. It returns a destination USER/ROLE ID only to the target table owner, inherited owner, effective table/schema ALTER grantee, or database administrator; typed owner transfer still revalidates.
-- The SQL lifecycle now attempts owner transfer as the table ALTER grantee after typed transfer and ownership restoration. The delegated gateway/supervisor process test exercises this SQL form as an ALTER grantee. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
-
-
-## DS-SQL-43: ALTER-authorized table owner-name binding — verified
-
 - Added authenticated table-scoped USER/ROLE name resolution for `ALTER TABLE ... OWNER TO`. The lookup grants no identity listing and returns the same absent result for unknown names or actors without table owner/ALTER/database-admin authority; typed mutation rechecks authorization and destination state.
 - The delegated gateway/supervisor lifecycle grants table ALTER, performs name-based SQL owner transfer as that grantee, revokes ALTER, then confirms the transferred owner retains catalog DDL visibility. The focused process test, workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## DS-SQL-44: ALTER-authorized schema owner-name binding — verified
+
+- Generalized `metadata.alter_identities.resolve` to schema and table object IDs. Schema owners and effective schema ALTER grantees can bind SQL destination owner names without global identity-management authority; typed operations continue to revalidate the change.
+- The delegated gateway/supervisor lifecycle grants schema ALTER and transfers schema ownership through `admin-sql` as that grantee. The process test, workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

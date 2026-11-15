@@ -926,3 +926,8 @@
 
 - Updated the `admin-sql` client contract for target-scoped owner identity resolution. The destination name lookup is limited to the target table's owner/ALTER/database-admin authority.
 - Verified with the delegated gateway/supervisor SQL lifecycle; workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## DS-SQL-44: ALTER-authorized schema owner-name binding — verified
+
+- Updated the SDK command contract to scope named schema-owner transfer resolution to the target schema's owner/ALTER/database-admin authority.
+- Verified with the delegated gateway/supervisor lifecycle and workspace build/format/Clippy checks; `git diff --check` passes and Cargo.lock is unchanged.

@@ -1118,3 +1118,8 @@
 
 - Added a token-authenticated storage entry point that resolves one USER/ROLE name only after checking table ownership, inherited owner membership, table/schema ALTER, or database-admin authority. The existing owner-transfer mutation remains authoritative and revalidates the operation.
 - Verified through the delegated gateway/supervisor SQL lifecycle and workspace build/format/Clippy checks; `git diff --check` passes and Cargo.lock is unchanged.
+
+## DS-SQL-44: schema-scoped owner identity resolution — verified
+
+- Generalized the authenticated storage lookup to accept a schema or table object ID and check the matching ownership/schema/table ALTER authority before resolving one destination identity.
+- Verified through the real delegated schema owner-transfer SQL path and workspace build/format/Clippy checks; `git diff --check` passes and Cargo.lock is unchanged.

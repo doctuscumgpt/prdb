@@ -3265,14 +3265,14 @@ impl<'db> StorageManager<'db> {
         transaction.resolve_catalog_policy_identity_name(schema_id, table_id, name, kind)
     }
 
-    /// Resolve a USER or ROLE name only for an authenticated table ALTER
-    /// grantee, owner, or database administrator. Owner transfer rechecks
-    /// current authority at mutation time.
-    pub fn resolve_token_table_alter_identity_name(
+    /// Resolve a USER or ROLE name only for an authenticated schema/table
+    /// ALTER grantee, owner, or database administrator. Owner transfer
+    /// rechecks current authority at mutation time.
+    pub fn resolve_token_alter_identity_name(
         &self,
         token_id: [u8; 16],
         token_secret: &[u8; TOKEN_SECRET_BYTES],
-        table_id: [u8; 16],
+        object_id: [u8; 16],
         name: &str,
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
     ) -> Result<Option<[u8; 16]>, TransactionError> {
@@ -3294,7 +3294,7 @@ impl<'db> StorageManager<'db> {
         )?;
         let now_us = now_unix_micros().ok_or(TransactionError::ClockUnavailable)?;
         transaction.authenticate_credential_token(token_id, token_secret, now_us)?;
-        transaction.resolve_catalog_table_alter_identity_name(table_id, name, kind)
+        transaction.resolve_catalog_alter_identity_name(object_id, name, kind)
     }
 
     /// Resolve a grant recipient within the authenticated grant authority of

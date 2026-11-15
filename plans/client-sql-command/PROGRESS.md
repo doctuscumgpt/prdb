@@ -509,11 +509,10 @@
 
 ## DS-SQL-43: ALTER-authorized table owner-name binding — verified
 
-- `ALTER TABLE ... OWNER TO USER|ROLE name` now binds the destination identity through target table ALTER authority, then uses the existing typed mutation.
-- Updated the command contract. Delegated gateway/supervisor coverage, workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
-
-
-## DS-SQL-43: ALTER-authorized table owner-name binding — verified
-
 - `ALTER TABLE ... OWNER TO USER|ROLE name` now resolves the destination identity under the target table's ALTER authority, then dispatches the existing typed mutation.
 - The delegated gateway/supervisor process test exercises the SQL form as a table ALTER grantee. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## DS-SQL-44: ALTER-authorized schema owner-name binding — verified
+
+- `ALTER SCHEMA ... OWNER TO name|USER name|ROLE name` now resolves destinations with the same schema-scoped authority used by schema ownership mutation.
+- The delegated gateway/supervisor process test exercises the SQL transfer as a schema ALTER grantee. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

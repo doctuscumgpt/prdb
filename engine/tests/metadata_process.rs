@@ -2539,6 +2539,9 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&schema_transfer_command.stdout).contains("changed schema owner")
     );
     let schema_owner_sql_path = root.join("schema-owner.sql");
+    admin.execute_object_privilege_sql(
+        "GRANT ALTER ON SCHEMA process_admin_schema TO USER process_table_owner_renamed",
+    )?;
     std::fs::write(
         &schema_owner_sql_path,
         "ALTER SCHEMA process_admin_schema OWNER TO process_table_owner_renamed;",
@@ -2549,7 +2552,9 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             "--address",
             &address_text,
             "--credentials",
-            admin_cli_credentials,
+            transfer_credential_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
             "--sql-file",
             schema_owner_sql_path
                 .to_str()
@@ -2564,6 +2569,9 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     assert!(
         String::from_utf8_lossy(&schema_owner_sql_command.stdout).contains("changed schema owner")
     );
+    admin.execute_object_privilege_sql(
+        "REVOKE ALTER ON SCHEMA process_admin_schema FROM USER process_table_owner_renamed",
+    )?;
     std::fs::write(
         &schema_owner_sql_path,
         "CREATE SCHEMA IF NOT EXISTS process_sql_owned AUTHORIZATION process_table_owner_renamed;",

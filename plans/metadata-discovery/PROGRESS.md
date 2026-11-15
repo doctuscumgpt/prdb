@@ -242,11 +242,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 ## DS-SQL-43: table ALTER-scoped identity resolution — verified
 
-- Added a bounded request-scoped metadata operation to resolve a destination USER/ROLE name under effective table ALTER authority. Unauthorized and absent identities share a non-disclosing result; no identity list or principal fields are returned.
-- Updated the metadata discovery contract. The delegated gateway/supervisor process test exercises the new protocol operation. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
-
-
-## DS-SQL-43: table ALTER-scoped identity resolution — verified
-
 - Added `metadata.table_alter_identities.resolve` to resolve one destination USER/ROLE ID under target table owner/effective ALTER/database-admin authority. Unknown identities and insufficient target authority are non-disclosing; no identity listing or extra principal fields are returned.
 - The real delegated process test exercises the protocol as an ALTER grantee. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## DS-SQL-44: schema ALTER-scoped identity resolution — verified
+
+- Generalized the non-enumerating owner-name resolver to schema and table object scopes. Effective schema ALTER authority now permits the same target-scoped USER/ROLE resolution as table ALTER authority; untyped schema owners use the global unique-name index under that scope.
+- The delegated process test exercises schema owner-name resolution as a schema ALTER grantee. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
