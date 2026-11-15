@@ -426,3 +426,8 @@
 
 - Added `prdb-client grant-list` over the existing authenticated `metadata.grants.list` pages. The JSON includes direct grantee/grantor IDs, privilege, target scope, and target ID; it does not expand role inheritance or expose names.
 - A gateway/supervisor regression invokes the CLI after a real grant and checks the returned grantor, grantee, privilege, and column target. The red process run failed because `grant-list` was not a recognized command; the updated focused gateway/supervisor lifecycle passes and checks the grantee ID, grantor ID, privilege, and column target. Workspace build, format, warning-denied Clippy, cgroup probe with writable `cpu memory pids`, and full serial delegated-cgroup workspace suite passed with zero ignored tests; see [metadata discovery progress](../metadata-discovery/PROGRESS.md). Cargo.lock is unchanged.
+
+## Policy summary CLI — verified
+
+- Added `prdb-client policy-list` over the existing authorized policy metadata pages. Its JSON includes policy IDs, kind, operation, effect, target columns, and only the recipients allowed by the authenticated API; expression bodies are omitted.
+- The initial red run failed because `policy-list` was not recognized. A follow-up showed that the table owner lacks schema-level policy discovery authority and receives the API's empty page; the production regression uses the authorized schema administrator and verifies row/cell summaries, recipient IDs, and expression-body absence. The focused delegated process test passed. Workspace build, format, warning-denied Clippy, delegated cgroup probe, and full serial delegated-cgroup suite passed with zero ignored tests; see [metadata discovery progress](../metadata-discovery/PROGRESS.md). Cargo.lock is unchanged.

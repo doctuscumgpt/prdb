@@ -57,6 +57,7 @@ Token secrets are saved only to mode-0600 credential files and are never printed
   prdb-client constraint-list --address IP:PORT --credentials ADMIN_FILE --schema-id HEX --table-id HEX\n\
   prdb-client index-list --address IP:PORT --credentials ADMIN_FILE --schema-id HEX --table-id HEX\n\
   prdb-client grant-list --address IP:PORT --credentials ADMIN_FILE --schema-id HEX --table-id HEX\n\
+  prdb-client policy-list --address IP:PORT --credentials ADMIN_FILE --schema-id HEX --table-id HEX\n\
   prdb-client runtime-list --address IP:PORT --credentials ADMIN_FILE\n\
     [--limit N] [--cursor HEX]\n\n\
   prdb-client audit-list --address IP:PORT --credentials ADMIN_FILE\n\
@@ -177,6 +178,7 @@ fn run() -> Result<(), String> {
         "constraint-list" => constraint_list(address, credentials_path, &mut fields),
         "index-list" => index_list(address, credentials_path, &mut fields),
         "grant-list" => grant_list(address, credentials_path, &mut fields),
+        "policy-list" => policy_list(address, credentials_path, &mut fields),
         "runtime-list" => runtime_list(address, credentials_path, &mut fields),
         "audit-list" => audit_list(address, credentials_path, &mut fields),
         "schema-create" | "schema-rename" | "schema-drop" | "schema-owner-set" | "table-create"
@@ -2543,6 +2545,93 @@ fn grant_list(
                 json_string(grant.target_scope.as_wire_name()),
                 json_string(&lower_hex(&grant.target_id)),
             );
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    println!("]}}");
+    Ok(())
+}
+
+fn policy_list(
+    address: SocketAddr,
+    credentials_path: PathBuf,
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<(), String> {
+    let schema_id = parse_id(&take_text(fields, "--schema-id")?)?;
+    let table_id = parse_id(&take_text(fields, "--table-id")?)?;
+    reject_unknown(fields)?;
+    let mut administrator =
+        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
+    let mut client = AdminClient::connect_authenticated(
+        address,
+        administrator.token_id,
+        &mut administrator.token_secret,
+    )
+    .map_err(|error| error.to_string())?;
+    print!("{{\"policies\":[");
+    let mut first_policy = true;
+    let mut cursor = None;
+    loop {
+        let page = client
+            .list_policies_page(schema_id, table_id, 128, cursor.as_deref())
+            .map_err(|error| error.to_string())?;
+        for policy in &page.records {
+            if !first_policy {
+                print!(",");
+            }
+            first_policy = false;
+            let kind = match policy.kind {
+                prdb_engine::metadata_discovery::AdministrativePolicyKind::Row => "row",
+                prdb_engine::metadata_discovery::AdministrativePolicyKind::Cell => "cell",
+            };
+            let operation = match policy.operation {
+                prdb_engine::metadata_discovery::AdministrativePolicyOperation::Select => "select",
+                prdb_engine::metadata_discovery::AdministrativePolicyOperation::Insert => "insert",
+                prdb_engine::metadata_discovery::AdministrativePolicyOperation::Update => "update",
+                prdb_engine::metadata_discovery::AdministrativePolicyOperation::Delete => "delete",
+            };
+            let effect = match policy.effect {
+                prdb_engine::metadata_discovery::AdministrativePolicyEffect::Allow => "allow",
+                prdb_engine::metadata_discovery::AdministrativePolicyEffect::Restrict => "restrict",
+            };
+            print!(
+                "{{\"policy_id\":{},\"kind\":{},\"operation\":{},\"effect\":{},\"column_ids\":[",
+                json_string(&lower_hex(&policy.policy_id)),
+                json_string(kind),
+                json_string(operation),
+                json_string(effect),
+            );
+            for (column_index, column_id) in policy.column_ids.iter().enumerate() {
+                if column_index != 0 {
+                    print!(",");
+                }
+                print!("{}", json_string(&lower_hex(column_id)));
+            }
+            print!("],\"recipients\":");
+            match &policy.recipients {
+                Some(recipients) => {
+                    print!("[");
+                    for (recipient_index, recipient) in recipients.iter().enumerate() {
+                        if recipient_index != 0 {
+                            print!(",");
+                        }
+                        let recipient_kind = match recipient.kind {
+                            prdb_engine::metadata_discovery::AdministrativePolicyRecipientKind::User => "user",
+                            prdb_engine::metadata_discovery::AdministrativePolicyRecipientKind::Role => "role",
+                        };
+                        print!(
+                            "{{\"kind\":{},\"principal_id\":{}}}",
+                            json_string(recipient_kind),
+                            json_string(&lower_hex(&recipient.principal_id)),
+                        );
+                    }
+                    print!("]}}");
+                }
+                None => print!("null}}"),
+            }
         }
         cursor = page.next_cursor;
         if cursor.is_none() {

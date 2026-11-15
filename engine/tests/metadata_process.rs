@@ -3611,6 +3611,37 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&create_cell_policy_sql.stderr)
     );
     assert!(String::from_utf8_lossy(&create_cell_policy_sql.stdout).contains("created policy"));
+    let policy_list_schema = encode_id_hex(&created_schema.identity_id);
+    let policy_list_table = encode_id_hex(&created_table.table_id);
+    let policy_list_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "policy-list",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("policy-list credentials path is not UTF-8")?,
+            "--schema-id",
+            &policy_list_schema,
+            "--table-id",
+            &policy_list_table,
+        ])
+        .output()?;
+    assert!(
+        policy_list_cli.status.success(),
+        "policy-list CLI failed: {}",
+        String::from_utf8_lossy(&policy_list_cli.stderr)
+    );
+    let policy_list_json = String::from_utf8_lossy(&policy_list_cli.stdout);
+    assert!(
+        policy_list_json.contains("\"kind\":\"row\""),
+        "policy-list omitted row policy summary: {policy_list_json}"
+    );
+    assert!(policy_list_json.contains("\"kind\":\"cell\""));
+    assert!(policy_list_json.contains(&encode_id_hex(&admin_user_id)));
+    assert!(policy_list_json.contains(&encode_id_hex(&policy_role.identity_id)));
+    assert!(!policy_list_json.contains("HAS_ROLE"));
     let original_policy_ids = admin
         .list_policies_page(created_schema.identity_id, created_table.table_id, 64, None)?
         .records

@@ -204,3 +204,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## Grant provenance `prdb-client` projection — verified
 
 - The existing authorized `metadata.grants.list` client page now has a `grant-list` CLI projection that follows connection-local pages and returns direct grants with grantor IDs, without principal names or inherited-grant expansion. The production process regression verifies a real column grant. The focused gateway/supervisor CLI regression passed and verifies direct grantor/grantee provenance without names. Workspace build, format, warning-denied Clippy, cgroup probe, full serial delegated-cgroup workspace suite, and `git diff --check` passed; see [client SQL command progress](../client-sql-command/PROGRESS.md). Cargo.lock is unchanged.
+
+## Policy summary `prdb-client` projection — verified
+
+- The existing `metadata.policies.list` page now has a `policy-list` CLI projection that follows connection-local pages and preserves the API's recipient redaction. It never returns expression identifiers or bodies. A production process regression exercises administrator visibility, including row/cell summaries, recipient IDs, and omission of expression bodies; a table-owner attempt receives the server's empty result.
+- The focused process regression, workspace build, format, warning-denied Clippy, delegated cgroup probe, and full serial delegated-cgroup suite passed; see [client SQL command progress](../client-sql-command/PROGRESS.md). Cargo.lock is unchanged.
