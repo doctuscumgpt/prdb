@@ -3030,6 +3030,39 @@ impl AdminClient {
         }
     }
 
+    /// Rename a user or role through SQL, resolving its current catalog name
+    /// through the authenticated, non-enumerating identity lookup.
+    pub fn execute_rename_identity_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_rename_identity(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let kind = match statement.kind {
+            crate::ddl_sql::CreateIdentityKind::User => "user",
+            crate::ddl_sql::CreateIdentityKind::Role => "role",
+        };
+        let payload = format!(
+            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"metadata.identities.resolve\",\"arguments\":{{\"name\":\"{}\",\"kind\":\"{kind}\"}}}}",
+            statement.old_name
+        );
+        let response = self.transport.exchange(10, payload.into_bytes())?;
+        let fields = parse_flat_response(&response.payload)?;
+        if fields.len() != 1 {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        let identity_id = response_id(&fields, "identity_id")
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        match statement.kind {
+            crate::ddl_sql::CreateIdentityKind::User => {
+                self.rename_user(identity_id, &statement.new_name)
+            }
+            crate::ddl_sql::CreateIdentityKind::Role => {
+                self.rename_role(identity_id, &statement.new_name)
+            }
+        }
+    }
+
     /// Execute the supported SQL `CREATE TABLE` subset through the
     /// authenticated administrative control channel. The SQL is parsed locally
     /// into the same typed operation as `create_table`; storage remains the

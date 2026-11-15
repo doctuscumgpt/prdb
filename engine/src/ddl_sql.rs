@@ -164,6 +164,13 @@ pub struct CreateIdentitySql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RenameIdentitySql {
+    pub kind: CreateIdentityKind,
+    pub old_name: String,
+    pub new_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckExpressionSql {
     Column(String),
     Literal(CheckLiteralSql),
@@ -502,6 +509,29 @@ pub fn parse_create_identity(sql: &str) -> Result<CreateIdentitySql, DdlSqlError
         kind,
         name,
         login_enabled,
+    })
+}
+
+/// Parse `ALTER USER|ROLE old_name RENAME TO new_name`.
+pub fn parse_rename_identity(sql: &str) -> Result<RenameIdentitySql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    let kind = if parser.peek_word("user") {
+        parser.word("user")?;
+        CreateIdentityKind::User
+    } else {
+        parser.word("role")?;
+        CreateIdentityKind::Role
+    };
+    let old_name = parser.identifier()?;
+    parser.word("rename")?;
+    parser.word("to")?;
+    let new_name = parser.identifier()?;
+    finish_statement(&mut parser)?;
+    Ok(RenameIdentitySql {
+        kind,
+        old_name,
+        new_name,
     })
 }
 
@@ -2273,6 +2303,34 @@ mod tests {
                 .unwrap()
                 .login_enabled
         );
+    }
+
+    #[test]
+    fn parses_bounded_identity_rename_sql() {
+        assert_eq!(
+            parse_rename_identity("ALTER USER analyst RENAME TO analyst_admin;").unwrap(),
+            RenameIdentitySql {
+                kind: CreateIdentityKind::User,
+                old_name: "analyst".into(),
+                new_name: "analyst_admin".into(),
+            }
+        );
+        assert_eq!(
+            parse_rename_identity("ALTER ROLE reporting RENAME TO report_readers").unwrap(),
+            RenameIdentitySql {
+                kind: CreateIdentityKind::Role,
+                old_name: "reporting".into(),
+                new_name: "report_readers".into(),
+            }
+        );
+        for sql in [
+            "ALTER USER RENAME TO analyst_admin",
+            "ALTER USER analyst RENAME analyst_admin",
+            "ALTER USER analyst RENAME TO app.analyst_admin",
+            "ALTER USER analyst RENAME TO analyst_admin; DROP USER other RESTRICT",
+        ] {
+            assert!(parse_rename_identity(sql).is_err(), "accepted {sql}");
+        }
     }
 
     #[test]

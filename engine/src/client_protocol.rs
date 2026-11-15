@@ -445,6 +445,10 @@ struct MetadataPagination {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClientAdminRead {
+    ResolveIdentityName {
+        name: String,
+        kind: crate::metadata_discovery::AdministrativeIdentityKind,
+    },
     ListSchemas,
     ListSchemasPage {
         page_limit: usize,
@@ -509,6 +513,10 @@ pub enum ClientAdminRead {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClientAdminCommand {
+    ResolveIdentityName {
+        name: String,
+        kind: crate::metadata_discovery::AdministrativeIdentityKind,
+    },
     ListSchemas,
     ListSchemasPage {
         page_limit: usize,
@@ -746,6 +754,9 @@ pub enum ClientAdminCommand {
 /// Decode the versioned, read-only ADMIN envelope and its first supported operation.
 pub fn decode_client_admin_read(payload: &[u8]) -> Result<ClientAdminRead, ClientControlError> {
     match decode_client_admin_command(payload)? {
+        ClientAdminCommand::ResolveIdentityName { name, kind } => {
+            Ok(ClientAdminRead::ResolveIdentityName { name, kind })
+        }
         ClientAdminCommand::ListSchemas => Ok(ClientAdminRead::ListSchemas),
         ClientAdminCommand::ListSchemasPage { page_limit, cursor } => {
             Ok(ClientAdminRead::ListSchemasPage { page_limit, cursor })
@@ -1027,6 +1038,25 @@ pub fn decode_client_admin_command(
         return Err(ClientControlError::InvalidJson);
     }
     match phase.as_deref() {
+        Some("read")
+            if version == Some(1)
+                && operation.as_deref() == Some("metadata.identities.resolve") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let name = args.remove("name").ok_or(ClientControlError::MissingKey)?;
+            let kind = match args.remove("kind").as_deref() {
+                Some("user") => crate::metadata_discovery::AdministrativeIdentityKind::User,
+                Some("role") => crate::metadata_discovery::AdministrativeIdentityKind::Role,
+                _ => return Err(ClientControlError::InvalidPrepare),
+            };
+            if !args.is_empty() {
+                return Err(ClientControlError::UnknownKey);
+            }
+            Ok(ClientAdminCommand::ResolveIdentityName { name, kind })
+        }
         Some("read")
             if version == Some(1) && operation.as_deref() == Some("metadata.schemas.list") =>
         {
@@ -3948,6 +3978,28 @@ impl ClientConnectionSession {
             self.metadata_page_snapshot = None;
         }
         match command {
+            ClientAdminCommand::ResolveIdentityName { name, kind } => {
+                let token_id = self
+                    .authenticated
+                    .as_ref()
+                    .ok_or(ClientSessionError::AuthenticationRequired)?
+                    .token_id();
+                let token_secret = self
+                    .token_secret
+                    .as_ref()
+                    .ok_or(ClientSessionError::AuthenticationRequired)?;
+                let identity_id = storage
+                    .resolve_token_administrative_identity_name(token_id, token_secret, &name, kind)
+                    .map_err(ClientSessionError::Storage)?;
+                let payload = match identity_id {
+                    Some(identity_id) => format!(
+                        "{{\"identity_id\":\"{}\"}}",
+                        encode_lower_hex_id(identity_id)
+                    ),
+                    None => "{\"identity_id\":null}".to_owned(),
+                };
+                self.json_response(request.request_id, payload.into_bytes())
+            }
             ClientAdminCommand::ListSchemas => {
                 let token_id = self
                     .authenticated

@@ -1053,3 +1053,6 @@
 - Validation: the table-create commit guard verifies one-to-one constraint/index ownership, table membership, ordered source/index columns, the unique index shape, object identity/owner/version, dependency edges, and the single-primary-key maximum.
 - Regression: the atomic table lifecycle regression creates composite PRIMARY KEY and nullable UNIQUE constraints together and validates startup. The full 173-test commit target passed.
 - Verification: locked workspace build, format check, warning-denied Clippy, full serial delegated-cgroup workspace suite (sandbox/process tests enabled, zero ignored), and `git diff --check` passed.
+## ID-SQL-2: authenticated principal name lookup
+
+- Added `resolve_token_administrative_identity_name`, which authenticates each request and resolves one indexed principal name in the pinned catalog snapshot after checking `MANAGE_USERS` or `MANAGE_ROLES` (or database-admin membership). The full real-redb/process lifecycle suite passes in the delegated-cgroup workspace run; hidden and absent names share the null result.

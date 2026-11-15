@@ -221,6 +221,7 @@ fn admin_sql(
     let table_statement = prdb_engine::ddl_sql::parse_create_table(sql).ok();
     let create_index_statement = prdb_engine::ddl_sql::parse_create_index(sql).ok();
     let create_identity_statement = prdb_engine::ddl_sql::parse_create_identity(sql).ok();
+    let rename_identity_statement = prdb_engine::ddl_sql::parse_rename_identity(sql).ok();
     let drop_index_statement = prdb_engine::ddl_sql::parse_drop_index(sql).ok();
     let schema_statement = prdb_engine::ddl_sql::parse_create_schema(sql).ok();
     let rename_schema_statement = prdb_engine::ddl_sql::parse_rename_schema(sql).ok();
@@ -240,6 +241,7 @@ fn admin_sql(
     if table_statement.is_none()
         && create_index_statement.is_none()
         && create_identity_statement.is_none()
+        && rename_identity_statement.is_none()
         && drop_index_statement.is_none()
         && schema_statement.is_none()
         && rename_schema_statement.is_none()
@@ -290,6 +292,19 @@ fn admin_sql(
             lower_hex(&result.identity_id),
             lower_hex(&result.operation_id),
             result.commit_sequence
+        );
+    } else if let Some(statement) = rename_identity_statement {
+        let result = client
+            .execute_rename_identity_sql(sql)
+            .map_err(|error| error.to_string())?;
+        let kind = match statement.kind {
+            prdb_engine::ddl_sql::CreateIdentityKind::User => "user",
+            prdb_engine::ddl_sql::CreateIdentityKind::Role => "role",
+        };
+        print_operation(
+            &format!("renamed {kind}"),
+            &result.operation_id,
+            result.commit_sequence,
         );
     } else if drop_index_statement.is_some() {
         let result = client

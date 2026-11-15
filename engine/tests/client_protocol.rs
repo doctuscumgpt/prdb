@@ -338,6 +338,32 @@ fn admin_read_decoder_accepts_empty_visible_schema_discovery_request() {
 }
 
 #[test]
+fn identity_name_resolver_decoder_requires_one_kind_and_name() {
+    let request = br#"{"phase":"read","operation_version":1,"operation":"metadata.identities.resolve","arguments":{"name":"analyst","kind":"user"}}"#;
+    assert!(matches!(
+        decode_client_admin_command(request),
+        Ok(ClientAdminCommand::ResolveIdentityName {
+            name,
+            kind: prdb_engine::metadata_discovery::AdministrativeIdentityKind::User
+        }) if name == "analyst"
+    ));
+    assert!(matches!(
+        decode_client_admin_read(request),
+        Ok(ClientAdminRead::ResolveIdentityName {
+            name,
+            kind: prdb_engine::metadata_discovery::AdministrativeIdentityKind::User
+        }) if name == "analyst"
+    ));
+    for invalid in [
+        br#"{"phase":"read","operation_version":1,"operation":"metadata.identities.resolve","arguments":{"name":"analyst","kind":"user","extra":"x"}}"#.as_slice(),
+        br#"{"phase":"read","operation_version":1,"operation":"metadata.identities.resolve","arguments":{"name":"analyst","kind":"users"}}"#.as_slice(),
+        br#"{"phase":"prepare","operation_version":1,"operation":"metadata.identities.resolve","arguments":{"name":"analyst","kind":"user"}}"#.as_slice(),
+    ] {
+        assert!(decode_client_admin_command(invalid).is_err());
+    }
+}
+
+#[test]
 fn admin_read_decoder_requires_exact_relation_discovery_arguments() {
     assert_eq!(
         decode_client_admin_read(

@@ -3146,6 +3146,36 @@ impl<'db> StorageManager<'db> {
         Ok(Some(indexes))
     }
 
+    /// Resolve one user or role name for an authenticated identity manager.
+    /// Unauthorized and absent names share the same `None` result.
+    pub fn resolve_token_administrative_identity_name(
+        &self,
+        token_id: [u8; 16],
+        token_secret: &[u8; TOKEN_SECRET_BYTES],
+        name: &str,
+        kind: crate::metadata_discovery::AdministrativeIdentityKind,
+    ) -> Result<Option<[u8; 16]>, TransactionError> {
+        let principal_id = lookup_credential_principal(self.database, token_id)?;
+        let mut invocation_id = [0; 16];
+        getrandom::fill(&mut invocation_id)
+            .map_err(|_| TransactionError::Storage("randomness unavailable".into()))?;
+        if invocation_id == [0; 16] {
+            return Err(TransactionError::Storage("randomness unavailable".into()));
+        }
+        let mut transaction = InvocationTransaction::begin_inner(
+            self.database,
+            InvocationCoordination::uncoordinated(),
+            invocation_id,
+            principal_id,
+            i64::MAX,
+            1,
+            1,
+        )?;
+        let now_us = now_unix_micros().ok_or(TransactionError::ClockUnavailable)?;
+        transaction.authenticate_credential_token(token_id, token_secret, now_us)?;
+        transaction.resolve_catalog_administrative_identity_name(name, kind)
+    }
+
     /// Describe logical constraints for a relation only when the
     /// authenticated control principal has administrative schema authority.
     /// Hidden foreign-key targets are redacted from the logical response.

@@ -813,3 +813,6 @@
 
 - Added a bounded parser/client helper for `CREATE USER name LOGIN|NOLOGIN` and `CREATE ROLE name`, dispatching the existing typed identity control operations. User creation does not issue a credential; NOLOGIN is enforced during token issuance.
 - Parser, authenticated TCP typed-dispatch, and CLI pre-credential recognition regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, full serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed; see the identity DDL progress entry.
+## ID-SQL-2: identity rename SQL
+
+- Added `AdminClient::execute_rename_identity_sql` and routed `admin-sql` ALTER USER/ROLE RENAME to existing typed operations after exact authenticated name resolution. Parser, decoder, CLI pre-credential, and delegated gateway/supervisor process regressions pass; full workspace, Clippy, and TinyCC checks pass.

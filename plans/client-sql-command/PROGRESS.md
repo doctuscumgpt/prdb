@@ -256,3 +256,6 @@
 
 - Added bounded identity creation syntax and routes to typed authenticated user/role operations; token issuance remains separate.
 - Parser, authenticated TCP, and CLI recognition regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, full serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed; see the identity DDL progress entry.
+## ID-SQL-2: identity rename SQL
+
+- `ALTER USER|ROLE old_name RENAME TO new_name` resolves the current name through the authenticated identity metadata operation, then calls the existing typed rename API. Parser and CLI syntax regressions pass, and the full delegated gateway/supervisor lifecycle test executes SQL rename successfully. Full delegated-cgroup workspace suite, build, formatting, Clippy, and TinyCC checks pass.

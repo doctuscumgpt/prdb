@@ -39,7 +39,7 @@ use crate::metadata_discovery::{
 use crate::outcome::{InvocationOutcome, OutcomeStatus};
 use crate::overlay::{Overlay, OverlayError, ResolvedRow, RowId, StagedRow};
 use crate::row_record::{RowRecord, RowRecordError};
-use crate::schema::{ENGINE_META, OUTCOMES};
+use crate::schema::{ENGINE_META, OUTCOMES, PRINCIPAL_NAMES};
 use crate::snapshot::{MAX_CATALOG_FAMILY_SCAN, MAX_ROW_SCAN_PAGE, RowSnapshot, SnapshotError};
 use crate::statistics::{
     AuthorizedScanEstimate, AuthorizedScanSummary, ColumnPopulation, MAX_ESTIMATE_CANDIDATES,
@@ -3313,6 +3313,105 @@ impl<'db> InvocationTransaction<'db> {
                 Err(error)
             }
         }
+    }
+
+    /// Resolve one normalized principal name only for a caller with the
+    /// corresponding identity-management privilege or database-admin role.
+    /// The lookup is non-enumerating and remains within this pinned snapshot.
+    pub(crate) fn resolve_catalog_administrative_identity_name(
+        &mut self,
+        name: &str,
+        kind: crate::metadata_discovery::AdministrativeIdentityKind,
+    ) -> Result<Option<[u8; 16]>, TransactionError> {
+        let bytes = name.as_bytes();
+        if bytes.is_empty()
+            || bytes.len() > 128
+            || !(bytes[0].is_ascii_lowercase() || bytes[0] == b'_')
+            || !bytes
+                .iter()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+        {
+            return Err(TransactionError::InvalidMetadataRequest);
+        }
+        let roles = self.load_catalog_role_closure(self.principal_id)?;
+        let is_database_admin = roles.contains(&crate::bootstrap::database_admin_role_id());
+        let privilege_code = match kind {
+            crate::metadata_discovery::AdministrativeIdentityKind::User => 12u16,
+            crate::metadata_discovery::AdministrativeIdentityKind::Role => 13u16,
+        };
+        let metadata_bytes = self
+            .pinned_snapshot()?
+            .get_engine_metadata_value()
+            .map_err(|error| TransactionError::Storage(error.to_string()))?
+            .ok_or(TransactionError::NotReady)?;
+        let metadata = EngineMetadata::decode(&metadata_bytes)
+            .map_err(|error| TransactionError::Storage(error.to_string()))?;
+        let mut subjects = roles.clone();
+        subjects.insert(self.principal_id);
+        let has_management_privilege = if is_database_admin {
+            true
+        } else {
+            let mut granted = false;
+            for subject in subjects {
+                let mut key = 12u16.to_be_bytes().to_vec();
+                key.extend_from_slice(&[1]);
+                key.extend_from_slice(&subject);
+                key.extend_from_slice(&[1]);
+                key.extend_from_slice(&metadata.database_id);
+                key.extend_from_slice(&[1]);
+                key.extend_from_slice(&privilege_code.to_be_bytes());
+                key.extend_from_slice(&[1]);
+                key.extend_from_slice(&1u16.to_be_bytes());
+                key.extend_from_slice(&[1]);
+                key.extend_from_slice(&metadata.database_id);
+                if let Some(record) = self.read_catalog_record(&key)? {
+                    if record.family_code != 12
+                        || catalog_id(&record, 1)? == [0; 16]
+                        || catalog_u64(&record, 2)? == 0
+                    {
+                        return Err(TransactionError::CorruptCatalog);
+                    }
+                    granted = true;
+                    break;
+                }
+            }
+            granted
+        };
+        if !has_management_privilege {
+            return Ok(None);
+        }
+        let snapshot = self.pinned_snapshot()?;
+        let name_index = snapshot
+            .read_transaction()
+            .open_table(PRINCIPAL_NAMES)
+            .map_err(|error| TransactionError::Storage(error.to_string()))?;
+        let Some(identity_id) = name_index
+            .get(bytes)
+            .map_err(|error| TransactionError::Storage(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let identity_id: [u8; 16] = identity_id
+            .value()
+            .try_into()
+            .map_err(|_| TransactionError::CorruptCatalog)?;
+        if identity_id == [0; 16] {
+            return Err(TransactionError::CorruptCatalog);
+        }
+        let principal = self
+            .read_catalog_record(&catalog_id_key(10, identity_id))?
+            .ok_or(TransactionError::CorruptCatalog)?;
+        if principal.family_code != 10 {
+            return Err(TransactionError::CorruptCatalog);
+        }
+        let expected_kind = match kind {
+            crate::metadata_discovery::AdministrativeIdentityKind::User => 1,
+            crate::metadata_discovery::AdministrativeIdentityKind::Role => 2,
+        };
+        if catalog_u16(&principal, 1)? != expected_kind || catalog_field(&principal, 2)? != bytes {
+            return Err(TransactionError::CorruptCatalog);
+        }
+        Ok(Some(identity_id))
     }
 
     /// List schemas over which this authenticated control principal has

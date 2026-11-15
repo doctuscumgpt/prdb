@@ -1669,17 +1669,21 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let admin_cli_credentials = admin_cancel_credentials_path
         .to_str()
         .ok_or("credential path is not UTF-8")?;
+    let rename_sql_path = root.join("rename-user.sql");
+    std::fs::write(
+        &rename_sql_path,
+        "ALTER USER process_table_owner RENAME TO process_table_owner_renamed;",
+    )?;
+    let rename_sql_path_text = rename_sql_path.to_str().ok_or("SQL path is not UTF-8")?;
     let rename_user_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
-            "user-rename",
+            "admin-sql",
             "--address",
             &address_text,
             "--credentials",
             admin_cli_credentials,
-            "--id",
-            &transfer_user_id_text,
-            "--name",
-            "process_table_owner_renamed",
+            "--sql-file",
+            rename_sql_path_text,
         ])
         .output()?;
     assert!(
@@ -1687,7 +1691,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         "user-rename CLI failed: {}",
         String::from_utf8_lossy(&rename_user_cli.stderr)
     );
-    assert!(String::from_utf8_lossy(&rename_user_cli.stdout).contains("renamed identity"));
+    assert!(String::from_utf8_lossy(&rename_user_cli.stdout).contains("renamed user"));
     let disable_login_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
             "user-login",

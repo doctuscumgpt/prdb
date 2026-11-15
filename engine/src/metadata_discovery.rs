@@ -93,6 +93,13 @@ pub struct AdministrativeIndex {
     pub unique: bool,
 }
 
+/// Identity category used for one non-enumerating administrative name lookup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdministrativeIdentityKind {
+    User,
+    Role,
+}
+
 /// Constraint kinds exposed by administrative table description.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdministrativeConstraintKind {

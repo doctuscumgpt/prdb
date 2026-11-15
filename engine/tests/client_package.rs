@@ -343,6 +343,27 @@ fn admin_sql_cli_rejects_unsupported_ddl_before_credentials_or_network() {
         listener.accept(),
         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
     ));
+    fs::write(&sql_path, "ALTER USER analyst RENAME TO analyst_admin").unwrap();
+    let recognized_rename = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            temp.join("missing.cred").to_str().unwrap(),
+            "--sql-file",
+            sql_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!recognized_rename.status.success());
+    assert!(
+        !String::from_utf8_lossy(&recognized_rename.stderr).contains("invalid administrative SQL")
+    );
+    assert!(matches!(
+        listener.accept(),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
     fs::write(&sql_path, "CREATE USER service_loader NOLOGIN").unwrap();
     let recognized_no_login = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
