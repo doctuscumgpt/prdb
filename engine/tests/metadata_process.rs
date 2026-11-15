@@ -2253,6 +2253,49 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     drop(transfer_client_credentials);
     drop(renewed_credentials);
     let admin_owner_id_text = encode_id_hex(&admin_user_id);
+    admin.grant_object_privilege(
+        transfer_owner.identity_id,
+        created_schema.identity_id,
+        AdminObjectPrivilege::Alter,
+        AdminObjectGrantTarget::Object,
+    )?;
+    let schema_alter_sql_path = root.join("schema-alter-grantee.sql");
+    for (old_name, new_name) in [
+        ("process_admin_schema", "process_admin_schema_renamed"),
+        ("process_admin_schema_renamed", "process_admin_schema"),
+    ] {
+        std::fs::write(
+            &schema_alter_sql_path,
+            format!("ALTER SCHEMA {old_name} RENAME TO {new_name};"),
+        )?;
+        let command = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "admin-sql",
+                "--address",
+                &address_text,
+                "--credentials",
+                transfer_credential_path
+                    .to_str()
+                    .ok_or("credential path is not UTF-8")?,
+                "--sql-file",
+                schema_alter_sql_path
+                    .to_str()
+                    .ok_or("SQL path is not UTF-8")?,
+            ])
+            .output()?;
+        assert!(
+            command.status.success(),
+            "schema ALTER grantee SQL failed: {}",
+            String::from_utf8_lossy(&command.stderr)
+        );
+        assert!(String::from_utf8_lossy(&command.stdout).contains("renamed schema"));
+    }
+    admin.revoke_object_privilege(
+        transfer_owner.identity_id,
+        created_schema.identity_id,
+        AdminObjectPrivilege::Alter,
+        AdminObjectGrantTarget::Object,
+    )?;
     admin.set_schema_owner(created_schema.identity_id, transfer_owner.identity_id)?;
     let schema_id_text = encode_id_hex(&created_schema.identity_id);
     let schema_transfer_command = Command::new(env!("CARGO_BIN_EXE_prdb-client"))

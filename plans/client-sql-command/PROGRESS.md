@@ -471,3 +471,8 @@
 
 - Authenticated schema metadata now reveals a schema name to an effective schema-scoped `CREATE` grantee, allowing `CREATE TABLE` SQL to reach the typed operation without schema `USAGE`. The read does not grant relation or column visibility; storage rechecks the grant.
 - The delegated gateway/supervisor lifecycle covers the schema grant and successful `admin-sql CREATE TABLE` flow. Focused process regression, formatting, workspace build, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## Schema ALTER-grantee SQL binding — verified
+
+- Authenticated metadata exposes schema names to effective schema-scoped `ALTER` grantees so `ALTER SCHEMA` can bind its target without schema `USAGE`; relation and column names remain hidden. Typed schema DDL guards continue to enforce and recheck the grant.
+- The focused gateway/supervisor lifecycle renames a schema as a non-owner ALTER grantee, restores its name, and revokes the grant. The focused delegated process test, workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

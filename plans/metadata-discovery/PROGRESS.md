@@ -234,3 +234,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Schema-scoped `CREATE` grantees can resolve only the granted schema name through authenticated metadata, allowing SQL table creation to reach its existing typed authorization check without exposing that schema's relations or columns.
 - Metadata and DDL contracts are updated. The delegated gateway/supervisor lifecycle grants schema-scoped `CREATE` without `USAGE` and successfully creates a table through `admin-sql`. The focused process regression, formatting, workspace build, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## Schema ALTER-authorized SQL binding — verified
+
+- Effective schema-scoped `ALTER` grantees can resolve schema names for `ALTER SCHEMA` without schema `USAGE`; this reveals no relations or columns. Typed schema rename, owner-transfer, and drop commit guards now accept and guard the direct/inherited ALTER grant, including grant revocation races.
+- Permission, metadata-discovery, schema DDL, and client SQL contracts are updated. The gateway/supervisor lifecycle regression grants ALTER to a non-owner with no schema USAGE and renames the schema through `admin-sql`, then renames it back and revokes the grant. The focused delegated process test, workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.

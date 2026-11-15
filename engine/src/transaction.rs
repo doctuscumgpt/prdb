@@ -4072,6 +4072,7 @@ impl<'db> InvocationTransaction<'db> {
                 }
                 let schema_id = match (privilege_code, catalog_u16(&object, 1)?) {
                     (7, 1) => object_id,
+                    (8, 1) => object_id,
                     (8 | 9, 3) => {
                         let Some(schema_id) = catalog_optional_id(&object, 2)? else {
                             return Err(TransactionError::CorruptCatalog);

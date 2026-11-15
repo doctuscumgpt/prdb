@@ -10068,8 +10068,26 @@ fn schema_drop_ddl_authority_guards(
     let owner_id: [u8; 16] = catalog_field_bytes(&object_key, object_bytes, 2, 4)?
         .try_into()
         .map_err(|_| CommitError::InvalidCatalog)?;
-    let authorized =
+    let mut authorized =
         owner_id == principal_id || roles.contains(&owner_id) || roles.contains(&admin_role_id);
+    let mut authority_subjects = roles.clone();
+    authority_subjects.insert(principal_id);
+    for subject in authority_subjects {
+        let key = grant_key(subject, schema_id, 8, 1, schema_id);
+        let bytes = catalog
+            .get(key.as_slice())
+            .map_err(storage_error)?
+            .map(|value| value.value().to_vec());
+        if let Some(value) = &bytes {
+            if catalog_field_bytes(&key, value, 12, 1)? == [0; 16]
+                || catalog_field_u64(&key, value, 12, 2)? == 0
+            {
+                return Err(CommitError::InvalidCatalog);
+            }
+            authorized = true;
+        }
+        add_catalog_guard(&mut guards, key, bytes);
+    }
     if !authorized {
         return Err(CommitError::DdlAuthorizationDenied);
     }
@@ -10327,7 +10345,27 @@ fn schema_metadata_ddl_authority_guards(
         .map_err(|_| CommitError::InvalidCatalog)?;
     let mut admin_role_id = [0x80; 16];
     admin_role_id[15] = 3;
-    if old_owner != principal_id && !roles.contains(&old_owner) && !roles.contains(&admin_role_id) {
+    let mut authorized =
+        old_owner == principal_id || roles.contains(&old_owner) || roles.contains(&admin_role_id);
+    let mut authority_subjects = roles.clone();
+    authority_subjects.insert(principal_id);
+    for subject in authority_subjects {
+        let key = grant_key(subject, schema_id, 8, 1, schema_id);
+        let bytes = catalog
+            .get(key.as_slice())
+            .map_err(storage_error)?
+            .map(|value| value.value().to_vec());
+        if let Some(value) = &bytes {
+            if catalog_field_bytes(&key, value, 12, 1)? == [0; 16]
+                || catalog_field_u64(&key, value, 12, 2)? == 0
+            {
+                return Err(CommitError::InvalidCatalog);
+            }
+            authorized = true;
+        }
+        add_catalog_guard(&mut guards, key, bytes);
+    }
+    if !authorized {
         return Err(CommitError::DdlAuthorizationDenied);
     }
     let role_ids = memberships
