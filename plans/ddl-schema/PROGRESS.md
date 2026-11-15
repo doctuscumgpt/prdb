@@ -393,7 +393,13 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Contract: [schema DDL](../../specs/ddl-schema.md) requires a table definition and its typed columns/name indexes to publish with the audit event, durable outcome, and commit sequence as one transaction.
 - Regression: `process_crash_during_create_table_recovers_all_or_none` creates an authorized schema, then exits a child at the backend write boundary or after `create_table` returns. Reopen and startup validation show either no table name, audit, outcome, or sequence advance, or a resolvable table and column with valid typed records, audit, committed outcome, and one sequence advance.
 - Verification: focused two-boundary process-crash test passed. Workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests, release-profile validation (10 binaries and one query fixture), delegated cgroup probe, and the complete serial delegated-cgroup workspace suite passed: 224 library tests, 159 commit tests, and 75 transaction tests, including confined SQL and process integration tests.
-- Scope: process exit covers creation of one table with one column and no constraints. It does not simulate power loss or cover constraint/default creation combinations.
+- Initial scope: process exit covered one table column without constraints and did not simulate power loss or cover constraint/default combinations. The primary-key follow-up below extends the constraint coverage.
+
+### CREATE TABLE with PRIMARY KEY crash-recovery follow-up — verified
+
+- `process_crash_during_create_table_recovers_all_or_none` now creates the table and PRIMARY KEY/backing index in one operation. At the interrupted-write boundary it requires no table, constraint, audit, outcome, or sequence advance; after commit it checks that the table, column, PRIMARY KEY, owned index, dependency, audit, committed outcome, and single sequence advance are all recovered, then startup validation passes.
+- The focused two-boundary process-crash regression passed. Locked workspace formatting, warning-denied all-target Clippy, maintained TinyCC SDK tests and sandbox fixture, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (273 library, 174 commit, 75 transaction tests; all other targets passed). `Cargo.lock` is unchanged.
+- Scope: the recovery test now covers an atomic PRIMARY KEY and owned index, while separate tests cover CHECK, UNIQUE, and FOREIGN KEY creation recovery. It does not simulate power loss or cover every combination of defaults and multiple constraint kinds in one CREATE TABLE.
 
 ## DS-4 / DS-7: UNIQUE constraint process-crash recovery — verified
 

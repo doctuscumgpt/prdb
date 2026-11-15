@@ -26441,21 +26441,25 @@ fn process_crash_during_create_table_recovers_all_or_none() -> Result<(), Box<dy
         } else if boundary != "after_commit" {
             return Err(format!("unknown CREATE TABLE crash boundary {boundary}").into());
         }
-        let create_result = storage.create_table(CreateTableRequest {
-            invocation_id: CREATE_INVOCATION_ID,
-            authenticated_actor_id: ACTOR_ID,
-            schema_id: schema.schema_id,
-            name: "crash_table".to_owned(),
-            columns: vec![TableColumnDefinition {
-                name: "payload".to_owned(),
-                scalar_type: ScalarType::Text,
-                nullable: false,
-                generated_uuid_identity: false,
-                default: None,
-            }],
-            retention_deadline_us: i64::MAX,
-            audit_event: create_audit,
-        });
+        let create_result = storage.create_table_with_constraints(
+            CreateTableRequest {
+                invocation_id: CREATE_INVOCATION_ID,
+                authenticated_actor_id: ACTOR_ID,
+                schema_id: schema.schema_id,
+                name: "crash_table".to_owned(),
+                columns: vec![TableColumnDefinition {
+                    name: "payload".to_owned(),
+                    scalar_type: ScalarType::Text,
+                    nullable: false,
+                    generated_uuid_identity: false,
+                    default: None,
+                }],
+                retention_deadline_us: i64::MAX,
+                audit_event: create_audit,
+            },
+            Some(&["payload".to_owned()]),
+            &[],
+        );
         if boundary == "write" {
             return Err(format!(
                 "CREATE TABLE returned without injected backend-write exit: {create_result:?}"
@@ -26513,6 +26517,12 @@ fn process_crash_during_create_table_recovers_all_or_none() -> Result<(), Box<dy
             let table_id = table_id.ok_or("committed table name was not recovered")?;
             let column_id = lookup_column_id_by_name(&read, table_id, "payload")?
                 .ok_or("committed table column name was not recovered")?;
+            let constraint_ids =
+                prdb_engine::catalog_index::scan_constraint_ids_for_table(&read, table_id, 1)?;
+            assert_eq!(constraint_ids.len(), 1);
+            let index_ids =
+                prdb_engine::catalog_index::scan_index_ids_for_table(&read, table_id, 1)?;
+            assert_eq!(index_ids.len(), 1);
             let catalog = read.open_table(CATALOG)?;
             let table_record = catalog
                 .get(id_catalog_key(5, table_id).as_slice())?
@@ -26520,6 +26530,42 @@ fn process_crash_during_create_table_recovers_all_or_none() -> Result<(), Box<dy
             let column_record = catalog
                 .get(id_catalog_key(6, column_id).as_slice())?
                 .ok_or("committed column record was not recovered")?;
+            let constraint_id = constraint_ids[0];
+            let constraint_key = id_catalog_key(8, constraint_id);
+            let constraint_record = catalog
+                .get(constraint_key.as_slice())?
+                .ok_or("committed PRIMARY KEY record was not recovered")?;
+            let constraint_record = decode_registered_envelope(constraint_record.value())?;
+            let constraint_kind = constraint_record
+                .fields
+                .iter()
+                .find(|field| field.tag == 2)
+                .ok_or("committed PRIMARY KEY kind was not recovered")?
+                .payload
+                .as_slice()
+                .try_into()?;
+            assert_eq!(u16::from_le_bytes(constraint_kind), 2);
+            let index_id: [u8; 16] = constraint_record
+                .fields
+                .iter()
+                .find(|field| field.tag == 11)
+                .ok_or("committed PRIMARY KEY index ID was not recovered")?
+                .payload
+                .as_slice()
+                .try_into()?;
+            assert_eq!(index_id, index_ids[0]);
+            assert!(
+                catalog
+                    .get(id_catalog_key(9, index_id).as_slice())?
+                    .is_some(),
+                "committed PRIMARY KEY index record was not recovered"
+            );
+            assert!(
+                catalog
+                    .get(dependency_write(constraint_id, index_id, 4).key.as_slice())?
+                    .is_some(),
+                "committed PRIMARY KEY index dependency was not recovered"
+            );
             decode_registered_envelope(table_record.value())?;
             decode_registered_envelope(column_record.value())?;
             assert_eq!(sequence, before_create_sequence + 1);
