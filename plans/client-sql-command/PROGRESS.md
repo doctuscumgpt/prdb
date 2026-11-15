@@ -403,5 +403,5 @@
 
 ## DS-8: ALTER TABLE DROP COLUMN production lifecycle — verified
 
-- The gateway/supervisor metadata lifecycle now drops the newly added column through `admin-sql` with `RESTRICT`, then confirms through authenticated metadata that the column is gone and the original column remains.
+- The gateway/supervisor metadata lifecycle adds a column, creates an index on it, verifies SQL `DROP COLUMN ... RESTRICT` is rejected while the index depends on it, drops the index, and then drops the column through `admin-sql`. Authenticated metadata confirms only the original column remains.
 - The focused delegated process test passed. Workspace build, format check, warning-denied Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. See [schema DDL progress](../ddl-schema/PROGRESS.md).
