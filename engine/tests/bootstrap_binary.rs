@@ -1467,6 +1467,7 @@ fn migration_apply_requires_complete_history_ack_and_publishes_validated_v2() {
         i64::MAX,
     )
     .expect("initialize migration source");
+    let admin_id = session.admin_user_id();
     let mut secret = session.take_secret().expect("bootstrap secret");
     use zeroize::Zeroize;
     secret.zeroize();
@@ -1564,6 +1565,90 @@ fn migration_apply_requires_complete_history_ack_and_publishes_validated_v2() {
     );
     drop(read);
     drop(active);
+
+    let post_upgrade_schema_id;
+    {
+        let instance = StorageInstance::open(fixture.instance_dir())
+            .expect("reopen migrated instance for post-upgrade write");
+        let storage = prdb_engine::storage_manager::StorageManager::new(
+            instance.database(),
+            std::time::Duration::from_millis(100),
+        )
+        .expect("create migrated storage manager");
+        post_upgrade_schema_id = storage
+            .create_schema(
+                [0x91; 16],
+                admin_id,
+                "post_upgrade_data",
+                admin_id,
+                i64::MAX,
+                AuditEvent {
+                    event_id: [0x92; 16],
+                    actor_id: Some(admin_id),
+                    correlation_id: [0x91; 16],
+                    occurred_at_us: 1,
+                    action: AuditAction::Ddl,
+                    result: AuditResult::Succeeded,
+                    target_ids: Vec::new(),
+                },
+            )
+            .expect("commit schema after migration")
+            .schema_id;
+    }
+    let active_after_write =
+        ReadOnlyDatabase::open(&source_path).expect("open post-migration active image read-only");
+    let post_upgrade_report =
+        prdb_engine::startup::validate_persisted_records_read_only(&active_after_write)
+            .expect("validate active image after post-upgrade write");
+    assert_eq!(post_upgrade_report.metadata.catalog_version, 2);
+    assert!(post_upgrade_report.metadata.commit_sequence > metadata.commit_sequence);
+    assert_eq!(
+        prdb_engine::catalog_index::lookup_schema_id_by_name(
+            &active_after_write
+                .begin_read()
+                .expect("read upgraded catalog"),
+            "post_upgrade_data",
+        )
+        .expect("lookup post-upgrade schema"),
+        Some(post_upgrade_schema_id)
+    );
+    let post_upgrade_sequence = post_upgrade_report.metadata.commit_sequence;
+    drop(active_after_write);
+
+    let repeated_migration = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-apply", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--backup-dir")
+        .arg(&backup_path)
+        .arg("--identity-history")
+        .arg(&history_path)
+        .arg("--confirm-complete-identity-history")
+        .output()
+        .expect("attempt migration again after a post-upgrade write");
+    assert!(
+        !repeated_migration.status.success(),
+        "migration unexpectedly replaced a newer active generation: stdout={} stderr={}",
+        String::from_utf8_lossy(&repeated_migration.stdout),
+        String::from_utf8_lossy(&repeated_migration.stderr)
+    );
+    let active_after_retry = ReadOnlyDatabase::open(&source_path)
+        .expect("reopen active image after rejected repeat migration");
+    let retry_report =
+        prdb_engine::startup::validate_persisted_records_read_only(&active_after_retry)
+            .expect("validate active image after rejected repeat migration");
+    assert_eq!(retry_report.metadata.catalog_version, 2);
+    assert_eq!(retry_report.metadata.commit_sequence, post_upgrade_sequence);
+    assert_eq!(
+        prdb_engine::catalog_index::lookup_schema_id_by_name(
+            &active_after_retry
+                .begin_read()
+                .expect("read post-retry catalog"),
+            "post_upgrade_data",
+        )
+        .expect("verify post-upgrade schema survived retry"),
+        Some(post_upgrade_schema_id)
+    );
+    drop(active_after_retry);
 
     let retained = ReadOnlyDatabase::open(fixture.instance_dir().join(".prdb-migration.next"))
         .expect("open retained v1 source");
