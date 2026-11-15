@@ -847,3 +847,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Focused evidence: parser unit test passes; the delegated storage regression verifies old-snapshot metadata, unchanged tuple bytes/schema version/index schema version, widened-value decoding, stale-writer conflict, no-op rejection, and unauthorized actor rejection. The delegated gateway/supervisor process lifecycle verifies SQL execution, authenticated metadata readback, stable column ID, and index availability after widening.
 - Validation: locked workspace build, formatting check, warning-denied all-target Clippy, focused storage and process tests, and the complete serial delegated-cgroup workspace suite all pass. The full suite reported 281 library tests and 175 commit tests passed with sandbox/process coverage enabled and zero ignored. Cargo.lock is unchanged.
 - Remaining: broader lockstep DDL acceptance for concurrent FK/policy interactions remains open.
+
+## DS-SQL-47: SET/DROP NOT NULL SQL across gateway and supervisor — verified
+
+- Added authenticated `admin-sql` integration coverage for `ALTER TABLE ... ALTER COLUMN ... SET NOT NULL` and `DROP NOT NULL` through separate production gateway and supervisor processes. The test reads the column metadata after each operation and confirms the nullable flag changes while preserving the existing table lifecycle.
+- Updated the schema DDL contract to state that SQL name binding uses authenticated metadata and the typed operation remains authoritative for authorization and fenced row validation.
+- Verification: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` passed inside the delegated `systemd --user` service. The path exercises both transitions over the external TCP control protocol; storage regressions separately cover NULL rejection, stale-writer conflict, and internal constraint cleanup.

@@ -1995,6 +1995,51 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     );
     assert!(!added_label.nullable);
     assert!(added_columns.next_cursor.is_none());
+    for (suffix, sql, expected_nullable) in [
+        (
+            "set-not-null",
+            "ALTER TABLE process_admin_schema.process_admin_table ALTER COLUMN payload SET NOT NULL;",
+            false,
+        ),
+        (
+            "drop-not-null",
+            "ALTER TABLE process_admin_schema.process_admin_table ALTER COLUMN payload DROP NOT NULL;",
+            true,
+        ),
+    ] {
+        let sql_path = root.join(format!("{suffix}.sql"));
+        std::fs::write(&sql_path, sql)?;
+        let result = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "admin-sql",
+                "--address",
+                &address.to_string(),
+                "--credentials",
+                admin_cancel_credentials_path
+                    .to_str()
+                    .ok_or("credential path is not UTF-8")?,
+                "--sql-file",
+                sql_path.to_str().ok_or("SQL path is not UTF-8")?,
+            ])
+            .output()?;
+        assert!(
+            result.status.success(),
+            "admin-sql {suffix} failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let columns = admin.list_columns_page(
+            created_schema.identity_id,
+            created_table.table_id,
+            16,
+            None,
+        )?;
+        let label = columns
+            .records
+            .iter()
+            .find(|column| column.name == "payload")
+            .ok_or("column nullability SQL removed its target column")?;
+        assert_eq!(label.nullable, expected_nullable, "{suffix} metadata");
+    }
     let add_column_if_missing_path = root.join("add-column-if-not-exists.sql");
     std::fs::write(
         &add_column_if_missing_path,
