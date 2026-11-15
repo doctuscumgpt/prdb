@@ -52,6 +52,7 @@ Token secrets are saved only to mode-0600 credential files and are never printed
     [--after-token-id HEX]\n\n\
   prdb-client dependency-list --address IP:PORT --credentials ADMIN_FILE --object-id HEX\n\
     [--limit N] [--cursor HEX]\n\n\
+  prdb-client constraint-list --address IP:PORT --credentials ADMIN_FILE --schema-id HEX --table-id HEX [--limit N] [--cursor TOKEN]\n\
   prdb-client runtime-list --address IP:PORT --credentials ADMIN_FILE\n\
     [--limit N] [--cursor HEX]\n\n\
   prdb-client audit-list --address IP:PORT --credentials ADMIN_FILE\n\
@@ -167,6 +168,7 @@ fn run() -> Result<(), String> {
         "token-revoke" => token_revoke(address, credentials_path, &mut fields),
         "token-list" => token_list(address, credentials_path, &mut fields),
         "dependency-list" => dependency_list(address, credentials_path, &mut fields),
+        "constraint-list" => constraint_list(address, credentials_path, &mut fields),
         "runtime-list" => runtime_list(address, credentials_path, &mut fields),
         "audit-list" => audit_list(address, credentials_path, &mut fields),
         "schema-create" | "schema-rename" | "schema-drop" | "schema-owner-set" | "table-create"
@@ -2325,6 +2327,82 @@ fn dependency_list(
         Some(cursor) => println!("],\"next_cursor\":{}}}", json_string(&cursor)),
         None => println!("],\"next_cursor\":null}}"),
     }
+    Ok(())
+}
+
+fn constraint_list(
+    address: SocketAddr,
+    credentials_path: PathBuf,
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<(), String> {
+    let schema_id = parse_id(&take_text(fields, "--schema-id")?)?;
+    let table_id = parse_id(&take_text(fields, "--table-id")?)?;
+    let page_limit = fields
+        .remove("--limit")
+        .map(|value| parse_number::<usize>(value, "--limit"))
+        .transpose()?
+        .unwrap_or(64);
+    if !(1..=128).contains(&page_limit) {
+        return Err("--limit must be between 1 and 128".to_owned());
+    }
+    let cursor = fields
+        .remove("--cursor")
+        .map(|value| {
+            value
+                .into_string()
+                .map_err(|_| "--cursor must be UTF-8".to_owned())
+        })
+        .transpose()?;
+    reject_unknown(fields)?;
+    let mut administrator =
+        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
+    let mut client = AdminClient::connect_authenticated(
+        address,
+        administrator.token_id,
+        &mut administrator.token_secret,
+    )
+    .map_err(|error| error.to_string())?;
+    let page = client
+        .list_constraints_page(schema_id, table_id, page_limit, cursor.as_deref())
+        .map_err(|error| error.to_string())?;
+    print!("{{\"constraints\":[");
+    for (index, constraint) in page.records.iter().enumerate() {
+        if index != 0 {
+            print!(",");
+        }
+        print!(
+            "{{\"constraint_id\":{},\"kind\":{},\"column_ids\":[",
+            json_string(&lower_hex(&constraint.constraint_id)),
+            json_string(constraint.kind.as_wire_name())
+        );
+        for (column_index, column_id) in constraint.column_ids.iter().enumerate() {
+            if column_index != 0 {
+                print!(",");
+            }
+            print!("{}", json_string(&lower_hex(column_id)));
+        }
+        print!("],\"referenced_table_id\":");
+        match constraint.referenced_table_id {
+            Some(referenced_table_id) => {
+                print!("{}", json_string(&lower_hex(&referenced_table_id)))
+            }
+            None => print!("null"),
+        }
+        print!(",\"referenced_column_ids\":[");
+        for (column_index, column_id) in constraint.referenced_column_ids.iter().enumerate() {
+            if column_index != 0 {
+                print!(",");
+            }
+            print!("{}", json_string(&lower_hex(column_id)));
+        }
+        print!("]}}");
+    }
+    println!(
+        "],\"next_cursor\":{}}}",
+        page.next_cursor
+            .map(|value| json_string(&value))
+            .unwrap_or_else(|| "null".to_owned())
+    );
     Ok(())
 }
 

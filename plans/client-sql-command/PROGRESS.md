@@ -1,5 +1,10 @@
 # `prdb-client run-sql` Progress
 
+## Constraint metadata CLI — verified
+
+- The generated constraint IDs required by SQL `DROP CONSTRAINT` were not otherwise exposed by a `prdb-client` metadata command. Added `constraint-list` on top of the authenticated, bounded metadata page; it emits IDs, kinds, ordered source columns, and discoverable FK target IDs as JSON.
+- The delegated gateway/supervisor process regression verifies the command reports the self-referential composite FK ID and ordered source/target columns. Workspace build, format, warning-denied Clippy, and `git diff --check` pass; `Cargo.lock` is unchanged.
+
 ## DS-SQL-27: self-referencing CREATE TABLE SQL — verified
 
 - Inline and table-level `REFERENCES` may target a key declared in the new table. The SQL client emits the v2 `tables.create` payload only for local targets and preserves the prior v1 payload for ordinary external references.
