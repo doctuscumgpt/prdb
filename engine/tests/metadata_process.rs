@@ -2127,6 +2127,9 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     assert_eq!(columns_after_drop.records.len(), 1);
     assert_eq!(columns_after_drop.records[0].name, "payload");
     assert!(columns_after_drop.next_cursor.is_none());
+    let unique_constraint = admin
+        .create_unique_constraint(created_table.table_id, &created_table.column_ids)
+        .map_err(|error| format!("process ADMIN create_unique_constraint failed: {error}"))?;
     let transfer_owner = admin.create_user("process_table_owner")?;
     let token_expiration =
         i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?
@@ -2440,7 +2443,77 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     assert!(
         String::from_utf8_lossy(&table_owner_sql_command.stdout).contains("changed table owner")
     );
+    let mut table_owner_credentials = read_client_credentials(&transfer_credential_path)?;
+    let mut table_owner_client = AdminClient::connect_authenticated(
+        address,
+        table_owner_credentials.token_id,
+        &mut table_owner_credentials.token_secret,
+    )?;
+    let table_owner_constraints = table_owner_client.list_constraints_page(
+        created_schema.identity_id,
+        created_table.table_id,
+        128,
+        None,
+    )?;
+    assert!(table_owner_constraints.records.iter().any(|constraint| {
+        constraint.kind == prdb_engine::metadata_discovery::AdministrativeConstraintKind::Unique
+    }));
+    let owner_alter_sql_path = root.join("table-owner-add-column.sql");
+    std::fs::write(
+        &owner_alter_sql_path,
+        "ALTER TABLE process_admin_schema.process_admin_table ADD COLUMN owner_added INTEGER;",
+    )?;
+    let owner_alter_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            credential_path_text,
+            "--sql-file",
+            owner_alter_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        owner_alter_sql.status.success(),
+        "table-owner ALTER SQL failed: {}",
+        String::from_utf8_lossy(&owner_alter_sql.stderr)
+    );
+    assert!(String::from_utf8_lossy(&owner_alter_sql.stdout).contains("added column"));
+    drop(table_owner_client);
     admin.set_table_owner(created_table.table_id, admin_user_id)?;
+    admin.grant_object_privilege(
+        transfer_owner.identity_id,
+        created_table.table_id,
+        AdminObjectPrivilege::Alter,
+        AdminObjectGrantTarget::Object,
+    )?;
+    let grantee_alter_sql_path = root.join("alter-grantee-add-column.sql");
+    std::fs::write(
+        &grantee_alter_sql_path,
+        "ALTER TABLE process_admin_schema.process_admin_table ADD COLUMN grantee_added INTEGER;",
+    )?;
+    let grantee_alter_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            credential_path_text,
+            "--sql-file",
+            grantee_alter_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        grantee_alter_sql.status.success(),
+        "ALTER-grantee SQL failed: {}",
+        String::from_utf8_lossy(&grantee_alter_sql.stderr)
+    );
+    assert!(String::from_utf8_lossy(&grantee_alter_sql.stdout).contains("added column"));
     let added_column = admin.add_column(
         created_table.table_id,
         &AdminColumnDefinition {
@@ -2451,9 +2524,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             default: None,
         },
     )?;
-    let unique_constraint = admin
-        .create_unique_constraint(created_table.table_id, &created_table.column_ids)
-        .map_err(|error| format!("process ADMIN create_unique_constraint failed: {error}"))?;
     let source_table = admin.create_table(
         created_schema.identity_id,
         "process_admin_source",
