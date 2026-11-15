@@ -214,3 +214,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added a named control result type carrying schema, object, and grantee IDs after the authenticated grant-scope lookup succeeds. This keeps the shared discovery contract explicit while returning no IDs for unauthorized or absent targets.
 - Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused decoder and process regressions remain to be added; no test suite was run for this increment.
+
+## MANAGE_GRANTS column metadata for SQL binding — implemented slice
+
+- The authenticated columns read now exposes a target table's declared shape to its owner or inherited scoped `MANAGE_GRANTS` holder without requiring schema USAGE. This lets object-grant SQL bind named columns while keeping the information limited to the object the caller may administer.
+- Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused authorization and process regressions remain to be added; no test suite was run for this increment.

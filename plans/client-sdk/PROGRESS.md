@@ -888,3 +888,5 @@
 
 - `execute_object_privilege_sql` now resolves the schema/table and recipient together through the scoped endpoint. Owners and `MANAGE_GRANTS` holders do not need global user/role administration or ordinary schema/relation visibility to target object grants. The server-side grant mutation remains authoritative.
 - Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused client/process regressions remain to be added; no test suite was run for this increment.
+- Follow-up: scoped `MANAGE_GRANTS` also receives target table column names for explicit-column grant binding without schema USAGE. General query and invocation metadata remain filtered by ordinary grants.
+- Validation for this continuation: workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused client/authorization/process regressions remain to be added; no test suite was run.

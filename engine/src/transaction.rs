@@ -4114,10 +4114,14 @@ impl<'db> InvocationTransaction<'db> {
         }
         if !schema_admin {
             let (_, schema_grants) = self.load_catalog_schema_usage_grants(self.principal_id)?;
-            if !schema_grants.iter().any(|grant| {
+            let has_usage = schema_grants.iter().any(|grant| {
                 grant.operation == Operation::Usage
                     && grant.target == AccessTarget::Schema(schema_id)
-            }) || !self.has_catalog_policy_ddl_authority(schema_id, relation_id, &roles)?
+            });
+            let has_policy_metadata = has_usage
+                && self.has_catalog_policy_ddl_authority(schema_id, relation_id, &roles)?;
+            if !has_policy_metadata
+                && !self.current_principal_has_grant_ddl_authority(relation_id)?
             {
                 return Ok(None);
             }
@@ -4841,6 +4845,32 @@ impl<'db> InvocationTransaction<'db> {
         self.read_discovery_schema(schema_id)?;
         let owner_id = catalog_id(&object, 4)?;
         Ok(owner_id == self.principal_id || roles.contains(&owner_id))
+    }
+
+    fn current_principal_has_grant_ddl_authority(
+        &mut self,
+        object_id: [u8; 16],
+    ) -> Result<bool, TransactionError> {
+        let principal = self
+            .read_catalog_record(&catalog_id_key(10, self.principal_id))?
+            .ok_or(TransactionError::CorruptCatalog)?;
+        if principal.family_code != 10 || catalog_u16(&principal, 1)? != 1 {
+            return Err(TransactionError::CorruptCatalog);
+        }
+        let name = std::str::from_utf8(catalog_field(&principal, 2)?)
+            .map_err(|_| TransactionError::CorruptCatalog)?;
+        let Some(identity_id) = self.resolve_catalog_grant_identity_name(
+            object_id,
+            name,
+            crate::metadata_discovery::AdministrativeIdentityKind::User,
+        )?
+        else {
+            return Ok(false);
+        };
+        if identity_id != self.principal_id {
+            return Err(TransactionError::CorruptCatalog);
+        }
+        Ok(true)
     }
 
     fn has_catalog_policy_ddl_authority(
