@@ -2770,7 +2770,11 @@ impl Parser {
             };
             if let Some(operator) = operator {
                 self.position += 1;
-                let right = self.check_value_expression()?;
+                let right = if self.peek() == Some(&Token::LeftParen) {
+                    self.check_unary()?
+                } else {
+                    self.check_value_expression()?
+                };
                 Ok(CheckExpressionSql::Compare {
                     operator,
                     left: Box::new(left),
@@ -3899,6 +3903,72 @@ mod tests {
                 CheckExpressionSql::Compare { operator, .. } if operator == expected
             ));
         }
+    }
+
+    #[test]
+    fn parses_and_binds_integer_check_arithmetic_with_precedence() {
+        use crate::authorization::Expr;
+
+        let parsed = parse_add_check_constraint(
+            "ALTER TABLE app.inventory ADD CHECK (quantity * 2 + reserved <= capacity)",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.expression,
+            CheckExpressionSql::Compare {
+                operator: CheckComparisonOperator::LessEqual,
+                left: Box::new(CheckExpressionSql::Add(
+                    Box::new(CheckExpressionSql::Multiply(
+                        Box::new(CheckExpressionSql::Column("quantity".into())),
+                        Box::new(CheckExpressionSql::Literal(CheckLiteralSql::Number(
+                            "2".into(),
+                        ))),
+                    )),
+                    Box::new(CheckExpressionSql::Column("reserved".into())),
+                )),
+                right: Box::new(CheckExpressionSql::Column("capacity".into())),
+            }
+        );
+        let bound = bind_check_expression(&parsed.expression, |name| match name {
+            "quantity" => Some((0, ScalarType::Integer)),
+            "reserved" => Some((1, ScalarType::Integer)),
+            "capacity" => Some((2, ScalarType::Integer)),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(
+            bound,
+            Expr::LessEqual(
+                Box::new(Expr::Add(
+                    Box::new(Expr::Multiply(
+                        Box::new(Expr::Field(0)),
+                        Box::new(Expr::Literal(Some(ScalarValue::Integer(2)))),
+                    )),
+                    Box::new(Expr::Field(1)),
+                )),
+                Box::new(Expr::Field(2)),
+            )
+        );
+        assert!(
+            parse_add_check_constraint(
+                "ALTER TABLE app.inventory ADD CHECK (quantity + 'two' <= capacity)"
+            )
+            .is_ok()
+        );
+        assert!(
+            bind_check_expression(
+                &parse_add_check_constraint(
+                    "ALTER TABLE app.inventory ADD CHECK (quantity + 'two' <= capacity)"
+                )
+                .unwrap()
+                .expression,
+                |name| match name {
+                    "quantity" | "capacity" => Some((0, ScalarType::Integer)),
+                    _ => None,
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]

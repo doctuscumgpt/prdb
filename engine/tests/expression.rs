@@ -56,13 +56,16 @@ fn expression_codec_matches_the_hand_checked_eir1_fixture() {
         Box::new(Expr::Literal(Some(ScalarValue::Text("x".to_owned())))),
     );
     let expected = [
-        b'E', b'I', b'R', b'1', 1, 0, 0, 0,  // header
+        b'E', b'I', b'R', b'1', 2, 0, 0, 0,  // header
         16, // Equal
         2, 0, 0, // Field(0)
         1, 6, 1, 0, 0, 0, b'x', // Literal(Text("x"))
     ];
     assert_eq!(encode_expression(&expression).unwrap(), expected);
     assert_eq!(decode_expression(&expected).unwrap(), expression);
+    let mut legacy = expected;
+    legacy[4] = 1;
+    assert_eq!(decode_expression(&legacy).unwrap(), expression);
 }
 
 #[test]
@@ -96,6 +99,18 @@ fn expression_codec_round_trips_all_nodes_and_scalar_literals() {
             Box::new(Expr::Literal(Some(ScalarValue::Date(0)))),
             Box::new(Expr::Literal(Some(ScalarValue::TimestampTz(0)))),
         ),
+        Expr::Add(
+            Box::new(Expr::Field(0)),
+            Box::new(Expr::Literal(Some(ScalarValue::Integer(1)))),
+        ),
+        Expr::Subtract(
+            Box::new(Expr::Field(1)),
+            Box::new(Expr::Literal(Some(ScalarValue::SmallInt(2)))),
+        ),
+        Expr::Multiply(
+            Box::new(Expr::Field(2)),
+            Box::new(Expr::Literal(Some(ScalarValue::BigInt(3)))),
+        ),
         Expr::Literal(None),
         Expr::CurrentPrincipalId,
     ]);
@@ -108,13 +123,14 @@ fn expression_codec_rejects_malformed_noncanonical_and_oversized_ir() {
     let valid = encode_expression(&Expr::CurrentPrincipalId).unwrap();
     for invalid in [
         b"BAD1\x01\0\0\0\x03".as_slice(),
-        b"EIR1\x02\0\0\0\x03".as_slice(),
+        b"EIR1\x03\0\0\0\x03".as_slice(),
         b"EIR1\x01\0\x01\0\x03".as_slice(),
         b"EIR1\x01\0\0\0\xff".as_slice(),
         b"EIR1\x01\0\0\0\x03\0".as_slice(),
     ] {
         assert!(decode_expression(invalid).is_err());
     }
+    assert!(decode_expression(b"EIR1\x01\0\0\0\x1a\x02\0\x00\x02\0").is_err());
     let mut trailing = valid.clone();
     trailing.push(0);
     assert!(decode_expression(&trailing).is_err());
@@ -229,6 +245,58 @@ fn schema_binding_checks_fields_types_result_metadata_and_dependencies() {
     assert!(
         validate_expression_binding(
             &wrong_result,
+            &columns,
+            &[column_id],
+            [23; 16],
+            ScalarType::Boolean,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn schema_binding_accepts_integer_arithmetic_and_null_but_rejects_mixed_types() {
+    let column_id = [25; 16];
+    let columns = [ColumnSchema {
+        scalar_type: ScalarType::Integer,
+        nullable: true,
+    }];
+    let expression = CatalogExpression {
+        expression_id: [26; 16],
+        purpose: ExpressionPurpose::Check,
+        result_type_id: [23; 16],
+        result_parameters: [0; 8],
+        dependencies: vec![column_id],
+        expression: Expr::GreaterEqual(
+            Box::new(Expr::Add(
+                Box::new(Expr::Field(0)),
+                Box::new(Expr::Literal(None)),
+            )),
+            Box::new(Expr::Literal(Some(ScalarValue::Integer(0)))),
+        ),
+    };
+    assert!(
+        validate_expression_binding(
+            &expression,
+            &columns,
+            &[column_id],
+            [23; 16],
+            ScalarType::Boolean,
+        )
+        .is_ok()
+    );
+
+    let mut mixed_types = expression;
+    mixed_types.expression = Expr::Greater(
+        Box::new(Expr::Add(
+            Box::new(Expr::Field(0)),
+            Box::new(Expr::Literal(Some(ScalarValue::BigInt(1)))),
+        )),
+        Box::new(Expr::Literal(Some(ScalarValue::Integer(0)))),
+    );
+    assert!(
+        validate_expression_binding(
+            &mixed_types,
             &columns,
             &[column_id],
             [23; 16],

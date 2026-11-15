@@ -59,6 +59,42 @@ fn check_constraints_accept_true_and_unknown_but_reject_false() {
 }
 
 #[test]
+fn check_constraints_evaluate_checked_integer_arithmetic_and_propagate_null() {
+    let ctx = context();
+    let within_limit = Expr::LessEqual(
+        Box::new(Expr::Add(
+            Box::new(Expr::Field(0)),
+            Box::new(Expr::Literal(Some(ScalarValue::Integer(2)))),
+        )),
+        Box::new(Expr::Literal(Some(ScalarValue::Integer(12)))),
+    );
+    assert_eq!(
+        check_constraint_passes(&within_limit, &[Some(ScalarValue::Integer(10))], &ctx),
+        Ok(true)
+    );
+    assert_eq!(
+        check_constraint_passes(&within_limit, &[Some(ScalarValue::Integer(11))], &ctx),
+        Ok(false)
+    );
+    assert_eq!(
+        check_constraint_passes(&within_limit, &[None], &ctx),
+        Ok(true)
+    );
+
+    let overflow = Expr::Greater(
+        Box::new(Expr::Add(
+            Box::new(Expr::Field(0)),
+            Box::new(Expr::Literal(Some(ScalarValue::Integer(1)))),
+        )),
+        Box::new(Expr::Literal(Some(ScalarValue::Integer(0)))),
+    );
+    assert_eq!(
+        check_constraint_passes(&overflow, &[Some(ScalarValue::Integer(i32::MAX))], &ctx),
+        Err(AuthorizationError::EvaluationFailed)
+    );
+}
+
+#[test]
 fn defaults_allow_typed_literals_and_the_admitted_principal_only() {
     let ctx = context();
     assert_eq!(
