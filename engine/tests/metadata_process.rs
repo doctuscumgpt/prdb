@@ -2514,6 +2514,38 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&grantee_alter_sql.stderr)
     );
     assert!(String::from_utf8_lossy(&grantee_alter_sql.stdout).contains("added column"));
+    admin
+        .grant_object_privilege(
+            transfer_owner.identity_id,
+            created_schema.identity_id,
+            AdminObjectPrivilege::Create,
+            AdminObjectGrantTarget::Object,
+        )
+        .map_err(|error| format!("schema CREATE grant failed: {error:?}"))?;
+    let schema_create_sql_path = root.join("create-table-with-schema-grant.sql");
+    std::fs::write(
+        &schema_create_sql_path,
+        "CREATE TABLE process_admin_schema.process_created_by_grantee (payload TEXT);",
+    )?;
+    let schema_create_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            credential_path_text,
+            "--sql-file",
+            schema_create_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        schema_create_sql.status.success(),
+        "CREATE-grantee SQL failed without schema USAGE: {}",
+        String::from_utf8_lossy(&schema_create_sql.stderr)
+    );
+    assert!(String::from_utf8_lossy(&schema_create_sql.stdout).contains("created table"));
     let denied_constraint_noop_sql_path = root.join("alter-grantee-missing-constraint.sql");
     std::fs::write(
         &denied_constraint_noop_sql_path,
@@ -3938,10 +3970,25 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let renamed_table = admin.rename_table(created_table.table_id, "process_admin_table_v2")?;
     let dropped_source_table = admin.drop_table(source_table.table_id)?;
     let dropped_table = admin.drop_table(created_table.table_id)?;
+    let created_by_grantee_id = admin
+        .list_relations_page(created_schema.identity_id, 128, None)?
+        .records
+        .into_iter()
+        .find(|relation| relation.name == "process_created_by_grantee")
+        .map(|relation| relation.relation_id)
+        .ok_or("CREATE grantee table was not visible during cleanup")?;
+    let dropped_by_grantee_table = admin.drop_table(created_by_grantee_id)?;
+    admin.revoke_object_privilege(
+        transfer_owner.identity_id,
+        created_schema.identity_id,
+        AdminObjectPrivilege::Create,
+        AdminObjectGrantTarget::Object,
+    )?;
     assert!(dropped_source_table.commit_sequence > renamed_table.commit_sequence);
     assert!(dropped_table.commit_sequence > dropped_source_table.commit_sequence);
+    assert!(dropped_by_grantee_table.commit_sequence > dropped_table.commit_sequence);
     let dropped_schema = admin.drop_schema(created_schema.identity_id)?;
-    assert!(dropped_schema.commit_sequence > dropped_table.commit_sequence);
+    assert!(dropped_schema.commit_sequence > dropped_by_grantee_table.commit_sequence);
     let drop_sql_path = root.join("drop-user.sql");
     std::fs::write(
         &drop_sql_path,

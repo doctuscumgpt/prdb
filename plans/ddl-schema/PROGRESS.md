@@ -784,3 +784,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Constraint metadata binding for SQL DDL now recognizes table ownership and inherited table-scoped `ALTER`, matching the typed constraint mutation authority. These principals can resolve the target schema/table and declared columns without data grants or schema USAGE. CHECK bodies remain omitted and hidden FK target details stay redacted.
 - Updated metadata-discovery, SDK, and DDL contracts. The focused delegated gateway/supervisor lifecycle verifies table-owner constraint listing and owner/direct-ALTER-grantee `ADD COLUMN` SQL binding without schema USAGE. The focused process regression, workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.
+
+## DS-SQL-36: schema CREATE-grantee SQL binding — implemented slice
+
+- Schema-scoped `CREATE` grantees can resolve a schema name for `CREATE TABLE` through authenticated metadata, without exposing its existing relations or columns. Table creation still uses the typed operation and storage authorization.
+- Updated metadata-discovery and client SQL contracts. The focused delegated gateway/supervisor lifecycle verifies a schema-scoped `CREATE` grantee can run `CREATE TABLE` without schema `USAGE`; typed storage remains authoritative. The focused process regression, formatting, workspace build, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

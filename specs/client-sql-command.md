@@ -25,6 +25,8 @@ prdb-client run-sql --address IP:PORT --credentials FILE \
 
 ## Administrative DDL Input
 
+`CREATE TABLE` name binding exposes a schema name to an effective schema-scoped `CREATE` grantee without schema `USAGE`; this metadata read does not expose the schema's existing relations or columns. The table is still created through the typed control operation, which rechecks current authority.
+
 `prdb-client constraint-list --address IP:PORT --credentials ADMIN_FILE --schema-id HEX --table-id HEX` returns all authenticated constraint metadata for the table as one JSON array. It follows the bounded metadata pages of 128 records on one authenticated control connection, so continuation tokens remain connection-local and are not exposed as CLI cursors. Each record exposes a generated `constraint_id`, constraint `kind`, ordered `column_ids`, and (for discoverable foreign keys) the referenced table and ordered column IDs. CHECK expressions and hidden target details are omitted. The generated ID can be used with `ALTER TABLE schema.table DROP CONSTRAINT 'generated-id'` after confirming it belongs to that table.
 
 `prdb-client index-list --address IP:PORT --credentials ADMIN_FILE --schema-id HEX --table-id HEX` returns all authenticated logical index metadata for the table as one JSON array. It follows the bounded metadata pages of 128 records on one authenticated control connection. Each record exposes `index_id`, `name`, ordered `column_ids`, and `unique`; physical storage IDs, roots, membership entries, counts, and key samples are omitted.

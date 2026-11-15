@@ -466,3 +466,8 @@
 
 - The authenticated `constraint-list` / `admin-sql` metadata route now supports table owners and inherited table-scoped `ALTER` grantees, including schema/table/column name binding without data grants or schema USAGE, so constraint DDL can use its regular typed authority.
 - Client SDK and metadata contracts are updated. The focused delegated gateway/supervisor lifecycle verifies table-owner constraint listing and owner/direct-ALTER-grantee `admin-sql` binding without schema USAGE. The focused process regression, workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.
+
+## Schema CREATE-grantee SQL binding — implemented slice
+
+- Authenticated schema metadata now reveals a schema name to an effective schema-scoped `CREATE` grantee, allowing `CREATE TABLE` SQL to reach the typed operation without schema `USAGE`. The read does not grant relation or column visibility; storage rechecks the grant.
+- The delegated gateway/supervisor lifecycle covers the schema grant and successful `admin-sql CREATE TABLE` flow. Focused process regression, formatting, workspace build, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

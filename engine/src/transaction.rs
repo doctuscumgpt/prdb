@@ -3937,10 +3937,9 @@ impl<'db> InvocationTransaction<'db> {
         Ok(None)
     }
 
-    /// List schemas over which this authenticated control principal has
-    /// administrative metadata authority. This entry point is separate from
-    /// invocation discovery so database administration and schema ownership
-    /// never widen executor or SQL query grants.
+    /// List schemas visible for authenticated control operations. This entry
+    /// point is separate from invocation discovery so DDL name binding never
+    /// widens executor or SQL query grants.
     pub(crate) fn list_catalog_administrative_schemas(
         &mut self,
     ) -> Result<Vec<VisibleSchema>, TransactionError> {
@@ -4040,7 +4039,7 @@ impl<'db> InvocationTransaction<'db> {
                 }
                 let privilege_code =
                     u16::from_be_bytes([grant.logical_key[37], grant.logical_key[38]]);
-                if !matches!(privilege_code, 8 | 9)
+                if !matches!(privilege_code, 7..=9)
                     || grant.logical_key[40..42] != 1u16.to_be_bytes()
                 {
                     continue;
@@ -4065,14 +4064,21 @@ impl<'db> InvocationTransaction<'db> {
                 {
                     return Err(TransactionError::CorruptCatalog);
                 }
-                let table_object = self
+                let object = self
                     .read_catalog_record(&catalog_id_key(2, object_id))?
                     .ok_or(TransactionError::CorruptCatalog)?;
-                if table_object.family_code != 2 || catalog_u16(&table_object, 1)? != 3 {
+                if object.family_code != 2 {
                     return Err(TransactionError::CorruptCatalog);
                 }
-                let Some(schema_id) = catalog_optional_id(&table_object, 2)? else {
-                    return Err(TransactionError::CorruptCatalog);
+                let schema_id = match (privilege_code, catalog_u16(&object, 1)?) {
+                    (7, 1) => object_id,
+                    (8 | 9, 3) => {
+                        let Some(schema_id) = catalog_optional_id(&object, 2)? else {
+                            return Err(TransactionError::CorruptCatalog);
+                        };
+                        schema_id
+                    }
+                    _ => continue,
                 };
                 let schema = self.read_discovery_schema(schema_id)?;
                 if !discovered_schema_ids.insert(schema_id) {

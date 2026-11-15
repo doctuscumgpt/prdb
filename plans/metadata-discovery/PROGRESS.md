@@ -229,3 +229,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Constraint ID/kind/source-column discovery now includes schema owners, table owners, database administrators, and inherited table-scoped `ALTER` grantees. ALTER principals can resolve the target schema/table and declared columns without data grants or schema USAGE. CHECK bodies remain omitted, and foreign-key target details still require visibility of the target schema.
 - Metadata discovery, SDK, and SQL contracts are updated. The focused delegated gateway/supervisor lifecycle now verifies table-owner constraint listing and owner/direct-ALTER-grantee SQL name binding without schema USAGE. The focused process regression, workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.
+
+## Schema CREATE-authorized SQL binding — implemented slice
+
+- Schema-scoped `CREATE` grantees can resolve only the granted schema name through authenticated metadata, allowing SQL table creation to reach its existing typed authorization check without exposing that schema's relations or columns.
+- Metadata and DDL contracts are updated. The delegated gateway/supervisor lifecycle grants schema-scoped `CREATE` without `USAGE` and successfully creates a table through `admin-sql`. The focused process regression, formatting, workspace build, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
