@@ -431,3 +431,8 @@
 
 - Added `prdb-client policy-list` over the existing authorized policy metadata pages. Its JSON includes policy IDs, kind, operation, effect, target columns, and only the recipients allowed by the authenticated API; expression bodies are omitted.
 - The initial red run failed because `policy-list` was not recognized. A follow-up showed that the table owner lacks schema-level policy discovery authority and receives the API's empty page; the production regression uses the authorized schema administrator and verifies row/cell summaries, recipient IDs, and expression-body absence. The focused delegated process test passed. Workspace build, format, warning-denied Clippy, delegated cgroup probe, and full serial delegated-cgroup suite passed with zero ignored tests; see [metadata discovery progress](../metadata-discovery/PROGRESS.md). Cargo.lock is unchanged.
+
+## Conditional DROP RESTRICT regression — verified
+
+- The production `admin-sql` lifecycle now tests `IF EXISTS` with both present and absent objects: present table drops succeed, while foreign-key and non-empty-schema RESTRICT failures remain errors.
+- The focused delegated process test, workspace build, format, warning-denied Clippy, cgroup probe, and full serial delegated-cgroup workspace suite passed; see [DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

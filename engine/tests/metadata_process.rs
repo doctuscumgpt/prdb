@@ -4253,6 +4253,11 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
         "admin-sql self-referencing CREATE TABLE failed: {}",
         String::from_utf8_lossy(&cli_output.stderr)
     );
+    let restricted_schema_drop = execute_admin_sql("DROP SCHEMA IF EXISTS selfref_app RESTRICT;")?;
+    assert!(
+        !restricted_schema_drop.status.success(),
+        "DROP SCHEMA IF EXISTS must preserve RESTRICT failures for a present schema"
+    );
     let cli_stdout = String::from_utf8_lossy(&cli_output.stdout);
     let table_id_text = cli_stdout
         .split_whitespace()
@@ -4383,7 +4388,7 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
         130,
         "index-list omitted constraint-owned indexes across pages: {many_index_json}"
     );
-    let drop_output = execute_admin_sql("DROP TABLE selfref_app.nodes RESTRICT;")?;
+    let drop_output = execute_admin_sql("DROP TABLE IF EXISTS selfref_app.nodes RESTRICT;")?;
     assert!(
         drop_output.status.success(),
         "admin-sql DROP TABLE failed: {}",
@@ -4432,7 +4437,7 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
             .ok_or("admin-sql child output omitted the table ID")?,
     )
     .ok_or("admin-sql returned an invalid child table ID")?;
-    let restricted_drop = execute_admin_sql("DROP TABLE selfref_app.parents RESTRICT;")?;
+    let restricted_drop = execute_admin_sql("DROP TABLE IF EXISTS selfref_app.parents RESTRICT;")?;
     assert!(!restricted_drop.status.success());
     let relations = admin.list_relations_page(created_schema.identity_id, 16, None)?;
     assert!(
