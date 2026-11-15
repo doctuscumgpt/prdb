@@ -1849,7 +1849,7 @@ fn storage_manager_creates_typed_table_with_atomic_check_constraint()
     let mut audit = identity_audit_event(0xd7, actor, id(0xd8));
     audit.correlation_id = invocation_id;
     let created = storage
-        .create_table_with_named_checks_and_foreign_keys(
+        .create_table_with_named_constraints_and_foreign_keys(
             CreateTableRequest {
                 invocation_id,
                 authenticated_actor_id: actor,
@@ -1884,6 +1884,8 @@ fn storage_manager_creates_typed_table_with_atomic_check_constraint()
                 audit_event: audit,
             },
             None,
+            None,
+            &[],
             &[],
             &[prdb_engine::authorization::Expr::GreaterEqual(
                 Box::new(prdb_engine::authorization::Expr::Field(1)),
@@ -1892,6 +1894,7 @@ fn storage_manager_creates_typed_table_with_atomic_check_constraint()
                 ))),
             )],
             &[Some("ledger_label_minimum".to_owned())],
+            &[],
             &[],
         )
         .map_err(|error| format!("table creation failed: {error:?}"))?;
@@ -1916,6 +1919,83 @@ fn storage_manager_creates_typed_table_with_atomic_check_constraint()
             .payload,
         b"ledger_label_minimum"
     );
+    let keyed_invocation = id(0xe1);
+    let mut keyed_audit = identity_audit_event(0xe1, actor, id(0xe2));
+    keyed_audit.correlation_id = keyed_invocation;
+    let _keyed = storage
+        .create_table_with_named_constraints_and_foreign_keys(
+            CreateTableRequest {
+                invocation_id: keyed_invocation,
+                authenticated_actor_id: actor,
+                schema_id,
+                name: "keyed_ledger".to_owned(),
+                columns: vec![
+                    TableColumnDefinition {
+                        name: "id".to_owned(),
+                        scalar_type: ScalarType::Uuid,
+                        nullable: false,
+                        generated_uuid_identity: false,
+                        default: None,
+                    },
+                    TableColumnDefinition {
+                        name: "parent_id".to_owned(),
+                        scalar_type: ScalarType::Uuid,
+                        nullable: true,
+                        generated_uuid_identity: false,
+                        default: None,
+                    },
+                ],
+                retention_deadline_us: 9_999,
+                audit_event: keyed_audit,
+            },
+            Some(&["id".to_owned()]),
+            Some("keyed_ledger_pk".to_owned()),
+            &[vec!["parent_id".to_owned()]],
+            &[Some("keyed_ledger_parent_key".to_owned())],
+            &[],
+            &[],
+            &[
+                prdb_engine::storage_manager::CreateTableForeignKeyDefinition {
+                    source_columns: vec!["parent_id".to_owned()],
+                    target_constraint_id: [0; 16],
+                    target_columns: Some(vec!["id".to_owned()]),
+                },
+            ],
+            &[Some("keyed_ledger_parent_fk".to_owned())],
+        )
+        .map_err(|error| format!("named key table creation failed: {error:?}"))?;
+    let keyed_read = database.begin_read()?;
+    let keyed_catalog = keyed_read.open_table(CATALOG)?;
+    let mut keyed_constraint_names = Vec::new();
+    for entry in keyed_catalog.iter()? {
+        let (key, value) = entry?;
+        let key = key.value();
+        if key.len() != 19 || key[..2] != 2u16.to_be_bytes() {
+            continue;
+        }
+        let object = decode_registered_envelope(value.value())?;
+        if object.family_code == 2
+            && object
+                .fields
+                .iter()
+                .any(|field| field.tag == 1 && field.payload.as_slice() == 6u16.to_le_bytes())
+        {
+            if let Some(name) = object.fields.iter().find(|field| field.tag == 3) {
+                keyed_constraint_names.push(name.payload.clone());
+            }
+        }
+    }
+    for expected_name in [
+        b"keyed_ledger_pk".as_slice(),
+        b"keyed_ledger_parent_key".as_slice(),
+        b"keyed_ledger_parent_fk".as_slice(),
+    ] {
+        assert!(
+            keyed_constraint_names
+                .iter()
+                .any(|name| name == expected_name)
+        );
+    }
     let table_record = catalog
         .get(id_catalog_key(5, created.table_id).as_slice())?
         .ok_or("missing table record")?;

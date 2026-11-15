@@ -6483,7 +6483,7 @@ impl<'db> StorageManager<'db> {
         &self,
         request: CreateTableRequest,
     ) -> Result<CreatedTable, TableLifecycleError> {
-        self.create_table_inner(request, None, &[], &[], &[], &[])
+        self.create_table_inner(request, None, None, &[], &[], &[], &[], &[], &[])
     }
 
     /// Create a table and its primary key catalog/index records atomically.
@@ -6495,6 +6495,9 @@ impl<'db> StorageManager<'db> {
         self.create_table_inner(
             request,
             Some(primary_key_columns.to_vec()),
+            None,
+            &[],
+            &[],
             &[],
             &[],
             &[],
@@ -6508,7 +6511,17 @@ impl<'db> StorageManager<'db> {
         request: CreateTableRequest,
         unique_constraints: &[Vec<String>],
     ) -> Result<CreatedTable, TableLifecycleError> {
-        self.create_table_inner(request, None, unique_constraints, &[], &[], &[])
+        self.create_table_inner(
+            request,
+            None,
+            None,
+            unique_constraints,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+        )
     }
 
     /// Create a table with a primary key and table-level UNIQUE constraints atomically.
@@ -6521,7 +6534,10 @@ impl<'db> StorageManager<'db> {
         self.create_table_inner(
             request,
             primary_key_columns.map(<[String]>::to_vec),
+            None,
             unique_constraints,
+            &[],
+            &[],
             &[],
             &[],
             &[],
@@ -6538,8 +6554,11 @@ impl<'db> StorageManager<'db> {
         self.create_table_inner(
             request,
             primary_key_columns.map(<[String]>::to_vec),
+            None,
             unique_constraints,
+            &[],
             check_expressions,
+            &[],
             &[],
             &[],
         )
@@ -6556,9 +6575,12 @@ impl<'db> StorageManager<'db> {
         self.create_table_inner(
             request,
             primary_key_columns.map(<[String]>::to_vec),
+            None,
             unique_constraints,
+            &[],
             check_expressions,
             foreign_keys,
+            &[],
             &[],
         )
     }
@@ -6572,23 +6594,56 @@ impl<'db> StorageManager<'db> {
         check_constraint_names: &[Option<String>],
         foreign_keys: &[CreateTableForeignKeyDefinition],
     ) -> Result<CreatedTable, TableLifecycleError> {
+        self.create_table_with_named_constraints_and_foreign_keys(
+            request,
+            primary_key_columns,
+            None,
+            unique_constraints,
+            &[],
+            check_expressions,
+            check_constraint_names,
+            foreign_keys,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_table_with_named_constraints_and_foreign_keys(
+        &self,
+        request: CreateTableRequest,
+        primary_key_columns: Option<&[String]>,
+        primary_key_name: Option<String>,
+        unique_constraints: &[Vec<String>],
+        unique_constraint_names: &[Option<String>],
+        check_expressions: &[crate::authorization::Expr],
+        check_constraint_names: &[Option<String>],
+        foreign_keys: &[CreateTableForeignKeyDefinition],
+        foreign_key_names: &[Option<String>],
+    ) -> Result<CreatedTable, TableLifecycleError> {
         self.create_table_inner(
             request,
             primary_key_columns.map(<[String]>::to_vec),
+            primary_key_name,
             unique_constraints,
+            unique_constraint_names,
             check_expressions,
             foreign_keys,
+            foreign_key_names,
             check_constraint_names,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_table_inner(
         &self,
         request: CreateTableRequest,
         primary_key_columns: Option<Vec<String>>,
+        primary_key_name: Option<String>,
         unique_constraints: &[Vec<String>],
+        unique_constraint_names: &[Option<String>],
         check_expressions: &[crate::authorization::Expr],
         foreign_keys: &[CreateTableForeignKeyDefinition],
+        foreign_key_names: &[Option<String>],
         check_constraint_names: &[Option<String>],
     ) -> Result<CreatedTable, TableLifecycleError> {
         let CreateTableRequest {
@@ -6610,6 +6665,18 @@ impl<'db> StorageManager<'db> {
             || check_expressions.len() > crate::tuple::MAX_COLUMNS
             || (!check_constraint_names.is_empty()
                 && check_constraint_names.len() != check_expressions.len())
+            || (primary_key_name.is_some() && primary_key_columns.is_none())
+            || (!unique_constraint_names.is_empty()
+                && unique_constraint_names.len() != unique_constraints.len())
+            || (!foreign_key_names.is_empty() && foreign_key_names.len() != foreign_keys.len())
+            || primary_key_name
+                .as_ref()
+                .is_some_and(|name| !is_normalized_principal_name(name))
+            || unique_constraint_names
+                .iter()
+                .flatten()
+                .chain(foreign_key_names.iter().flatten())
+                .any(|name| !is_normalized_principal_name(name))
             || check_constraint_names
                 .iter()
                 .flatten()
@@ -6697,6 +6764,16 @@ impl<'db> StorageManager<'db> {
         {
             return Err(TableLifecycleError::InvalidRequest);
         }
+        let mut supplied_constraint_names = HashSet::new();
+        if primary_key_name
+            .iter()
+            .chain(unique_constraint_names.iter().flatten())
+            .chain(check_constraint_names.iter().flatten())
+            .chain(foreign_key_names.iter().flatten())
+            .any(|name| !supplied_constraint_names.insert(name.as_str()))
+        {
+            return Err(TableLifecycleError::InvalidRequest);
+        }
         if foreign_keys.iter().any(|foreign_key| {
             foreign_key.source_columns.is_empty()
                 || foreign_key.source_columns.len() > columns.len()
@@ -6763,9 +6840,15 @@ impl<'db> StorageManager<'db> {
                 index_id.zeroize();
                 return Err(TableLifecycleError::ObjectIdGenerationFailed);
             }
-            key_constraints.push((2u16, key_column_ids, constraint_id, index_id));
+            key_constraints.push((
+                2u16,
+                key_column_ids,
+                primary_key_name.clone(),
+                constraint_id,
+                index_id,
+            ));
         }
-        for columns_for_key in unique_constraints {
+        for (index, columns_for_key) in unique_constraints.iter().enumerate() {
             let key_column_ids = columns_for_key
                 .iter()
                 .map(|name| {
@@ -6786,7 +6869,13 @@ impl<'db> StorageManager<'db> {
                 index_id.zeroize();
                 return Err(TableLifecycleError::ObjectIdGenerationFailed);
             }
-            key_constraints.push((3u16, key_column_ids, constraint_id, index_id));
+            key_constraints.push((
+                3u16,
+                key_column_ids,
+                unique_constraint_names.get(index).cloned().flatten(),
+                constraint_id,
+                index_id,
+            ));
         }
         let mut check_constraints = Vec::with_capacity(check_expressions.len());
         for (index, expression) in check_expressions.iter().enumerate() {
@@ -7085,7 +7174,9 @@ impl<'db> StorageManager<'db> {
             payload.extend(ids.iter().flatten());
             payload
         };
-        for (constraint_kind, key_column_ids, constraint_id, index_id) in &key_constraints {
+        for (constraint_kind, key_column_ids, constraint_name, constraint_id, index_id) in
+            &key_constraints
+        {
             let constraint_key = id_catalog_key(8, *constraint_id);
             let constraint_fields = [
                 CatalogField {
@@ -7152,17 +7243,27 @@ impl<'db> StorageManager<'db> {
                 } else {
                     (6u16, 7u16, "unique_constraint", "unique_index")
                 };
-            for (object_id, kind, prefix) in [
-                (*constraint_id, constraint_kind_object, constraint_prefix),
-                (*index_id, index_kind_object, index_prefix),
+            for (object_id, kind, prefix, supplied_name) in [
+                (
+                    *constraint_id,
+                    constraint_kind_object,
+                    constraint_prefix,
+                    constraint_name.as_deref(),
+                ),
+                (*index_id, index_kind_object, index_prefix, None),
             ] {
                 let key = id_catalog_key(2, object_id);
-                let name = format!(
-                    "{prefix}_{}",
-                    object_id
-                        .iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect::<String>()
+                let name = supplied_name.map_or_else(
+                    || {
+                        format!(
+                            "{prefix}_{}",
+                            object_id
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>()
+                        )
+                    },
+                    str::to_owned,
                 );
                 let payload = encode_envelope(
                     &family_schema(2).ok_or(TableLifecycleError::Storage)?,
@@ -7512,7 +7613,7 @@ impl<'db> StorageManager<'db> {
                 .map_err(|_| TableLifecycleError::Storage)?;
             let mut referenced_tables = HashMap::<[u8; 16], Vec<u8>>::new();
             let mut foreign_key_shapes = HashSet::new();
-            for definition in foreign_keys {
+            for (index, definition) in foreign_keys.iter().enumerate() {
                 let source_column_ids = definition
                     .source_columns
                     .iter()
@@ -7543,10 +7644,10 @@ impl<'db> StorageManager<'db> {
                 let target_constraint_id = if let Some(target_column_ids) = &local_target {
                     key_constraints
                         .iter()
-                        .find(|(kind, key_columns, _, _)| {
+                        .find(|(kind, key_columns, _, _, _)| {
                             matches!(kind, 2 | 3) && key_columns == target_column_ids
                         })
-                        .map(|(_, _, constraint_id, _)| *constraint_id)
+                        .map(|(_, _, _, constraint_id, _)| *constraint_id)
                         .ok_or(TableLifecycleError::InvalidRequest)?
                 } else {
                     definition.target_constraint_id
@@ -7713,13 +7814,19 @@ impl<'db> StorageManager<'db> {
                 )
                 .map_err(|_| TableLifecycleError::InvalidRequest)?;
                 let object_key = id_catalog_key(2, foreign_key_id);
-                let object_name = format!(
-                    "foreign_key_{}",
-                    foreign_key_id
-                        .iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect::<String>()
-                );
+                let object_name = foreign_key_names
+                    .get(index)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or_else(|| {
+                        format!(
+                            "foreign_key_{}",
+                            foreign_key_id
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>()
+                        )
+                    });
                 let object_payload = encode_envelope(
                     &family_schema(2).ok_or(TableLifecycleError::Storage)?,
                     &object_key,

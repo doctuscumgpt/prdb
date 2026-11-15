@@ -330,3 +330,8 @@
 
 - Added `tables.create` operation version 3 with an expression-aligned `check_constraint_names` string array; empty entries preserve unnamed checks. Versions 1 and 2 remain valid for existing unnamed requests.
 - AdminClient serialization and decoder regression cover named column/table checks; full delegated workspace validation is recorded below.
+
+## DS-SQL-51: named CREATE TABLE key/FK protocol — implemented
+
+- Added strict `tables.create` v4 decoding for the PK name and UNIQUE/FK name arrays, with alignment, canonical-name, and cross-kind uniqueness validation. Versions 1–3 remain accepted under their prior shapes.
+- Authenticated AdminClient serialization emits and decodes v4 names for PK, UNIQUE, CHECK, and self-referencing FK definitions. The complete serial delegated-cgroup workspace suite passes with zero ignored tests; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

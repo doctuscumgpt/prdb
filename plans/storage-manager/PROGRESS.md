@@ -1148,3 +1148,8 @@
 
 - Added an atomic table-creation path that carries optional names alongside CHECK expressions and stores supplied names on constraint objects while retaining generated names for unnamed checks.
 - Real-redb regression confirms the named catalog object is published with the table. The production gateway/supervisor lifecycle now creates and reads a named CHECK. The full serial delegated-cgroup workspace suite passes with sandbox and process tests enabled (282 library tests and 177 commit tests; no ignored tests).
+
+## DS-SQL-51: named CREATE TABLE key/FK catalog objects — implemented
+
+- The atomic table-create path now accepts optional PRIMARY KEY, UNIQUE, and FOREIGN KEY names, validates alignment and statement-wide uniqueness with CHECK names, and persists each supplied label on the corresponding family-2 constraint object. Unnamed definitions retain generated labels.
+- Real-redb coverage creates a named PK, UNIQUE, and self-referencing FK atomically, alongside a named CHECK fixture, and confirms catalog object-name persistence. Workspace build, format check, warning-denied Clippy, and the complete serial delegated-cgroup workspace suite pass with zero ignored tests; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

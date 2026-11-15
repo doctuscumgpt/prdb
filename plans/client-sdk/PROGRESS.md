@@ -947,3 +947,8 @@
 - Updated `execute_create_table_sql` to bind optional constraint names to the corresponding CHECK EIR1 expressions and submit the versioned atomic CREATE TABLE request. Existing unnamed SQL and typed AdminClient operations keep their prior wire versions.
 - Authenticated control-channel regression verifies names and expressions remain aligned, including a mix of column- and table-level CHECK forms.
 - Production gateway/supervisor process coverage and storage persistence pass. The full serial delegated-cgroup workspace suite passes with sandbox and process tests enabled (282 library tests and 177 commit tests; no ignored tests).
+
+## DS-SQL-51: named CREATE TABLE key/FK client binding — implemented
+
+- The SQL binder passes parsed names in definition order to the typed CREATE TABLE request; self-referential named FKs retain the same atomic local-target binding behavior.
+- The authenticated request regression verifies the v4 names remain aligned with PK/UNIQUE/FK definitions and CHECK expressions. The complete serial delegated-cgroup workspace suite passes with zero ignored tests; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

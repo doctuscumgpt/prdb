@@ -541,3 +541,8 @@
 
 - `admin-sql` CREATE TABLE accepts named column-level and table-level CHECK clauses and routes them through the atomic typed creation operation. Duplicate names are rejected locally before submission; storage validates and persists the names.
 - Parser and authenticated AdminClient request tests pass. The production gateway/supervisor fixture now includes a named CHECK. The full serial delegated-cgroup workspace suite passes with sandbox and process tests enabled (282 library tests and 177 commit tests; no ignored tests).
+
+## DS-SQL-51: named CREATE TABLE key/FK SQL — implemented
+
+- SQL CREATE TABLE now sends optional PK/UNIQUE/FK names and retains the existing CHECK names; constraint metadata can resolve each explicit name for DROP CONSTRAINT. Grammar, protocol, and metadata contracts are updated in the normative specs.
+- Parser and authenticated AdminClient request regressions cover named PK, UNIQUE, CHECK, and self-referencing FK SQL. The production self-reference process test and complete delegated-cgroup workspace suite pass with zero ignored tests; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

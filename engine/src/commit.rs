@@ -1640,6 +1640,15 @@ fn validate_final_object_owners(
     Ok(())
 }
 
+fn is_normalized_constraint_name(name: &[u8]) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && (name[0].is_ascii_lowercase() || name[0] == b'_')
+        && name
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+}
+
 /// Require the final set of user and role names to be unique in their shared
 /// database namespace. The DDL layer supplies already-normalized names.
 fn validate_final_principal_names(
@@ -9194,16 +9203,13 @@ fn table_create_ddl_authority_guards(
                 .get(&constraint_id)
                 .and_then(|write| write.payload.as_deref())
                 .ok_or(CommitError::InvalidCatalog)?;
-            let expected_name = format!(
-                "foreign_key_{}",
-                constraint_id
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>()
-            );
             if catalog_field_u16(&foreign_key_object_key, foreign_key_object, 2, 1)? != 6
-                || catalog_field_bytes(&foreign_key_object_key, foreign_key_object, 2, 3)?
-                    != expected_name.as_bytes()
+                || !is_normalized_constraint_name(&catalog_field_bytes(
+                    &foreign_key_object_key,
+                    foreign_key_object,
+                    2,
+                    3,
+                )?)
                 || catalog_field_bytes(&foreign_key_object_key, foreign_key_object, 2, 4)?
                     != principal_id
                 || catalog_field_u64(&foreign_key_object_key, foreign_key_object, 2, 5)? != 1
@@ -9303,8 +9309,12 @@ fn table_create_ddl_authority_guards(
             || catalog_field_u32(&index_key, index_bytes, 9, 9)? != 1
             || catalog_field_u64(&index_key, index_bytes, 9, 10)? != 1
             || catalog_field_u16(&constraint_object_key, constraint_object, 2, 1)? != 6
-            || catalog_field_bytes(&constraint_object_key, constraint_object, 2, 3)?
-                != expected_constraint_name.as_bytes()
+            || {
+                let constraint_name =
+                    catalog_field_bytes(&constraint_object_key, constraint_object, 2, 3)?;
+                constraint_name != expected_constraint_name.as_bytes()
+                    && !is_normalized_constraint_name(&constraint_name)
+            }
             || catalog_field_bytes(&constraint_object_key, constraint_object, 2, 4)? != principal_id
             || catalog_field_u64(&constraint_object_key, constraint_object, 2, 5)? != 1
             || catalog_field_u16(&constraint_object_key, constraint_object, 2, 6)? != 1

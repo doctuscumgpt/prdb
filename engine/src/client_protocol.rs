@@ -314,10 +314,13 @@ enum PendingAdminAction {
         name: String,
         columns: Vec<crate::storage_manager::TableColumnDefinition>,
         primary_key_columns: Option<Vec<String>>,
+        primary_key_name: Option<String>,
         unique_constraints: Vec<Vec<String>>,
+        unique_constraint_names: Vec<Option<String>>,
         check_expressions: Vec<crate::authorization::Expr>,
         check_constraint_names: Vec<Option<String>>,
         foreign_keys: Vec<crate::storage_manager::CreateTableForeignKeyDefinition>,
+        foreign_key_names: Vec<Option<String>>,
     },
     RenameIdentity {
         identity_id: [u8; 16],
@@ -772,10 +775,13 @@ pub enum ClientAdminCommand {
         name: String,
         columns: Vec<crate::storage_manager::TableColumnDefinition>,
         primary_key_columns: Option<Vec<String>>,
+        primary_key_name: Option<String>,
         unique_constraints: Vec<Vec<String>>,
+        unique_constraint_names: Vec<Option<String>>,
         check_expressions: Vec<crate::authorization::Expr>,
         check_constraint_names: Vec<Option<String>>,
         foreign_keys: Vec<crate::storage_manager::CreateTableForeignKeyDefinition>,
+        foreign_key_names: Vec<Option<String>>,
     },
     PrepareRenameIdentity {
         identity_id: [u8; 16],
@@ -986,11 +992,13 @@ pub fn decode_client_admin_command(
     let mut table_columns = None;
     let mut primary_key_columns = None;
     let mut unique_constraints = None;
+    let mut unique_constraint_names = None;
     let mut check_expressions = None;
     let mut check_constraint_names = None;
     let mut table_foreign_key_sources = None;
     let mut table_foreign_key_targets = None;
     let mut table_foreign_key_target_columns = None;
+    let mut foreign_key_names = None;
     let mut foreign_key_source_columns = None;
     let mut constraint_column_ids = None;
     let mut index_unique = None;
@@ -1041,11 +1049,18 @@ pub fn decode_client_admin_command(
                     {
                         primary_key_columns = Some(parser.parse_string_array()?);
                         args.insert(arg, "<structured-names>".to_owned());
+                    } else if arg == "primary_key_name" {
+                        args.insert(arg, parser.parse_string()?);
                     } else if arg == "unique_constraints"
                         && parser.text.get(parser.offset) == Some(&b'[')
                     {
                         unique_constraints = Some(parser.parse_string_array_array()?);
                         args.insert(arg, "<structured-name-arrays>".to_owned());
+                    } else if arg == "unique_constraint_names"
+                        && parser.text.get(parser.offset) == Some(&b'[')
+                    {
+                        unique_constraint_names = Some(parser.parse_string_array()?);
+                        args.insert(arg, "<structured-unique-names>".to_owned());
                     } else if arg == "check_expressions_eir1"
                         && parser.text.get(parser.offset) == Some(&b'[')
                     {
@@ -1087,6 +1102,11 @@ pub fn decode_client_admin_command(
                     {
                         table_foreign_key_target_columns = Some(parser.parse_string_array_array()?);
                         args.insert(arg, "<structured-foreign-key-target-columns>".to_owned());
+                    } else if arg == "foreign_key_names"
+                        && parser.text.get(parser.offset) == Some(&b'[')
+                    {
+                        foreign_key_names = Some(parser.parse_string_array()?);
+                        args.insert(arg, "<structured-foreign-key-names>".to_owned());
                     } else if arg == "source_column_ids"
                         && parser.text.get(parser.offset) == Some(&b'[')
                     {
@@ -2453,9 +2473,9 @@ pub fn decode_client_admin_command(
             })
         }
         Some("prepare")
-            if matches!(version, Some(1..=3)) && operation.as_deref() == Some("tables.create") =>
+            if matches!(version, Some(1..=4)) && operation.as_deref() == Some("tables.create") =>
         {
-            if operation_id.is_some() || !(4..=11).contains(&seen.len()) {
+            if operation_id.is_some() || !(4..=14).contains(&seen.len()) {
                 return Err(ClientControlError::UnknownKey);
             }
             let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
@@ -2498,7 +2518,7 @@ pub fn decode_client_admin_command(
                 != check_constraint_names
                     .as_ref()
                     .map(|_| "<structured-check-names>")
-                || (version != Some(3) && check_constraint_names.is_some())
+                || (version.is_some_and(|version| version < 3) && check_constraint_names.is_some())
                 || (version == Some(3) && check_constraint_names.is_none())
             {
                 return Err(ClientControlError::InvalidPrepare);
@@ -2554,6 +2574,65 @@ pub fn decode_client_admin_command(
                 .unwrap_or_else(|| vec![Vec::new(); target_constraint_ids.len()]);
             if source_columns.len() != target_constraint_ids.len()
                 || source_columns.len() != target_columns.len()
+            {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            let primary_key_name_field = args.remove("primary_key_name");
+            let unique_names_marker = args.remove("unique_constraint_names");
+            let foreign_names_marker = args.remove("foreign_key_names");
+            if version == Some(4) {
+                if primary_key_name_field.is_none()
+                    || unique_names_marker.as_deref() != Some("<structured-unique-names>")
+                    || foreign_names_marker.as_deref() != Some("<structured-foreign-key-names>")
+                    || unique_constraint_names.is_none()
+                    || foreign_key_names.is_none()
+                {
+                    return Err(ClientControlError::InvalidPrepare);
+                }
+            } else if primary_key_name_field.is_some()
+                || unique_names_marker.is_some()
+                || foreign_names_marker.is_some()
+                || unique_constraint_names.is_some()
+                || foreign_key_names.is_some()
+            {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            let primary_key_name = primary_key_name_field.filter(|name| !name.is_empty());
+            let unique_constraint_names = unique_constraint_names
+                .unwrap_or_default()
+                .into_iter()
+                .map(|name| if name.is_empty() { None } else { Some(name) })
+                .collect::<Vec<_>>();
+            let foreign_key_names = foreign_key_names
+                .unwrap_or_default()
+                .into_iter()
+                .map(|name| if name.is_empty() { None } else { Some(name) })
+                .collect::<Vec<_>>();
+            let named_constraint_names = primary_key_name
+                .iter()
+                .chain(unique_constraint_names.iter().flatten())
+                .chain(check_constraint_names.iter().flatten())
+                .chain(foreign_key_names.iter().flatten())
+                .collect::<std::collections::HashSet<_>>();
+            if primary_key_name
+                .as_ref()
+                .is_some_and(|_| primary_key_columns.is_none())
+                || (!unique_constraint_names.is_empty()
+                    && unique_constraint_names.len() != unique_constraints.len())
+                || (!foreign_key_names.is_empty()
+                    && foreign_key_names.len() != target_columns.len())
+                || unique_constraint_names
+                    .iter()
+                    .flatten()
+                    .chain(foreign_key_names.iter().flatten())
+                    .chain(check_constraint_names.iter().flatten())
+                    .chain(primary_key_name.iter())
+                    .any(|name| !is_canonical_admin_principal_name(name))
+                || named_constraint_names.len()
+                    != usize::from(primary_key_name.is_some())
+                        + unique_constraint_names.iter().flatten().count()
+                        + check_constraint_names.iter().flatten().count()
+                        + foreign_key_names.iter().flatten().count()
             {
                 return Err(ClientControlError::InvalidPrepare);
             }
@@ -2636,10 +2715,13 @@ pub fn decode_client_admin_command(
                 name,
                 columns,
                 primary_key_columns,
+                primary_key_name,
                 unique_constraints,
+                unique_constraint_names,
                 check_expressions,
                 check_constraint_names,
                 foreign_keys,
+                foreign_key_names,
             })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("users.rename") => {
@@ -6092,10 +6174,13 @@ impl ClientConnectionSession {
                 name,
                 columns,
                 primary_key_columns,
+                primary_key_name,
                 unique_constraints,
+                unique_constraint_names,
                 check_expressions,
                 check_constraint_names,
                 foreign_keys,
+                foreign_key_names,
             } => {
                 if self.pending_admin_operation.is_some() {
                     return Err(ClientSessionError::WrongMode);
@@ -6116,10 +6201,13 @@ impl ClientConnectionSession {
                         name,
                         columns,
                         primary_key_columns,
+                        primary_key_name,
                         unique_constraints,
+                        unique_constraint_names,
                         check_expressions,
                         check_constraint_names,
                         foreign_keys,
+                        foreign_key_names,
                     },
                 });
                 self.json_response(
@@ -7379,10 +7467,13 @@ impl ClientConnectionSession {
                         name,
                         columns,
                         primary_key_columns,
+                        primary_key_name,
                         unique_constraints,
+                        unique_constraint_names,
                         check_expressions,
                         check_constraint_names,
                         foreign_keys,
+                        foreign_key_names,
                     } => {
                         let create_request = crate::storage_manager::CreateTableRequest {
                             invocation_id: operation_id,
@@ -7402,13 +7493,16 @@ impl ClientConnectionSession {
                             },
                         };
                         let created = storage
-                            .create_table_with_named_checks_and_foreign_keys(
+                            .create_table_with_named_constraints_and_foreign_keys(
                                 create_request,
                                 primary_key_columns.as_deref(),
+                                primary_key_name,
                                 &unique_constraints,
+                                &unique_constraint_names,
                                 &check_expressions,
                                 &check_constraint_names,
                                 &foreign_keys,
+                                &foreign_key_names,
                             )
                             .map_err(ClientSessionError::TableLifecycle)?;
                         let mut payload = format!(

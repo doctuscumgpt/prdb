@@ -1124,10 +1124,13 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
             schema_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             name: "events".into(),
             primary_key_columns: None,
+            primary_key_name: None,
             unique_constraints: vec![],
+            unique_constraint_names: vec![],
             check_expressions: vec![],
             check_constraint_names: vec![],
             foreign_keys: vec![],
+            foreign_key_names: vec![],
             columns: vec![
                 prdb_engine::storage_manager::TableColumnDefinition {
                     name: "event_id".into(),

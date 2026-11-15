@@ -209,3 +209,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - A second debug-build-only failpoint exits after the staging image has passed logical digest and READY validation but immediately before exchange. The regression proves the active v2 bytes and independent backup remain identical, the completed staged v3 image is valid, and a fresh retry rebuilds staging and publishes successfully while retaining the v2 source.
 - Verification: all 33 serial `bootstrap_binary` tests passed, including both sides of the exchange process-exit cases. Formatting, locked offline workspace build, warning-denied all-target Clippy, and `git diff --check` passed.
 - Limit: these abrupt process exits run with the same live kernel and filesystem and do not simulate power loss.
+
+
+## DS-SQL-51: normalized explicit constraint object names — verified
+
+- The serialized CREATE TABLE validator now accepts canonical explicit PK, UNIQUE, and FK object names while validating the normalized identifier profile; generated labels continue to pass. Real-redb persistence and the full delegated workspace suite pass; details are recorded in [schema DDL progress](../ddl-schema/PROGRESS.md).

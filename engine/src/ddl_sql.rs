@@ -18,14 +18,18 @@ pub struct CreateTableSql {
     pub if_not_exists: bool,
     pub columns: Vec<AdminColumnDefinition>,
     pub primary_key_columns: Option<Vec<String>>,
+    pub primary_key_name: Option<String>,
     pub unique_constraints: Vec<Vec<String>>,
+    pub unique_constraint_names: Vec<Option<String>>,
     pub check_constraints: Vec<CheckExpressionSql>,
     pub check_constraint_names: Vec<Option<String>>,
+    pub foreign_key_names: Vec<Option<String>>,
     pub foreign_keys: Vec<CreateTableForeignKeySql>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateTableForeignKeySql {
+    pub name: Option<String>,
     pub columns: Vec<String>,
     pub referenced_schema: String,
     pub referenced_table: String,
@@ -408,7 +412,9 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
     parser.take(Token::LeftParen)?;
     let mut columns = Vec::new();
     let mut primary_key_columns = None;
+    let mut primary_key_name = None;
     let mut unique_constraints = Vec::new();
+    let mut unique_constraint_names = Vec::new();
     let mut check_constraints = Vec::new();
     let mut check_constraint_names = Vec::new();
     let mut foreign_keys = Vec::new();
@@ -435,9 +441,6 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
                 check_constraints.push(expression);
                 check_constraint_names.push(constraint_name);
             } else if parser.peek_word("foreign") {
-                if constraint_name.is_some() {
-                    return Err(DdlSqlError::InvalidStatement);
-                }
                 if foreign_keys.len() >= crate::tuple::MAX_COLUMNS {
                     return Err(DdlSqlError::InvalidStatement);
                 }
@@ -457,15 +460,13 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
                     return Err(DdlSqlError::InvalidStatement);
                 }
                 foreign_keys.push(CreateTableForeignKeySql {
+                    name: constraint_name.clone(),
                     columns,
                     referenced_schema,
                     referenced_table,
                     referenced_columns,
                 });
             } else {
-                if constraint_name.is_some() {
-                    return Err(DdlSqlError::InvalidStatement);
-                }
                 let kind = if parser.peek_word("primary") {
                     parser.word("primary")?;
                     parser.word("key")?;
@@ -490,6 +491,7 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
                     if primary_key_columns.replace(names).is_some() {
                         return Err(DdlSqlError::InvalidStatement);
                     }
+                    primary_key_name = constraint_name;
                 } else {
                     if unique_constraints.len() >= crate::tuple::MAX_COLUMNS
                         || unique_constraints.contains(&names)
@@ -497,6 +499,7 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
                         return Err(DdlSqlError::InvalidStatement);
                     }
                     unique_constraints.push(names);
+                    unique_constraint_names.push(constraint_name);
                 }
             }
             if parser.peek() == Some(&Token::Comma) {
@@ -528,7 +531,9 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
         let mut nullable = true;
         let mut default = None;
         let mut unique = false;
+        let mut unique_name = None;
         let mut primary_key = false;
+        let mut primary_key_column_name = None;
         loop {
             if parser.peek_word("not") && nullable {
                 parser.word("not")?;
@@ -540,6 +545,48 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
             } else if parser.peek_word("unique") && !unique {
                 parser.word("unique")?;
                 unique = true;
+            } else if parser.peek_word("constraint") {
+                parser.word("constraint")?;
+                let constraint_name = parser.identifier()?;
+                if parser.peek_word("check") {
+                    if check_constraints.len() >= crate::tuple::MAX_COLUMNS {
+                        return Err(DdlSqlError::InvalidStatement);
+                    }
+                    let expression = parser.check_constraint_expression()?;
+                    validate_column_check_expression(&name, &expression)?;
+                    check_constraints.push(expression);
+                    check_constraint_names.push(Some(constraint_name));
+                } else if parser.peek_word("primary") && !primary_key {
+                    parser.word("primary")?;
+                    parser.word("key")?;
+                    primary_key = true;
+                    primary_key_column_name = Some(constraint_name);
+                } else if parser.peek_word("unique") && !unique {
+                    parser.word("unique")?;
+                    unique = true;
+                    unique_name = Some(constraint_name);
+                } else if parser.peek_word("references") {
+                    if foreign_keys.len() >= crate::tuple::MAX_COLUMNS {
+                        return Err(DdlSqlError::InvalidStatement);
+                    }
+                    parser.word("references")?;
+                    let referenced_schema = parser.identifier()?;
+                    parser.take(Token::Dot)?;
+                    let referenced_table = parser.identifier()?;
+                    let referenced_columns = parse_column_name_list(&mut parser)?;
+                    if referenced_columns.len() != 1 {
+                        return Err(DdlSqlError::InvalidStatement);
+                    }
+                    foreign_keys.push(CreateTableForeignKeySql {
+                        name: Some(constraint_name),
+                        columns: vec![name.clone()],
+                        referenced_schema,
+                        referenced_table,
+                        referenced_columns,
+                    });
+                } else {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
             } else if parser.peek_word("primary") && !primary_key {
                 parser.word("primary")?;
                 parser.word("key")?;
@@ -571,6 +618,7 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
                     return Err(DdlSqlError::InvalidStatement);
                 }
                 foreign_keys.push(CreateTableForeignKeySql {
+                    name: None,
                     columns: vec![name.clone()],
                     referenced_schema,
                     referenced_table,
@@ -599,12 +647,16 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
         if primary_key && primary_key_columns.replace(vec![name.clone()]).is_some() {
             return Err(DdlSqlError::InvalidStatement);
         }
+        if primary_key {
+            primary_key_name = primary_key_column_name;
+        }
         if unique {
             let key_columns = vec![name.clone()];
             if unique_constraints.contains(&key_columns) {
                 return Err(DdlSqlError::InvalidStatement);
             }
             unique_constraints.push(key_columns);
+            unique_constraint_names.push(unique_name);
         }
         if parser.peek() == Some(&Token::Comma) {
             parser.position += 1;
@@ -648,6 +700,24 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
     {
         return Err(DdlSqlError::InvalidStatement);
     }
+    let foreign_key_names = foreign_keys
+        .iter()
+        .map(|foreign_key| foreign_key.name.clone())
+        .collect::<Vec<_>>();
+    let named_names = primary_key_name
+        .iter()
+        .chain(unique_constraint_names.iter().flatten())
+        .chain(check_constraint_names.iter().flatten())
+        .chain(foreign_key_names.iter().flatten())
+        .collect::<std::collections::HashSet<_>>();
+    if named_names.len()
+        != usize::from(primary_key_name.is_some())
+            + unique_constraint_names.iter().flatten().count()
+            + check_constraint_names.iter().flatten().count()
+            + foreign_key_names.iter().flatten().count()
+    {
+        return Err(DdlSqlError::InvalidStatement);
+    }
     if foreign_keys.iter().any(|foreign_key| {
         foreign_key
             .columns
@@ -662,9 +732,12 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
         if_not_exists,
         columns,
         primary_key_columns,
+        primary_key_name,
         unique_constraints,
+        unique_constraint_names,
         check_constraints,
         check_constraint_names,
+        foreign_key_names,
         foreign_keys,
     })
 }
@@ -3178,8 +3251,29 @@ mod tests {
         assert_eq!(parsed.check_constraints.len(), 2);
         for sql in [
             "CREATE TABLE app.events (id INTEGER, CONSTRAINT repeated CHECK (id > 0), CONSTRAINT repeated CHECK (id < 10))",
-            "CREATE TABLE app.events (id INTEGER, CONSTRAINT named_unique UNIQUE (id))",
             "CREATE TABLE app.events (id INTEGER, CONSTRAINT 9bad CHECK (id > 0))",
+        ] {
+            assert!(parse_create_table(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_named_create_table_key_and_foreign_key_constraints() {
+        let parsed = parse_create_table(
+            "CREATE TABLE app.orders (id UUID CONSTRAINT orders_pk PRIMARY KEY, code TEXT CONSTRAINT orders_code_key UNIQUE, customer_id UUID, CONSTRAINT customer_fk FOREIGN KEY (customer_id) REFERENCES crm.customers (id), CONSTRAINT other_key UNIQUE (code, customer_id))",
+        )
+        .unwrap();
+        assert_eq!(parsed.primary_key_name.as_deref(), Some("orders_pk"));
+        assert_eq!(
+            parsed.unique_constraint_names,
+            vec![Some("orders_code_key".into()), Some("other_key".into())]
+        );
+        assert_eq!(parsed.foreign_key_names, vec![Some("customer_fk".into())]);
+        assert_eq!(parsed.foreign_keys[0].name.as_deref(), Some("customer_fk"));
+
+        for sql in [
+            "CREATE TABLE app.t (id UUID CONSTRAINT same PRIMARY KEY, value TEXT CONSTRAINT same UNIQUE)",
+            "CREATE TABLE app.t (id UUID, CONSTRAINT same UNIQUE (id), CONSTRAINT same FOREIGN KEY (id) REFERENCES app.x (id))",
         ] {
             assert!(parse_create_table(sql).is_err(), "accepted {sql}");
         }
@@ -4122,12 +4216,14 @@ mod tests {
             parsed.foreign_keys,
             vec![
                 CreateTableForeignKeySql {
+                    name: None,
                     columns: vec!["customer_id".into()],
                     referenced_schema: "crm".into(),
                     referenced_table: "customers".into(),
                     referenced_columns: vec!["id".into()],
                 },
                 CreateTableForeignKeySql {
+                    name: None,
                     columns: vec!["order_id".into()],
                     referenced_schema: "app".into(),
                     referenced_table: "orders".into(),
@@ -4155,12 +4251,14 @@ mod tests {
             parsed.foreign_keys,
             vec![
                 CreateTableForeignKeySql {
+                    name: None,
                     columns: vec!["customer_id".into()],
                     referenced_schema: "crm".into(),
                     referenced_table: "customers".into(),
                     referenced_columns: vec!["id".into()],
                 },
                 CreateTableForeignKeySql {
+                    name: None,
                     columns: vec!["order_id".into()],
                     referenced_schema: "app".into(),
                     referenced_table: "orders".into(),

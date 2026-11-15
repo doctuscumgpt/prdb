@@ -871,3 +871,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended the bounded grammar with column- and table-level `CONSTRAINT name CHECK` forms. Names remain aligned with EIR1 expressions through the new `tables.create` v3 field and publish as CHECK catalog object names in the same atomic table-creation commit.
 - Parser, authenticated AdminClient request, and real-redb catalog regressions pass. Production process coverage now includes a named CREATE TABLE CHECK alongside a self-referencing FK; the full serial delegated-cgroup workspace suite passes with sandbox and process tests enabled (282 library tests and 177 commit tests; no ignored tests).
+
+## DS-SQL-51: named key and foreign-key constraints in CREATE TABLE — implemented
+
+- Extended SQL parsing and the typed CREATE TABLE path with optional names for PRIMARY KEY, UNIQUE, and FOREIGN KEY constraints, including column-level shorthand. Duplicate names are rejected across all constraint kinds in a statement; persisted objects use explicit names and unnamed objects retain generated labels.
+- `tables.create` v4 carries the primary-key name plus arrays aligned with UNIQUE and FK definitions; older versions remain valid. Existing constraint metadata and name-based DROP CONSTRAINT routing cover the persisted names.
+- Focused parser and authenticated AdminClient serialization regressions pass, including a self-referencing FK and simultaneous PK/UNIQUE/CHECK/FK names. A real-redb regression verifies atomic persistence of named PK, UNIQUE, FK, and CHECK objects. Commit validation accepts only normalized explicit labels while retaining generated labels. The complete serial delegated-cgroup workspace suite passes (283 library tests, 177 commit tests, and all other targets; zero ignored). Workspace build, format check, warning-denied Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
