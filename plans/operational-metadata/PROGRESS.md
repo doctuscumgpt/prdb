@@ -308,3 +308,8 @@
 
 - Strengthened `denied_monitoring_pressure_does_not_starve_commit_or_cancellation` to issue the full 128-event administrator audit page on each pressure iteration while durable commit and managed cancellation proceed. The fixture seeds 129 audit events and asserts exactly 128 records plus a continuation, exercising the page bound under sustained monitoring load.
 - The focused delegated-cgroup regression, workspace build, formatting check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## OM-7 maximum invocation-page pressure — verified
+
+- Extended the monitoring pressure regression to hold 129 live invocations for one owner and exercise maximum-size (128-record) owner and administrator runtime pages with continuations on every pressure iteration. The same run retains 129-event full audit-page pressure while a separate durable commit and accepted cancellation complete.
+- The focused delegated-cgroup regression, locked workspace build, formatting check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

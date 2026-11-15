@@ -14333,7 +14333,13 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
     let database = initialize(&fixture.path())?;
-    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let storage = StorageManager::with_config(
+        &database,
+        prdb_engine::storage_manager::StorageManagerConfig {
+            max_active_invocations: 256,
+            ..prdb_engine::storage_manager::StorageManagerConfig::default()
+        },
+    )?;
     let admin_id = [0xd4; 16];
     let ordinary_id = [0xd3; 16];
     let cancel_id = [0xd1; 16];
@@ -14366,6 +14372,16 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
     let retention_deadline_us = now_us + 60_000_000;
     let mut cancellation =
         storage.begin_invocation(cancel_id, ordinary_id, retention_deadline_us, 2, 64)?;
+    let mut retained_invocations = Vec::with_capacity(129);
+    for invocation_number in 1..=129 {
+        retained_invocations.push(storage.begin_invocation(
+            id(invocation_number),
+            ordinary_id,
+            retention_deadline_us,
+            2,
+            64,
+        )?);
+    }
     let stop_pressure = std::sync::atomic::AtomicBool::new(false);
     let denied_runtime_requests = std::sync::atomic::AtomicUsize::new(0);
     let denied_audit_requests = std::sync::atomic::AtomicUsize::new(0);
@@ -14403,9 +14419,18 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
                     runtime_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 let audit_total = audit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 let own_page = pressure_storage
-                    .list_own_invocations(ordinary_id, now_us, 1, None)
+                    .list_own_invocations(
+                        ordinary_id,
+                        now_us,
+                        prdb_engine::storage_manager::MAX_OWN_INVOCATION_PAGE,
+                        None,
+                    )
                     .expect("owner status page remains available under pressure");
-                assert!(own_page.invocations.len() <= 1);
+                assert_eq!(
+                    own_page.invocations.len(),
+                    prdb_engine::storage_manager::MAX_OWN_INVOCATION_PAGE
+                );
+                assert!(own_page.continuation.is_some());
                 own_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let owner_status = pressure_storage
                     .get_invocation_status(cancel_id, ordinary_id, now_us)
@@ -14434,9 +14459,19 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
                         | prdb_engine::storage_manager::InvocationStatus::Terminal(_)
                 ));
                 admin_point_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                pressure_storage
-                    .list_runtime_invocations(admin_id, now_us, 1, None)
+                let runtime_page = pressure_storage
+                    .list_runtime_invocations(
+                        admin_id,
+                        now_us,
+                        prdb_engine::storage_manager::MAX_ADMIN_INVOCATION_PAGE,
+                        None,
+                    )
                     .expect("authorized runtime page remains available under pressure");
+                assert_eq!(
+                    runtime_page.invocations.len(),
+                    prdb_engine::storage_manager::MAX_ADMIN_INVOCATION_PAGE
+                );
+                assert!(runtime_page.continuation.is_some());
                 admin_runtime_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let audit_page = pressure_storage
                     .list_audit_events(

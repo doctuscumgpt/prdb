@@ -1128,3 +1128,8 @@
 
 - Extended the storage monitoring pressure regression to repeatedly decode/copy the maximum 128-event audit page from a 129-event history while a separate invocation commits and a live invocation is cancelled and confirmed ABORTED.
 - The focused delegated-cgroup commit test, workspace build, formatting check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## OM-7 maximum invocation-page pressure — verified
+
+- Raised only the pressure-test registry limit and retained 129 live read snapshots, allowing repeated full 128-record owner/admin runtime-page reads and continuation checks during a concurrent commit and managed cancellation. The test still verifies the cancellation's durable ABORTED outcome and maximum audit-page behavior.
+- The focused delegated-cgroup commit test, workspace build, formatting check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
