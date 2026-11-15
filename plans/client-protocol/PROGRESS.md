@@ -276,3 +276,8 @@
 
 - Added an `all_columns` PREPARE target with no ID array, keeping table-wide grants bounded on the wire even when a table approaches the engine's column limit. Storage expands the target at START; explicit `columns` requests remain bounded to 2–64 distinct IDs.
 - Verification: strict decoder regression and delegated SQL process lifecycle passed. Locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, release-profile validation, cgroup probe, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored. `git diff --check` passed; Cargo.lock is unchanged.
+
+## Atomic policy replacement operation — verified
+
+- `metadata.policies.resolve` accepts the bounded `any` kind for authorized same-name replacement lookup. `policies.replace` carries the full typed successor definition and old policy ID in one PREPARE/START lifecycle; START returns the new ID after storage commits the replacement atomically.
+- The decoder test covers the `any` lookup shape; the delegated gateway/supervisor lifecycle exercises `policies.replace` across row/cell kinds. Full serial delegated-cgroup workspace tests passed with zero ignored tests, as did build, format, warning-denied Clippy, TinyCC, and release-profile validation.

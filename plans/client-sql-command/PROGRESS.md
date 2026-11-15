@@ -311,4 +311,8 @@
 
 ## DP-SQL-3: bounded CREATE ROW/CELL POLICY SQL — implemented
 
-- `admin-sql` recognizes row and cell policy creation, binds identifiers/context functions, and prints the generated policy ID after dispatching the typed operation. Parser/binder and delegated process tests, workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, and full serial delegated-cgroup suite pass with zero ignored. Identity name resolution currently requires the corresponding identity-management privilege or database-admin membership; DROP policy SQL remains pending.
+- `admin-sql` recognizes row and cell policy creation, binds identifiers/context functions, and prints the generated policy ID after dispatching the typed operation. Parser/binder and delegated process tests, workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, and full serial delegated-cgroup suite pass with zero ignored. Policy-scoped identity resolution and DROP SQL are covered by DP-SQL-4/5 below.
+
+## DP-SQL-5: CREATE OR REPLACE ROW/CELL POLICY — verified
+
+- `CREATE OR REPLACE` resolves a same-name policy across row and cell kinds and dispatches the dedicated atomic `policies.replace` protocol operation. The production process lifecycle replaces a row policy with a cell policy; the full serial delegated-cgroup workspace suite, warning-denied Clippy, build, format, TinyCC, and release-profile checks passed with zero ignored tests.

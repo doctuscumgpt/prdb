@@ -1096,3 +1096,9 @@
 
 - Added a bounded storage target that reads the table's current column records and emits per-column grant and dependency changes in the same authorized catalog commit. Revocation checks every target before preparing writes and checks for surviving grants once across the target set. Audit target IDs remain within the AUD1 maximum for wide tables.
 - Verification: the delegated SQL regression confirms current columns receive grants and a column added afterward does not. Locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, release-profile validation, cgroup probe, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored. `git diff --check` passed; Cargo.lock is unchanged.
+
+## DP-5: one-commit policy replacement — verified
+
+- Storage now collects the existing policy's expression, target, and dependency removals, verifies the replacement target belongs to the requested table, and combines those removals with new policy records under one `commit_authorized_policy_ddl` call. The table write epoch advances once; the audit event includes both old and new policy IDs.
+- The delegated SQL lifecycle passes across row/cell kinds and confirms the prior ID is gone after replacement. A barrier race with concurrent `MANAGE_POLICIES` revocation verifies final authority rechecking, outcome publication, and exactly one table-epoch advance when replacement commits.
+- Verification: focused storage race and full serial delegated-cgroup workspace suite passed. Locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, release-profile validation, cgroup capability probe, and full sandbox/process integration passed with zero ignored tests. `git diff --check` passed; Cargo.lock is unchanged.

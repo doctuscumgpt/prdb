@@ -228,6 +228,7 @@ enum PendingAdminAction {
         dependency_column_ids: Vec<[u8; 16]>,
     },
     CreatePolicy {
+        replaced_policy_id: Option<[u8; 16]>,
         table_id: [u8; 16],
         name: String,
         kind: crate::storage_manager::PolicyKind,
@@ -454,7 +455,7 @@ pub enum ClientAdminRead {
         schema_id: [u8; 16],
         table_id: [u8; 16],
         name: String,
-        is_cell: bool,
+        is_cell: Option<bool>,
     },
     ListSchemas,
     ListSchemasPage {
@@ -529,7 +530,7 @@ pub enum ClientAdminCommand {
         schema_id: [u8; 16],
         table_id: [u8; 16],
         name: String,
-        is_cell: bool,
+        is_cell: Option<bool>,
     },
     ListSchemas,
     ListSchemasPage {
@@ -645,6 +646,7 @@ pub enum ClientAdminCommand {
         dependency_column_ids: Vec<[u8; 16]>,
     },
     PrepareCreatePolicy {
+        replaced_policy_id: Option<[u8; 16]>,
         table_id: [u8; 16],
         name: String,
         kind: crate::storage_manager::PolicyKind,
@@ -1156,8 +1158,9 @@ pub fn decode_client_admin_command(
             )?;
             let name = args.remove("name").ok_or(ClientControlError::MissingKey)?;
             let is_cell = match args.remove("kind").as_deref() {
-                Some("row") => false,
-                Some("cell") => true,
+                Some("row") => Some(false),
+                Some("cell") => Some(true),
+                Some("any") => None,
                 _ => return Err(ClientControlError::InvalidPrepare),
             };
             if !args.is_empty() || schema_id == [0; 16] || table_id == [0; 16] {
@@ -1808,7 +1811,11 @@ pub fn decode_client_admin_command(
             })
         }
         Some("prepare")
-            if version == Some(1) && operation.as_deref() == Some("policies.create") =>
+            if version == Some(1)
+                && matches!(
+                    operation.as_deref(),
+                    Some("policies.create" | "policies.replace")
+                ) =>
         {
             if operation_id.is_some() || seen.len() != 4 {
                 return Err(ClientControlError::UnknownKey);
@@ -1869,7 +1876,17 @@ pub fn decode_client_admin_command(
                 args.remove("with_check_expression_eir1")
                     .ok_or(ClientControlError::MissingKey)?,
             )?;
+            let replaced_policy_id = if operation.as_deref() == Some("policies.replace") {
+                Some(decode_lower_hex_id(
+                    &args
+                        .remove("replaced_policy_id")
+                        .ok_or(ClientControlError::MissingKey)?,
+                )?)
+            } else {
+                None
+            };
             if !args.is_empty()
+                || replaced_policy_id == Some([0; 16])
                 || !is_canonical_admin_principal_name(&name)
                 || recipients.is_empty()
                 || recipients
@@ -1906,6 +1923,7 @@ pub fn decode_client_admin_command(
                 return Err(ClientControlError::InvalidPrepare);
             }
             Ok(ClientAdminCommand::PrepareCreatePolicy {
+                replaced_policy_id,
                 table_id,
                 name,
                 kind,
@@ -5178,6 +5196,7 @@ impl ClientConnectionSession {
                 )
             }
             ClientAdminCommand::PrepareCreatePolicy {
+                replaced_policy_id,
                 table_id,
                 name,
                 kind,
@@ -5203,6 +5222,7 @@ impl ClientConnectionSession {
                 self.pending_admin_operation = Some(PendingAdminOperation {
                     operation_id,
                     action: PendingAdminAction::CreatePolicy {
+                        replaced_policy_id,
                         table_id,
                         name,
                         kind,
@@ -6329,6 +6349,7 @@ impl ClientConnectionSession {
                         )
                     }
                     PendingAdminAction::CreatePolicy {
+                        replaced_policy_id,
                         table_id,
                         name,
                         kind,
@@ -6339,31 +6360,34 @@ impl ClientConnectionSession {
                         using_expression,
                         with_check_expression,
                     } => {
-                        let created = storage
-                            .create_policy(crate::storage_manager::CreatePolicyRequest {
-                                invocation_id: operation_id,
-                                authenticated_actor_id: actor_id,
-                                table_id,
-                                name,
-                                kind,
-                                operation,
-                                effect,
-                                recipients,
-                                target_column_ids,
-                                using_expression,
-                                with_check_expression,
-                                retention_deadline_us,
-                                audit_event: crate::audit::AuditEvent {
-                                    event_id,
-                                    actor_id: Some(actor_id),
-                                    correlation_id: operation_id,
-                                    occurred_at_us: now_us,
-                                    action: crate::audit::AuditAction::Ddl,
-                                    result: crate::audit::AuditResult::Succeeded,
-                                    target_ids: Vec::new(),
-                                },
-                            })
-                            .map_err(ClientSessionError::PolicyLifecycle)?;
+                        let policy_request = crate::storage_manager::CreatePolicyRequest {
+                            invocation_id: operation_id,
+                            authenticated_actor_id: actor_id,
+                            table_id,
+                            name,
+                            kind,
+                            operation,
+                            effect,
+                            recipients,
+                            target_column_ids,
+                            using_expression,
+                            with_check_expression,
+                            retention_deadline_us,
+                            audit_event: crate::audit::AuditEvent {
+                                event_id,
+                                actor_id: Some(actor_id),
+                                correlation_id: operation_id,
+                                occurred_at_us: now_us,
+                                action: crate::audit::AuditAction::Ddl,
+                                result: crate::audit::AuditResult::Succeeded,
+                                target_ids: Vec::new(),
+                            },
+                        };
+                        let created = match replaced_policy_id {
+                            Some(policy_id) => storage.replace_policy(policy_request, policy_id),
+                            None => storage.create_policy(policy_request),
+                        }
+                        .map_err(ClientSessionError::PolicyLifecycle)?;
                         self.json_response(
                             request.request_id,
                             format!(

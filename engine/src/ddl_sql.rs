@@ -243,6 +243,7 @@ pub struct PolicyRecipientSql {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreatePolicySql {
+    pub replace_existing: bool,
     pub schema: String,
     pub table: String,
     pub name: String,
@@ -1102,6 +1103,13 @@ fn has_duplicates(names: &[String]) -> bool {
 pub fn parse_create_policy(sql: &str) -> Result<CreatePolicySql, DdlSqlError> {
     let mut parser = statement_parser(sql)?;
     parser.word("create")?;
+    let replace_existing = if parser.peek_word("or") {
+        parser.word("or")?;
+        parser.word("replace")?;
+        true
+    } else {
+        false
+    };
     let is_cell = if parser.peek_word("cell") {
         parser.word("cell")?;
         true
@@ -1198,6 +1206,7 @@ pub fn parse_create_policy(sql: &str) -> Result<CreatePolicySql, DdlSqlError> {
         return Err(DdlSqlError::InvalidStatement);
     }
     Ok(CreatePolicySql {
+        replace_existing,
         schema,
         table,
         name,
@@ -3181,6 +3190,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(row.name, "visible");
+        assert!(!row.replace_existing);
         assert!(!row.is_cell);
         assert_eq!(row.operation, "select");
         assert_eq!(row.recipients.len(), 2);
@@ -3191,6 +3201,12 @@ mod tests {
         .unwrap();
         assert!(cell.is_cell);
         assert_eq!(cell.columns, ["salary"]);
+        let replacement = parse_create_policy(
+            "CREATE OR REPLACE ROW POLICY visible ON app.records FOR SELECT TO ROLE readers AS ALLOW USING (enabled = TRUE)",
+        )
+        .unwrap();
+        assert!(replacement.replace_existing);
+        assert_eq!(replacement.name, "visible");
         for sql in [
             "CREATE ROW POLICY p ON app.t FOR SELECT TO ROLE r AS ALLOW",
             "CREATE ROW POLICY p ON app.t FOR UPDATE TO ROLE r AS ALLOW USING (TRUE)",

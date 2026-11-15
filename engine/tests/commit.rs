@@ -19054,7 +19054,7 @@ fn storage_manager_authorizes_policy_ddl_for_owners_and_inherited_manage_policie
         schema_id,
         1,
         None,
-        admin_role,
+        table_owner,
         "policy_schema",
     );
     let table_object = object_write_with_parent_and_owner_and_name(
@@ -19495,6 +19495,145 @@ fn storage_manager_authorizes_policy_ddl_for_owners_and_inherited_manage_policie
             .status,
         OutcomeStatus::Committed
     );
+
+    let replacement_invocation = id(0x89);
+    let revoke_invocation = id(0x8a);
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    let table_record = decode_registered_envelope(
+        catalog
+            .get(table_key.as_slice())?
+            .ok_or("policy replacement table record is missing")?
+            .value(),
+    )?;
+    let table_epoch_before_replacement = u64::from_le_bytes(
+        table_record
+            .fields
+            .iter()
+            .find(|field| field.tag == 3)
+            .ok_or("policy replacement table epoch is missing")?
+            .payload
+            .as_slice()
+            .try_into()?,
+    );
+    drop(catalog);
+    drop(read);
+    let replacement_barrier = Arc::new(Barrier::new(3));
+    let manager_grant = grant_write(manager_role, schema_id, 10, 1, schema_id, admin_role);
+    let replacement_result = std::thread::scope(|scope| {
+        let replace_barrier = replacement_barrier.clone();
+        let replace_storage = &storage;
+        let replacement = scope.spawn(move || {
+            let mut audit = policy_audit(0x8b, policy_manager);
+            audit.correlation_id = replacement_invocation;
+            replace_barrier.wait();
+            replace_storage.replace_policy(
+                prdb_engine::storage_manager::CreatePolicyRequest {
+                    invocation_id: replacement_invocation,
+                    authenticated_actor_id: policy_manager,
+                    table_id,
+                    name: "visible_rows".to_owned(),
+                    kind: prdb_engine::storage_manager::PolicyKind::Row,
+                    operation: prdb_engine::authorization::Operation::Select,
+                    effect: prdb_engine::authorization::Effect::Allow,
+                    recipients: vec![prdb_engine::authorization::Subject::Principal(table_owner)],
+                    target_column_ids: Vec::new(),
+                    using_expression: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+                    with_check_expression: None,
+                    retention_deadline_us: 9_999,
+                    audit_event: audit,
+                },
+                policy_id,
+            )
+        });
+        let revoke_barrier = replacement_barrier.clone();
+        let revoke_storage = &storage;
+        let revoke = scope.spawn(move || {
+            let mut audit = identity_audit_event(0x8c, table_owner, manager_role);
+            audit.correlation_id = revoke_invocation;
+            audit.action = AuditAction::AuthorityChange;
+            revoke_barrier.wait();
+            revoke_storage.set_object_grant(prdb_engine::storage_manager::SetObjectGrantRequest {
+                invocation_id: revoke_invocation,
+                authenticated_actor_id: table_owner,
+                grantee_id: manager_role,
+                object_id: schema_id,
+                privilege: prdb_engine::storage_manager::ObjectGrantPrivilege::ManagePolicies,
+                target: prdb_engine::storage_manager::ObjectGrantTarget::Object,
+                grant: false,
+                retention_deadline_us: 9_999,
+                audit_event: audit,
+            })
+        });
+        replacement_barrier.wait();
+        (
+            replacement.join().expect("replacement DDL thread panicked"),
+            revoke.join().expect("grant revoke thread panicked"),
+        )
+    });
+    let (replacement_status, replacement_policy_id) = match replacement_result.0 {
+        Ok(created) => {
+            assert_ne!(created.policy_id, policy_id);
+            (OutcomeStatus::Committed, Some(created.policy_id))
+        }
+        Err(prdb_engine::storage_manager::TableLifecycleError::Unauthorized)
+        | Err(prdb_engine::storage_manager::TableLifecycleError::Commit(CommitError::Conflict)) => {
+            (OutcomeStatus::Aborted, None)
+        }
+        other => panic!("unexpected replacement/revocation race: {other:?}"),
+    };
+    assert!(
+        replacement_result.1.is_ok(),
+        "database administrator must be able to revoke MANAGE_POLICIES: {:?}",
+        replacement_result.1
+    );
+    assert_eq!(
+        lookup_outcome(&database, replacement_invocation, policy_manager, 1)?
+            .ok_or("missing policy replacement race outcome")?
+            .status,
+        replacement_status
+    );
+    assert_eq!(
+        commit_sequence(&database)?,
+        7 + u64::from(replacement_status == OutcomeStatus::Committed) + 1
+    );
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    assert!(catalog.get(manager_grant.key.as_slice())?.is_none());
+    let final_table_record = decode_registered_envelope(
+        catalog
+            .get(table_key.as_slice())?
+            .ok_or("policy replacement table record disappeared")?
+            .value(),
+    )?;
+    let table_epoch_after_replacement = u64::from_le_bytes(
+        final_table_record
+            .fields
+            .iter()
+            .find(|field| field.tag == 3)
+            .ok_or("policy replacement table epoch disappeared")?
+            .payload
+            .as_slice()
+            .try_into()?,
+    );
+    assert_eq!(
+        table_epoch_after_replacement,
+        table_epoch_before_replacement + u64::from(replacement_status == OutcomeStatus::Committed)
+    );
+    assert_eq!(
+        catalog.get(policy_key.as_slice())?.is_some(),
+        replacement_status == OutcomeStatus::Aborted
+    );
+    if let Some(replacement_policy_id) = replacement_policy_id {
+        assert!(
+            catalog
+                .get(id_catalog_key(13, replacement_policy_id).as_slice())?
+                .is_some()
+        );
+    }
+    drop(catalog);
+    drop(read);
+    prdb_engine::startup::validate_persisted_records(&database)?;
     Ok(())
 }
 

@@ -3559,7 +3559,7 @@ impl<'db> InvocationTransaction<'db> {
         schema_id: [u8; 16],
         table_id: [u8; 16],
         name: &str,
-        is_cell: bool,
+        is_cell: Option<bool>,
     ) -> Result<Option<[u8; 16]>, TransactionError> {
         if name.is_empty()
             || name.len() > 128
@@ -3658,9 +3658,11 @@ impl<'db> InvocationTransaction<'db> {
             if !matches!(policy_kind, 1 | 2) {
                 return Err(TransactionError::CorruptCatalog);
             }
-            let expected_kind = if is_cell { 2 } else { 1 };
-            if policy_kind != expected_kind {
-                continue;
+            if let Some(is_cell) = is_cell {
+                let expected_kind = if is_cell { 2 } else { 1 };
+                if policy_kind != expected_kind {
+                    continue;
+                }
             }
             let object = self
                 .read_catalog_record(&catalog_id_key(2, policy_id))?

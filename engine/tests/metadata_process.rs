@@ -3136,6 +3136,52 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&create_cell_policy_sql.stderr)
     );
     assert!(String::from_utf8_lossy(&create_cell_policy_sql.stdout).contains("created policy"));
+    let original_policy_ids = admin
+        .list_policies_page(created_schema.identity_id, created_table.table_id, 64, None)?
+        .records
+        .into_iter()
+        .map(|policy| policy.policy_id)
+        .collect::<std::collections::HashSet<_>>();
+    let replace_policy_sql_path = root.join("replace-row-policy.sql");
+    std::fs::write(
+        &replace_policy_sql_path,
+        "CREATE OR REPLACE CELL POLICY process_visible ON process_admin_schema.process_admin_table (payload) FOR SELECT TO USER metadata_process_admin AS ALLOW USING (HAS_ROLE('process_policy_role'));",
+    )?;
+    let replace_policy_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            transfer_credential_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            replace_policy_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        replace_policy_sql.status.success(),
+        "CREATE OR REPLACE POLICY SQL failed: {}",
+        String::from_utf8_lossy(&replace_policy_sql.stderr)
+    );
+    assert!(String::from_utf8_lossy(&replace_policy_sql.stdout).contains("created policy"));
+    let replaced_policy_ids = admin
+        .list_policies_page(created_schema.identity_id, created_table.table_id, 64, None)?
+        .records
+        .into_iter()
+        .map(|policy| policy.policy_id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(replaced_policy_ids.len(), original_policy_ids.len());
+    assert_eq!(
+        replaced_policy_ids
+            .intersection(&original_policy_ids)
+            .count(),
+        original_policy_ids.len() - 1,
+        "replacement must remove exactly the old definition and publish its successor"
+    );
     let created_policy_ids = admin
         .list_policies_page(created_schema.identity_id, created_table.table_id, 64, None)?
         .records
@@ -3147,7 +3193,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     for (filename, sql) in [
         (
             "drop-row-policy.sql",
-            "DROP ROW POLICY process_visible ON process_admin_schema.process_admin_table RESTRICT;",
+            "DROP CELL POLICY process_visible ON process_admin_schema.process_admin_table RESTRICT;",
         ),
         (
             "drop-cell-policy.sql",

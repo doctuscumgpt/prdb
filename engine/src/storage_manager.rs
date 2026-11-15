@@ -771,6 +771,13 @@ pub struct DropPolicyRequest {
     pub audit_event: AuditEvent,
 }
 
+struct PolicyDropWriteSet {
+    table_id: [u8; 16],
+    kind: u16,
+    writes: Vec<CatalogWrite>,
+    expression_ids: Vec<[u8; 16]>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateIndexRequest {
     pub invocation_id: [u8; 16],
@@ -3220,7 +3227,7 @@ impl<'db> StorageManager<'db> {
         schema_id: [u8; 16],
         table_id: [u8; 16],
         name: &str,
-        is_cell: bool,
+        is_cell: Option<bool>,
     ) -> Result<Option<[u8; 16]>, TransactionError> {
         let principal_id = lookup_credential_principal(self.database, token_id)?;
         let mut invocation_id = [0; 16];
@@ -9357,11 +9364,194 @@ impl<'db> StorageManager<'db> {
         })
     }
 
+    fn collect_policy_drop_writes(
+        catalog: &impl ReadableTable<&'static [u8], &'static [u8]>,
+        policy_id: [u8; 16],
+    ) -> Result<PolicyDropWriteSet, TableLifecycleError> {
+        let policy_key = id_catalog_key(13, policy_id);
+        let policy_bytes = catalog
+            .get(policy_key.as_slice())
+            .map_err(|_| TableLifecycleError::Storage)?
+            .map(|value| value.value().to_vec())
+            .ok_or(TableLifecycleError::InvalidRequest)?;
+        let policy_record = read_catalog_record(&policy_key, &policy_bytes, 13)?;
+        let table_id = read_catalog_id(&policy_key, &policy_bytes, 13, 1)?;
+        let kind = read_catalog_u16(&policy_key, &policy_bytes, 13, 2)?;
+        if !matches!(kind, 1 | 2) {
+            return Err(TableLifecycleError::Commit(CommitError::InvalidCatalog));
+        }
+
+        let mut writes = Vec::<CatalogWrite>::new();
+        let mut expression_ids = Vec::new();
+        for (tag, expected_purpose) in [
+            (5u16, crate::expression::ExpressionPurpose::PolicyUsing),
+            (6u16, crate::expression::ExpressionPurpose::PolicyCheck),
+        ] {
+            let Some(field) = policy_record.fields.iter().find(|field| field.tag == tag) else {
+                continue;
+            };
+            let expression_id: [u8; 16] = field
+                .payload
+                .as_slice()
+                .try_into()
+                .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+            let expression_key = id_catalog_key(7, expression_id);
+            let expression_bytes = catalog
+                .get(expression_key.as_slice())
+                .map_err(|_| TableLifecycleError::Storage)?
+                .map(|value| value.value().to_vec())
+                .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+            let expression = crate::expression::decode_catalog_expression(&expression_bytes)
+                .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+            if expression.purpose != expected_purpose {
+                return Err(TableLifecycleError::Commit(CommitError::InvalidCatalog));
+            }
+            writes.push(CatalogWrite {
+                key: expression_key,
+                expected_value: Some(expression_bytes),
+                payload: None,
+            });
+            let expression_object_key = id_catalog_key(2, expression_id);
+            let expression_object = catalog
+                .get(expression_object_key.as_slice())
+                .map_err(|_| TableLifecycleError::Storage)?
+                .map(|value| value.value().to_vec())
+                .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+            writes.push(CatalogWrite {
+                key: expression_object_key,
+                expected_value: Some(expression_object),
+                payload: None,
+            });
+            let policy_expression_edge = dependency_catalog_key(policy_id, expression_id, 2);
+            let policy_expression_value = catalog
+                .get(policy_expression_edge.as_slice())
+                .map_err(|_| TableLifecycleError::Storage)?
+                .map(|value| value.value().to_vec())
+                .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+            writes.push(CatalogWrite {
+                key: policy_expression_edge,
+                expected_value: Some(policy_expression_value),
+                payload: None,
+            });
+            for dependency_id in expression.dependencies {
+                let key = dependency_catalog_key(expression_id, dependency_id, 2);
+                let value = catalog
+                    .get(key.as_slice())
+                    .map_err(|_| TableLifecycleError::Storage)?
+                    .map(|value| value.value().to_vec())
+                    .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+                writes.push(CatalogWrite {
+                    key,
+                    expected_value: Some(value),
+                    payload: None,
+                });
+            }
+            expression_ids.push(expression_id);
+        }
+
+        let target_prefix = 14u16.to_be_bytes();
+        let mut scanned_targets = 0usize;
+        let mut has_recipient = false;
+        for entry in catalog
+            .range(target_prefix.as_slice()..)
+            .map_err(|_| TableLifecycleError::Storage)?
+        {
+            let (key, value) = entry.map_err(|_| TableLifecycleError::Storage)?;
+            let key = key.value().to_vec();
+            if !key.starts_with(&target_prefix) {
+                break;
+            }
+            scanned_targets += 1;
+            if scanned_targets > MAX_CATALOG_FAMILY_SCAN {
+                return Err(TableLifecycleError::Commit(CommitError::InvalidCatalog));
+            }
+            if key.len() != 39 {
+                return Err(TableLifecycleError::Commit(CommitError::InvalidCatalog));
+            }
+            if key[3..19] != policy_id {
+                continue;
+            }
+            let target = decode_policy_target(value.value())
+                .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+            if target.policy_id != policy_id {
+                return Err(TableLifecycleError::Commit(CommitError::InvalidCatalog));
+            }
+            if matches!(target.kind, 1 | 2) {
+                has_recipient = true;
+                let edge_key = dependency_catalog_key(policy_id, target.target_id, 5);
+                let edge_value = catalog
+                    .get(edge_key.as_slice())
+                    .map_err(|_| TableLifecycleError::Storage)?
+                    .map(|value| value.value().to_vec())
+                    .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+                writes.push(CatalogWrite {
+                    key: edge_key,
+                    expected_value: Some(edge_value),
+                    payload: None,
+                });
+            }
+            writes.push(CatalogWrite {
+                key,
+                expected_value: Some(value.value().to_vec()),
+                payload: None,
+            });
+        }
+        if !has_recipient {
+            return Err(TableLifecycleError::Commit(CommitError::InvalidCatalog));
+        }
+        for (key, value) in [
+            (policy_key, policy_bytes),
+            (
+                id_catalog_key(2, policy_id),
+                catalog
+                    .get(id_catalog_key(2, policy_id).as_slice())
+                    .map_err(|_| TableLifecycleError::Storage)?
+                    .map(|value| value.value().to_vec())
+                    .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?,
+            ),
+        ] {
+            writes.push(CatalogWrite {
+                key,
+                expected_value: Some(value),
+                payload: None,
+            });
+        }
+        Ok(PolicyDropWriteSet {
+            table_id,
+            kind,
+            writes,
+            expression_ids,
+        })
+    }
+
     /// Create a row or cell policy and its expression/recipient records as one
     /// authorized table DDL commit.
     pub fn create_policy(
         &self,
         request: CreatePolicyRequest,
+    ) -> Result<CreatedPolicy, TableLifecycleError> {
+        self.create_policy_inner(request, None)
+    }
+
+    /// Replace an existing same-name policy in the same catalog commit that
+    /// publishes its successor. The old policy is removed from the final
+    /// catalog view before duplicate-name validation and the table epoch
+    /// advances once for the complete replacement.
+    pub fn replace_policy(
+        &self,
+        request: CreatePolicyRequest,
+        replaced_policy_id: [u8; 16],
+    ) -> Result<CreatedPolicy, TableLifecycleError> {
+        if replaced_policy_id == [0; 16] {
+            return Err(TableLifecycleError::InvalidRequest);
+        }
+        self.create_policy_inner(request, Some(replaced_policy_id))
+    }
+
+    fn create_policy_inner(
+        &self,
+        request: CreatePolicyRequest,
+        replaced_policy_id: Option<[u8; 16]>,
     ) -> Result<CreatedPolicy, TableLifecycleError> {
         let CreatePolicyRequest {
             invocation_id,
@@ -9534,6 +9724,7 @@ impl<'db> StorageManager<'db> {
         }
 
         let mut policy_scan = 0usize;
+        let mut same_name_policy_id = None;
         let policy_prefix = 13u16.to_be_bytes();
         for entry in catalog
             .range(policy_prefix.as_slice()..)
@@ -9563,13 +9754,32 @@ impl<'db> StorageManager<'db> {
                 .map_err(|_| TableLifecycleError::Storage)?
                 .map(|value| value.value().to_vec())
                 .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
-            if read_catalog_field(&object_key, &object_bytes, 2, 3)? == name.as_bytes() {
-                return Err(TableLifecycleError::InvalidRequest);
+            if read_catalog_field(&object_key, &object_bytes, 2, 3)? == name.as_bytes()
+                && same_name_policy_id.replace(policy_id).is_some()
+            {
+                return Err(TableLifecycleError::Commit(CommitError::InvalidCatalog));
             }
         }
+        if same_name_policy_id != replaced_policy_id {
+            return Err(TableLifecycleError::InvalidRequest);
+        }
+        let mut replaced_expression_ids = Vec::new();
+        let mut writes = if let Some(policy_id) = replaced_policy_id {
+            let drop_write_set = Self::collect_policy_drop_writes(&catalog, policy_id)?;
+            if drop_write_set.table_id != table_id || !matches!(drop_write_set.kind, 1 | 2) {
+                return Err(TableLifecycleError::InvalidRequest);
+            }
+            replaced_expression_ids = drop_write_set.expression_ids;
+            drop_write_set.writes
+        } else {
+            Vec::new()
+        };
 
         let mut generated = HashSet::new();
         let policy_id = self.generate_table_object_id()?;
+        if replaced_policy_id == Some(policy_id) {
+            return Err(TableLifecycleError::ObjectIdGenerationFailed);
+        }
         generated.insert(policy_id);
         let mut generated_expression_id = || -> Result<[u8; 16], TableLifecycleError> {
             for _ in 0..8 {
@@ -9589,7 +9799,6 @@ impl<'db> StorageManager<'db> {
             .map(|_| generated_expression_id())
             .transpose()?;
 
-        let mut writes = Vec::new();
         let kind_code = match kind {
             PolicyKind::Row => 1u16,
             PolicyKind::Cell => 2u16,
@@ -9885,6 +10094,8 @@ impl<'db> StorageManager<'db> {
         drop(read);
 
         audit_event.target_ids = vec![policy_id];
+        audit_event.target_ids.extend(replaced_policy_id);
+        audit_event.target_ids.extend(replaced_expression_ids);
         audit_event.target_ids.extend(using_expression_id);
         audit_event.target_ids.extend(with_check_expression_id);
         audit_event.target_ids.sort_unstable();

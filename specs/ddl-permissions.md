@@ -45,25 +45,25 @@ Grant/revoke adds/removes the specified direct grant. Another inherited role gra
 These are engine extensions, not standard SQL:
 
 ```text
-CREATE ROW POLICY name ON schema.table
+CREATE [OR REPLACE] ROW POLICY name ON schema.table
     FOR { SELECT | INSERT | UPDATE | DELETE }
     TO { USER name | ROLE name } [, ...]
     AS { ALLOW | RESTRICT }
     [USING (old_or_visible_row_expression)]
     [WITH CHECK (new_row_expression)];
 
-CREATE CELL POLICY name ON schema.table (column [, ...])
+CREATE [OR REPLACE] CELL POLICY name ON schema.table (column [, ...])
     FOR { SELECT | INSERT | UPDATE }
     TO { USER name | ROLE name } [, ...]
     AS { ALLOW | RESTRICT }
     [USING (old_or_visible_row_expression)]
     [WITH CHECK (new_row_expression)];
 
-DROP ROW POLICY name ON schema.table;
-DROP CELL POLICY name ON schema.table;
+DROP ROW POLICY name ON schema.table RESTRICT;
+DROP CELL POLICY name ON schema.table RESTRICT;
 ```
 
-`SELECT` and `DELETE` require `USING` only; `INSERT` requires `WITH CHECK` only; `UPDATE` requires both explicitly. `DELETE` has no cell policy because it removes the row. Bare field names bind to the visible/old row in `USING`, and the proposed full row in `WITH CHECK`; cross-old/new references are deferred. Policy names are unique per table across row/cell kinds. Replace a policy through atomic drop-and-create in an administrative batch; no missing-policy window is visible.
+`SELECT` and `DELETE` require `USING` only; `INSERT` requires `WITH CHECK` only; `UPDATE` requires both explicitly. `DELETE` has no cell policy because it removes the row. Bare field names bind to the visible/old row in `USING`, and the proposed full row in `WITH CHECK`; cross-old/new references are deferred. Policy names are unique per table across row/cell kinds. `CREATE OR REPLACE` resolves the existing same-name policy and publishes its removal and the new definition, expressions, targets, dependencies, epoch, audit event, and durable outcome in one administrative commit. It may change the policy kind; observers see either the complete prior definition or the complete replacement, with no missing-policy window.
 
 Predicates are bounded, typed, side-effect-free expressions using comparisons, Boolean operators, null checks, literals, and trusted context values. Initially expose `CURRENT_PRINCIPAL_ID()` and `HAS_ROLE('role_name')`; role names bind to catalog IDs at definition time. No caller-writable session variables, SQL subqueries, arbitrary joins, native code, network/filesystem access, or volatile functions. Runtime expression error fails closed and aborts the operation; null/unknown is not an allow decision.
 

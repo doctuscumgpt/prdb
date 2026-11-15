@@ -393,12 +393,17 @@ fn policy_name_resolver_requires_a_scoped_nonzero_table() {
             schema_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             table_id: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31],
             name,
-            is_cell: false,
+            is_cell: Some(false),
         }) if name == "visible"
     ));
     assert!(matches!(
         decode_client_admin_read(request),
-        Ok(ClientAdminRead::ResolvePolicyName { name, is_cell: false, .. }) if name == "visible"
+        Ok(ClientAdminRead::ResolvePolicyName { name, is_cell: Some(false), .. }) if name == "visible"
+    ));
+    let any_kind_request = br#"{"phase":"read","operation_version":1,"operation":"metadata.policies.resolve","arguments":{"schema_id":"000102030405060708090a0b0c0d0e0f","table_id":"101112131415161718191a1b1c1d1e1f","name":"visible","kind":"any"}}"#;
+    assert!(matches!(
+        decode_client_admin_command(any_kind_request),
+        Ok(ClientAdminCommand::ResolvePolicyName { name, is_cell: None, .. }) if name == "visible"
     ));
     for invalid in [
         br#"{"phase":"read","operation_version":1,"operation":"metadata.policies.resolve","arguments":{"schema_id":"000102030405060708090a0b0c0d0e0f","table_id":"00000000000000000000000000000000","name":"visible","kind":"row"}}"#.as_slice(),
@@ -690,6 +695,7 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
             effect: prdb_engine::authorization::Effect::Allow,
             recipients,
             target_column_ids,
+            replaced_policy_id: None,
             using_expression: Some(prdb_engine::authorization::Expr::Literal(Some(
                 prdb_engine::tuple::ScalarValue::Boolean(true)
             ))),

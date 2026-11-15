@@ -3340,11 +3340,15 @@ impl AdminClient {
     fn resolve_policy_sql_name(
         &mut self,
         name: &str,
-        is_cell: bool,
+        is_cell: Option<bool>,
         schema_id: [u8; 16],
         table_id: [u8; 16],
     ) -> Result<[u8; 16], ClientSubmitError> {
-        let kind = if is_cell { "cell" } else { "row" };
+        let kind = match is_cell {
+            Some(true) => "cell",
+            Some(false) => "row",
+            None => "any",
+        };
         let payload = format!(
             "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"metadata.policies.resolve\",\"arguments\":{{\"schema_id\":\"{}\",\"table_id\":\"{}\",\"name\":{},\"kind\":\"{kind}\"}}}}",
             lower_hex(&schema_id),
@@ -3457,7 +3461,7 @@ impl AdminClient {
             .as_ref()
             .map(|expression| bind_expression(self, expression))
             .transpose()?;
-        self.create_policy(AdminCreatePolicyRequest {
+        let request = AdminCreatePolicyRequest {
             table_id,
             name: &statement.name,
             kind,
@@ -3467,7 +3471,14 @@ impl AdminClient {
             target_column_ids: &target_column_ids,
             using_expression: using_expression.as_ref(),
             with_check_expression: with_check_expression.as_ref(),
-        })
+        };
+        if statement.replace_existing {
+            let replaced_policy_id =
+                self.resolve_policy_sql_name(&statement.name, None, schema_id, table_id)?;
+            self.replace_policy(request, replaced_policy_id)
+        } else {
+            self.create_policy(request)
+        }
     }
 
     pub fn execute_drop_policy_sql(
@@ -3478,8 +3489,12 @@ impl AdminClient {
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
         let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
         let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
-        let policy_id =
-            self.resolve_policy_sql_name(&statement.name, statement.is_cell, schema_id, table_id)?;
+        let policy_id = self.resolve_policy_sql_name(
+            &statement.name,
+            Some(statement.is_cell),
+            schema_id,
+            table_id,
+        )?;
         self.drop_policy(policy_id)
     }
 
@@ -4467,6 +4482,23 @@ impl AdminClient {
         &mut self,
         request: AdminCreatePolicyRequest<'_>,
     ) -> Result<AdminPolicyResult, ClientSubmitError> {
+        self.create_or_replace_policy(request, None)
+    }
+
+    pub fn replace_policy(
+        &mut self,
+        request: AdminCreatePolicyRequest<'_>,
+        replaced_policy_id: [u8; 16],
+    ) -> Result<AdminPolicyResult, ClientSubmitError> {
+        validate_admin_id(replaced_policy_id)?;
+        self.create_or_replace_policy(request, Some(replaced_policy_id))
+    }
+
+    fn create_or_replace_policy(
+        &mut self,
+        request: AdminCreatePolicyRequest<'_>,
+        replaced_policy_id: Option<[u8; 16]>,
+    ) -> Result<AdminPolicyResult, ClientSubmitError> {
         let AdminCreatePolicyRequest {
             table_id,
             name,
@@ -4535,10 +4567,18 @@ impl AdminClient {
         let check_json = check_ir
             .map(|value| format!("\"{value}\""))
             .unwrap_or_else(|| "null".to_owned());
+        let operation_name = if replaced_policy_id.is_some() {
+            "policies.replace"
+        } else {
+            "policies.create"
+        };
+        let replacement_argument = replaced_policy_id
+            .map(|id| format!(",\"replaced_policy_id\":\"{}\"", lower_hex(&id)))
+            .unwrap_or_default();
         let (result, generated_ids) = self.execute_admin_operation_with_generated_ids(
-            "policies.create",
+            operation_name,
             format!(
-                "{{\"table_id\":\"{}\",\"name\":{},\"kind\":\"{}\",\"policy_operation\":\"{}\",\"effect\":\"{}\",\"recipients\":[{}],\"target_column_ids\":{},\"using_expression_eir1\":{},\"with_check_expression_eir1\":{}}}",
+                "{{\"table_id\":\"{}\",\"name\":{},\"kind\":\"{}\",\"policy_operation\":\"{}\",\"effect\":\"{}\",\"recipients\":[{}],\"target_column_ids\":{},\"using_expression_eir1\":{},\"with_check_expression_eir1\":{}{replacement_argument}}}",
                 lower_hex(&table_id),
                 json_quote(name),
                 kind.as_wire_name(),
