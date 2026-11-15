@@ -2282,6 +2282,107 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     drop(renewed_credentials);
     let admin_owner_id_text = encode_id_hex(&admin_user_id);
     admin.execute_object_privilege_sql(
+        "GRANT ALTER ON TABLE process_admin_schema.process_admin_table TO USER process_table_owner_renamed",
+    )?;
+    let table_alter_sql_path = root.join("table-alter-grantee.sql");
+    for (statement, expected) in [
+        (
+            "ALTER TABLE process_admin_schema.process_admin_table RENAME TO process_admin_table_altered;",
+            "renamed table",
+        ),
+        (
+            "ALTER TABLE process_admin_schema.process_admin_table_altered RENAME TO process_admin_table;",
+            "renamed table",
+        ),
+    ] {
+        std::fs::write(&table_alter_sql_path, statement)?;
+        let command = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "admin-sql",
+                "--address",
+                &address_text,
+                "--credentials",
+                transfer_credential_path
+                    .to_str()
+                    .ok_or("credential path is not UTF-8")?,
+                "--sql-file",
+                table_alter_sql_path
+                    .to_str()
+                    .ok_or("SQL path is not UTF-8")?,
+            ])
+            .output()?;
+        assert!(
+            command.status.success(),
+            "table ALTER grantee SQL {statement:?} failed: {}",
+            String::from_utf8_lossy(&command.stderr)
+        );
+        assert!(String::from_utf8_lossy(&command.stdout).contains(expected));
+    }
+    let table_alter_credentials = read_client_credentials(&transfer_credential_path)?;
+    let mut table_alter_secret = table_alter_credentials.token_secret;
+    let mut table_alter_client = AdminClient::connect_authenticated(
+        address,
+        table_alter_credentials.token_id,
+        &mut table_alter_secret,
+    )?;
+    table_alter_client.set_table_owner(created_table.table_id, transfer_owner.identity_id)?;
+    drop(table_alter_client);
+    admin.set_table_owner(created_table.table_id, admin_user_id)?;
+    admin.execute_object_privilege_sql(
+        "REVOKE ALTER ON TABLE process_admin_schema.process_admin_table FROM USER process_table_owner_renamed",
+    )?;
+    let create_alter_drop_sql_path = root.join("create-alter-drop-target.sql");
+    std::fs::write(
+        &create_alter_drop_sql_path,
+        "CREATE TABLE process_admin_schema.process_admin_drop_target (value INTEGER);",
+    )?;
+    let create_alter_drop_target = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--sql-file",
+            create_alter_drop_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        create_alter_drop_target.status.success(),
+        "ALTER drop target CREATE TABLE failed: {}",
+        String::from_utf8_lossy(&create_alter_drop_target.stderr)
+    );
+    admin.execute_object_privilege_sql(
+        "GRANT ALTER ON TABLE process_admin_schema.process_admin_drop_target TO USER process_table_owner_renamed",
+    )?;
+    std::fs::write(
+        &table_alter_sql_path,
+        "DROP TABLE process_admin_schema.process_admin_drop_target RESTRICT;",
+    )?;
+    let drop_table_alter_grantee = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            transfer_credential_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            table_alter_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        drop_table_alter_grantee.status.success(),
+        "table ALTER grantee DROP TABLE failed: {}",
+        String::from_utf8_lossy(&drop_table_alter_grantee.stderr)
+    );
+    assert!(String::from_utf8_lossy(&drop_table_alter_grantee.stdout).contains("dropped table"));
+    admin.execute_object_privilege_sql(
         "GRANT ALTER ON SCHEMA process_admin_schema TO USER process_table_owner_renamed",
     )?;
     let schema_alter_sql_path = root.join("schema-alter-grantee.sql");

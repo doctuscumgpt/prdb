@@ -799,3 +799,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The production gateway/supervisor lifecycle now drops a present logical index through `DROP INDEX IF EXISTS ... RESTRICT`, then repeats the statement and verifies the database-administrator no-op reports that no operation committed. The same fixture still confirms RESTRICT blocks dropping a column while its index exists.
 - The focused delegated process test and `cargo fmt --all` pass; Cargo.lock is unchanged.
+
+## DS-6: table-scoped ALTER for rename, owner transfer, and drop — verified slice
+
+- Typed table rename, owner transfer, and drop guards now accept effective table- or schema-scoped `ALTER` grants in addition to ownership/database administration. Direct and inherited grant records are retained as commit guards so revocation cannot authorize stale DDL. Column rename uses the same scoped authority.
+- Updated table rename/drop/owner-transfer contracts. The production gateway/supervisor test grants table ALTER, renames the target through `admin-sql` without schema USAGE, exercises owner transfer through the typed ADMIN operation, restores ownership, and drops a separate table through `admin-sql` as an ALTER grantee. The focused delegated process test and formatting pass. Cargo.lock is unchanged.

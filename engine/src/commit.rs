@@ -10554,9 +10554,8 @@ fn table_rename_ddl_authority_guards(
         .map_err(|_| CommitError::InvalidCatalog)?;
     let mut admin_role_id = [0x80; 16];
     admin_role_id[15] = 3;
-    if owner_id != principal_id && !roles.contains(&owner_id) && !roles.contains(&admin_role_id) {
-        return Err(CommitError::DdlAuthorizationDenied);
-    }
+    let mut authorized =
+        owner_id == principal_id || roles.contains(&owner_id) || roles.contains(&admin_role_id);
     let metadata = read
         .open_table(ENGINE_META)
         .map_err(storage_error)?
@@ -10592,6 +10591,29 @@ fn table_rename_ddl_authority_guards(
     if builtins[4..].chunks_exact(20).any(|entry| {
         matches!(u16::from_le_bytes([entry[0], entry[1]]), 1 | 2) && entry[4..20] == schema_id
     }) {
+        return Err(CommitError::DdlAuthorizationDenied);
+    }
+    let mut authority_subjects = roles.clone();
+    authority_subjects.insert(principal_id);
+    for subject in authority_subjects {
+        for object_id in [table_id, schema_id] {
+            let key = grant_key(subject, object_id, 8, 1, object_id);
+            let bytes = catalog
+                .get(key.as_slice())
+                .map_err(storage_error)?
+                .map(|value| value.value().to_vec());
+            if let Some(value) = &bytes {
+                if catalog_field_bytes(&key, value, 12, 1)? == [0; 16]
+                    || catalog_field_u64(&key, value, 12, 2)? == 0
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
+                authorized = true;
+            }
+            add_catalog_guard(&mut guards, key, bytes);
+        }
+    }
+    if !authorized {
         return Err(CommitError::DdlAuthorizationDenied);
     }
     subject_ids.extend(roles);
@@ -10833,9 +10855,8 @@ fn column_rename_ddl_authority_guards(
         .map_err(|_| CommitError::InvalidCatalog)?;
     let mut admin_role_id = [0x80; 16];
     admin_role_id[15] = 3;
-    if owner_id != principal_id && !roles.contains(&owner_id) && !roles.contains(&admin_role_id) {
-        return Err(CommitError::DdlAuthorizationDenied);
-    }
+    let mut authorized =
+        owner_id == principal_id || roles.contains(&owner_id) || roles.contains(&admin_role_id);
     let metadata = read
         .open_table(ENGINE_META)
         .map_err(storage_error)?
@@ -10871,6 +10892,29 @@ fn column_rename_ddl_authority_guards(
     if builtins[4..].chunks_exact(20).any(|entry| {
         matches!(u16::from_le_bytes([entry[0], entry[1]]), 1 | 2) && entry[4..20] == schema_id
     }) {
+        return Err(CommitError::DdlAuthorizationDenied);
+    }
+    let mut authority_subjects = roles.clone();
+    authority_subjects.insert(principal_id);
+    for subject in authority_subjects {
+        for object_id in [table_id, schema_id] {
+            let key = grant_key(subject, object_id, 8, 1, object_id);
+            let bytes = catalog
+                .get(key.as_slice())
+                .map_err(storage_error)?
+                .map(|value| value.value().to_vec());
+            if let Some(value) = &bytes {
+                if catalog_field_bytes(&key, value, 12, 1)? == [0; 16]
+                    || catalog_field_u64(&key, value, 12, 2)? == 0
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
+                authorized = true;
+            }
+            add_catalog_guard(&mut guards, key, bytes);
+        }
+    }
+    if !authorized {
         return Err(CommitError::DdlAuthorizationDenied);
     }
     subjects.extend(roles);
@@ -11004,9 +11048,6 @@ fn table_drop_ddl_authority_guards(
         .map_err(|_| CommitError::InvalidCatalog)?;
     let mut admin_role_id = [0x80; 16];
     admin_role_id[15] = 3;
-    if owner_id != principal_id && !roles.contains(&owner_id) && !roles.contains(&admin_role_id) {
-        return Err(CommitError::DdlAuthorizationDenied);
-    }
 
     let schema_id: [u8; 16] = catalog_field_bytes(&table_key, table_bytes, 5, 1)?
         .try_into()
@@ -11046,6 +11087,31 @@ fn table_drop_ddl_authority_guards(
     if builtins[4..].chunks_exact(20).any(|entry| {
         matches!(u16::from_le_bytes([entry[0], entry[1]]), 1 | 2) && entry[4..20] == schema_id
     }) {
+        return Err(CommitError::DdlAuthorizationDenied);
+    }
+    let mut authorized =
+        owner_id == principal_id || roles.contains(&owner_id) || roles.contains(&admin_role_id);
+    let mut authority_subjects = roles.clone();
+    authority_subjects.insert(principal_id);
+    for subject in authority_subjects {
+        for object_id in [table_id, schema_id] {
+            let key = grant_key(subject, object_id, 8, 1, object_id);
+            let bytes = catalog
+                .get(key.as_slice())
+                .map_err(storage_error)?
+                .map(|value| value.value().to_vec());
+            if let Some(value) = &bytes {
+                if catalog_field_bytes(&key, value, 12, 1)? == [0; 16]
+                    || catalog_field_u64(&key, value, 12, 2)? == 0
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
+                authorized = true;
+            }
+            add_catalog_guard(&mut guards, key, bytes);
+        }
+    }
+    if !authorized {
         return Err(CommitError::DdlAuthorizationDenied);
     }
     let mut owned_ids = HashSet::from([table_id]);

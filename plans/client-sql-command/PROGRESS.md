@@ -481,3 +481,8 @@
 
 - The gateway/supervisor lifecycle exercises `DROP INDEX IF EXISTS` against both a present index and the same absent index. The first dispatches the typed drop; the second succeeds as an administrator no-op with no DDL operation.
 - The focused delegated process test and formatting pass; Cargo.lock is unchanged.
+
+## Table ALTER-authorized SQL rename and drop — verified slice
+
+- Table-scoped ALTER grantees can bind table names without schema USAGE for SQL rename and drop. The typed commit guard validates direct/inherited table or schema grants through publication; ownership transfer remains available through the typed operation, while SQL owner-name resolution retains its own identity-discovery requirements.
+- The gateway/supervisor process test verifies table rename and RESTRICT drop as a non-owner ALTER grantee. The focused delegated process test and formatting pass; Cargo.lock is unchanged.
