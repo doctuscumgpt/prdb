@@ -22,6 +22,7 @@ Specify bounded permission syntax/structured operations and typed policy IR shar
 | DP-SQL-8 | Administrators can write finite-set policy predicates without enumerating OR comparisons | Accept column `IN`/`NOT IN` with 1–64 typed literals, bind to the declared type, and lower to existing EIR1 Boolean operations under its node budget |
 | DP-SQL-9 | Administrators can write inclusive policy range predicates | Accept column `BETWEEN`/`NOT BETWEEN` with typed bounds and lower to existing inclusive comparisons while preserving NULL/UNKNOWN policy behavior |
 | DP-SQL-10 | Administrators can define null-safe policy comparisons | Accept `IS [NOT] DISTINCT FROM` with typed scalar literals and lower to existing EIR1 null checks/comparisons |
+| DP-SQL-11 | Administrators can grant or revoke several object privileges as one change | Parse a bounded privilege list and publish every grant, dependency, epoch, audit event, and outcome in one authenticated catalog transaction |
 
 ## Acceptance and Handoff
 

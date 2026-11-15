@@ -790,6 +790,19 @@ pub struct SetObjectGrantRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SetObjectGrantBatchRequest {
+    pub invocation_id: [u8; 16],
+    pub authenticated_actor_id: [u8; 16],
+    pub grantee_id: [u8; 16],
+    pub object_id: [u8; 16],
+    pub privileges: Vec<ObjectGrantPrivilege>,
+    pub target: ObjectGrantTarget,
+    pub grant: bool,
+    pub retention_deadline_us: i64,
+    pub audit_event: AuditEvent,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateCheckConstraintRequest {
     pub invocation_id: [u8; 16],
     pub authenticated_actor_id: [u8; 16],
@@ -12346,7 +12359,7 @@ impl<'db> StorageManager<'db> {
     /// Add or remove one direct schema/table/column object grant using the
     /// authenticated ADMIN path. Authority and catalog dependencies are
     /// revalidated by the serialized commit validator.
-    pub fn set_object_grant(&self, mut request: SetObjectGrantRequest) -> Result<u64, CommitError> {
+    pub fn set_object_grant(&self, request: SetObjectGrantRequest) -> Result<u64, CommitError> {
         let SetObjectGrantRequest {
             invocation_id,
             authenticated_actor_id,
@@ -12356,12 +12369,49 @@ impl<'db> StorageManager<'db> {
             target,
             grant,
             retention_deadline_us,
+            audit_event,
+        } = request;
+        self.set_object_grants_batch(SetObjectGrantBatchRequest {
+            invocation_id,
+            authenticated_actor_id,
+            grantee_id,
+            object_id,
+            privileges: vec![privilege],
+            target,
+            grant,
+            retention_deadline_us,
+            audit_event,
+        })
+    }
+
+    /// Add or remove several direct grants in one authenticated catalog
+    /// publication. Every privilege shares one grantee, object, target, and
+    /// direction so authorization and provenance change atomically.
+    pub fn set_object_grants_batch(
+        &self,
+        mut request: SetObjectGrantBatchRequest,
+    ) -> Result<u64, CommitError> {
+        let SetObjectGrantBatchRequest {
+            invocation_id,
+            authenticated_actor_id,
+            grantee_id,
+            object_id,
+            privileges,
+            target,
+            grant,
+            retention_deadline_us,
             ref mut audit_event,
         } = request;
         if invocation_id == [0; 16]
             || authenticated_actor_id == [0; 16]
             || grantee_id == [0; 16]
             || object_id == [0; 16]
+            || privileges.is_empty()
+            || privileges.len() > 11
+            || privileges
+                .iter()
+                .enumerate()
+                .any(|(index, privilege)| privileges[..index].contains(privilege))
             || retention_deadline_us <= 0
             || audit_event.actor_id != Some(authenticated_actor_id)
             || audit_event.correlation_id != invocation_id
@@ -12416,7 +12466,11 @@ impl<'db> StorageManager<'db> {
         let (scope, target_ids) = match target {
             ObjectGrantTarget::Object => (1u16, vec![object_id]),
             ObjectGrantTarget::AllColumns => {
-                if object_kind != 3 || !matches!(privilege.code(), 2 | 3 | 4 | 6) {
+                if object_kind != 3
+                    || privileges
+                        .iter()
+                        .any(|privilege| !matches!(privilege.code(), 2 | 3 | 4 | 6))
+                {
                     return Err(CommitError::InvalidCatalog);
                 }
                 let prefix = 6u16.to_be_bytes();
@@ -12500,23 +12554,39 @@ impl<'db> StorageManager<'db> {
                 (2, column_ids)
             }
         };
-        let code = privilege.code();
-        let valid_scope = matches!(
-            (object_kind, code, scope),
-            (1, 1 | 7 | 8 | 10 | 11, 1) | (3, 2..=4 | 6, 1 | 2) | (3, 5 | 8 | 9 | 10 | 11, 1)
-        );
-        if !valid_scope {
-            return Err(CommitError::InvalidCatalog);
+        let mut grant_specs = Vec::with_capacity(privileges.len() * target_ids.len());
+        for privilege in &privileges {
+            let code = privilege.code();
+            let valid_scope = matches!(
+                (object_kind, code, scope),
+                (1, 1 | 7 | 8 | 10 | 11, 1) | (3, 2..=4 | 6, 1 | 2) | (3, 5 | 8 | 9 | 10 | 11, 1)
+            );
+            if !valid_scope {
+                return Err(CommitError::InvalidCatalog);
+            }
+            for target_id in &target_ids {
+                grant_specs.push((
+                    code,
+                    *target_id,
+                    object_grant_catalog_key(grantee_id, object_id, code, scope, *target_id),
+                ));
+            }
+        }
+        if grant_specs
+            .len()
+            .saturating_add(target_ids.len())
+            .saturating_add(1)
+            > crate::authorization::MAX_AUTHORIZATION_INPUTS
+        {
+            return Err(CommitError::InvalidWrite);
         }
 
-        let grant_keys = target_ids
+        let grant_keys = grant_specs
             .iter()
-            .map(|target_id| {
-                object_grant_catalog_key(grantee_id, object_id, code, scope, *target_id)
-            })
+            .map(|(_, _, grant_key)| grant_key.clone())
             .collect::<Vec<_>>();
-        let mut current_grants = Vec::with_capacity(grant_keys.len());
-        for grant_key in &grant_keys {
+        let mut current_grants = Vec::with_capacity(grant_specs.len());
+        for (_, _, grant_key) in &grant_specs {
             let current = catalog
                 .get(grant_key.as_slice())
                 .map_err(|error| CommitError::Storage(error.to_string()))?
@@ -12558,10 +12628,8 @@ impl<'db> StorageManager<'db> {
             }
             remaining_targets
         };
-        let mut writes = Vec::with_capacity(target_ids.len() * 2 + 1);
-        for ((target_id, grant_key), current_grant) in
-            target_ids.iter().zip(&grant_keys).zip(current_grants)
-        {
+        let mut writes = Vec::with_capacity(grant_specs.len() * 2 + 1);
+        for ((_, _, grant_key), current_grant) in grant_specs.iter().zip(current_grants) {
             let payload = if grant {
                 Some(
                     encode_envelope(
@@ -12590,7 +12658,8 @@ impl<'db> StorageManager<'db> {
                 expected_value: current_grant,
                 payload,
             });
-
+        }
+        for target_id in &target_ids {
             let dependency_key = dependency_catalog_key(grantee_id, *target_id, 5);
             let current_dependency = catalog
                 .get(dependency_key.as_slice())

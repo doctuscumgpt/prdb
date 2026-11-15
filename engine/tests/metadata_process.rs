@@ -1721,6 +1721,126 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             && grant.target_scope
                 == prdb_engine::metadata_discovery::AdministrativeGrantTargetScope::Column
     }));
+    admin.execute_object_privilege_sql(
+        "GRANT ALTER ON TABLE process_ddl.records TO USER process_member_user",
+    )?;
+    std::fs::write(
+        &object_privilege_sql_path,
+        "GRANT ALTER, INDEX ON TABLE process_ddl.records TO USER process_member_user;",
+    )?;
+    let overlapping_privilege_batch = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            object_privilege_sql_path_text,
+        ])
+        .output()?;
+    assert!(
+        !overlapping_privilege_batch.status.success(),
+        "multi-privilege GRANT unexpectedly accepted a pre-existing member"
+    );
+    let after_overlapping_privilege_batch =
+        admin.list_grants_page(ddl_schema.identity_id, ddl_table.table_id, 128, None)?;
+    assert!(
+        after_overlapping_privilege_batch
+            .records
+            .iter()
+            .any(|grant| {
+                grant.grantee_id == member_user.identity_id
+                    && grant.privilege
+                        == prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Alter
+            })
+    );
+    assert!(
+        !after_overlapping_privilege_batch
+            .records
+            .iter()
+            .any(|grant| {
+                grant.grantee_id == member_user.identity_id
+                    && grant.privilege
+                        == prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Index
+            })
+    );
+    admin.execute_object_privilege_sql(
+        "REVOKE ALTER ON TABLE process_ddl.records FROM USER process_member_user",
+    )?;
+    std::fs::write(
+        &object_privilege_sql_path,
+        "GRANT ALTER, INDEX, MANAGE_POLICIES, MANAGE_GRANTS ON TABLE process_ddl.records TO USER process_member_user;",
+    )?;
+    let grant_multiple_privileges = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            object_privilege_sql_path_text,
+        ])
+        .output()?;
+    assert!(
+        grant_multiple_privileges.status.success(),
+        "multi-privilege GRANT SQL failed: {}",
+        String::from_utf8_lossy(&grant_multiple_privileges.stderr)
+    );
+    let multiple_privilege_grants =
+        admin.list_grants_page(ddl_schema.identity_id, ddl_table.table_id, 128, None)?;
+    for privilege in [
+        prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Alter,
+        prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Index,
+        prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::ManagePolicies,
+        prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::ManageGrants,
+    ] {
+        assert!(multiple_privilege_grants.records.iter().any(|grant| {
+            grant.grantee_id == member_user.identity_id
+                && grant.privilege == privilege
+                && grant.target_scope
+                    == prdb_engine::metadata_discovery::AdministrativeGrantTargetScope::Object
+        }));
+    }
+    std::fs::write(
+        &object_privilege_sql_path,
+        "REVOKE ALTER, INDEX, MANAGE_POLICIES, MANAGE_GRANTS ON TABLE process_ddl.records FROM USER process_member_user;",
+    )?;
+    let revoke_multiple_privileges = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            object_privilege_sql_path_text,
+        ])
+        .output()?;
+    assert!(
+        revoke_multiple_privileges.status.success(),
+        "multi-privilege REVOKE SQL failed: {}",
+        String::from_utf8_lossy(&revoke_multiple_privileges.stderr)
+    );
+    let revoked_multiple_privileges =
+        admin.list_grants_page(ddl_schema.identity_id, ddl_table.table_id, 128, None)?;
+    assert!(!revoked_multiple_privileges.records.iter().any(|grant| {
+        grant.grantee_id == member_user.identity_id
+            && matches!(
+                grant.privilege,
+                prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Alter
+                    | prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Index
+                    | prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::ManagePolicies
+                    | prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::ManageGrants
+            )
+    }));
     std::fs::write(
         &object_privilege_sql_path,
         "GRANT SELECT ON TABLE process_ddl.records TO USER process_member_user;",

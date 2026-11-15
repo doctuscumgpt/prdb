@@ -686,7 +686,7 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
         Ok(ClientAdminCommand::PrepareObjectGrant {
             grantee_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             object_id: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31],
-            privilege: prdb_engine::storage_manager::ObjectGrantPrivilege::References,
+            privileges: vec![prdb_engine::storage_manager::ObjectGrantPrivilege::References],
             target: prdb_engine::storage_manager::ObjectGrantTarget::Column([
                 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
             ]),
@@ -700,7 +700,7 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
         Ok(ClientAdminCommand::PrepareObjectGrant {
             grantee_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             object_id: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31],
-            privilege: prdb_engine::storage_manager::ObjectGrantPrivilege::References,
+            privileges: vec![prdb_engine::storage_manager::ObjectGrantPrivilege::References],
             target: prdb_engine::storage_manager::ObjectGrantTarget::Object,
             grant: false,
         })
@@ -712,7 +712,7 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
         Ok(ClientAdminCommand::PrepareObjectGrant {
             grantee_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             object_id: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31],
-            privilege: prdb_engine::storage_manager::ObjectGrantPrivilege::Select,
+            privileges: vec![prdb_engine::storage_manager::ObjectGrantPrivilege::Select],
             target: prdb_engine::storage_manager::ObjectGrantTarget::Columns(vec![
                 [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47],
                 [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63],
@@ -727,6 +727,14 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
             target: prdb_engine::storage_manager::ObjectGrantTarget::AllColumns,
             ..
         })
+    ));
+    assert!(matches!(
+        decode_client_admin_command(br#"{"phase":"prepare","operation_version":1,"operation":"objects.grant_batch","arguments":{"grantee_id":"000102030405060708090a0b0c0d0e0f","object_id":"101112131415161718191a1b1c1d1e1f","privileges":["alter","index","manage_policies","manage_grants"],"target_scope":"object","target_id":"101112131415161718191a1b1c1d1e1f"}}"#),
+        Ok(ClientAdminCommand::PrepareObjectGrant {
+            privileges,
+            grant: true,
+            ..
+        }) if privileges.len() == 4
     ));
     assert!(decode_client_admin_command(
         br#"{"phase":"prepare","operation_version":1,"operation":"objects.grant","arguments":{"grantee_id":"000102030405060708090a0b0c0d0e0f","object_id":"101112131415161718191a1b1c1d1e1f","privilege":"all","target_scope":"object","target_id":"101112131415161718191a1b1c1d1e1f"}}"#

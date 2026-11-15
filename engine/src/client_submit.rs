@@ -2673,24 +2673,65 @@ impl AdminClient {
         privilege: AdminObjectPrivilege,
         target: AdminObjectGrantTarget,
     ) -> Result<AdminOperationResult, ClientSubmitError> {
+        self.change_object_privileges(operation, grantee_id, object_id, vec![privilege], target)
+    }
+
+    fn change_object_privileges(
+        &mut self,
+        operation: &str,
+        grantee_id: [u8; 16],
+        object_id: [u8; 16],
+        privileges: Vec<AdminObjectPrivilege>,
+        target: AdminObjectGrantTarget,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
         validate_admin_id(grantee_id)?;
         validate_admin_id(object_id)?;
+        if privileges.is_empty()
+            || privileges.len() > 11
+            || privileges
+                .iter()
+                .enumerate()
+                .any(|(i, value)| privileges[..i].contains(value))
+        {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let privilege_json = privileges
+            .iter()
+            .map(|privilege| format!("\"{}\"", privilege.as_wire_name()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let (operation, privilege_field) = if privileges.len() == 1 {
+            (
+                operation,
+                format!("\"privilege\":\"{}\"", privileges[0].as_wire_name()),
+            )
+        } else {
+            let batch_operation = match operation {
+                "objects.grant" => "objects.grant_batch",
+                "objects.revoke" => "objects.revoke_batch",
+                _ => return Err(ClientSubmitError::InvalidAdministrativeRequest),
+            };
+            (
+                batch_operation,
+                format!("\"privileges\":[{privilege_json}]"),
+            )
+        };
         let arguments = match target {
             AdminObjectGrantTarget::Object => format!(
-                "{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",\"privilege\":\"{}\",\"target_scope\":\"{}\",\"target_id\":\"{}\"}}",
+                "{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",{},\"target_scope\":\"{}\",\"target_id\":\"{}\"}}",
                 lower_hex(&grantee_id),
                 lower_hex(&object_id),
-                privilege.as_wire_name(),
+                privilege_field,
                 "object",
                 lower_hex(&object_id)
             ),
             AdminObjectGrantTarget::Column(column_id) => {
                 validate_admin_id(column_id)?;
                 format!(
-                    "{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",\"privilege\":\"{}\",\"target_scope\":\"column\",\"target_id\":\"{}\"}}",
+                    "{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",{},\"target_scope\":\"column\",\"target_id\":\"{}\"}}",
                     lower_hex(&grantee_id),
                     lower_hex(&object_id),
-                    privilege.as_wire_name(),
+                    privilege_field,
                     lower_hex(&column_id)
                 )
             }
@@ -2713,18 +2754,18 @@ impl AdminClient {
                     .collect::<Vec<_>>()
                     .join(",");
                 format!(
-                    "{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",\"privilege\":\"{}\",\"target_scope\":\"columns\",\"target_ids\":[{}]}}",
+                    "{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",{},\"target_scope\":\"columns\",\"target_ids\":[{}]}}",
                     lower_hex(&grantee_id),
                     lower_hex(&object_id),
-                    privilege.as_wire_name(),
+                    privilege_field,
                     encoded_ids
                 )
             }
             AdminObjectGrantTarget::AllColumns => format!(
-                "{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",\"privilege\":\"{}\",\"target_scope\":\"all_columns\"}}",
+                "{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",{},\"target_scope\":\"all_columns\"}}",
                 lower_hex(&grantee_id),
                 lower_hex(&object_id),
-                privilege.as_wire_name()
+                privilege_field
             ),
         };
         self.execute_admin_operation(operation, arguments, None)
@@ -3841,11 +3882,34 @@ impl AdminClient {
         let schema_id = grant_target.schema_id;
         let object_id = grant_target.object_id;
         let grantee_id = grant_target.identity_id;
+        let privileges = statement
+            .privileges
+            .iter()
+            .map(|privilege| match privilege.as_str() {
+                "usage" => Ok(AdminObjectPrivilege::Usage),
+                "select" => Ok(AdminObjectPrivilege::Select),
+                "insert" => Ok(AdminObjectPrivilege::Insert),
+                "update" => Ok(AdminObjectPrivilege::Update),
+                "delete" => Ok(AdminObjectPrivilege::Delete),
+                "references" => Ok(AdminObjectPrivilege::References),
+                "create" => Ok(AdminObjectPrivilege::Create),
+                "alter" => Ok(AdminObjectPrivilege::Alter),
+                "index" => Ok(AdminObjectPrivilege::Index),
+                "manage_policies" => Ok(AdminObjectPrivilege::ManagePolicies),
+                "manage_grants" => Ok(AdminObjectPrivilege::ManageGrants),
+                _ => Err(ClientSubmitError::InvalidAdministrativeRequest),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let expands_table_data_grant = statement.table_name.is_some()
-            && matches!(
-                statement.privilege.as_str(),
-                "select" | "insert" | "update" | "references"
-            );
+            && privileges.iter().all(|privilege| {
+                matches!(
+                    privilege,
+                    AdminObjectPrivilege::Select
+                        | AdminObjectPrivilege::Insert
+                        | AdminObjectPrivilege::Update
+                        | AdminObjectPrivilege::References
+                )
+            });
         let target = if !statement.column_names.is_empty() {
             let table_id = object_id;
             let mut column_ids = Vec::with_capacity(statement.column_names.len());
@@ -3884,25 +3948,17 @@ impl AdminClient {
         } else {
             AdminObjectGrantTarget::Object
         };
-        let privilege = match statement.privilege.as_str() {
-            "usage" => AdminObjectPrivilege::Usage,
-            "select" => AdminObjectPrivilege::Select,
-            "insert" => AdminObjectPrivilege::Insert,
-            "update" => AdminObjectPrivilege::Update,
-            "delete" => AdminObjectPrivilege::Delete,
-            "references" => AdminObjectPrivilege::References,
-            "create" => AdminObjectPrivilege::Create,
-            "alter" => AdminObjectPrivilege::Alter,
-            "index" => AdminObjectPrivilege::Index,
-            "manage_policies" => AdminObjectPrivilege::ManagePolicies,
-            "manage_grants" => AdminObjectPrivilege::ManageGrants,
-            _ => return Err(ClientSubmitError::InvalidAdministrativeRequest),
-        };
-        if statement.grant {
-            self.grant_object_privilege(grantee_id, object_id, privilege, target)
-        } else {
-            self.revoke_object_privilege(grantee_id, object_id, privilege, target)
-        }
+        self.change_object_privileges(
+            if statement.grant {
+                "objects.grant"
+            } else {
+                "objects.revoke"
+            },
+            grantee_id,
+            object_id,
+            privileges,
+            target,
+        )
     }
 
     fn resolve_identity_sql_name(

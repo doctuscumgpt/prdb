@@ -103,3 +103,9 @@
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. It includes object-grant revocation linearization, policy-owner/manager authorization and replacement, policy evaluation, and cross-process grant/policy DDL coverage.
 - Broader permission-change race schedules and administrative SQL coverage beyond the implemented forms remain open.
+
+## DP-SQL-11: atomic multi-privilege grant SQL — verified
+
+- `GRANT` and `REVOKE` accept a bounded comma-separated privilege list. The authenticated protocol carries that list as one PREPARE/START operation; storage validates all requested grant states before publishing grant records, provenance dependencies, one grantee epoch change, one audit event, and one durable outcome in a single catalog commit.
+- The delegated gateway/supervisor metadata lifecycle grants `ALTER, INDEX, MANAGE_POLICIES, MANAGE_GRANTS` together, verifies every table-scoped grant through metadata discovery, revokes the same set together, and verifies no grant remains. Parser and protocol regressions cover the documented list, duplicates, unknown names, and column-list restrictions.
+- Verification: focused parser/protocol/client tests and the cross-process metadata lifecycle passed; locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests and sandbox fixture, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed; Cargo.lock is unchanged.
