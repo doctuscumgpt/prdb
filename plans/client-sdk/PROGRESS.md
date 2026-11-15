@@ -905,3 +905,8 @@
 
 - Added `AdminClient::execute_create_schema_if_not_exists_sql`; existing schemas no-op only after current database-administrator authority is confirmed, while absent schemas use the ordinary schema-create operation. The regular create method rejects conditional syntax so callers cannot accidentally discard the no-op result.
 - Parser and production process coverage pass for initial create, administrator repeat, and non-admin rejection. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md) for commands and contract links; Cargo.lock is unchanged.
+
+## Conditional table creation SQL — implemented extension
+
+- Added `AdminClient::execute_create_table_if_not_exists_sql`; an existing table returns `None` only after current database-admin authorization, while absent tables go through the normal typed creation path. The ordinary create method rejects conditional syntax so callers handle no-op results explicitly.
+- Parser and delegated production process coverage pass for initial create, administrator repeat, and non-admin rejection. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.

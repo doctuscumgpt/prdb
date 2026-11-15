@@ -809,3 +809,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended bounded schema SQL with `CREATE SCHEMA IF NOT EXISTS`. An absent schema follows the ordinary typed `schemas.create` authorization and publication path. If the schema already resolves, only a database administrator receives a no-op; it creates no DDL outcome and does not resolve or apply an optional owner clause.
 - Updated schema DDL, client SDK, and client SQL contracts. Parser coverage and the production gateway/supervisor lifecycle verify create, administrator repeat no-op, and non-administrator denial. The targeted parser and delegated process tests, workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## DS-SQL-40: CREATE TABLE IF NOT EXISTS — verified extension
+
+- Added `CREATE TABLE IF NOT EXISTS` to the bounded authenticated SQL parser and CLI. Absent relations use the existing typed create path; an existing relation is a database-administrator-only no-op with no DDL outcome, and its definition is not compared or reconciled.
+- Updated schema DDL, client SDK, and client SQL contracts. Parser and gateway/supervisor process coverage verifies table creation, administrator repeat no-op, and rejection of the no-op for a non-administrator even when that actor has table-scoped ALTER. Targeted parser and delegated process tests pass; Cargo.lock is unchanged.

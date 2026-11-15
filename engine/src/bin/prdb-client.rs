@@ -509,16 +509,32 @@ fn admin_sql(
             result.commit_sequence,
         );
     } else if let Some(statement) = table_statement {
-        let result = client
-            .execute_create_table_sql(sql)
-            .map_err(|error| error.to_string())?;
-        println!(
-            "created table {} with {} columns (operation {}, commit {})",
-            lower_hex(&result.table_id),
-            statement.columns.len(),
-            lower_hex(&result.operation_id),
-            result.commit_sequence
-        );
+        if statement.if_not_exists {
+            match client
+                .execute_create_table_if_not_exists_sql(sql)
+                .map_err(|error| error.to_string())?
+            {
+                Some(result) => println!(
+                    "created table {} with {} columns (operation {}, commit {})",
+                    lower_hex(&result.table_id),
+                    statement.columns.len(),
+                    lower_hex(&result.operation_id),
+                    result.commit_sequence
+                ),
+                None => println!("table already exists; no operation committed"),
+            }
+        } else {
+            let result = client
+                .execute_create_table_sql(sql)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "created table {} with {} columns (operation {}, commit {})",
+                lower_hex(&result.table_id),
+                statement.columns.len(),
+                lower_hex(&result.operation_id),
+                result.commit_sequence
+            );
+        }
     } else if let Some(statement) = schema_statement {
         if statement.if_not_exists {
             match client

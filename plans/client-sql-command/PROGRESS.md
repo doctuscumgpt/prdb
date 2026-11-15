@@ -491,3 +491,8 @@
 
 - `admin-sql` now accepts `CREATE SCHEMA IF NOT EXISTS` with existing owner syntax. It creates an absent schema through the typed path; an existing schema is an administrator-only no-op with no committed DDL operation.
 - Parser and gateway/supervisor process regressions cover create, repeat no-op, and non-admin rejection. Focused parser and delegated process tests, workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## CREATE TABLE IF NOT EXISTS — verified extension
+
+- `admin-sql` accepts the conditional create modifier. It creates absent relations through `tables.create`; an existing relation is an administrator-only no-op that commits no operation and does not compare definitions.
+- Parser and gateway/supervisor process tests cover create, administrator repeat, and non-administrator denial despite table ALTER metadata visibility. Focused tests pass; Cargo.lock is unchanged.

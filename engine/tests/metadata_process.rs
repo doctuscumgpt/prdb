@@ -2334,7 +2334,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let create_alter_drop_sql_path = root.join("create-alter-drop-target.sql");
     std::fs::write(
         &create_alter_drop_sql_path,
-        "CREATE TABLE process_admin_schema.process_admin_drop_target (value INTEGER);",
+        "CREATE TABLE IF NOT EXISTS process_admin_schema.process_admin_drop_target (value INTEGER);",
     )?;
     let create_alter_drop_target = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
@@ -2354,9 +2354,50 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         "ALTER drop target CREATE TABLE failed: {}",
         String::from_utf8_lossy(&create_alter_drop_target.stderr)
     );
+    let repeated_create_alter_drop_target = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--sql-file",
+            create_alter_drop_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        repeated_create_alter_drop_target.status.success(),
+        "administrator CREATE TABLE IF NOT EXISTS repeat failed: {}",
+        String::from_utf8_lossy(&repeated_create_alter_drop_target.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&repeated_create_alter_drop_target.stdout)
+            .contains("table already exists; no operation committed")
+    );
     admin.execute_object_privilege_sql(
         "GRANT ALTER ON TABLE process_admin_schema.process_admin_drop_target TO USER process_table_owner_renamed",
     )?;
+    let non_admin_create_existing_table = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            transfer_credential_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            create_alter_drop_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        !non_admin_create_existing_table.status.success(),
+        "non-administrator CREATE TABLE IF NOT EXISTS suppressed an existing target"
+    );
     std::fs::write(
         &table_alter_sql_path,
         "DROP TABLE process_admin_schema.process_admin_drop_target RESTRICT;",

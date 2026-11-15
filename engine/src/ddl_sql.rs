@@ -15,6 +15,7 @@ const MAX_DDL_BYTES: usize = 65_536;
 pub struct CreateTableSql {
     pub schema: String,
     pub table: String,
+    pub if_not_exists: bool,
     pub columns: Vec<AdminColumnDefinition>,
     pub primary_key_columns: Option<Vec<String>>,
     pub unique_constraints: Vec<Vec<String>>,
@@ -366,6 +367,14 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
     };
     parser.word("create")?;
     parser.word("table")?;
+    let if_not_exists = if parser.peek_word("if") {
+        parser.word("if")?;
+        parser.word("not")?;
+        parser.word("exists")?;
+        true
+    } else {
+        false
+    };
     let schema = parser.identifier()?;
     parser.take(Token::Dot)?;
     let table = parser.identifier()?;
@@ -585,6 +594,7 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
     Ok(CreateTableSql {
         schema,
         table,
+        if_not_exists,
         columns,
         primary_key_columns,
         unique_constraints,
@@ -2971,6 +2981,22 @@ mod tests {
         ] {
             assert!(parse_create_table(sql).is_err(), "accepted {sql}");
         }
+    }
+
+    #[test]
+    fn parses_create_table_if_not_exists() {
+        let parsed =
+            parse_create_table("CREATE TABLE IF NOT EXISTS app.events (id UUID PRIMARY KEY);")
+                .unwrap();
+        assert!(parsed.if_not_exists);
+        assert_eq!(parsed.schema, "app");
+        assert_eq!(parsed.table, "events");
+        assert_eq!(parsed.primary_key_columns, Some(vec!["id".into()]));
+        assert!(
+            !parse_create_table("CREATE TABLE app.events (id UUID)")
+                .unwrap()
+                .if_not_exists
+        );
     }
 
     #[test]

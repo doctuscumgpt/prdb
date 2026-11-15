@@ -3924,6 +3924,40 @@ impl AdminClient {
     ) -> Result<AdminTableResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_create_table(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if statement.if_not_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        self.create_table_from_sql_statement(statement)
+    }
+
+    /// Execute `CREATE TABLE IF NOT EXISTS`. An existing relation is a
+    /// database-administrator-only no-op; absent relations use the ordinary
+    /// typed CREATE TABLE path.
+    pub fn execute_create_table_if_not_exists_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<Option<AdminTableResult>, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_create_table(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if !statement.if_not_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        match self.resolve_table_sql_name(&statement.schema, &statement.table) {
+            Ok(_) => {
+                self.list_runtime_invocations_page(1, None)?;
+                Ok(None)
+            }
+            Err(ClientSubmitError::InvalidAdministrativeRequest) => {
+                self.create_table_from_sql_statement(statement).map(Some)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn create_table_from_sql_statement(
+        &mut self,
+        statement: crate::ddl_sql::CreateTableSql,
+    ) -> Result<AdminTableResult, ClientSubmitError> {
         let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
         let checks = statement
             .check_constraints
