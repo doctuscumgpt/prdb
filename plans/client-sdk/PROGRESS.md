@@ -989,3 +989,7 @@
 ## DS-SQL-58: Null tests on supported expressions — verified
 
 - Authenticated CHECK SQL binding now serializes `IS [NOT] NULL` over any supported scalar expression to the existing EIR1 null-test nodes while preserving metadata-resolved column dependencies. Parser/binder and AdminClient serialization regressions pass, as does the full serial delegated-cgroup workspace suite with sandbox/process coverage and zero ignored tests. Workspace build, format check, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
+
+## DS-SQL-59: Null-safe distinctness on supported expressions — verified
+
+- CHECK binding now accepts a supported scalar expression before `IS [NOT] DISTINCT FROM`, with one typed literal on the right, and lowers through existing EIR1 nodes. Parser/binder and full serial delegated-cgroup workspace regressions pass with sandbox/process coverage and zero ignored tests; workspace build, format check, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.

@@ -916,3 +916,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The CREATE TABLE CHECK and ALTER CHECK binder now accepts null tests over any supported scalar expression, including parenthesized comparisons. Binding recursively resolves columns and types, then lowers to the existing EIR1 `IS NULL` node and optional `NOT`; no wire or storage format changed. Column-level CHECK still restricts references to its declared column.
 - Regression coverage checks parser/binder EIR for `(active = TRUE) IS [NOT] NULL` and authenticated AdminClient EIR serialization for a null test on an integer comparison. The full serial delegated-cgroup workspace suite passes (289 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored); workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.
+
+## DS-SQL-59: null-safe distinctness on supported expressions — verified
+
+- `IS [NOT] DISTINCT FROM` now accepts a supported scalar expression on the left and one context-typed scalar literal on the right. Binding retains two-valued NULL-safe semantics by lowering to the existing EIR1 null checks, comparisons, and Boolean nodes. Column-level CHECK references remain limited to the declared column, and policy context restrictions still apply recursively.
+- Regression coverage checks `(code IS NULL) IS DISTINCT FROM TRUE` and existing NULL/non-NULL literal forms. The full serial delegated-cgroup workspace suite passes (289 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored); workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.
