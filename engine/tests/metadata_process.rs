@@ -4821,6 +4821,45 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             )
             .is_err()
     );
+    let mut conditional_drop_credentials = read_client_credentials(&admin_cancel_credentials_path)?;
+    let mut conditional_drop_admin = AdminClient::connect_authenticated(
+        address,
+        conditional_drop_credentials.token_id,
+        &mut conditional_drop_credentials.token_secret,
+    )?;
+    assert!(
+        conditional_drop_admin
+            .execute_drop_identity_if_exists_sql(
+                "DROP ROLE IF EXISTS missing_conditional_role RESTRICT"
+            )?
+            .is_none()
+    );
+    assert!(
+        conditional_drop_admin
+            .execute_drop_identity_if_exists_sql("DROP USER IF EXISTS sql_service RESTRICT")?
+            .is_some()
+    );
+    assert!(
+        conditional_drop_admin
+            .execute_drop_identity_if_exists_sql("DROP USER IF EXISTS sql_service RESTRICT")?
+            .is_none()
+    );
+    assert!(
+        conditional_drop_admin
+            .execute_drop_identity_if_exists_sql(
+                "DROP ROLE IF EXISTS sql_conditional_role RESTRICT"
+            )?
+            .is_some()
+    );
+    assert!(
+        conditional_drop_admin
+            .execute_drop_identity_if_exists_sql(
+                "DROP ROLE IF EXISTS sql_conditional_role RESTRICT"
+            )?
+            .is_none()
+    );
+    drop(conditional_drop_admin);
+    drop(conditional_drop_credentials);
     drop(no_login_admin);
     drop(no_login_admin_credentials);
     remove_client_credentials(&admin_cancel_credentials_path)?;

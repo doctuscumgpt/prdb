@@ -140,3 +140,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `CREATE USER|ROLE IF NOT EXISTS`. Existing requested-kind identities are a no-op only after database-administrator authority is confirmed; an existing user's LOGIN state is not reconciled. Absent identities use existing typed creation operations.
 - Parser and delegated gateway/supervisor process regressions pass, including repeated role creation and preserving a NOLOGIN user. Locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite pass (sandbox/process tests enabled; zero ignored). Component SQL contracts are updated; Cargo.lock is unchanged.
+
+## ID-SQL-7: conditional identity drop lifecycle — verified
+
+- The authenticated gateway/supervisor lifecycle now covers `DROP USER|ROLE IF EXISTS` for absent and existing identities. Missing targets are a no-op, existing targets use the typed RESTRICT drop, and a repeated drop remains a no-op. The check reconnects after a deliberately failed token issuance so it exercises a fresh ADMIN session.
+- Verification: `nix develop --no-update-lock-file --command cargo test -p prdb-engine --test metadata_process authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes -- --exact --nocapture` passed (1 test). Workspace-wide checks were not rerun for this test-only increment.
