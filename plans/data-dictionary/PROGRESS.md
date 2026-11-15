@@ -340,9 +340,15 @@
 ## 2026-11-16 integrated acceptance refresh
 
 - The complete serial delegated-cgroup workspace suite passed with zero ignored tests, including 22 catalog wire-fixture tests, 54 startup catalog/index integrity tests, and 75 transaction tests. The updated DD-5 test passed with 64 successive row versions behind a pinned pre-DDL reader.
-- Physical compaction/reclamation behavior, long-duration reader pressure, and continued fuzz campaigns remain open.
+- Long-duration mixed catalog-DDL/read pressure and continued fuzz campaigns remain open.
 
 ## 2026-11 delegated acceptance checkpoint
 
 - The complete serial delegated-cgroup workspace suite passed with zero ignored tests. Catalog wire-fixture coverage passed (22 tests), startup catalog/index integrity coverage passed (54 tests), and transaction catalog loading and retained-snapshot coverage passed (75 tests).
-- DD-5 long-reader reclamation pressure and continued fuzz campaigns remain open; this checkpoint does not change those plan statuses.
+- DD-5 acceptance remains open at this historical checkpoint; see the later DD-5 closure evidence below. Continued fuzz campaigns remain open.
+
+## DD-5: snapshot retention acceptance — verified
+
+- Old snapshots retain definitions and rows across rename and drop (`schema_name_index_tracks_renames_per_snapshot`, `storage_manager_drop_table_removes_owned_catalog_and_rows`). The ADD COLUMN regression now pins both the pre-DDL shape and post-backfill default while 64 newer row versions commit; each snapshot decodes its own row layout.
+- `retained_reader_blocks_compaction_until_release_then_reclaims_deleted_pages` verifies a pinned redb reader blocks compaction, preserves its view, and allows page reclamation after release.
+- Verification: the complete serial delegated-cgroup workspace suite passed with zero ignored tests, including the updated commit regression and redb foundation retention/compaction tests. Longer-duration mixed catalog-DDL/read pressure remains additional hardening, not an unverified DD-5 contract item.
