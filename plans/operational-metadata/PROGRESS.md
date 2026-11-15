@@ -298,3 +298,8 @@
 - The status scan is an explicit offline maintenance command rather than part of high-frequency runtime pages. With no sink identity installed, it reports an unconfigured sink and zero pending deliveries.
 - Integrity follow-up: status validation now rejects malformed sink identities/markers and delivery markers that reference pruned or absent audit events, including unexpected markers when no sink is configured.
 - Verification: workspace build, formatting check, warning-denied all-target Clippy, and `git diff --check` pass. No tests were added or run. Cargo.lock is unchanged.
+
+## OM-6 offline audit-sink status — verified
+
+- Added focused status coverage for an unconfigured sink, a configured sink with one pending event and its oldest age, and the same event after durable delivery. The test verifies the status projection follows stored sink identity and delivery markers without exposing event contents.
+- The targeted real-redb audit-sink test passed; `Cargo.lock` is unchanged. Offline instance locking and malformed marker validation remain implemented in the status path.

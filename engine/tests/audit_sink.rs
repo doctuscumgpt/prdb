@@ -104,6 +104,66 @@ fn jsonl_sink_failure_keeps_audit_event_pending() -> Result<(), Box<dyn std::err
 }
 
 #[test]
+fn audit_sink_status_reports_pending_delivery_count_and_age()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = create_database(&fixture.0.join("database.redb"))?;
+    let unconfigured = prdb_engine::audit_sink::status(&database, 100)?;
+    assert_eq!(
+        unconfigured,
+        prdb_engine::audit_sink::AuditSinkStatus {
+            configured: false,
+            pending_events: 0,
+            oldest_pending_age_us: None,
+        }
+    );
+
+    let sink = fixture.0.join("status.jsonl");
+    assert_eq!(
+        prdb_engine::audit_sink::deliver_jsonl_batch(&database, &sink, 8)?,
+        1
+    );
+    {
+        let write = database.begin_write()?;
+        let event = AuditEvent {
+            event_id: [0x21; 16],
+            actor_id: Some([0x12; 16]),
+            correlation_id: [0x13; 16],
+            occurred_at_us: 70,
+            action: AuditAction::AuthorityChange,
+            result: AuditResult::Succeeded,
+            target_ids: vec![[0x22; 16]],
+        };
+        write
+            .open_table(AUDIT)?
+            .insert(event.event_id.as_slice(), event.encode()?.as_slice())?;
+        write.commit()?;
+    }
+    assert_eq!(
+        prdb_engine::audit_sink::status(&database, 100)?,
+        prdb_engine::audit_sink::AuditSinkStatus {
+            configured: true,
+            pending_events: 1,
+            oldest_pending_age_us: Some(30),
+        }
+    );
+
+    assert_eq!(
+        prdb_engine::audit_sink::deliver_jsonl_batch(&database, &sink, 8)?,
+        1
+    );
+    assert_eq!(
+        prdb_engine::audit_sink::status(&database, 100)?,
+        prdb_engine::audit_sink::AuditSinkStatus {
+            configured: true,
+            pending_events: 0,
+            oldest_pending_age_us: None,
+        }
+    );
+    Ok(())
+}
+
+#[test]
 fn jsonl_sink_reads_only_the_requested_pending_batch() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
     let database = create_database(&fixture.0.join("database.redb"))?;
