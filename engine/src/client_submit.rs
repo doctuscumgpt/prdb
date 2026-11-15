@@ -3114,6 +3114,54 @@ impl AdminClient {
         self.set_user_login(user_id, statement.enabled)
     }
 
+    /// Grant or revoke one role membership using authenticated name resolution
+    /// followed by the existing typed membership operation.
+    pub fn execute_role_membership_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_role_membership(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let role_id = self.resolve_identity_sql_name(
+            &statement.role_name,
+            crate::metadata_discovery::AdministrativeIdentityKind::Role,
+        )?;
+        let member_id = self.resolve_identity_sql_name(
+            &statement.member_name,
+            if statement.member_is_role {
+                crate::metadata_discovery::AdministrativeIdentityKind::Role
+            } else {
+                crate::metadata_discovery::AdministrativeIdentityKind::User
+            },
+        )?;
+        if statement.grant {
+            self.grant_role(member_id, role_id)
+        } else {
+            self.revoke_role(member_id, role_id)
+        }
+    }
+
+    fn resolve_identity_sql_name(
+        &mut self,
+        name: &str,
+        kind: crate::metadata_discovery::AdministrativeIdentityKind,
+    ) -> Result<[u8; 16], ClientSubmitError> {
+        let kind = match kind {
+            crate::metadata_discovery::AdministrativeIdentityKind::User => "user",
+            crate::metadata_discovery::AdministrativeIdentityKind::Role => "role",
+        };
+        let payload = format!(
+            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"metadata.identities.resolve\",\"arguments\":{{\"name\":\"{name}\",\"kind\":\"{kind}\"}}}}"
+        );
+        let response = self.transport.exchange(10, payload.into_bytes())?;
+        let fields = parse_flat_response(&response.payload)?;
+        if fields.len() != 1 {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        response_id(&fields, "identity_id")
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)
+    }
+
     /// Execute the supported SQL `CREATE TABLE` subset through the
     /// authenticated administrative control channel. The SQL is parsed locally
     /// into the same typed operation as `create_table`; storage remains the

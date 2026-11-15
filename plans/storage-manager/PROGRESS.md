@@ -1064,3 +1064,7 @@
 ## ID-SQL-4: LOGIN state SQL dispatch
 
 - SQL dispatches to the existing storage lifecycle. Atomic active-token revocation on NOLOGIN and the no-token-restoration behavior on LOGIN remain storage enforced. Delegated process and full workspace suites pass.
+
+## ID-SQL-5: role membership SQL dispatch
+
+- SQL invokes the existing membership lifecycle, which validates endpoint kinds, cycles, and administrator safety under commit serialization. Delegated process and full workspace suites pass.

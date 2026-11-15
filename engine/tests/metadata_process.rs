@@ -1488,19 +1488,23 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let role_membership_credentials = admin_cancel_credentials_path
         .to_str()
         .ok_or("credential path is not UTF-8")?;
-    let role_membership_member = encode_id_hex(&member_user.identity_id);
-    let role_membership_role = encode_id_hex(&created_role.identity_id);
+    let role_membership_sql_path = root.join("role-membership.sql");
+    std::fs::write(
+        &role_membership_sql_path,
+        "GRANT process_admin_role_v2 TO USER process_member_user;",
+    )?;
+    let role_membership_sql_path_text = role_membership_sql_path
+        .to_str()
+        .ok_or("SQL path is not UTF-8")?;
     let grant_role_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
-            "role-grant",
+            "admin-sql",
             "--address",
             &role_membership_address,
             "--credentials",
             role_membership_credentials,
-            "--member-id",
-            &role_membership_member,
-            "--role-id",
-            &role_membership_role,
+            "--sql-file",
+            role_membership_sql_path_text,
         ])
         .output()?;
     assert!(
@@ -1508,7 +1512,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         "role-grant CLI failed: {}",
         String::from_utf8_lossy(&grant_role_cli.stderr)
     );
-    assert!(String::from_utf8_lossy(&grant_role_cli.stdout).contains("changed role membership"));
+    assert!(String::from_utf8_lossy(&grant_role_cli.stdout).contains("granted role membership"));
     let member_cli_credentials = member_credentials_path
         .to_str()
         .ok_or("member credential path is not UTF-8")?;
@@ -1545,17 +1549,19 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         ),
         "role drop did not return a rejected outcome while membership still referenced the role"
     );
+    std::fs::write(
+        &role_membership_sql_path,
+        "REVOKE process_admin_role_v2 FROM USER process_member_user;",
+    )?;
     let revoke_role_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
-            "role-revoke",
+            "admin-sql",
             "--address",
             &role_membership_address,
             "--credentials",
             role_membership_credentials,
-            "--member-id",
-            &role_membership_member,
-            "--role-id",
-            &role_membership_role,
+            "--sql-file",
+            role_membership_sql_path_text,
         ])
         .output()?;
     assert!(
@@ -1563,7 +1569,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         "role-revoke CLI failed: {}",
         String::from_utf8_lossy(&revoke_role_cli.stderr)
     );
-    assert!(String::from_utf8_lossy(&revoke_role_cli.stdout).contains("changed role membership"));
+    assert!(String::from_utf8_lossy(&revoke_role_cli.stdout).contains("revoked role membership"));
     let mut member_authentication_probe = read_client_credentials(&member_credentials_path)?;
     let authenticated_member = SubmissionClient::connect_authenticated(
         address,

@@ -183,6 +183,14 @@ pub struct SetUserLoginSql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleMembershipSql {
+    pub grant: bool,
+    pub role_name: String,
+    pub member_name: String,
+    pub member_is_role: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckExpressionSql {
     Column(String),
     Literal(CheckLiteralSql),
@@ -579,6 +587,39 @@ pub fn parse_set_user_login(sql: &str) -> Result<SetUserLoginSql, DdlSqlError> {
     };
     finish_statement(&mut parser)?;
     Ok(SetUserLoginSql { name, enabled })
+}
+
+/// Parse `GRANT role TO USER|ROLE member` and its REVOKE counterpart.
+pub fn parse_role_membership(sql: &str) -> Result<RoleMembershipSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    let grant = if parser.peek_word("grant") {
+        parser.word("grant")?;
+        true
+    } else {
+        parser.word("revoke")?;
+        false
+    };
+    let role_name = parser.identifier()?;
+    if grant {
+        parser.word("to")?;
+    } else {
+        parser.word("from")?;
+    }
+    let member_is_role = if parser.peek_word("user") {
+        parser.word("user")?;
+        false
+    } else {
+        parser.word("role")?;
+        true
+    };
+    let member_name = parser.identifier()?;
+    finish_statement(&mut parser)?;
+    Ok(RoleMembershipSql {
+        grant,
+        role_name,
+        member_name,
+        member_is_role,
+    })
 }
 
 /// Parse the bounded SQL form `CREATE SCHEMA name AUTHORIZATION 'uuid'`.
@@ -2427,6 +2468,37 @@ mod tests {
             "ALTER USER analyst LOGIN; ALTER USER analyst NOLOGIN",
         ] {
             assert!(parse_set_user_login(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_bounded_role_membership_sql() {
+        assert_eq!(
+            parse_role_membership("GRANT managers TO USER alice;").unwrap(),
+            RoleMembershipSql {
+                grant: true,
+                role_name: "managers".into(),
+                member_name: "alice".into(),
+                member_is_role: false,
+            }
+        );
+        assert_eq!(
+            parse_role_membership("REVOKE managers FROM ROLE app_owner").unwrap(),
+            RoleMembershipSql {
+                grant: false,
+                role_name: "managers".into(),
+                member_name: "app_owner".into(),
+                member_is_role: true,
+            }
+        );
+        for sql in [
+            "GRANT managers USER alice",
+            "REVOKE managers TO USER alice",
+            "GRANT managers TO alice",
+            "GRANT managers TO USER alice WITH ADMIN OPTION",
+            "GRANT managers TO USER alice; REVOKE managers FROM USER alice",
+        ] {
+            assert!(parse_role_membership(sql).is_err(), "accepted {sql}");
         }
     }
 

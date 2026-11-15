@@ -824,3 +824,7 @@
 ## ID-SQL-4: user LOGIN state SQL
 
 - Added `AdminClient::execute_set_user_login_sql` and routed `admin-sql` ALTER USER LOGIN/NOLOGIN to the existing typed mutation after name resolution. Parser and delegated process regressions pass, along with workspace build, format, Clippy, TinyCC SDK and fixture checks, and the full serial delegated-cgroup workspace suite.
+
+## ID-SQL-5: role membership SQL
+
+- Added `AdminClient::execute_role_membership_sql` and routed GRANT/REVOKE role membership syntax through name resolution to existing typed operations. Parser and delegated process regressions pass, along with workspace build, format, Clippy, TinyCC SDK and fixture checks, and the full serial delegated-cgroup workspace suite.

@@ -267,3 +267,7 @@
 ## ID-SQL-4: user LOGIN state SQL
 
 - `ALTER USER name LOGIN|NOLOGIN` resolves one name through the authenticated metadata operation and invokes the existing `users.login` mutation. Parser and delegated process regressions pass; build, format, Clippy, TinyCC, and full serial delegated-cgroup workspace checks pass.
+
+## ID-SQL-5: role membership SQL
+
+- `GRANT role TO USER|ROLE member` and matching `REVOKE` resolve both names independently and invoke existing membership mutations. Parser and delegated process regressions pass; build, format, Clippy, TinyCC, and full serial delegated-cgroup workspace checks pass.
