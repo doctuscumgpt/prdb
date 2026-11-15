@@ -448,6 +448,7 @@ pub enum ClientAdminRead {
     ResolveIdentityName {
         name: String,
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
+        policy_scope: Option<([u8; 16], [u8; 16])>,
     },
     ListSchemas,
     ListSchemasPage {
@@ -516,6 +517,7 @@ pub enum ClientAdminCommand {
     ResolveIdentityName {
         name: String,
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
+        policy_scope: Option<([u8; 16], [u8; 16])>,
     },
     ListSchemas,
     ListSchemasPage {
@@ -754,9 +756,15 @@ pub enum ClientAdminCommand {
 /// Decode the versioned, read-only ADMIN envelope and its first supported operation.
 pub fn decode_client_admin_read(payload: &[u8]) -> Result<ClientAdminRead, ClientControlError> {
     match decode_client_admin_command(payload)? {
-        ClientAdminCommand::ResolveIdentityName { name, kind } => {
-            Ok(ClientAdminRead::ResolveIdentityName { name, kind })
-        }
+        ClientAdminCommand::ResolveIdentityName {
+            name,
+            kind,
+            policy_scope,
+        } => Ok(ClientAdminRead::ResolveIdentityName {
+            name,
+            kind,
+            policy_scope,
+        }),
         ClientAdminCommand::ListSchemas => Ok(ClientAdminRead::ListSchemas),
         ClientAdminCommand::ListSchemasPage { page_limit, cursor } => {
             Ok(ClientAdminRead::ListSchemasPage { page_limit, cursor })
@@ -1055,7 +1063,47 @@ pub fn decode_client_admin_command(
             if !args.is_empty() {
                 return Err(ClientControlError::UnknownKey);
             }
-            Ok(ClientAdminCommand::ResolveIdentityName { name, kind })
+            Ok(ClientAdminCommand::ResolveIdentityName {
+                name,
+                kind,
+                policy_scope: None,
+            })
+        }
+        Some("read")
+            if version == Some(1)
+                && operation.as_deref() == Some("metadata.policy_identities.resolve") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            if args.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let schema_id = decode_lower_hex_id(
+                &args
+                    .remove("schema_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let table_id = decode_lower_hex_id(
+                &args
+                    .remove("table_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let name = args.remove("name").ok_or(ClientControlError::MissingKey)?;
+            let kind = match args.remove("kind").as_deref() {
+                Some("user") => crate::metadata_discovery::AdministrativeIdentityKind::User,
+                Some("role") => crate::metadata_discovery::AdministrativeIdentityKind::Role,
+                _ => return Err(ClientControlError::InvalidPrepare),
+            };
+            if !args.is_empty() || schema_id == [0; 16] || table_id == [0; 16] {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            Ok(ClientAdminCommand::ResolveIdentityName {
+                name,
+                kind,
+                policy_scope: Some((schema_id, table_id)),
+            })
         }
         Some("read")
             if version == Some(1) && operation.as_deref() == Some("metadata.schemas.list") =>
@@ -3978,7 +4026,11 @@ impl ClientConnectionSession {
             self.metadata_page_snapshot = None;
         }
         match command {
-            ClientAdminCommand::ResolveIdentityName { name, kind } => {
+            ClientAdminCommand::ResolveIdentityName {
+                name,
+                kind,
+                policy_scope,
+            } => {
                 let token_id = self
                     .authenticated
                     .as_ref()
@@ -3988,9 +4040,23 @@ impl ClientConnectionSession {
                     .token_secret
                     .as_ref()
                     .ok_or(ClientSessionError::AuthenticationRequired)?;
-                let identity_id = storage
-                    .resolve_token_administrative_identity_name(token_id, token_secret, &name, kind)
-                    .map_err(ClientSessionError::Storage)?;
+                let identity_id = match policy_scope {
+                    Some((schema_id, table_id)) => storage.resolve_token_policy_identity_name(
+                        token_id,
+                        token_secret,
+                        schema_id,
+                        table_id,
+                        &name,
+                        kind,
+                    ),
+                    None => storage.resolve_token_administrative_identity_name(
+                        token_id,
+                        token_secret,
+                        &name,
+                        kind,
+                    ),
+                }
+                .map_err(ClientSessionError::Storage)?;
                 let payload = match identity_id {
                     Some(identity_id) => format!(
                         "{{\"identity_id\":\"{}\"}}",

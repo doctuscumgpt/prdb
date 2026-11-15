@@ -1,5 +1,11 @@
 # Metadata Discovery Progress
 
+## DP-SQL-3 follow-up: policy-scoped identity lookup — verified locally
+
+- Added a point lookup for one named principal that first verifies a real schema/table relationship and then requires database-admin membership, schema/table ownership, or scoped `MANAGE_POLICIES`. Hidden and absent identities both return no result; no listing capability is exposed.
+- Protocol decoder coverage and the focused delegated gateway/supervisor policy lifecycle pass. The SQL caller still needs existing relation and column visibility to bind names.
+- Verification: locked workspace build, formatting check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace tests passed with zero ignored tests. `git diff --check` passed and Cargo.lock is unchanged. Commit is the remaining handoff step.
+
 Migrated component-owned progress entries from [storage-manager progress](../storage-manager/PROGRESS.md); evidence is preserved below.
 
 ## MD-1 dependency: pinned authorized relation listing — in progress

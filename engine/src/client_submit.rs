@@ -3262,6 +3262,32 @@ impl AdminClient {
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)
     }
 
+    fn resolve_policy_identity_sql_name(
+        &mut self,
+        name: &str,
+        kind: crate::metadata_discovery::AdministrativeIdentityKind,
+        schema_id: [u8; 16],
+        table_id: [u8; 16],
+    ) -> Result<[u8; 16], ClientSubmitError> {
+        let kind = match kind {
+            crate::metadata_discovery::AdministrativeIdentityKind::User => "user",
+            crate::metadata_discovery::AdministrativeIdentityKind::Role => "role",
+        };
+        let payload = format!(
+            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"metadata.policy_identities.resolve\",\"arguments\":{{\"schema_id\":\"{}\",\"table_id\":\"{}\",\"name\":{},\"kind\":\"{kind}\"}}}}",
+            lower_hex(&schema_id),
+            lower_hex(&table_id),
+            json_quote(name),
+        );
+        let response = self.transport.exchange(10, payload.into_bytes())?;
+        let fields = parse_flat_response(&response.payload)?;
+        if fields.len() != 1 {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        response_id(&fields, "identity_id")
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)
+    }
+
     pub fn execute_create_policy_sql(
         &mut self,
         sql: &str,
@@ -3309,7 +3335,8 @@ impl AdminClient {
             } else {
                 crate::metadata_discovery::AdministrativeIdentityKind::User
             };
-            let id = self.resolve_identity_sql_name(&recipient.name, kind)?;
+            let id =
+                self.resolve_policy_identity_sql_name(&recipient.name, kind, schema_id, table_id)?;
             recipients.push(if recipient.is_role {
                 AdminPolicyRecipient::Role(id)
             } else {
@@ -3337,9 +3364,11 @@ impl AdminClient {
                 },
                 |name| {
                     client
-                        .resolve_identity_sql_name(
+                        .resolve_policy_identity_sql_name(
                             name,
                             crate::metadata_discovery::AdministrativeIdentityKind::Role,
+                            schema_id,
+                            table_id,
                         )
                         .ok()
                 },

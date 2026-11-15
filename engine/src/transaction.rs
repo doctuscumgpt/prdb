@@ -3414,6 +3414,142 @@ impl<'db> InvocationTransaction<'db> {
         Ok(Some(identity_id))
     }
 
+    /// Resolve a policy recipient only when the authenticated principal can
+    /// administer policies on this table. This keeps name lookup scoped to
+    /// the object whose policy is being created.
+    pub(crate) fn resolve_catalog_policy_identity_name(
+        &mut self,
+        schema_id: [u8; 16],
+        table_id: [u8; 16],
+        name: &str,
+        kind: crate::metadata_discovery::AdministrativeIdentityKind,
+    ) -> Result<Option<[u8; 16]>, TransactionError> {
+        let bytes = name.as_bytes();
+        if bytes.is_empty()
+            || bytes.len() > 128
+            || !(bytes[0].is_ascii_lowercase() || bytes[0] == b'_')
+            || !bytes
+                .iter()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+            || schema_id == [0; 16]
+            || table_id == [0; 16]
+        {
+            return Err(TransactionError::InvalidMetadataRequest);
+        }
+        let roles = self.load_catalog_role_closure(self.principal_id)?;
+        let mut subjects = roles.clone();
+        subjects.insert(self.principal_id);
+        let is_database_admin = roles.contains(&crate::bootstrap::database_admin_role_id());
+        let schema_key = catalog_id_key(2, schema_id);
+        let table_key = catalog_id_key(5, table_id);
+        let Some(schema) = self.read_catalog_record(&schema_key)? else {
+            return Ok(None);
+        };
+        let Some(table) = self.read_catalog_record(&table_key)? else {
+            return Ok(None);
+        };
+        if schema.family_code != 2
+            || catalog_u16(&schema, 1)? != 1
+            || table.family_code != 5
+            || catalog_id(&table, 1)? != schema_id
+        {
+            return Ok(None);
+        }
+        let schema_object = self
+            .read_catalog_record(&catalog_id_key(2, schema_id))?
+            .ok_or(TransactionError::CorruptCatalog)?;
+        let table_object = self
+            .read_catalog_record(&catalog_id_key(2, table_id))?
+            .ok_or(TransactionError::CorruptCatalog)?;
+        if schema_object.family_code != 2
+            || catalog_u16(&schema_object, 1)? != 1
+            || table_object.family_code != 2
+            || catalog_u16(&table_object, 1)? != 3
+        {
+            return Err(TransactionError::CorruptCatalog);
+        }
+        let mut has_policy_authority = is_database_admin
+            || subjects.contains(&catalog_id(&schema_object, 4)?)
+            || subjects.contains(&catalog_id(&table_object, 4)?);
+        for object_id in [schema_id, table_id] {
+            if has_policy_authority {
+                break;
+            }
+            let grants = self
+                .pinned_snapshot()?
+                .lookup_grants_for_object(object_id)
+                .map_err(|error| match error {
+                    SnapshotError::Storage(error) => TransactionError::Storage(error),
+                    _ => TransactionError::CorruptCatalog,
+                })?;
+            self.charge_scan_work(grants.len())?;
+            for grant in grants {
+                let key = &grant.logical_key;
+                if grant.family_code != 12
+                    || key.len() != 59
+                    || key[0..2] != 12u16.to_be_bytes()
+                    || key[2] != 1
+                    || key[19] != 1
+                    || key[20..36] != object_id
+                    || key[36] != 1
+                    || key[37..39] != 10u16.to_be_bytes()
+                    || key[39] != 1
+                    || key[40..42] != 1u16.to_be_bytes()
+                    || key[42] != 1
+                    || key[43..59] != object_id
+                    || catalog_u64(&grant, 2)? == 0
+                {
+                    continue;
+                }
+                let grantee: [u8; 16] = key[3..19]
+                    .try_into()
+                    .map_err(|_| TransactionError::CorruptCatalog)?;
+                if grantee == [0; 16] {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                if subjects.contains(&grantee) {
+                    has_policy_authority = true;
+                    break;
+                }
+            }
+        }
+        if !has_policy_authority {
+            return Ok(None);
+        }
+        let snapshot = self.pinned_snapshot()?;
+        let name_index = snapshot
+            .read_transaction()
+            .open_table(PRINCIPAL_NAMES)
+            .map_err(|error| TransactionError::Storage(error.to_string()))?;
+        let Some(identity_id) = name_index
+            .get(bytes)
+            .map_err(|error| TransactionError::Storage(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let identity_id: [u8; 16] = identity_id
+            .value()
+            .try_into()
+            .map_err(|_| TransactionError::CorruptCatalog)?;
+        if identity_id == [0; 16] {
+            return Err(TransactionError::CorruptCatalog);
+        }
+        let principal = self
+            .read_catalog_record(&catalog_id_key(10, identity_id))?
+            .ok_or(TransactionError::CorruptCatalog)?;
+        if principal.family_code != 10 {
+            return Err(TransactionError::CorruptCatalog);
+        }
+        let expected_kind = match kind {
+            crate::metadata_discovery::AdministrativeIdentityKind::User => 1,
+            crate::metadata_discovery::AdministrativeIdentityKind::Role => 2,
+        };
+        if catalog_u16(&principal, 1)? != expected_kind || catalog_field(&principal, 2)? != bytes {
+            return Err(TransactionError::CorruptCatalog);
+        }
+        Ok(Some(identity_id))
+    }
+
     /// List schemas over which this authenticated control principal has
     /// administrative metadata authority. This entry point is separate from
     /// invocation discovery so database administration and schema ownership

@@ -1,5 +1,11 @@
 # Client Protocol Progress
 
+## DP-SQL-3 follow-up: scoped policy identity read — implementation in progress
+
+- Added the read-only `metadata.policy_identities.resolve` operation with exact normalized arguments and nonzero schema/table IDs. The existing `metadata.identities.resolve` contract remains unchanged.
+- A protocol decoder regression covers successful scope decoding and malformed/zero-table rejection. The delegated process lifecycle passes when a table owner creates row and cell policies.
+- Verification: locked workspace build, formatting check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace tests passed with zero ignored tests. `git diff --check` passed and Cargo.lock is unchanged. Commit is the remaining handoff step.
+
 ## NP-1 dependency: bounded version-1 frame codec
 
 - Behavior: `ClientFrameDecoder` incrementally accepts fragmented/coalesced bytes, validates the fixed PDBN 1.0 header and per-kind payload limits before allocation, rejects nonzero flags/invalid sequences/zero IDs, and reports partial-frame EOF. `ClientFrame::encode` emits the fixed little-endian header. Request-ID and streamed-response sequence helpers enforce monotonic request IDs and consecutive RESULT_DATA/TERMINAL sequence numbers.

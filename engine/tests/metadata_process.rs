@@ -2898,6 +2898,19 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     );
     assert!(String::from_utf8_lossy(&drop_index_cli.stdout).contains("dropped index"));
     let policy_role = admin.create_role("process_policy_role")?;
+    admin.grant_object_privilege(
+        transfer_owner.identity_id,
+        created_schema.identity_id,
+        AdminObjectPrivilege::Usage,
+        AdminObjectGrantTarget::Object,
+    )?;
+    admin.grant_object_privilege(
+        transfer_owner.identity_id,
+        created_table.table_id,
+        AdminObjectPrivilege::Select,
+        AdminObjectGrantTarget::Object,
+    )?;
+    admin.set_table_owner(created_table.table_id, transfer_owner.identity_id)?;
     let pre_policy_ids = admin
         .list_policies_page(created_schema.identity_id, created_table.table_id, 64, None)?
         .records
@@ -2915,7 +2928,9 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             "--address",
             &address_text,
             "--credentials",
-            admin_cli_credentials,
+            transfer_credential_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
             "--sql-file",
             create_policy_sql_path
                 .to_str()
@@ -2939,7 +2954,9 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             "--address",
             &address_text,
             "--credentials",
-            admin_cli_credentials,
+            transfer_credential_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
             "--sql-file",
             create_cell_policy_sql_path
                 .to_str()
@@ -2960,10 +2977,23 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         .filter(|policy_id| !pre_policy_ids.contains(policy_id))
         .collect::<Vec<_>>();
     assert_eq!(created_policy_ids.len(), 2);
+    admin.set_table_owner(created_table.table_id, admin_user_id)?;
     for policy_id in created_policy_ids {
         admin.drop_policy(policy_id)?;
     }
     admin.drop_role(policy_role.identity_id)?;
+    admin.revoke_object_privilege(
+        transfer_owner.identity_id,
+        created_schema.identity_id,
+        AdminObjectPrivilege::Usage,
+        AdminObjectGrantTarget::Object,
+    )?;
+    admin.revoke_object_privilege(
+        transfer_owner.identity_id,
+        created_table.table_id,
+        AdminObjectPrivilege::Select,
+        AdminObjectGrantTarget::Object,
+    )?;
     let renamed_table = admin.rename_table(created_table.table_id, "process_admin_table_v2")?;
     let dropped_source_table = admin.drop_table(source_table.table_id)?;
     let dropped_table = admin.drop_table(created_table.table_id)?;

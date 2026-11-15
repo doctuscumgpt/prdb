@@ -2,6 +2,8 @@
 
 ## Implemented
 
+- `CREATE ROW|CELL POLICY` now resolves recipients and `HAS_ROLE` names through a table/schema scoped identity read. Storage returns no identity for absent names or callers without database-admin, ownership, or scoped `MANAGE_POLICIES` authority. Relation and column binding still uses the existing metadata visibility rules; the process regression grants schema USAGE and SELECT to the table owner for that discovery. Full serial delegated-cgroup workspace validation passed with zero ignored tests, along with locked build, format, Clippy, SDK and sandbox fixture checks.
+
 - `run-sql` reads bounded UTF-8 SQL from a regular file or stdin, validates an explicit normalized schema name, and parses the canonical `PDB-SQL-PARAMETERS-1` JSON file into PSP1 invocation bytes.
 - A generated query ABI v3 wrapper emits SQL and schema as numeric byte constants. SQL source injection is therefore not possible, and parameter values remain invocation data.
 - The maintained SQL SDK now contains `prdb_sdk_sql_run_v1`, a PSP1 decoder, typed parameter metadata for Decimal scale, strict placeholder coverage checks, SELECT v2 execution, SQLR row writing, and statement-failure latching.

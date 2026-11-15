@@ -15,7 +15,8 @@
 
 - Added operation-specific bounded policy clauses, row/cell targets, named USER/ROLE recipients, Boolean predicates, and `CURRENT_PRINCIPAL_ID()` / catalog-bound `HAS_ROLE(...)` binding to the typed `policies.create` operation. The delegated process test creates both row and cell policies, then removes them.
 - Verification: parser/binder and delegated process tests, locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, and the full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored; `git diff --check` passed. Cargo.lock is unchanged.
-- Scope: SQL creation resolves policy recipients and `HAS_ROLE` through the existing identity resolver, so a caller needs the matching `MANAGE_USERS`/`MANAGE_ROLES` privilege or database-admin membership in addition to storage-enforced policy authority. A scoped policy-identity resolver and DROP ROW/CELL POLICY SQL remain planned.
+- Follow-up: `metadata.policy_identities.resolve` now resolves one user or role only when the authenticated principal owns the policy schema/table, holds scoped `MANAGE_POLICIES`, or is a database administrator. The focused delegated gateway/supervisor lifecycle and full serial delegated-cgroup workspace suite pass with policy SQL issued as a table owner. Locked workspace build, formatting, warning-denied Clippy, maintained TinyCC SDK tests/fixture, and `git diff --check` pass; no tests were ignored and Cargo.lock is unchanged. The owner fixture currently needs schema USAGE and SELECT visibility to resolve the qualified table and its columns through the existing metadata APIs.
+- Remaining: scoped relation/column discovery that works without SELECT, and DROP ROW/CELL POLICY SQL.
 
 ## DP-1 / DP-2 / NP-6: column grant authority through separate service processes — verified
 

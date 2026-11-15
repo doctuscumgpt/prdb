@@ -344,20 +344,41 @@ fn identity_name_resolver_decoder_requires_one_kind_and_name() {
         decode_client_admin_command(request),
         Ok(ClientAdminCommand::ResolveIdentityName {
             name,
-            kind: prdb_engine::metadata_discovery::AdministrativeIdentityKind::User
+            kind: prdb_engine::metadata_discovery::AdministrativeIdentityKind::User,
+            policy_scope: None,
         }) if name == "analyst"
     ));
     assert!(matches!(
         decode_client_admin_read(request),
         Ok(ClientAdminRead::ResolveIdentityName {
             name,
-            kind: prdb_engine::metadata_discovery::AdministrativeIdentityKind::User
+            kind: prdb_engine::metadata_discovery::AdministrativeIdentityKind::User,
+            policy_scope: None,
         }) if name == "analyst"
     ));
     for invalid in [
         br#"{"phase":"read","operation_version":1,"operation":"metadata.identities.resolve","arguments":{"name":"analyst","kind":"user","extra":"x"}}"#.as_slice(),
         br#"{"phase":"read","operation_version":1,"operation":"metadata.identities.resolve","arguments":{"name":"analyst","kind":"users"}}"#.as_slice(),
         br#"{"phase":"prepare","operation_version":1,"operation":"metadata.identities.resolve","arguments":{"name":"analyst","kind":"user"}}"#.as_slice(),
+    ] {
+        assert!(decode_client_admin_command(invalid).is_err());
+    }
+}
+
+#[test]
+fn policy_identity_resolver_requires_a_scoped_nonzero_table() {
+    let request = br#"{"phase":"read","operation_version":1,"operation":"metadata.policy_identities.resolve","arguments":{"schema_id":"000102030405060708090a0b0c0d0e0f","table_id":"101112131415161718191a1b1c1d1e1f","name":"payroll","kind":"role"}}"#;
+    assert!(matches!(
+        decode_client_admin_command(request),
+        Ok(ClientAdminCommand::ResolveIdentityName {
+            name,
+            kind: prdb_engine::metadata_discovery::AdministrativeIdentityKind::Role,
+            policy_scope: Some(([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]))
+        }) if name == "payroll"
+    ));
+    for invalid in [
+        br#"{"phase":"read","operation_version":1,"operation":"metadata.policy_identities.resolve","arguments":{"schema_id":"000102030405060708090a0b0c0d0e0f","table_id":"00000000000000000000000000000000","name":"payroll","kind":"role"}}"#.as_slice(),
+        br#"{"phase":"read","operation_version":1,"operation":"metadata.policy_identities.resolve","arguments":{"schema_id":"000102030405060708090a0b0c0d0e0f","table_id":"101112131415161718191a1b1c1d1e1f","name":"payroll","kind":"users"}}"#.as_slice(),
     ] {
         assert!(decode_client_admin_command(invalid).is_err());
     }
