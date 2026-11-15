@@ -2079,7 +2079,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     );
     std::fs::write(
         &dependency_sql_path,
-        "DROP INDEX process_admin_schema.process_label_index RESTRICT;",
+        "DROP INDEX IF EXISTS process_admin_schema.process_label_index RESTRICT;",
     )?;
     let drop_dependency_index = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
@@ -2100,6 +2100,34 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         drop_dependency_index.status.success(),
         "admin-sql DROP INDEX failed: {}",
         String::from_utf8_lossy(&drop_dependency_index.stderr)
+    );
+    std::fs::write(
+        &dependency_sql_path,
+        "DROP INDEX IF EXISTS process_admin_schema.process_label_index RESTRICT;",
+    )?;
+    let repeated_drop_dependency_index = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            dependency_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        repeated_drop_dependency_index.status.success(),
+        "admin-sql repeated DROP INDEX IF EXISTS failed: {}",
+        String::from_utf8_lossy(&repeated_drop_dependency_index.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&repeated_drop_dependency_index.stdout)
+            .contains("index was absent; no operation committed")
     );
     let drop_column_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([

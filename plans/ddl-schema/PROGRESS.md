@@ -794,3 +794,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Effective schema-scoped `ALTER` now authorizes schema rename, ownership transfer, and empty-schema drop through the typed commit guard, with applicable grant and membership records guarded through publication. Schema-scoped ALTER principals can bind schema names for SQL DDL without gaining relation or column discovery.
 - Updated the schema DDL, permission, and metadata-discovery contracts. The focused gateway/supervisor process lifecycle issues `GRANT ALTER ON SCHEMA` and `REVOKE ALTER ON SCHEMA`, then verifies that the non-owner grantee without schema `USAGE` can rename through `admin-sql`; rename-back and revocation restore the fixture. Build, format check, warning-denied Clippy, and the focused delegated process test pass. Cargo.lock is unchanged.
+
+## DS-SQL-38: conditional index drop process coverage — verified
+
+- The production gateway/supervisor lifecycle now drops a present logical index through `DROP INDEX IF EXISTS ... RESTRICT`, then repeats the statement and verifies the database-administrator no-op reports that no operation committed. The same fixture still confirms RESTRICT blocks dropping a column while its index exists.
+- The focused delegated process test and `cargo fmt --all` pass; Cargo.lock is unchanged.

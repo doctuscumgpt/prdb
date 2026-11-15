@@ -476,3 +476,8 @@
 
 - Authenticated metadata exposes schema names to effective schema-scoped `ALTER` grantees so `ALTER SCHEMA` can bind its target without schema `USAGE`; relation and column names remain hidden. Typed schema DDL guards continue to enforce and recheck the grant.
 - The focused gateway/supervisor lifecycle renames a schema as a non-owner ALTER grantee, restores its name, and revokes the grant. The focused delegated process test, workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## Conditional DROP INDEX SQL process coverage — verified
+
+- The gateway/supervisor lifecycle exercises `DROP INDEX IF EXISTS` against both a present index and the same absent index. The first dispatches the typed drop; the second succeeds as an administrator no-op with no DDL operation.
+- The focused delegated process test and formatting pass; Cargo.lock is unchanged.
