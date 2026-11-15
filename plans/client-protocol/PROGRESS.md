@@ -1,10 +1,15 @@
 # Client Protocol Progress
 
-## DP-SQL-3 follow-up: scoped policy identity read — implementation in progress
+## DP-SQL-3 follow-up: scoped policy identity read — verified
 
 - Added the read-only `metadata.policy_identities.resolve` operation with exact normalized arguments and nonzero schema/table IDs. The existing `metadata.identities.resolve` contract remains unchanged.
 - A protocol decoder regression covers successful scope decoding and malformed/zero-table rejection. The delegated process lifecycle passes when a table owner creates row and cell policies.
 - Verification: locked workspace build, formatting check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace tests passed with zero ignored tests. `git diff --check` passed and Cargo.lock is unchanged. Commit is the remaining handoff step.
+
+## DP-SQL-4: scoped policy-name read — verified
+
+- Added `metadata.policies.resolve` for one row/cell policy name inside a nonzero schema/table scope. The real process regression exercises the read and subsequent typed drop as a table owner; decoder coverage checks the exact kind/scope shape.
+- Focused parser, protocol, and delegated process tests pass. Locked workspace build, format check, warning-denied Clippy, TinyCC SDK tests/fixture, and full serial delegated-cgroup suite also pass with zero ignored tests. `git diff --check` passes; Cargo.lock is unchanged.
 
 ## NP-1 dependency: bounded version-1 frame codec
 

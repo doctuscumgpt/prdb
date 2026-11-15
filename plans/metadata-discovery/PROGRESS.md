@@ -6,6 +6,11 @@
 - Protocol decoder coverage and the focused delegated gateway/supervisor policy lifecycle pass. The SQL caller still needs existing relation and column visibility to bind names.
 - Verification: locked workspace build, formatting check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace tests passed with zero ignored tests. `git diff --check` passed and Cargo.lock is unchanged. Commit is the remaining handoff step.
 
+## DP-SQL-4: policy-name point resolution — verified
+
+- Added an authenticated, table-scoped policy-name lookup returning only the stable ID needed by DROP SQL. It requires the same ownership or scoped `MANAGE_POLICIES` authority as policy DDL; the mutation independently rechecks authorization.
+- The delegated owner lifecycle drops both row and cell policies by name. Focused parser/protocol/process tests and the full serial delegated-cgroup suite pass with zero ignored tests; format, build, Clippy, TinyCC SDK tests/fixture, and `git diff --check` pass. Cargo.lock is unchanged.
+
 Migrated component-owned progress entries from [storage-manager progress](../storage-manager/PROGRESS.md); evidence is preserved below.
 
 ## MD-1 dependency: pinned authorized relation listing — in progress

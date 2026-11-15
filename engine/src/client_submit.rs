@@ -3288,6 +3288,29 @@ impl AdminClient {
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)
     }
 
+    fn resolve_policy_sql_name(
+        &mut self,
+        name: &str,
+        is_cell: bool,
+        schema_id: [u8; 16],
+        table_id: [u8; 16],
+    ) -> Result<[u8; 16], ClientSubmitError> {
+        let kind = if is_cell { "cell" } else { "row" };
+        let payload = format!(
+            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"metadata.policies.resolve\",\"arguments\":{{\"schema_id\":\"{}\",\"table_id\":\"{}\",\"name\":{},\"kind\":\"{kind}\"}}}}",
+            lower_hex(&schema_id),
+            lower_hex(&table_id),
+            json_quote(name),
+        );
+        let response = self.transport.exchange(10, payload.into_bytes())?;
+        let fields = parse_flat_response(&response.payload)?;
+        if fields.len() != 1 {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        response_id(&fields, "policy_id")
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)
+    }
+
     pub fn execute_create_policy_sql(
         &mut self,
         sql: &str,
@@ -3396,6 +3419,19 @@ impl AdminClient {
             using_expression: using_expression.as_ref(),
             with_check_expression: with_check_expression.as_ref(),
         })
+    }
+
+    pub fn execute_drop_policy_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_drop_policy(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
+        let policy_id =
+            self.resolve_policy_sql_name(&statement.name, statement.is_cell, schema_id, table_id)?;
+        self.drop_policy(policy_id)
     }
 
     /// Execute the supported SQL `CREATE TABLE` subset through the

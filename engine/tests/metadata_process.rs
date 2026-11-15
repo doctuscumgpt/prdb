@@ -2977,10 +2977,48 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         .filter(|policy_id| !pre_policy_ids.contains(policy_id))
         .collect::<Vec<_>>();
     assert_eq!(created_policy_ids.len(), 2);
-    admin.set_table_owner(created_table.table_id, admin_user_id)?;
-    for policy_id in created_policy_ids {
-        admin.drop_policy(policy_id)?;
+    for (filename, sql) in [
+        (
+            "drop-row-policy.sql",
+            "DROP ROW POLICY process_visible ON process_admin_schema.process_admin_table RESTRICT;",
+        ),
+        (
+            "drop-cell-policy.sql",
+            "DROP CELL POLICY process_payload ON process_admin_schema.process_admin_table RESTRICT;",
+        ),
+    ] {
+        let drop_policy_sql_path = root.join(filename);
+        std::fs::write(&drop_policy_sql_path, sql)?;
+        let drop_policy_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "admin-sql",
+                "--address",
+                &address_text,
+                "--credentials",
+                transfer_credential_path
+                    .to_str()
+                    .ok_or("credential path is not UTF-8")?,
+                "--sql-file",
+                drop_policy_sql_path
+                    .to_str()
+                    .ok_or("SQL path is not UTF-8")?,
+            ])
+            .output()?;
+        assert!(
+            drop_policy_sql.status.success(),
+            "DROP POLICY SQL failed: {}",
+            String::from_utf8_lossy(&drop_policy_sql.stderr)
+        );
+        assert!(String::from_utf8_lossy(&drop_policy_sql.stdout).contains("dropped "));
     }
+    admin.set_table_owner(created_table.table_id, admin_user_id)?;
+    assert!(
+        admin
+            .list_policies_page(created_schema.identity_id, created_table.table_id, 64, None)?
+            .records
+            .into_iter()
+            .all(|policy| pre_policy_ids.contains(&policy.policy_id))
+    );
     admin.drop_role(policy_role.identity_id)?;
     admin.revoke_object_privilege(
         transfer_owner.identity_id,

@@ -1,9 +1,14 @@
 # Storage Manager Progress
 
-## DP-SQL-3 follow-up: policy-scoped identity lookup — implementation in progress
+## DP-SQL-3 follow-up: policy-scoped identity lookup — verified
 
 - `StorageManager::resolve_token_policy_identity_name` authenticates the token before invoking a bounded catalog resolver. The resolver verifies schema/table linkage, checks database-admin/owner/scoped `MANAGE_POLICIES` authority against the pinned catalog and role closure, then resolves one identity of the requested kind.
 - The focused delegated process test and full serial delegated-cgroup workspace suite pass for table-owner policy creation. Locked workspace build, formatting, warning-denied Clippy, maintained TinyCC SDK tests/fixture, and `git diff --check` pass; zero tests were ignored and Cargo.lock is unchanged. Commit is the remaining handoff step.
+
+## DP-SQL-4: policy-name point resolution — verified
+
+- The token-authenticated resolver verifies policy DDL authority against its pinned catalog, scans policies for the selected table, and returns the matching row/cell ID. `policies.drop` remains the only mutation path and independently validates the current actor.
+- The focused delegated process lifecycle and full serial delegated-cgroup workspace suite pass for table-owner drop SQL with zero ignored tests. Locked build, formatting, warning-denied Clippy, TinyCC SDK tests/fixture, and `git diff --check` pass; Cargo.lock is unchanged.
 
 ## DP-SQL-1: object-level grant SQL
 

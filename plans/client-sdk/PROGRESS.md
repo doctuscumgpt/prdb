@@ -1,5 +1,10 @@
 # Client SDK Progress
 
+## DP-SQL-4: DROP ROW/CELL POLICY SQL entry point — verified
+
+- Added `AdminClient::execute_drop_policy_sql` and `admin-sql` dispatch for the bounded qualified DROP syntax. The client resolves the policy name through the scoped authenticated read and submits the stable ID to the existing typed drop operation.
+- Parser, protocol, and delegated gateway/supervisor lifecycle tests pass. Locked workspace build, format check, warning-denied Clippy, TinyCC SDK tests/fixture, and the full delegated-cgroup workspace suite pass with zero ignored tests. `git diff --check` passes; Cargo.lock is unchanged.
+
 ## SDK-16: expose transaction identity and age — verified
 
 - Contract: administrator runtime invocation pages include an opaque internal transaction ID and its age at the page observation time, alongside the existing state, write-set usage, and snapshot pin count.

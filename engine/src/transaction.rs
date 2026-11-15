@@ -3550,6 +3550,129 @@ impl<'db> InvocationTransaction<'db> {
         Ok(Some(identity_id))
     }
 
+    /// Resolve a policy name only inside a table for which this actor has
+    /// policy DDL authority. The mutating drop operation rechecks authority.
+    pub(crate) fn resolve_catalog_policy_name(
+        &mut self,
+        schema_id: [u8; 16],
+        table_id: [u8; 16],
+        name: &str,
+        is_cell: bool,
+    ) -> Result<Option<[u8; 16]>, TransactionError> {
+        if name.is_empty()
+            || name.len() > 128
+            || !name.as_bytes()[0].is_ascii_lowercase() && name.as_bytes()[0] != b'_'
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+            || schema_id == [0; 16]
+            || table_id == [0; 16]
+        {
+            return Err(TransactionError::InvalidMetadataRequest);
+        }
+        let roles = self.load_catalog_role_closure(self.principal_id)?;
+        let mut subjects = roles.clone();
+        subjects.insert(self.principal_id);
+        let is_database_admin = roles.contains(&crate::bootstrap::database_admin_role_id());
+        let Some(schema) = self.read_catalog_record(&catalog_id_key(2, schema_id))? else {
+            return Ok(None);
+        };
+        let Some(table) = self.read_catalog_record(&catalog_id_key(5, table_id))? else {
+            return Ok(None);
+        };
+        let Some(schema_object) = self.read_catalog_record(&catalog_id_key(2, schema_id))? else {
+            return Err(TransactionError::CorruptCatalog);
+        };
+        let Some(table_object) = self.read_catalog_record(&catalog_id_key(2, table_id))? else {
+            return Err(TransactionError::CorruptCatalog);
+        };
+        if schema.family_code != 2
+            || catalog_u16(&schema, 1)? != 1
+            || table.family_code != 5
+            || catalog_id(&table, 1)? != schema_id
+            || schema_object.family_code != 2
+            || catalog_u16(&schema_object, 1)? != 1
+            || table_object.family_code != 2
+            || catalog_u16(&table_object, 1)? != 3
+        {
+            return Ok(None);
+        }
+        let mut authorized = is_database_admin
+            || subjects.contains(&catalog_id(&schema_object, 4)?)
+            || subjects.contains(&catalog_id(&table_object, 4)?);
+        for object_id in [schema_id, table_id] {
+            if authorized {
+                break;
+            }
+            let grants = self
+                .pinned_snapshot()?
+                .lookup_grants_for_object(object_id)
+                .map_err(|error| match error {
+                    SnapshotError::Storage(error) => TransactionError::Storage(error),
+                    _ => TransactionError::CorruptCatalog,
+                })?;
+            self.charge_scan_work(grants.len())?;
+            for grant in grants {
+                let key = &grant.logical_key;
+                if grant.family_code != 12
+                    || key.len() != 59
+                    || key[0..2] != 12u16.to_be_bytes()
+                    || key[2] != 1
+                    || key[19] != 1
+                    || key[20..36] != object_id
+                    || key[36] != 1
+                    || key[37..39] != 10u16.to_be_bytes()
+                    || key[39] != 1
+                    || key[40..42] != 1u16.to_be_bytes()
+                    || key[42] != 1
+                    || key[43..59] != object_id
+                    || catalog_u64(&grant, 2)? == 0
+                {
+                    continue;
+                }
+                let grantee: [u8; 16] = key[3..19]
+                    .try_into()
+                    .map_err(|_| TransactionError::CorruptCatalog)?;
+                if grantee == [0; 16] {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                if subjects.contains(&grantee) {
+                    authorized = true;
+                    break;
+                }
+            }
+        }
+        if !authorized {
+            return Ok(None);
+        }
+        for policy_id in self.scan_policy_ids_for_table(table_id)? {
+            let policy = self
+                .read_catalog_record(&catalog_id_key(13, policy_id))?
+                .ok_or(TransactionError::CorruptCatalog)?;
+            if policy.family_code != 13 || catalog_id(&policy, 1)? != table_id {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            let policy_kind = catalog_u16(&policy, 2)?;
+            if !matches!(policy_kind, 1 | 2) {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            let expected_kind = if is_cell { 2 } else { 1 };
+            if policy_kind != expected_kind {
+                continue;
+            }
+            let object = self
+                .read_catalog_record(&catalog_id_key(2, policy_id))?
+                .ok_or(TransactionError::CorruptCatalog)?;
+            if object.family_code != 2 || catalog_u16(&object, 1)? != 10 {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            if catalog_field(&object, 3)? == name.as_bytes() {
+                return Ok(Some(policy_id));
+            }
+        }
+        Ok(None)
+    }
+
     /// List schemas over which this authenticated control principal has
     /// administrative metadata authority. This entry point is separate from
     /// invocation discovery so database administration and schema ownership

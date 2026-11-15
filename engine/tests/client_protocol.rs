@@ -385,6 +385,30 @@ fn policy_identity_resolver_requires_a_scoped_nonzero_table() {
 }
 
 #[test]
+fn policy_name_resolver_requires_a_scoped_nonzero_table() {
+    let request = br#"{"phase":"read","operation_version":1,"operation":"metadata.policies.resolve","arguments":{"schema_id":"000102030405060708090a0b0c0d0e0f","table_id":"101112131415161718191a1b1c1d1e1f","name":"visible","kind":"row"}}"#;
+    assert!(matches!(
+        decode_client_admin_command(request),
+        Ok(ClientAdminCommand::ResolvePolicyName {
+            schema_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            table_id: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31],
+            name,
+            is_cell: false,
+        }) if name == "visible"
+    ));
+    assert!(matches!(
+        decode_client_admin_read(request),
+        Ok(ClientAdminRead::ResolvePolicyName { name, is_cell: false, .. }) if name == "visible"
+    ));
+    for invalid in [
+        br#"{"phase":"read","operation_version":1,"operation":"metadata.policies.resolve","arguments":{"schema_id":"000102030405060708090a0b0c0d0e0f","table_id":"00000000000000000000000000000000","name":"visible","kind":"row"}}"#.as_slice(),
+        br#"{"phase":"read","operation_version":1,"operation":"metadata.policies.resolve","arguments":{"schema_id":"000102030405060708090a0b0c0d0e0f","table_id":"101112131415161718191a1b1c1d1e1f","name":"visible","kind":"policy"}}"#.as_slice(),
+    ] {
+        assert!(decode_client_admin_command(invalid).is_err());
+    }
+}
+
+#[test]
 fn admin_read_decoder_requires_exact_relation_discovery_arguments() {
     assert_eq!(
         decode_client_admin_read(

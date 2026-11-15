@@ -450,6 +450,12 @@ pub enum ClientAdminRead {
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
         policy_scope: Option<([u8; 16], [u8; 16])>,
     },
+    ResolvePolicyName {
+        schema_id: [u8; 16],
+        table_id: [u8; 16],
+        name: String,
+        is_cell: bool,
+    },
     ListSchemas,
     ListSchemasPage {
         page_limit: usize,
@@ -518,6 +524,12 @@ pub enum ClientAdminCommand {
         name: String,
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
         policy_scope: Option<([u8; 16], [u8; 16])>,
+    },
+    ResolvePolicyName {
+        schema_id: [u8; 16],
+        table_id: [u8; 16],
+        name: String,
+        is_cell: bool,
     },
     ListSchemas,
     ListSchemasPage {
@@ -764,6 +776,17 @@ pub fn decode_client_admin_read(payload: &[u8]) -> Result<ClientAdminRead, Clien
             name,
             kind,
             policy_scope,
+        }),
+        ClientAdminCommand::ResolvePolicyName {
+            schema_id,
+            table_id,
+            name,
+            is_cell,
+        } => Ok(ClientAdminRead::ResolvePolicyName {
+            schema_id,
+            table_id,
+            name,
+            is_cell,
         }),
         ClientAdminCommand::ListSchemas => Ok(ClientAdminRead::ListSchemas),
         ClientAdminCommand::ListSchemasPage { page_limit, cursor } => {
@@ -1103,6 +1126,42 @@ pub fn decode_client_admin_command(
                 name,
                 kind,
                 policy_scope: Some((schema_id, table_id)),
+            })
+        }
+        Some("read")
+            if version == Some(1) && operation.as_deref() == Some("metadata.policies.resolve") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            if args.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let schema_id = decode_lower_hex_id(
+                &args
+                    .remove("schema_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let table_id = decode_lower_hex_id(
+                &args
+                    .remove("table_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let name = args.remove("name").ok_or(ClientControlError::MissingKey)?;
+            let is_cell = match args.remove("kind").as_deref() {
+                Some("row") => false,
+                Some("cell") => true,
+                _ => return Err(ClientControlError::InvalidPrepare),
+            };
+            if !args.is_empty() || schema_id == [0; 16] || table_id == [0; 16] {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            Ok(ClientAdminCommand::ResolvePolicyName {
+                schema_id,
+                table_id,
+                name,
+                is_cell,
             })
         }
         Some("read")
@@ -4063,6 +4122,39 @@ impl ClientConnectionSession {
                         encode_lower_hex_id(identity_id)
                     ),
                     None => "{\"identity_id\":null}".to_owned(),
+                };
+                self.json_response(request.request_id, payload.into_bytes())
+            }
+            ClientAdminCommand::ResolvePolicyName {
+                schema_id,
+                table_id,
+                name,
+                is_cell,
+            } => {
+                let token_id = self
+                    .authenticated
+                    .as_ref()
+                    .ok_or(ClientSessionError::AuthenticationRequired)?
+                    .token_id();
+                let token_secret = self
+                    .token_secret
+                    .as_ref()
+                    .ok_or(ClientSessionError::AuthenticationRequired)?;
+                let policy_id = storage
+                    .resolve_token_policy_name(
+                        token_id,
+                        token_secret,
+                        schema_id,
+                        table_id,
+                        &name,
+                        is_cell,
+                    )
+                    .map_err(ClientSessionError::Storage)?;
+                let payload = match policy_id {
+                    Some(policy_id) => {
+                        format!("{{\"policy_id\":\"{}\"}}", encode_lower_hex_id(policy_id))
+                    }
+                    None => "{\"policy_id\":null}".to_owned(),
                 };
                 self.json_response(request.request_id, payload.into_bytes())
             }

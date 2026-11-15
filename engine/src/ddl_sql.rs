@@ -255,6 +255,14 @@ pub struct CreatePolicySql {
     pub with_check_expression: Option<CheckExpressionSql>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DropPolicySql {
+    pub schema: String,
+    pub table: String,
+    pub name: String,
+    pub is_cell: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CheckComparisonOperator {
     Equal,
@@ -1180,6 +1188,32 @@ pub fn parse_create_policy(sql: &str) -> Result<CreatePolicySql, DdlSqlError> {
         effect: effect.to_owned(),
         using_expression,
         with_check_expression,
+    })
+}
+
+pub fn parse_drop_policy(sql: &str) -> Result<DropPolicySql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("drop")?;
+    let is_cell = if parser.peek_word("cell") {
+        parser.word("cell")?;
+        true
+    } else {
+        parser.word("row")?;
+        false
+    };
+    parser.word("policy")?;
+    let name = parser.identifier()?;
+    parser.word("on")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("restrict")?;
+    finish_statement(&mut parser)?;
+    Ok(DropPolicySql {
+        schema,
+        table,
+        name,
+        is_cell,
     })
 }
 
@@ -3102,6 +3136,26 @@ mod tests {
             "CREATE ROW POLICY p ON app.t FOR SELECT TO ROLE r AS ALLOW USING (TRUE); CREATE ROLE other",
         ] {
             assert!(parse_create_policy(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_bounded_row_and_cell_policy_drop_sql() {
+        let row = parse_drop_policy("DROP ROW POLICY visible ON app.records RESTRICT;").unwrap();
+        assert_eq!(row.schema, "app");
+        assert_eq!(row.table, "records");
+        assert_eq!(row.name, "visible");
+        assert!(!row.is_cell);
+        let cell =
+            parse_drop_policy("DROP CELL POLICY salary_read ON app.records RESTRICT").unwrap();
+        assert!(cell.is_cell);
+        for sql in [
+            "DROP POLICY visible ON app.records RESTRICT",
+            "DROP ROW POLICY visible ON app.records",
+            "DROP ROW POLICY visible ON app.records CASCADE",
+            "DROP CELL POLICY p ON app.t RESTRICT; DROP ROLE r",
+        ] {
+            assert!(parse_drop_policy(sql).is_err(), "accepted {sql}");
         }
     }
 

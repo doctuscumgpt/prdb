@@ -228,6 +228,7 @@ fn admin_sql(
     let system_privilege_statement = prdb_engine::ddl_sql::parse_system_privilege(sql).ok();
     let object_privilege_statement = prdb_engine::ddl_sql::parse_object_privilege(sql).ok();
     let create_policy_statement = prdb_engine::ddl_sql::parse_create_policy(sql).ok();
+    let drop_policy_statement = prdb_engine::ddl_sql::parse_drop_policy(sql).ok();
     let drop_index_statement = prdb_engine::ddl_sql::parse_drop_index(sql).ok();
     let schema_statement = prdb_engine::ddl_sql::parse_create_schema(sql).ok();
     let rename_schema_statement = prdb_engine::ddl_sql::parse_rename_schema(sql).ok();
@@ -256,6 +257,7 @@ fn admin_sql(
         && system_privilege_statement.is_none()
         && object_privilege_statement.is_none()
         && create_policy_statement.is_none()
+        && drop_policy_statement.is_none()
         && drop_index_statement.is_none()
         && schema_statement.is_none()
         && rename_schema_statement.is_none()
@@ -400,6 +402,16 @@ fn admin_sql(
             lower_hex(&result.policy_id),
             lower_hex(&result.operation_id),
             result.commit_sequence
+        );
+    } else if let Some(statement) = drop_policy_statement {
+        let result = client
+            .execute_drop_policy_sql(sql)
+            .map_err(|error| error.to_string())?;
+        let kind = if statement.is_cell { "cell" } else { "row" };
+        print_operation(
+            &format!("dropped {kind} policy"),
+            &result.operation_id,
+            result.commit_sequence,
         );
     } else if drop_index_statement.is_some() {
         let result = client
