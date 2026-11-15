@@ -3,7 +3,7 @@
 ## DS-SQL-27: self-referencing CREATE TABLE SQL — verified
 
 - Inline and table-level `REFERENCES` may target a key declared in the new table. The SQL client emits the v2 `tables.create` payload only for local targets and preserves the prior v1 payload for ordinary external references.
-- An authenticated AdminClient control-channel regression verifies the SQL is encoded as `tables.create` v2 with a local target, and the strict protocol decoder accepts it. The real-redb storage regression separately verifies atomic publication and recovery. The full delegated-cgroup workspace suite passes with sandbox/process tests enabled and zero ignored tests; the existing cross-process admin lifecycle also passes unchanged. Dedicated self-reference process coverage remains a follow-up; see [DDL progress](../ddl-schema/PROGRESS.md).
+- An authenticated AdminClient control-channel regression verifies the SQL is encoded as `tables.create` v2 with a local target, and the strict protocol decoder accepts it. The real-redb storage regression separately verifies atomic publication and recovery. A dedicated gateway/supervisor process regression creates the table through authenticated SQL and reads back its self-targeting FK metadata. See [DDL progress](../ddl-schema/PROGRESS.md).
 
 ## Name-resolved CREATE SCHEMA ownership
 

@@ -3823,6 +3823,178 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
 }
 
 #[test]
+fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
+-> Result<(), Box<dyn std::error::Error>> {
+    fn runtime_paths(name: &str) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+        let value = std::env::var_os(name).ok_or(format!("{name} is required"))?;
+        if name == "PRDB_TEST_RUNTIME_READ_ONLY" && value.is_empty() {
+            return Ok(Vec::new());
+        }
+        let paths = std::env::split_paths(&value).collect::<Vec<_>>();
+        if paths.is_empty() || paths.iter().any(|path| !path.is_absolute()) {
+            return Err(format!("{name} must contain absolute paths").into());
+        }
+        Ok(paths)
+    }
+
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "prdb-self-reference-process-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&root)?;
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+    let _cleanup = DirectoryGuard(root.clone());
+
+    let instance_dir = root.join("instance");
+    let mut setup = initialize(&instance_dir, "selfref_process_admin", i64::MAX)?;
+    let token_id = setup.token_id();
+    let token_secret = setup.take_secret().ok_or("bootstrap secret missing")?;
+    drop(setup.acknowledge()?);
+
+    let cgroup_parent = std::env::var_os("PRDB_TEST_CGROUP_PARENT")
+        .map(std::path::PathBuf::from)
+        .ok_or("PRDB_TEST_CGROUP_PARENT must name a delegated cgroup v2 parent")?;
+    if !cgroup_parent.is_absolute() {
+        return Err("PRDB_TEST_CGROUP_PARENT must be absolute".into());
+    }
+    let runtime_read_execute = runtime_paths("PRDB_TEST_RUNTIME_READ_EXECUTE")?;
+    let runtime_read_only = runtime_paths("PRDB_TEST_RUNTIME_READ_ONLY")?;
+    let service_socket = root.join("supervisor.sock");
+    let uid = unsafe { libc::geteuid() };
+    let uid_string = uid.to_string();
+    let mut supervisor_command = Command::new(env!("CARGO_BIN_EXE_prdb-supervisor"));
+    supervisor_command.args([
+        "--instance-dir",
+        instance_dir.to_str().ok_or("non-UTF-8 instance path")?,
+        "--service-socket",
+        service_socket.to_str().ok_or("non-UTF-8 socket path")?,
+        "--gateway-uid",
+        &uid_string,
+        "--cgroup-parent",
+        cgroup_parent.to_str().ok_or("non-UTF-8 cgroup path")?,
+        "--executor",
+        env!("CARGO_BIN_EXE_prdb-executor"),
+        "--optimizer",
+        env!("CARGO_BIN_EXE_prdb-optimizer"),
+        "--scratch-parent",
+        root.to_str().ok_or("non-UTF-8 scratch path")?,
+        "--cpu-baseline",
+        "x86_64-v1",
+        "--runtime-profile",
+        "test-runtime",
+        "--sdk-release",
+        "1",
+        "--allow-legacy-static-sdk-release",
+        "1",
+        "--retention-seconds",
+        "3600",
+        "--max-rows",
+        "8",
+        "--max-bytes",
+        "4096",
+        "--cpu-quota-us",
+        "100000",
+        "--cpu-period-us",
+        "100000",
+        "--memory-max-bytes",
+        "67108864",
+        "--max-processes",
+        "16",
+    ]);
+    for path in &runtime_read_execute {
+        supervisor_command.arg("--runtime-read-execute").arg(path);
+    }
+    for path in &runtime_read_only {
+        supervisor_command.arg("--runtime-read-only").arg(path);
+    }
+    let mut supervisor = ChildGuard(Some(
+        supervisor_command
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()?,
+    ));
+    let socket_deadline = Instant::now() + Duration::from_secs(5);
+    while !service_socket.exists() {
+        if let Some(status) = supervisor.child().try_wait()? {
+            return Err(format!("supervisor exited before binding: {status}").into());
+        }
+        if Instant::now() >= socket_deadline {
+            return Err("supervisor did not bind its service socket".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let mut gateway = ChildGuard(Some(
+        Command::new(env!("CARGO_BIN_EXE_prdb-gateway"))
+            .args([
+                "--bind",
+                "127.0.0.1:0",
+                "--service-socket",
+                service_socket.to_str().ok_or("non-UTF-8 socket path")?,
+                "--service-uid",
+                &uid_string,
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()?,
+    ));
+    let gateway_stderr = gateway
+        .child()
+        .stderr
+        .take()
+        .ok_or("gateway stderr missing")?;
+    let (address_sender, address_receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = BufReader::new(gateway_stderr)
+            .read_line(&mut line)
+            .map(|_| line);
+        let _ = address_sender.send(result);
+    });
+    let address_line = address_receiver.recv_timeout(Duration::from_secs(5))??;
+    let address: std::net::SocketAddr = address_line
+        .trim()
+        .strip_prefix("prdb-gateway listening on ")
+        .ok_or("gateway listen line had an unexpected prefix")?
+        .parse()?;
+
+    let mut authenticated_secret = token_secret;
+    let mut admin =
+        AdminClient::connect_authenticated(address, token_id, &mut authenticated_secret)?;
+    assert_eq!(authenticated_secret, [0; 32]);
+    let created_schema = admin.execute_create_schema_sql("CREATE SCHEMA selfref_app")?;
+    let created = admin.execute_create_table_sql(
+        "CREATE TABLE selfref_app.nodes (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES selfref_app.nodes (id));",
+    )?;
+    let columns =
+        admin.list_columns_page(created_schema.identity_id, created.table_id, 16, None)?;
+    assert_eq!(columns.records.len(), 2);
+    let constraints =
+        admin.list_constraints_page(created_schema.identity_id, created.table_id, 16, None)?;
+    let foreign_key = constraints
+        .records
+        .iter()
+        .find(|constraint| {
+            constraint.kind
+                == prdb_engine::metadata_discovery::AdministrativeConstraintKind::ForeignKey
+        })
+        .ok_or("self-referencing FK was absent from process metadata")?;
+    assert_eq!(foreign_key.referenced_table_id, Some(created.table_id));
+    assert_eq!(foreign_key.column_ids, vec![columns.records[1].column_id]);
+    assert_eq!(
+        foreign_key.referenced_column_ids,
+        vec![columns.records[0].column_id]
+    );
+    assert!(constraints.next_cursor.is_none());
+    drop(admin);
+
+    assert!(gateway.stop()?.success());
+    assert!(supervisor.stop()?.success());
+    Ok(())
+}
+
+#[test]
 fn disconnected_submission_is_reconciled_after_gateway_restart()
 -> Result<(), Box<dyn std::error::Error>> {
     fn required_paths(name: &str) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {

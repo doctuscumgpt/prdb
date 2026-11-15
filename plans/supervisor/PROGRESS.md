@@ -1,5 +1,10 @@
 # Supervisor Progress
 
+## DS-SQL-27: self-referencing CREATE TABLE over gateway service — verified
+
+- The separate supervisor process accepts the gateway's authenticated `tables.create` v2 operation and commits an FK whose target key is declared by the new table. The production process test checks the result through authenticated metadata.
+- Verification: focused gateway/supervisor process test passed in the delegated user service with writable `cpu memory pids`; see [schema DDL progress](../ddl-schema/PROGRESS.md).
+
 ## SU-9 follow-up: reconcile terminal storage errors without blocking — verified
 
 - Regression: a cancellation accepted during a slow result relay can race with successful worker exit, causing the subsequent commit request to fail with `CancellationRequested` after the transaction records ABORTED. The terminal helper now joins the storage handler before reading its response, so a handler error cannot leave the caller waiting forever for a frame that was never sent; the gateway then confirms and relays the durable outcome. Observation errors also attempt the normal storage abort path before outcome lookup.

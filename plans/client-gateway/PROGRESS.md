@@ -2,6 +2,11 @@
 
 Migrated component-owned progress entries from [storage-manager progress](../storage-manager/PROGRESS.md); evidence is preserved below.
 
+## DS-SQL-27: authenticated self-referencing CREATE TABLE DDL — verified
+
+- Production gateway TCP forwards the authenticated SQL control request for a same-statement self-FK through the supervisor to storage. The isolated process regression verifies the committed FK target table and ordered target column IDs through metadata.
+- Verification: focused gateway/supervisor process test passed in the delegated user service with `cpu memory pids` enabled; see [schema DDL progress](../ddl-schema/PROGRESS.md).
+
 ## GW-1 dependency: loopback-default TCP listener
 
 - Behavior: `TcpGatewayListener` binds loopback by default and refuses a non-loopback plaintext address unless `allow_non_loopback_plaintext` is explicitly enabled. Its API exposes the bound address and TCP accept operation without storage access.

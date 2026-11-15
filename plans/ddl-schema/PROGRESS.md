@@ -6,7 +6,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - `CREATE TABLE` now accepts inline or table-level foreign keys that target a PRIMARY KEY or UNIQUE constraint declared in the same statement. Storage resolves the local target after generating the table's column/key IDs and publishes the FK, dependency, key index, and table together. No pre-existing REFERENCES grant is needed for a target key owned by that same CREATE; external FK authority remains unchanged.
 - The control payload uses `tables.create` version 2 only when a same-statement target is present; ordinary and external-FK requests retain version 1. Strict decoder and authenticated AdminClient request regressions cover the zero-ID/local-column sentinel and the self-target identity.
-- Verification: focused real-redb storage, strict v2 decoder, and authenticated AdminClient SQL control-channel tests pass. The complete serial delegated-cgroup workspace suite passes with sandbox/process tests enabled and zero ignored tests (274 library tests, 174 commit tests, 42 client-admin tests, plus all other targets). Workspace build, format check, warning-denied Clippy, TinyCC SDK tests/fixture, release-profile validation, and `git diff --check` pass. Cargo.lock is unchanged. Dedicated self-reference coverage through the full gateway/supervisor process path remains a follow-up.
+- Verification: focused real-redb storage, strict v2 decoder, and authenticated AdminClient SQL control-channel tests pass. The complete serial delegated-cgroup workspace suite passes with sandbox/process tests enabled and zero ignored tests (274 library tests, 174 commit tests, 42 client-admin tests, plus all other targets). Workspace build, format check, warning-denied Clippy, TinyCC SDK tests/fixture, release-profile validation, and `git diff --check` pass. Cargo.lock is unchanged.
+
+### DS-SQL-27 gateway/supervisor process follow-up — verified
+
+- `self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes` starts separate production gateway and supervisor binaries, creates a schema and self-referencing table over authenticated SQL, then confirms the FK points to the new table and its declared PK column through authenticated metadata.
+- Verification: the focused test and complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. Post-change `cargo fmt --all -- --check`, warning-denied Clippy, and `git diff --check` passed. This isolated acceptance keeps the earlier long metadata lifecycle's index and policy fixtures independent.
 
 ## DS-5 / SM-5: empty schema DROP RESTRICT — verified
 
