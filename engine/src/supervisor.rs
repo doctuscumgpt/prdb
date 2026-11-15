@@ -74,6 +74,8 @@ pub struct StagingRuntimeUsage {
     pub queued_operational_starts: u64,
     pub queued_analytical_starts: u64,
     pub oldest_queued_start_wait_us: u64,
+    pub operational_start_wait_buckets: [u64; 6],
+    pub analytical_start_wait_buckets: [u64; 6],
     pub reserved_submission_bytes: u64,
 }
 
@@ -250,6 +252,8 @@ struct Reservation {
 struct StagingState {
     reservations: BTreeMap<[u8; 16], Reservation>,
     start_queue: BTreeMap<u128, StartQueueEntry>,
+    operational_start_wait_buckets: [u64; 6],
+    analytical_start_wait_buckets: [u64; 6],
     next_start_ticket: u128,
     connection_reservations: HashMap<[u8; 16], [u8; 16]>,
     global_reserved_bytes: u64,
@@ -263,6 +267,7 @@ struct StartQueueEntry {
     principal_id: [u8; 16],
     workload_class: WorkloadClass,
     queued_at: Instant,
+    was_blocked: bool,
 }
 
 pub struct StagingStore {
@@ -362,6 +367,8 @@ impl StagingStore {
         let state = self.state.lock().map_err(|_| StagingError::Poisoned)?;
         let mut summary = StagingRuntimeUsage {
             reserved_submission_bytes: state.global_reserved_bytes,
+            operational_start_wait_buckets: state.operational_start_wait_buckets,
+            analytical_start_wait_buckets: state.analytical_start_wait_buckets,
             ..StagingRuntimeUsage::default()
         };
         for reservation in state.reservations.values() {
@@ -718,6 +725,7 @@ impl StagingStore {
                 principal_id: reservation.principal_id,
                 workload_class: reservation.metadata.workload_class,
                 queued_at: Instant::now(),
+                was_blocked: false,
             };
             let sealed_data = Arc::clone(
                 reservation
@@ -728,9 +736,12 @@ impl StagingStore {
             self.enqueue_start(&mut state, entry)
                 .map_err(StartError::Staging)?;
             if self.next_eligible_start(&state).map(|(_, id)| id) != Some(invocation_id) {
+                mark_start_queue_blocked(&mut state, invocation_id);
                 return Err(StartError::Staging(StagingError::ResourceLimit));
             }
-            remove_start_queue_entry(&mut state, invocation_id);
+            if let Some(entry) = take_start_queue_entry(&mut state, invocation_id) {
+                record_completed_start_wait(&mut state, entry, Instant::now());
+            }
             let submission = SealedSubmission {
                 invocation_id,
                 data: sealed_data,
@@ -1160,13 +1171,54 @@ fn discard_reservation(state: &mut StagingState, invocation_id: [u8; 16]) {
 }
 
 fn remove_start_queue_entry(state: &mut StagingState, invocation_id: [u8; 16]) {
+    let _ = take_start_queue_entry(state, invocation_id);
+}
+
+fn take_start_queue_entry(
+    state: &mut StagingState,
+    invocation_id: [u8; 16],
+) -> Option<StartQueueEntry> {
     let ticket = state
         .start_queue
         .iter()
         .find_map(|(ticket, entry)| (entry.invocation_id == invocation_id).then_some(*ticket));
-    if let Some(ticket) = ticket {
-        state.start_queue.remove(&ticket);
+    ticket.and_then(|ticket| state.start_queue.remove(&ticket))
+}
+
+fn mark_start_queue_blocked(state: &mut StagingState, invocation_id: [u8; 16]) {
+    if let Some(entry) = state
+        .start_queue
+        .values_mut()
+        .find(|entry| entry.invocation_id == invocation_id)
+    {
+        entry.was_blocked = true;
     }
+}
+
+fn record_completed_start_wait(state: &mut StagingState, entry: StartQueueEntry, now: Instant) {
+    if !entry.was_blocked {
+        return;
+    }
+    let elapsed_us = u64::try_from(now.saturating_duration_since(entry.queued_at).as_micros())
+        .unwrap_or(u64::MAX);
+    let bucket = if elapsed_us <= 1_000 {
+        0
+    } else if elapsed_us <= 5_000 {
+        1
+    } else if elapsed_us <= 10_000 {
+        2
+    } else if elapsed_us <= 50_000 {
+        3
+    } else if elapsed_us <= 100_000 {
+        4
+    } else {
+        5
+    };
+    let buckets = match entry.workload_class {
+        WorkloadClass::Operational => &mut state.operational_start_wait_buckets,
+        WorkloadClass::Analytical => &mut state.analytical_start_wait_buckets,
+    };
+    buckets[bucket] = buckets[bucket].saturating_add(1);
 }
 
 fn reap_expired(
@@ -1416,6 +1468,7 @@ mod tests {
                     queued_at: observed_at
                         .checked_sub(Duration::from_micros(2_000))
                         .unwrap(),
+                    was_blocked: false,
                 },
             );
             state.start_queue.insert(
@@ -1427,6 +1480,7 @@ mod tests {
                     queued_at: observed_at
                         .checked_sub(Duration::from_micros(4_000))
                         .unwrap(),
+                    was_blocked: false,
                 },
             );
         }
@@ -1439,6 +1493,8 @@ mod tests {
                 queued_operational_starts: 1,
                 queued_analytical_starts: 1,
                 oldest_queued_start_wait_us: 4_000,
+                operational_start_wait_buckets: [0; 6],
+                analytical_start_wait_buckets: [0; 6],
                 reserved_submission_bytes: 73,
             }
         );
@@ -1455,6 +1511,64 @@ mod tests {
         assert_eq!(usage.started_submissions, 1);
         assert_eq!(usage.queued_operational_starts, 0);
         assert_eq!(usage.queued_analytical_starts, 0);
+    }
+
+    #[test]
+    fn completed_start_wait_buckets_use_bounded_class_specific_histograms() {
+        let observed_at = Instant::now();
+        let mut state = StagingState::default();
+        let operational_boundaries = [
+            1_000, 1_001, 5_000, 5_001, 10_000, 10_001, 50_000, 50_001, 100_000, 100_001,
+        ];
+        for (index, elapsed_us) in operational_boundaries.into_iter().enumerate() {
+            record_completed_start_wait(
+                &mut state,
+                StartQueueEntry {
+                    invocation_id: [(index + 1) as u8; 16],
+                    principal_id: [30; 16],
+                    workload_class: WorkloadClass::Operational,
+                    queued_at: observed_at - Duration::from_micros(elapsed_us),
+                    was_blocked: true,
+                },
+                observed_at,
+            );
+        }
+        record_completed_start_wait(
+            &mut state,
+            StartQueueEntry {
+                invocation_id: [20; 16],
+                principal_id: [31; 16],
+                workload_class: WorkloadClass::Analytical,
+                queued_at: observed_at - Duration::from_micros(5_001),
+                was_blocked: true,
+            },
+            observed_at,
+        );
+        record_completed_start_wait(
+            &mut state,
+            StartQueueEntry {
+                invocation_id: [21; 16],
+                principal_id: [31; 16],
+                workload_class: WorkloadClass::Operational,
+                queued_at: observed_at,
+                was_blocked: false,
+            },
+            observed_at,
+        );
+        state.operational_start_wait_buckets[0] = u64::MAX;
+        record_completed_start_wait(
+            &mut state,
+            StartQueueEntry {
+                invocation_id: [22; 16],
+                principal_id: [30; 16],
+                workload_class: WorkloadClass::Operational,
+                queued_at: observed_at - Duration::from_micros(1_000),
+                was_blocked: true,
+            },
+            observed_at,
+        );
+        assert_eq!(state.operational_start_wait_buckets, [u64::MAX, 2, 2, 2, 2, 1]);
+        assert_eq!(state.analytical_start_wait_buckets, [0, 1, 0, 0, 0, 0]);
     }
 
     #[test]
@@ -1869,6 +1983,9 @@ mod tests {
             .start_with(third_owner, third_id, |_| Ok::<_, ()>(()))
             .unwrap();
         store.finish_started(third_owner, third_id).unwrap();
+        let usage = store.runtime_usage_summary().unwrap();
+        assert_eq!(usage.operational_start_wait_buckets.iter().sum::<u64>(), 2);
+        assert_eq!(usage.analytical_start_wait_buckets, [0; 6]);
     }
 
     #[test]

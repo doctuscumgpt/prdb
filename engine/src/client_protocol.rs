@@ -1615,7 +1615,7 @@ pub fn decode_client_admin_command(
             Ok(ClientAdminCommand::ListAuditEvents { page_limit, cursor })
         }
         Some("read")
-            if matches!(version, Some(1..=7))
+            if matches!(version, Some(1..=8))
                 && operation.as_deref() == Some("runtime.invocations.list") =>
         {
             if operation_id.is_some() || seen.len() != 4 {
@@ -5286,6 +5286,27 @@ impl ClientConnectionSession {
                     if response_version >= 4 {
                         payload.push_str(",\"oldest_queued_start_wait_us\":");
                         payload.push_str(&usage.oldest_queued_start_wait_us.to_string());
+                    }
+                    if response_version >= 8 {
+                        payload.push_str(",\"operational_start_wait_buckets\":[");
+                        for (index, bucket) in
+                            usage.operational_start_wait_buckets.iter().enumerate()
+                        {
+                            if index != 0 {
+                                payload.push(',');
+                            }
+                            payload.push_str(&bucket.to_string());
+                        }
+                        payload.push_str("],\"analytical_start_wait_buckets\":[");
+                        for (index, bucket) in
+                            usage.analytical_start_wait_buckets.iter().enumerate()
+                        {
+                            if index != 0 {
+                                payload.push(',');
+                            }
+                            payload.push_str(&bucket.to_string());
+                        }
+                        payload.push(']');
                     }
                     payload.push_str(",\"reserved_submission_bytes\":");
                     payload.push_str(&usage.reserved_submission_bytes.to_string());
@@ -9256,7 +9277,7 @@ mod runtime_wait_tests {
 
     #[test]
     fn runtime_list_versions_one_through_seven_decode_and_later_versions_reject() {
-        for version in 1..=7 {
+        for version in 1..=8 {
             let request = format!(
                 "{{\"phase\":\"read\",\"operation_version\":{version},\"operation\":\"runtime.invocations.list\",\"arguments\":{{\"limit\":\"1\"}}}}"
             );
@@ -9269,7 +9290,7 @@ mod runtime_wait_tests {
                 } if response_version == version
             ));
         }
-        let unsupported = br#"{"phase":"read","operation_version":8,"operation":"runtime.invocations.list","arguments":{"limit":"1"}}"#;
+        let unsupported = br#"{"phase":"read","operation_version":9,"operation":"runtime.invocations.list","arguments":{"limit":"1"}}"#;
         assert!(decode_client_admin_command(unsupported).is_err());
     }
 

@@ -400,6 +400,8 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
             queued_operational_starts: 3,
             queued_analytical_starts: 5,
             oldest_queued_start_wait_us: 6000,
+            operational_start_wait_buckets: [1, 2, 3, 4, 5, 6],
+            analytical_start_wait_buckets: [6, 5, 4, 3, 2, 1],
             reserved_submission_bytes: 4096,
         }
     );
@@ -416,6 +418,8 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
     assert_eq!(second.records[0].age_us, 100);
     assert!(second.fence_waits.is_empty());
     assert_eq!(second.supervisor_queue.started_submissions, 1);
+    assert_eq!(second.supervisor_queue.operational_start_wait_buckets, [0; 6]);
+    assert_eq!(second.supervisor_queue.analytical_start_wait_buckets, [0; 6]);
     assert_eq!(second.gateway_result_bytes_relayed_total, 12346);
     assert_eq!(second.gateway_result_bytes_sent_to_clients_total, 6790);
     assert_eq!(second.pinned_snapshot_count, 2);

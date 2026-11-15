@@ -1320,7 +1320,7 @@ impl AdminClient {
             arguments.push('"');
         }
         let payload = format!(
-            "{{\"phase\":\"read\",\"operation_version\":7,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
+            "{{\"phase\":\"read\",\"operation_version\":8,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
         );
         let response = self.transport.exchange(10, payload.into_bytes())?;
         let mut fields = parse_flat_response(&response.payload)?;
@@ -1496,7 +1496,7 @@ impl AdminClient {
             response_u64(&mut fields, "gateway_result_bytes_sent_to_clients_total")?
                 .ok_or(ClientSubmitError::InvalidResponse)?;
         let mut supervisor_queue = match fields.remove("supervisor_queue") {
-            Some(ResponseValue::Object(fields)) if fields.len() == 7 => fields,
+            Some(ResponseValue::Object(fields)) if fields.len() == 9 => fields,
             _ => return Err(ClientSubmitError::InvalidResponse),
         };
         let supervisor_queue = crate::supervisor::StagingRuntimeUsage {
@@ -1521,6 +1521,16 @@ impl AdminClient {
                 "oldest_queued_start_wait_us",
             )?
             .ok_or(ClientSubmitError::InvalidResponse)?,
+            operational_start_wait_buckets: response_u64_array(
+                &mut supervisor_queue,
+                "operational_start_wait_buckets",
+                6,
+            )?,
+            analytical_start_wait_buckets: response_u64_array(
+                &mut supervisor_queue,
+                "analytical_start_wait_buckets",
+                6,
+            )?,
             reserved_submission_bytes: response_u64(
                 &mut supervisor_queue,
                 "reserved_submission_bytes",
@@ -6710,6 +6720,27 @@ fn response_id_array(
             _ => Err(ClientSubmitError::InvalidResponse),
         })
         .collect()
+}
+
+fn response_u64_array(
+    fields: &mut HashMap<String, ResponseValue>,
+    key: &str,
+    expected_len: usize,
+) -> Result<[u64; 6], ClientSubmitError> {
+    let values = match fields.remove(key) {
+        Some(ResponseValue::Array(values)) if values.len() == expected_len && expected_len == 6 => {
+            values
+        }
+        _ => return Err(ClientSubmitError::InvalidResponse),
+    };
+    let mut output = [0; 6];
+    for (index, value) in values.into_iter().enumerate() {
+        let ResponseValue::Number(value) = value else {
+            return Err(ClientSubmitError::InvalidResponse);
+        };
+        output[index] = value;
+    }
+    Ok(output)
 }
 
 fn response_boolean(

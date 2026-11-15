@@ -3040,7 +3040,7 @@ fn runtime_list(
         print!("],\"blockers_truncated\":{}}}", wait.blockers_truncated);
     }
     print!(
-        "],\"fence_waits_truncated\":{},\"gateway_result_bytes_relayed_total\":{},\"gateway_result_bytes_sent_to_clients_total\":{},\"supervisor_queue\":{{\"pending_submissions\":{},\"starting_submissions\":{},\"started_submissions\":{},\"queued_operational_starts\":{},\"queued_analytical_starts\":{},\"oldest_queued_start_wait_us\":{},\"reserved_submission_bytes\":{}}},",
+        "],\"fence_waits_truncated\":{},\"gateway_result_bytes_relayed_total\":{},\"gateway_result_bytes_sent_to_clients_total\":{},\"supervisor_queue\":{{\"pending_submissions\":{},\"starting_submissions\":{},\"started_submissions\":{},\"queued_operational_starts\":{},\"queued_analytical_starts\":{},\"oldest_queued_start_wait_us\":{},\"operational_start_wait_buckets\":{:?},\"analytical_start_wait_buckets\":{:?},\"reserved_submission_bytes\":{}}},",
         page.fence_waits_truncated,
         page.gateway_result_bytes_relayed_total,
         page.gateway_result_bytes_sent_to_clients_total,
@@ -3050,6 +3050,8 @@ fn runtime_list(
         page.supervisor_queue.queued_operational_starts,
         page.supervisor_queue.queued_analytical_starts,
         page.supervisor_queue.oldest_queued_start_wait_us,
+        page.supervisor_queue.operational_start_wait_buckets,
+        page.supervisor_queue.analytical_start_wait_buckets,
         page.supervisor_queue.reserved_submission_bytes
     );
     match page.next_cursor {
