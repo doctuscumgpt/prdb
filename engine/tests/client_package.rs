@@ -94,7 +94,7 @@ fn admin_sql_cli_runs_create_table_over_authenticated_control_mode() {
     let sql_path = temp.join("create.sql");
     fs::write(
         &sql_path,
-        "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY PRIMARY KEY, amount DECIMAL(5,2) DEFAULT 1.20 UNIQUE, CHECK (amount >= 0.75));",
+        "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY PRIMARY KEY, amount DECIMAL(5,2) DEFAULT 1.20 UNIQUE CHECK (amount >= 0.75));",
     )
     .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

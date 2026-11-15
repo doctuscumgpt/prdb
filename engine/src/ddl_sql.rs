@@ -471,6 +471,10 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
                 parser.word("primary")?;
                 parser.word("key")?;
                 primary_key = true;
+            } else if parser.peek_word("check") {
+                let expression = parser.check_constraint_expression()?;
+                validate_column_check_expression(&name, &expression)?;
+                check_constraints.push(expression);
             } else {
                 break;
             }
@@ -1397,6 +1401,34 @@ fn validate_check_columns(
             .map(|ordinal| (ordinal, columns[ordinal].scalar_type))
     })?;
     Ok(())
+}
+
+fn validate_column_check_expression(
+    column: &str,
+    expression: &CheckExpressionSql,
+) -> Result<(), DdlSqlError> {
+    fn only_column(column: &str, expression: &CheckExpressionSql) -> bool {
+        match expression {
+            CheckExpressionSql::Column(name)
+            | CheckExpressionSql::IsNull(name)
+            | CheckExpressionSql::IsNotNull(name) => name == column,
+            CheckExpressionSql::Literal(_) => true,
+            CheckExpressionSql::CurrentPrincipalId | CheckExpressionSql::HasRole(_) => false,
+            CheckExpressionSql::Compare { left, right, .. } => {
+                only_column(column, left) && only_column(column, right)
+            }
+            CheckExpressionSql::Not(inner) => only_column(column, inner),
+            CheckExpressionSql::And(items) | CheckExpressionSql::Or(items) => {
+                items.iter().all(|item| only_column(column, item))
+            }
+        }
+    }
+
+    if only_column(column, expression) {
+        Ok(())
+    } else {
+        Err(DdlSqlError::InvalidStatement)
+    }
 }
 
 /// Bind SQL CHECK names and context-typed literals to a row-local EIR1 tree.
@@ -2828,6 +2860,34 @@ mod tests {
     }
 
     #[test]
+    fn parses_column_level_check_against_its_declared_column() {
+        let parsed = parse_create_table(
+            "CREATE TABLE app.payments (amount DECIMAL(8,2) CHECK (amount >= 0));",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.check_constraints,
+            vec![CheckExpressionSql::Compare {
+                operator: CheckComparisonOperator::GreaterEqual,
+                left: Box::new(CheckExpressionSql::Column("amount".into())),
+                right: Box::new(CheckExpressionSql::Literal(CheckLiteralSql::Number(
+                    "0".into()
+                ))),
+            }]
+        );
+        assert!(parse_create_table(
+            "CREATE TABLE app.payments (amount DECIMAL(8,2), other INTEGER, CHECK (amount >= 0));"
+        )
+        .is_ok());
+        assert!(
+            parse_create_table(
+                "CREATE TABLE app.payments (amount DECIMAL(8,2) CHECK (other >= 0), other INTEGER)"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn binds_check_comparison_literals_to_column_types() {
         use crate::authorization::Expr;
 
@@ -3644,7 +3704,7 @@ mod tests {
     fn rejects_unsupported_or_ambiguous_ddl() {
         for sql in [
             "CREATE TABLE events (id UUID)",
-            "CREATE TABLE app.events (id UUID CHECK (id IS NOT NULL))",
+            "CREATE TABLE app.events (id UUID, other INTEGER CHECK (id IS NOT NULL))",
             "CREATE TABLE app.events (id UUID); CREATE TABLE app.other (id UUID)",
             "CREATE TABLE \"app\".events (id UUID)",
             "CREATE TABLE app.events (id DECIMAL(39, 0))",
