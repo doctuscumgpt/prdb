@@ -352,3 +352,9 @@
 - Old snapshots retain definitions and rows across rename and drop (`schema_name_index_tracks_renames_per_snapshot`, `storage_manager_drop_table_removes_owned_catalog_and_rows`). The ADD COLUMN regression now pins both the pre-DDL shape and post-backfill default while 64 newer row versions commit; each snapshot decodes its own row layout.
 - `retained_reader_blocks_compaction_until_release_then_reclaims_deleted_pages` verifies a pinned redb reader blocks compaction, preserves its view, and allows page reclamation after release.
 - Verification: the complete serial delegated-cgroup workspace suite passed with zero ignored tests, including the updated commit regression and redb foundation retention/compaction tests. Longer-duration mixed catalog-DDL/read pressure remains additional hardening, not an unverified DD-5 contract item.
+
+## DD-1 / OP-1: extended catalog and DDL codec fuzz campaign — verified slice
+
+- The pinned `catalog_ddl_codecs` target completed a 300-second campaign with 19,914,102 executions and no crash or sanitizer finding. The run reached 2,937 coverage counters and 6,397 features; the accumulated 1,538-input corpus was minimized to 1,304 coverage-preserving inputs, while retaining the four named hand-authored seeds.
+- The isolated nightly 1.101 compiler emitted a deprecation warning for `AtomicU64::fetch_update` in `gateway.rs`; the repository-pinned stable format, Clippy, build, and workspace test checks had passed independently. No production or Cargo dependency change was made for the fuzz run.
+- Longer continuous campaigns and deterministic regressions for any future crash remain hardening work.
