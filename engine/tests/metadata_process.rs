@@ -4023,6 +4023,33 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
         vec![columns.records[0].column_id, columns.records[1].column_id]
     );
     assert!(constraints.next_cursor.is_none());
+    std::fs::write(&sql_path, "DROP TABLE selfref_app.nodes RESTRICT;")?;
+    let drop_output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            credentials_path
+                .to_str()
+                .ok_or("non-UTF-8 credentials path")?,
+            "--sql-file",
+            sql_path.to_str().ok_or("non-UTF-8 SQL path")?,
+        ])
+        .output()?;
+    assert!(
+        drop_output.status.success(),
+        "admin-sql DROP TABLE failed: {}",
+        String::from_utf8_lossy(&drop_output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&drop_output.stdout).contains("dropped table"));
+    let relations = admin.list_relations_page(created_schema.identity_id, 16, None)?;
+    assert!(
+        relations
+            .records
+            .iter()
+            .all(|relation| relation.name != "nodes")
+    );
     drop(admin);
 
     assert!(gateway.stop()?.success());
