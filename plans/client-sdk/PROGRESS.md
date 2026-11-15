@@ -993,3 +993,7 @@
 ## DS-SQL-59: Null-safe distinctness on supported expressions — verified
 
 - CHECK binding now accepts a supported scalar expression before `IS [NOT] DISTINCT FROM`, with one typed literal on the right, and lowers through existing EIR1 nodes. Parser/binder and full serial delegated-cgroup workspace regressions pass with sandbox/process coverage and zero ignored tests; workspace build, format check, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
+
+## DS-SQL-60: Finite-set and range predicates on supported expressions — verified
+
+- Authenticated CHECK SQL accepts supported scalar expressions before `IN`/`NOT IN` and `BETWEEN`/`NOT BETWEEN`. Binding contextually types literals, preserves column dependencies, and validates canonical EIR1 node/depth/byte bounds after lowering. Parser/binder and full delegated-cgroup workspace checks pass with sandbox/process coverage and zero ignored tests; workspace build, format check, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.

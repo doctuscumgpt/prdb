@@ -317,12 +317,12 @@ pub enum CheckExpressionSql {
         right: Box<CheckExpressionSql>,
     },
     In {
-        column: String,
+        expression: Box<CheckExpressionSql>,
         values: Vec<CheckLiteralSql>,
         negated: bool,
     },
     Between {
-        column: String,
+        expression: Box<CheckExpressionSql>,
         lower: CheckLiteralSql,
         upper: CheckLiteralSql,
         negated: bool,
@@ -1775,8 +1775,8 @@ fn validate_column_check_expression(
             CheckExpressionSql::Compare { left, right, .. } => {
                 only_column(column, left) && only_column(column, right)
             }
-            CheckExpressionSql::In { column: name, .. } => name == column,
-            CheckExpressionSql::Between { column: name, .. } => name == column,
+            CheckExpressionSql::In { expression, .. }
+            | CheckExpressionSql::Between { expression, .. } => only_column(column, expression),
             CheckExpressionSql::DistinctFrom { expression, .. } => only_column(column, expression),
             CheckExpressionSql::Not(inner) => only_column(column, inner),
             CheckExpressionSql::And(items) | CheckExpressionSql::Or(items) => {
@@ -1803,8 +1803,8 @@ pub fn bind_check_expression(
             CheckExpressionSql::Compare { left, right, .. } => {
                 has_policy_context(left) || has_policy_context(right)
             }
-            CheckExpressionSql::In { .. } => false,
-            CheckExpressionSql::Between { .. } => false,
+            CheckExpressionSql::In { expression, .. }
+            | CheckExpressionSql::Between { expression, .. } => has_policy_context(expression),
             CheckExpressionSql::DistinctFrom { expression, .. } => has_policy_context(expression),
             CheckExpressionSql::Not(inner) => has_policy_context(inner),
             CheckExpressionSql::And(items) | CheckExpressionSql::Or(items) => {
@@ -1821,7 +1821,9 @@ pub fn bind_check_expression(
         return Err(DdlSqlError::InvalidStatement);
     }
     let mut no_roles = |_: &str| None;
-    bind_expression(expression, &lookup, &mut no_roles)
+    let expression = bind_expression(expression, &lookup, &mut no_roles)?;
+    crate::expression::encode_expression(&expression).map_err(|_| DdlSqlError::InvalidStatement)?;
+    Ok(expression)
 }
 
 pub fn bind_policy_expression(
@@ -1830,7 +1832,9 @@ pub fn bind_policy_expression(
     role_lookup: impl FnMut(&str) -> Option<[u8; 16]>,
 ) -> Result<crate::authorization::Expr, DdlSqlError> {
     let mut role_lookup = role_lookup;
-    bind_expression(expression, &lookup, &mut role_lookup)
+    let expression = bind_expression(expression, &lookup, &mut role_lookup)?;
+    crate::expression::encode_expression(&expression).map_err(|_| DdlSqlError::InvalidStatement)?;
+    Ok(expression)
 }
 
 fn bind_expression(
@@ -2085,11 +2089,12 @@ fn bind_expression(
                 (expression, Some(ScalarType::Boolean))
             }
             Sql::In {
-                column,
+                expression,
                 values,
                 negated,
             } => {
-                let (ordinal, column_type) = lookup(column).ok_or(DdlSqlError::InvalidStatement)?;
+                let (left, column_type) = bind(expression, None, lookup, role_lookup)?;
+                let column_type = column_type.ok_or(DdlSqlError::InvalidStatement)?;
                 let mut alternatives = Vec::with_capacity(values.len());
                 for value in values {
                     let (literal, literal_type) = bind(
@@ -2103,10 +2108,7 @@ fn bind_expression(
                     {
                         return Err(DdlSqlError::InvalidStatement);
                     }
-                    alternatives.push(Expr::Equal(
-                        Box::new(Expr::Field(ordinal)),
-                        Box::new(literal),
-                    ));
+                    alternatives.push(Expr::Equal(Box::new(left.clone()), Box::new(literal)));
                 }
                 let expression = Expr::Or(alternatives);
                 let expression = if *negated {
@@ -2117,12 +2119,13 @@ fn bind_expression(
                 (expression, Some(ScalarType::Boolean))
             }
             Sql::Between {
-                column,
+                expression,
                 lower,
                 upper,
                 negated,
             } => {
-                let (ordinal, column_type) = lookup(column).ok_or(DdlSqlError::InvalidStatement)?;
+                let (left, column_type) = bind(expression, None, lookup, role_lookup)?;
+                let column_type = column_type.ok_or(DdlSqlError::InvalidStatement)?;
                 let bind_bound =
                     |literal: &CheckLiteralSql, role_lookup: &mut _| -> Result<Expr, DdlSqlError> {
                         let (bound, bound_type) = bind(
@@ -2141,8 +2144,8 @@ fn bind_expression(
                 let lower = bind_bound(lower, role_lookup)?;
                 let upper = bind_bound(upper, role_lookup)?;
                 let expression = Expr::And(vec![
-                    Expr::GreaterEqual(Box::new(Expr::Field(ordinal)), Box::new(lower)),
-                    Expr::LessEqual(Box::new(Expr::Field(ordinal)), Box::new(upper)),
+                    Expr::GreaterEqual(Box::new(left.clone()), Box::new(lower)),
+                    Expr::LessEqual(Box::new(left), Box::new(upper)),
                 ]);
                 let expression = if *negated {
                     Expr::Not(Box::new(expression))
@@ -2548,8 +2551,24 @@ impl Parser {
             self.position += 1;
             let expression = self.check_or()?;
             self.take(Token::RightParen)?;
-            if self.peek_word("is") {
-                return self.check_is_predicate(expression);
+            if self.peek_word("is")
+                || self.peek_word("between")
+                || self.peek_word("in")
+                || (self.peek_word("not")
+                    && matches!(self.tokens.get(self.position + 1), Some(Token::Word(word)) if word == "between" || word == "in"))
+                || matches!(
+                    self.peek(),
+                    Some(
+                        Token::Equal
+                            | Token::NotEqual
+                            | Token::Less
+                            | Token::LessEqual
+                            | Token::Greater
+                            | Token::GreaterEqual
+                    )
+                )
+            {
+                return self.check_value_predicate(expression);
             }
             return Ok(expression);
         }
@@ -2558,15 +2577,19 @@ impl Parser {
 
     fn check_predicate(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
         let left = self.check_value_atom()?;
+        self.check_value_predicate(left)
+    }
+
+    fn check_value_predicate(
+        &mut self,
+        left: CheckExpressionSql,
+    ) -> Result<CheckExpressionSql, DdlSqlError> {
         if self.peek_word("is") {
             self.check_is_predicate(left)
         } else if self.peek_word("between")
             || (self.peek_word("not")
                 && matches!(self.tokens.get(self.position + 1), Some(Token::Word(word)) if word == "between"))
         {
-            let CheckExpressionSql::Column(column) = left else {
-                return Err(DdlSqlError::InvalidStatement);
-            };
             let negated = if self.peek_word("not") {
                 self.position += 1;
                 true
@@ -2582,7 +2605,7 @@ impl Parser {
                 return Err(DdlSqlError::InvalidStatement);
             };
             Ok(CheckExpressionSql::Between {
-                column,
+                expression: Box::new(left),
                 lower,
                 upper,
                 negated,
@@ -2591,9 +2614,6 @@ impl Parser {
             || (self.peek_word("not")
                 && matches!(self.tokens.get(self.position + 1), Some(Token::Word(word)) if word == "in"))
         {
-            let CheckExpressionSql::Column(column) = left else {
-                return Err(DdlSqlError::InvalidStatement);
-            };
             let negated = if self.peek_word("not") {
                 self.position += 1;
                 true
@@ -2621,7 +2641,7 @@ impl Parser {
             }
             self.take(Token::RightParen)?;
             Ok(CheckExpressionSql::In {
-                column,
+                expression: Box::new(left),
                 values,
                 negated,
             })
@@ -3749,7 +3769,7 @@ mod tests {
         )
         .unwrap();
         let expected = CheckExpressionSql::In {
-            column: "state".into(),
+            expression: Box::new(CheckExpressionSql::Column("state".into())),
             values: vec![
                 CheckLiteralSql::String("new".into()),
                 CheckLiteralSql::String("running".into()),
@@ -3786,18 +3806,41 @@ mod tests {
         assert!(matches!(
             negative.expression,
             CheckExpressionSql::In {
-                ref column,
+                ref expression,
                 ref values,
                 negated: true
-            } if column == "priority" && values.len() == 3
+            } if expression.as_ref() == &CheckExpressionSql::Column("priority".into()) && values.len() == 3
         ));
         for sql in [
             "CREATE TABLE app.jobs (state TEXT, CHECK (state IN ()))",
             "CREATE TABLE app.jobs (state TEXT, CHECK (state IN ('ok', other)))",
-            "CREATE TABLE app.jobs (state TEXT, CHECK ('ok' IN ('ok')))",
         ] {
             assert!(parse_create_table(sql).is_err(), "accepted {sql}");
         }
+        let literal =
+            parse_add_check_constraint("ALTER TABLE app.jobs ADD CHECK ('ok' IN ('ok'))").unwrap();
+        assert!(bind_check_expression(&literal.expression, |_| None).is_ok());
+        let grouped = parse_add_check_constraint(
+            "ALTER TABLE app.jobs ADD CHECK ((priority >= 1) IN (TRUE, FALSE))",
+        )
+        .unwrap();
+        assert!(
+            bind_check_expression(&grouped.expression, |name| {
+                (name == "priority").then_some((0, ScalarType::Integer))
+            })
+            .is_ok()
+        );
+        let repeated_values = vec!["TRUE"; MAX_CHECK_IN_VALUES].join(", ");
+        let oversized = parse_add_check_constraint(&format!(
+            "ALTER TABLE app.jobs ADD CHECK ((priority >= 1) IN ({repeated_values}))"
+        ))
+        .unwrap();
+        assert!(
+            bind_check_expression(&oversized.expression, |name| {
+                (name == "priority").then_some((0, ScalarType::Integer))
+            })
+            .is_err()
+        );
         assert!(
             bind_check_expression(&negative.expression, |name| {
                 (name == "priority").then_some((0, ScalarType::Integer))
@@ -3834,7 +3877,7 @@ mod tests {
         assert_eq!(
             parsed.expression,
             CheckExpressionSql::Between {
-                column: "priority".into(),
+                expression: Box::new(CheckExpressionSql::Column("priority".into())),
                 lower: CheckLiteralSql::Number("1".into()),
                 upper: CheckLiteralSql::Number("9".into()),
                 negated: false,
@@ -3874,7 +3917,6 @@ mod tests {
         for sql in [
             "ALTER TABLE app.jobs ADD CHECK (priority BETWEEN 1)",
             "ALTER TABLE app.jobs ADD CHECK (priority BETWEEN 1 AND other)",
-            "ALTER TABLE app.jobs ADD CHECK (1 BETWEEN 1 AND 9)",
         ] {
             assert!(parse_add_check_constraint(sql).is_err(), "accepted {sql}");
         }
@@ -3883,6 +3925,16 @@ mod tests {
                 (name == "priority").then_some((0, ScalarType::Boolean))
             })
             .is_err()
+        );
+        let grouped = parse_add_check_constraint(
+            "ALTER TABLE app.jobs ADD CHECK ((priority >= 1) BETWEEN FALSE AND TRUE)",
+        )
+        .unwrap();
+        assert!(
+            bind_check_expression(&grouped.expression, |name| {
+                (name == "priority").then_some((0, ScalarType::Integer))
+            })
+            .is_ok()
         );
     }
 
