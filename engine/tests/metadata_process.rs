@@ -2282,6 +2282,37 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         AdminObjectPrivilege::References,
         AdminObjectGrantTarget::Column(created_table.column_ids[0]),
     )?;
+    let inline_reference_table = admin.execute_create_table_sql(
+        "CREATE TABLE process_admin_schema.process_admin_inline_source (payload TEXT REFERENCES process_admin_schema.process_admin_table (payload))",
+    )?;
+    assert_ne!(inline_reference_table.table_id, [0; 16]);
+    assert_eq!(inline_reference_table.column_ids.len(), 1);
+    let inline_reference_constraints = admin.list_constraints_page(
+        created_schema.identity_id,
+        inline_reference_table.table_id,
+        128,
+        None,
+    )?;
+    let inline_reference_fk = inline_reference_constraints
+        .records
+        .iter()
+        .find(|constraint| {
+            constraint.kind
+                == prdb_engine::metadata_discovery::AdministrativeConstraintKind::ForeignKey
+        })
+        .ok_or("inline REFERENCES did not publish a foreign key")?;
+    assert_eq!(
+        inline_reference_fk.column_ids,
+        inline_reference_table.column_ids
+    );
+    assert_eq!(
+        inline_reference_fk.referenced_table_id,
+        Some(created_table.table_id)
+    );
+    assert_eq!(
+        inline_reference_fk.referenced_column_ids,
+        created_table.column_ids
+    );
     let administrative_grants = admin.list_grants_page(
         created_schema.identity_id,
         created_table.table_id,
@@ -2548,9 +2579,11 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     assert!(
         String::from_utf8_lossy(&revoke_object_cli.stdout).contains("revoked object privilege")
     );
+    let dropped_inline_reference_table = admin.drop_table(inline_reference_table.table_id)?;
     let dropped_unique = admin
         .drop_unique_constraint(unique_constraint.constraint_id)
         .map_err(|error| format!("process ADMIN drop_unique_constraint failed: {error}"))?;
+    assert!(dropped_unique.commit_sequence > dropped_inline_reference_table.commit_sequence);
     assert!(dropped_unique.commit_sequence > unique_constraint.commit_sequence);
     let constraint_cli_address = address.to_string();
     let constraint_cli_credentials = admin_cancel_credentials_path

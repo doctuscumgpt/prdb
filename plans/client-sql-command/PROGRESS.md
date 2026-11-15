@@ -380,3 +380,8 @@
 - `ALTER INDEX schema.name REBUILD [USING BTREE] {UNIQUE|NONUNIQUE} (columns...)` resolves the existing logical index and binds its replacement key columns on the owning table through authenticated metadata, then dispatches the established atomic `indexes.rebuild` operation.
 - Parser rejection cases cover unqualified names, omitted uniqueness profile, unsupported methods, duplicate/empty columns, and multiple statements. The gateway/supervisor lifecycle exercises a named index definition change through `admin-sql` and confirms the new ordered column IDs and nonunique profile through authenticated metadata.
 - Focused parser and delegated process tests passed, including a focused rerun after the metadata assertions were added. Locked offline workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests. `Cargo.lock` is unchanged.
+
+## DS-SQL-26: column-level CREATE TABLE REFERENCES process coverage — verified
+
+- The authenticated gateway/supervisor lifecycle now creates `process_admin_inline_source` through `AdminClient::execute_create_table_sql` with column-level `REFERENCES`, then verifies the published foreign-key metadata through the same real control path.
+- The focused delegated-cgroup process test passed with writable `cpu memory pids` (1 passed, 0 failed). This complements the parser, authenticated AdminClient, and CLI request coverage recorded in [schema DDL progress](../ddl-schema/PROGRESS.md).

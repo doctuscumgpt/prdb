@@ -709,3 +709,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Column-level `REFERENCES schema.table (column)` now lowers to the existing one-column foreign-key definition; target key binding, REFERENCES authorization, and atomic table/FK publication remain in the existing client and storage path.
 - The parser regression failed with `InvalidStatement` before the change and passes afterward, including malformed and multi-column reference rejection. Authenticated AdminClient and CLI integration coverage passed, including authenticated target-key resolution and typed payload validation.
 - Verification: 40 DDL parser tests and focused AdminClient/CLI tests passed. Locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests and sandbox fixture, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (273 library, 174 commit, 75 transaction tests; all other targets passed). The cgroup probe reported writable `cpu memory pids`; `git diff --check` passed and Cargo.lock is unchanged.
+
+### DS-SQL-26 production process follow-up — verified
+
+- The gateway/supervisor DDL lifecycle now creates a referencing table with column-level `REFERENCES`, then reads back its FK source column, target table, and referenced column through authenticated metadata.
+- The first run exposed the expected dependency guard when teardown tried to drop the referenced UNIQUE constraint before the new FK table. Teardown now drops the dependent table first.
+- Verification: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` passed inside the delegated cgroup service with `cpu memory pids` enabled (1 passed, 0 failed). The initial column-level FK implementation's full validation is recorded above; this follow-up changes only process integration coverage and progress evidence.
