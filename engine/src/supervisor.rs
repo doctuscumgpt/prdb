@@ -1567,7 +1567,10 @@ mod tests {
             },
             observed_at,
         );
-        assert_eq!(state.operational_start_wait_buckets, [u64::MAX, 2, 2, 2, 2, 1]);
+        assert_eq!(
+            state.operational_start_wait_buckets,
+            [u64::MAX, 2, 2, 2, 2, 1]
+        );
         assert_eq!(state.analytical_start_wait_buckets, [0, 1, 0, 0, 0, 0]);
     }
 

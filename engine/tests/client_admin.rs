@@ -418,8 +418,14 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
     assert_eq!(second.records[0].age_us, 100);
     assert!(second.fence_waits.is_empty());
     assert_eq!(second.supervisor_queue.started_submissions, 1);
-    assert_eq!(second.supervisor_queue.operational_start_wait_buckets, [0; 6]);
-    assert_eq!(second.supervisor_queue.analytical_start_wait_buckets, [0; 6]);
+    assert_eq!(
+        second.supervisor_queue.operational_start_wait_buckets,
+        [0; 6]
+    );
+    assert_eq!(
+        second.supervisor_queue.analytical_start_wait_buckets,
+        [0; 6]
+    );
     assert_eq!(second.gateway_result_bytes_relayed_total, 12346);
     assert_eq!(second.gateway_result_bytes_sent_to_clients_total, 6790);
     assert_eq!(second.pinned_snapshot_count, 2);
