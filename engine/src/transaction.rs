@@ -3757,8 +3757,15 @@ impl<'db> InvocationTransaction<'db> {
         schema_id: [u8; 16],
     ) -> Result<Option<Vec<VisibleRelation>>, TransactionError> {
         let roles = self.load_catalog_role_closure(self.principal_id)?;
-        if !self.has_schema_metadata_authority(schema_id, &roles)? {
-            return Ok(None);
+        let schema_admin = self.has_schema_metadata_authority(schema_id, &roles)?;
+        if !schema_admin {
+            let (_, schema_grants) = self.load_catalog_schema_usage_grants(self.principal_id)?;
+            if !schema_grants.iter().any(|grant| {
+                grant.operation == Operation::Usage
+                    && grant.target == AccessTarget::Schema(schema_id)
+            }) {
+                return Ok(None);
+            }
         }
         let mut relation_ids = self.scan_relation_ids_for_schema(schema_id)?;
         if relation_ids.is_empty() {
@@ -3781,9 +3788,45 @@ impl<'db> InvocationTransaction<'db> {
         if relation_ids.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(TransactionError::CorruptCatalog);
         }
+        let mut visible_relation_ids = if schema_admin {
+            relation_ids.iter().copied().collect::<HashSet<_>>()
+        } else {
+            let mut visible = HashSet::new();
+            let mut continuation = None;
+            loop {
+                let Some(page) = self.list_catalog_authorized_relations(
+                    schema_id,
+                    crate::metadata_discovery::MAX_RELATIONS_PER_PAGE,
+                    continuation,
+                )?
+                else {
+                    return Ok(None);
+                };
+                visible.extend(
+                    page.relations
+                        .into_iter()
+                        .map(|relation| relation.relation_id),
+                );
+                continuation = page.continuation;
+                if continuation.is_none() {
+                    break;
+                }
+            }
+            visible
+        };
+        if !schema_admin {
+            for relation_id in &relation_ids {
+                if self.has_catalog_policy_ddl_authority(schema_id, *relation_id, &roles)? {
+                    visible_relation_ids.insert(*relation_id);
+                }
+            }
+        }
         let mut relations = Vec::new();
         let mut encoded_bytes = 0usize;
         for relation_id in relation_ids {
+            if !visible_relation_ids.contains(&relation_id) {
+                continue;
+            }
             let relation = self.read_discovery_relation(schema_id, relation_id)?;
             encoded_bytes = encoded_bytes
                 .saturating_add(16)
@@ -3805,9 +3848,7 @@ impl<'db> InvocationTransaction<'db> {
         relation_id: [u8; 16],
     ) -> Result<Option<Vec<VisibleColumn>>, TransactionError> {
         let roles = self.load_catalog_role_closure(self.principal_id)?;
-        if !self.has_schema_metadata_authority(schema_id, &roles)? {
-            return Ok(None);
-        }
+        let schema_admin = self.has_schema_metadata_authority(schema_id, &roles)?;
         let table_key = catalog_id_key(5, relation_id);
         let Some(table) = self.read_catalog_record(&table_key)? else {
             return Ok(None);
@@ -3817,6 +3858,16 @@ impl<'db> InvocationTransaction<'db> {
         }
         if catalog_id(&table, 1)? != schema_id {
             return Ok(None);
+        }
+        if !schema_admin {
+            let (_, schema_grants) = self.load_catalog_schema_usage_grants(self.principal_id)?;
+            if !schema_grants.iter().any(|grant| {
+                grant.operation == Operation::Usage
+                    && grant.target == AccessTarget::Schema(schema_id)
+            }) || !self.has_catalog_policy_ddl_authority(schema_id, relation_id, &roles)?
+            {
+                return Ok(None);
+            }
         }
         self.read_discovery_relation(schema_id, relation_id)?;
         let schema = self.load_catalog_table_schema(relation_id)?;
@@ -4536,6 +4587,80 @@ impl<'db> InvocationTransaction<'db> {
         self.read_discovery_schema(schema_id)?;
         let owner_id = catalog_id(&object, 4)?;
         Ok(owner_id == self.principal_id || roles.contains(&owner_id))
+    }
+
+    fn has_catalog_policy_ddl_authority(
+        &mut self,
+        schema_id: [u8; 16],
+        table_id: [u8; 16],
+        roles: &HashSet<[u8; 16]>,
+    ) -> Result<bool, TransactionError> {
+        let Some(schema_object) = self.read_catalog_record(&catalog_id_key(2, schema_id))? else {
+            return Ok(false);
+        };
+        let Some(table_record) = self.read_catalog_record(&catalog_id_key(5, table_id))? else {
+            return Ok(false);
+        };
+        let Some(table_object) = self.read_catalog_record(&catalog_id_key(2, table_id))? else {
+            return Err(TransactionError::CorruptCatalog);
+        };
+        if schema_object.family_code != 2
+            || catalog_u16(&schema_object, 1)? != 1
+            || table_record.family_code != 5
+            || catalog_id(&table_record, 1)? != schema_id
+            || table_object.family_code != 2
+            || catalog_u16(&table_object, 1)? != 3
+        {
+            return Ok(false);
+        }
+        let mut subjects = roles.clone();
+        subjects.insert(self.principal_id);
+        if subjects.contains(&catalog_id(&schema_object, 4)?)
+            || subjects.contains(&catalog_id(&table_object, 4)?)
+        {
+            return Ok(true);
+        }
+        for object_id in [schema_id, table_id] {
+            let grants = self
+                .pinned_snapshot()?
+                .lookup_grants_for_object(object_id)
+                .map_err(|error| match error {
+                    SnapshotError::Storage(error) => TransactionError::Storage(error),
+                    _ => TransactionError::CorruptCatalog,
+                })?;
+            self.charge_scan_work(grants.len())?;
+            for grant in grants {
+                let key = &grant.logical_key;
+                if grant.family_code != 12
+                    || key.len() != 59
+                    || key[2] != 1
+                    || key[19] != 1
+                    || key[20..36] != object_id
+                    || key[36] != 1
+                    || key[37..39] != 10u16.to_be_bytes()
+                    || key[39] != 1
+                    || key[40..42] != 1u16.to_be_bytes()
+                    || key[42] != 1
+                    || key[43..59] != object_id
+                {
+                    continue;
+                }
+                let grantor_id = catalog_id(&grant, 1)?;
+                if grantor_id == [0; 16] || catalog_u64(&grant, 2)? == 0 {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                let grantee: [u8; 16] = key[3..19]
+                    .try_into()
+                    .map_err(|_| TransactionError::CorruptCatalog)?;
+                if grantee == [0; 16] {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                if subjects.contains(&grantee) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// Return the authorized rows exposed by `information_schema.schemata`.

@@ -10,6 +10,11 @@
 - The token-authenticated resolver verifies policy DDL authority against its pinned catalog, scans policies for the selected table, and returns the matching row/cell ID. `policies.drop` remains the only mutation path and independently validates the current actor.
 - The focused delegated process lifecycle and full serial delegated-cgroup workspace suite pass for table-owner drop SQL with zero ignored tests. Locked build, formatting, warning-denied Clippy, TinyCC SDK tests/fixture, and `git diff --check` pass; Cargo.lock is unchanged.
 
+## DP-SQL-5: policy-authorized table and column metadata — verified
+
+- Administrative discovery now adds relation and column shape for schema/table owners and scoped `MANAGE_POLICIES` holders. Regular relation listings retain their previous data-grant visibility, and no row data is returned.
+- The delegated policy lifecycle passes with SELECT grants removed. Locked workspace build, format check, warning-denied Clippy, TinyCC SDK tests/fixture, and full delegated-cgroup workspace tests passed with zero ignored; `git diff --check` passed and Cargo.lock is unchanged.
+
 ## DP-SQL-1: object-level grant SQL
 
 - The SQL path reuses existing storage object grant operations; no storage authorization or publication semantics changed. Delegated process verification confirms SQL reaches the typed route; full build, lint, TinyCC, and serial delegated-cgroup suite passed.

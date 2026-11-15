@@ -2904,12 +2904,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         AdminObjectPrivilege::Usage,
         AdminObjectGrantTarget::Object,
     )?;
-    admin.grant_object_privilege(
-        transfer_owner.identity_id,
-        created_table.table_id,
-        AdminObjectPrivilege::Select,
-        AdminObjectGrantTarget::Object,
-    )?;
     admin.set_table_owner(created_table.table_id, transfer_owner.identity_id)?;
     let pre_policy_ids = admin
         .list_policies_page(created_schema.identity_id, created_table.table_id, 64, None)?
@@ -3024,12 +3018,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         transfer_owner.identity_id,
         created_schema.identity_id,
         AdminObjectPrivilege::Usage,
-        AdminObjectGrantTarget::Object,
-    )?;
-    admin.revoke_object_privilege(
-        transfer_owner.identity_id,
-        created_table.table_id,
-        AdminObjectPrivilege::Select,
         AdminObjectGrantTarget::Object,
     )?;
     let renamed_table = admin.rename_table(created_table.table_id, "process_admin_table_v2")?;

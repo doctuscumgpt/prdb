@@ -11,6 +11,11 @@
 - Added `metadata.policies.resolve` for one row/cell policy name inside a nonzero schema/table scope. The real process regression exercises the read and subsequent typed drop as a table owner; decoder coverage checks the exact kind/scope shape.
 - Focused parser, protocol, and delegated process tests pass. Locked workspace build, format check, warning-denied Clippy, TinyCC SDK tests/fixture, and full serial delegated-cgroup suite also pass with zero ignored tests. `git diff --check` passes; Cargo.lock is unchanged.
 
+## DP-SQL-5: policy-authorized metadata shape — verified
+
+- `metadata.relations.list` and `metadata.columns.list` now include a schema-visible table when the caller owns it or holds scoped `MANAGE_POLICIES`; ordinary grant-based results are preserved. The process regression confirms policy CREATE and DROP work as table owner with schema USAGE and no SELECT.
+- Focused delegated process test passed. Locked workspace build, format check, warning-denied Clippy, TinyCC SDK tests/fixture, and full delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed and Cargo.lock is unchanged.
+
 ## NP-1 dependency: bounded version-1 frame codec
 
 - Behavior: `ClientFrameDecoder` incrementally accepts fragmented/coalesced bytes, validates the fixed PDBN 1.0 header and per-kind payload limits before allocation, rejects nonzero flags/invalid sequences/zero IDs, and reports partial-frame EOF. `ClientFrame::encode` emits the fixed little-endian header. Request-ID and streamed-response sequence helpers enforce monotonic request IDs and consecutive RESULT_DATA/TERMINAL sequence numbers.

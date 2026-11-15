@@ -11,6 +11,11 @@
 - Added an authenticated, table-scoped policy-name lookup returning only the stable ID needed by DROP SQL. It requires the same ownership or scoped `MANAGE_POLICIES` authority as policy DDL; the mutation independently rechecks authorization.
 - The delegated owner lifecycle drops both row and cell policies by name. Focused parser/protocol/process tests and the full serial delegated-cgroup suite pass with zero ignored tests; format, build, Clippy, TinyCC SDK tests/fixture, and `git diff --check` pass. Cargo.lock is unchanged.
 
+## DP-SQL-5: policy-authorized metadata visibility — verified
+
+- Relation discovery combines existing data-grant visibility with policy DDL authority for table owners and scoped `MANAGE_POLICIES` holders. Declared columns are visible within the same schema/table scope, without exposing rows or policy bodies.
+- The process test failed before the change because the owner could not resolve the table without SELECT; it now passes for row/cell CREATE and DROP SQL with only schema USAGE. Locked workspace build, format check, warning-denied Clippy, TinyCC SDK tests/fixture, and full delegated-cgroup workspace tests passed with zero ignored; `git diff --check` passed and Cargo.lock is unchanged.
+
 Migrated component-owned progress entries from [storage-manager progress](../storage-manager/PROGRESS.md); evidence is preserved below.
 
 ## MD-1 dependency: pinned authorized relation listing — in progress
