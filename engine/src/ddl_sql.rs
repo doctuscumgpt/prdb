@@ -221,6 +221,8 @@ pub struct ObjectPrivilegeSql {
 pub enum CheckExpressionSql {
     Column(String),
     Literal(CheckLiteralSql),
+    CurrentPrincipalId,
+    HasRole(String),
     IsNull(String),
     IsNotNull(String),
     Compare {
@@ -231,6 +233,26 @@ pub enum CheckExpressionSql {
     Not(Box<CheckExpressionSql>),
     And(Vec<CheckExpressionSql>),
     Or(Vec<CheckExpressionSql>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyRecipientSql {
+    pub name: String,
+    pub is_role: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreatePolicySql {
+    pub schema: String,
+    pub table: String,
+    pub name: String,
+    pub is_cell: bool,
+    pub columns: Vec<String>,
+    pub operation: String,
+    pub recipients: Vec<PolicyRecipientSql>,
+    pub effect: String,
+    pub using_expression: Option<CheckExpressionSql>,
+    pub with_check_expression: Option<CheckExpressionSql>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1048,6 +1070,119 @@ fn has_duplicates(names: &[String]) -> bool {
     names.iter().collect::<std::collections::HashSet<_>>().len() != names.len()
 }
 
+/// Parse one bounded CREATE ROW/CELL POLICY statement.
+pub fn parse_create_policy(sql: &str) -> Result<CreatePolicySql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("create")?;
+    let is_cell = if parser.peek_word("cell") {
+        parser.word("cell")?;
+        true
+    } else {
+        parser.word("row")?;
+        false
+    };
+    parser.word("policy")?;
+    let name = parser.identifier()?;
+    parser.word("on")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    let columns = if is_cell && parser.peek() == Some(&Token::LeftParen) {
+        parse_column_name_list(&mut parser)?
+    } else {
+        Vec::new()
+    };
+    parser.word("for")?;
+    let operation = ["select", "insert", "update", "delete"]
+        .into_iter()
+        .find(|operation| parser.peek_word(operation))
+        .ok_or(DdlSqlError::InvalidStatement)?;
+    parser.position += 1;
+    parser.word("to")?;
+    let mut recipients = Vec::new();
+    loop {
+        let is_role = if parser.peek_word("user") {
+            parser.word("user")?;
+            false
+        } else {
+            parser.word("role")?;
+            true
+        };
+        recipients.push(PolicyRecipientSql {
+            name: parser.identifier()?,
+            is_role,
+        });
+        if parser.peek() != Some(&Token::Comma) {
+            break;
+        }
+        parser.position += 1;
+    }
+    parser.word("as")?;
+    let effect = if parser.peek_word("allow") {
+        parser.word("allow")?;
+        "allow"
+    } else {
+        parser.word("restrict")?;
+        "restrict"
+    };
+    let mut using_expression = None;
+    let mut with_check_expression = None;
+    while parser.peek_word("using") || parser.peek_word("with") {
+        if parser.peek_word("using") {
+            if using_expression.is_some() {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+            parser.word("using")?;
+            parser.take(Token::LeftParen)?;
+            using_expression = Some(parser.check_or()?);
+            parser.take(Token::RightParen)?;
+        } else {
+            if with_check_expression.is_some() {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+            parser.word("with")?;
+            parser.word("check")?;
+            parser.take(Token::LeftParen)?;
+            with_check_expression = Some(parser.check_or()?);
+            parser.take(Token::RightParen)?;
+        }
+    }
+    finish_statement(&mut parser)?;
+    let required_clauses = match operation {
+        "select" | "delete" => using_expression.is_some() && with_check_expression.is_none(),
+        "insert" => using_expression.is_none() && with_check_expression.is_some(),
+        "update" => using_expression.is_some() && with_check_expression.is_some(),
+        _ => false,
+    };
+    if recipients.is_empty()
+        || recipients.len() > crate::authorization::MAX_POLICY_SUBJECTS
+        || recipients
+            .iter()
+            .map(|recipient| (recipient.is_role, &recipient.name))
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            != recipients.len()
+        || (is_cell && (columns.is_empty() || has_duplicates(&columns)))
+        || (!is_cell && !columns.is_empty())
+        || (is_cell && operation == "delete")
+        || !required_clauses
+    {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    Ok(CreatePolicySql {
+        schema,
+        table,
+        name,
+        is_cell,
+        columns,
+        operation: operation.to_owned(),
+        recipients,
+        effect: effect.to_owned(),
+        using_expression,
+        with_check_expression,
+    })
+}
+
 /// Parse `ALTER TABLE schema.table ADD CHECK (expression)` using a bounded
 /// Boolean grammar over columns, typed comparisons, literals, and NULL tests.
 pub fn parse_add_check_constraint(sql: &str) -> Result<AddCheckConstraintSql, DdlSqlError> {
@@ -1085,6 +1220,43 @@ pub fn bind_check_expression(
     expression: &CheckExpressionSql,
     lookup: impl Fn(&str) -> Option<(usize, ScalarType)>,
 ) -> Result<crate::authorization::Expr, DdlSqlError> {
+    fn has_policy_context(expression: &CheckExpressionSql) -> bool {
+        match expression {
+            CheckExpressionSql::CurrentPrincipalId | CheckExpressionSql::HasRole(_) => true,
+            CheckExpressionSql::Compare { left, right, .. } => {
+                has_policy_context(left) || has_policy_context(right)
+            }
+            CheckExpressionSql::Not(inner) => has_policy_context(inner),
+            CheckExpressionSql::And(items) | CheckExpressionSql::Or(items) => {
+                items.iter().any(has_policy_context)
+            }
+            CheckExpressionSql::Column(_)
+            | CheckExpressionSql::Literal(_)
+            | CheckExpressionSql::IsNull(_)
+            | CheckExpressionSql::IsNotNull(_) => false,
+        }
+    }
+    if has_policy_context(expression) {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    let mut no_roles = |_: &str| None;
+    bind_expression(expression, &lookup, &mut no_roles)
+}
+
+pub fn bind_policy_expression(
+    expression: &CheckExpressionSql,
+    lookup: impl Fn(&str) -> Option<(usize, ScalarType)>,
+    role_lookup: impl FnMut(&str) -> Option<[u8; 16]>,
+) -> Result<crate::authorization::Expr, DdlSqlError> {
+    let mut role_lookup = role_lookup;
+    bind_expression(expression, &lookup, &mut role_lookup)
+}
+
+fn bind_expression(
+    expression: &CheckExpressionSql,
+    lookup: &impl Fn(&str) -> Option<(usize, ScalarType)>,
+    role_lookup: &mut impl FnMut(&str) -> Option<[u8; 16]>,
+) -> Result<crate::authorization::Expr, DdlSqlError> {
     fn scalar_compatible(left: ScalarType, right: ScalarType) -> bool {
         match (left, right) {
             (ScalarType::Decimal { scale: a, .. }, ScalarType::Decimal { scale: b, .. }) => a == b,
@@ -1099,6 +1271,8 @@ pub fn bind_check_expression(
     ) -> Option<ScalarType> {
         match expression {
             CheckExpressionSql::Column(name) => lookup(name).map(|(_, scalar_type)| scalar_type),
+            CheckExpressionSql::CurrentPrincipalId => Some(ScalarType::Uuid),
+            CheckExpressionSql::HasRole(_) => Some(ScalarType::Boolean),
             CheckExpressionSql::Literal(CheckLiteralSql::Boolean(_)) => Some(ScalarType::Boolean),
             CheckExpressionSql::Literal(CheckLiteralSql::String(_)) => Some(ScalarType::Text),
             CheckExpressionSql::Literal(CheckLiteralSql::Bytea(_)) => Some(ScalarType::Bytea),
@@ -1177,6 +1351,7 @@ pub fn bind_check_expression(
         expression: &CheckExpressionSql,
         expected: Option<ScalarType>,
         lookup: &impl Fn(&str) -> Option<(usize, ScalarType)>,
+        role_lookup: &mut impl FnMut(&str) -> Option<[u8; 16]>,
     ) -> Result<(crate::authorization::Expr, Option<ScalarType>), DdlSqlError> {
         use crate::authorization::Expr;
         use CheckExpressionSql as Sql;
@@ -1185,6 +1360,11 @@ pub fn bind_check_expression(
                 let (ordinal, scalar_type) = lookup(name).ok_or(DdlSqlError::InvalidStatement)?;
                 (Expr::Field(ordinal), Some(scalar_type))
             }
+            Sql::CurrentPrincipalId => (Expr::CurrentPrincipalId, Some(ScalarType::Uuid)),
+            Sql::HasRole(name) => (
+                Expr::HasRole(role_lookup(name).ok_or(DdlSqlError::InvalidStatement)?),
+                Some(ScalarType::Boolean),
+            ),
             Sql::Literal(literal) => {
                 let (value, scalar_type) = match literal {
                     CheckLiteralSql::Null => (None, None),
@@ -1260,9 +1440,13 @@ pub fn bind_check_expression(
                             comparison_hint(right, lookup),
                         )
                     };
-                let (left, left_type) = bind(left, right_hint, lookup)?;
-                let (right, right_type) =
-                    bind(right, left_hint.or(right_hint).or(left_type), lookup)?;
+                let (left, left_type) = bind(left, right_hint, lookup, role_lookup)?;
+                let (right, right_type) = bind(
+                    right,
+                    left_hint.or(right_hint).or(left_type),
+                    lookup,
+                    role_lookup,
+                )?;
                 if let (Some(left_type), Some(right_type)) = (left_type, right_type)
                     && !scalar_compatible(left_type, right_type)
                 {
@@ -1287,7 +1471,8 @@ pub fn bind_check_expression(
                 (expression, Some(ScalarType::Boolean))
             }
             Sql::Not(inner) => {
-                let (inner, scalar_type) = bind(inner, Some(ScalarType::Boolean), lookup)?;
+                let (inner, scalar_type) =
+                    bind(inner, Some(ScalarType::Boolean), lookup, role_lookup)?;
                 if scalar_type.is_some_and(|scalar_type| scalar_type != ScalarType::Boolean) {
                     return Err(DdlSqlError::InvalidStatement);
                 }
@@ -1296,7 +1481,8 @@ pub fn bind_check_expression(
             Sql::And(items) | Sql::Or(items) => {
                 let mut expressions = Vec::with_capacity(items.len());
                 for item in items {
-                    let (item, scalar_type) = bind(item, Some(ScalarType::Boolean), lookup)?;
+                    let (item, scalar_type) =
+                        bind(item, Some(ScalarType::Boolean), lookup, role_lookup)?;
                     if scalar_type.is_some_and(|scalar_type| scalar_type != ScalarType::Boolean) {
                         return Err(DdlSqlError::InvalidStatement);
                     }
@@ -1313,7 +1499,8 @@ pub fn bind_check_expression(
         Ok(bound)
     }
 
-    let (expression, scalar_type) = bind(expression, Some(ScalarType::Boolean), &lookup)?;
+    let (expression, scalar_type) =
+        bind(expression, Some(ScalarType::Boolean), lookup, role_lookup)?;
     if scalar_type.is_some_and(|scalar_type| scalar_type != ScalarType::Boolean) {
         return Err(DdlSqlError::InvalidStatement);
     }
@@ -1646,6 +1833,23 @@ impl Parser {
     }
 
     fn check_value_atom(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
+        if self.peek_word("current_principal_id") {
+            self.position += 1;
+            self.take(Token::LeftParen)?;
+            self.take(Token::RightParen)?;
+            return Ok(CheckExpressionSql::CurrentPrincipalId);
+        }
+        if self.peek_word("has_role") {
+            self.position += 1;
+            self.take(Token::LeftParen)?;
+            let role_name = match self.peek() {
+                Some(Token::String(name)) => name.clone(),
+                _ => return Err(DdlSqlError::InvalidStatement),
+            };
+            self.position += 1;
+            self.take(Token::RightParen)?;
+            return Ok(CheckExpressionSql::HasRole(role_name));
+        }
         if self.peek_word("null") {
             self.position += 1;
             return Ok(CheckExpressionSql::Literal(CheckLiteralSql::Null));
@@ -2421,6 +2625,39 @@ mod tests {
     }
 
     #[test]
+    fn binds_policy_context_functions_to_typed_authority_nodes() {
+        use crate::authorization::Expr;
+        let current = parse_add_check_constraint(
+            "ALTER TABLE app.records ADD CHECK (owner = CURRENT_PRINCIPAL_ID())",
+        )
+        .unwrap();
+        let expression = bind_policy_expression(
+            &current.expression,
+            |name| (name == "owner").then_some((0, ScalarType::Uuid)),
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(
+            expression,
+            Expr::Equal(Box::new(Expr::Field(0)), Box::new(Expr::CurrentPrincipalId),)
+        );
+        let role =
+            parse_add_check_constraint("ALTER TABLE app.records ADD CHECK (HAS_ROLE('payroll'))")
+                .unwrap();
+        assert_eq!(
+            bind_policy_expression(
+                &role.expression,
+                |_| None,
+                |name| { (name == "payroll").then_some([7; 16]) }
+            )
+            .unwrap(),
+            Expr::HasRole([7; 16])
+        );
+        assert!(bind_check_expression(&current.expression, |_| None).is_err());
+        assert!(bind_policy_expression(&role.expression, |_| None, |_| None).is_err());
+    }
+
+    #[test]
     fn parses_bounded_check_alterations_and_rejects_other_expression_syntax() {
         assert_eq!(
             parse_add_check_constraint("ALTER TABLE app.events ADD CHECK (active AND (deleted IS NULL OR deleted IS NOT NULL));").unwrap(),
@@ -2834,6 +3071,37 @@ mod tests {
             "GRANT SELECT (a) ON SCHEMA app TO ROLE r",
         ] {
             assert!(parse_object_privilege(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_bounded_row_and_cell_policy_sql() {
+        let row = parse_create_policy(
+            "CREATE ROW POLICY visible ON app.records FOR SELECT TO ROLE readers, USER auditor AS ALLOW USING (enabled = TRUE AND owner = CURRENT_PRINCIPAL_ID())",
+        )
+        .unwrap();
+        assert_eq!(row.name, "visible");
+        assert!(!row.is_cell);
+        assert_eq!(row.operation, "select");
+        assert_eq!(row.recipients.len(), 2);
+        assert!(row.with_check_expression.is_none());
+        let cell = parse_create_policy(
+            "CREATE CELL POLICY salary_read ON app.records (salary) FOR SELECT TO ROLE managers AS RESTRICT USING (HAS_ROLE('payroll') OR salary IS NULL);",
+        )
+        .unwrap();
+        assert!(cell.is_cell);
+        assert_eq!(cell.columns, ["salary"]);
+        for sql in [
+            "CREATE ROW POLICY p ON app.t FOR SELECT TO ROLE r AS ALLOW",
+            "CREATE ROW POLICY p ON app.t FOR UPDATE TO ROLE r AS ALLOW USING (TRUE)",
+            "CREATE ROW POLICY p ON app.t FOR SELECT TO ROLE r AS ALLOW WITH CHECK (TRUE)",
+            "CREATE CELL POLICY p ON app.t (x) FOR DELETE TO ROLE r AS ALLOW USING (TRUE)",
+            "CREATE CELL POLICY p ON app.t (x, x) FOR SELECT TO ROLE r AS ALLOW USING (TRUE)",
+            "CREATE ROW POLICY p ON app.t FOR INSERT TO ROLE r, ROLE r AS ALLOW WITH CHECK (TRUE)",
+            "CREATE ROW POLICY p ON app.t FOR SELECT TO ROLE r AS ALLOW USING (random() > 0)",
+            "CREATE ROW POLICY p ON app.t FOR SELECT TO ROLE r AS ALLOW USING (TRUE); CREATE ROLE other",
+        ] {
+            assert!(parse_create_policy(sql).is_err(), "accepted {sql}");
         }
     }
 

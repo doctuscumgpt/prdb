@@ -3262,6 +3262,113 @@ impl AdminClient {
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)
     }
 
+    pub fn execute_create_policy_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminPolicyResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_create_policy(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
+        let mut cursor = None;
+        let mut columns = Vec::new();
+        loop {
+            let page = self.list_columns_page(
+                schema_id,
+                table_id,
+                DEFAULT_METADATA_PAGE_SIZE,
+                cursor.as_deref(),
+            )?;
+            columns.extend(page.records);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let kind = if statement.is_cell {
+            AdminPolicyKind::Cell
+        } else {
+            AdminPolicyKind::Row
+        };
+        let operation = match statement.operation.as_str() {
+            "select" => AdminPolicyOperation::Select,
+            "insert" => AdminPolicyOperation::Insert,
+            "update" => AdminPolicyOperation::Update,
+            "delete" => AdminPolicyOperation::Delete,
+            _ => return Err(ClientSubmitError::InvalidAdministrativeRequest),
+        };
+        let effect = match statement.effect.as_str() {
+            "allow" => AdminPolicyEffect::Allow,
+            "restrict" => AdminPolicyEffect::Restrict,
+            _ => return Err(ClientSubmitError::InvalidAdministrativeRequest),
+        };
+        let mut recipients = Vec::with_capacity(statement.recipients.len());
+        for recipient in &statement.recipients {
+            let kind = if recipient.is_role {
+                crate::metadata_discovery::AdministrativeIdentityKind::Role
+            } else {
+                crate::metadata_discovery::AdministrativeIdentityKind::User
+            };
+            let id = self.resolve_identity_sql_name(&recipient.name, kind)?;
+            recipients.push(if recipient.is_role {
+                AdminPolicyRecipient::Role(id)
+            } else {
+                AdminPolicyRecipient::User(id)
+            });
+        }
+        let mut target_column_ids = Vec::with_capacity(statement.columns.len());
+        for column_name in &statement.columns {
+            let column = columns
+                .iter()
+                .find(|column| &column.name == column_name)
+                .ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
+            target_column_ids.push(column.column_id);
+        }
+        let bind_expression = |client: &mut Self,
+                               expression: &crate::ddl_sql::CheckExpressionSql|
+         -> Result<crate::authorization::Expr, ClientSubmitError> {
+            crate::ddl_sql::bind_policy_expression(
+                expression,
+                |name| {
+                    columns
+                        .iter()
+                        .find(|column| column.name == name)
+                        .map(|column| (column.ordinal as usize, column.scalar_type))
+                },
+                |name| {
+                    client
+                        .resolve_identity_sql_name(
+                            name,
+                            crate::metadata_discovery::AdministrativeIdentityKind::Role,
+                        )
+                        .ok()
+                },
+            )
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)
+        };
+        let using_expression = statement
+            .using_expression
+            .as_ref()
+            .map(|expression| bind_expression(self, expression))
+            .transpose()?;
+        let with_check_expression = statement
+            .with_check_expression
+            .as_ref()
+            .map(|expression| bind_expression(self, expression))
+            .transpose()?;
+        self.create_policy(AdminCreatePolicyRequest {
+            table_id,
+            name: &statement.name,
+            kind,
+            operation,
+            effect,
+            recipients: &recipients,
+            target_column_ids: &target_column_ids,
+            using_expression: using_expression.as_ref(),
+            with_check_expression: with_check_expression.as_ref(),
+        })
+    }
+
     /// Execute the supported SQL `CREATE TABLE` subset through the
     /// authenticated administrative control channel. The SQL is parsed locally
     /// into the same typed operation as `create_table`; storage remains the

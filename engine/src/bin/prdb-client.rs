@@ -227,6 +227,7 @@ fn admin_sql(
     let role_membership_statement = prdb_engine::ddl_sql::parse_role_membership(sql).ok();
     let system_privilege_statement = prdb_engine::ddl_sql::parse_system_privilege(sql).ok();
     let object_privilege_statement = prdb_engine::ddl_sql::parse_object_privilege(sql).ok();
+    let create_policy_statement = prdb_engine::ddl_sql::parse_create_policy(sql).ok();
     let drop_index_statement = prdb_engine::ddl_sql::parse_drop_index(sql).ok();
     let schema_statement = prdb_engine::ddl_sql::parse_create_schema(sql).ok();
     let rename_schema_statement = prdb_engine::ddl_sql::parse_rename_schema(sql).ok();
@@ -254,6 +255,7 @@ fn admin_sql(
         && role_membership_statement.is_none()
         && system_privilege_statement.is_none()
         && object_privilege_statement.is_none()
+        && create_policy_statement.is_none()
         && drop_index_statement.is_none()
         && schema_statement.is_none()
         && rename_schema_statement.is_none()
@@ -388,6 +390,16 @@ fn admin_sql(
             &format!("{action} object privilege"),
             &result.operation_id,
             result.commit_sequence,
+        );
+    } else if create_policy_statement.is_some() {
+        let result = client
+            .execute_create_policy_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "created policy {} (operation {}, commit {})",
+            lower_hex(&result.policy_id),
+            lower_hex(&result.operation_id),
+            result.commit_sequence
         );
     } else if drop_index_statement.is_some() {
         let result = client

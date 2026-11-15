@@ -2897,6 +2897,73 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&drop_index_cli.stderr)
     );
     assert!(String::from_utf8_lossy(&drop_index_cli.stdout).contains("dropped index"));
+    let policy_role = admin.create_role("process_policy_role")?;
+    let pre_policy_ids = admin
+        .list_policies_page(created_schema.identity_id, created_table.table_id, 64, None)?
+        .records
+        .into_iter()
+        .map(|policy| policy.policy_id)
+        .collect::<std::collections::HashSet<_>>();
+    let create_policy_sql_path = root.join("create-row-policy.sql");
+    std::fs::write(
+        &create_policy_sql_path,
+        "CREATE ROW POLICY process_visible ON process_admin_schema.process_admin_table FOR SELECT TO USER metadata_process_admin AS ALLOW USING (payload = 'visible' AND HAS_ROLE('process_policy_role'));",
+    )?;
+    let create_policy_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--sql-file",
+            create_policy_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        create_policy_sql.status.success(),
+        "CREATE POLICY SQL failed: {}",
+        String::from_utf8_lossy(&create_policy_sql.stderr)
+    );
+    assert!(String::from_utf8_lossy(&create_policy_sql.stdout).contains("created policy"));
+    let create_cell_policy_sql_path = root.join("create-cell-policy.sql");
+    std::fs::write(
+        &create_cell_policy_sql_path,
+        "CREATE CELL POLICY process_payload ON process_admin_schema.process_admin_table (payload) FOR SELECT TO ROLE process_policy_role AS RESTRICT USING (HAS_ROLE('process_policy_role'));",
+    )?;
+    let create_cell_policy_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--sql-file",
+            create_cell_policy_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        create_cell_policy_sql.status.success(),
+        "CREATE CELL POLICY SQL failed: {}",
+        String::from_utf8_lossy(&create_cell_policy_sql.stderr)
+    );
+    assert!(String::from_utf8_lossy(&create_cell_policy_sql.stdout).contains("created policy"));
+    let created_policy_ids = admin
+        .list_policies_page(created_schema.identity_id, created_table.table_id, 64, None)?
+        .records
+        .into_iter()
+        .map(|policy| policy.policy_id)
+        .filter(|policy_id| !pre_policy_ids.contains(policy_id))
+        .collect::<Vec<_>>();
+    assert_eq!(created_policy_ids.len(), 2);
+    for policy_id in created_policy_ids {
+        admin.drop_policy(policy_id)?;
+    }
+    admin.drop_role(policy_role.identity_id)?;
     let renamed_table = admin.rename_table(created_table.table_id, "process_admin_table_v2")?;
     let dropped_source_table = admin.drop_table(source_table.table_id)?;
     let dropped_table = admin.drop_table(created_table.table_id)?;

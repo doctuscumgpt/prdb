@@ -287,3 +287,7 @@
 ## DS-SQL-17: schema and table OWNER SQL — implemented
 
 - `admin-sql` recognizes bounded schema/table OWNER statements with explicit USER or ROLE targets, resolves names through authenticated metadata, and dispatches typed owner changes. Parser and delegated gateway/supervisor regressions pass; workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, and the full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored.
+
+## DP-SQL-3: bounded CREATE ROW/CELL POLICY SQL — implemented
+
+- `admin-sql` recognizes row and cell policy creation, binds identifiers/context functions, and prints the generated policy ID after dispatching the typed operation. Parser/binder and delegated process tests, workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, and full serial delegated-cgroup suite pass with zero ignored. Identity name resolution currently requires the corresponding identity-management privilege or database-admin membership; DROP policy SQL remains pending.

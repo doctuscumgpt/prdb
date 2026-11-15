@@ -844,3 +844,7 @@
 ## DS-SQL-17: ownership transfer SQL — implemented
 
 - Added AdminClient helpers that resolve schema/table names and a typed USER/ROLE identity name, then invoke existing `schemas.owner`/`tables.owner` mutations. Parser, delegated process, workspace build, format, Clippy, TinyCC, and full delegated suite checks pass.
+
+## DP-SQL-3: bounded policy creation SQL — implemented
+
+- Added `AdminClient::execute_create_policy_sql` to bind field names/ordinals, resolve recipient and `HAS_ROLE` names through authenticated identity metadata, and invoke `policies.create`. Parser, delegated process, workspace build, format, Clippy, TinyCC, and full delegated suite checks pass. The current resolver requires the corresponding identity-management privilege or database-admin membership; DROP policy SQL remains pending.
