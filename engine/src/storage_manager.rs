@@ -3265,6 +3265,37 @@ impl<'db> StorageManager<'db> {
         transaction.resolve_catalog_policy_identity_name(schema_id, table_id, name, kind)
     }
 
+    /// Resolve a grant recipient within the authenticated grant authority of
+    /// one schema or table. Unauthorized and absent identities both return None.
+    pub fn resolve_token_grant_identity_name(
+        &self,
+        token_id: [u8; 16],
+        token_secret: &[u8; TOKEN_SECRET_BYTES],
+        object_id: [u8; 16],
+        name: &str,
+        kind: crate::metadata_discovery::AdministrativeIdentityKind,
+    ) -> Result<Option<[u8; 16]>, TransactionError> {
+        let principal_id = lookup_credential_principal(self.database, token_id)?;
+        let mut invocation_id = [0; 16];
+        getrandom::fill(&mut invocation_id)
+            .map_err(|_| TransactionError::Storage("randomness unavailable".into()))?;
+        if invocation_id == [0; 16] {
+            return Err(TransactionError::Storage("randomness unavailable".into()));
+        }
+        let mut transaction = InvocationTransaction::begin_inner(
+            self.database,
+            InvocationCoordination::uncoordinated(),
+            invocation_id,
+            principal_id,
+            i64::MAX,
+            1,
+            1,
+        )?;
+        let now_us = now_unix_micros().ok_or(TransactionError::ClockUnavailable)?;
+        transaction.authenticate_credential_token(token_id, token_secret, now_us)?;
+        transaction.resolve_catalog_grant_identity_name(object_id, name, kind)
+    }
+
     /// Resolve a policy name inside an authenticated schema/table scope.
     /// Absent names and callers without policy DDL authority share `None`.
     pub fn resolve_token_policy_name(

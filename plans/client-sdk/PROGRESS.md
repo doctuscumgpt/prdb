@@ -883,3 +883,8 @@
 ## AdminClient conditional schema-drop SQL — verified
 
 - Added `execute_drop_schema_if_exists_sql`; resolved schemas follow the existing typed drop path, and absence is suppressed only after an authenticated database-administrator check. The focused parser and delegated process regressions, workspace build, format, warning-denied Clippy, and full serial delegated-cgroup workspace suite passed; see [DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+## AdminClient object-grant SQL identity scope — implemented slice
+
+- `execute_object_privilege_sql` now resolves the target schema/table first and asks the scoped grant-identity endpoint to resolve the recipient. Owners and `MANAGE_GRANTS` holders no longer need global user/role administration just to grant object privileges. The server-side grant mutation remains authoritative.
+- Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed. Focused client/process regressions remain to be added; no test suite was run for this increment.

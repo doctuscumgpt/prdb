@@ -308,3 +308,8 @@
 
 - Version 6 retains the supervisor relay counter and adds a gateway-local result payload byte counter to successful administrator pages. The gateway appends the field after the supervisor response; unauthorized responses and versions 1–5 preserve their prior shapes.
 - The strict request decoder, typed client page decoder, gateway helper, and production process lifecycle cover the added field. Workspace format, build, warning-denied all-target Clippy, TinyCC SDK tests/fixture, delegated cgroup probe, full serial delegated-cgroup workspace suite, and `git diff --check` passed. Cargo.lock is unchanged.
+
+## Scoped object-grant identity resolution — implemented slice
+
+- Added `metadata.grant_identities.resolve` to the authenticated control decoder and session dispatch. It returns a single user/role ID only to the schema/table owner, inherited `MANAGE_GRANTS` holder, or database administrator; absent and unauthorized names share `null`.
+- Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed. Focused protocol and process regressions remain to be added; no test suite was run for this increment.

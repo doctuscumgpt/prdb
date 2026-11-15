@@ -451,6 +451,11 @@ pub enum ClientAdminRead {
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
         policy_scope: Option<([u8; 16], [u8; 16])>,
     },
+    ResolveGrantIdentityName {
+        object_id: [u8; 16],
+        name: String,
+        kind: crate::metadata_discovery::AdministrativeIdentityKind,
+    },
     ResolvePolicyName {
         schema_id: [u8; 16],
         table_id: [u8; 16],
@@ -525,6 +530,11 @@ pub enum ClientAdminCommand {
         name: String,
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
         policy_scope: Option<([u8; 16], [u8; 16])>,
+    },
+    ResolveGrantIdentityName {
+        object_id: [u8; 16],
+        name: String,
+        kind: crate::metadata_discovery::AdministrativeIdentityKind,
     },
     ResolvePolicyName {
         schema_id: [u8; 16],
@@ -782,6 +792,15 @@ pub fn decode_client_admin_read(payload: &[u8]) -> Result<ClientAdminRead, Clien
             name,
             kind,
             policy_scope,
+        }),
+        ClientAdminCommand::ResolveGrantIdentityName {
+            object_id,
+            name,
+            kind,
+        } => Ok(ClientAdminRead::ResolveGrantIdentityName {
+            object_id,
+            name,
+            kind,
         }),
         ClientAdminCommand::ResolvePolicyName {
             schema_id,
@@ -1145,6 +1164,37 @@ pub fn decode_client_admin_command(
                 name,
                 kind,
                 policy_scope: Some((schema_id, table_id)),
+            })
+        }
+        Some("read")
+            if version == Some(1)
+                && operation.as_deref() == Some("metadata.grant_identities.resolve") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            if args.len() != 3 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let object_id = decode_lower_hex_id(
+                &args
+                    .remove("object_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let name = args.remove("name").ok_or(ClientControlError::MissingKey)?;
+            let kind = match args.remove("kind").as_deref() {
+                Some("user") => crate::metadata_discovery::AdministrativeIdentityKind::User,
+                Some("role") => crate::metadata_discovery::AdministrativeIdentityKind::Role,
+                _ => return Err(ClientControlError::InvalidPrepare),
+            };
+            if !args.is_empty() || object_id == [0; 16] {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            Ok(ClientAdminCommand::ResolveGrantIdentityName {
+                object_id,
+                name,
+                kind,
             })
         }
         Some("read")
@@ -4274,6 +4324,38 @@ impl ClientConnectionSession {
                     ),
                 }
                 .map_err(ClientSessionError::Storage)?;
+                let payload = match identity_id {
+                    Some(identity_id) => format!(
+                        "{{\"identity_id\":\"{}\"}}",
+                        encode_lower_hex_id(identity_id)
+                    ),
+                    None => "{\"identity_id\":null}".to_owned(),
+                };
+                self.json_response(request.request_id, payload.into_bytes())
+            }
+            ClientAdminCommand::ResolveGrantIdentityName {
+                object_id,
+                name,
+                kind,
+            } => {
+                let token_id = self
+                    .authenticated
+                    .as_ref()
+                    .ok_or(ClientSessionError::AuthenticationRequired)?
+                    .token_id();
+                let token_secret = self
+                    .token_secret
+                    .as_ref()
+                    .ok_or(ClientSessionError::AuthenticationRequired)?;
+                let identity_id = storage
+                    .resolve_token_grant_identity_name(
+                        token_id,
+                        token_secret,
+                        object_id,
+                        &name,
+                        kind,
+                    )
+                    .map_err(ClientSessionError::Storage)?;
                 let payload = match identity_id {
                     Some(identity_id) => format!(
                         "{{\"identity_id\":\"{}\"}}",
