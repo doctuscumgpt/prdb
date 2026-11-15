@@ -334,8 +334,8 @@
 
 ## DD-5: retained row/schema across version pressure — verified slice
 
-- Extended `storage_manager_adds_column_and_backfills_existing_rows` to hold a pre-DDL redb snapshot while the current schema receives a defaulted column and 64 successive committed row versions. The old snapshot still decodes its original schema and row; the current view decodes the newest row, and a later nullable-column backfill preserves that row value.
-- Verification: the focused commit integration test passed. This covers retained-version pressure at the logical snapshot layer; physical compaction/reclamation behavior and long-duration reader pressure remain open.
+- Extended `storage_manager_adds_column_and_backfills_existing_rows` to hold both a pre-DDL redb snapshot and a post-ADD snapshot of the backfilled default while committing 64 successive row versions. The old snapshot decodes its original schema/row, the post-DDL snapshot still decodes the stored `ready` default, and the current view decodes the newest row; a later nullable-column backfill preserves that value.
+- Verification: the focused commit integration test and the complete serial delegated-cgroup workspace suite passed with zero ignored tests. `retained_reader_blocks_compaction_until_release_then_reclaims_deleted_pages` separately verifies redb compaction is blocked while a reader is held and reclaims pages after release. Longer-duration catalog DDL/read pressure remains open.
 
 ## 2026-11-16 integrated acceptance refresh
 

@@ -6150,6 +6150,7 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
     );
     let added = added_result?;
     assert_eq!(added.schema_version, 2);
+    let retained_default_snapshot = database.begin_read()?;
     for generation in 0..64u8 {
         let churn_invocation = id(0x80 + generation);
         let mut churn = storage.begin_invocation(churn_invocation, actor, 9_999, 2, 1024)?;
@@ -6182,6 +6183,33 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
         &retained_row.payload,
     )?;
     assert_eq!(retained_tuple.values, vec![Some(ScalarValue::Integer(7))]);
+    let retained_default_rows = prdb_engine::snapshot::RowSnapshot::new(retained_default_snapshot);
+    let retained_default_row = RowRecord::decode(
+        &retained_default_rows
+            .get(&table_row_key(table.table_id, row_id.row))?
+            .ok_or("post-DDL retained reader lost its backfilled row")?,
+    )?;
+    let retained_default_tuple = decode_tuple(
+        &[
+            prdb_engine::tuple::ColumnSchema {
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+            },
+            prdb_engine::tuple::ColumnSchema {
+                scalar_type: ScalarType::Text,
+                nullable: false,
+            },
+        ],
+        added.schema_version,
+        &retained_default_row.payload,
+    )?;
+    assert_eq!(
+        retained_default_tuple.values,
+        vec![
+            Some(ScalarValue::Integer(7)),
+            Some(ScalarValue::Text("ready".to_owned())),
+        ]
+    );
     let stale_result = stale_writer.commit();
     assert!(
         matches!(

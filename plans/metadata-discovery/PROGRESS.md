@@ -269,4 +269,4 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 integrated acceptance refresh
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. All three authenticated metadata process tests passed, including the MD-6 schema-owner transfer between administrative policy pages.
-- SQL binding/execution and continuation across process restart remain unimplemented as recorded in the component plan.
+- Confined SQL SELECT over all three public projections, including predicates/limits and API parity, is covered by the maintained fixture acceptance recorded in SM-6 / MD-4 above. Cursor continuation across process restart remains unimplemented.
