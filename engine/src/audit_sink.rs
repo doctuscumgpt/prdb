@@ -45,6 +45,85 @@ impl From<std::io::Error> for AuditSinkError {
     }
 }
 
+/// Offline diagnostic for the optional durable audit JSONL sink.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuditSinkStatus {
+    pub configured: bool,
+    pub pending_events: u64,
+    pub oldest_pending_age_us: Option<u64>,
+}
+
+/// Summarize pending JSONL deliveries from one bounded audit snapshot.
+/// Intended for offline maintenance, not a high-frequency runtime endpoint.
+pub fn status<D: ReadableDatabase>(
+    database: &D,
+    now_us: i64,
+) -> Result<AuditSinkStatus, AuditSinkError> {
+    if now_us <= 0 {
+        return Err(AuditSinkError::Storage);
+    }
+    let read = database.begin_read().map_err(|_| AuditSinkError::Storage)?;
+    let audit = read
+        .open_table(AUDIT)
+        .map_err(|_| AuditSinkError::Storage)?;
+    let stats = read
+        .open_table(STATS)
+        .map_err(|_| AuditSinkError::Storage)?;
+    let sink_id = stats
+        .get(SINK_ID_KEY)
+        .map_err(|_| AuditSinkError::Storage)?;
+    if sink_id.is_none() {
+        return Ok(AuditSinkStatus {
+            configured: false,
+            pending_events: 0,
+            oldest_pending_age_us: None,
+        });
+    }
+    if sink_id.is_some_and(|value| value.value().len() != 60) {
+        return Err(AuditSinkError::Storage);
+    }
+    if audit.len().map_err(|_| AuditSinkError::Storage)? > MAX_AUDIT_EVENTS as u64 {
+        return Err(AuditSinkError::Storage);
+    }
+    let mut pending_events = 0u64;
+    let mut oldest_pending_at_us = None::<i64>;
+    for entry in audit.iter().map_err(|_| AuditSinkError::Storage)? {
+        let (key, value) = entry.map_err(|_| AuditSinkError::Storage)?;
+        let event_id: [u8; 16] = key
+            .value()
+            .try_into()
+            .map_err(|_| AuditSinkError::Storage)?;
+        let event = AuditEvent::decode(value.value()).map_err(|_| AuditSinkError::Storage)?;
+        if event.event_id != event_id {
+            return Err(AuditSinkError::Storage);
+        }
+        let mut marker_key = DELIVERED_PREFIX.to_vec();
+        marker_key.extend_from_slice(&event_id);
+        let marker = stats
+            .get(marker_key.as_slice())
+            .map_err(|_| AuditSinkError::Storage)?;
+        match marker.as_ref().map(|value| value.value()) {
+            None => {
+                pending_events = pending_events.saturating_add(1);
+                oldest_pending_at_us =
+                    Some(oldest_pending_at_us.map_or(event.occurred_at_us, |oldest| {
+                        oldest.min(event.occurred_at_us)
+                    }));
+            }
+            Some(b"1") => {}
+            Some(_) => return Err(AuditSinkError::Storage),
+        }
+    }
+    let oldest_pending_age_us = oldest_pending_at_us.map(|timestamp| {
+        u64::try_from(now_us.saturating_sub(timestamp).max(0)).unwrap_or(u64::MAX)
+    });
+    Ok(AuditSinkStatus {
+        configured: true,
+        pending_events,
+        oldest_pending_age_us,
+    })
+}
+
 /// Deliver up to `max_events` pending AUD1 records to a mode-0600 JSONL file.
 ///
 /// A path change resets delivery markers and replays the retained audit

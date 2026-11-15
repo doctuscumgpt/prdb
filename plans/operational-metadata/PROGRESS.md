@@ -291,3 +291,9 @@
 - Implementation: the gateway increments the counter only after a successful `write_all` for a RESULT_DATA frame and appends it only to a successful administrator runtime response. Runtime-list versions 1–5 retain their response shapes.
 - Regression: gateway unit coverage verifies byte accounting, saturation, successful-response-only field injection, and malformed JSON rejection. Typed TCP pagination and protocol decoder tests cover version 6. The real gateway/supervisor CLI lifecycle verifies the counter includes the delivered `QUERY_READY` payload.
 - Verification: focused gateway, AdminClient, and protocol decoder tests passed; the delegated gateway/supervisor lifecycle passed and confirmed the actual ready-event byte count. Workspace format, build, warning-denied all-target Clippy, maintained TinyCC SDK tests and sandbox fixture, delegated cgroup probe, and full serial delegated-cgroup workspace suite passed. `git diff --check` passed; Cargo.lock is unchanged.
+
+## OM-6 offline audit sink backlog status — implemented slice
+
+- `prdb-maintain audit-sink-status --instance-dir PATH` reports whether the optional JSONL sink is configured, the retained pending-event count, and the oldest pending-event age. It validates the bounded audit records and delivery markers from a read-only instance opened under the exclusive lock; it emits no event IDs, principals, sink path, or event contents.
+- The status scan is an explicit offline maintenance command rather than part of high-frequency runtime pages. With no sink identity installed, it reports an unconfigured sink and zero pending deliveries.
+- Verification: workspace build, formatting check, warning-denied all-target Clippy, and `git diff --check` pass. No tests were added or run. Cargo.lock is unchanged.

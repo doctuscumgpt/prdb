@@ -441,6 +441,16 @@ impl ReadOnlyStorageInstance {
     pub fn database(&self) -> &ReadOnlyDatabase {
         &self.database
     }
+
+    /// Inspect optional audit JSONL delivery progress from this exclusively
+    /// locked offline snapshot.
+    pub fn audit_sink_status(
+        &self,
+    ) -> Result<crate::audit_sink::AuditSinkStatus, crate::audit_sink::AuditSinkError> {
+        let now_us = crate::credentials::now_unix_micros()
+            .ok_or(crate::audit_sink::AuditSinkError::Storage)?;
+        crate::audit_sink::status(&self.database, now_us)
+    }
 }
 
 /// Convert a catalog-v1 READY instance from an independently verified backup

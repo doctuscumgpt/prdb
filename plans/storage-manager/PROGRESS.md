@@ -1,5 +1,10 @@
 # Storage Manager Progress
 
+## Offline audit sink status — implemented slice
+
+- `ReadOnlyStorageInstance::audit_sink_status` summarizes the optional JSONL sink's configuration, retained pending event count, and oldest pending age while the instance is exclusively locked and validated read-only. It checks AUD1 key/payload identities and delivery marker values and returns only aggregate fields.
+- Verification: workspace build, formatting check, warning-denied all-target Clippy, and `git diff --check` pass. No tests were added or run; Cargo.lock is unchanged.
+
 ## DS-SQL-27: atomic self-referencing CREATE TABLE key — verified
 
 - The CREATE path resolves local target column names against generated column IDs and the same-statement PRIMARY KEY/UNIQUE definitions, then stores the FK target ID and dependency atomically with the table. It avoids treating the new table as an externally referenced table for write-epoch and REFERENCES authority checks.

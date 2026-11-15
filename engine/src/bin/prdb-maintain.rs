@@ -25,6 +25,8 @@ fn print_help() {
          Writes a durable checksummed audit archive before pruning its events.\n\
          prdb-maintain audit-verify --archive PATH\n\
          Verifies one private PRA1 archive without opening a database.\n\
+         prdb-maintain audit-sink-status --instance-dir PATH\n\
+         Reports pending optional JSONL audit deliveries from an offline snapshot.\n\
          prdb-maintain backup --instance-dir PATH --output-dir PATH\n\
          Copies and validates a READY instance while holding its exclusive lock.\n\
          prdb-maintain backup-verify --backup-dir PATH\n\
@@ -43,7 +45,7 @@ fn print_help() {
          Validates the active READY image and any private staged image.\n\
          prdb-maintain migration-discard-stage --instance-dir PATH --backup-dir PATH\n\
          Discards staging only when active bytes match the verified backup.\n\
-         Stop gateway and supervisor services before compact, audit-archive, backup, restore, redb-format-upgrade, migration-backup, migration-apply, or migration-discard-stage."
+         Stop gateway and supervisor services before compact, audit-archive, audit-sink-status, backup, restore, redb-format-upgrade, migration-backup, migration-apply, or migration-discard-stage."
     );
 }
 
@@ -59,7 +61,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut args = std::env::args_os().skip(1);
     let operation = args.next().ok_or(
-        "operation is required: compact, audit-archive, audit-verify, backup, backup-verify, restore, redb-format-upgrade, migration-backup, migration-apply, inspect, migration-inspect, or migration-discard-stage",
+        "operation is required: compact, audit-archive, audit-verify, audit-sink-status, backup, backup-verify, restore, redb-format-upgrade, migration-backup, migration-apply, inspect, migration-inspect, or migration-discard-stage",
     )?;
     if operation == "audit-verify" {
         if args.next().as_deref() != Some(std::ffi::OsStr::new("--archive")) {
@@ -90,6 +92,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         let records = prdb_engine::audit_archive::decode(&bytes)?;
         println!("verified events={}", records.len());
+        return Ok(());
+    }
+    if operation == "audit-sink-status" {
+        if args.next().as_deref() != Some(std::ffi::OsStr::new("--instance-dir")) {
+            return Err("--instance-dir PATH is required".into());
+        }
+        let instance_dir = PathBuf::from(args.next().ok_or("instance directory is required")?);
+        if args.next().is_some() {
+            return Err("unexpected trailing arguments".into());
+        }
+        let instance = ReadOnlyStorageInstance::open(instance_dir)?;
+        let status = instance.audit_sink_status()?;
+        match status.oldest_pending_age_us {
+            Some(age_us) => println!(
+                "configured={} pending_events={} oldest_pending_age_us={age_us}",
+                status.configured, status.pending_events
+            ),
+            None => println!(
+                "configured={} pending_events={} oldest_pending_age_us=none",
+                status.configured, status.pending_events
+            ),
+        }
         return Ok(());
     }
     if operation == "backup-verify" {
