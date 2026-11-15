@@ -303,16 +303,31 @@ fn admin_sql(
         &mut administrator.token_secret,
     )
     .map_err(|error| error.to_string())?;
-    if create_index_statement.is_some() {
-        let result = client
-            .execute_create_index_sql(sql)
-            .map_err(|error| error.to_string())?;
-        println!(
-            "created index {} (operation {}, commit {})",
-            lower_hex(&result.index_id),
-            lower_hex(&result.operation_id),
-            result.commit_sequence
-        );
+    if let Some(statement) = create_index_statement {
+        if statement.if_not_exists {
+            match client
+                .execute_create_index_if_not_exists_sql(sql)
+                .map_err(|error| error.to_string())?
+            {
+                Some(result) => println!(
+                    "created index {} (operation {}, commit {})",
+                    lower_hex(&result.index_id),
+                    lower_hex(&result.operation_id),
+                    result.commit_sequence
+                ),
+                None => println!("index already exists; no operation committed"),
+            }
+        } else {
+            let result = client
+                .execute_create_index_sql(sql)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "created index {} (operation {}, commit {})",
+                lower_hex(&result.index_id),
+                lower_hex(&result.operation_id),
+                result.commit_sequence
+            );
+        }
     } else if let Some(statement) = create_identity_statement {
         let result = client
             .execute_create_identity_sql(sql)

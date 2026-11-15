@@ -496,3 +496,8 @@
 
 - `admin-sql` accepts the conditional create modifier. It creates absent relations through `tables.create`; an existing relation is an administrator-only no-op that commits no operation and does not compare definitions.
 - Parser and gateway/supervisor process tests cover create, administrator repeat, and non-administrator denial despite table ALTER metadata visibility. Focused tests pass; Cargo.lock is unchanged.
+
+## CREATE INDEX IF NOT EXISTS — verified extension
+
+- `admin-sql` supports the conditional modifier for ordinary and unique indexes. Existing indexes no-op only for a database administrator; absent indexes follow the normal typed index-create path.
+- Parser and gateway/supervisor process tests pass for initial create and administrator repeat. Cargo.lock is unchanged.

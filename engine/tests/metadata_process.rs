@@ -1998,7 +1998,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let dependency_sql_path = root.join("column-dependency.sql");
     std::fs::write(
         &dependency_sql_path,
-        "CREATE INDEX process_label_index ON process_admin_schema.process_admin_table (label);",
+        "CREATE INDEX IF NOT EXISTS process_label_index ON process_admin_schema.process_admin_table (label);",
     )?;
     let create_dependency_index = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
@@ -2019,6 +2019,30 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         create_dependency_index.status.success(),
         "admin-sql CREATE INDEX failed: {}",
         String::from_utf8_lossy(&create_dependency_index.stderr)
+    );
+    let repeated_create_dependency_index = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            dependency_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        repeated_create_dependency_index.status.success(),
+        "admin-sql repeated CREATE INDEX IF NOT EXISTS failed: {}",
+        String::from_utf8_lossy(&repeated_create_dependency_index.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&repeated_create_dependency_index.stdout)
+            .contains("index already exists; no operation committed")
     );
     let table_index_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([

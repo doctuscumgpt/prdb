@@ -814,3 +814,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `CREATE TABLE IF NOT EXISTS` to the bounded authenticated SQL parser and CLI. Absent relations use the existing typed create path; an existing relation is a database-administrator-only no-op with no DDL outcome, and its definition is not compared or reconciled.
 - Updated schema DDL, client SDK, and client SQL contracts. Parser and gateway/supervisor process coverage verifies table creation, administrator repeat no-op, and rejection of the no-op for a non-administrator even when that actor has table-scoped ALTER. Targeted parser and delegated process tests pass; Cargo.lock is unchanged.
+
+## DS-SQL-41: CREATE INDEX IF NOT EXISTS — verified extension
+
+- Added `CREATE [UNIQUE] INDEX IF NOT EXISTS` to bounded SQL. An absent index uses the regular typed build; a resolved existing logical index no-ops only for a database administrator, with no DDL outcome and no definition reconciliation.
+- Updated schema DDL, client SDK, and client SQL contracts. Parser and production gateway/supervisor lifecycle tests cover conditional creation and administrator repeat no-op. Targeted tests pass; Cargo.lock is unchanged.

@@ -181,6 +181,7 @@ pub struct CreateIndexSql {
     pub name: String,
     pub columns: Vec<String>,
     pub unique: bool,
+    pub if_not_exists: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -614,6 +615,14 @@ pub fn parse_create_index(sql: &str) -> Result<CreateIndexSql, DdlSqlError> {
         false
     };
     parser.word("index")?;
+    let if_not_exists = if parser.peek_word("if") {
+        parser.word("if")?;
+        parser.word("not")?;
+        parser.word("exists")?;
+        true
+    } else {
+        false
+    };
     let name = parser.identifier()?;
     parser.word("on")?;
     let schema = parser.identifier()?;
@@ -644,6 +653,7 @@ pub fn parse_create_index(sql: &str) -> Result<CreateIndexSql, DdlSqlError> {
         name,
         columns,
         unique,
+        if_not_exists,
     })
 }
 
@@ -3315,6 +3325,7 @@ mod tests {
                 name: "employee_department".into(),
                 columns: vec!["department_id".into(), "name".into()],
                 unique: false,
+                if_not_exists: false,
             }
         );
         let unique = parse_create_index(
@@ -3323,6 +3334,12 @@ mod tests {
         .unwrap();
         assert!(unique.unique);
         assert_eq!(unique.columns, ["department_id", "name"]);
+        let conditional = parse_create_index(
+            "CREATE UNIQUE INDEX IF NOT EXISTS employee_department ON app.employees (department_id, name)",
+        )
+        .unwrap();
+        assert!(conditional.unique);
+        assert!(conditional.if_not_exists);
         for sql in [
             "CREATE INDEX employee_department ON employees (department_id)",
             "CREATE INDEX employee_department ON app.employees USING HASH (department_id)",

@@ -3191,6 +3191,39 @@ impl AdminClient {
     ) -> Result<AdminIndexResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_create_index(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if statement.if_not_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        self.create_index_from_sql_statement(statement)
+    }
+
+    /// Execute `CREATE [UNIQUE] INDEX IF NOT EXISTS`. Existing indexes are
+    /// administrator-only no-ops; absent indexes use the regular typed path.
+    pub fn execute_create_index_if_not_exists_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<Option<AdminIndexResult>, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_create_index(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if !statement.if_not_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        match self.resolve_index_sql_name(&statement.schema, &statement.name) {
+            Ok(_) => {
+                self.list_runtime_invocations_page(1, None)?;
+                Ok(None)
+            }
+            Err(ClientSubmitError::InvalidAdministrativeRequest) => {
+                self.create_index_from_sql_statement(statement).map(Some)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn create_index_from_sql_statement(
+        &mut self,
+        statement: crate::ddl_sql::CreateIndexSql,
+    ) -> Result<AdminIndexResult, ClientSubmitError> {
         let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
         let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
         let mut cursor = None;
