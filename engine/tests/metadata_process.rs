@@ -2253,11 +2253,8 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     drop(transfer_client_credentials);
     drop(renewed_credentials);
     let admin_owner_id_text = encode_id_hex(&admin_user_id);
-    admin.grant_object_privilege(
-        transfer_owner.identity_id,
-        created_schema.identity_id,
-        AdminObjectPrivilege::Alter,
-        AdminObjectGrantTarget::Object,
+    admin.execute_object_privilege_sql(
+        "GRANT ALTER ON SCHEMA process_admin_schema TO USER process_table_owner_renamed",
     )?;
     let schema_alter_sql_path = root.join("schema-alter-grantee.sql");
     for (old_name, new_name) in [
@@ -2290,11 +2287,8 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         );
         assert!(String::from_utf8_lossy(&command.stdout).contains("renamed schema"));
     }
-    admin.revoke_object_privilege(
-        transfer_owner.identity_id,
-        created_schema.identity_id,
-        AdminObjectPrivilege::Alter,
-        AdminObjectGrantTarget::Object,
+    admin.execute_object_privilege_sql(
+        "REVOKE ALTER ON SCHEMA process_admin_schema FROM USER process_table_owner_renamed",
     )?;
     admin.set_schema_owner(created_schema.identity_id, transfer_owner.identity_id)?;
     let schema_id_text = encode_id_hex(&created_schema.identity_id);
