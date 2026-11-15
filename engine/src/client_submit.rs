@@ -2550,16 +2550,27 @@ impl AdminClient {
         name: &str,
         owner_id: [u8; 16],
     ) -> Result<AdminIdentityResult, ClientSubmitError> {
+        self.create_schema_with_owner(name, Some(owner_id))
+    }
+
+    fn create_schema_with_owner(
+        &mut self,
+        name: &str,
+        owner_id: Option<[u8; 16]>,
+    ) -> Result<AdminIdentityResult, ClientSubmitError> {
         validate_admin_name(name)?;
-        validate_admin_id(owner_id)?;
-        let (result, schema_id) = self.execute_admin_operation(
-            "schemas.create",
-            format!(
+        if let Some(owner_id) = owner_id {
+            validate_admin_id(owner_id)?;
+        }
+        let arguments = match owner_id {
+            Some(owner_id) => format!(
                 "{{\"name\":\"{name}\",\"owner_id\":\"{}\"}}",
                 lower_hex(&owner_id)
             ),
-            Some("schema_id"),
-        )?;
+            None => format!("{{\"name\":\"{name}\"}}"),
+        };
+        let (result, schema_id) =
+            self.execute_admin_operation("schemas.create", arguments, Some("schema_id"))?;
         Ok(AdminIdentityResult {
             operation_id: result.operation_id,
             identity_id: schema_id.ok_or(ClientSubmitError::InvalidResponse)?,
@@ -3668,17 +3679,18 @@ impl AdminClient {
         let statement = crate::ddl_sql::parse_create_schema(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
         let owner_id = match statement.owner {
-            crate::ddl_sql::CreateSchemaOwnerSql::Id(owner_id) => owner_id,
+            crate::ddl_sql::CreateSchemaOwnerSql::CurrentUser => None,
+            crate::ddl_sql::CreateSchemaOwnerSql::Id(owner_id) => Some(owner_id),
             crate::ddl_sql::CreateSchemaOwnerSql::Identity { name, is_role } => {
                 let kind = if is_role {
                     crate::metadata_discovery::AdministrativeIdentityKind::Role
                 } else {
                     crate::metadata_discovery::AdministrativeIdentityKind::User
                 };
-                self.resolve_identity_sql_name(&name, kind)?
+                Some(self.resolve_identity_sql_name(&name, kind)?)
             }
         };
-        self.create_schema(&statement.schema, owner_id)
+        self.create_schema_with_owner(&statement.schema, owner_id)
     }
 
     pub fn execute_rename_schema_sql(

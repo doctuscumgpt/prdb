@@ -805,7 +805,16 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
         ),
         Ok(ClientAdminCommand::PrepareCreateSchema {
             name: "app_data".into(),
-            owner_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            owner_id: Some([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
+        })
+    );
+    assert_eq!(
+        decode_client_admin_command(
+            br#"{"phase":"prepare","operation_version":1,"operation":"schemas.create","arguments":{"name":"app_data"}}"#
+        ),
+        Ok(ClientAdminCommand::PrepareCreateSchema {
+            name: "app_data".into(),
+            owner_id: None,
         })
     );
     assert!(decode_client_admin_command(

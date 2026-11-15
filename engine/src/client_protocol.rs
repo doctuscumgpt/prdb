@@ -190,7 +190,7 @@ enum PendingAdminAction {
     },
     CreateSchema {
         name: String,
-        owner_id: [u8; 16],
+        owner_id: Option<[u8; 16]>,
     },
     DropSchema {
         schema_id: [u8; 16],
@@ -608,7 +608,7 @@ pub enum ClientAdminCommand {
     },
     PrepareCreateSchema {
         name: String,
-        owner_id: [u8; 16],
+        owner_id: Option<[u8; 16]>,
     },
     PrepareDropSchema {
         schema_id: [u8; 16],
@@ -1504,11 +1504,10 @@ pub fn decode_client_admin_command(
             }
             let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
             let name = args.remove("name").ok_or(ClientControlError::MissingKey)?;
-            let owner_id = decode_lower_hex_id(
-                &args
-                    .remove("owner_id")
-                    .ok_or(ClientControlError::MissingKey)?,
-            )?;
+            let owner_id = args
+                .remove("owner_id")
+                .map(|value| decode_lower_hex_id(&value))
+                .transpose()?;
             if !is_canonical_admin_principal_name(&name) || !args.is_empty() {
                 return Err(ClientControlError::InvalidPrepare);
             }
@@ -5836,6 +5835,7 @@ impl ClientConnectionSession {
                         )
                     }
                     PendingAdminAction::CreateSchema { name, owner_id } => {
+                        let owner_id = owner_id.unwrap_or(actor_id);
                         let created = storage
                             .create_schema(
                                 operation_id,

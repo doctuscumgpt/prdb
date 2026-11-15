@@ -38,6 +38,7 @@ pub struct CreateSchemaSql {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateSchemaOwnerSql {
+    CurrentUser,
     Id([u8; 16]),
     Identity { name: String, is_role: bool },
 }
@@ -920,7 +921,7 @@ pub fn parse_object_privilege(sql: &str) -> Result<ObjectPrivilegeSql, DdlSqlErr
     })
 }
 
-/// Parse bounded schema creation with a UUID or explicitly typed owner.
+/// Parse bounded schema creation with an optional UUID or typed owner.
 pub fn parse_create_schema(sql: &str) -> Result<CreateSchemaSql, DdlSqlError> {
     if sql.is_empty() || sql.len() > MAX_DDL_BYTES || sql.as_bytes().contains(&0) {
         return Err(DdlSqlError::InvalidStatement);
@@ -932,26 +933,30 @@ pub fn parse_create_schema(sql: &str) -> Result<CreateSchemaSql, DdlSqlError> {
     parser.word("create")?;
     parser.word("schema")?;
     let schema = parser.identifier()?;
-    parser.word("authorization")?;
-    let owner = if let Some(Token::String(value)) = parser.peek() {
-        let owner_id = parse_uuid(value)?;
-        if owner_id == [0; 16] {
-            return Err(DdlSqlError::InvalidStatement);
-        }
-        parser.position += 1;
-        CreateSchemaOwnerSql::Id(owner_id)
-    } else {
-        let is_role = if parser.peek_word("user") {
-            parser.word("user")?;
-            false
+    let owner = if parser.peek_word("authorization") {
+        parser.word("authorization")?;
+        if let Some(Token::String(value)) = parser.peek() {
+            let owner_id = parse_uuid(value)?;
+            if owner_id == [0; 16] {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+            parser.position += 1;
+            CreateSchemaOwnerSql::Id(owner_id)
         } else {
-            parser.word("role")?;
-            true
-        };
-        CreateSchemaOwnerSql::Identity {
-            name: parser.identifier()?,
-            is_role,
+            let is_role = if parser.peek_word("user") {
+                parser.word("user")?;
+                false
+            } else {
+                parser.word("role")?;
+                true
+            };
+            CreateSchemaOwnerSql::Identity {
+                name: parser.identifier()?,
+                is_role,
+            }
         }
+    } else {
+        CreateSchemaOwnerSql::CurrentUser
     };
     finish_statement(&mut parser)?;
     Ok(CreateSchemaSql { schema, owner })
@@ -2505,6 +2510,10 @@ mod tests {
             ])
         );
         assert_eq!(
+            parse_create_schema("CREATE SCHEMA app;").unwrap().owner,
+            CreateSchemaOwnerSql::CurrentUser
+        );
+        assert_eq!(
             parse_create_schema("CREATE SCHEMA app AUTHORIZATION USER app_owner")
                 .unwrap()
                 .owner,
@@ -2523,7 +2532,6 @@ mod tests {
             }
         );
         for sql in [
-            "CREATE SCHEMA app",
             "CREATE SCHEMA app AUTHORIZATION app_owner",
             "CREATE SCHEMA app AUTHORIZATION GROUP app_owner",
             "CREATE SCHEMA app AUTHORIZATION '00000000-0000-0000-0000-000000000000'",

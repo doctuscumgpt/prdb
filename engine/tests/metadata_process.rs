@@ -2152,6 +2152,47 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&drop_owned_schema_sql.stderr)
     );
     assert!(String::from_utf8_lossy(&drop_owned_schema_sql.stdout).contains("dropped schema"));
+    std::fs::write(&schema_owner_sql_path, "CREATE SCHEMA process_sql_default;")?;
+    let create_default_owned_schema_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--sql-file",
+            schema_owner_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        create_default_owned_schema_sql.status.success(),
+        "CREATE SCHEMA current-user SQL failed: {}",
+        String::from_utf8_lossy(&create_default_owned_schema_sql.stderr)
+    );
+    std::fs::write(
+        &schema_owner_sql_path,
+        "DROP SCHEMA process_sql_default RESTRICT;",
+    )?;
+    let drop_default_owned_schema_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--sql-file",
+            schema_owner_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        drop_default_owned_schema_sql.status.success(),
+        "DROP SCHEMA current-user cleanup failed: {}",
+        String::from_utf8_lossy(&drop_default_owned_schema_sql.stderr)
+    );
     admin.set_schema_owner(created_schema.identity_id, admin_user_id)?;
     let transferred = admin.set_table_owner(created_table.table_id, transfer_owner.identity_id)?;
     assert!(transferred.commit_sequence > 0);

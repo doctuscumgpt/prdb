@@ -5,6 +5,12 @@
 - `admin-sql` accepts typed `AUTHORIZATION USER owner_name` and `AUTHORIZATION ROLE owner_name`; it resolves the identity over authenticated metadata and then uses the existing `schemas.create` operation. The explicit UUID owner form remains available.
 - Verification: focused parser and authenticated TCP tests passed for both USER and ROLE resolution, as did the gateway/supervisor process lifecycle that creates and drops a schema owned by a renamed user. Locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK/fixture, delegated cgroup probe, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed; Cargo.lock is unchanged.
 
+## Default CREATE SCHEMA owner
+
+- `admin-sql` now accepts `CREATE SCHEMA name` and omits the owner from the typed request; the authenticated server assigns the current actor as owner. UUID, USER, and ROLE clauses continue to work.
+- Parser, protocol decoder, and authenticated request coverage verifies the owner field is omitted, so the server assigns the actor at START. The gateway/supervisor process lifecycle executes and removes a default-owned schema through `admin-sql`.
+- Verification: focused tests, workspace build, format check, warning-denied Clippy, TinyCC SDK/fixture, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `Cargo.lock` is unchanged.
+
 ## Implemented
 
 - `CREATE ROW|CELL POLICY` now resolves recipients and `HAS_ROLE` names through a table/schema scoped identity read. Storage returns no identity for absent names or callers without database-admin, ownership, or scoped `MANAGE_POLICIES` authority. Policy DDL authority now exposes the target relation's declared shape through authenticated metadata; the process regression grants schema USAGE but no SELECT to the table owner.

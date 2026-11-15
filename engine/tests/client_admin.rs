@@ -1465,6 +1465,33 @@ fn admin_client_creates_and_drops_schemas() {
             )
             .as_bytes(),
         );
+        let prepare_default_owner = read_frame(&mut stream, &mut decoder);
+        let default_owner_payload =
+            String::from_utf8(prepare_default_owner.payload.clone()).unwrap();
+        assert!(default_owner_payload.contains("\"operation\":\"schemas.create\""));
+        assert!(
+            default_owner_payload.contains("\"arguments\":{\"name\":\"current_owner_schema\"}")
+        );
+        respond(
+            &mut stream,
+            &prepare_default_owner,
+            format!(
+                "{{\"operation_id\":\"{}\",\"state\":\"prepared\"}}",
+                hex(&[0x67; 16])
+            )
+            .as_bytes(),
+        );
+        let start = read_frame(&mut stream, &mut decoder);
+        respond(
+            &mut stream,
+            &start,
+            format!(
+                "{{\"operation_id\":\"{}\",\"outcome\":\"committed\",\"schema_id\":\"{}\",\"commit_sequence\":\"48\"}}",
+                hex(&[0x67; 16]),
+                "a5".repeat(16)
+            )
+            .as_bytes(),
+        );
     });
 
     let mut secret = [5; 32];
@@ -1490,6 +1517,10 @@ fn admin_client_creates_and_drops_schemas() {
         .execute_create_schema_sql("CREATE SCHEMA role_schema AUTHORIZATION ROLE app_admin;")
         .unwrap();
     assert_eq!(role_schema.identity_id, [0xa4; 16]);
+    let current_owner_schema = client
+        .execute_create_schema_sql("CREATE SCHEMA current_owner_schema;")
+        .unwrap();
+    assert_eq!(current_owner_schema.identity_id, [0xa5; 16]);
     server.join().unwrap();
 }
 
