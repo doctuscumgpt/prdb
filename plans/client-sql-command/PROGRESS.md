@@ -228,3 +228,9 @@
 - The existing `CREATE TABLE` command accepts multiple table-level `FOREIGN KEY (...) REFERENCES schema.table (...)` clauses and routes them through `AdminClient` metadata binding and one typed create operation.
 - Regression coverage verifies parser constraints, authenticated metadata/typed request binding, and atomic storage publication. No obsolete tests were identified; negative parser tests still cover unsupported/malformed input.
 - Focused parser, authenticated client, and storage checks passed. Locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests and sandbox fixture build, and the complete serial delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed.
+
+
+## admin-sql: ALTER COLUMN SET/DROP DEFAULT — implemented
+
+- Added bounded single-statement parsing for `ALTER TABLE schema.table ALTER COLUMN column SET DEFAULT literal` and `DROP DEFAULT`, including fail-closed malformed and multiple-statement cases.
+- The command validates syntax before credentials/network and routes accepted statements through the authenticated AdminClient. Parser/binder, TCP binding, CLI process recognition, locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests/fixture, and complete serial delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed.

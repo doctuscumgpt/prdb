@@ -3322,6 +3322,46 @@ impl AdminClient {
         self.alter_column_nullability(table_id, column.column_id, statement.nullable)
     }
 
+    /// Set or drop a typed column default after resolving its declared type
+    /// and nullability through authenticated metadata.
+    pub fn execute_alter_column_default_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_alter_column_default(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
+        let mut cursor = None;
+        let mut visible_columns = Vec::new();
+        loop {
+            let page = self.list_columns_page(
+                schema_id,
+                table_id,
+                DEFAULT_METADATA_PAGE_SIZE,
+                cursor.as_deref(),
+            )?;
+            visible_columns.extend(page.records);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let column = visible_columns
+            .iter()
+            .find(|column| column.name == statement.column)
+            .ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
+        let Some(literal) = statement.default else {
+            return self.drop_column_default(table_id, column.column_id);
+        };
+        let default = crate::ddl_sql::bind_default_literal(&literal, column.scalar_type)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if matches!(default, AdminColumnDefault::Null) && !column.nullable {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        self.set_column_default(table_id, column.column_id, column.scalar_type, default)
+    }
+
     /// Append one bounded SQL column definition through authenticated control
     /// metadata and the existing typed add-column operation.
     pub fn execute_add_column_sql(

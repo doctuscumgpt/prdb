@@ -617,4 +617,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Implementation: the typed create operation carries FK source-column names and target constraint IDs. Storage publishes the new table, FK constraint/object/dependency records, target table write-epoch changes, audit, and durable outcome atomically. Commit validation guards target catalog records and checks authority.
 - Regression: parser tests cover multiple FK clauses and invalid arity, duplicate/unknown columns, qualification, and multiple statements. Authenticated TCP coverage checks metadata binding and typed arguments; storage coverage verifies atomic catalog/dependency/epoch publication and startup validation. No stale tests were found; existing negative syntax tests remain relevant.
 - Validation: focused parser, authenticated AdminClient, and storage regressions passed. Locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests, sandbox fixture build, and the full serial delegated-cgroup workspace suite passed (all sandbox/process tests enabled, zero ignored); `git diff --check` passed.
-- Next: implement a planned operational database increment after inspecting its component plan; preserve DDL as the priority when the roadmap calls for schema work.
+- Next: expose the existing typed current-default operations through bounded ALTER COLUMN SQL, preserving future-insert-only semantics.
+
+
+## DS-13: ALTER COLUMN SET/DROP DEFAULT SQL — implemented
+
+- Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). Qualified `SET DEFAULT`/`DROP DEFAULT` resolves the declared column type and nullability through authenticated metadata, binds one supported typed literal, and uses the existing typed operations; existing rows remain unchanged.
+- Red evidence: the new parser regression failed to compile because the bounded ALTER DEFAULT parser did not exist.
+- Implementation: parser and binder support typed defaults, including exact DECIMAL scaling, and the authenticated client/CLI route to existing storage operations.
+- Verification: parser/binder, authenticated AdminClient TCP, and CLI pre-credential tests passed. Locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests and sandbox fixture, and the complete serial delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed.

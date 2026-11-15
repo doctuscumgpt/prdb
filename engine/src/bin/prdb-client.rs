@@ -230,6 +230,7 @@ fn admin_sql(
     let add_check_constraint_statement = prdb_engine::ddl_sql::parse_add_check_constraint(sql).ok();
     let alter_column_nullability_statement =
         prdb_engine::ddl_sql::parse_alter_column_nullability(sql).ok();
+    let alter_column_default_statement = prdb_engine::ddl_sql::parse_alter_column_default(sql).ok();
     let add_column_statement = prdb_engine::ddl_sql::parse_add_column(sql).ok();
     let rename_column_statement = prdb_engine::ddl_sql::parse_rename_column(sql).ok();
     let drop_column_statement = prdb_engine::ddl_sql::parse_drop_column(sql).ok();
@@ -244,6 +245,7 @@ fn admin_sql(
         && drop_constraint_statement.is_none()
         && add_check_constraint_statement.is_none()
         && alter_column_nullability_statement.is_none()
+        && alter_column_default_statement.is_none()
         && add_column_statement.is_none()
         && rename_column_statement.is_none()
         && drop_column_statement.is_none()
@@ -343,6 +345,21 @@ fn admin_sql(
         println!(
             "{} NOT NULL on column {} (operation {}, commit {})",
             if statement.nullable { "dropped" } else { "set" },
+            statement.column,
+            lower_hex(&result.operation_id),
+            result.commit_sequence
+        );
+    } else if let Some(statement) = alter_column_default_statement {
+        let result = client
+            .execute_alter_column_default_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "{} default on column {} (operation {}, commit {})",
+            if statement.default.is_some() {
+                "set"
+            } else {
+                "dropped"
+            },
             statement.column,
             lower_hex(&result.operation_id),
             result.commit_sequence

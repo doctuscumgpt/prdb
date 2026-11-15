@@ -96,6 +96,24 @@ pub struct AlterColumnNullabilitySql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AlterColumnDefaultSql {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
+    pub default: Option<DefaultLiteralSql>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DefaultLiteralSql {
+    Null,
+    CurrentPrincipalId,
+    Boolean(bool),
+    Number(String),
+    String(String),
+    Bytea(Vec<u8>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AddColumnSql {
     pub schema: String,
     pub table: String,
@@ -880,6 +898,76 @@ pub fn parse_alter_column_nullability(sql: &str) -> Result<AlterColumnNullabilit
     })
 }
 
+/// Parse `ALTER TABLE ... ALTER COLUMN ... SET|DROP DEFAULT` with a
+/// context-independent literal. The authenticated client binds it to the
+/// declared column type after metadata resolution.
+pub fn parse_alter_column_default(sql: &str) -> Result<AlterColumnDefaultSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("table")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("alter")?;
+    parser.word("column")?;
+    let column = parser.identifier()?;
+    let default = if parser.peek_word("set") {
+        parser.word("set")?;
+        parser.word("default")?;
+        Some(parser.default_literal()?)
+    } else {
+        parser.word("drop")?;
+        parser.word("default")?;
+        None
+    };
+    finish_statement(&mut parser)?;
+    Ok(AlterColumnDefaultSql {
+        schema,
+        table,
+        column,
+        default,
+    })
+}
+
+pub fn bind_default_literal(
+    literal: &DefaultLiteralSql,
+    scalar_type: ScalarType,
+) -> Result<AdminColumnDefault, DdlSqlError> {
+    let value = match literal {
+        DefaultLiteralSql::Null => return Ok(AdminColumnDefault::Null),
+        DefaultLiteralSql::CurrentPrincipalId if scalar_type == ScalarType::Uuid => {
+            return Ok(AdminColumnDefault::CurrentPrincipalId);
+        }
+        DefaultLiteralSql::Boolean(value) if scalar_type == ScalarType::Boolean => {
+            ScalarValue::Boolean(*value)
+        }
+        DefaultLiteralSql::Number(value) => match scalar_type {
+            ScalarType::SmallInt => ScalarValue::SmallInt(value.parse().map_err(invalid)?),
+            ScalarType::Integer => ScalarValue::Integer(value.parse().map_err(invalid)?),
+            ScalarType::BigInt => ScalarValue::BigInt(value.parse().map_err(invalid)?),
+            ScalarType::Decimal { precision, scale } => {
+                ScalarValue::Decimal(parse_decimal_coefficient(value, precision, scale)?)
+            }
+            ScalarType::Date => ScalarValue::Date(value.parse().map_err(invalid)?),
+            ScalarType::TimestampTz => ScalarValue::TimestampTz(value.parse().map_err(invalid)?),
+            _ => return Err(DdlSqlError::InvalidStatement),
+        },
+        DefaultLiteralSql::String(value) => match scalar_type {
+            ScalarType::Text => ScalarValue::Text(value.clone()),
+            ScalarType::Varchar { max_chars } if value.chars().count() <= max_chars as usize => {
+                ScalarValue::Varchar(value.clone())
+            }
+            ScalarType::Uuid => ScalarValue::Uuid(parse_uuid(value)?),
+            _ => return Err(DdlSqlError::InvalidStatement),
+        },
+        DefaultLiteralSql::Bytea(value) if scalar_type == ScalarType::Bytea => {
+            ScalarValue::Bytea(value.clone())
+        }
+        _ => return Err(DdlSqlError::InvalidStatement),
+    };
+    Ok(AdminColumnDefault::Literal(value))
+}
+
 /// Parse one typed `ALTER TABLE schema.table ADD COLUMN` definition.
 pub fn parse_add_column(sql: &str) -> Result<AddColumnSql, DdlSqlError> {
     let mut parser = statement_parser(sql)?;
@@ -1309,6 +1397,60 @@ impl Parser {
         };
         self.position += consumed_tokens;
         Ok(AdminColumnDefault::Literal(value))
+    }
+
+    fn default_literal(&mut self) -> Result<DefaultLiteralSql, DdlSqlError> {
+        if self.peek_word("null") {
+            self.position += 1;
+            return Ok(DefaultLiteralSql::Null);
+        }
+        if self.peek_word("current_principal_id") {
+            self.position += 1;
+            self.take(Token::LeftParen)?;
+            self.take(Token::RightParen)?;
+            return Ok(DefaultLiteralSql::CurrentPrincipalId);
+        }
+        if self.peek_word("true") || self.peek_word("false") {
+            let value = self.peek_word("true");
+            self.position += 1;
+            return Ok(DefaultLiteralSql::Boolean(value));
+        }
+        if self.peek_word("x") {
+            self.position += 1;
+            let Some(Token::String(hex)) = self.peek() else {
+                return Err(DdlSqlError::InvalidStatement);
+            };
+            let value = decode_hex(hex)?;
+            self.position += 1;
+            return Ok(DefaultLiteralSql::Bytea(value));
+        }
+        if let Some(Token::String(value)) = self.peek() {
+            let value = value.clone();
+            self.position += 1;
+            return Ok(DefaultLiteralSql::String(value));
+        }
+        if matches!(
+            self.peek(),
+            Some(Token::Number(_) | Token::Minus | Token::Plus)
+        ) {
+            let value = self.signed_number()?;
+            if value
+                .split_once('.')
+                .is_some_and(|(_, fraction)| fraction.len() > 38)
+            {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+            if self
+                .peek()
+                .is_some_and(|token| matches!(token, Token::Minus | Token::Plus))
+            {
+                self.position += 2;
+            } else {
+                self.position += 1;
+            }
+            return Ok(DefaultLiteralSql::Number(value));
+        }
+        Err(DdlSqlError::InvalidStatement)
     }
 
     fn signed_number(&mut self) -> Result<String, DdlSqlError> {
@@ -1854,6 +1996,80 @@ mod tests {
                 parse_alter_column_nullability(sql).is_err(),
                 "accepted {sql}"
             );
+        }
+    }
+
+    #[test]
+    fn parses_typed_column_default_alterations() {
+        assert_eq!(
+            parse_alter_column_default(
+                "ALTER TABLE app.events ALTER COLUMN amount SET DEFAULT -12.30"
+            )
+            .unwrap(),
+            AlterColumnDefaultSql {
+                schema: "app".into(),
+                table: "events".into(),
+                column: "amount".into(),
+                default: Some(DefaultLiteralSql::Number("-12.30".into())),
+            }
+        );
+        assert_eq!(
+            parse_alter_column_default("ALTER TABLE app.events ALTER COLUMN amount DROP DEFAULT;")
+                .unwrap()
+                .default,
+            None
+        );
+        for (sql, expected) in [
+            (
+                "ALTER TABLE app.events ALTER COLUMN label SET DEFAULT 'ready'",
+                DefaultLiteralSql::String("ready".into()),
+            ),
+            (
+                "ALTER TABLE app.events ALTER COLUMN enabled SET DEFAULT TRUE",
+                DefaultLiteralSql::Boolean(true),
+            ),
+            (
+                "ALTER TABLE app.events ALTER COLUMN payload SET DEFAULT X'00ff'",
+                DefaultLiteralSql::Bytea(vec![0, 255]),
+            ),
+            (
+                "ALTER TABLE app.events ALTER COLUMN owner SET DEFAULT CURRENT_PRINCIPAL_ID()",
+                DefaultLiteralSql::CurrentPrincipalId,
+            ),
+            (
+                "ALTER TABLE app.events ALTER COLUMN label SET DEFAULT NULL",
+                DefaultLiteralSql::Null,
+            ),
+        ] {
+            assert_eq!(
+                parse_alter_column_default(sql).unwrap().default,
+                Some(expected)
+            );
+        }
+        let decimal = DefaultLiteralSql::Number("-12.30".into());
+        assert_eq!(
+            bind_default_literal(
+                &decimal,
+                ScalarType::Decimal {
+                    precision: 5,
+                    scale: 2,
+                },
+            )
+            .unwrap(),
+            AdminColumnDefault::Literal(ScalarValue::Decimal(-1230))
+        );
+        assert!(bind_default_literal(&decimal, ScalarType::Integer).is_err());
+        assert!(
+            bind_default_literal(&DefaultLiteralSql::CurrentPrincipalId, ScalarType::Integer)
+                .is_err()
+        );
+        for sql in [
+            "ALTER TABLE app.events ALTER COLUMN label SET DEFAULT",
+            "ALTER TABLE app.events ALTER COLUMN label DROP NOT NULL",
+            "ALTER TABLE events ALTER COLUMN label DROP DEFAULT",
+            "ALTER TABLE app.events ALTER COLUMN label DROP DEFAULT; ALTER TABLE app.events ALTER COLUMN label DROP DEFAULT",
+        ] {
+            assert!(parse_alter_column_default(sql).is_err(), "accepted {sql}");
         }
     }
 

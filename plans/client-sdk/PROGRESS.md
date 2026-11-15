@@ -785,3 +785,9 @@
 - `AdminClient::execute_create_table_sql` resolves each referenced schema, table, ordered columns, and visible PRIMARY KEY/UNIQUE constraint through the authenticated metadata channel, then sends table and FK definitions in one typed create request.
 - Storage validates `REFERENCES` authority and atomically publishes FK records, target dependencies, and referenced-table write-epoch changes alongside the new table.
 - Authenticated TCP and storage regressions passed. Locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests and sandbox fixture build, and the complete serial delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed.
+
+
+## SDK: ALTER COLUMN SET/DROP DEFAULT SQL — implemented
+
+- Added an authenticated SQL helper that resolves the relation and column metadata, binds a context-typed default literal, and calls the existing typed set/drop operation. Existing rows are not rewritten.
+- Parser/binder, authenticated TCP, CLI recognition, locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests/fixture, and complete serial delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed.

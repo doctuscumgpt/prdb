@@ -1821,6 +1821,82 @@ fn admin_client_binds_nullability_sql_to_metadata_ids() {
 }
 
 #[test]
+fn admin_client_binds_column_default_sql_to_metadata_type() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        for (operation, body) in [
+            (
+                "metadata.schemas.list",
+                format!(
+                    r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                    "a3".repeat(16)
+                ),
+            ),
+            (
+                "metadata.relations.list",
+                format!(
+                    r#"{{"relations":[{{"relation_id":"{}","name":"employees"}}],"next_cursor":null}}"#,
+                    "b4".repeat(16)
+                ),
+            ),
+            (
+                "metadata.columns.list",
+                format!(
+                    r#"{{"columns":[{{"column_id":"{}","name":"priority","ordinal":0,"scalar_type":"integer","nullable":false}}],"next_cursor":null}}"#,
+                    "c5".repeat(16)
+                ),
+            ),
+        ] {
+            let request = read_frame(&mut stream, &mut decoder);
+            assert!(
+                String::from_utf8_lossy(&request.payload)
+                    .contains(&format!(r#""operation":"{operation}""#))
+            );
+            respond(&mut stream, &request, body.as_bytes());
+        }
+        let prepare = read_frame(&mut stream, &mut decoder);
+        let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+        assert!(payload.contains(r#""operation":"tables.set_column_default""#));
+        assert!(payload.contains(&format!(
+            r#""arguments":{{"table_id":"{}","column_id":"{}","type":"integer","default":{{"kind":"literal","value":"42"}} }}"#,
+            "b4".repeat(16),
+            "c5".repeat(16)
+        )));
+        respond(
+            &mut stream,
+            &prepare,
+            format!(
+                r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                "d7".repeat(16)
+            )
+            .as_bytes(),
+        );
+        let start = read_frame(&mut stream, &mut decoder);
+        respond(&mut stream, &start, format!(r#"{{"operation_id":"{}","outcome":"committed","table_id":"{}","column_id":"{}","commit_sequence":"80"}}"#, "d7".repeat(16), "b4".repeat(16), "c5".repeat(16)).as_bytes());
+    });
+
+    let mut secret = [5; 32];
+    let mut client = AdminClient::connect_authenticated_with_timeout(
+        address,
+        [6; 16],
+        &mut secret,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let altered = client
+        .execute_alter_column_default_sql(
+            "ALTER TABLE app.employees ALTER COLUMN priority SET DEFAULT 42",
+        )
+        .unwrap();
+    assert_eq!(altered.commit_sequence, 80);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_adds_typed_column_from_sql_names() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
