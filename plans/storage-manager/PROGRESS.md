@@ -1091,3 +1091,8 @@
 ## ID-SQL-6: system privilege SQL dispatch
 
 - SQL invokes the existing system privilege lifecycle, which restricts grants and revokes to database administrators. Delegated process and full workspace suites pass.
+
+## DP-2: atomic expansion of table-wide data grants — verified
+
+- Added a bounded storage target that reads the table's current column records and emits per-column grant and dependency changes in the same authorized catalog commit. Revocation checks every target before preparing writes and checks for surviving grants once across the target set. Audit target IDs remain within the AUD1 maximum for wide tables.
+- Verification: the delegated SQL regression confirms current columns receive grants and a column added afterward does not. Locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, release-profile validation, cgroup probe, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored. `git diff --check` passed; Cargo.lock is unchanged.

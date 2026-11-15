@@ -2548,6 +2548,7 @@ fn decode_object_grant_prepare(
             }
             crate::storage_manager::ObjectGrantTarget::Columns(target_ids)
         }
+        "all_columns" => crate::storage_manager::ObjectGrantTarget::AllColumns,
         _ => return Err(ClientControlError::InvalidPrepare),
     };
     if !args.is_empty() {

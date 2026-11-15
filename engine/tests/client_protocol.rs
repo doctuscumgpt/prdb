@@ -656,6 +656,14 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
             grant: true,
         })
     );
+    let expanded_table_grant = br#"{"phase":"prepare","operation_version":1,"operation":"objects.grant","arguments":{"grantee_id":"000102030405060708090a0b0c0d0e0f","object_id":"101112131415161718191a1b1c1d1e1f","privilege":"select","target_scope":"all_columns"}}"#;
+    assert!(matches!(
+        decode_client_admin_command(expanded_table_grant),
+        Ok(ClientAdminCommand::PrepareObjectGrant {
+            target: prdb_engine::storage_manager::ObjectGrantTarget::AllColumns,
+            ..
+        })
+    ));
     assert!(decode_client_admin_command(
         br#"{"phase":"prepare","operation_version":1,"operation":"objects.grant","arguments":{"grantee_id":"000102030405060708090a0b0c0d0e0f","object_id":"101112131415161718191a1b1c1d1e1f","privilege":"all","target_scope":"object","target_id":"101112131415161718191a1b1c1d1e1f"}}"#
     )

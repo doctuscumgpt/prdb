@@ -704,6 +704,7 @@ pub enum ObjectGrantTarget {
     Object,
     Column([u8; 16]),
     Columns(Vec<[u8; 16]>),
+    AllColumns,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -11062,6 +11063,48 @@ impl<'db> StorageManager<'db> {
             .map_err(table_lifecycle_commit_error)?;
         let (scope, target_ids) = match target {
             ObjectGrantTarget::Object => (1u16, vec![object_id]),
+            ObjectGrantTarget::AllColumns => {
+                if object_kind != 3 || !matches!(privilege.code(), 2 | 3 | 4 | 6) {
+                    return Err(CommitError::InvalidCatalog);
+                }
+                let prefix = 6u16.to_be_bytes();
+                let mut column_ids = Vec::new();
+                let mut scanned = 0usize;
+                for entry in catalog
+                    .range(prefix.as_slice()..)
+                    .map_err(|error| CommitError::Storage(error.to_string()))?
+                {
+                    let (key, value) =
+                        entry.map_err(|error| CommitError::Storage(error.to_string()))?;
+                    let key = key.value();
+                    if !key.starts_with(&prefix) {
+                        break;
+                    }
+                    scanned += 1;
+                    if scanned > crate::snapshot::MAX_CATALOG_FAMILY_SCAN
+                        || key.len() != 19
+                        || key[2] != 1
+                    {
+                        return Err(CommitError::InvalidCatalog);
+                    }
+                    let column_id: [u8; 16] = key[3..19]
+                        .try_into()
+                        .map_err(|_| CommitError::InvalidCatalog)?;
+                    if read_catalog_id(key, value.value(), 6, 1)
+                        .map_err(table_lifecycle_commit_error)?
+                        == object_id
+                    {
+                        column_ids.push(column_id);
+                        if column_ids.len() > crate::tuple::MAX_COLUMNS {
+                            return Err(CommitError::InvalidCatalog);
+                        }
+                    }
+                }
+                if column_ids.is_empty() {
+                    return Err(CommitError::InvalidCatalog);
+                }
+                (2, column_ids)
+            }
             ObjectGrantTarget::Column(column_id) => {
                 if object_kind != 3 || column_id == [0; 16] {
                     return Err(CommitError::InvalidCatalog);
@@ -11131,6 +11174,38 @@ impl<'db> StorageManager<'db> {
             }
             current_grants.push(current);
         }
+        let other_grant_targets = if grant {
+            HashSet::new()
+        } else {
+            let grant_prefix = 12u16.to_be_bytes();
+            let target_id_set = target_ids.iter().copied().collect::<HashSet<_>>();
+            let mut remaining_targets = HashSet::new();
+            for entry in catalog
+                .range(grant_prefix.as_slice()..)
+                .map_err(|error| CommitError::Storage(error.to_string()))?
+            {
+                let (key, _) = entry.map_err(|error| CommitError::Storage(error.to_string()))?;
+                let key = key.value();
+                if !key.starts_with(&grant_prefix) {
+                    break;
+                }
+                if key.len() == 59
+                    && key[2] == 1
+                    && key[3..19] == grantee_id
+                    && !grant_keys
+                        .iter()
+                        .any(|grant_key| grant_key.as_slice() == key)
+                {
+                    let target_id: [u8; 16] = key[43..59]
+                        .try_into()
+                        .map_err(|_| CommitError::InvalidCatalog)?;
+                    if target_id_set.contains(&target_id) {
+                        remaining_targets.insert(target_id);
+                    }
+                }
+            }
+            remaining_targets
+        };
         let mut writes = Vec::with_capacity(target_ids.len() * 2 + 1);
         for ((target_id, grant_key), current_grant) in
             target_ids.iter().zip(&grant_keys).zip(current_grants)
@@ -11172,31 +11247,7 @@ impl<'db> StorageManager<'db> {
             let needs_dependency = if grant {
                 current_dependency.is_none()
             } else {
-                let prefix = 12u16.to_be_bytes();
-                let mut another_grant = false;
-                for entry in catalog
-                    .range(prefix.as_slice()..)
-                    .map_err(|error| CommitError::Storage(error.to_string()))?
-                {
-                    let (key, _) =
-                        entry.map_err(|error| CommitError::Storage(error.to_string()))?;
-                    let key = key.value();
-                    if !key.starts_with(&prefix) {
-                        break;
-                    }
-                    if key.len() == 59
-                        && key[2] == 1
-                        && key[3..19] == grantee_id
-                        && key[43..59] == *target_id
-                        && !grant_keys
-                            .iter()
-                            .any(|grant_key| grant_key.as_slice() == key)
-                    {
-                        another_grant = true;
-                        break;
-                    }
-                }
-                current_dependency.is_some() && !another_grant
+                current_dependency.is_some() && !other_grant_targets.contains(target_id)
             };
             if needs_dependency {
                 let edge = new_dependency_write(grantee_id, *target_id, 5)
@@ -11225,7 +11276,9 @@ impl<'db> StorageManager<'db> {
         drop(read);
 
         audit_event.target_ids = vec![grantee_id, object_id];
-        audit_event.target_ids.extend(target_ids);
+        if target_ids.len() + audit_event.target_ids.len() <= crate::audit::MAX_TARGETS {
+            audit_event.target_ids.extend(target_ids);
+        }
         audit_event.target_ids.sort_unstable();
         audit_event.target_ids.dedup();
         self.commit_authorized_object_grant_ddl(

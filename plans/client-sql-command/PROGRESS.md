@@ -297,6 +297,12 @@
 - The delegated process lifecycle verifies an overlapping grant is rejected without a partial write, then checks successful multi-column grant discovery and complete batch revoke.
 - Verification: focused protocol and cross-process metadata tests; locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, release-profile validation, cgroup probe, and complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored. `git diff --check` passed; Cargo.lock is unchanged.
 
+## DP-SQL-2: table-wide data grant expansion — verified
+
+- Unqualified table `SELECT`, `INSERT`, `UPDATE`, and `REFERENCES` bind to a compact `all_columns` operation so storage expands the privilege at its catalog snapshot. A service-process regression checks grants on existing columns and confirms a later-added column receives none.
+- Red/green: the regression first failed because the SQL path emitted a table object grant; it now passes through the separate gateway and supervisor processes.
+- Verification: locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, release-profile validation, cgroup capability probe, and complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored. `git diff --check` passed; Cargo.lock is unchanged.
+
 ## DS-SQL-17: schema and table OWNER SQL — implemented
 
 - `admin-sql` recognizes bounded schema/table OWNER statements with explicit USER or ROLE targets, resolves names through authenticated metadata, and dispatches typed owner changes. Parser and delegated gateway/supervisor regressions pass; workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, and the full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored.

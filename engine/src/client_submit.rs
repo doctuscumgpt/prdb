@@ -346,6 +346,7 @@ pub enum AdminObjectGrantTarget {
     Object,
     Column([u8; 16]),
     Columns(Vec<[u8; 16]>),
+    AllColumns,
 }
 
 impl AdminTokenResult {
@@ -2514,6 +2515,12 @@ impl AdminClient {
                     encoded_ids
                 )
             }
+            AdminObjectGrantTarget::AllColumns => format!(
+                "{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",\"privilege\":\"{}\",\"target_scope\":\"all_columns\"}}",
+                lower_hex(&grantee_id),
+                lower_hex(&object_id),
+                privilege.as_wire_name()
+            ),
         };
         self.execute_admin_operation(operation, arguments, None)
             .map(|(result, _)| result)
@@ -3219,6 +3226,11 @@ impl AdminClient {
         } else {
             schema_id
         };
+        let expands_table_data_grant = statement.table_name.is_some()
+            && matches!(
+                statement.privilege.as_str(),
+                "select" | "insert" | "update" | "references"
+            );
         let target = if !statement.column_names.is_empty() {
             let table_id = object_id;
             let mut column_ids = Vec::with_capacity(statement.column_names.len());
@@ -3252,6 +3264,8 @@ impl AdminClient {
             } else {
                 AdminObjectGrantTarget::Columns(column_ids)
             }
+        } else if expands_table_data_grant {
+            AdminObjectGrantTarget::AllColumns
         } else {
             AdminObjectGrantTarget::Object
         };

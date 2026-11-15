@@ -1698,6 +1698,65 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             && grant.target_scope
                 == prdb_engine::metadata_discovery::AdministrativeGrantTargetScope::Column
     }));
+    std::fs::write(
+        &object_privilege_sql_path,
+        "GRANT SELECT ON TABLE process_ddl.records TO USER process_member_user;",
+    )?;
+    let grant_all_existing_columns = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            object_privilege_sql_path_text,
+        ])
+        .output()?;
+    assert!(
+        grant_all_existing_columns.status.success(),
+        "table-wide SELECT GRANT SQL failed: {}",
+        String::from_utf8_lossy(&grant_all_existing_columns.stderr)
+    );
+    let table_wide_grants =
+        admin.list_grants_page(ddl_schema.identity_id, ddl_table.table_id, 128, None)?;
+    assert!(ddl_table.column_ids.iter().all(|column_id| {
+        table_wide_grants.records.iter().any(|grant| {
+            grant.grantee_id == member_user.identity_id
+                && grant.privilege
+                    == prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Select
+                && grant.target_scope
+                    == prdb_engine::metadata_discovery::AdministrativeGrantTargetScope::Column
+                && grant.target_id == *column_id
+        })
+    }));
+    assert!(!table_wide_grants.records.iter().any(|grant| {
+        grant.grantee_id == member_user.identity_id
+            && grant.privilege
+                == prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Select
+            && grant.target_scope
+                == prdb_engine::metadata_discovery::AdministrativeGrantTargetScope::Object
+    }));
+    let added_column = admin.add_column(
+        ddl_table.table_id,
+        &AdminColumnDefinition {
+            name: "future_field".to_owned(),
+            scalar_type: ScalarType::Integer,
+            nullable: true,
+            generated_uuid_identity: false,
+            default: None,
+        },
+    )?;
+    let after_column_add =
+        admin.list_grants_page(ddl_schema.identity_id, ddl_table.table_id, 128, None)?;
+    assert!(!after_column_add.records.iter().any(|grant| {
+        grant.grantee_id == member_user.identity_id
+            && grant.privilege
+                == prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Select
+            && grant.target_id == added_column.column_id
+    }));
     let dropped_table = admin.drop_table(ddl_table.table_id)?;
     assert!(dropped_table.commit_sequence > ddl_constraint.commit_sequence);
     assert!(

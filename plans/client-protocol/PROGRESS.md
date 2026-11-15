@@ -271,3 +271,8 @@
 ## ID-SQL-6: system privilege SQL dispatch
 
 - Resolves the grantee by kind and name before dispatching `privileges.grant`/`privileges.revoke`; storage keeps system privilege mutations database-admin-only. The delegated process lifecycle and full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored tests.
+
+## Bounded all-columns grant target — verified
+
+- Added an `all_columns` PREPARE target with no ID array, keeping table-wide grants bounded on the wire even when a table approaches the engine's column limit. Storage expands the target at START; explicit `columns` requests remain bounded to 2–64 distinct IDs.
+- Verification: strict decoder regression and delegated SQL process lifecycle passed. Locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, release-profile validation, cgroup probe, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored. `git diff --check` passed; Cargo.lock is unchanged.

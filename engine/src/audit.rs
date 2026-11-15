@@ -1,7 +1,7 @@
 //! Bounded, versioned administrative audit event encoding.
 
 const HEADER_LENGTH: usize = 68;
-const MAX_TARGETS: usize = 256;
+pub(crate) const MAX_TARGETS: usize = 256;
 const MAX_EVENT_LENGTH: usize = HEADER_LENGTH + MAX_TARGETS * 16;
 /// Hard bound for the append-only audit table until an audited retention/sink
 /// workflow is available. At the AUD1 maximum this limits raw payloads to
