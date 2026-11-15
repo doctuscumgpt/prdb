@@ -385,3 +385,8 @@
 
 - The authenticated gateway/supervisor lifecycle creates `process_admin_inline_source` through `AdminClient::execute_create_table_sql` with column-level `REFERENCES`, then verifies the published foreign-key metadata. The same process lifecycle now creates a second FK through `admin-sql` `ALTER TABLE ... ADD FOREIGN KEY` and drops it through `ALTER TABLE ... DROP CONSTRAINT '<generated-id>'`.
 - The focused delegated-cgroup process test passed with writable `cpu memory pids` (1 passed, 0 failed). This complements the parser, authenticated AdminClient, and CLI request coverage recorded in [schema DDL progress](../ddl-schema/PROGRESS.md).
+
+## DS-8: ALTER TABLE ADD COLUMN production lifecycle — verified
+
+- `admin-sql` now has gateway/supervisor process coverage for adding a non-null VARCHAR column with a typed literal default. The test verifies the committed ordinal, type bound, and nullability through the authenticated metadata API.
+- The focused delegated-cgroup process test, locked workspace build, format check, warning-denied Clippy, TinyCC SDK tests/fixture, release-profile validation, and full serial delegated-cgroup workspace suite passed with zero ignored tests; see [schema DDL progress](../ddl-schema/PROGRESS.md).

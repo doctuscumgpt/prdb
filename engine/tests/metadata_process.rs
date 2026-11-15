@@ -1932,6 +1932,46 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     )?;
     assert_ne!(created_table.table_id, [0; 16]);
     assert_eq!(created_table.column_ids.len(), 1);
+    let add_column_sql_path = root.join("add-column.sql");
+    std::fs::write(
+        &add_column_sql_path,
+        "ALTER TABLE process_admin_schema.process_admin_table ADD COLUMN label VARCHAR(30) NOT NULL DEFAULT 'unknown';",
+    )?;
+    let add_column_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            add_column_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        add_column_cli.status.success(),
+        "admin-sql ADD COLUMN failed: {}",
+        String::from_utf8_lossy(&add_column_cli.stderr)
+    );
+    assert!(String::from_utf8_lossy(&add_column_cli.stdout).contains("added column"));
+    let added_columns =
+        admin.list_columns_page(created_schema.identity_id, created_table.table_id, 16, None)?;
+    let added_label = added_columns
+        .records
+        .iter()
+        .find(|column| column.name == "label")
+        .ok_or("committed ADD COLUMN SQL was absent from authenticated metadata")?;
+    assert_eq!(added_label.ordinal, 1);
+    assert_eq!(
+        added_label.scalar_type,
+        ScalarType::Varchar { max_chars: 30 }
+    );
+    assert!(!added_label.nullable);
+    assert!(added_columns.next_cursor.is_none());
     let transfer_owner = admin.create_user("process_table_owner")?;
     let token_expiration =
         i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?
