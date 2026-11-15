@@ -184,6 +184,8 @@ pub struct InvocationStatusSnapshot {
 pub struct OwnInvocationStatus {
     pub invocation_id: [u8; 16],
     pub status: InvocationStatus,
+    pub staged_rows: usize,
+    pub staged_value_bytes: usize,
 }
 
 /// Opaque continuation for one owner's live invocation page sequence.
@@ -2292,6 +2294,8 @@ impl InvocationAdmissionState {
                 let invocation = live.entries.get(&invocation_id)?;
                 Some(OwnInvocationStatus {
                     invocation_id,
+                    staged_rows: invocation.staged_rows,
+                    staged_value_bytes: invocation.staged_value_bytes,
                     status: match invocation.phase {
                         LiveInvocationPhase::Active => InvocationStatus::Active {
                             started_at_us: invocation.started_at_us,
@@ -2467,13 +2471,22 @@ impl InvocationAdmissionPermit {
             .live
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(invocation) = live.entries.get_mut(&self.invocation_id)
-            && (invocation.staged_rows != staged_rows
-                || invocation.staged_value_bytes != staged_value_bytes)
-        {
+        let principal_id = live
+            .entries
+            .get(&self.invocation_id)
+            .and_then(|invocation| {
+                (invocation.staged_rows != staged_rows
+                    || invocation.staged_value_bytes != staged_value_bytes)
+                    .then_some(invocation.principal_id)
+            });
+        if let Some(principal_id) = principal_id {
+            let invocation = live
+                .entries
+                .get_mut(&self.invocation_id)
+                .expect("invocation was observed while the registry lock was held");
             invocation.staged_rows = staged_rows;
             invocation.staged_value_bytes = staged_value_bytes;
-            live.advance_generation();
+            live.advance_owner_generation(principal_id);
         }
     }
 

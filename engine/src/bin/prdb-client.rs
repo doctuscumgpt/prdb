@@ -3110,14 +3110,16 @@ fn invocation_list(
             _ => return Err("server returned a terminal invocation in the live page".into()),
         };
         print!(
-            "{{\"invocation_id\":{},\"state\":{},\"started_at_us\":{},\"deadline_at_us\":{},\"cancellation_requested\":{}}}",
+            "{{\"invocation_id\":{},\"state\":{},\"started_at_us\":{},\"deadline_at_us\":{},\"cancellation_requested\":{},\"staged_rows\":{},\"staged_value_bytes\":{}}}",
             json_string(&lower_hex(&invocation.invocation_id)),
             json_string(state),
             invocation.started_at_us,
             invocation
                 .deadline_at_us
                 .map_or_else(|| "null".to_owned(), |value| value.to_string()),
-            invocation.cancellation_requested
+            invocation.cancellation_requested,
+            invocation.staged_rows,
+            invocation.staged_value_bytes
         );
     }
     println!(

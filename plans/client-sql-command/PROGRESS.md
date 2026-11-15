@@ -587,4 +587,9 @@
 ## SQL CHECK integer arithmetic — implemented slice
 
 - `CREATE TABLE` and `ALTER TABLE ... ADD CHECK` expression parsing accepts integer `+`, `-`, and `*`, including grouped scalar expressions and normal multiplication precedence. DDL SQL still uses the separately authenticated control path.
-- Verification: workspace check, format, and warning-denied all-target Clippy passed in the pinned Nix shell. Tests were not run in this turn.
+- Parser/binder and arithmetic regression coverage, including multiplication precedence, mixed-type rejection, SQL NULL, and overflow, passed. The full serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process coverage enabled, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed; Cargo.lock is unchanged.
+
+## Owner invocation usage output — implemented slice
+
+- `prdb-client invocation-list` reports each owned live invocation's current staged row count and row-payload bytes in its JSON page.
+- Owner usage fields use `runtime.invocations.own.list` operation version 2; version 1 keeps its prior response shape. The real gateway/supervisor CLI process regression confirms owner usage JSON and cross-owner filtering. The full serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process coverage enabled, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed; Cargo.lock is unchanged.

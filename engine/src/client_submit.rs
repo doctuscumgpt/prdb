@@ -435,6 +435,8 @@ pub struct OwnInvocation {
     pub started_at_us: u64,
     pub deadline_at_us: Option<u64>,
     pub cancellation_requested: bool,
+    pub staged_rows: u64,
+    pub staged_value_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1210,7 +1212,7 @@ impl AdminClient {
             arguments.push('"');
         }
         let payload = format!(
-            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"runtime.invocations.own.list\",\"arguments\":{{{arguments}}}}}"
+            "{{\"phase\":\"read\",\"operation_version\":2,\"operation\":\"runtime.invocations.own.list\",\"arguments\":{{{arguments}}}}}"
         );
         let response = self.transport.exchange(10, payload.into_bytes())?;
         let mut fields = parse_flat_response(&response.payload)?;
@@ -1239,7 +1241,7 @@ impl AdminClient {
             let ResponseValue::Object(mut row) = value else {
                 return Err(ClientSubmitError::InvalidResponse);
             };
-            if row.len() != 5 {
+            if row.len() != 5 && row.len() != 7 {
                 return Err(ClientSubmitError::InvalidResponse);
             }
             let invocation_id = response_id(&row, "invocation_id")?;
@@ -1257,6 +1259,13 @@ impl AdminClient {
                 .ok_or(ClientSubmitError::InvalidResponse)?;
             let deadline_at_us = response_optional_u64(&mut row, "deadline_at_us")?;
             let cancellation_requested = response_boolean(&mut row, "cancellation_requested")?;
+            let has_staged_rows = row.contains_key("staged_rows");
+            let has_staged_value_bytes = row.contains_key("staged_value_bytes");
+            if has_staged_rows != has_staged_value_bytes {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let staged_rows = response_u64(&mut row, "staged_rows")?.unwrap_or(0);
+            let staged_value_bytes = response_u64(&mut row, "staged_value_bytes")?.unwrap_or(0);
             if !row.is_empty()
                 || previous_id.is_some_and(|previous| previous >= invocation_id)
                 || started_at_us == 0
@@ -1271,6 +1280,8 @@ impl AdminClient {
                 started_at_us,
                 deadline_at_us,
                 cancellation_requested,
+                staged_rows,
+                staged_value_bytes,
             });
         }
         let next_cursor = match fields.remove("next_cursor") {

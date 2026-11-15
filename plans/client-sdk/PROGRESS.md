@@ -1013,4 +1013,9 @@
 ## SQL CHECK integer arithmetic — implemented slice
 
 - The typed SQL CHECK binder accepts same-type SMALLINT, INTEGER, and BIGINT `+`, `-`, and `*` expressions and emits bounded EIR1 version 2 nodes. NULL operands preserve SQL null propagation; overflow fails closed during CHECK evaluation. The decoder remains compatible with EIR1 version 1.
-- Verification: workspace check, format, and warning-denied all-target Clippy passed in the pinned Nix shell. Tests were not run in this turn.
+- Regression coverage checks parser precedence/type binding, checked evaluation, NULL propagation, overflow failure, and EIR v1/v2 compatibility. Focused regressions and the full serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process coverage enabled, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed; Cargo.lock is unchanged.
+
+## Owner invocation usage fields — implemented slice
+
+- `OwnInvocation` exposes per-invocation staged row and payload-byte gauges. Decoding remains compatible with older owner-list responses that omit both fields, while rejecting a partial pair.
+- `list_own_invocations_page` requests operation version 2; servers retain version 1 response shape for older clients, and the client decoder accepts either shape. The typed owner-list decoder compatibility path and full serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process coverage enabled, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed; Cargo.lock is unchanged.

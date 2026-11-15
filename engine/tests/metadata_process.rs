@@ -5783,6 +5783,8 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
             encode_id_hex(&invocation_id)
         )));
         assert!(invocation_list_output.contains("\"state\":\"active\""));
+        assert!(invocation_list_output.contains("\"staged_rows\":0"));
+        assert!(invocation_list_output.contains("\"staged_value_bytes\":0"));
         assert!(!invocation_list_output.contains("\"principal_id\":"));
         let other_owner_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
             .args([

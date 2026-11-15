@@ -640,6 +640,7 @@ pub enum ClientAdminCommand {
         cursor: Option<crate::storage_manager::AdministrativeInvocationCursor>,
     },
     ListOwnInvocations {
+        response_version: u64,
         page_limit: usize,
         cursor: Option<crate::storage_manager::InvocationListCursor>,
     },
@@ -1643,7 +1644,7 @@ pub fn decode_client_admin_command(
             })
         }
         Some("read")
-            if version == Some(1)
+            if matches!(version, Some(1 | 2))
                 && operation.as_deref() == Some("runtime.invocations.own.list") =>
         {
             if operation_id.is_some() || seen.len() != 4 {
@@ -1665,7 +1666,11 @@ pub fn decode_client_admin_command(
             if !args.is_empty() {
                 return Err(ClientControlError::UnknownKey);
             }
-            Ok(ClientAdminCommand::ListOwnInvocations { page_limit, cursor })
+            Ok(ClientAdminCommand::ListOwnInvocations {
+                response_version: version.ok_or(ClientControlError::MissingKey)?,
+                page_limit,
+                cursor,
+            })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("users.create") => {
             if operation_id.is_some() || seen.len() != 4 {
@@ -5067,7 +5072,11 @@ impl ClientConnectionSession {
                 }
                 self.json_response(request.request_id, payload.into_bytes())
             }
-            ClientAdminCommand::ListOwnInvocations { page_limit, cursor } => {
+            ClientAdminCommand::ListOwnInvocations {
+                response_version,
+                page_limit,
+                cursor,
+            } => {
                 let now_us = current_unix_micros().ok_or(ClientSessionError::UnsupportedRequest)?;
                 let page = storage
                     .list_own_invocations(actor_id, now_us, page_limit, cursor.as_ref())
@@ -5118,6 +5127,12 @@ impl ClientConnectionSession {
                     } else {
                         "false"
                     });
+                    if response_version >= 2 {
+                        payload.push_str(",\"staged_rows\":");
+                        payload.push_str(&invocation.staged_rows.to_string());
+                        payload.push_str(",\"staged_value_bytes\":");
+                        payload.push_str(&invocation.staged_value_bytes.to_string());
+                    }
                     payload.push('}');
                 }
                 payload.push_str("],\"next_cursor\":");

@@ -19,6 +19,7 @@ Define bounded registry schemas/status projections, observation times/consistenc
 | OM-5 | Admin change and required audit/outbox either both persist or neither does | Atomic audit records for DDL, membership/grants/policies and credentials; bounded/rate-limited auth failure and admin cancel events, no secrets |
 | OM-6 | Audit sink failure does not erase a committed action; optional metric failure cannot report data abort | Durable required outbox with bounded delivery queues/retention and separately best-effort telemetry |
 | OM-7 | Saturated monitoring or denied requests cannot retain history/locks or starve commit/cancel | Bounded copies/short pins, release references before formatting/sends, deadlines and pressure tests |
+| OM-1-OWN-USAGE | An owner can inspect the resource usage of each of their live invocations | Extend owner-only pages with current staged row count and payload bytes; bind cursor invalidation to write-set changes and expose no global totals or administrator-only transaction fields |
 | OM-2-WRITE-ACQUISITION | Admin runtime pages distinguish managed commit duration from redb write-transaction acquisition latency | Time `Database::begin_write()` only on the managed invocation path, report bounded noncumulative buckets through a new runtime-list version, and preserve saturation/reset semantics |
 
 ## Acceptance and Handoff

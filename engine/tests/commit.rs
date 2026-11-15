@@ -12359,10 +12359,19 @@ fn storage_manager_lists_only_owner_live_invocations_with_generation_bound_pages
     let mut first = storage.begin_invocation(id(220), id(9), retention_deadline_us, 2, 64)?;
     let mut hidden = storage.begin_invocation(id(221), id(10), retention_deadline_us, 2, 64)?;
     let mut second = storage.begin_invocation(id(222), id(9), retention_deadline_us, 2, 64)?;
+    first.stage_put(
+        prdb_engine::overlay::RowId {
+            table: id(225),
+            row: id(226),
+        },
+        b"own-usage",
+    )?;
 
     let page = storage.list_own_invocations(id(9), now_us, 1, None)?;
     assert_eq!(page.invocations.len(), 1);
     assert_eq!(page.invocations[0].invocation_id, id(220));
+    assert_eq!(page.invocations[0].staged_rows, 1);
+    assert_eq!(page.invocations[0].staged_value_bytes, 9);
     assert!(matches!(
         page.invocations[0].status,
         InvocationStatus::Active { .. }
@@ -12393,6 +12402,21 @@ fn storage_manager_lists_only_owner_live_invocations_with_generation_bound_pages
         .list_own_invocations(id(9), now_us, 1, None)?
         .continuation
         .unwrap();
+    first.stage_put(
+        prdb_engine::overlay::RowId {
+            table: id(225),
+            row: id(226),
+        },
+        b"changed",
+    )?;
+    assert!(matches!(
+        storage.list_own_invocations(id(9), now_us, 1, Some(&stale)),
+        Err(InvocationStatusError::StaleCursor)
+    ));
+    let refreshed = storage.list_own_invocations(id(9), now_us, 1, None)?;
+    assert_eq!(refreshed.invocations[0].staged_rows, 1);
+    assert_eq!(refreshed.invocations[0].staged_value_bytes, 7);
+    let stale = refreshed.continuation.unwrap();
     let mut added = storage.begin_invocation(id(223), id(9), retention_deadline_us, 2, 64)?;
     assert!(matches!(
         storage.list_own_invocations(id(9), now_us, 1, Some(&stale)),

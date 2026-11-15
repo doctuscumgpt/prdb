@@ -322,6 +322,7 @@ fn own_invocation_page_decoder_enforces_owner_list_shape_and_bounds() {
     assert!(matches!(
         decode_client_admin_command(request),
         Ok(ClientAdminCommand::ListOwnInvocations {
+            response_version: 1,
             page_limit: 128,
             cursor: None,
         })
@@ -333,9 +334,6 @@ fn own_invocation_page_decoder_enforces_owner_list_shape_and_bounds() {
         String::from_utf8(request.to_vec())
             .unwrap()
             .replace("\"limit\":\"128\"", "\"limit\":\"129\""),
-        String::from_utf8(request.to_vec())
-            .unwrap()
-            .replace("\"operation_version\":1", "\"operation_version\":2"),
         String::from_utf8(request.to_vec()).unwrap().replace(
             "\"limit\":\"128\"",
             "\"limit\":\"128\",\"principal_id\":\"000102030405060708090a0b0c0d0e0f\"",
@@ -343,6 +341,17 @@ fn own_invocation_page_decoder_enforces_owner_list_shape_and_bounds() {
     ] {
         assert!(decode_client_admin_command(invalid.as_bytes()).is_err());
     }
+    let version_two = String::from_utf8(request.to_vec())
+        .unwrap()
+        .replace("\"operation_version\":1", "\"operation_version\":2");
+    assert!(matches!(
+        decode_client_admin_command(version_two.as_bytes()),
+        Ok(ClientAdminCommand::ListOwnInvocations {
+            response_version: 2,
+            page_limit: 128,
+            cursor: None,
+        })
+    ));
 }
 
 #[test]
