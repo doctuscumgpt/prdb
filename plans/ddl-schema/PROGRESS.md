@@ -824,3 +824,14 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. An absent column uses the existing typed add-column operation; a resolved existing column is a database-administrator-only no-op and does not compare or reconcile the requested definition.
 - Updated the schema DDL, client SDK, and client SQL contracts. The parser unit test and delegated production gateway/supervisor process test pass. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## DS-SQL-43: ALTER-authorized table owner-name binding — verified
+
+- Added a request-scoped `metadata.table_alter_identities.resolve` lookup. It returns a destination USER/ROLE ID only to the target table owner, inherited owner, effective table/schema ALTER grantee, or database administrator; typed owner transfer still revalidates.
+- The SQL lifecycle now attempts owner transfer as the table ALTER grantee after typed transfer and ownership restoration. The delegated gateway/supervisor process test exercises this SQL form as an ALTER grantee. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+
+## DS-SQL-43: ALTER-authorized table owner-name binding — verified
+
+- Added authenticated table-scoped USER/ROLE name resolution for `ALTER TABLE ... OWNER TO`. The lookup grants no identity listing and returns the same absent result for unknown names or actors without table owner/ALTER/database-admin authority; typed mutation rechecks authorization and destination state.
+- The delegated gateway/supervisor lifecycle grants table ALTER, performs name-based SQL owner transfer as that grantee, revokes ALTER, then confirms the transferred owner retains catalog DDL visibility. The focused process test, workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

@@ -920,3 +920,9 @@
 
 - Added conditional column creation to authenticated `admin-sql`; existing-column no-ops require database-administrator authority and create no DDL outcome.
 - Updated the SDK contract. The parser unit test and delegated production gateway/supervisor process test pass. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+
+## DS-SQL-43: ALTER-authorized table owner-name binding — verified
+
+- Updated the `admin-sql` client contract for target-scoped owner identity resolution. The destination name lookup is limited to the target table's owner/ALTER/database-admin authority.
+- Verified with the delegated gateway/supervisor SQL lifecycle; workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

@@ -239,3 +239,14 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Effective schema-scoped `ALTER` grantees can resolve schema names for `ALTER SCHEMA` without schema `USAGE`; this reveals no relations or columns. Typed schema rename, owner-transfer, and drop commit guards now accept and guard the direct/inherited ALTER grant, including grant revocation races.
 - Permission, metadata-discovery, schema DDL, and client SQL contracts are updated. The gateway/supervisor lifecycle regression grants ALTER to a non-owner with no schema USAGE and renames the schema through `admin-sql`, then renames it back and revokes the grant. The focused delegated process test, workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.
+
+## DS-SQL-43: table ALTER-scoped identity resolution — verified
+
+- Added a bounded request-scoped metadata operation to resolve a destination USER/ROLE name under effective table ALTER authority. Unauthorized and absent identities share a non-disclosing result; no identity list or principal fields are returned.
+- Updated the metadata discovery contract. The delegated gateway/supervisor process test exercises the new protocol operation. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+
+## DS-SQL-43: table ALTER-scoped identity resolution — verified
+
+- Added `metadata.table_alter_identities.resolve` to resolve one destination USER/ROLE ID under target table owner/effective ALTER/database-admin authority. Unknown identities and insufficient target authority are non-disclosing; no identity listing or extra principal fields are returned.
+- The real delegated process test exercises the protocol as an ALTER grantee. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

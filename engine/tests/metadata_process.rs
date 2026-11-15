@@ -2719,6 +2719,9 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     );
     assert!(String::from_utf8_lossy(&transfer_command.stdout).contains("changed table owner"));
     let table_owner_sql_path = root.join("table-owner.sql");
+    admin.execute_object_privilege_sql(
+        "GRANT ALTER ON TABLE process_admin_schema.process_admin_table TO USER process_table_owner_renamed",
+    )?;
     std::fs::write(
         &table_owner_sql_path,
         "ALTER TABLE process_admin_schema.process_admin_table OWNER TO USER process_table_owner_renamed;",
@@ -2729,7 +2732,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             "--address",
             &address_text,
             "--credentials",
-            admin_cli_credentials,
+            credential_path_text,
             "--sql-file",
             table_owner_sql_path
                 .to_str()
@@ -2744,6 +2747,9 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     assert!(
         String::from_utf8_lossy(&table_owner_sql_command.stdout).contains("changed table owner")
     );
+    admin.execute_object_privilege_sql(
+        "REVOKE ALTER ON TABLE process_admin_schema.process_admin_table FROM USER process_table_owner_renamed",
+    )?;
     let mut table_owner_credentials = read_client_credentials(&transfer_credential_path)?;
     let mut table_owner_client = AdminClient::connect_authenticated(
         address,

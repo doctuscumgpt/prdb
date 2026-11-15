@@ -506,3 +506,14 @@
 
 - Added `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` to bounded `admin-sql`. Existing columns no-op only after database-administrator authority is confirmed; absent columns follow typed `tables.add_column`.
 - Updated the SQL command and client SDK contracts. The parser unit test and delegated production gateway/supervisor process test pass. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## DS-SQL-43: ALTER-authorized table owner-name binding — verified
+
+- `ALTER TABLE ... OWNER TO USER|ROLE name` now binds the destination identity through target table ALTER authority, then uses the existing typed mutation.
+- Updated the command contract. Delegated gateway/supervisor coverage, workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+
+## DS-SQL-43: ALTER-authorized table owner-name binding — verified
+
+- `ALTER TABLE ... OWNER TO USER|ROLE name` now resolves the destination identity under the target table's ALTER authority, then dispatches the existing typed mutation.
+- The delegated gateway/supervisor process test exercises the SQL form as a table ALTER grantee. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

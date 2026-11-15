@@ -1112,3 +1112,9 @@
 - Storage now collects the existing policy's expression, target, and dependency removals, verifies the replacement target belongs to the requested table, and combines those removals with new policy records under one `commit_authorized_policy_ddl` call. The table write epoch advances once; the audit event includes both old and new policy IDs.
 - The delegated SQL lifecycle passes across row/cell kinds and confirms the prior ID is gone after replacement. A barrier race with concurrent `MANAGE_POLICIES` revocation verifies final authority rechecking, outcome publication, and exactly one table-epoch advance when replacement commits.
 - Verification: focused storage race and full serial delegated-cgroup workspace suite passed. Locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, release-profile validation, cgroup capability probe, and full sandbox/process integration passed with zero ignored tests. `git diff --check` passed; Cargo.lock is unchanged.
+
+
+## DS-SQL-43: ALTER-scoped destination identity lookup — verified
+
+- Added a token-authenticated storage entry point that resolves one USER/ROLE name only after checking table ownership, inherited owner membership, table/schema ALTER, or database-admin authority. The existing owner-transfer mutation remains authoritative and revalidates the operation.
+- Verified through the delegated gateway/supervisor SQL lifecycle and workspace build/format/Clippy checks; `git diff --check` passes and Cargo.lock is unchanged.

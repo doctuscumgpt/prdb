@@ -3664,6 +3664,24 @@ impl<'db> InvocationTransaction<'db> {
         self.resolve_catalog_object_ddl_identity_name(object_id, name, kind, 11)
     }
 
+    /// Resolve an owner name only for an actor with ALTER authority over the
+    /// target table. The owner-transfer operation rechecks authority.
+    pub(crate) fn resolve_catalog_table_alter_identity_name(
+        &mut self,
+        table_id: [u8; 16],
+        name: &str,
+        kind: crate::metadata_discovery::AdministrativeIdentityKind,
+    ) -> Result<Option<[u8; 16]>, TransactionError> {
+        if !matches!(
+            kind,
+            crate::metadata_discovery::AdministrativeIdentityKind::User
+                | crate::metadata_discovery::AdministrativeIdentityKind::Role
+        ) {
+            return Err(TransactionError::InvalidMetadataRequest);
+        }
+        self.resolve_catalog_object_ddl_identity_name(table_id, name, kind, 8)
+    }
+
     fn resolve_catalog_object_ddl_identity_name(
         &mut self,
         object_id: [u8; 16],
