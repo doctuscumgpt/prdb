@@ -27,7 +27,8 @@
 ## DP-SQL-5: policy-authorized table and column binding — verified
 
 - Authenticated relation and column metadata now includes a table when the caller owns the table/schema or has scoped `MANAGE_POLICIES`, while still requiring schema USAGE and preserving ordinary grant-based discovery for other relations.
-- The delegated gateway/supervisor lifecycle failed before this change at CREATE POLICY relation resolution, then passed when the table owner's SELECT grant was removed. This process regression verifies owner-based binding; the separate scoped `MANAGE_POLICIES` metadata-name-resolution case is not yet verified and remains follow-up work.
+- The delegated gateway/supervisor lifecycle verifies both owner-based binding and non-owner manager binding. The table owner creates/drops row and cell policies with schema USAGE and no SELECT; a separate non-owner with schema USAGE and table-scoped `MANAGE_POLICIES` resolves the relation and creates/drops a row policy without data grants.
+- Red/green: the manager regression first failed with unavailable metadata because relation grant discovery treated valid `MANAGE_POLICIES` as catalog corruption. The loader now filters valid non-data grants and preserves malformed target checks.
 - Latest verification: the focused production metadata process test, locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, release-profile validation, cgroup capability probe, full serial delegated-cgroup workspace suite with sandbox/process tests enabled, and `git diff --check` passed with zero ignored tests. Cargo.lock is unchanged.
 
 ## DP-1 / DP-2 / NP-6: column grant authority through separate service processes — verified

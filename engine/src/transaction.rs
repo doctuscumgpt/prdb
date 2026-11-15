@@ -6986,37 +6986,45 @@ impl<'db> InvocationTransaction<'db> {
                     .try_into()
                     .map_err(|_| TransactionError::CorruptCatalog)?;
                 let target = if object_id == schema_id {
-                    if privilege != 1 || target_scope != 1 || target_id != schema_id {
+                    if target_scope != 1 || target_id != schema_id {
                         return Err(TransactionError::CorruptCatalog);
                     }
-                    Some((Operation::Usage, AccessTarget::Schema(schema_id)))
+                    match privilege {
+                        1 => Some((Operation::Usage, AccessTarget::Schema(schema_id))),
+                        7 | 8 | 10 | 11 => None,
+                        _ => return Err(TransactionError::CorruptCatalog),
+                    }
                 } else if table_ids.binary_search(&object_id).is_ok() {
                     match target_scope {
                         1 if target_id == object_id => {
                             let operation = match privilege {
-                                2 => Operation::Select,
-                                3 => Operation::Insert,
-                                4 => Operation::Update,
-                                5 => Operation::Delete,
+                                2 => Some(Operation::Select),
+                                3 => Some(Operation::Insert),
+                                4 => Some(Operation::Update),
+                                5 => Some(Operation::Delete),
+                                6 | 8 | 9 | 10 | 11 => None,
                                 _ => return Err(TransactionError::CorruptCatalog),
                             };
-                            Some((operation, AccessTarget::Table(object_id)))
+                            operation.map(|operation| (operation, AccessTarget::Table(object_id)))
                         }
-                        2 if matches!(privilege, 2..=4) => {
+                        2 if matches!(privilege, 2..=4 | 6) => {
                             self.validate_discovery_column(object_id, target_id)?;
                             let operation = match privilege {
-                                2 => Operation::Select,
-                                3 => Operation::Insert,
-                                4 => Operation::Update,
-                                _ => return Err(TransactionError::CorruptCatalog),
+                                2 => Some(Operation::Select),
+                                3 => Some(Operation::Insert),
+                                4 => Some(Operation::Update),
+                                6 => None,
+                                _ => unreachable!(),
                             };
-                            Some((
-                                operation,
-                                AccessTarget::Column {
-                                    table_id: object_id,
-                                    column_id: target_id,
-                                },
-                            ))
+                            operation.map(|operation| {
+                                (
+                                    operation,
+                                    AccessTarget::Column {
+                                        table_id: object_id,
+                                        column_id: target_id,
+                                    },
+                                )
+                            })
                         }
                         _ => return Err(TransactionError::CorruptCatalog),
                     }

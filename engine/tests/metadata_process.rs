@@ -3006,6 +3006,82 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         assert!(String::from_utf8_lossy(&drop_policy_sql.stdout).contains("dropped "));
     }
     admin.set_table_owner(created_table.table_id, admin_user_id)?;
+    admin.grant_object_privilege(
+        transfer_owner.identity_id,
+        created_table.table_id,
+        AdminObjectPrivilege::ManagePolicies,
+        AdminObjectGrantTarget::Object,
+    )?;
+    let mut manager_metadata_credentials = read_client_credentials(&transfer_credential_path)?;
+    let mut manager_metadata = MetadataClient::connect_authenticated(
+        address,
+        manager_metadata_credentials.token_id,
+        &mut manager_metadata_credentials.token_secret,
+    )?;
+    assert!(
+        manager_metadata
+            .list_relations(created_schema.identity_id)?
+            .iter()
+            .any(|relation| relation.relation_id == created_table.table_id)
+    );
+    drop(manager_metadata);
+    drop(manager_metadata_credentials);
+    let managed_policy_sql_path = root.join("create-managed-policy.sql");
+    std::fs::write(
+        &managed_policy_sql_path,
+        "CREATE ROW POLICY process_managed ON process_admin_schema.process_admin_table FOR SELECT TO ROLE process_policy_role AS ALLOW USING (HAS_ROLE('process_policy_role'));",
+    )?;
+    let create_managed_policy_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            transfer_credential_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            managed_policy_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        create_managed_policy_sql.status.success(),
+        "CREATE POLICY as MANAGE_POLICIES holder failed: {}",
+        String::from_utf8_lossy(&create_managed_policy_sql.stderr)
+    );
+    let drop_managed_policy_sql_path = root.join("drop-managed-policy.sql");
+    std::fs::write(
+        &drop_managed_policy_sql_path,
+        "DROP ROW POLICY process_managed ON process_admin_schema.process_admin_table RESTRICT;",
+    )?;
+    let drop_managed_policy_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            transfer_credential_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            drop_managed_policy_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        drop_managed_policy_sql.status.success(),
+        "DROP POLICY as MANAGE_POLICIES holder failed: {}",
+        String::from_utf8_lossy(&drop_managed_policy_sql.stderr)
+    );
+    admin.revoke_object_privilege(
+        transfer_owner.identity_id,
+        created_table.table_id,
+        AdminObjectPrivilege::ManagePolicies,
+        AdminObjectGrantTarget::Object,
+    )?;
     assert!(
         admin
             .list_policies_page(created_schema.identity_id, created_table.table_id, 64, None)?
