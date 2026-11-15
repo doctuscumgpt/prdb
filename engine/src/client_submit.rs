@@ -425,6 +425,23 @@ pub struct RuntimeInvocationPage {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnInvocation {
+    pub invocation_id: [u8; 16],
+    pub state: RuntimeInvocationState,
+    pub started_at_us: u64,
+    pub deadline_at_us: Option<u64>,
+    pub cancellation_requested: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnInvocationPage {
+    pub observed_at_us: u64,
+    pub consistency: RuntimeConsistency,
+    pub records: Vec<OwnInvocation>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeFenceWaitCategory {
     Writer,
@@ -1167,6 +1184,107 @@ impl AdminClient {
             crate::client_protocol::ClientMode::Control,
         )?;
         Ok(Self { transport })
+    }
+
+    /// Return one best-effort page of this authenticated owner's live
+    /// invocations. The server binds and revalidates every cursor to the owner.
+    pub fn list_own_invocations_page(
+        &mut self,
+        page_limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<OwnInvocationPage, ClientSubmitError> {
+        if !(1..=crate::storage_manager::MAX_OWN_INVOCATION_PAGE).contains(&page_limit)
+            || cursor.is_some_and(|value| {
+                crate::storage_manager::InvocationListCursor::from_wire(value).is_none()
+            })
+        {
+            return Err(ClientSubmitError::InvalidMetadataPage);
+        }
+        let mut arguments = format!("\"limit\":\"{page_limit}\"");
+        if let Some(cursor) = cursor {
+            arguments.push_str(",\"cursor\":\"");
+            arguments.push_str(cursor);
+            arguments.push('"');
+        }
+        let payload = format!(
+            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"runtime.invocations.own.list\",\"arguments\":{{{arguments}}}}}"
+        );
+        let response = self.transport.exchange(10, payload.into_bytes())?;
+        let mut fields = parse_flat_response(&response.payload)?;
+        if fields.len() != 4 {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        let observed_at_us = response_u64(&mut fields, "observed_at_us")?
+            .filter(|value| *value > 0)
+            .ok_or(ClientSubmitError::InvalidResponse)?;
+        let consistency = match fields.remove("consistency") {
+            Some(ResponseValue::String(value)) if value == "best_effort" => {
+                RuntimeConsistency::BestEffort
+            }
+            _ => return Err(ClientSubmitError::InvalidResponse),
+        };
+        let rows = match fields.remove("invocations") {
+            Some(ResponseValue::Array(values)) => values,
+            _ => return Err(ClientSubmitError::InvalidResponse),
+        };
+        if rows.len() > page_limit {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        let mut records = Vec::with_capacity(rows.len());
+        let mut previous_id = None;
+        for value in rows {
+            let ResponseValue::Object(mut row) = value else {
+                return Err(ClientSubmitError::InvalidResponse);
+            };
+            if row.len() != 5 {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let invocation_id = response_id(&row, "invocation_id")?;
+            row.remove("invocation_id");
+            let state = match row.remove("state") {
+                Some(ResponseValue::String(value)) if value == "active" => {
+                    RuntimeInvocationState::Active
+                }
+                Some(ResponseValue::String(value)) if value == "committing" => {
+                    RuntimeInvocationState::Committing
+                }
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+            let started_at_us = response_u64(&mut row, "started_at_us")?
+                .ok_or(ClientSubmitError::InvalidResponse)?;
+            let deadline_at_us = response_optional_u64(&mut row, "deadline_at_us")?;
+            let cancellation_requested = response_boolean(&mut row, "cancellation_requested")?;
+            if !row.is_empty()
+                || previous_id.is_some_and(|previous| previous >= invocation_id)
+                || started_at_us == 0
+                || deadline_at_us.is_some_and(|deadline| deadline == 0)
+            {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            previous_id = Some(invocation_id);
+            records.push(OwnInvocation {
+                invocation_id,
+                state,
+                started_at_us,
+                deadline_at_us,
+                cancellation_requested,
+            });
+        }
+        let next_cursor = match fields.remove("next_cursor") {
+            None | Some(ResponseValue::Null) => None,
+            Some(ResponseValue::String(value))
+                if crate::storage_manager::InvocationListCursor::from_wire(&value).is_some() =>
+            {
+                Some(value)
+            }
+            _ => return Err(ClientSubmitError::InvalidResponse),
+        };
+        Ok(OwnInvocationPage {
+            observed_at_us,
+            consistency,
+            records,
+            next_cursor,
+        })
     }
 
     /// Return one best-effort page of invocation registry state. The server checks

@@ -4759,6 +4759,14 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         .map_err(|error| format!("issue query token failed: {error:?}"))?;
     let query_token_id = query_token.token_id;
     let mut query_secret = *query_token.token_secret();
+    let invocation_list_credentials_path = root.join("invocation-list-owner.cred");
+    write_client_credentials(
+        &invocation_list_credentials_path,
+        &ClientCredentials {
+            token_id: query_token_id,
+            token_secret: query_secret,
+        },
+    )?;
     let mut restart_query_secret = query_secret;
     let mut recovery_query_secret = query_secret;
     let mut client =
@@ -4777,6 +4785,49 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
             matches!(ready_event, Some(prdb_engine::client_submit::ClientResultEvent::Data(ref bytes)) if bytes == b"QUERY_READY"),
             "unexpected query startup event: {ready_event:?}"
         );
+        let invocation_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "invocation-list",
+                "--address",
+                &address.to_string(),
+                "--credentials",
+                invocation_list_credentials_path
+                    .to_str()
+                    .ok_or("credential path is not UTF-8")?,
+            ])
+            .output()?;
+        assert!(
+            invocation_list.status.success(),
+            "invocation-list CLI failed: {}",
+            String::from_utf8_lossy(&invocation_list.stderr)
+        );
+        let invocation_list_output = String::from_utf8(invocation_list.stdout)?;
+        assert!(invocation_list_output.contains("\"consistency\":\"best_effort\""));
+        assert!(invocation_list_output.contains(&format!(
+            "\"invocation_id\":\"{}\"",
+            encode_id_hex(&invocation_id)
+        )));
+        assert!(invocation_list_output.contains("\"state\":\"active\""));
+        assert!(!invocation_list_output.contains("\"principal_id\":"));
+        let other_owner_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "invocation-list",
+                "--address",
+                &address.to_string(),
+                "--credentials",
+                runtime_list_credentials_path
+                    .to_str()
+                    .ok_or("credential path is not UTF-8")?,
+            ])
+            .output()?;
+        assert!(
+            other_owner_list.status.success(),
+            "other-owner invocation-list CLI failed: {}",
+            String::from_utf8_lossy(&other_owner_list.stderr)
+        );
+        let other_owner_output = String::from_utf8(other_owner_list.stdout)?;
+        assert!(other_owner_output.contains("\"invocations\":[]"));
+        assert!(!other_owner_output.contains(&encode_id_hex(&invocation_id)));
         let runtime_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
             .args([
                 "runtime-list",

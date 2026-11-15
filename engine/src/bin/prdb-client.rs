@@ -39,6 +39,7 @@ const USAGE: &str = "Usage:\n\
   prdb-client cancel --address IP:PORT --credentials FILE --invocation-id HEX\n\n\
   prdb-client admin-cancel --address IP:PORT --credentials ADMIN_FILE --invocation-id HEX\n\n\
   prdb-client admin-status --address IP:PORT --credentials ADMIN_FILE --invocation-id HEX\n\n\
+  prdb-client invocation-list --address IP:PORT --credentials FILE\n    [--limit N] [--cursor HEX]\n\n\
   prdb-client scope --address IP:PORT --credentials FILE --schema NAME --output FILE \\\n    [--relation NAME --operations select,insert,update,delete [--columns NAME,...]]\n\n\
   prdb-client credential-remove --credentials FILE\n\n\
 Submission output is provisional until a committed terminal event. START is never retried;\n\
@@ -165,6 +166,7 @@ fn run() -> Result<(), String> {
         "cancel" => cancel(address, credentials_path, &mut fields),
         "admin-status" => admin_status(address, credentials_path, &mut fields),
         "admin-cancel" => admin_cancel(address, credentials_path, &mut fields),
+        "invocation-list" => invocation_list(address, credentials_path, &mut fields),
         "scope" => scope(address, credentials_path, &mut fields),
         "discover" => discover(address, credentials_path, &mut fields),
         "token-issue" => token_issue(address, credentials_path, &mut fields),
@@ -2681,6 +2683,76 @@ fn runtime_list(
         Some(cursor) => println!("\"next_cursor\":{}}}", json_string(&cursor)),
         None => println!("\"next_cursor\":null}}"),
     }
+    Ok(())
+}
+
+fn invocation_list(
+    address: SocketAddr,
+    credentials_path: PathBuf,
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<(), String> {
+    let page_limit = fields
+        .remove("--limit")
+        .map(|value| parse_number::<usize>(value, "--limit"))
+        .transpose()?
+        .unwrap_or(64);
+    if !(1..=prdb_engine::storage_manager::MAX_OWN_INVOCATION_PAGE).contains(&page_limit) {
+        return Err(format!(
+            "--limit must be between 1 and {}",
+            prdb_engine::storage_manager::MAX_OWN_INVOCATION_PAGE
+        ));
+    }
+    let cursor = fields
+        .remove("--cursor")
+        .map(|value| {
+            value
+                .into_string()
+                .map_err(|_| "--cursor must be UTF-8".to_owned())
+        })
+        .transpose()?;
+    reject_unknown(fields)?;
+
+    let mut credentials =
+        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
+    let mut client = AdminClient::connect_authenticated(
+        address,
+        credentials.token_id,
+        &mut credentials.token_secret,
+    )
+    .map_err(|error| error.to_string())?;
+    let page = client
+        .list_own_invocations_page(page_limit, cursor.as_deref())
+        .map_err(|error| error.to_string())?;
+    print!(
+        "{{\"observed_at_us\":{},\"consistency\":\"best_effort\",\"invocations\":[",
+        page.observed_at_us
+    );
+    for (index, invocation) in page.records.iter().enumerate() {
+        if index != 0 {
+            print!(",");
+        }
+        let state = match invocation.state {
+            prdb_engine::client_submit::RuntimeInvocationState::Active => "active",
+            prdb_engine::client_submit::RuntimeInvocationState::Committing => "committing",
+            _ => return Err("server returned a terminal invocation in the live page".into()),
+        };
+        print!(
+            "{{\"invocation_id\":{},\"state\":{},\"started_at_us\":{},\"deadline_at_us\":{},\"cancellation_requested\":{}}}",
+            json_string(&lower_hex(&invocation.invocation_id)),
+            json_string(state),
+            invocation.started_at_us,
+            invocation
+                .deadline_at_us
+                .map_or_else(|| "null".to_owned(), |value| value.to_string()),
+            invocation.cancellation_requested
+        );
+    }
+    println!(
+        "],\"next_cursor\":{}}}",
+        page.next_cursor
+            .map(|value| format!("\"{value}\""))
+            .unwrap_or_else(|| "null".to_owned())
+    );
     Ok(())
 }
 

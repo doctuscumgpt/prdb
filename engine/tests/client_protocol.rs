@@ -317,6 +317,35 @@ fn admin_read_decoder_accepts_token_inventory_and_rejects_mutation_shapes() {
 }
 
 #[test]
+fn own_invocation_page_decoder_enforces_owner_list_shape_and_bounds() {
+    let request = br#"{"phase":"read","operation_version":1,"operation":"runtime.invocations.own.list","arguments":{"limit":"128"}}"#;
+    assert!(matches!(
+        decode_client_admin_command(request),
+        Ok(ClientAdminCommand::ListOwnInvocations {
+            page_limit: 128,
+            cursor: None,
+        })
+    ));
+    for invalid in [
+        String::from_utf8(request.to_vec())
+            .unwrap()
+            .replace("\"limit\":\"128\"", "\"limit\":\"0\""),
+        String::from_utf8(request.to_vec())
+            .unwrap()
+            .replace("\"limit\":\"128\"", "\"limit\":\"129\""),
+        String::from_utf8(request.to_vec())
+            .unwrap()
+            .replace("\"operation_version\":1", "\"operation_version\":2"),
+        String::from_utf8(request.to_vec()).unwrap().replace(
+            "\"limit\":\"128\"",
+            "\"limit\":\"128\",\"principal_id\":\"000102030405060708090a0b0c0d0e0f\"",
+        ),
+    ] {
+        assert!(decode_client_admin_command(invalid.as_bytes()).is_err());
+    }
+}
+
+#[test]
 fn admin_read_decoder_accepts_empty_visible_schema_discovery_request() {
     let request = br#"{"phase":"read","operation_version":1,"operation":"metadata.schemas.list","arguments":{}}"#;
     assert_eq!(

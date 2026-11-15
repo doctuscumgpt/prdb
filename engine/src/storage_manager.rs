@@ -188,6 +188,51 @@ pub struct InvocationListCursor {
     after_invocation_id: [u8; 16],
 }
 
+impl InvocationListCursor {
+    /// Serialize the owner-bound live-invocation cursor as lowercase hex.
+    pub fn to_wire(&self) -> String {
+        let mut bytes = [0; 49];
+        bytes[0] = 1;
+        bytes[1..17].copy_from_slice(&self.principal_id);
+        bytes[17..33].copy_from_slice(&self.owner_generation.to_be_bytes());
+        bytes[33..49].copy_from_slice(&self.after_invocation_id);
+        let mut output = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            output.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
+            output.push(char::from(b"0123456789abcdef"[(byte & 0x0f) as usize]));
+        }
+        output
+    }
+
+    /// Parse a canonical wire cursor. The owner and generation are checked
+    /// again by `list_own_invocations` on every request.
+    pub fn from_wire(value: &str) -> Option<Self> {
+        if value.len() != 98 {
+            return None;
+        }
+        let mut bytes = [0; 49];
+        for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+            let high = lower_hex_value(pair[0])?;
+            let low = lower_hex_value(pair[1])?;
+            bytes[index] = high << 4 | low;
+        }
+        if bytes[0] != 1 {
+            return None;
+        }
+        let principal_id = bytes[1..17].try_into().ok()?;
+        let owner_generation = u128::from_be_bytes(bytes[17..33].try_into().ok()?);
+        let after_invocation_id = bytes[33..49].try_into().ok()?;
+        if principal_id == [0; 16] || owner_generation == 0 || after_invocation_id == [0; 16] {
+            return None;
+        }
+        Some(Self {
+            principal_id,
+            owner_generation,
+            after_invocation_id,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InvocationStatusPage {
     pub observed_at_us: i64,
@@ -13146,8 +13191,8 @@ fn lookup_credential_principal(
 #[cfg(test)]
 mod commit_cancellation_boundary_tests {
     use super::{
-        AdmissionError, InvocationAdmissionState, LiveInvocationRegistry, OwnerCancellationResult,
-        StorageManager, StorageManagerConfig, bounded_invocation_ids,
+        AdmissionError, InvocationAdmissionState, InvocationListCursor, LiveInvocationRegistry,
+        OwnerCancellationResult, StorageManager, StorageManagerConfig, bounded_invocation_ids,
     };
     use redb::Database;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -13166,6 +13211,19 @@ mod commit_cancellation_boundary_tests {
             vec![[3; 16], [4; 16], [6; 16]]
         );
         assert_eq!(bounded_invocation_ids(ids, None, 0), Vec::<[u8; 16]>::new());
+    }
+
+    #[test]
+    fn owner_invocation_cursor_round_trips_canonically() {
+        let cursor = InvocationListCursor {
+            principal_id: [0xab; 16],
+            owner_generation: 0x1234,
+            after_invocation_id: [0xcd; 16],
+        };
+        let wire = cursor.to_wire();
+        assert_eq!(InvocationListCursor::from_wire(&wire), Some(cursor));
+        assert!(InvocationListCursor::from_wire(&wire.to_uppercase()).is_none());
+        assert!(InvocationListCursor::from_wire(&wire[..96]).is_none());
     }
 
     #[test]

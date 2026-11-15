@@ -597,6 +597,10 @@ pub enum ClientAdminCommand {
         page_limit: usize,
         cursor: Option<crate::storage_manager::AdministrativeInvocationCursor>,
     },
+    ListOwnInvocations {
+        page_limit: usize,
+        cursor: Option<crate::storage_manager::InvocationListCursor>,
+    },
     PrepareCreateUser {
         name: String,
     },
@@ -1469,6 +1473,31 @@ pub fn decode_client_admin_command(
                 page_limit,
                 cursor,
             })
+        }
+        Some("read")
+            if version == Some(1)
+                && operation.as_deref() == Some("runtime.invocations.own.list") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let page_limit = args.remove("limit").ok_or(ClientControlError::MissingKey)?;
+            let page_limit = parse_canonical_positive_i64(&page_limit)
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|value| *value <= crate::storage_manager::MAX_OWN_INVOCATION_PAGE)
+                .ok_or(ClientControlError::InvalidPrepare)?;
+            let cursor = args
+                .remove("cursor")
+                .map(|value| {
+                    crate::storage_manager::InvocationListCursor::from_wire(&value)
+                        .ok_or(ClientControlError::InvalidPrepare)
+                })
+                .transpose()?;
+            if !args.is_empty() {
+                return Err(ClientControlError::UnknownKey);
+            }
+            Ok(ClientAdminCommand::ListOwnInvocations { page_limit, cursor })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("users.create") => {
             if operation_id.is_some() || seen.len() != 4 {
@@ -4584,6 +4613,73 @@ impl ClientConnectionSession {
                         payload.push('"');
                     }
                     payload.push_str("]}");
+                }
+                payload.push_str("],\"next_cursor\":");
+                if let Some(cursor) = page.continuation {
+                    payload.push('"');
+                    payload.push_str(&cursor.to_wire());
+                    payload.push('"');
+                } else {
+                    payload.push_str("null");
+                }
+                payload.push('}');
+                if payload.len() > CLIENT_MAX_CONTROL_BYTES {
+                    return Err(ClientSessionError::ResourceLimit);
+                }
+                self.json_response(request.request_id, payload.into_bytes())
+            }
+            ClientAdminCommand::ListOwnInvocations { page_limit, cursor } => {
+                let now_us = current_unix_micros().ok_or(ClientSessionError::UnsupportedRequest)?;
+                let page = storage
+                    .list_own_invocations(actor_id, now_us, page_limit, cursor.as_ref())
+                    .map_err(ClientSessionError::Status)?;
+                let mut payload = format!(
+                    "{{\"observed_at_us\":{},\"consistency\":\"best_effort\",\"invocations\":[",
+                    page.observed_at_us
+                );
+                for (index, invocation) in page.invocations.iter().enumerate() {
+                    if index != 0 {
+                        payload.push(',');
+                    }
+                    let (state, started_at_us, deadline_at_us, cancellation_requested) =
+                        match invocation.status {
+                            crate::storage_manager::InvocationStatus::Active {
+                                started_at_us,
+                                deadline_at_us,
+                                cancellation_requested,
+                            } => (
+                                "active",
+                                started_at_us,
+                                deadline_at_us,
+                                cancellation_requested,
+                            ),
+                            crate::storage_manager::InvocationStatus::Committing {
+                                started_at_us,
+                                deadline_at_us,
+                                cancellation_requested,
+                            } => (
+                                "committing",
+                                started_at_us,
+                                deadline_at_us,
+                                cancellation_requested,
+                            ),
+                            _ => return Err(ClientSessionError::UnsupportedRequest),
+                        };
+                    payload.push_str("{\"invocation_id\":\"");
+                    payload.push_str(&encode_lower_hex_id(invocation.invocation_id));
+                    payload.push_str("\",\"state\":\"");
+                    payload.push_str(state);
+                    payload.push_str("\",\"started_at_us\":");
+                    payload.push_str(&started_at_us.to_string());
+                    payload.push_str(",\"deadline_at_us\":");
+                    push_json_optional_i64(&mut payload, deadline_at_us);
+                    payload.push_str(",\"cancellation_requested\":");
+                    payload.push_str(if cancellation_requested {
+                        "true"
+                    } else {
+                        "false"
+                    });
+                    payload.push('}');
                 }
                 payload.push_str("],\"next_cursor\":");
                 if let Some(cursor) = page.continuation {
