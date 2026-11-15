@@ -4031,6 +4031,15 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
     assert!(constraints.next_cursor.is_none());
     let schema_id_text = encode_id_hex(&created_schema.identity_id);
     let table_id_text = encode_id_hex(&table_id);
+    let expected_foreign_key = format!(
+        "\"constraint_id\":\"{}\",\"kind\":\"foreign_key\",\"column_ids\":[\"{}\",\"{}\"],\"referenced_table_id\":\"{}\",\"referenced_column_ids\":[\"{}\",\"{}\"]",
+        encode_id_hex(&foreign_key.constraint_id),
+        encode_id_hex(&columns.records[2].column_id),
+        encode_id_hex(&columns.records[3].column_id),
+        encode_id_hex(&table_id),
+        encode_id_hex(&columns.records[0].column_id),
+        encode_id_hex(&columns.records[1].column_id)
+    );
     let constraint_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
             "constraint-list",
@@ -4053,16 +4062,48 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
     );
     let constraint_json = String::from_utf8_lossy(&constraint_list.stdout);
     assert!(
-        constraint_json.contains(&format!(
-            "\"constraint_id\":\"{}\",\"kind\":\"foreign_key\",\"column_ids\":[\"{}\",\"{}\"],\"referenced_table_id\":\"{}\",\"referenced_column_ids\":[\"{}\",\"{}\"]",
-            encode_id_hex(&foreign_key.constraint_id),
-            encode_id_hex(&columns.records[2].column_id),
-            encode_id_hex(&columns.records[3].column_id),
-            encode_id_hex(&table_id),
-            encode_id_hex(&columns.records[0].column_id),
-            encode_id_hex(&columns.records[1].column_id)
-        )),
+        constraint_json.contains(&expected_foreign_key),
         "constraint-list omitted ordered self-referencing FK metadata: {constraint_json}"
+    );
+    assert!(constraint_json.ends_with("]}\n"));
+
+    let many_constraint_columns = (0..130)
+        .map(|ordinal| format!("column_{ordinal} INTEGER"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let many_unique_constraints = (0..130)
+        .map(|ordinal| format!("UNIQUE (column_{ordinal})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let many_constraint_table = admin.execute_create_table_sql(&format!(
+        "CREATE TABLE selfref_app.many_constraints ({many_constraint_columns}, {many_unique_constraints});"
+    ))?;
+    let many_table_id_text = encode_id_hex(&many_constraint_table.table_id);
+    let many_constraint_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "constraint-list",
+            "--address",
+            &address_text,
+            "--credentials",
+            credentials_path
+                .to_str()
+                .ok_or("non-UTF-8 credentials path")?,
+            "--schema-id",
+            &schema_id_text,
+            "--table-id",
+            &many_table_id_text,
+        ])
+        .output()?;
+    assert!(
+        many_constraint_list.status.success(),
+        "constraint-list failed to continue across pages: {}",
+        String::from_utf8_lossy(&many_constraint_list.stderr)
+    );
+    let many_constraint_json = String::from_utf8_lossy(&many_constraint_list.stdout);
+    assert_eq!(
+        many_constraint_json.matches("\"kind\":\"unique\"").count(),
+        130,
+        "constraint-list omitted UNIQUE constraints across pages: {many_constraint_json}"
     );
     let drop_output = execute_admin_sql("DROP TABLE selfref_app.nodes RESTRICT;")?;
     assert!(
