@@ -283,6 +283,8 @@
 
 - Bounded `GRANT|REVOKE SYSTEM PRIVILEGE` syntax resolves a grantee name and calls the existing typed database privilege operation. Parser and delegated process regressions pass; build, format, Clippy, TinyCC, and full serial delegated-cgroup workspace checks pass.
 
+- Compatibility follow-up: `GRANT|REVOKE MANAGE_USERS|MANAGE_ROLES|CREATE_SCHEMA ON DATABASE TO|FROM USER|ROLE name` now dispatches through the same authenticated resolver and typed mutation. Parser tests cover both supported forms; the delegated metadata lifecycle uses the normative `ON DATABASE` spelling.
+
 ## DP-SQL-1: object-level grant SQL
 
 - Added bounded schema/table object privilege GRANT/REVOKE parsing and routing through authenticated object and identity resolution to the existing typed grant operation. Column-targeted grants remain typed-only. Parser and delegated process tests pass; locked workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored.

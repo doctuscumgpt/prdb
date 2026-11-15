@@ -1375,7 +1375,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let system_privilege_sql_path = root.join("system-privilege.sql");
     std::fs::write(
         &system_privilege_sql_path,
-        "GRANT SYSTEM PRIVILEGE MANAGE_ROLES TO ROLE process_admin_role_v2;",
+        "GRANT MANAGE_ROLES ON DATABASE TO ROLE process_admin_role_v2;",
     )?;
     let system_privilege_sql_path_text = system_privilege_sql_path
         .to_str()
@@ -1872,7 +1872,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     );
     std::fs::write(
         &system_privilege_sql_path,
-        "REVOKE SYSTEM PRIVILEGE MANAGE_ROLES FROM ROLE process_admin_role_v2;",
+        "REVOKE MANAGE_ROLES ON DATABASE FROM ROLE process_admin_role_v2;",
     )?;
     let revoke_privilege_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([

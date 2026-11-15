@@ -679,7 +679,10 @@ pub fn parse_role_membership(sql: &str) -> Result<RoleMembershipSql, DdlSqlError
     })
 }
 
-/// Parse `GRANT|REVOKE SYSTEM PRIVILEGE name TO|FROM USER|ROLE grantee`.
+/// Parse a database-scoped system privilege grant or revoke.
+///
+/// Both the explicit `SYSTEM PRIVILEGE` form and the concise `ON DATABASE`
+/// form are accepted for compatibility with the permission DDL syntax.
 pub fn parse_system_privilege(sql: &str) -> Result<SystemPrivilegeSql, DdlSqlError> {
     let mut parser = statement_parser(sql)?;
     let grant = if parser.peek_word("grant") {
@@ -689,14 +692,23 @@ pub fn parse_system_privilege(sql: &str) -> Result<SystemPrivilegeSql, DdlSqlErr
         parser.word("revoke")?;
         false
     };
-    parser.word("system")?;
-    parser.word("privilege")?;
-    let privilege = parser.identifier()?;
+    let explicit_system_privilege = parser.peek_word("system");
+    let privilege = if explicit_system_privilege {
+        parser.word("system")?;
+        parser.word("privilege")?;
+        parser.identifier()?
+    } else {
+        parser.identifier()?
+    };
     if !matches!(
         privilege.as_str(),
         "manage_users" | "manage_roles" | "create_schema"
     ) {
         return Err(DdlSqlError::InvalidStatement);
+    }
+    if !explicit_system_privilege {
+        parser.word("on")?;
+        parser.word("database")?;
     }
     if grant {
         parser.word("to")?;
@@ -3054,12 +3066,35 @@ mod tests {
                 grantee_is_role: false,
             }
         );
+        assert_eq!(
+            parse_system_privilege("GRANT MANAGE_USERS ON DATABASE TO USER account_admin;")
+                .unwrap(),
+            SystemPrivilegeSql {
+                grant: true,
+                privilege: "manage_users".into(),
+                grantee_name: "account_admin".into(),
+                grantee_is_role: false,
+            }
+        );
+        assert_eq!(
+            parse_system_privilege("REVOKE CREATE_SCHEMA ON DATABASE FROM ROLE deployers").unwrap(),
+            SystemPrivilegeSql {
+                grant: false,
+                privilege: "create_schema".into(),
+                grantee_name: "deployers".into(),
+                grantee_is_role: true,
+            }
+        );
         for sql in [
             "GRANT SYSTEM PRIVILEGE SELECT TO USER alice",
             "GRANT SYSTEM PRIVILEGE MANAGE_USERS USER alice",
             "REVOKE SYSTEM PRIVILEGE CREATE_SCHEMA TO USER alice",
             "GRANT SYSTEM PRIVILEGE MANAGE_ROLES TO ROLE admins WITH ADMIN OPTION",
             "GRANT SYSTEM PRIVILEGE MANAGE_USERS TO USER alice; REVOKE SYSTEM PRIVILEGE MANAGE_USERS FROM USER alice",
+            "GRANT MANAGE_USERS TO USER alice",
+            "GRANT SELECT ON DATABASE TO USER alice",
+            "GRANT MANAGE_USERS ON SCHEMA app TO USER alice",
+            "REVOKE MANAGE_ROLES ON DATABASE TO ROLE admins",
         ] {
             assert!(parse_system_privilege(sql).is_err(), "accepted {sql}");
         }
