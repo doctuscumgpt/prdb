@@ -1972,6 +1972,37 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     );
     assert!(!added_label.nullable);
     assert!(added_columns.next_cursor.is_none());
+    let drop_column_sql_path = root.join("drop-column.sql");
+    std::fs::write(
+        &drop_column_sql_path,
+        "ALTER TABLE process_admin_schema.process_admin_table DROP COLUMN label RESTRICT;",
+    )?;
+    let drop_column_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            drop_column_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        drop_column_cli.status.success(),
+        "admin-sql DROP COLUMN failed: {}",
+        String::from_utf8_lossy(&drop_column_cli.stderr)
+    );
+    assert!(String::from_utf8_lossy(&drop_column_cli.stdout).contains("dropped column"));
+    let columns_after_drop =
+        admin.list_columns_page(created_schema.identity_id, created_table.table_id, 16, None)?;
+    assert_eq!(columns_after_drop.records.len(), 1);
+    assert_eq!(columns_after_drop.records[0].name, "payload");
+    assert!(columns_after_drop.next_cursor.is_none());
     let transfer_owner = admin.create_user("process_table_owner")?;
     let token_expiration =
         i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?

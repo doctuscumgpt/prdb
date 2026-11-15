@@ -400,3 +400,8 @@
 
 - `admin-sql` now has gateway/supervisor process coverage for adding a non-null VARCHAR column with a typed literal default. The test verifies the committed ordinal, type bound, and nullability through the authenticated metadata API.
 - The focused delegated-cgroup process test, locked workspace build, format check, warning-denied Clippy, TinyCC SDK tests/fixture, release-profile validation, and full serial delegated-cgroup workspace suite passed with zero ignored tests; see [schema DDL progress](../ddl-schema/PROGRESS.md).
+
+## DS-8: ALTER TABLE DROP COLUMN production lifecycle — verified
+
+- The gateway/supervisor metadata lifecycle now drops the newly added column through `admin-sql` with `RESTRICT`, then confirms through authenticated metadata that the column is gone and the original column remains.
+- The focused delegated process test passed. Workspace build, format check, warning-denied Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. See [schema DDL progress](../ddl-schema/PROGRESS.md).
