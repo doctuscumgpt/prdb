@@ -150,6 +150,18 @@ pub struct DropIndexSql {
     pub name: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CreateIdentityKind {
+    User,
+    Role,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateIdentitySql {
+    pub kind: CreateIdentityKind,
+    pub name: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckExpressionSql {
     Column(String),
@@ -459,6 +471,25 @@ pub fn parse_drop_index(sql: &str) -> Result<DropIndexSql, DdlSqlError> {
     parser.word("restrict")?;
     finish_statement(&mut parser)?;
     Ok(DropIndexSql { schema, name })
+}
+
+/// Parse the bounded administrative `CREATE USER` or `CREATE ROLE` form.
+pub fn parse_create_identity(sql: &str) -> Result<CreateIdentitySql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("create")?;
+    let kind = if parser.peek_word("user") {
+        parser.word("user")?;
+        CreateIdentityKind::User
+    } else {
+        parser.word("role")?;
+        CreateIdentityKind::Role
+    };
+    let name = parser.identifier()?;
+    if kind == CreateIdentityKind::User {
+        parser.word("login")?;
+    }
+    finish_statement(&mut parser)?;
+    Ok(CreateIdentitySql { kind, name })
 }
 
 /// Parse the bounded SQL form `CREATE SCHEMA name AUTHORIZATION 'uuid'`.
@@ -2193,6 +2224,34 @@ mod tests {
             "DROP INDEX app.employee_department RESTRICT; DROP TABLE app.users RESTRICT",
         ] {
             assert!(parse_drop_index(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_bounded_identity_creation_sql() {
+        assert_eq!(
+            parse_create_identity("CREATE USER analyst LOGIN;").unwrap(),
+            CreateIdentitySql {
+                kind: CreateIdentityKind::User,
+                name: "analyst".into(),
+            }
+        );
+        assert_eq!(
+            parse_create_identity("CREATE ROLE reporting").unwrap(),
+            CreateIdentitySql {
+                kind: CreateIdentityKind::Role,
+                name: "reporting".into(),
+            }
+        );
+        for sql in [
+            "CREATE USER",
+            "CREATE GROUP reporting",
+            "CREATE USER analyst",
+            "CREATE USER analyst NOLOGIN",
+            "CREATE USER app.analyst",
+            "CREATE ROLE reporting; CREATE USER analyst",
+        ] {
+            assert!(parse_create_identity(sql).is_err(), "accepted {sql}");
         }
     }
 

@@ -808,3 +808,8 @@
 
 - Authenticated administrative index metadata now exposes logical names. The SQL route resolves `DROP INDEX schema.name RESTRICT` across visible relations and pages, then dispatches the existing typed drop operation by stable generated ID.
 - Parser, metadata decoding, authenticated TCP dispatch, and CLI recognition regressions passed. Focused parser, metadata decoding, authenticated TCP dispatch, CLI recognition, and process-level metadata lifecycle tests passed. Locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, full serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed; see the DDL component progress entry.
+
+## SDK: CREATE USER/ROLE administrative SQL — implemented
+
+- Added a bounded parser/client helper for `CREATE USER name LOGIN` and `CREATE ROLE name`, dispatching the existing typed identity control operations. User creation does not issue a credential.
+- Parser, authenticated TCP typed-dispatch, and CLI pre-credential recognition regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, full serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed; see the identity DDL progress entry.

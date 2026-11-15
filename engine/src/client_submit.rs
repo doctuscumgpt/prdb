@@ -3005,6 +3005,20 @@ impl AdminClient {
         self.drop_index(index_id)
     }
 
+    /// Create a user or role from bounded SQL through the existing typed ADMIN
+    /// operations. User creation does not issue a credential.
+    pub fn execute_create_identity_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminIdentityResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_create_identity(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        match statement.kind {
+            crate::ddl_sql::CreateIdentityKind::User => self.create_user(&statement.name),
+            crate::ddl_sql::CreateIdentityKind::Role => self.create_role(&statement.name),
+        }
+    }
+
     /// Execute the supported SQL `CREATE TABLE` subset through the
     /// authenticated administrative control channel. The SQL is parsed locally
     /// into the same typed operation as `create_table`; storage remains the

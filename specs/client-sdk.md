@@ -56,6 +56,10 @@ The requested set is only a ceiling. At START storage intersects it with the cur
 
 The Rust `RequestedScopeBuilder` consumes permission-filtered `VisibleSchema`, `VisibleRelation`, and `VisibleColumn` records from metadata discovery. Selecting a relation operation produces a table capability; selecting a column operation produces a column capability. Both automatically include that schema's USAGE capability. It emits canonical PSC1 ordering, collapses repeated identical selections, and enforces the 200-capability limit atomically. It cannot discover objects itself or establish authority: callers must obtain records through the authorized discovery APIs, and storage validates every submitted ID and grant independently.
 
+## Administrative Identity Creation SQL
+
+`AdminClient::execute_create_identity_sql` accepts one `CREATE USER name LOGIN` or `CREATE ROLE name` statement and dispatches the existing authenticated identity operation. A created user has no credential until a separate token-issue operation succeeds. `NOLOGIN`, rename, drop, and membership SQL remain outside this bounded SQL helper; their typed AdminClient operations remain available.
+
 ## Administrative CREATE INDEX SQL
 
 `AdminClient::execute_create_index_sql` accepts one bounded `CREATE [UNIQUE] INDEX name ON schema.table [USING BTREE] (column, ...)` statement. It resolves schema, relation, and ordered column names through authenticated metadata, then calls the existing typed index-create operation on the same control connection. Storage remains authoritative for DDL permission, uniqueness, and catalog validation. `execute_drop_index_sql` accepts `DROP INDEX schema.name RESTRICT`, enumerates visible relations and their name-bearing index metadata, and dispatches the existing typed index-drop operation by generated ID. Missing or ambiguous names reject before mutation.

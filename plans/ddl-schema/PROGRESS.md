@@ -617,7 +617,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Implementation: the typed create operation carries FK source-column names and target constraint IDs. Storage publishes the new table, FK constraint/object/dependency records, target table write-epoch changes, audit, and durable outcome atomically. Commit validation guards target catalog records and checks authority.
 - Regression: parser tests cover multiple FK clauses and invalid arity, duplicate/unknown columns, qualification, and multiple statements. Authenticated TCP coverage checks metadata binding and typed arguments; storage coverage verifies atomic catalog/dependency/epoch publication and startup validation. No stale tests were found; existing negative syntax tests remain relevant.
 - Validation: focused parser, authenticated AdminClient, and storage regressions passed. Locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests, sandbox fixture build, and the full serial delegated-cgroup workspace suite passed (all sandbox/process tests enabled, zero ignored); `git diff --check` passed.
-- Next: add operational SQL transaction support for bounded INSERT/UPDATE/DELETE statements through the existing confined query executor.
+- Next: continue the adjacent identity DDL SQL surface with `NOLOGIN`, rename, RESTRICT drop, and role membership forms.
 
 
 ## DS-13: ALTER COLUMN SET/DROP DEFAULT SQL — implemented

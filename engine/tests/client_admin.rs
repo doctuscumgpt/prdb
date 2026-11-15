@@ -991,6 +991,71 @@ fn admin_client_drops_index_from_schema_qualified_sql_name() {
 }
 
 #[test]
+fn admin_client_creates_user_and_role_from_sql_names() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        for (operation, name, id_field, operation_id, identity_id) in [
+            ("users.create", "analyst", "user_id", [0x11; 16], [0xa1; 16]),
+            (
+                "roles.create",
+                "reporting",
+                "role_id",
+                [0x12; 16],
+                [0xa2; 16],
+            ),
+        ] {
+            let prepare = read_frame(&mut stream, &mut decoder);
+            let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+            assert!(payload.contains(&format!(r#""operation":"{operation}""#)));
+            assert!(payload.contains(&format!(r#""name":"{name}""#)));
+            respond(
+                &mut stream,
+                &prepare,
+                format!(
+                    r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                    hex(&operation_id)
+                )
+                .as_bytes(),
+            );
+            let start = read_frame(&mut stream, &mut decoder);
+            respond(
+                &mut stream,
+                &start,
+                format!(
+                    r#"{{"operation_id":"{}","outcome":"committed","{id_field}":"{}","commit_sequence":"{}"}}"#,
+                    hex(&operation_id),
+                    hex(&identity_id),
+                    identity_id[0]
+                )
+                .as_bytes(),
+            );
+        }
+    });
+
+    let mut secret = [5; 32];
+    let mut client = AdminClient::connect_authenticated_with_timeout(
+        address,
+        [6; 16],
+        &mut secret,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let user = client
+        .execute_create_identity_sql("CREATE USER analyst LOGIN")
+        .unwrap();
+    assert_eq!(user.identity_id, [0xa1; 16]);
+    let role = client
+        .execute_create_identity_sql("CREATE ROLE reporting;")
+        .unwrap();
+    assert_eq!(role.identity_id, [0xa2; 16]);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_returns_operation_id_when_start_reply_is_lost() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
