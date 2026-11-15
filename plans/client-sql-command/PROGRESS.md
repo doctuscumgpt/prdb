@@ -436,3 +436,8 @@
 
 - The production `admin-sql` lifecycle now tests `IF EXISTS` with both present and absent objects: present table drops succeed, while foreign-key and non-empty-schema RESTRICT failures remain errors.
 - The focused delegated process test, workspace build, format, warning-denied Clippy, cgroup probe, and full serial delegated-cgroup workspace suite passed; see [DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+## Conditional DROP INDEX SQL — implemented slice
+
+- `admin-sql` recognizes `DROP INDEX IF EXISTS schema.name RESTRICT`; authorized administrators receive a no-op when the target cannot be resolved, while present indexes follow regular drop authorization and RESTRICT validation.
+- CLI dispatch, contract docs, workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` are updated/passing. A focused process regression remains to be added; no test suite was run for this increment.

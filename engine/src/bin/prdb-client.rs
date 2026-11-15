@@ -429,15 +429,30 @@ fn admin_sql(
             &result.operation_id,
             result.commit_sequence,
         );
-    } else if drop_index_statement.is_some() {
-        let result = client
-            .execute_drop_index_sql(sql)
-            .map_err(|error| error.to_string())?;
-        print_operation(
-            "dropped index",
-            &result.operation_id,
-            result.commit_sequence,
-        );
+    } else if let Some(statement) = drop_index_statement {
+        if statement.if_exists {
+            if let Some(result) = client
+                .execute_drop_index_if_exists_sql(sql)
+                .map_err(|error| error.to_string())?
+            {
+                print_operation(
+                    "dropped index",
+                    &result.operation_id,
+                    result.commit_sequence,
+                );
+            } else {
+                println!("index was absent; no operation committed");
+            }
+        } else {
+            let result = client
+                .execute_drop_index_sql(sql)
+                .map_err(|error| error.to_string())?;
+            print_operation(
+                "dropped index",
+                &result.operation_id,
+                result.commit_sequence,
+            );
+        }
     } else if alter_index_rebuild_statement.is_some() {
         let result = client
             .execute_alter_index_rebuild_sql(sql)

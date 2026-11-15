@@ -183,6 +183,7 @@ pub struct CreateIndexSql {
 pub struct DropIndexSql {
     pub schema: String,
     pub name: String,
+    pub if_exists: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -636,12 +637,23 @@ pub fn parse_drop_index(sql: &str) -> Result<DropIndexSql, DdlSqlError> {
     let mut parser = statement_parser(sql)?;
     parser.word("drop")?;
     parser.word("index")?;
+    let if_exists = if parser.peek_word("if") {
+        parser.word("if")?;
+        parser.word("exists")?;
+        true
+    } else {
+        false
+    };
     let schema = parser.identifier()?;
     parser.take(Token::Dot)?;
     let name = parser.identifier()?;
     parser.word("restrict")?;
     finish_statement(&mut parser)?;
-    Ok(DropIndexSql { schema, name })
+    Ok(DropIndexSql {
+        schema,
+        name,
+        if_exists,
+    })
 }
 
 /// Parse a bounded schema-qualified index rebuild request.
@@ -3233,6 +3245,7 @@ mod tests {
             DropIndexSql {
                 schema: "app".into(),
                 name: "employee_department".into(),
+                if_exists: false,
             }
         );
         for sql in [

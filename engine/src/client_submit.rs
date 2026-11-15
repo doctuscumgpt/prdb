@@ -3253,7 +3253,7 @@ impl AdminClient {
                                 .replace((relation.relation_id, index))
                                 .is_some()
                         {
-                            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+                            return Err(ClientSubmitError::InvalidResponse);
                         }
                     }
                     index_cursor = next_index_cursor;
@@ -3329,8 +3329,32 @@ impl AdminClient {
     ) -> Result<AdminIndexResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_drop_index(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if statement.if_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
         let (_, index) = self.resolve_index_sql_name(&statement.schema, &statement.name)?;
         self.drop_index(index.index_id)
+    }
+
+    /// Execute `DROP INDEX IF EXISTS`. An unresolved target is suppressed only
+    /// after the server confirms database-administrator authority.
+    pub fn execute_drop_index_if_exists_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<Option<AdminIndexResult>, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_drop_index(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if !statement.if_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        match self.resolve_index_sql_name(&statement.schema, &statement.name) {
+            Ok((_, index)) => self.drop_index(index.index_id).map(Some),
+            Err(ClientSubmitError::InvalidAdministrativeRequest) => {
+                self.list_runtime_invocations_page(1, None)?;
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Create a user or role from bounded SQL through the existing typed ADMIN

@@ -759,3 +759,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Contract: `DROP TABLE IF EXISTS` and `DROP SCHEMA IF EXISTS` suppress only unresolved-target errors after authority is checked. A present but restricted object must still fail and remain intact.
 - Regression: the gateway/supervisor lifecycle now successfully drops a present table with `IF EXISTS`, rejects `DROP TABLE IF EXISTS` for a parent referenced by a child FK, and rejects `DROP SCHEMA IF EXISTS` for a non-empty schema. Existing rows/relations remain checked after the failed table drop.
 - Verification: the focused delegated process test passed (1 passed, 0 failed). Workspace build, format, warning-denied Clippy, writable `cpu memory pids` cgroup probe, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (278 library, 174 commit, 3 metadata-process, 75 transaction tests; all other targets passed). `git diff --check` passed; Cargo.lock is unchanged.
+
+## DS-SQL-31: authorized `DROP INDEX IF EXISTS` — implemented slice
+
+- Extended bounded index-drop SQL parsing and `admin-sql` dispatch with `DROP INDEX IF EXISTS schema.name RESTRICT`. Present indexes retain typed authorization and dependency checks; unresolved names are a no-op only after the authenticated server confirms database-administrator authority. Ambiguous index-name resolution remains an error.
+- Updated the schema DDL and SQL command contracts. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused parser and delegated process regressions remain to be added; no test suite was run for this increment.

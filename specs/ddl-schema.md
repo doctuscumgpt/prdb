@@ -106,7 +106,7 @@ Changing nullability on an existing column is available through `tables.alter_co
 
 `tables.set_column_default` sets or replaces a current insert default on a non-generated column. PREPARE supplies `{ "table_id": id, "column_id": id, "type": type, "default": { ... } }`; the default uses the same typed literal, `null`, or `current_principal_id` forms as `tables.create`. The table owner (including inherited ownership through a role) or a database administrator may change defaults on a non-system table. The default mask and declared scalar type are checked, including UUID-only `CURRENT_PRINCIPAL_ID`; existing rows are not rewritten. `tables.drop_column_default` removes the current default. Both operations atomically update the column's current-default expression reference and table write epoch, while preserving schema version and the immutable add-column default reference. Replaced or dropped expression objects and column dependency edges are removed in the same commit. Setting an identical default or dropping an absent default is rejected.
 
-Default drop mode is `RESTRICT`: dependencies prevent removing an object still referenced elsewhere. Dropping a column is blocked by its policies, constraints, and indexes. Dropping a table removes its owned column/index/constraint/policy definitions atomically, but is blocked by external references such as another table's foreign key. Dropping a schema requires it to be empty. No implicit cross-object cascade is supported. `IF EXISTS`/`IF NOT EXISTS` may suppress existence errors only after checking authority; they never reconcile incompatible definitions. For the supported `DROP TABLE IF EXISTS` and `DROP SCHEMA IF EXISTS`, the absent-object no-op is database-administrator-only and creates no DDL outcome. Adding a column grants no field privileges automatically.
+Default drop mode is `RESTRICT`: dependencies prevent removing an object still referenced elsewhere. Dropping a column is blocked by its policies, constraints, and indexes. Dropping a table removes its owned column/index/constraint/policy definitions atomically, but is blocked by external references such as another table's foreign key. Dropping a schema requires it to be empty. No implicit cross-object cascade is supported. `IF EXISTS`/`IF NOT EXISTS` may suppress existence errors only after checking authority; they never reconcile incompatible definitions. For `DROP TABLE IF EXISTS`, `DROP SCHEMA IF EXISTS`, and `DROP INDEX IF EXISTS`, the absent-object no-op is database-administrator-only and creates no DDL outcome; a present object follows its regular authorization and RESTRICT checks. Adding a column grants no field privileges automatically.
 
 ## Indexes
 
@@ -114,6 +114,7 @@ Default drop mode is `RESTRICT`: dependencies prevent removing an object still r
 CREATE INDEX employees_department ON app.employees USING BTREE (department_id, name);
 CREATE UNIQUE INDEX employees_unique_name ON app.employees (department_id, name);
 DROP INDEX app.employees_department RESTRICT;
+DROP INDEX IF EXISTS app.employees_department RESTRICT;
 REBUILD INDEX app.employees_department;
 ALTER INDEX app.employees_department REBUILD USING BTREE NONUNIQUE (department_id, name);
 ```
