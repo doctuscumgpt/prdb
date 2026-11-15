@@ -1,5 +1,10 @@
 # Storage Manager Progress
 
+## DS-SQL-27: atomic self-referencing CREATE TABLE key — verified
+
+- The CREATE path resolves local target column names against generated column IDs and the same-statement PRIMARY KEY/UNIQUE definitions, then stores the FK target ID and dependency atomically with the table. It avoids treating the new table as an externally referenced table for write-epoch and REFERENCES authority checks.
+- The focused real-redb lifecycle regression creates the self-referencing table, commits, and validates recovered catalog metadata. The full serial delegated-cgroup workspace suite passes with zero ignored tests. See [DDL progress](../ddl-schema/PROGRESS.md).
+
 ## DP-SQL-3 follow-up: policy-scoped identity lookup — verified
 
 - `StorageManager::resolve_token_policy_identity_name` authenticates the token before invoking a bounded catalog resolver. The resolver verifies schema/table linkage, checks database-admin/owner/scoped `MANAGE_POLICIES` authority against the pinned catalog and role closure, then resolves one identity of the requested kind.

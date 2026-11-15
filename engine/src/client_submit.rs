@@ -167,6 +167,9 @@ pub struct AdminColumnDefinition {
 pub struct AdminTableForeignKeyDefinition {
     pub source_columns: Vec<String>,
     pub target_constraint_id: [u8; 16],
+    /// Present only when this key targets a PRIMARY KEY or UNIQUE declared by
+    /// the same CREATE TABLE statement.
+    pub target_columns: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2880,7 +2883,20 @@ impl AdminClient {
             || foreign_keys.iter().any(|foreign_key| {
                 foreign_key.source_columns.is_empty()
                     || foreign_key.source_columns.len() > columns.len()
-                    || foreign_key.target_constraint_id == [0; 16]
+                    || (foreign_key.target_constraint_id == [0; 16])
+                        != foreign_key.target_columns.is_some()
+                    || foreign_key
+                        .target_columns
+                        .as_ref()
+                        .is_some_and(|target_columns| {
+                            target_columns.is_empty()
+                                || target_columns.len() > columns.len()
+                                || target_columns.iter().collect::<HashSet<_>>().len()
+                                    != target_columns.len()
+                                || target_columns
+                                    .iter()
+                                    .any(|name| !columns.iter().any(|column| &column.name == name))
+                        })
                     || foreign_key
                         .source_columns
                         .iter()
@@ -2917,12 +2933,46 @@ impl AdminClient {
                 .map(|foreign_key| format!("\"{}\"", lower_hex(&foreign_key.target_constraint_id)))
                 .collect::<Vec<_>>()
                 .join(",");
-            format!(
-                ",\"foreign_key_source_columns\":[{source_columns}],\"foreign_key_target_constraint_ids\":[{target_constraints}]"
-            )
+            let target_columns = foreign_keys
+                .iter()
+                .map(|foreign_key| {
+                    format!(
+                        "[{}]",
+                        foreign_key
+                            .target_columns
+                            .as_deref()
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|column| json_quote(column))
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            if foreign_keys
+                .iter()
+                .any(|foreign_key| foreign_key.target_columns.is_some())
+            {
+                format!(
+                    ",\"foreign_key_source_columns\":[{source_columns}],\"foreign_key_target_constraint_ids\":[{target_constraints}],\"foreign_key_target_columns\":[{target_columns}]"
+                )
+            } else {
+                format!(
+                    ",\"foreign_key_source_columns\":[{source_columns}],\"foreign_key_target_constraint_ids\":[{target_constraints}]"
+                )
+            }
+        };
+        let operation_version = if foreign_keys
+            .iter()
+            .any(|foreign_key| foreign_key.target_columns.is_some())
+        {
+            2
+        } else {
+            1
         };
         let prepare = format!(
-            "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tables.create\",\"arguments\":{{\"schema_id\":\"{}\",\"name\":\"{name}\",\"columns\":{encoded_columns}{primary_key_json}{unique_json}{checks_json}{foreign_keys_json}}}}}",
+            "{{\"phase\":\"prepare\",\"operation_version\":{operation_version},\"operation\":\"tables.create\",\"arguments\":{{\"schema_id\":\"{}\",\"name\":\"{name}\",\"columns\":{encoded_columns}{primary_key_json}{unique_json}{checks_json}{foreign_keys_json}}}}}",
             lower_hex(&schema_id)
         );
         let prepared = self.transport.exchange(10, prepare.into_bytes())?;
@@ -3628,6 +3678,27 @@ impl AdminClient {
             .collect::<Result<Vec<_>, _>>()?;
         let mut foreign_keys = Vec::with_capacity(statement.foreign_keys.len());
         for foreign_key in &statement.foreign_keys {
+            if foreign_key.referenced_schema == statement.schema
+                && foreign_key.referenced_table == statement.table
+            {
+                let local_key_exists = statement
+                    .primary_key_columns
+                    .as_ref()
+                    .is_some_and(|columns| columns == &foreign_key.referenced_columns)
+                    || statement
+                        .unique_constraints
+                        .iter()
+                        .any(|columns| columns == &foreign_key.referenced_columns);
+                if !local_key_exists {
+                    return Err(ClientSubmitError::InvalidAdministrativeRequest);
+                }
+                foreign_keys.push(AdminTableForeignKeyDefinition {
+                    source_columns: foreign_key.columns.clone(),
+                    target_constraint_id: [0; 16],
+                    target_columns: Some(foreign_key.referenced_columns.clone()),
+                });
+                continue;
+            }
             let target_schema_id = self.resolve_schema_sql_name(&foreign_key.referenced_schema)?;
             let target_table_id = self.resolve_table_sql_name_in_schema(
                 target_schema_id,
@@ -3688,6 +3759,7 @@ impl AdminClient {
             foreign_keys.push(AdminTableForeignKeyDefinition {
                 source_columns: foreign_key.columns.clone(),
                 target_constraint_id,
+                target_columns: None,
             });
         }
         self.create_table_with_checks_constraints_and_foreign_keys(

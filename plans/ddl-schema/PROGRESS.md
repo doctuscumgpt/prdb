@@ -2,6 +2,12 @@
 
 Migrated component-owned progress entries from [storage-manager progress](../storage-manager/PROGRESS.md); evidence is preserved below.
 
+## DS-SQL-27: self-referencing FOREIGN KEY in CREATE TABLE — verified
+
+- `CREATE TABLE` now accepts inline or table-level foreign keys that target a PRIMARY KEY or UNIQUE constraint declared in the same statement. Storage resolves the local target after generating the table's column/key IDs and publishes the FK, dependency, key index, and table together. No pre-existing REFERENCES grant is needed for a target key owned by that same CREATE; external FK authority remains unchanged.
+- The control payload uses `tables.create` version 2 only when a same-statement target is present; ordinary and external-FK requests retain version 1. Strict decoder and authenticated AdminClient request regressions cover the zero-ID/local-column sentinel and the self-target identity.
+- Verification: focused real-redb storage, strict v2 decoder, and authenticated AdminClient SQL control-channel tests pass. The complete serial delegated-cgroup workspace suite passes with sandbox/process tests enabled and zero ignored tests (274 library tests, 174 commit tests, 42 client-admin tests, plus all other targets). Workspace build, format check, warning-denied Clippy, TinyCC SDK tests/fixture, release-profile validation, and `git diff --check` pass. Cargo.lock is unchanged. Dedicated self-reference coverage through the full gateway/supervisor process path remains a follow-up.
+
 ## DS-5 / SM-5: empty schema DROP RESTRICT — verified
 
 - Behavior and normative contracts: [schema DDL](../../specs/ddl-schema.md), [client protocol](../../specs/client-protocol.md), and [storage manager](../../specs/storage-manager.md). The owner, a member of an owning role, or a database administrator can remove an empty non-system schema. Child objects and remaining dependency edges reject the request. A second emptiness check runs under the serialized redb writer to linearize against concurrent table creation.

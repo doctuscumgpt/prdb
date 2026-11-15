@@ -1,5 +1,11 @@
 # Client Protocol Progress
 
+## DS-SQL-27: local FK target in `tables.create` v2 — verified
+
+- Added version 2 decoding for parallel FK source-column, target-constraint-ID, and target-column arrays. An all-zero constraint ID is accepted only with non-empty local target names; version 1 continues to encode existing/external targets.
+- Regression: the strict decoder accepts a `parent_id REFERENCES` target represented by the same CREATE's `id` key. Focused decoder test passes. The protocol spec documents the sentinel and compatibility contract.
+- Full serial delegated-cgroup workspace suite passes with zero ignored tests. Strict v1 compatibility and v2 decoding are covered; see [DDL progress](../ddl-schema/PROGRESS.md).
+
 ## DP-SQL-3 follow-up: scoped policy identity read — verified
 
 - Added the read-only `metadata.policy_identities.resolve` operation with exact normalized arguments and nonzero schema/table IDs. The existing `metadata.identities.resolve` contract remains unchanged.

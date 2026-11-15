@@ -8880,11 +8880,19 @@ fn table_create_ddl_authority_guards(
                 return Err(CommitError::InvalidCatalog);
             }
             let target_constraint_key = id_catalog_key(8, target_constraint_id);
-            let target_constraint_bytes = catalog
-                .get(target_constraint_key.as_slice())
-                .map_err(storage_error)?
-                .map(|value| value.value().to_vec())
-                .ok_or(CommitError::InvalidCatalog)?;
+            let local_target_constraint = constraint_writes
+                .get(&target_constraint_id)
+                .and_then(|write| write.payload.as_deref());
+            let is_local_target = local_target_constraint.is_some();
+            let target_constraint_bytes = if let Some(bytes) = local_target_constraint {
+                bytes.to_vec()
+            } else {
+                catalog
+                    .get(target_constraint_key.as_slice())
+                    .map_err(storage_error)?
+                    .map(|value| value.value().to_vec())
+                    .ok_or(CommitError::InvalidCatalog)?
+            };
             let target_kind =
                 catalog_field_u16(&target_constraint_key, &target_constraint_bytes, 8, 2)?;
             let target_table_id =
@@ -8893,12 +8901,14 @@ fn table_create_ddl_authority_guards(
                 catalog_id_list_field(&target_constraint_key, &target_constraint_bytes, 8, 3)?;
             if !matches!(target_kind, 2 | 3)
                 || target_table_id == [0; 16]
-                || target_table_id == table_id
+                || (target_table_id == table_id) != is_local_target
                 || primary_target_columns != target_columns
             {
                 return Err(CommitError::InvalidCatalog);
             }
-            referenced_table_ids.insert(target_table_id);
+            if !is_local_target {
+                referenced_table_ids.insert(target_table_id);
+            }
             let source_positions = source_columns
                 .iter()
                 .map(|source_id| {
@@ -8910,6 +8920,18 @@ fn table_create_ddl_authority_guards(
                 .collect::<Result<Vec<_>, _>>()?;
             for (source_position, target_column_id) in source_positions.iter().zip(&target_columns)
             {
+                if is_local_target {
+                    let target_position = ordered_column_ids
+                        .iter()
+                        .position(|column_id| column_id == target_column_id)
+                        .ok_or(CommitError::InvalidCatalog)?;
+                    if column_schemas[*source_position].scalar_type
+                        != column_schemas[target_position].scalar_type
+                    {
+                        return Err(CommitError::InvalidCatalog);
+                    }
+                    continue;
+                }
                 let target_column_key = id_catalog_key(6, *target_column_id);
                 let target_column_bytes = catalog
                     .get(target_column_key.as_slice())
@@ -8943,21 +8965,33 @@ fn table_create_ddl_authority_guards(
                 add_catalog_guard(&mut guards, target_column_key, Some(target_column_bytes));
                 add_catalog_guard(&mut guards, target_type_key, Some(target_type_bytes));
             }
-            add_catalog_guard(
-                &mut guards,
-                target_constraint_key.clone(),
-                Some(target_constraint_bytes),
-            );
+            if !is_local_target {
+                add_catalog_guard(
+                    &mut guards,
+                    target_constraint_key.clone(),
+                    Some(target_constraint_bytes),
+                );
+            }
             let target_object_key = id_catalog_key(2, target_constraint_id);
-            let target_object_bytes = catalog
-                .get(target_object_key.as_slice())
-                .map_err(storage_error)?
-                .map(|value| value.value().to_vec())
-                .ok_or(CommitError::InvalidCatalog)?;
+            let target_object_bytes = if is_local_target {
+                object_writes
+                    .get(&target_constraint_id)
+                    .and_then(|write| write.payload.as_deref())
+                    .map(ToOwned::to_owned)
+                    .ok_or(CommitError::InvalidCatalog)?
+            } else {
+                catalog
+                    .get(target_object_key.as_slice())
+                    .map_err(storage_error)?
+                    .map(|value| value.value().to_vec())
+                    .ok_or(CommitError::InvalidCatalog)?
+            };
             if catalog_field_u16(&target_object_key, &target_object_bytes, 2, 1)? != 6 {
                 return Err(CommitError::InvalidCatalog);
             }
-            add_catalog_guard(&mut guards, target_object_key, Some(target_object_bytes));
+            if !is_local_target {
+                add_catalog_guard(&mut guards, target_object_key, Some(target_object_bytes));
+            }
             let foreign_key_object_key = id_catalog_key(2, constraint_id);
             let foreign_key_object = object_writes
                 .get(&constraint_id)
@@ -9427,6 +9461,12 @@ fn table_create_ddl_authority_guards(
                 .as_slice()
                 .try_into()
                 .map_err(|_| CommitError::InvalidCatalog)?;
+        if constraint_writes.contains_key(&target_constraint_id) {
+            // A self-reference targets a key declared by this same atomic
+            // CREATE TABLE. The table creator's DDL authority covers its own
+            // key definition; there is no pre-existing grant to consult.
+            continue;
+        }
         let target_constraint_key = id_catalog_key(8, target_constraint_id);
         let target_constraint_bytes = catalog
             .get(target_constraint_key.as_slice())

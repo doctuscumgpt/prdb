@@ -8557,7 +8557,8 @@ fn storage_manager_creates_foreign_key_and_advances_both_table_epochs()
 fn storage_manager_atomically_creates_table_with_foreign_key_to_existing_key()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{
-        CreateTableForeignKeyDefinition, CreateTableRequest, TableColumnDefinition,
+        CreateIndexRequest, CreateTableForeignKeyDefinition, CreateTableRequest,
+        RebuildIndexRequest, TableColumnDefinition,
     };
 
     let fixture = Fixture::new();
@@ -8613,6 +8614,7 @@ fn storage_manager_atomically_creates_table_with_foreign_key_to_existing_key()
         &[CreateTableForeignKeyDefinition {
             source_columns: vec!["parent_id".to_owned()],
             target_constraint_id: id(85),
+            target_columns: None,
         }],
     );
     let created = created_result
@@ -8623,6 +8625,75 @@ fn storage_manager_atomically_creates_table_with_foreign_key_to_existing_key()
             .ok_or("missing CREATE TABLE FK outcome")?
             .status,
         OutcomeStatus::Committed
+    );
+    let self_reference_invocation = id(0xf0);
+    let mut self_reference_audit = identity_audit_event(0xf1, actor, id(80));
+    self_reference_audit.correlation_id = self_reference_invocation;
+    let self_referencing = storage
+        .create_table_with_foreign_keys(
+            CreateTableRequest {
+                invocation_id: self_reference_invocation,
+                authenticated_actor_id: actor,
+                schema_id: id(80),
+                name: "self_referencing".to_owned(),
+                columns: vec![
+                    TableColumnDefinition {
+                        name: "id".to_owned(),
+                        scalar_type: target_type,
+                        nullable: false,
+                        generated_uuid_identity: false,
+                        default: None,
+                    },
+                    TableColumnDefinition {
+                        name: "parent_id".to_owned(),
+                        scalar_type: target_type,
+                        nullable: true,
+                        generated_uuid_identity: false,
+                        default: None,
+                    },
+                ],
+                retention_deadline_us: 9_999,
+                audit_event: self_reference_audit,
+            },
+            Some(&["id".to_owned()]),
+            &[],
+            &[],
+            &[CreateTableForeignKeyDefinition {
+                source_columns: vec!["parent_id".to_owned()],
+                target_constraint_id: [0; 16],
+                target_columns: Some(vec!["id".to_owned()]),
+            }],
+        )
+        .map_err(|error| format!("atomic self-referencing CREATE TABLE failed: {error:?}"))?;
+    assert_eq!(self_referencing.commit_sequence, 3);
+    let create_index_invocation = id(0xf2);
+    let mut create_index_audit = identity_audit_event(0xf3, actor, id(80));
+    create_index_audit.correlation_id = create_index_invocation;
+    let created_index = storage.create_index(CreateIndexRequest {
+        invocation_id: create_index_invocation,
+        authenticated_actor_id: actor,
+        table_id: created.table_id,
+        name: "post_self_fk_index".to_owned(),
+        column_ids: vec![created.column_ids[0]],
+        unique: false,
+        retention_deadline_us: 9_999,
+        audit_event: create_index_audit,
+    })?;
+    let rebuild_index_invocation = id(0xf4);
+    let mut rebuild_index_audit = identity_audit_event(0xf5, actor, id(80));
+    rebuild_index_audit.correlation_id = rebuild_index_invocation;
+    let rebuilt_index = storage.rebuild_index(RebuildIndexRequest {
+        invocation_id: rebuild_index_invocation,
+        authenticated_actor_id: actor,
+        index_id: created_index.index_id,
+        column_ids: vec![created.column_ids[0]],
+        unique: false,
+        retention_deadline_us: 9_999,
+        audit_event: rebuild_index_audit,
+    });
+    assert!(
+        rebuilt_index.is_ok(),
+        "unrelated index rebuild after self-referencing CREATE TABLE failed: {rebuilt_index:?}"
     );
     let read = database.begin_read()?;
     let catalog = read.open_table(CATALOG)?;

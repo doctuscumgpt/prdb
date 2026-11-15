@@ -633,6 +633,8 @@ pub struct CreateTableRequest {
 pub struct CreateTableForeignKeyDefinition {
     pub source_columns: Vec<String>,
     pub target_constraint_id: [u8; 16],
+    /// Local referenced key columns for an atomic self-reference.
+    pub target_columns: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -5992,7 +5994,20 @@ impl<'db> StorageManager<'db> {
         if foreign_keys.iter().any(|foreign_key| {
             foreign_key.source_columns.is_empty()
                 || foreign_key.source_columns.len() > columns.len()
-                || foreign_key.target_constraint_id == [0; 16]
+                || (foreign_key.target_constraint_id == [0; 16])
+                    != foreign_key.target_columns.is_some()
+                || foreign_key
+                    .target_columns
+                    .as_ref()
+                    .is_some_and(|target_columns| {
+                        target_columns.is_empty()
+                            || target_columns.len() > columns.len()
+                            || target_columns.iter().collect::<HashSet<_>>().len()
+                                != target_columns.len()
+                            || target_columns
+                                .iter()
+                                .any(|name| !columns.iter().any(|column| column.name == *name))
+                    })
                 || foreign_key
                     .source_columns
                     .iter()
@@ -6788,34 +6803,77 @@ impl<'db> StorageManager<'db> {
                         Ok(column_ids[ordinal])
                     })
                     .collect::<Result<Vec<_>, TableLifecycleError>>()?;
-                if !foreign_key_shapes
-                    .insert((source_column_ids.clone(), definition.target_constraint_id))
+                let local_target = definition
+                    .target_columns
+                    .as_ref()
+                    .map(|names| {
+                        names
+                            .iter()
+                            .map(|name| {
+                                columns
+                                    .iter()
+                                    .position(|column| &column.name == name)
+                                    .map(|ordinal| column_ids[ordinal])
+                                    .ok_or(TableLifecycleError::InvalidRequest)
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .transpose()?;
+                let target_constraint_id = if let Some(target_column_ids) = &local_target {
+                    key_constraints
+                        .iter()
+                        .find(|(kind, key_columns, _, _)| {
+                            matches!(kind, 2 | 3) && key_columns == target_column_ids
+                        })
+                        .map(|(_, _, constraint_id, _)| *constraint_id)
+                        .ok_or(TableLifecycleError::InvalidRequest)?
+                } else {
+                    definition.target_constraint_id
+                };
+                if !foreign_key_shapes.insert((source_column_ids.clone(), target_constraint_id)) {
+                    return Err(TableLifecycleError::InvalidRequest);
+                }
+                let local_target = local_target.is_some();
+                let (target_table_id, target_column_ids) = if let Some(target_column_ids) =
+                    definition.target_columns.as_ref()
                 {
-                    return Err(TableLifecycleError::InvalidRequest);
-                }
-                let target_constraint_key = id_catalog_key(8, definition.target_constraint_id);
-                let target_constraint_bytes = catalog
-                    .get(target_constraint_key.as_slice())
-                    .map_err(|_| TableLifecycleError::Storage)?
-                    .map(|value| value.value().to_vec())
-                    .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
-                let target_constraint =
-                    read_catalog_record(&target_constraint_key, &target_constraint_bytes, 8)?;
-                if !matches!(
-                    read_catalog_u16(&target_constraint_key, &target_constraint_bytes, 8, 2)?,
-                    2 | 3
-                ) {
-                    return Err(TableLifecycleError::InvalidRequest);
-                }
-                let target_table_id =
-                    read_catalog_id(&target_constraint_key, &target_constraint_bytes, 8, 1)?;
-                let target_column_ids = target_constraint
-                    .fields
-                    .iter()
-                    .find(|field| field.tag == 3 && field.wire_type == WireType::Ids)
-                    .map(|field| decode_catalog_id_list(&field.payload))
-                    .transpose()?
-                    .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+                    let target_column_ids = target_column_ids
+                        .iter()
+                        .map(|name| {
+                            columns
+                                .iter()
+                                .position(|column| &column.name == name)
+                                .map(|ordinal| column_ids[ordinal])
+                                .ok_or(TableLifecycleError::InvalidRequest)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    (table_id, target_column_ids)
+                } else {
+                    let target_constraint_key = id_catalog_key(8, target_constraint_id);
+                    let target_constraint_bytes = catalog
+                        .get(target_constraint_key.as_slice())
+                        .map_err(|_| TableLifecycleError::Storage)?
+                        .map(|value| value.value().to_vec())
+                        .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+                    let target_constraint =
+                        read_catalog_record(&target_constraint_key, &target_constraint_bytes, 8)?;
+                    if !matches!(
+                        read_catalog_u16(&target_constraint_key, &target_constraint_bytes, 8, 2,)?,
+                        2 | 3
+                    ) {
+                        return Err(TableLifecycleError::InvalidRequest);
+                    }
+                    let target_table_id =
+                        read_catalog_id(&target_constraint_key, &target_constraint_bytes, 8, 1)?;
+                    let target_column_ids = target_constraint
+                        .fields
+                        .iter()
+                        .find(|field| field.tag == 3 && field.wire_type == WireType::Ids)
+                        .map(|field| decode_catalog_id_list(&field.payload))
+                        .transpose()?
+                        .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+                    (target_table_id, target_column_ids)
+                };
                 if target_column_ids.is_empty()
                     || target_column_ids.len() != source_column_ids.len()
                     || target_column_ids.contains(&[0; 16])
@@ -6831,34 +6889,40 @@ impl<'db> StorageManager<'db> {
                         .iter()
                         .position(|column| column.name == *source_name)
                         .ok_or(TableLifecycleError::InvalidRequest)?;
-                    let target_column_key = id_catalog_key(6, *target_column_id);
-                    let target_column_bytes = catalog
-                        .get(target_column_key.as_slice())
-                        .map_err(|_| TableLifecycleError::Storage)?
-                        .map(|value| value.value().to_vec())
-                        .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
-                    if read_catalog_id(&target_column_key, &target_column_bytes, 6, 1)?
-                        != target_table_id
-                    {
-                        return Err(TableLifecycleError::Commit(CommitError::InvalidCatalog));
-                    }
-                    let target_type_id =
-                        read_catalog_id(&target_column_key, &target_column_bytes, 6, 4)?;
-                    let target_type_key = id_catalog_key(4, target_type_id);
-                    let target_type_bytes = catalog
-                        .get(target_type_key.as_slice())
-                        .map_err(|_| TableLifecycleError::Storage)?
-                        .map(|value| value.value().to_vec())
-                        .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
-                    let target_parameters =
-                        read_catalog_field(&target_column_key, &target_column_bytes, 6, 5)?;
-                    let target_type_record =
-                        read_catalog_record(&target_type_key, &target_type_bytes, 4)?;
-                    let target_scalar_type =
+                    let target_scalar_type = if local_target {
+                        let target_ordinal = column_ids
+                            .iter()
+                            .position(|column_id| column_id == target_column_id);
+                        let target_ordinal = target_ordinal
+                            .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+                        columns[target_ordinal].scalar_type
+                    } else {
+                        let target_column_key = id_catalog_key(6, *target_column_id);
+                        let target_column_bytes = catalog
+                            .get(target_column_key.as_slice())
+                            .map_err(|_| TableLifecycleError::Storage)?
+                            .map(|value| value.value().to_vec())
+                            .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+                        if read_catalog_id(&target_column_key, &target_column_bytes, 6, 1)?
+                            != target_table_id
+                        {
+                            return Err(TableLifecycleError::Commit(CommitError::InvalidCatalog));
+                        }
+                        let target_type_id =
+                            read_catalog_id(&target_column_key, &target_column_bytes, 6, 4)?;
+                        let target_type_key = id_catalog_key(4, target_type_id);
+                        let target_type_bytes = catalog
+                            .get(target_type_key.as_slice())
+                            .map_err(|_| TableLifecycleError::Storage)?
+                            .map(|value| value.value().to_vec())
+                            .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+                        let target_parameters =
+                            read_catalog_field(&target_column_key, &target_column_bytes, 6, 5)?;
+                        let target_type_record =
+                            read_catalog_record(&target_type_key, &target_type_bytes, 4)?;
                         decode_builtin_scalar_type(&target_type_record, &target_parameters)
-                            .map_err(|_| {
-                                TableLifecycleError::Commit(CommitError::InvalidCatalog)
-                            })?;
+                            .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?
+                    };
                     if columns[source_ordinal].scalar_type != target_scalar_type {
                         return Err(TableLifecycleError::InvalidRequest);
                     }
@@ -6897,7 +6961,7 @@ impl<'db> StorageManager<'db> {
                         CatalogField {
                             tag: 5,
                             wire_type: WireType::Id,
-                            payload: definition.target_constraint_id.to_vec(),
+                            payload: target_constraint_id.to_vec(),
                         },
                         CatalogField {
                             tag: 6,
@@ -6978,10 +7042,11 @@ impl<'db> StorageManager<'db> {
                         expected_value: None,
                         payload: Some(object_payload),
                     },
-                    new_dependency_write(foreign_key_id, definition.target_constraint_id, 3)?,
+                    new_dependency_write(foreign_key_id, target_constraint_id, 3)?,
                 ]);
-                if let std::collections::hash_map::Entry::Vacant(entry) =
-                    referenced_tables.entry(target_table_id)
+                if !local_target
+                    && let std::collections::hash_map::Entry::Vacant(entry) =
+                        referenced_tables.entry(target_table_id)
                 {
                     let table_key = id_catalog_key(5, target_table_id);
                     let table_bytes = catalog

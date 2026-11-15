@@ -915,6 +915,7 @@ pub fn decode_client_admin_command(
     let mut check_expressions = None;
     let mut table_foreign_key_sources = None;
     let mut table_foreign_key_targets = None;
+    let mut table_foreign_key_target_columns = None;
     let mut foreign_key_source_columns = None;
     let mut constraint_column_ids = None;
     let mut index_unique = None;
@@ -999,8 +1000,13 @@ pub fn decode_client_admin_command(
                     } else if arg == "foreign_key_target_constraint_ids"
                         && parser.text.get(parser.offset) == Some(&b'[')
                     {
-                        table_foreign_key_targets = Some(parser.parse_id_array()?);
+                        table_foreign_key_targets = Some(parser.parse_id_array_allow_zero()?);
                         args.insert(arg, "<structured-foreign-key-targets>".to_owned());
+                    } else if arg == "foreign_key_target_columns"
+                        && parser.text.get(parser.offset) == Some(&b'[')
+                    {
+                        table_foreign_key_target_columns = Some(parser.parse_string_array_array()?);
+                        args.insert(arg, "<structured-foreign-key-target-columns>".to_owned());
                     } else if arg == "source_column_ids"
                         && parser.text.get(parser.offset) == Some(&b'[')
                     {
@@ -2199,8 +2205,10 @@ pub fn decode_client_admin_command(
                 column_id,
             })
         }
-        Some("prepare") if version == Some(1) && operation.as_deref() == Some("tables.create") => {
-            if operation_id.is_some() || !(4..=9).contains(&seen.len()) {
+        Some("prepare")
+            if matches!(version, Some(1 | 2)) && operation.as_deref() == Some("tables.create") =>
+        {
+            if operation_id.is_some() || !(4..=10).contains(&seen.len()) {
                 return Err(ClientControlError::UnknownKey);
             }
             let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
@@ -2256,16 +2264,42 @@ pub fn decode_client_admin_command(
             }
             let source_columns = table_foreign_key_sources.unwrap_or_default();
             let target_constraint_ids = table_foreign_key_targets.unwrap_or_default();
-            if source_columns.len() != target_constraint_ids.len() {
+            let target_columns_marker = args.remove("foreign_key_target_columns");
+            if target_columns_marker.as_deref()
+                != table_foreign_key_target_columns
+                    .as_ref()
+                    .map(|_| "<structured-foreign-key-target-columns>")
+                || (version == Some(1) && table_foreign_key_target_columns.is_some())
+            {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            let target_columns = table_foreign_key_target_columns
+                .unwrap_or_else(|| vec![Vec::new(); target_constraint_ids.len()]);
+            if source_columns.len() != target_constraint_ids.len()
+                || source_columns.len() != target_columns.len()
+            {
                 return Err(ClientControlError::InvalidPrepare);
             }
             let foreign_keys = source_columns
                 .into_iter()
-                .zip(target_constraint_ids)
-                .map(|(source_columns, target_constraint_id)| {
+                .zip(target_constraint_ids.into_iter().zip(target_columns))
+                .map(|(source_columns, (target_constraint_id, target_columns))| {
+                    let target_columns = if target_columns.is_empty() {
+                        None
+                    } else {
+                        Some(target_columns)
+                    };
                     if source_columns.is_empty()
                         || source_columns.len() > columns.len()
-                        || target_constraint_id == [0; 16]
+                        || (target_constraint_id == [0; 16]) != target_columns.is_some()
+                        || target_columns.as_ref().is_some_and(|names| {
+                            names.len() > columns.len()
+                                || names.iter().collect::<std::collections::HashSet<_>>().len()
+                                    != names.len()
+                                || names
+                                    .iter()
+                                    .any(|name| !columns.iter().any(|column| column.name == *name))
+                        })
                         || source_columns
                             .iter()
                             .collect::<std::collections::HashSet<_>>()
@@ -2280,6 +2314,7 @@ pub fn decode_client_admin_command(
                     Ok(crate::storage_manager::CreateTableForeignKeyDefinition {
                         source_columns,
                         target_constraint_id,
+                        target_columns,
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -3211,6 +3246,27 @@ impl JsonStringObjectParser<'_> {
         Ok(ids)
     }
 
+    fn parse_id_array_allow_zero(&mut self) -> Result<Vec<[u8; 16]>, ClientControlError> {
+        self.expect(b'[')?;
+        self.skip_whitespace();
+        let mut ids = Vec::new();
+        if self.consume(b']') {
+            return Ok(ids);
+        }
+        loop {
+            if ids.len() >= crate::tuple::MAX_COLUMNS {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            ids.push(decode_lower_hex_id_allow_zero(&self.parse_string()?)?);
+            self.skip_whitespace();
+            if self.consume(b']') {
+                break;
+            }
+            self.expect(b',')?;
+        }
+        Ok(ids)
+    }
+
     fn parse_policy_recipient_array(
         &mut self,
     ) -> Result<Vec<crate::authorization::Subject>, ClientControlError> {
@@ -3549,6 +3605,14 @@ fn reject_unknown_scalars(fields: HashMap<String, JsonScalar>) -> Result<(), Cli
 }
 
 fn decode_lower_hex_id(text: &str) -> Result<[u8; 16], ClientControlError> {
+    let id = decode_lower_hex_id_allow_zero(text)?;
+    if id == [0; 16] {
+        return Err(ClientControlError::InvalidTokenId);
+    }
+    Ok(id)
+}
+
+fn decode_lower_hex_id_allow_zero(text: &str) -> Result<[u8; 16], ClientControlError> {
     if text.len() != 32 {
         return Err(ClientControlError::InvalidTokenId);
     }
@@ -3557,9 +3621,6 @@ fn decode_lower_hex_id(text: &str) -> Result<[u8; 16], ClientControlError> {
         let high = lower_hex_nibble(pair[0]).ok_or(ClientControlError::InvalidTokenId)?;
         let low = lower_hex_nibble(pair[1]).ok_or(ClientControlError::InvalidTokenId)?;
         id[index] = (high << 4) | low;
-    }
-    if id == [0; 16] {
-        return Err(ClientControlError::InvalidTokenId);
     }
     Ok(id)
 }

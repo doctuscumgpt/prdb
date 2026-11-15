@@ -41,6 +41,20 @@ fn admin_create_table_decoder_validates_constraints_and_check_expressions() {
     );
 }
 
+#[test]
+fn admin_create_table_v2_decoder_accepts_same_statement_foreign_key_target() {
+    let self_reference = br#"{"phase":"prepare","operation_version":2,"operation":"tables.create","arguments":{"schema_id":"11111111111111111111111111111111","name":"nodes","columns":[{"name":"id","type":"integer","nullable":false,"generated_uuid_identity":false},{"name":"parent_id","type":"integer","nullable":true,"generated_uuid_identity":false}],"primary_key_columns":["id"],"foreign_key_source_columns":[["parent_id"]],"foreign_key_target_constraint_ids":["00000000000000000000000000000000"],"foreign_key_target_columns":[["id"]]}}"#;
+    assert!(matches!(
+        decode_client_admin_command(self_reference),
+        Ok(ClientAdminCommand::PrepareCreateTable { foreign_keys, .. })
+            if foreign_keys == [prdb_engine::storage_manager::CreateTableForeignKeyDefinition {
+                source_columns: vec!["parent_id".to_owned()],
+                target_constraint_id: [0; 16],
+                target_columns: Some(vec!["id".to_owned()]),
+            }]
+    ));
+}
+
 fn read_frame(stream: &mut TcpStream, decoder: &mut ClientFrameDecoder) -> ClientFrame {
     let mut input = [0u8; 4096];
     loop {
@@ -2775,6 +2789,90 @@ fn admin_client_executes_create_table_sql_on_authenticated_control_channel() {
 }
 
 #[test]
+fn admin_client_executes_self_referencing_create_table_sql_with_v2_payload() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let schemas = read_frame(&mut stream, &mut decoder);
+        assert!(
+            String::from_utf8_lossy(&schemas.payload)
+                .contains(r#""operation":"metadata.schemas.list""#)
+        );
+        respond(
+            &mut stream,
+            &schemas,
+            format!(
+                r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                "01".repeat(16)
+            )
+            .as_bytes(),
+        );
+        let prepare = read_frame(&mut stream, &mut decoder);
+        let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+        assert!(
+            payload.contains(r#""operation_version":2,"#),
+            "expected tables.create v2 payload, got {payload}"
+        );
+        assert!(payload.contains(r#""foreign_key_source_columns":[["parent_id"]],"#));
+        assert!(payload.contains(
+            r#""foreign_key_target_constraint_ids":["00000000000000000000000000000000"],"#
+        ));
+        assert!(payload.contains(r#""foreign_key_target_columns":[["id"]]"#));
+        assert!(matches!(
+            decode_client_admin_command(&prepare.payload),
+            Ok(ClientAdminCommand::PrepareCreateTable { foreign_keys, .. })
+                if foreign_keys.len() == 1
+                    && foreign_keys[0].source_columns == ["parent_id"]
+                    && foreign_keys[0].target_columns.as_deref() == Some(["id".to_owned()].as_slice())
+        ));
+        let operation_id = [0x82; 16];
+        respond(
+            &mut stream,
+            &prepare,
+            format!(
+                r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                hex(&operation_id)
+            )
+            .as_bytes(),
+        );
+        let start = read_frame(&mut stream, &mut decoder);
+        respond(
+            &mut stream,
+            &start,
+            format!(
+                r#"{{"operation_id":"{}","outcome":"committed","table_id":"{}","column_ids":["{}","{}"],"commit_sequence":"63"}}"#,
+                hex(&operation_id),
+                "a6".repeat(16),
+                "b1".repeat(16),
+                "b2".repeat(16)
+            )
+            .as_bytes(),
+        );
+    });
+
+    let mut secret = [5; 32];
+    let mut client = AdminClient::connect_authenticated_with_timeout(
+        address,
+        [6; 16],
+        &mut secret,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let created = client
+        .execute_create_table_sql(
+            "CREATE TABLE app.tree (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES app.tree (id));",
+        )
+        .unwrap();
+    assert_eq!(created.table_id, [0xa6; 16]);
+    assert_eq!(created.column_ids, [[0xb1; 16], [0xb2; 16]]);
+    assert_eq!(created.commit_sequence, 63);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_adds_renames_and_drops_columns() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -2937,6 +3035,7 @@ fn admin_client_creates_table_with_foreign_key_in_one_typed_operation() {
                 if foreign_keys == [prdb_engine::storage_manager::CreateTableForeignKeyDefinition {
                     source_columns: vec!["customer_id".to_owned()],
                     target_constraint_id: [0xd7; 16],
+                    target_columns: None,
                 }]
         ));
         respond(
