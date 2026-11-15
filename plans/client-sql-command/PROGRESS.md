@@ -21,6 +21,12 @@
 - The bounded `admin-sql` parser accepts column-level `UNIQUE` and sends the same one-column typed unique-constraint definition used by table-level syntax. Parser coverage rejects duplicate inline/table definitions, and authenticated AdminClient plus CLI coverage exercise the inline form.
 - Verification: the red/green parser regression, authenticated AdminClient request test, CLI recognition test, locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests and fixture, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. The suite reported 270 library tests, 174 commit tests, and 75 transaction tests, with all other targets passing. `git diff --check` passed and Cargo.lock is unchanged.
 
+## CREATE TABLE column-level PRIMARY KEY — verified
+
+- The bounded parser lowers a column-level primary key to the existing `primary_key_columns` request field and enforces NOT NULL. Duplicate inline/table-level declarations reject.
+- Red/green parser coverage passes, and authenticated AdminClient and CLI tests use the inline form. Obsolete syntax-rejection assertions were removed while malformed and unsupported syntax checks remain.
+- Verification: all 38 DDL parser tests, focused AdminClient/CLI tests, locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (271 library, 174 commit, 75 transaction tests; all other targets passed). `git diff --check` passed and Cargo.lock is unchanged.
+
 ## Implemented
 
 - `CREATE ROW|CELL POLICY` now resolves recipients and `HAS_ROLE` names through a table/schema scoped identity read. Storage returns no identity for absent names or callers without database-admin, ownership, or scoped `MANAGE_POLICIES` authority. Policy DDL authority now exposes the target relation's declared shape through authenticated metadata; the process regression grants schema USAGE but no SELECT to the table owner.

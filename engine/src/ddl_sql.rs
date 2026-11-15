@@ -455,6 +455,7 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
         let mut nullable = true;
         let mut default = None;
         let mut unique = false;
+        let mut primary_key = false;
         loop {
             if parser.peek_word("not") && nullable {
                 parser.word("not")?;
@@ -466,6 +467,10 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
             } else if parser.peek_word("unique") && !unique {
                 parser.word("unique")?;
                 unique = true;
+            } else if parser.peek_word("primary") && !primary_key {
+                parser.word("primary")?;
+                parser.word("key")?;
+                primary_key = true;
             } else {
                 break;
             }
@@ -476,6 +481,9 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
             }
             nullable = false;
         }
+        if primary_key {
+            nullable = false;
+        }
         columns.push(AdminColumnDefinition {
             name: name.clone(),
             scalar_type,
@@ -483,8 +491,11 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
             generated_uuid_identity,
             default,
         });
+        if primary_key && primary_key_columns.replace(vec![name.clone()]).is_some() {
+            return Err(DdlSqlError::InvalidStatement);
+        }
         if unique {
-            let key_columns = vec![name];
+            let key_columns = vec![name.clone()];
             if unique_constraints.contains(&key_columns) {
                 return Err(DdlSqlError::InvalidStatement);
             }
@@ -2798,6 +2809,25 @@ mod tests {
     }
 
     #[test]
+    fn parses_column_level_primary_key_as_non_nullable() {
+        let parsed = parse_create_table(
+            "CREATE TABLE app.accounts (id UUID PRIMARY KEY, email TEXT UNIQUE);",
+        )
+        .unwrap();
+        assert_eq!(parsed.primary_key_columns, Some(vec![String::from("id")]));
+        assert!(!parsed.columns[0].nullable);
+        assert_eq!(parsed.unique_constraints, vec![vec![String::from("email")]]);
+
+        for sql in [
+            "CREATE TABLE app.accounts (id INTEGER PRIMARY KEY, email INTEGER PRIMARY KEY)",
+            "CREATE TABLE app.accounts (id INTEGER PRIMARY KEY, PRIMARY KEY (id))",
+            "CREATE TABLE app.accounts (id INTEGER PRIMARY KEY PRIMARY KEY)",
+        ] {
+            assert!(parse_create_table(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
     fn binds_check_comparison_literals_to_column_types() {
         use crate::authorization::Expr;
 
@@ -3547,7 +3577,6 @@ mod tests {
             "CREATE TABLE app.t (id UUID, PRIMARY KEY (missing))",
             "CREATE TABLE app.t (id UUID, PRIMARY KEY (id, id))",
             "CREATE TABLE app.t (id UUID, PRIMARY KEY (id), extra INTEGER)",
-            "CREATE TABLE app.t (id UUID PRIMARY KEY)",
         ] {
             assert!(parse_create_table(sql).is_err(), "accepted {sql}");
         }
@@ -3615,7 +3644,7 @@ mod tests {
     fn rejects_unsupported_or_ambiguous_ddl() {
         for sql in [
             "CREATE TABLE events (id UUID)",
-            "CREATE TABLE app.events (id UUID PRIMARY KEY)",
+            "CREATE TABLE app.events (id UUID CHECK (id IS NOT NULL))",
             "CREATE TABLE app.events (id UUID); CREATE TABLE app.other (id UUID)",
             "CREATE TABLE \"app\".events (id UUID)",
             "CREATE TABLE app.events (id DECIMAL(39, 0))",
