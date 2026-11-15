@@ -2902,6 +2902,11 @@ mod tests {
                 if_exists: false,
             }
         );
+        assert!(parse_drop_constraint(
+            "ALTER TABLE app.orders DROP CONSTRAINT IF EXISTS '01234567-89ab-cdef-0123-456789abcdef'"
+        )
+        .unwrap()
+        .if_exists);
         for sql in [
             "ALTER TABLE app.orders DROP CONSTRAINT fk_orders_customer",
             "ALTER TABLE orders DROP CONSTRAINT '0123456789abcdef0123456789abcdef'",

@@ -2514,6 +2514,28 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&grantee_alter_sql.stderr)
     );
     assert!(String::from_utf8_lossy(&grantee_alter_sql.stdout).contains("added column"));
+    let denied_constraint_noop_sql_path = root.join("alter-grantee-missing-constraint.sql");
+    std::fs::write(
+        &denied_constraint_noop_sql_path,
+        "ALTER TABLE process_admin_schema.process_admin_table DROP CONSTRAINT IF EXISTS '00000000-0000-0000-0000-000000000001';",
+    )?;
+    let denied_constraint_noop = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            credential_path_text,
+            "--sql-file",
+            denied_constraint_noop_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        !denied_constraint_noop.status.success(),
+        "ALTER grantee received an absent-constraint no-op without database-admin authority"
+    );
     let added_column = admin.add_column(
         created_table.table_id,
         &AdminColumnDefinition {
@@ -2766,7 +2788,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     std::fs::write(
         &drop_constraint_sql_path,
         format!(
-            "ALTER TABLE process_admin_schema.process_admin_source DROP CONSTRAINT '{constraint_uuid}';"
+            "ALTER TABLE process_admin_schema.process_admin_source DROP CONSTRAINT IF EXISTS '{constraint_uuid}';"
         ),
     )?;
     let drop_foreign_key_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
@@ -2788,6 +2810,28 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&drop_foreign_key_cli.stderr)
     );
     assert!(String::from_utf8_lossy(&drop_foreign_key_cli.stdout).contains("dropped constraint"));
+    let repeated_drop_foreign_key_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &foreign_key_cli_address,
+            "--credentials",
+            foreign_key_cli_credentials,
+            "--sql-file",
+            drop_constraint_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        repeated_drop_foreign_key_cli.status.success(),
+        "admin-sql conditional DROP CONSTRAINT no-op failed: {}",
+        String::from_utf8_lossy(&repeated_drop_foreign_key_cli.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&repeated_drop_foreign_key_cli.stdout)
+            .contains("constraint did not exist")
+    );
     let revoked_references = admin.revoke_object_privilege(
         admin_user_id,
         created_table.table_id,

@@ -778,7 +778,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## DS-SQL-34: conditional constraint drops — implemented slice
 
 - Added `ALTER TABLE schema.table DROP CONSTRAINT IF EXISTS 'generated-id'`. Resolved IDs retain generated-ID table binding and dispatch through the typed PRIMARY KEY, UNIQUE, CHECK, or FOREIGN KEY drop path; unresolved IDs require database-administrator authority for a no-op.
-- Updated the schema DDL contract. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass. No tests were added or run; Cargo.lock is unchanged.
+- Updated the schema DDL contract. The delegated gateway/supervisor lifecycle now drops a present FK with `IF EXISTS`, repeats the same statement to verify the administrator no-op, and confirms an ALTER-only grantee cannot suppress a missing ID. The focused process regression, formatting, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
 
 ## DS-SQL-35: ALTER-authorized constraint binding — implemented slice
 

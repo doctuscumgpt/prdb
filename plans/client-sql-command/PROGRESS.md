@@ -460,7 +460,7 @@
 ## Conditional DROP CONSTRAINT SQL — implemented slice
 
 - `admin-sql` accepts `ALTER TABLE schema.table DROP CONSTRAINT IF EXISTS 'generated-id'`. A visible generated constraint ID follows its matching typed drop operation; an unresolved ID is suppressed only after a current database-administrator check.
-- CLI dispatch and client SQL documentation are updated. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass. No tests were added or run; Cargo.lock is unchanged.
+- CLI dispatch and client SQL documentation are updated. The delegated gateway/supervisor lifecycle verifies present-target removal, the administrator-only absent-target no-op, and denial of that no-op to an ALTER-only grantee. The focused process regression, formatting, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
 
 ## ALTER-authorized constraint SQL binding — implemented slice
 
