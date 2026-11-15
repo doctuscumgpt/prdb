@@ -313,12 +313,26 @@
 
 - `admin-sql` recognizes row and cell policy creation, binds identifiers/context functions, and prints the generated policy ID after dispatching the typed operation. Parser/binder and delegated process tests, workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, and full serial delegated-cgroup suite pass with zero ignored. Policy-scoped identity resolution and DROP SQL are covered by DP-SQL-4/5 below.
 
-## DP-SQL-5: CREATE OR REPLACE ROW/CELL POLICY — verified
+## DP-SQL-4: bounded DROP ROW/CELL POLICY SQL — verified
+
+- `DROP ROW|CELL POLICY name ON schema.table RESTRICT` resolves the named policy only in its table through authenticated metadata, then dispatches `policies.drop`; storage independently rechecks authority.
+- Parser/protocol regressions and the delegated gateway/supervisor lifecycle cover both policy kinds. Full serial delegated-cgroup workspace validation passed with sandbox/process tests enabled and zero ignored tests; details are in [permission DDL progress](../ddl-permissions/PROGRESS.md).
+
+## DP-SQL-5: policy-authorized table and column binding — verified
+
+- Relation and column metadata for policy DDL is available to schema/table owners and scoped `MANAGE_POLICIES` holders with schema USAGE, even without data SELECT. Policy recipient and `HAS_ROLE` identity resolution remains scoped to the authenticated policy authority.
+- The delegated lifecycle covers owner and non-owner manager paths. Full locked checks and the serial delegated-cgroup workspace suite passed; details are in [permission DDL progress](../ddl-permissions/PROGRESS.md).
+
+## DP-SQL-6: database-scoped system privilege syntax — verified
+
+- `GRANT|REVOKE MANAGE_USERS|MANAGE_ROLES|CREATE_SCHEMA ON DATABASE TO|FROM USER|ROLE name` resolves one grantee through authenticated metadata and calls the database-admin-only typed mutation.
+- Parser and gateway/supervisor lifecycle regressions passed. Full locked checks and the serial delegated-cgroup workspace suite passed with zero ignored tests; details are in [permission DDL progress](../ddl-permissions/PROGRESS.md).
+
+## DP-SQL-7: CREATE OR REPLACE ROW/CELL POLICY — verified
 
 - `CREATE OR REPLACE` resolves a same-name policy across row and cell kinds and dispatches the dedicated atomic `policies.replace` protocol operation. The production process lifecycle replaces a row policy with a cell policy; the full serial delegated-cgroup workspace suite, warning-denied Clippy, build, format, TinyCC, and release-profile checks passed with zero ignored tests.
 
-## DP-SQL-7: named REBUILD INDEX SQL — verified
+## DP-SQL-8: named index DDL SQL — verified
 
-- Added bounded `REBUILD INDEX schema.name` to `admin-sql`. The client searches paginated authenticated logical-index metadata within the named schema, rejects missing or ambiguous names, and dispatches the existing `indexes.rebuild` operation using the current ordered column IDs and uniqueness flag.
-- Red/green evidence: parser coverage rejects unqualified names, unsupported clauses, and multiple statements; the separate gateway/supervisor lifecycle successfully rebuilds a logical index by name through SQL.
-- Verification: focused parser and delegated process tests passed. Locked offline workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed; Cargo.lock is unchanged.
+- `CREATE INDEX`, `REBUILD INDEX schema.name`, and `DROP INDEX schema.name RESTRICT` resolve relation, column, or logical-index metadata through authenticated control reads and dispatch the existing typed operations. Rebuild uses the current ordered columns and uniqueness profile; missing or ambiguous named indexes reject before mutation.
+- Parser coverage checks bounded syntax. The delegated gateway/supervisor lifecycle now exercises named CREATE, REBUILD, and DROP via `admin-sql`. Focused tests and full serial delegated-cgroup validation passed with sandbox/process tests enabled and zero ignored tests; `Cargo.lock` is unchanged.
