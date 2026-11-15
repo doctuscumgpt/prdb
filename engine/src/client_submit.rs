@@ -3003,7 +3003,7 @@ impl AdminClient {
         &mut self,
         schema_name: &str,
         index_name: &str,
-    ) -> Result<crate::metadata_discovery::AdministrativeIndex, ClientSubmitError> {
+    ) -> Result<([u8; 16], crate::metadata_discovery::AdministrativeIndex), ClientSubmitError> {
         let schema_id = self.resolve_schema_sql_name(schema_name)?;
         let mut relation_cursor = None;
         let mut matched_index = None;
@@ -3025,7 +3025,11 @@ impl AdminClient {
                     )?;
                     let next_index_cursor = indexes.next_cursor;
                     for index in indexes.records {
-                        if index.name == index_name && matched_index.replace(index).is_some() {
+                        if index.name == index_name
+                            && matched_index
+                                .replace((relation.relation_id, index))
+                                .is_some()
+                        {
                             return Err(ClientSubmitError::InvalidAdministrativeRequest);
                         }
                     }
@@ -3051,8 +3055,47 @@ impl AdminClient {
     ) -> Result<AdminIndexResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_rebuild_index(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
-        let index = self.resolve_index_sql_name(&statement.schema, &statement.name)?;
+        let (_, index) = self.resolve_index_sql_name(&statement.schema, &statement.name)?;
         self.rebuild_index(index.index_id, &index.column_ids, index.unique)
+    }
+
+    /// Atomically replace a named index's ordered key columns and uniqueness
+    /// profile after binding the new columns through authenticated metadata.
+    pub fn execute_alter_index_rebuild_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminIndexResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_alter_index_rebuild(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let (table_id, index) = self.resolve_index_sql_name(&statement.schema, &statement.name)?;
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        let mut cursor = None;
+        let mut visible_columns = Vec::new();
+        loop {
+            let page = self.list_columns_page(
+                schema_id,
+                table_id,
+                DEFAULT_METADATA_PAGE_SIZE,
+                cursor.as_deref(),
+            )?;
+            visible_columns.extend(page.records);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let column_ids = statement
+            .columns
+            .iter()
+            .map(|name| {
+                visible_columns
+                    .iter()
+                    .find(|column| &column.name == name)
+                    .map(|column| column.column_id)
+                    .ok_or(ClientSubmitError::InvalidAdministrativeRequest)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.rebuild_index(index.index_id, &column_ids, statement.unique)
     }
 
     /// Drop a schema-qualified index after resolving its generated ID through
@@ -3063,7 +3106,7 @@ impl AdminClient {
     ) -> Result<AdminIndexResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_drop_index(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
-        let index = self.resolve_index_sql_name(&statement.schema, &statement.name)?;
+        let (_, index) = self.resolve_index_sql_name(&statement.schema, &statement.name)?;
         self.drop_index(index.index_id)
     }
 

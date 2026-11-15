@@ -336,3 +336,9 @@
 
 - `CREATE INDEX`, `REBUILD INDEX schema.name`, and `DROP INDEX schema.name RESTRICT` resolve relation, column, or logical-index metadata through authenticated control reads and dispatch the existing typed operations. Rebuild uses the current ordered columns and uniqueness profile; missing or ambiguous named indexes reject before mutation.
 - Parser coverage checks bounded syntax. The delegated gateway/supervisor lifecycle now exercises named CREATE, REBUILD, and DROP via `admin-sql`. Focused tests and full serial delegated-cgroup validation passed with sandbox/process tests enabled and zero ignored tests; `Cargo.lock` is unchanged.
+
+## DP-SQL-9: ALTER INDEX definition rebuild — verified
+
+- `ALTER INDEX schema.name REBUILD [USING BTREE] {UNIQUE|NONUNIQUE} (columns...)` resolves the existing logical index and binds its replacement key columns on the owning table through authenticated metadata, then dispatches the established atomic `indexes.rebuild` operation.
+- Parser rejection cases cover unqualified names, omitted uniqueness profile, unsupported methods, duplicate/empty columns, and multiple statements. The gateway/supervisor lifecycle exercises a named index definition change through `admin-sql` and confirms the new ordered column IDs and nonunique profile through authenticated metadata.
+- Focused parser and delegated process tests passed, including a focused rerun after the metadata assertions were added. Locked offline workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests. `Cargo.lock` is unchanged.

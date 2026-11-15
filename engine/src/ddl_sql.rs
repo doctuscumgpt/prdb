@@ -164,6 +164,14 @@ pub struct RebuildIndexSql {
     pub name: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AlterIndexRebuildSql {
+    pub schema: String,
+    pub name: String,
+    pub columns: Vec<String>,
+    pub unique: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CreateIdentityKind {
     User,
@@ -575,6 +583,51 @@ pub fn parse_rebuild_index(sql: &str) -> Result<RebuildIndexSql, DdlSqlError> {
     let name = parser.identifier()?;
     finish_statement(&mut parser)?;
     Ok(RebuildIndexSql { schema, name })
+}
+
+/// Parse an atomic index definition rebuild using a new ordered column set.
+pub fn parse_alter_index_rebuild(sql: &str) -> Result<AlterIndexRebuildSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("index")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let name = parser.identifier()?;
+    parser.word("rebuild")?;
+    if parser.peek_word("using") {
+        parser.word("using")?;
+        parser.word("btree")?;
+    }
+    let unique = if parser.peek_word("unique") {
+        parser.word("unique")?;
+        true
+    } else if parser.peek_word("nonunique") {
+        parser.word("nonunique")?;
+        false
+    } else {
+        return Err(DdlSqlError::InvalidStatement);
+    };
+    parser.take(Token::LeftParen)?;
+    let mut columns = vec![parser.identifier()?];
+    while parser.peek() == Some(&Token::Comma) {
+        parser.position += 1;
+        if columns.len() >= crate::tuple::MAX_COLUMNS {
+            return Err(DdlSqlError::InvalidStatement);
+        }
+        columns.push(parser.identifier()?);
+    }
+    parser.take(Token::RightParen)?;
+    finish_statement(&mut parser)?;
+    let mut seen = std::collections::HashSet::new();
+    if columns.iter().any(|column| !seen.insert(column)) {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    Ok(AlterIndexRebuildSql {
+        schema,
+        name,
+        columns,
+        unique,
+    })
 }
 
 /// Parse the bounded administrative `CREATE USER` or `CREATE ROLE` form.
@@ -2941,6 +2994,32 @@ mod tests {
             "REBUILD INDEX app.employee_department; DROP TABLE app.users RESTRICT",
         ] {
             assert!(parse_rebuild_index(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_bounded_alter_index_rebuild_sql() {
+        assert_eq!(
+            parse_alter_index_rebuild(
+                "ALTER INDEX app.employee_department REBUILD USING BTREE UNIQUE (department_id, employee_id);"
+            )
+            .unwrap(),
+            AlterIndexRebuildSql {
+                schema: "app".into(),
+                name: "employee_department".into(),
+                columns: vec!["department_id".into(), "employee_id".into()],
+                unique: true,
+            }
+        );
+        for sql in [
+            "ALTER INDEX employee_department REBUILD UNIQUE (department_id)",
+            "ALTER INDEX app.employee_department REBUILD (department_id)",
+            "ALTER INDEX app.employee_department REBUILD USING HASH UNIQUE (department_id)",
+            "ALTER INDEX app.employee_department REBUILD UNIQUE (department_id, department_id)",
+            "ALTER INDEX app.employee_department REBUILD NONUNIQUE ()",
+            "ALTER INDEX app.employee_department REBUILD UNIQUE (department_id); DROP INDEX app.other RESTRICT",
+        ] {
+            assert!(parse_alter_index_rebuild(sql).is_err(), "accepted {sql}");
         }
     }
 

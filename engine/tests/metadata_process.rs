@@ -2955,6 +2955,47 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&create_index_sql.stderr)
     );
     assert!(String::from_utf8_lossy(&create_index_sql.stdout).contains("created index "));
+    let alter_index_sql_path = root.join("alter-index.sql");
+    std::fs::write(
+        &alter_index_sql_path,
+        "ALTER INDEX process_admin_schema.process_admin_index REBUILD USING BTREE NONUNIQUE (payload);",
+    )?;
+    let alter_index_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            alter_index_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        alter_index_sql.status.success(),
+        "ALTER INDEX REBUILD SQL failed: {}",
+        String::from_utf8_lossy(&alter_index_sql.stderr)
+    );
+    assert!(String::from_utf8_lossy(&alter_index_sql.stdout).contains("rebuilt index definition"));
+    let payload_column_id = admin
+        .list_columns_page(created_schema.identity_id, created_table.table_id, 64, None)?
+        .records
+        .into_iter()
+        .find(|column| column.name == "payload")
+        .ok_or("ALTER INDEX SQL fixture column is missing")?
+        .column_id;
+    let altered_index = admin
+        .list_indexes_page(created_schema.identity_id, created_table.table_id, 64, None)?
+        .records
+        .into_iter()
+        .find(|index| index.index_id == created_index.index_id)
+        .ok_or("ALTER INDEX SQL fixture index is missing")?;
+    assert_eq!(altered_index.column_ids, [payload_column_id]);
+    assert!(!altered_index.unique);
     let rebuild_index_sql_path = root.join("rebuild-index.sql");
     std::fs::write(
         &rebuild_index_sql_path,
