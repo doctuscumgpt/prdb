@@ -3496,21 +3496,19 @@ impl AdminClient {
     ) -> Result<AdminOperationResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_object_privilege(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
-        let schema_id = self.resolve_schema_sql_name(&statement.schema_name)?;
-        let object_id = if let Some(table_name) = &statement.table_name {
-            self.resolve_table_sql_name_in_schema(schema_id, table_name)?
-        } else {
-            schema_id
-        };
-        let grantee_id = self.resolve_grant_identity_sql_name(
+        let grant_target = self.resolve_grant_target_sql_name(
+            &statement.schema_name,
+            statement.table_name.as_deref(),
             &statement.grantee_name,
             if statement.grantee_is_role {
                 crate::metadata_discovery::AdministrativeIdentityKind::Role
             } else {
                 crate::metadata_discovery::AdministrativeIdentityKind::User
             },
-            object_id,
         )?;
+        let schema_id = grant_target.schema_id;
+        let object_id = grant_target.object_id;
+        let grantee_id = grant_target.identity_id;
         let expands_table_data_grant = statement.table_name.is_some()
             && matches!(
                 statement.privilege.as_str(),
@@ -3624,29 +3622,45 @@ impl AdminClient {
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)
     }
 
-    fn resolve_grant_identity_sql_name(
+    fn resolve_grant_target_sql_name(
         &mut self,
+        schema_name: &str,
+        table_name: Option<&str>,
         name: &str,
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
-        object_id: [u8; 16],
-    ) -> Result<[u8; 16], ClientSubmitError> {
+    ) -> Result<crate::metadata_discovery::AdministrativeGrantIdentityResolution, ClientSubmitError>
+    {
         let kind = match kind {
             crate::metadata_discovery::AdministrativeIdentityKind::User => "user",
             crate::metadata_discovery::AdministrativeIdentityKind::Role => "role",
             crate::metadata_discovery::AdministrativeIdentityKind::Either => "either",
         };
         let payload = format!(
-            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"metadata.grant_identities.resolve\",\"arguments\":{{\"object_id\":\"{}\",\"name\":{},\"kind\":\"{kind}\"}}}}",
-            lower_hex(&object_id),
+            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"metadata.grant_identities.resolve\",\"arguments\":{{\"schema_name\":{},{}\"name\":{},\"kind\":\"{kind}\"}}}}",
+            json_quote(schema_name),
+            table_name
+                .map(|value| format!("\"table_name\":{},", json_quote(value)))
+                .unwrap_or_default(),
             json_quote(name),
         );
         let response = self.transport.exchange(10, payload.into_bytes())?;
         let fields = parse_flat_response(&response.payload)?;
-        if fields.len() != 1 {
+        if fields.len() != 3 {
             return Err(ClientSubmitError::InvalidResponse);
         }
-        response_id(&fields, "identity_id")
-            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)
+        let schema_id = response_id(&fields, "schema_id")
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let object_id = response_id(&fields, "object_id")
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let identity_id = response_id(&fields, "identity_id")
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        Ok(
+            crate::metadata_discovery::AdministrativeGrantIdentityResolution {
+                schema_id,
+                object_id,
+                identity_id,
+            },
+        )
     }
 
     fn resolve_policy_sql_name(

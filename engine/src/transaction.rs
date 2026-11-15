@@ -3567,6 +3567,92 @@ impl<'db> InvocationTransaction<'db> {
         Ok(Some(identity_id))
     }
 
+    /// Resolve a grant target and recipient only for an actor authorized to
+    /// administer grants on that schema or table. Mutation rechecks authority.
+    pub(crate) fn resolve_catalog_grant_target_identity_name(
+        &mut self,
+        schema_name: &str,
+        table_name: Option<&str>,
+        name: &str,
+        kind: crate::metadata_discovery::AdministrativeIdentityKind,
+    ) -> Result<
+        Option<crate::metadata_discovery::AdministrativeGrantIdentityResolution>,
+        TransactionError,
+    > {
+        let valid_name = |value: &str| {
+            !value.is_empty()
+                && value.len() <= 128
+                && (value.as_bytes()[0].is_ascii_lowercase() || value.as_bytes()[0] == b'_')
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        };
+        if !valid_name(schema_name) || table_name.is_some_and(|name| !valid_name(name)) {
+            return Err(TransactionError::InvalidMetadataRequest);
+        }
+        let indexed_schema_id = {
+            self.pinned_snapshot()?
+                .get_schema_name_index_value(schema_name.as_bytes())
+                .map_err(|error| TransactionError::Storage(error.to_string()))?
+        };
+        let Some(schema_id) = indexed_schema_id else {
+            return Ok(None);
+        };
+        let schema_id: [u8; 16] = schema_id
+            .try_into()
+            .map_err(|_| TransactionError::CorruptCatalog)?;
+        if schema_id == [0; 16] {
+            return Err(TransactionError::CorruptCatalog);
+        }
+        let schema_object = self
+            .read_catalog_record(&catalog_id_key(2, schema_id))?
+            .ok_or(TransactionError::CorruptCatalog)?;
+        if schema_object.family_code != 2
+            || catalog_u16(&schema_object, 1)? != 1
+            || catalog_field(&schema_object, 3)? != schema_name.as_bytes()
+        {
+            return Err(TransactionError::CorruptCatalog);
+        }
+        let object_id = if let Some(table_name) = table_name {
+            let indexed_table_id = {
+                self.pinned_snapshot()?
+                    .get_relation_name_index_value(schema_id, table_name.as_bytes())
+                    .map_err(|error| TransactionError::Storage(error.to_string()))?
+            };
+            let Some(table_id) = indexed_table_id else {
+                return Ok(None);
+            };
+            let table_id: [u8; 16] = table_id
+                .try_into()
+                .map_err(|_| TransactionError::CorruptCatalog)?;
+            if table_id == [0; 16] {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            let table_object = self
+                .read_catalog_record(&catalog_id_key(2, table_id))?
+                .ok_or(TransactionError::CorruptCatalog)?;
+            if table_object.family_code != 2
+                || catalog_u16(&table_object, 1)? != 3
+                || catalog_optional_id(&table_object, 2)? != Some(schema_id)
+                || catalog_field(&table_object, 3)? != table_name.as_bytes()
+            {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            table_id
+        } else {
+            schema_id
+        };
+        Ok(self
+            .resolve_catalog_grant_identity_name(object_id, name, kind)?
+            .map(
+                |identity_id| crate::metadata_discovery::AdministrativeGrantIdentityResolution {
+                    schema_id,
+                    object_id,
+                    identity_id,
+                },
+            ))
+    }
+
     /// Resolve a grant recipient only for an actor authorized to administer
     /// grants on the target schema or table. Mutation rechecks authority.
     pub(crate) fn resolve_catalog_grant_identity_name(

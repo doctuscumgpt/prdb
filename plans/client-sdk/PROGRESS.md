@@ -886,5 +886,5 @@
 
 ## AdminClient object-grant SQL identity scope — implemented slice
 
-- `execute_object_privilege_sql` now resolves the target schema/table first and asks the scoped grant-identity endpoint to resolve the recipient. Owners and `MANAGE_GRANTS` holders no longer need global user/role administration just to grant object privileges. The server-side grant mutation remains authoritative.
-- Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed. Focused client/process regressions remain to be added; no test suite was run for this increment.
+- `execute_object_privilege_sql` now resolves the schema/table and recipient together through the scoped endpoint. Owners and `MANAGE_GRANTS` holders do not need global user/role administration or ordinary schema/relation visibility to target object grants. The server-side grant mutation remains authoritative.
+- Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused client/process regressions remain to be added; no test suite was run for this increment.

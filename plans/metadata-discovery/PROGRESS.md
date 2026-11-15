@@ -209,3 +209,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The existing `metadata.policies.list` page now has a `policy-list` CLI projection that follows connection-local pages and preserves the API's recipient redaction. It never returns expression identifiers or bodies. A production process regression exercises administrator visibility, including row/cell summaries, recipient IDs, and omission of expression bodies; a table-owner attempt receives the server's empty result.
 - The focused process regression, workspace build, format, warning-denied Clippy, delegated cgroup probe, and full serial delegated-cgroup suite passed; see [client SQL command progress](../client-sql-command/PROGRESS.md). Cargo.lock is unchanged.
+
+## Scoped grant target resolution type — implemented slice
+
+- Added a named control result type carrying schema, object, and grantee IDs after the authenticated grant-scope lookup succeeds. This keeps the shared discovery contract explicit while returning no IDs for unauthorized or absent targets.
+- Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused decoder and process regressions remain to be added; no test suite was run for this increment.

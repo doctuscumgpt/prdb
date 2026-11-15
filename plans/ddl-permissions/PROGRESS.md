@@ -6,6 +6,7 @@
 - Parser tests cover schema/table forms and reject scope mismatches, malformed directions, grant option, and multiple statements. The delegated gateway/supervisor lifecycle covers SQL USAGE grant/revoke.
 - Locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed; Cargo.lock is unchanged.
 - Follow-up: SQL grantee lookup now uses `metadata.grant_identities.resolve`, scoped to the target schema/table and available to its owner, inherited `MANAGE_GRANTS` holder, or database administrator. This removes the unrelated global `MANAGE_USERS`/`MANAGE_ROLES` requirement from object-grant SQL; the typed mutation still revalidates grant authority.
+- Follow-up: the endpoint now resolves schema/table names and the grantee together, returning IDs only after scoped grant authority succeeds. Object-grant SQL no longer depends on ordinary schema/relation discovery merely to identify its target.
 
 ## DP-SQL-2: single-column grant SQL
 

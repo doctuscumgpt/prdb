@@ -135,6 +135,15 @@ pub struct AdministrativeConstraint {
     pub referenced_column_ids: Vec<[u8; 16]>,
 }
 
+/// Stable identifiers returned after scoped object-grant target and recipient
+/// resolution succeeds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AdministrativeGrantIdentityResolution {
+    pub schema_id: [u8; 16],
+    pub object_id: [u8; 16],
+    pub identity_id: [u8; 16],
+}
+
 /// Privilege names exposed by administrative grant descriptions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdministrativeGrantPrivilege {

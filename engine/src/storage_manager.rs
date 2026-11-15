@@ -3267,14 +3267,18 @@ impl<'db> StorageManager<'db> {
 
     /// Resolve a grant recipient within the authenticated grant authority of
     /// one schema or table. Unauthorized and absent identities both return None.
-    pub fn resolve_token_grant_identity_name(
+    pub fn resolve_token_grant_target_identity_name(
         &self,
         token_id: [u8; 16],
         token_secret: &[u8; TOKEN_SECRET_BYTES],
-        object_id: [u8; 16],
+        schema_name: &str,
+        table_name: Option<&str>,
         name: &str,
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
-    ) -> Result<Option<[u8; 16]>, TransactionError> {
+    ) -> Result<
+        Option<crate::metadata_discovery::AdministrativeGrantIdentityResolution>,
+        TransactionError,
+    > {
         let principal_id = lookup_credential_principal(self.database, token_id)?;
         let mut invocation_id = [0; 16];
         getrandom::fill(&mut invocation_id)
@@ -3293,7 +3297,7 @@ impl<'db> StorageManager<'db> {
         )?;
         let now_us = now_unix_micros().ok_or(TransactionError::ClockUnavailable)?;
         transaction.authenticate_credential_token(token_id, token_secret, now_us)?;
-        transaction.resolve_catalog_grant_identity_name(object_id, name, kind)
+        transaction.resolve_catalog_grant_target_identity_name(schema_name, table_name, name, kind)
     }
 
     /// Resolve a policy name inside an authenticated schema/table scope.

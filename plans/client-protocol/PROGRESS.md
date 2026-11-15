@@ -311,5 +311,5 @@
 
 ## Scoped object-grant identity resolution — implemented slice
 
-- Added `metadata.grant_identities.resolve` to the authenticated control decoder and session dispatch. It returns a single user/role ID only to the schema/table owner, inherited `MANAGE_GRANTS` holder, or database administrator; absent and unauthorized names share `null`.
-- Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed. Focused protocol and process regressions remain to be added; no test suite was run for this increment.
+- Added `metadata.grant_identities.resolve` to the authenticated control decoder and session dispatch. It resolves the schema/table target plus one user/role and returns their IDs only to the target owner, inherited `MANAGE_GRANTS` holder, or database administrator; absent and unauthorized targets share an all-null response.
+- SQL target lookup now uses this scoped endpoint instead of ordinary schema/relation pages, so scoped grant administration does not require global identity-management or ordinary visibility. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused protocol and process regressions remain to be added; no test suite was run for this increment.
