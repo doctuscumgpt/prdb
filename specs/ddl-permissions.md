@@ -61,7 +61,11 @@ CREATE [OR REPLACE] CELL POLICY name ON schema.table (column [, ...])
 
 DROP ROW POLICY name ON schema.table RESTRICT;
 DROP CELL POLICY name ON schema.table RESTRICT;
+DROP ROW POLICY IF EXISTS name ON schema.table RESTRICT;
+DROP CELL POLICY IF EXISTS name ON schema.table RESTRICT;
 ```
+
+The authenticated SQL convenience accepts `DROP ROW|CELL POLICY IF EXISTS`. A resolved policy follows its ordinary owner or inherited `MANAGE_POLICIES` authorization and RESTRICT checks. An unresolved schema, table, or policy is a successful no-op only after database-administrator authority is confirmed; no DDL outcome is created. Other failures are not suppressed.
 
 `SELECT` and `DELETE` require `USING` only; `INSERT` requires `WITH CHECK` only; `UPDATE` requires both explicitly. `DELETE` has no cell policy because it removes the row. Bare field names bind to the visible/old row in `USING`, and the proposed full row in `WITH CHECK`; cross-old/new references are deferred. Policy names are unique per table across row/cell kinds. `CREATE OR REPLACE` resolves the existing same-name policy and publishes its removal and the new definition, expressions, targets, dependencies, epoch, audit event, and durable outcome in one administrative commit. It may change the policy kind; observers see either the complete prior definition or the complete replacement, with no missing-policy window.
 

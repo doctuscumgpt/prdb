@@ -420,15 +420,32 @@ fn admin_sql(
             result.commit_sequence
         );
     } else if let Some(statement) = drop_policy_statement {
-        let result = client
-            .execute_drop_policy_sql(sql)
-            .map_err(|error| error.to_string())?;
-        let kind = if statement.is_cell { "cell" } else { "row" };
-        print_operation(
-            &format!("dropped {kind} policy"),
-            &result.operation_id,
-            result.commit_sequence,
-        );
+        if statement.if_exists {
+            match client
+                .execute_drop_policy_if_exists_sql(sql)
+                .map_err(|error| error.to_string())?
+            {
+                Some(result) => {
+                    let kind = if statement.is_cell { "cell" } else { "row" };
+                    print_operation(
+                        &format!("dropped {kind} policy"),
+                        &result.operation_id,
+                        result.commit_sequence,
+                    );
+                }
+                None => println!("policy was absent; no operation committed"),
+            }
+        } else {
+            let result = client
+                .execute_drop_policy_sql(sql)
+                .map_err(|error| error.to_string())?;
+            let kind = if statement.is_cell { "cell" } else { "row" };
+            print_operation(
+                &format!("dropped {kind} policy"),
+                &result.operation_id,
+                result.commit_sequence,
+            );
+        }
     } else if let Some(statement) = drop_index_statement {
         if statement.if_exists {
             if let Some(result) = client

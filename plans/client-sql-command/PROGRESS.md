@@ -441,3 +441,8 @@
 
 - `admin-sql` recognizes `DROP INDEX IF EXISTS schema.name RESTRICT`; authorized administrators receive a no-op when the target cannot be resolved, while present indexes follow regular drop authorization and RESTRICT validation.
 - CLI dispatch, contract docs, workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` are updated/passing. A focused process regression remains to be added; no test suite was run for this increment.
+
+## Conditional DROP ROW/CELL POLICY SQL — implemented slice
+
+- `admin-sql` accepts `DROP ROW|CELL POLICY IF EXISTS name ON schema.table RESTRICT`. A resolved policy uses the normal typed drop operation; an unresolved target is suppressed only after an authenticated database-administrator check.
+- Permission and client SQL specifications and component progress are updated. Workspace build, formatting, warning-denied Clippy, and `git diff --check` pass. Tests were not added or run; Cargo.lock is unchanged.

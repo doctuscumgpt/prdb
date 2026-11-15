@@ -3837,6 +3837,9 @@ impl AdminClient {
     ) -> Result<AdminOperationResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_drop_policy(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if statement.if_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
         let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
         let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
         let policy_id = self.resolve_policy_sql_name(
@@ -3846,6 +3849,38 @@ impl AdminClient {
             table_id,
         )?;
         self.drop_policy(policy_id)
+    }
+
+    /// Execute `DROP ROW|CELL POLICY IF EXISTS`. An unresolved target is
+    /// suppressed only after the server confirms database-administrator
+    /// authority; a resolved policy retains its ordinary owner/manager checks.
+    pub fn execute_drop_policy_if_exists_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<Option<AdminOperationResult>, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_drop_policy(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if !statement.if_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let resolved = (|| {
+            let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+            let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
+            self.resolve_policy_sql_name(
+                &statement.name,
+                Some(statement.is_cell),
+                schema_id,
+                table_id,
+            )
+        })();
+        match resolved {
+            Ok(policy_id) => self.drop_policy(policy_id).map(Some),
+            Err(ClientSubmitError::InvalidAdministrativeRequest) => {
+                self.list_runtime_invocations_page(1, None)?;
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Execute the supported SQL `CREATE TABLE` subset through the

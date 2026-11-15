@@ -304,6 +304,7 @@ pub struct DropPolicySql {
     pub table: String,
     pub name: String,
     pub is_cell: bool,
+    pub if_exists: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1417,6 +1418,13 @@ pub fn parse_drop_policy(sql: &str) -> Result<DropPolicySql, DdlSqlError> {
         false
     };
     parser.word("policy")?;
+    let if_exists = if parser.peek_word("if") {
+        parser.word("if")?;
+        parser.word("exists")?;
+        true
+    } else {
+        false
+    };
     let name = parser.identifier()?;
     parser.word("on")?;
     let schema = parser.identifier()?;
@@ -1429,6 +1437,7 @@ pub fn parse_drop_policy(sql: &str) -> Result<DropPolicySql, DdlSqlError> {
         table,
         name,
         is_cell,
+        if_exists,
     })
 }
 

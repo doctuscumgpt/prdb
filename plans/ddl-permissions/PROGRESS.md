@@ -68,3 +68,8 @@
 - The SQL route now resolves a same-name row or cell policy and sends one `policies.replace` PREPARE/START operation. Storage composes the old policy's definitions, targets, and dependency removals with the new records and commits them under the existing authorization recheck; one table epoch is advanced.
 - The delegated metadata lifecycle replaces an existing row policy with a cell policy and checks that the old ID disappears while its successor is published. A concurrent `MANAGE_POLICIES` revoke regression verifies the replacement either commits before revocation or aborts after it, with a table-epoch advance only on success.
 - Verification: focused parser, protocol decoder, storage race, and delegated process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC tests/fixture, release-profile validation (10 binaries and one query fixture), delegated cgroup probe, and full serial delegated-cgroup workspace suite passed with all sandbox/process tests enabled and zero ignored. `git diff --check` passed; Cargo.lock is unchanged.
+
+## DP-SQL-7: conditional policy drops — implemented slice
+
+- Added `DROP ROW|CELL POLICY IF EXISTS name ON schema.table RESTRICT`. Present targets dispatch the existing typed `policies.drop` mutation and retain policy authorization. Unresolved schemas, tables, or policies become a no-op only after the authenticated runtime-list read confirms database-administrator authority; no DDL outcome is created for the no-op.
+- Updated permission and client SQL contracts and the `admin-sql` CLI dispatch. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass. No tests were added or run; Cargo.lock is unchanged.
