@@ -1068,3 +1068,7 @@
 ## ID-SQL-5: role membership SQL dispatch
 
 - SQL invokes the existing membership lifecycle, which validates endpoint kinds, cycles, and administrator safety under commit serialization. Delegated process and full workspace suites pass.
+
+## ID-SQL-6: system privilege SQL dispatch
+
+- SQL invokes the existing system privilege lifecycle, which restricts grants and revokes to database administrators. Delegated process and full workspace suites pass.

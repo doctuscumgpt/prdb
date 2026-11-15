@@ -3141,6 +3141,34 @@ impl AdminClient {
         }
     }
 
+    /// Grant or revoke one database-scoped system privilege by identity name.
+    pub fn execute_system_privilege_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_system_privilege(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let grantee_id = self.resolve_identity_sql_name(
+            &statement.grantee_name,
+            if statement.grantee_is_role {
+                crate::metadata_discovery::AdministrativeIdentityKind::Role
+            } else {
+                crate::metadata_discovery::AdministrativeIdentityKind::User
+            },
+        )?;
+        let privilege = match statement.privilege.as_str() {
+            "manage_users" => AdminSystemPrivilege::ManageUsers,
+            "manage_roles" => AdminSystemPrivilege::ManageRoles,
+            "create_schema" => AdminSystemPrivilege::CreateSchema,
+            _ => return Err(ClientSubmitError::InvalidAdministrativeRequest),
+        };
+        if statement.grant {
+            self.grant_system_privilege(grantee_id, privilege)
+        } else {
+            self.revoke_system_privilege(grantee_id, privilege)
+        }
+    }
+
     fn resolve_identity_sql_name(
         &mut self,
         name: &str,

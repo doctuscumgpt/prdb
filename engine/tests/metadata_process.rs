@@ -1363,18 +1363,23 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let privilege_cli_credentials = admin_cancel_credentials_path
         .to_str()
         .ok_or("credential path is not UTF-8")?;
-    let privilege_cli_grantee = encode_id_hex(&created_role.identity_id);
+    let system_privilege_sql_path = root.join("system-privilege.sql");
+    std::fs::write(
+        &system_privilege_sql_path,
+        "GRANT SYSTEM PRIVILEGE MANAGE_ROLES TO ROLE process_admin_role_v2;",
+    )?;
+    let system_privilege_sql_path_text = system_privilege_sql_path
+        .to_str()
+        .ok_or("SQL path is not UTF-8")?;
     let grant_privilege_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
-            "system-privilege-grant",
+            "admin-sql",
             "--address",
             &privilege_cli_address,
             "--credentials",
             privilege_cli_credentials,
-            "--grantee-id",
-            &privilege_cli_grantee,
-            "--privilege",
-            "manage_roles",
+            "--sql-file",
+            system_privilege_sql_path_text,
         ])
         .output()?;
     assert!(
@@ -1592,17 +1597,19 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         !denied_role_create_cli.status.success(),
         "role-create remained authorized after the member's role was revoked"
     );
+    std::fs::write(
+        &system_privilege_sql_path,
+        "REVOKE SYSTEM PRIVILEGE MANAGE_ROLES FROM ROLE process_admin_role_v2;",
+    )?;
     let revoke_privilege_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
-            "system-privilege-revoke",
+            "admin-sql",
             "--address",
             &privilege_cli_address,
             "--credentials",
             privilege_cli_credentials,
-            "--grantee-id",
-            &privilege_cli_grantee,
-            "--privilege",
-            "manage_roles",
+            "--sql-file",
+            system_privilege_sql_path_text,
         ])
         .output()?;
     assert!(

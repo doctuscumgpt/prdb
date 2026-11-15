@@ -271,3 +271,7 @@
 ## ID-SQL-5: role membership SQL
 
 - `GRANT role TO USER|ROLE member` and matching `REVOKE` resolve both names independently and invoke existing membership mutations. Parser and delegated process regressions pass; build, format, Clippy, TinyCC, and full serial delegated-cgroup workspace checks pass.
+
+## ID-SQL-6: system privilege SQL
+
+- Bounded `GRANT|REVOKE SYSTEM PRIVILEGE` syntax resolves a grantee name and calls the existing typed database privilege operation. Parser and delegated process regressions pass; build, format, Clippy, TinyCC, and full serial delegated-cgroup workspace checks pass.

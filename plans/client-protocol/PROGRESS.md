@@ -251,3 +251,7 @@
 ## ID-SQL-5: role membership SQL dispatch
 
 - Resolves each membership endpoint using the authenticated identity read before dispatching `roles.grant` or `roles.revoke`. The delegated process lifecycle and full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored tests.
+
+## ID-SQL-6: system privilege SQL dispatch
+
+- Resolves the grantee by kind and name before dispatching `privileges.grant`/`privileges.revoke`; storage keeps system privilege mutations database-admin-only. The delegated process lifecycle and full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored tests.

@@ -225,6 +225,7 @@ fn admin_sql(
     let drop_identity_statement = prdb_engine::ddl_sql::parse_drop_identity(sql).ok();
     let set_user_login_statement = prdb_engine::ddl_sql::parse_set_user_login(sql).ok();
     let role_membership_statement = prdb_engine::ddl_sql::parse_role_membership(sql).ok();
+    let system_privilege_statement = prdb_engine::ddl_sql::parse_system_privilege(sql).ok();
     let drop_index_statement = prdb_engine::ddl_sql::parse_drop_index(sql).ok();
     let schema_statement = prdb_engine::ddl_sql::parse_create_schema(sql).ok();
     let rename_schema_statement = prdb_engine::ddl_sql::parse_rename_schema(sql).ok();
@@ -248,6 +249,7 @@ fn admin_sql(
         && drop_identity_statement.is_none()
         && set_user_login_statement.is_none()
         && role_membership_statement.is_none()
+        && system_privilege_statement.is_none()
         && drop_index_statement.is_none()
         && schema_statement.is_none()
         && rename_schema_statement.is_none()
@@ -350,6 +352,20 @@ fn admin_sql(
         };
         print_operation(
             &format!("{action} role membership"),
+            &result.operation_id,
+            result.commit_sequence,
+        );
+    } else if let Some(statement) = system_privilege_statement {
+        let result = client
+            .execute_system_privilege_sql(sql)
+            .map_err(|error| error.to_string())?;
+        let action = if statement.grant {
+            "granted"
+        } else {
+            "revoked"
+        };
+        print_operation(
+            &format!("{action} system privilege"),
             &result.operation_id,
             result.commit_sequence,
         );

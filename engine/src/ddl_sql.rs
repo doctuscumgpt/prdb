@@ -191,6 +191,14 @@ pub struct RoleMembershipSql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SystemPrivilegeSql {
+    pub grant: bool,
+    pub privilege: String,
+    pub grantee_name: String,
+    pub grantee_is_role: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckExpressionSql {
     Column(String),
     Literal(CheckLiteralSql),
@@ -619,6 +627,47 @@ pub fn parse_role_membership(sql: &str) -> Result<RoleMembershipSql, DdlSqlError
         role_name,
         member_name,
         member_is_role,
+    })
+}
+
+/// Parse `GRANT|REVOKE SYSTEM PRIVILEGE name TO|FROM USER|ROLE grantee`.
+pub fn parse_system_privilege(sql: &str) -> Result<SystemPrivilegeSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    let grant = if parser.peek_word("grant") {
+        parser.word("grant")?;
+        true
+    } else {
+        parser.word("revoke")?;
+        false
+    };
+    parser.word("system")?;
+    parser.word("privilege")?;
+    let privilege = parser.identifier()?;
+    if !matches!(
+        privilege.as_str(),
+        "manage_users" | "manage_roles" | "create_schema"
+    ) {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    if grant {
+        parser.word("to")?;
+    } else {
+        parser.word("from")?;
+    }
+    let grantee_is_role = if parser.peek_word("user") {
+        parser.word("user")?;
+        false
+    } else {
+        parser.word("role")?;
+        true
+    };
+    let grantee_name = parser.identifier()?;
+    finish_statement(&mut parser)?;
+    Ok(SystemPrivilegeSql {
+        grant,
+        privilege,
+        grantee_name,
+        grantee_is_role,
     })
 }
 
@@ -2499,6 +2548,39 @@ mod tests {
             "GRANT managers TO USER alice; REVOKE managers FROM USER alice",
         ] {
             assert!(parse_role_membership(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_bounded_system_privilege_sql() {
+        assert_eq!(
+            parse_system_privilege("GRANT SYSTEM PRIVILEGE MANAGE_ROLES TO ROLE administrators;")
+                .unwrap(),
+            SystemPrivilegeSql {
+                grant: true,
+                privilege: "manage_roles".into(),
+                grantee_name: "administrators".into(),
+                grantee_is_role: true,
+            }
+        );
+        assert_eq!(
+            parse_system_privilege("REVOKE SYSTEM PRIVILEGE CREATE_SCHEMA FROM USER deployer")
+                .unwrap(),
+            SystemPrivilegeSql {
+                grant: false,
+                privilege: "create_schema".into(),
+                grantee_name: "deployer".into(),
+                grantee_is_role: false,
+            }
+        );
+        for sql in [
+            "GRANT SYSTEM PRIVILEGE SELECT TO USER alice",
+            "GRANT SYSTEM PRIVILEGE MANAGE_USERS USER alice",
+            "REVOKE SYSTEM PRIVILEGE CREATE_SCHEMA TO USER alice",
+            "GRANT SYSTEM PRIVILEGE MANAGE_ROLES TO ROLE admins WITH ADMIN OPTION",
+            "GRANT SYSTEM PRIVILEGE MANAGE_USERS TO USER alice; REVOKE SYSTEM PRIVILEGE MANAGE_USERS FROM USER alice",
+        ] {
+            assert!(parse_system_privilege(sql).is_err(), "accepted {sql}");
         }
     }
 

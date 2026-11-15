@@ -828,3 +828,7 @@
 ## ID-SQL-5: role membership SQL
 
 - Added `AdminClient::execute_role_membership_sql` and routed GRANT/REVOKE role membership syntax through name resolution to existing typed operations. Parser and delegated process regressions pass, along with workspace build, format, Clippy, TinyCC SDK and fixture checks, and the full serial delegated-cgroup workspace suite.
+
+## ID-SQL-6: system privilege SQL
+
+- Added `AdminClient::execute_system_privilege_sql` and routed bounded database privilege GRANT/REVOKE statements through identity name resolution to existing typed operations. Parser and delegated process regressions pass, along with workspace build, format, Clippy, TinyCC SDK and fixture checks, and the full serial delegated-cgroup workspace suite.
