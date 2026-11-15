@@ -78,3 +78,8 @@
 
 - Shared policy SQL parsing and binding now accepts column `IN` and `NOT IN` over 1–64 typed literals, including NULL. The expressions lower to existing EIR1 nodes and retain fail-closed policy evaluation semantics.
 - Parser/binder regression coverage is shared with CHECK SQL. The focused test, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and full serial delegated-cgroup workspace suite pass with sandbox/process coverage and zero ignored tests. Cargo.lock is unchanged.
+
+## DP-SQL-9: inclusive policy range predicates — implemented slice
+
+- The shared policy expression grammar now accepts column `BETWEEN` and `NOT BETWEEN` with two typed literal bounds. Existing inclusive comparison nodes and SQL UNKNOWN evaluation preserve policy behavior without changing EIR1.
+- Parser/binder regression coverage includes numeric/text bounds, negation, malformed forms, and type mismatch. The focused test, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and full serial delegated-cgroup suite pass with sandbox/process coverage and zero ignored tests. Cargo.lock is unchanged.
