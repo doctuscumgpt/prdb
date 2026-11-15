@@ -981,3 +981,7 @@
 # DS-SQL-56: Boolean truth tests in SQL expression binding — verified
 
 - The bounded CREATE TABLE, ALTER CHECK, and policy expression binder accepts Boolean-column `IS [NOT] TRUE`, `FALSE`, and `UNKNOWN`, with EIR1 lowering and no wire-format change. The focused regression and full serial delegated-cgroup workspace suite pass with sandbox/process coverage and zero ignored tests; workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
+
+## DS-SQL-57: Truth tests on grouped Boolean expressions — verified
+
+- The expression binder accepts Boolean-valued grouped predicates and policy expressions as truth-test operands, with context restrictions retained and no wire-format change. Parser/binder, authenticated AdminClient EIR-serialization, and full serial delegated-cgroup regressions pass with sandbox/process coverage and zero ignored tests; workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.

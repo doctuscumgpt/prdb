@@ -555,3 +555,7 @@
 # DS-SQL-56: Boolean truth tests in administrative SQL — verified
 
 - Documented `IS [NOT] TRUE`, `FALSE`, and `UNKNOWN` for bounded CHECK and policy expressions. Client binding accepts only BOOLEAN columns and lowers to the existing EIR1 expression form. The focused regression and full serial delegated-cgroup workspace suite pass with sandbox/process coverage and zero ignored tests; workspace build, format, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
+
+## DS-SQL-57: Truth tests on grouped Boolean expressions — verified
+
+- Bounded CHECK and policy parsing now accepts a parenthesized Boolean predicate before `IS [NOT] TRUE/FALSE/UNKNOWN`; binding verifies the resulting type and preserves policy-context restrictions. Parser/binder, authenticated client, and full serial delegated-cgroup regressions pass with sandbox/process coverage and zero ignored tests; workspace build, format, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.

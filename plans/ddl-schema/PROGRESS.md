@@ -905,3 +905,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Contract: boolean columns accept `IS [NOT] TRUE`, `FALSE`, and `UNKNOWN` in CREATE TABLE CHECK, ALTER CHECK, and policy expression SQL. Binding rejects non-BOOLEAN columns. SQL truth tests always return Boolean: TRUE/FALSE tests return false for NULL, UNKNOWN tests match NULL, and NOT forms negate those results.
 - Red/green: the new parser regression failed before implementation on `active IS TRUE`; it now checks all six forms, exact EIR lowering, non-Boolean rejection, and malformed forms. Implementation uses existing EIR1 null checks, equality, AND, and NOT nodes without changing protocol or storage formats.
 - Verification: the focused parser/binder regression and complete serial delegated-cgroup workspace suite pass (289 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.
+
+## DS-SQL-57: Boolean truth tests on grouped expressions — verified
+
+- Contract: `IS [NOT] TRUE`, `FALSE`, and `UNKNOWN` accepts a Boolean-valued expression, including parenthesized comparisons/conjunctions. Policy-context functions may appear only in policy SQL; non-Boolean operands reject.
+- Red/green: added a regression for `(active = TRUE) IS TRUE` and `HAS_ROLE('operator') IS TRUE`; the first failed before implementation. The parser now attaches truth tests to the grouped expression, and binding validates Boolean result type before lowering to EIR1.
+- Verification: parser/binder and authenticated AdminClient EIR-serialization regressions pass. The full serial delegated-cgroup workspace suite passes (289 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.

@@ -307,7 +307,7 @@ pub enum CheckExpressionSql {
     IsNull(String),
     IsNotNull(String),
     BooleanTest {
-        column: String,
+        expression: Box<CheckExpressionSql>,
         test: CheckBooleanTest,
         negated: bool,
     },
@@ -1768,7 +1768,7 @@ fn validate_column_check_expression(
             CheckExpressionSql::Column(name)
             | CheckExpressionSql::IsNull(name)
             | CheckExpressionSql::IsNotNull(name) => name == column,
-            CheckExpressionSql::BooleanTest { column: name, .. } => name == column,
+            CheckExpressionSql::BooleanTest { expression, .. } => only_column(column, expression),
             CheckExpressionSql::Literal(_) => true,
             CheckExpressionSql::CurrentPrincipalId | CheckExpressionSql::HasRole(_) => false,
             CheckExpressionSql::Compare { left, right, .. } => {
@@ -1809,11 +1809,11 @@ pub fn bind_check_expression(
             CheckExpressionSql::And(items) | CheckExpressionSql::Or(items) => {
                 items.iter().any(has_policy_context)
             }
+            CheckExpressionSql::BooleanTest { expression, .. } => has_policy_context(expression),
             CheckExpressionSql::Column(_)
             | CheckExpressionSql::Literal(_)
             | CheckExpressionSql::IsNull(_)
-            | CheckExpressionSql::IsNotNull(_)
-            | CheckExpressionSql::BooleanTest { .. } => false,
+            | CheckExpressionSql::IsNotNull(_) => false,
         }
     }
     if has_policy_context(expression) {
@@ -2011,22 +2011,22 @@ fn bind_expression(
                 (expression, Some(ScalarType::Boolean))
             }
             Sql::BooleanTest {
-                column,
+                expression,
                 test,
                 negated,
             } => {
-                let (ordinal, scalar_type) = lookup(column).ok_or(DdlSqlError::InvalidStatement)?;
-                if scalar_type != ScalarType::Boolean {
+                let (value, scalar_type) =
+                    bind(expression, Some(ScalarType::Boolean), lookup, role_lookup)?;
+                if scalar_type != Some(ScalarType::Boolean) {
                     return Err(DdlSqlError::InvalidStatement);
                 }
                 let expression = match test {
-                    CheckBooleanTest::Unknown => Expr::IsNull(Box::new(Expr::Field(ordinal))),
+                    CheckBooleanTest::Unknown => Expr::IsNull(Box::new(value)),
                     CheckBooleanTest::True | CheckBooleanTest::False => {
-                        let is_known =
-                            Expr::Not(Box::new(Expr::IsNull(Box::new(Expr::Field(ordinal)))));
+                        let is_known = Expr::Not(Box::new(Expr::IsNull(Box::new(value.clone()))));
                         let expected = *test == CheckBooleanTest::True;
                         let equals_expected = Expr::Equal(
-                            Box::new(Expr::Field(ordinal)),
+                            Box::new(value),
                             Box::new(Expr::Literal(Some(ScalarValue::Boolean(expected)))),
                         );
                         Expr::And(vec![is_known, equals_expected])
@@ -2547,6 +2547,9 @@ impl Parser {
             self.position += 1;
             let expression = self.check_or()?;
             self.take(Token::RightParen)?;
+            if self.peek_word("is") {
+                return self.check_is_predicate(expression);
+            }
             return Ok(expression);
         }
         self.check_predicate()
@@ -2555,56 +2558,7 @@ impl Parser {
     fn check_predicate(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
         let left = self.check_value_atom()?;
         if self.peek_word("is") {
-            let CheckExpressionSql::Column(column) = left else {
-                return Err(DdlSqlError::InvalidStatement);
-            };
-            self.position += 1;
-            let negated = if self.peek_word("not") {
-                self.position += 1;
-                true
-            } else {
-                false
-            };
-            if self.peek_word("distinct") {
-                self.word("distinct")?;
-                self.word("from")?;
-                let CheckExpressionSql::Literal(value) = self.check_value_atom()? else {
-                    return Err(DdlSqlError::InvalidStatement);
-                };
-                Ok(CheckExpressionSql::DistinctFrom {
-                    column,
-                    value,
-                    negated,
-                })
-            } else if self.peek_word("true") {
-                self.position += 1;
-                Ok(CheckExpressionSql::BooleanTest {
-                    column,
-                    test: CheckBooleanTest::True,
-                    negated,
-                })
-            } else if self.peek_word("false") {
-                self.position += 1;
-                Ok(CheckExpressionSql::BooleanTest {
-                    column,
-                    test: CheckBooleanTest::False,
-                    negated,
-                })
-            } else if self.peek_word("unknown") {
-                self.position += 1;
-                Ok(CheckExpressionSql::BooleanTest {
-                    column,
-                    test: CheckBooleanTest::Unknown,
-                    negated,
-                })
-            } else {
-                self.word("null")?;
-                Ok(if negated {
-                    CheckExpressionSql::IsNotNull(column)
-                } else {
-                    CheckExpressionSql::IsNull(column)
-                })
-            }
+            self.check_is_predicate(left)
         } else if self.peek_word("between")
             || (self.peek_word("not")
                 && matches!(self.tokens.get(self.position + 1), Some(Token::Word(word)) if word == "between"))
@@ -2691,6 +2645,58 @@ impl Parser {
             } else {
                 Ok(left)
             }
+        }
+    }
+
+    fn check_is_predicate(
+        &mut self,
+        left: CheckExpressionSql,
+    ) -> Result<CheckExpressionSql, DdlSqlError> {
+        self.word("is")?;
+        let negated = if self.peek_word("not") {
+            self.position += 1;
+            true
+        } else {
+            false
+        };
+        if self.peek_word("distinct") {
+            let CheckExpressionSql::Column(column) = left else {
+                return Err(DdlSqlError::InvalidStatement);
+            };
+            self.word("distinct")?;
+            self.word("from")?;
+            let CheckExpressionSql::Literal(value) = self.check_value_atom()? else {
+                return Err(DdlSqlError::InvalidStatement);
+            };
+            Ok(CheckExpressionSql::DistinctFrom {
+                column,
+                value,
+                negated,
+            })
+        } else if self.peek_word("true") || self.peek_word("false") || self.peek_word("unknown") {
+            let test = if self.peek_word("true") {
+                CheckBooleanTest::True
+            } else if self.peek_word("false") {
+                CheckBooleanTest::False
+            } else {
+                CheckBooleanTest::Unknown
+            };
+            self.position += 1;
+            Ok(CheckExpressionSql::BooleanTest {
+                expression: Box::new(left),
+                test,
+                negated,
+            })
+        } else {
+            let CheckExpressionSql::Column(column) = left else {
+                return Err(DdlSqlError::InvalidStatement);
+            };
+            self.word("null")?;
+            Ok(if negated {
+                CheckExpressionSql::IsNotNull(column)
+            } else {
+                CheckExpressionSql::IsNull(column)
+            })
         }
     }
 
@@ -3942,6 +3948,44 @@ mod tests {
     fn parses_and_binds_boolean_truth_tests() {
         use crate::authorization::Expr;
 
+        let compound =
+            parse_add_check_constraint("ALTER TABLE app.jobs ADD CHECK ((active = TRUE) IS TRUE)")
+                .unwrap();
+        assert!(matches!(
+            &compound.expression,
+            CheckExpressionSql::BooleanTest {
+                expression,
+                test: CheckBooleanTest::True,
+                negated: false,
+            } if matches!(**expression, CheckExpressionSql::Compare { .. })
+        ));
+        assert!(
+            bind_check_expression(&compound.expression, |name| {
+                (name == "active").then_some((0, ScalarType::Boolean))
+            })
+            .is_ok()
+        );
+        let role = parse_add_check_constraint(
+            "ALTER TABLE app.jobs ADD CHECK (HAS_ROLE('operator') IS TRUE)",
+        )
+        .unwrap();
+        assert_eq!(
+            bind_policy_expression(
+                &role.expression,
+                |_| None,
+                |name| { (name == "operator").then_some([9; 16]) }
+            )
+            .unwrap(),
+            Expr::And(vec![
+                Expr::Not(Box::new(Expr::IsNull(Box::new(Expr::HasRole([9; 16]))))),
+                Expr::Equal(
+                    Box::new(Expr::HasRole([9; 16])),
+                    Box::new(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+                ),
+            ])
+        );
+        assert!(bind_check_expression(&role.expression, |_| None).is_err());
+
         for (sql, test, negated, expected_value) in [
             ("active IS TRUE", CheckBooleanTest::True, false, Some(true)),
             (
@@ -3976,7 +4020,7 @@ mod tests {
             assert_eq!(
                 statement.expression,
                 CheckExpressionSql::BooleanTest {
-                    column: "active".into(),
+                    expression: Box::new(CheckExpressionSql::Column("active".into())),
                     test,
                     negated,
                 }
@@ -4014,7 +4058,7 @@ mod tests {
         );
         for sql in [
             "ALTER TABLE app.jobs ADD CHECK (active IS MAYBE)",
-            "ALTER TABLE app.jobs ADD CHECK (TRUE IS TRUE)",
+            "ALTER TABLE app.jobs ADD CHECK (active IS TRUEISH)",
         ] {
             assert!(parse_add_check_constraint(sql).is_err(), "accepted {sql}");
         }

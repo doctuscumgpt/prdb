@@ -25,7 +25,7 @@ prdb-client run-sql --address IP:PORT --credentials FILE \
 
 ## Administrative DDL Input
 
-CHECK and policy expression SQL accepts boolean-column tests `column IS [NOT] TRUE`, `FALSE`, or `UNKNOWN`. Binding requires BOOLEAN metadata and lowers tests to the existing EIR1 representation. `IS TRUE`/`IS FALSE` produce false for NULL; `IS UNKNOWN` matches NULL. Unsupported truth-test names, non-column operands, and non-BOOLEAN columns are rejected before submission.
+CHECK and policy expression SQL accepts `boolean_expression IS [NOT] TRUE`, `FALSE`, or `UNKNOWN`. Operands may be parenthesized Boolean expressions and must bind to BOOLEAN; policy-context expressions are accepted only in policy SQL. Binding lowers tests to the existing EIR1 representation. `IS TRUE`/`IS FALSE` produce false for NULL; `IS UNKNOWN` matches NULL. Unsupported truth-test names and non-BOOLEAN operands are rejected before submission.
 
 `CREATE TABLE` name binding exposes a schema name to an effective schema-scoped `CREATE` grantee without schema `USAGE`; this metadata read does not expose the schema's existing relations or columns. The table is still created through the typed control operation, which rechecks current authority.
 

@@ -86,7 +86,7 @@ The SQL DML AST API in [`prdb_sdk_sql_dml_v1.h`](../engine/include/prdb_sdk_sql_
 
 ## Administrative SDK
 
-The bounded SQL expression binder supports `IS [NOT] TRUE`, `FALSE`, and `UNKNOWN` on BOOLEAN columns in CHECK and policy expressions. It lowers the tests to existing EIR1 null, equality, AND, and NOT nodes, preserving the two-valued SQL boolean-test result without a protocol or stored-expression version change.
+The bounded SQL expression binder supports `IS [NOT] TRUE`, `FALSE`, and `UNKNOWN` on BOOLEAN-valued expressions in CHECK and policy expressions, including parenthesized expressions. It lowers the tests to existing EIR1 null, equality, AND, and NOT nodes, preserving the two-valued SQL boolean-test result without a protocol or stored-expression version change.
 
 Expose typed definitions/builders and text submission for [schema DDL](ddl-schema.md), [users/roles](ddl-identity.md), and [permission DDL](ddl-permissions.md). Administration occurs in the client over a separate authenticated control-mode gateway connection; user query libraries cannot inherit that connection or its tokens. Storage validates every definition and privilege independently. Do not embed credentials in compiled artifacts or logged SQL. Data SQL functions reject DDL in an invocation, even when its principal also has administrative privileges.
 
