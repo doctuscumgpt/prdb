@@ -53,6 +53,7 @@ Token secrets are saved only to mode-0600 credential files and are never printed
   prdb-client dependency-list --address IP:PORT --credentials ADMIN_FILE --object-id HEX\n\
     [--limit N] [--cursor HEX]\n\n\
   prdb-client constraint-list --address IP:PORT --credentials ADMIN_FILE --schema-id HEX --table-id HEX\n\
+  prdb-client index-list --address IP:PORT --credentials ADMIN_FILE --schema-id HEX --table-id HEX\n\
   prdb-client runtime-list --address IP:PORT --credentials ADMIN_FILE\n\
     [--limit N] [--cursor HEX]\n\n\
   prdb-client audit-list --address IP:PORT --credentials ADMIN_FILE\n\
@@ -169,6 +170,7 @@ fn run() -> Result<(), String> {
         "token-list" => token_list(address, credentials_path, &mut fields),
         "dependency-list" => dependency_list(address, credentials_path, &mut fields),
         "constraint-list" => constraint_list(address, credentials_path, &mut fields),
+        "index-list" => index_list(address, credentials_path, &mut fields),
         "runtime-list" => runtime_list(address, credentials_path, &mut fields),
         "audit-list" => audit_list(address, credentials_path, &mut fields),
         "schema-create" | "schema-rename" | "schema-drop" | "schema-owner-set" | "table-create"
@@ -2389,6 +2391,58 @@ fn constraint_list(
         if cursor.is_none() {
             break;
         }
+    }
+    println!("]}}");
+    Ok(())
+}
+
+fn index_list(
+    address: SocketAddr,
+    credentials_path: PathBuf,
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<(), String> {
+    let schema_id = parse_id(&take_text(fields, "--schema-id")?)?;
+    let table_id = parse_id(&take_text(fields, "--table-id")?)?;
+    reject_unknown(fields)?;
+    let mut administrator =
+        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
+    let mut client = AdminClient::connect_authenticated(
+        address,
+        administrator.token_id,
+        &mut administrator.token_secret,
+    )
+    .map_err(|error| error.to_string())?;
+    print!("{{\"indexes\":[");
+    let mut first_index = true;
+    let mut cursor = None;
+    let mut page_number = 1usize;
+    loop {
+        let page = client
+            .list_indexes_page(schema_id, table_id, 128, cursor.as_deref())
+            .map_err(|error| format!("index metadata page {page_number}: {error}"))?;
+        for index in &page.records {
+            if !first_index {
+                print!(",");
+            }
+            first_index = false;
+            print!(
+                "{{\"index_id\":{},\"name\":{},\"column_ids\":[",
+                json_string(&lower_hex(&index.index_id)),
+                json_string(&index.name)
+            );
+            for (column_index, column_id) in index.column_ids.iter().enumerate() {
+                if column_index != 0 {
+                    print!(",");
+                }
+                print!("{}", json_string(&lower_hex(column_id)));
+            }
+            print!("],\"unique\":{}}}", index.unique);
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+        page_number = page_number.saturating_add(1);
     }
     println!("]}}");
     Ok(())

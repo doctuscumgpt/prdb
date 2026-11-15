@@ -1,5 +1,11 @@
 # `prdb-client run-sql` Progress
 
+## Logical index metadata CLI — verified
+
+- Added `index-list` to return logical index IDs, names, ordered column IDs, and uniqueness through authenticated administrative metadata. It follows connection-local 128-record pages internally and omits physical storage details.
+- The delegated gateway/supervisor regression checks an ordinary named index and pages 130 constraint-owned indexes. The initial run exposed that metadata discovery treated their valid object records, which omit an optional schema ID, as catalog corruption; that discovery check was corrected and the process regression now passes.
+- Verification: focused delegated process test passed (1 passed, 0 failed). Workspace build, format check, warning-denied Clippy, and `git diff --check` pass; `Cargo.lock` is unchanged.
+
 ## Constraint metadata CLI — verified
 
 - The generated constraint IDs required by SQL `DROP CONSTRAINT` were not otherwise exposed by a `prdb-client` metadata command. Added `constraint-list` on top of the authenticated, bounded metadata page; it emits IDs, kinds, ordered source columns, and discoverable FK target IDs as JSON.

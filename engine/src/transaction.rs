@@ -3938,7 +3938,8 @@ impl<'db> InvocationTransaction<'db> {
                 .ok_or(TransactionError::CorruptCatalog)?;
             if object.family_code != 2
                 || catalog_u16(&object, 1)? != 7
-                || catalog_optional_id(&object, 2)? != Some(schema_id)
+                || catalog_optional_id(&object, 2)?
+                    .is_some_and(|owner_schema| owner_schema != schema_id)
             {
                 return Err(TransactionError::CorruptCatalog);
             }

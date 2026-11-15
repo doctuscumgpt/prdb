@@ -1997,6 +1997,30 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         "admin-sql CREATE INDEX failed: {}",
         String::from_utf8_lossy(&create_dependency_index.stderr)
     );
+    let table_index_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "index-list",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--schema-id",
+            &encode_id_hex(&created_schema.identity_id),
+            "--table-id",
+            &encode_id_hex(&created_table.table_id),
+        ])
+        .output()?;
+    assert!(
+        table_index_list.status.success(),
+        "index-list failed after CREATE INDEX: {}",
+        String::from_utf8_lossy(&table_index_list.stderr)
+    );
+    let table_index_json = String::from_utf8_lossy(&table_index_list.stdout);
+    assert!(table_index_json.contains("\"name\":\"process_label_index\""));
+    assert!(table_index_json.contains(&encode_id_hex(&added_label.column_id)));
+    assert!(table_index_json.contains("\"unique\":false"));
     let drop_column_sql_path = root.join("drop-column.sql");
     std::fs::write(
         &drop_column_sql_path,
@@ -4212,6 +4236,32 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
         many_constraint_json.matches("\"kind\":\"unique\"").count(),
         130,
         "constraint-list omitted UNIQUE constraints across pages: {many_constraint_json}"
+    );
+    let many_index_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "index-list",
+            "--address",
+            &address_text,
+            "--credentials",
+            credentials_path
+                .to_str()
+                .ok_or("non-UTF-8 credentials path")?,
+            "--schema-id",
+            &schema_id_text,
+            "--table-id",
+            &many_table_id_text,
+        ])
+        .output()?;
+    assert!(
+        many_index_list.status.success(),
+        "index-list failed to continue across pages: {}",
+        String::from_utf8_lossy(&many_index_list.stderr)
+    );
+    let many_index_json = String::from_utf8_lossy(&many_index_list.stdout);
+    assert_eq!(
+        many_index_json.matches("\"unique\":true").count(),
+        130,
+        "index-list omitted constraint-owned indexes across pages: {many_index_json}"
     );
     let drop_output = execute_admin_sql("DROP TABLE selfref_app.nodes RESTRICT;")?;
     assert!(

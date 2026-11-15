@@ -1,5 +1,12 @@
 # Metadata Discovery Progress
 
+## Administrative index pages include constraint-owned indexes — verified
+
+- `metadata.indexes.list` now accepts constraint-owned index object records whose optional schema ID is absent. The index catalog record binds each index to the selected table, and the table record binds that table to the authorized schema; a present schema ID must still match.
+- The delegated gateway/supervisor regression lists 130 UNIQUE constraints and their constraint-owned indexes across metadata pages. It first failed with `CorruptCatalog` on the valid omitted-schema-ID shape; after the validation fix, the focused process test passed.
+- Contracts: [client protocol](../../specs/client-protocol.md), [metadata discovery](../../specs/metadata-discovery.md), and the [client SQL command](../../specs/client-sql-command.md).
+- Verification: focused delegated process test passed (1 passed, 0 failed). Workspace build, format check, warning-denied Clippy, and `git diff --check` pass; `Cargo.lock` is unchanged.
+
 ## DP-SQL-3 follow-up: policy-scoped identity lookup — verified locally
 
 - Added a point lookup for one named principal that first verifies a real schema/table relationship and then requires database-admin membership, schema/table ownership, or scoped `MANAGE_POLICIES`. Hidden and absent identities both return no result; no listing capability is exposed.
