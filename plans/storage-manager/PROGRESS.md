@@ -1060,3 +1060,7 @@
 ## ID-SQL-3: DROP identity SQL dispatch
 
 - SQL calls the existing identity drop lifecycle. RESTRICT reference checks, user credential revocation, role membership validation, and permanent user/role tombstones remain enforced in storage. The delegated gateway/supervisor SQL lifecycle passes and the full serial delegated-cgroup workspace suite passes.
+
+## ID-SQL-4: LOGIN state SQL dispatch
+
+- SQL dispatches to the existing storage lifecycle. Atomic active-token revocation on NOLOGIN and the no-token-restoration behavior on LOGIN remain storage enforced. Delegated process and full workspace suites pass.

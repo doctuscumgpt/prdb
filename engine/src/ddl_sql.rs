@@ -177,6 +177,12 @@ pub struct DropIdentitySql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SetUserLoginSql {
+    pub name: String,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckExpressionSql {
     Column(String),
     Literal(CheckLiteralSql),
@@ -556,6 +562,23 @@ pub fn parse_drop_identity(sql: &str) -> Result<DropIdentitySql, DdlSqlError> {
     parser.word("restrict")?;
     finish_statement(&mut parser)?;
     Ok(DropIdentitySql { kind, name })
+}
+
+/// Parse `ALTER USER name LOGIN|NOLOGIN`.
+pub fn parse_set_user_login(sql: &str) -> Result<SetUserLoginSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("user")?;
+    let name = parser.identifier()?;
+    let enabled = if parser.peek_word("login") {
+        parser.word("login")?;
+        true
+    } else {
+        parser.word("nologin")?;
+        false
+    };
+    finish_statement(&mut parser)?;
+    Ok(SetUserLoginSql { name, enabled })
 }
 
 /// Parse the bounded SQL form `CREATE SCHEMA name AUTHORIZATION 'uuid'`.
@@ -2379,6 +2402,31 @@ mod tests {
             "DROP ROLE old_role RESTRICT; CREATE ROLE other",
         ] {
             assert!(parse_drop_identity(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_bounded_user_login_sql() {
+        assert_eq!(
+            parse_set_user_login("ALTER USER analyst NOLOGIN;").unwrap(),
+            SetUserLoginSql {
+                name: "analyst".into(),
+                enabled: false,
+            }
+        );
+        assert_eq!(
+            parse_set_user_login("ALTER USER analyst LOGIN").unwrap(),
+            SetUserLoginSql {
+                name: "analyst".into(),
+                enabled: true,
+            }
+        );
+        for sql in [
+            "ALTER ROLE analyst LOGIN",
+            "ALTER USER analyst",
+            "ALTER USER analyst LOGIN; ALTER USER analyst NOLOGIN",
+        ] {
+            assert!(parse_set_user_login(sql).is_err(), "accepted {sql}");
         }
     }
 

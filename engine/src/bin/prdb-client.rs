@@ -223,6 +223,7 @@ fn admin_sql(
     let create_identity_statement = prdb_engine::ddl_sql::parse_create_identity(sql).ok();
     let rename_identity_statement = prdb_engine::ddl_sql::parse_rename_identity(sql).ok();
     let drop_identity_statement = prdb_engine::ddl_sql::parse_drop_identity(sql).ok();
+    let set_user_login_statement = prdb_engine::ddl_sql::parse_set_user_login(sql).ok();
     let drop_index_statement = prdb_engine::ddl_sql::parse_drop_index(sql).ok();
     let schema_statement = prdb_engine::ddl_sql::parse_create_schema(sql).ok();
     let rename_schema_statement = prdb_engine::ddl_sql::parse_rename_schema(sql).ok();
@@ -244,6 +245,7 @@ fn admin_sql(
         && create_identity_statement.is_none()
         && rename_identity_statement.is_none()
         && drop_identity_statement.is_none()
+        && set_user_login_statement.is_none()
         && drop_index_statement.is_none()
         && schema_statement.is_none()
         && rename_schema_statement.is_none()
@@ -318,6 +320,20 @@ fn admin_sql(
         };
         print_operation(
             &format!("dropped {kind}"),
+            &result.operation_id,
+            result.commit_sequence,
+        );
+    } else if let Some(statement) = set_user_login_statement {
+        let result = client
+            .execute_set_user_login_sql(sql)
+            .map_err(|error| error.to_string())?;
+        let state = if statement.enabled {
+            "LOGIN"
+        } else {
+            "NOLOGIN"
+        };
+        print_operation(
+            &format!("set user {state}"),
             &result.operation_id,
             result.commit_sequence,
         );

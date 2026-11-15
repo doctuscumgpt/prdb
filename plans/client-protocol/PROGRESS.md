@@ -243,3 +243,7 @@
 ## ID-SQL-3: DROP identity SQL dispatch
 
 - Reuses the exact authenticated `metadata.identities.resolve` read and existing `users.drop`/`roles.drop` mutations; storage remains authoritative for RESTRICT and tombstone checks. The full cross-process lifecycle and serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored tests.
+
+## ID-SQL-4: LOGIN state SQL dispatch
+
+- Reuses the exact authenticated user-name resolver and existing `users.login` mutation. The delegated process lifecycle covers SQL LOGIN/NOLOGIN and token invalidation; the full serial delegated-cgroup workspace suite passes with sandbox/process tests enabled and zero ignored tests.

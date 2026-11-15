@@ -263,3 +263,7 @@
 ## ID-SQL-3: identity drop SQL
 
 - `DROP USER|ROLE name RESTRICT` resolves one name through the same authenticated metadata operation and invokes the existing typed RESTRICT drop. Parser and delegated process regressions pass; build, format, Clippy, TinyCC, and full serial delegated-cgroup workspace checks pass.
+
+## ID-SQL-4: user LOGIN state SQL
+
+- `ALTER USER name LOGIN|NOLOGIN` resolves one name through the authenticated metadata operation and invokes the existing `users.login` mutation. Parser and delegated process regressions pass; build, format, Clippy, TinyCC, and full serial delegated-cgroup workspace checks pass.

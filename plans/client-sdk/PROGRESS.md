@@ -820,3 +820,7 @@
 ## ID-SQL-3: identity drop SQL
 
 - Added `AdminClient::execute_drop_identity_sql` and routed `admin-sql` DROP USER/ROLE RESTRICT to the existing typed lifecycle. Parser and delegated gateway/supervisor process coverage pass, as do workspace build, format, Clippy, TinyCC SDK and fixture checks, and the full serial delegated-cgroup workspace suite.
+
+## ID-SQL-4: user LOGIN state SQL
+
+- Added `AdminClient::execute_set_user_login_sql` and routed `admin-sql` ALTER USER LOGIN/NOLOGIN to the existing typed mutation after name resolution. Parser and delegated process regressions pass, along with workspace build, format, Clippy, TinyCC SDK and fixture checks, and the full serial delegated-cgroup workspace suite.

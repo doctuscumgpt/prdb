@@ -1665,7 +1665,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     drop(transfer_client_credentials);
     drop(transfer_credentials);
     let address_text = address.to_string();
-    let transfer_user_id_text = encode_id_hex(&transfer_owner.identity_id);
     let admin_cli_credentials = admin_cancel_credentials_path
         .to_str()
         .ok_or("credential path is not UTF-8")?;
@@ -1692,17 +1691,21 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&rename_user_cli.stderr)
     );
     assert!(String::from_utf8_lossy(&rename_user_cli.stdout).contains("renamed user"));
+    let login_sql_path = root.join("login-state.sql");
+    std::fs::write(
+        &login_sql_path,
+        "ALTER USER process_table_owner_renamed NOLOGIN;",
+    )?;
+    let login_sql_path_text = login_sql_path.to_str().ok_or("SQL path is not UTF-8")?;
     let disable_login_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
-            "user-login",
+            "admin-sql",
             "--address",
             &address_text,
             "--credentials",
             admin_cli_credentials,
-            "--user-id",
-            &transfer_user_id_text,
-            "--enabled",
-            "false",
+            "--sql-file",
+            login_sql_path_text,
         ])
         .output()?;
     assert!(
@@ -1710,7 +1713,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         "user-login disable CLI failed: {}",
         String::from_utf8_lossy(&disable_login_cli.stderr)
     );
-    assert!(String::from_utf8_lossy(&disable_login_cli.stdout).contains("changed user login"));
+    assert!(String::from_utf8_lossy(&disable_login_cli.stdout).contains("set user NOLOGIN"));
     let mut revoked_transfer_credentials = read_client_credentials(&transfer_credential_path)?;
     let revoked_transfer_token_id = revoked_transfer_credentials.token_id;
     assert!(
@@ -1721,17 +1724,19 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         )
         .is_err()
     );
+    std::fs::write(
+        &login_sql_path,
+        "ALTER USER process_table_owner_renamed LOGIN;",
+    )?;
     let enable_login_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
-            "user-login",
+            "admin-sql",
             "--address",
             &address_text,
             "--credentials",
             admin_cli_credentials,
-            "--user-id",
-            &transfer_user_id_text,
-            "--enabled",
-            "true",
+            "--sql-file",
+            login_sql_path_text,
         ])
         .output()?;
     assert!(
@@ -1739,7 +1744,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         "user-login enable CLI failed: {}",
         String::from_utf8_lossy(&enable_login_cli.stderr)
     );
-    assert!(String::from_utf8_lossy(&enable_login_cli.stdout).contains("changed user login"));
+    assert!(String::from_utf8_lossy(&enable_login_cli.stdout).contains("set user LOGIN"));
     let mut still_revoked_credentials = read_client_credentials(&transfer_credential_path)?;
     assert!(
         SubmissionClient::connect_authenticated(
