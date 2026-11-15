@@ -215,6 +215,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. All 33 `bootstrap_binary` tests passed, covering backup validation, v1 migration, physical redb upgrade, restore, publication retry, and process-exit recovery cases.
 - Power-loss/filesystem fault evidence and archived prior-release binary/data fixtures remain open as already recorded above.
 
+## 2026-11-16 integrated acceptance refresh
+
+- The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. All 33 bootstrap binary tests passed, including backup verification, migration, physical redb upgrade, restore, and publication retry/process-exit recovery.
+- Abrupt process-exit coverage does not simulate power loss; filesystem fault evidence and archived prior-release fixtures remain open.
+
 
 ## DS-SQL-51: normalized explicit constraint object names — verified
 

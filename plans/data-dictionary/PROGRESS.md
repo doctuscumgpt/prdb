@@ -337,6 +337,11 @@
 - Extended `storage_manager_adds_column_and_backfills_existing_rows` to hold a pre-DDL redb snapshot while the current schema receives a defaulted column and 64 successive committed row versions. The old snapshot still decodes its original schema and row; the current view decodes the newest row, and a later nullable-column backfill preserves that row value.
 - Verification: the focused commit integration test passed. This covers retained-version pressure at the logical snapshot layer; physical compaction/reclamation behavior and long-duration reader pressure remain open.
 
+## 2026-11-16 integrated acceptance refresh
+
+- The complete serial delegated-cgroup workspace suite passed with zero ignored tests, including 22 catalog wire-fixture tests, 54 startup catalog/index integrity tests, and 75 transaction tests. The updated DD-5 test passed with 64 successive row versions behind a pinned pre-DDL reader.
+- Physical compaction/reclamation behavior, long-duration reader pressure, and continued fuzz campaigns remain open.
+
 ## 2026-11 delegated acceptance checkpoint
 
 - The complete serial delegated-cgroup workspace suite passed with zero ignored tests. Catalog wire-fixture coverage passed (22 tests), startup catalog/index integrity coverage passed (54 tests), and transaction catalog loading and retained-snapshot coverage passed (75 tests).

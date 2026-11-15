@@ -208,3 +208,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. Relevant direct coverage includes 13 authorization unit tests, 177 commit tests, and 75 transaction tests; the full run also exercised confined forged-handle and two-principal cell-redaction paths.
 - AU-3 broader SQL/optimizer equivalence, AU-7 wider hostile IPC sequences, and remaining authority-change race schedules remain open.
+
+## 2026-11-16 integrated acceptance refresh
+
+- The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. It includes 291 engine unit tests, 177 commit tests, 75 transaction tests, and the hostile forged-handle executor paths.
+- Authorization plan gaps remain as recorded above: wider AU-3 SQL/optimizer equivalence, hostile IPC sequences, timing inference, and authority-change race schedules.

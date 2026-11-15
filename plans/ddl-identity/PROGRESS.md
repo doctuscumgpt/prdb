@@ -150,3 +150,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. The authenticated gateway/supervisor lifecycle now also covers repeated `DROP USER|ROLE IF EXISTS` for absent and present targets; see ID-SQL-7 above.
 - Broader identity-authority race schedules remain open.
+
+## 2026-11-16 integrated acceptance refresh
+
+- The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. Identity coverage includes last credentialed-admin protection, identity-drop write invalidation, token lifecycle, role-membership races, and the authenticated gateway/supervisor lifecycle.
+- Broader identity-authority race schedules remain open.

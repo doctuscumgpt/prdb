@@ -265,3 +265,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - The authenticated gateway/supervisor lifecycle now creates two policies, grants schema ownership to a non-administrator, opens a one-record administrative policy page, then transfers schema ownership back before continuing. The old owner’s continuation is rejected after current authority is rechecked.
 - This exercises authority revocation while the catalog result itself remains unchanged; policy DDL permission is not treated as administrative discovery authority.
 - Verification: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` passed through the production gateway and supervisor. The full delegated-cgroup workspace suite was last run at the prior acceptance checkpoint; it was not rerun for this focused process regression.
+
+## 2026-11-16 integrated acceptance refresh
+
+- The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. All three authenticated metadata process tests passed, including the MD-6 schema-owner transfer between administrative policy pages.
+- SQL binding/execution and continuation across process restart remain unimplemented as recorded in the component plan.

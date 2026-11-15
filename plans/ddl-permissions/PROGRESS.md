@@ -98,3 +98,8 @@
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. The authenticated gateway/supervisor lifecycle covers repeated absent `DROP ROW POLICY IF EXISTS` calls alongside existing-target policy drops; see DP-SQL-7 above.
 - Broader permission-change race schedules remain open.
+
+## 2026-11-16 integrated acceptance refresh
+
+- The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. It includes object-grant revocation linearization, policy-owner/manager authorization and replacement, policy evaluation, and cross-process grant/policy DDL coverage.
+- Broader permission-change race schedules and administrative SQL coverage beyond the implemented forms remain open.
