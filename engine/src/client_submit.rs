@@ -3169,6 +3169,58 @@ impl AdminClient {
         }
     }
 
+    /// Grant or revoke one object-scoped privilege on a schema or table.
+    pub fn execute_object_privilege_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_object_privilege(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let grantee_id = self.resolve_identity_sql_name(
+            &statement.grantee_name,
+            if statement.grantee_is_role {
+                crate::metadata_discovery::AdministrativeIdentityKind::Role
+            } else {
+                crate::metadata_discovery::AdministrativeIdentityKind::User
+            },
+        )?;
+        let schema_id = self.resolve_schema_sql_name(&statement.schema_name)?;
+        let object_id = if let Some(table_name) = &statement.table_name {
+            self.resolve_table_sql_name_in_schema(schema_id, table_name)?
+        } else {
+            schema_id
+        };
+        let privilege = match statement.privilege.as_str() {
+            "usage" => AdminObjectPrivilege::Usage,
+            "select" => AdminObjectPrivilege::Select,
+            "insert" => AdminObjectPrivilege::Insert,
+            "update" => AdminObjectPrivilege::Update,
+            "delete" => AdminObjectPrivilege::Delete,
+            "references" => AdminObjectPrivilege::References,
+            "create" => AdminObjectPrivilege::Create,
+            "alter" => AdminObjectPrivilege::Alter,
+            "index" => AdminObjectPrivilege::Index,
+            "manage_policies" => AdminObjectPrivilege::ManagePolicies,
+            "manage_grants" => AdminObjectPrivilege::ManageGrants,
+            _ => return Err(ClientSubmitError::InvalidAdministrativeRequest),
+        };
+        if statement.grant {
+            self.grant_object_privilege(
+                grantee_id,
+                object_id,
+                privilege,
+                AdminObjectGrantTarget::Object,
+            )
+        } else {
+            self.revoke_object_privilege(
+                grantee_id,
+                object_id,
+                privilege,
+                AdminObjectGrantTarget::Object,
+            )
+        }
+    }
+
     fn resolve_identity_sql_name(
         &mut self,
         name: &str,

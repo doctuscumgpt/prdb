@@ -832,3 +832,7 @@
 ## ID-SQL-6: system privilege SQL
 
 - Added `AdminClient::execute_system_privilege_sql` and routed bounded database privilege GRANT/REVOKE statements through identity name resolution to existing typed operations. Parser and delegated process regressions pass, along with workspace build, format, Clippy, TinyCC SDK and fixture checks, and the full serial delegated-cgroup workspace suite.
+
+## DP-SQL-1: object-level grant SQL
+
+- Added `AdminClient::execute_object_privilege_sql` for one schema/table object-level grant or revoke by SQL names. Column-level requests remain available through typed methods. Parser, production process, workspace build, format, Clippy, TinyCC and full delegated suite pass.

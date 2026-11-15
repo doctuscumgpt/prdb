@@ -1,5 +1,9 @@
 # Storage Manager Progress
 
+## DP-SQL-1: object-level grant SQL
+
+- The SQL path reuses existing storage object grant operations; no storage authorization or publication semantics changed. Delegated process verification confirms SQL reaches the typed route; full build, lint, TinyCC, and serial delegated-cgroup suite passed.
+
 ## SM-2 follow-up: bounded ordered index range pages — storage primitive verified
 
 - Contract: [index-key encoding v1](../../specs/index-key-encoding.md). A pinned redb snapshot accepts inclusive/exclusive tuple bounds for one nonzero index ID, returns ordered validated locators in pages capped at 1,024, and resumes strictly after an in-range continuation key. The row UUID suffix is included or excluded with the complete tuple boundary.
