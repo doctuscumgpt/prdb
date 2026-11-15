@@ -3,7 +3,7 @@
 ## Constraint metadata CLI — verified
 
 - The generated constraint IDs required by SQL `DROP CONSTRAINT` were not otherwise exposed by a `prdb-client` metadata command. Added `constraint-list` on top of the authenticated, bounded metadata page; it emits IDs, kinds, ordered source columns, and discoverable FK target IDs as JSON.
-- `constraint-list` follows the connection-local continuation tokens internally and emits one JSON array, avoiding a cursor that would be unusable after the CLI process exits. The delegated gateway/supervisor process regression verifies self-referential FK metadata and lists a table with 130 UNIQUE constraints across multiple pages. Workspace build, format, warning-denied Clippy, and `git diff --check` pass; `Cargo.lock` is unchanged.
+- `constraint-list` follows the connection-local continuation tokens internally and emits one JSON array, avoiding a cursor that would be unusable after the CLI process exits. The delegated gateway/supervisor process regression verifies self-referential FK metadata and lists a table with 130 UNIQUE constraints across multiple pages. It also uses an external FK ID from `constraint-list` in `ALTER TABLE ... DROP CONSTRAINT`, then confirms the referenced parent can be dropped. Focused delegated process coverage, workspace build, format, warning-denied Clippy, and `git diff --check` pass; `Cargo.lock` is unchanged.
 
 ## DS-SQL-27: self-referencing CREATE TABLE SQL — verified
 

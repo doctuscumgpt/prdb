@@ -4147,6 +4147,13 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
         "admin-sql CREATE TABLE child failed: {}",
         String::from_utf8_lossy(&child_create.stderr)
     );
+    let child_table_id = decode_id_hex(
+        String::from_utf8_lossy(&child_create.stdout)
+            .split_whitespace()
+            .nth(2)
+            .ok_or("admin-sql child output omitted the table ID")?,
+    )
+    .ok_or("admin-sql returned an invalid child table ID")?;
     let restricted_drop = execute_admin_sql("DROP TABLE selfref_app.parents RESTRICT;")?;
     assert!(!restricted_drop.status.success());
     let relations = admin.list_relations_page(created_schema.identity_id, 16, None)?;
@@ -4162,17 +4169,71 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
             .iter()
             .any(|relation| relation.name == "children")
     );
-    for statement in [
-        "DROP TABLE selfref_app.children RESTRICT;",
-        "DROP TABLE selfref_app.parents RESTRICT;",
-    ] {
-        let output = execute_admin_sql(statement)?;
-        assert!(
-            output.status.success(),
-            "admin-sql dependency cleanup failed for {statement}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let child_constraints =
+        admin.list_constraints_page(created_schema.identity_id, child_table_id, 128, None)?;
+    let child_foreign_key = child_constraints
+        .records
+        .iter()
+        .find(|constraint| {
+            constraint.kind
+                == prdb_engine::metadata_discovery::AdministrativeConstraintKind::ForeignKey
+        })
+        .ok_or("external FK was absent from child metadata")?;
+    let child_table_id_text = encode_id_hex(&child_table_id);
+    let child_constraint_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "constraint-list",
+            "--address",
+            &address_text,
+            "--credentials",
+            credentials_path
+                .to_str()
+                .ok_or("non-UTF-8 credentials path")?,
+            "--schema-id",
+            &schema_id_text,
+            "--table-id",
+            &child_table_id_text,
+        ])
+        .output()?;
+    assert!(
+        child_constraint_list.status.success(),
+        "constraint-list failed for external FK: {}",
+        String::from_utf8_lossy(&child_constraint_list.stderr)
+    );
+    let child_constraint_json = String::from_utf8_lossy(&child_constraint_list.stdout);
+    let foreign_key_kind_offset = child_constraint_json
+        .find("\"kind\":\"foreign_key\"")
+        .ok_or("constraint-list omitted external FK kind")?;
+    let constraint_id_start = child_constraint_json[..foreign_key_kind_offset]
+        .rfind("\"constraint_id\":\"")
+        .ok_or("constraint-list omitted external FK ID")?
+        + "\"constraint_id\":\"".len();
+    let constraint_id_end = constraint_id_start + 32;
+    let child_constraint_id = &child_constraint_json[constraint_id_start..constraint_id_end];
+    assert_eq!(
+        child_constraint_id,
+        encode_id_hex(&child_foreign_key.constraint_id)
+    );
+    let drop_constraint = execute_admin_sql(&format!(
+        "ALTER TABLE selfref_app.children DROP CONSTRAINT '{child_constraint_id}';"
+    ))?;
+    assert!(
+        drop_constraint.status.success(),
+        "admin-sql DROP CONSTRAINT failed: {}",
+        String::from_utf8_lossy(&drop_constraint.stderr)
+    );
+    let parent_drop = execute_admin_sql("DROP TABLE selfref_app.parents RESTRICT;")?;
+    assert!(
+        parent_drop.status.success(),
+        "admin-sql parent DROP TABLE remained restricted after FK drop: {}",
+        String::from_utf8_lossy(&parent_drop.stderr)
+    );
+    let child_drop = execute_admin_sql("DROP TABLE selfref_app.children RESTRICT;")?;
+    assert!(
+        child_drop.status.success(),
+        "admin-sql child DROP TABLE failed: {}",
+        String::from_utf8_lossy(&child_drop.stderr)
+    );
     drop(admin);
 
     assert!(gateway.stop()?.success());
