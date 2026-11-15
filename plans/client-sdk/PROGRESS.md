@@ -931,3 +931,8 @@
 
 - Updated the SDK command contract to scope named schema-owner transfer resolution to the target schema's owner/ALTER/database-admin authority.
 - Verified with the delegated gateway/supervisor lifecycle and workspace build/format/Clippy checks; `git diff --check` passes and Cargo.lock is unchanged.
+
+## DS-SQL-45: conditional identity creation — verified
+
+- Added `AdminClient::execute_create_identity_if_not_exists_sql` and documented its administrator-only no-op for existing identities and ordinary typed path for absent identities.
+- Parser and delegated gateway/supervisor process coverage pass. Locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite pass (sandbox/process tests enabled; zero ignored); Cargo.lock is unchanged.

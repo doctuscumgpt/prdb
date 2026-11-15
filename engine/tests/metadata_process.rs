@@ -4478,6 +4478,63 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let no_login_user = no_login_admin
         .execute_create_identity_sql("CREATE USER sql_service NOLOGIN")
         .map_err(|error| format!("CREATE USER NOLOGIN failed: {error:?}"))?;
+    assert!(
+        no_login_admin
+            .execute_create_identity_if_not_exists_sql(
+                "CREATE USER IF NOT EXISTS sql_service LOGIN"
+            )?
+            .is_none()
+    );
+    let conditional_role_sql_path = root.join("create-role-if-not-exists.sql");
+    std::fs::write(
+        &conditional_role_sql_path,
+        "CREATE ROLE IF NOT EXISTS sql_conditional_role;",
+    )?;
+    let create_conditional_role = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            conditional_role_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        create_conditional_role.status.success(),
+        "conditional CREATE ROLE failed: {}",
+        String::from_utf8_lossy(&create_conditional_role.stderr)
+    );
+    assert!(String::from_utf8_lossy(&create_conditional_role.stdout).contains("created role"));
+    let repeat_conditional_role = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            conditional_role_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        repeat_conditional_role.status.success(),
+        "repeated conditional CREATE ROLE failed: {}",
+        String::from_utf8_lossy(&repeat_conditional_role.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&repeat_conditional_role.stdout)
+            .contains("role already exists; no operation committed")
+    );
     let token_expiry = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?
         .saturating_add(60_000_000);
     assert!(

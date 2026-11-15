@@ -215,6 +215,7 @@ pub enum CreateIdentityKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateIdentitySql {
     pub kind: CreateIdentityKind,
+    pub if_not_exists: bool,
     pub name: String,
     pub login_enabled: bool,
 }
@@ -750,6 +751,14 @@ pub fn parse_create_identity(sql: &str) -> Result<CreateIdentitySql, DdlSqlError
         parser.word("role")?;
         CreateIdentityKind::Role
     };
+    let if_not_exists = if parser.peek_word("if") {
+        parser.word("if")?;
+        parser.word("not")?;
+        parser.word("exists")?;
+        true
+    } else {
+        false
+    };
     let name = parser.identifier()?;
     let login_enabled = if kind == CreateIdentityKind::User {
         if parser.peek_word("login") {
@@ -765,6 +774,7 @@ pub fn parse_create_identity(sql: &str) -> Result<CreateIdentitySql, DdlSqlError
     finish_statement(&mut parser)?;
     Ok(CreateIdentitySql {
         kind,
+        if_not_exists,
         name,
         login_enabled,
     })
@@ -3431,6 +3441,7 @@ mod tests {
             parse_create_identity("CREATE USER analyst LOGIN;").unwrap(),
             CreateIdentitySql {
                 kind: CreateIdentityKind::User,
+                if_not_exists: false,
                 name: "analyst".into(),
                 login_enabled: true,
             }
@@ -3439,12 +3450,24 @@ mod tests {
             parse_create_identity("CREATE ROLE reporting").unwrap(),
             CreateIdentitySql {
                 kind: CreateIdentityKind::Role,
+                if_not_exists: false,
                 name: "reporting".into(),
                 login_enabled: false,
             }
         );
+        assert!(
+            parse_create_identity("CREATE USER IF NOT EXISTS analyst NOLOGIN")
+                .unwrap()
+                .if_not_exists
+        );
+        assert!(
+            parse_create_identity("CREATE ROLE IF NOT EXISTS reporting")
+                .unwrap()
+                .if_not_exists
+        );
         for sql in [
             "CREATE USER",
+            "CREATE USER IF EXISTS analyst LOGIN",
             "CREATE GROUP reporting",
             "CREATE USER analyst",
             "CREATE USER app.analyst",

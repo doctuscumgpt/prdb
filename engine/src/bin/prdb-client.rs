@@ -329,19 +329,34 @@ fn admin_sql(
             );
         }
     } else if let Some(statement) = create_identity_statement {
-        let result = client
-            .execute_create_identity_sql(sql)
-            .map_err(|error| error.to_string())?;
         let kind = match statement.kind {
             prdb_engine::ddl_sql::CreateIdentityKind::User => "user",
             prdb_engine::ddl_sql::CreateIdentityKind::Role => "role",
         };
-        println!(
-            "created {kind} {} (operation {}, commit {})",
-            lower_hex(&result.identity_id),
-            lower_hex(&result.operation_id),
-            result.commit_sequence
-        );
+        if statement.if_not_exists {
+            match client
+                .execute_create_identity_if_not_exists_sql(sql)
+                .map_err(|error| error.to_string())?
+            {
+                Some(result) => println!(
+                    "created {kind} {} (operation {}, commit {})",
+                    lower_hex(&result.identity_id),
+                    lower_hex(&result.operation_id),
+                    result.commit_sequence
+                ),
+                None => println!("{kind} already exists; no operation committed"),
+            }
+        } else {
+            let result = client
+                .execute_create_identity_sql(sql)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "created {kind} {} (operation {}, commit {})",
+                lower_hex(&result.identity_id),
+                lower_hex(&result.operation_id),
+                result.commit_sequence
+            );
+        }
     } else if let Some(statement) = rename_identity_statement {
         let result = client
             .execute_rename_identity_sql(sql)

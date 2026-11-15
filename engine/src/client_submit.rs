@@ -3398,6 +3398,48 @@ impl AdminClient {
     ) -> Result<AdminIdentityResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_create_identity(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if statement.if_not_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        self.create_identity_from_statement(&statement)
+    }
+
+    /// Execute `CREATE USER|ROLE IF NOT EXISTS`. Existing identities are a
+    /// successful no-op only after current database-administrator authority
+    /// is confirmed; absent identities use the ordinary typed create path.
+    pub fn execute_create_identity_if_not_exists_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<Option<AdminIdentityResult>, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_create_identity(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if !statement.if_not_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let identity_kind = match statement.kind {
+            crate::ddl_sql::CreateIdentityKind::User => {
+                crate::metadata_discovery::AdministrativeIdentityKind::User
+            }
+            crate::ddl_sql::CreateIdentityKind::Role => {
+                crate::metadata_discovery::AdministrativeIdentityKind::Role
+            }
+        };
+        match self.resolve_identity_sql_name(&statement.name, identity_kind) {
+            Ok(_) => {
+                self.list_runtime_invocations_page(1, None)?;
+                Ok(None)
+            }
+            Err(ClientSubmitError::InvalidAdministrativeRequest) => {
+                self.create_identity_from_statement(&statement).map(Some)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn create_identity_from_statement(
+        &mut self,
+        statement: &crate::ddl_sql::CreateIdentitySql,
+    ) -> Result<AdminIdentityResult, ClientSubmitError> {
         match statement.kind {
             crate::ddl_sql::CreateIdentityKind::User if statement.login_enabled => {
                 self.create_user(&statement.name)

@@ -58,7 +58,7 @@ The Rust `RequestedScopeBuilder` consumes permission-filtered `VisibleSchema`, `
 
 ## Administrative Identity Creation SQL
 
-`AdminClient::execute_create_identity_sql` accepts one `CREATE USER name LOGIN|NOLOGIN` or `CREATE ROLE name` statement and dispatches the existing authenticated identity operation. A created user has no credential until a separate token-issue operation succeeds. Rename, drop, and membership SQL remain outside this bounded SQL helper; their typed AdminClient operations remain available.
+`AdminClient::execute_create_identity_sql` accepts one `CREATE USER name LOGIN|NOLOGIN` or `CREATE ROLE name` statement and dispatches the existing authenticated identity operation. `AdminClient::execute_create_identity_if_not_exists_sql` accepts the matching `CREATE USER|ROLE IF NOT EXISTS` forms and returns `None` for an existing identity only after confirming database-administrator authority; it leaves login state unchanged and commits no DDL outcome. An absent identity follows the ordinary typed create path. A created user has no credential until a separate token-issue operation succeeds. Rename, drop, and membership SQL remain outside this bounded SQL helper; their typed AdminClient operations remain available.
 
 ## Administrative CREATE INDEX SQL
 

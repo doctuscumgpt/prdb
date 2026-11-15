@@ -135,3 +135,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `DROP USER|ROLE IF EXISTS name RESTRICT`. Present identities use the existing typed drop mutation and preserve management authorization and RESTRICT dependencies. An unresolved identity is suppressed only after the authenticated runtime-list read confirms database-administrator authority; the no-op creates no DDL outcome.
 - Updated identity and client SQL contracts. Workspace build, formatting, warning-denied Clippy, and `git diff --check` pass. No tests were added or run; Cargo.lock is unchanged.
+
+## ID-SQL-8: conditional identity creation SQL — verified
+
+- Added `CREATE USER|ROLE IF NOT EXISTS`. Existing requested-kind identities are a no-op only after database-administrator authority is confirmed; an existing user's LOGIN state is not reconciled. Absent identities use existing typed creation operations.
+- Parser and delegated gateway/supervisor process regressions pass, including repeated role creation and preserving a NOLOGIN user. Locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite pass (sandbox/process tests enabled; zero ignored). Component SQL contracts are updated; Cargo.lock is unchanged.

@@ -516,3 +516,8 @@
 
 - `ALTER SCHEMA ... OWNER TO name|USER name|ROLE name` now resolves destinations with the same schema-scoped authority used by schema ownership mutation.
 - The delegated gateway/supervisor process test exercises the SQL transfer as a schema ALTER grantee. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## DS-SQL-45: conditional identity creation — verified
+
+- `admin-sql` accepts `CREATE USER|ROLE IF NOT EXISTS`. Existing identities require database-administrator authority and create no DDL outcome; absent identities follow normal typed creation. Existing LOGIN state is preserved.
+- Parser and delegated gateway/supervisor process coverage pass. Locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite pass (sandbox/process tests enabled; zero ignored); Cargo.lock is unchanged.

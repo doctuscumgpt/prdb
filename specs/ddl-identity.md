@@ -10,6 +10,7 @@ Initially support database-local users and roles with database-issued opaque bea
 
 ```sql
 CREATE USER alice LOGIN;
+CREATE USER IF NOT EXISTS alice LOGIN;
 CREATE USER service_loader NOLOGIN;
 ALTER USER alice NOLOGIN;
 ALTER USER alice LOGIN;
@@ -18,6 +19,7 @@ DROP USER service_loader RESTRICT;
 DROP USER IF EXISTS retired_loader RESTRICT;
 
 CREATE ROLE managers;
+CREATE ROLE IF NOT EXISTS managers;
 CREATE ROLE app_owner;
 GRANT managers TO USER alice_admin;
 GRANT managers TO ROLE app_owner;
@@ -25,7 +27,7 @@ REVOKE managers FROM USER alice_admin;
 DROP ROLE managers RESTRICT;
 ```
 
-The authenticated `admin-sql` subset accepts `CREATE USER name LOGIN|NOLOGIN`, `CREATE ROLE name`, `ALTER USER|ROLE old_name RENAME TO new_name`, `ALTER USER name LOGIN|NOLOGIN`, `DROP USER|ROLE name RESTRICT` and `DROP USER|ROLE IF EXISTS name RESTRICT`, `GRANT role TO USER|ROLE member` with the matching `REVOKE role FROM USER|ROLE member` form, and `GRANT|REVOKE SYSTEM PRIVILEGE MANAGE_USERS|MANAGE_ROLES|CREATE_SCHEMA TO|FROM USER|ROLE name`. Identity operands resolve through authenticated, non-enumerating metadata reads, then submit existing typed operations using stable IDs. Unauthorized and absent names have the same lookup result; storage rechecks authorization and applies RESTRICT dependencies during mutation. For conditional drops, an unresolved identity is a successful no-op only after database-administrator authority is confirmed; no DDL outcome is created. A resolved identity follows the normal management privilege and RESTRICT checks. Disabling LOGIN revokes outstanding credentials atomically; enabling LOGIN does not restore them. User creation creates no credential; issue a token separately. Membership is transitive, and storage checks endpoint kinds, cycles, and final administrator invariants. System privilege changes are restricted to database administrators.
+The authenticated `admin-sql` subset accepts `CREATE USER [IF NOT EXISTS] name LOGIN|NOLOGIN`, `CREATE ROLE [IF NOT EXISTS] name`, `ALTER USER|ROLE old_name RENAME TO new_name`, `ALTER USER name LOGIN|NOLOGIN`, `DROP USER|ROLE name RESTRICT` and `DROP USER|ROLE IF EXISTS name RESTRICT`, `GRANT role TO USER|ROLE member` with the matching `REVOKE role FROM USER|ROLE member` form, and `GRANT|REVOKE SYSTEM PRIVILEGE MANAGE_USERS|MANAGE_ROLES|CREATE_SCHEMA TO|FROM USER|ROLE name`. Identity operands resolve through authenticated, non-enumerating metadata reads, then submit existing typed operations using stable IDs. Unauthorized and absent names have the same lookup result; storage rechecks authorization and applies RESTRICT dependencies during mutation. For conditional creation, an existing identity of the requested kind is a successful no-op only after database-administrator authority is confirmed; its login state and DDL outcome are unchanged. An absent identity follows the normal typed creation path and authorization checks. For conditional drops, an unresolved identity is a successful no-op only after database-administrator authority is confirmed; no DDL outcome is created. A resolved identity follows the normal management privilege and RESTRICT checks. Disabling LOGIN revokes outstanding credentials atomically; enabling LOGIN does not restore them. User creation creates no credential; issue a token separately. Membership is transitive, and storage checks endpoint kinds, cycles, and final administrator invariants. System privilege changes are restricted to database administrators.
 
 Users and roles share one unambiguous naming namespace. The storage layer rejects duplicate normalized principal names in the final catalog state, including a name shared by a user and role; startup also rejects persisted duplicates. Creation denies data privileges by default. Rename retains the stable ID and all references. Membership inheritance is transitive; cycles and self-membership fail. `GRANT role TO ROLE parent` makes members of `parent` inherit `role`. Every membership edge must name a live user or role as its member and a live role as its target. Runtime closure resolution traverses the pinned member-to-role index and charges the invocation work budget for reachable edges only; it fails closed on cycles, duplicate edges, or a closure above 4096 edges. Startup and serialized catalog publication validate the complete graph, including disconnected components. Administrative membership commits validate endpoint kinds against the latest committed graph plus staged changes under commit serialization; the 4096-edge limit is enforced before publication. No `SET ROLE`, delegation/admin option, or `PUBLIC` role in the baseline. Policies targeting a role apply to its transitive members.
 
