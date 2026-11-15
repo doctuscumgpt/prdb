@@ -176,7 +176,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Contract: when an index key cell is hidden or only conditionally readable, point access must fall back before consulting the query's equality value so hidden key existence cannot select a different managed result.
 - Regression: `unique_constraint_uses_its_backing_index_for_invocation_writes` now submits both a matching and a differently sized non-matching value under hidden and conditional cell projections. Each pair returns the same `Unavailable` result; the existing readable projection still returns the sanitized row for a matching key and reconciles staged updates/deletes.
 - Verification: the focused real-redb test passed. Locked workspace build, rustfmt check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite passed; the commit and transaction targets reported 148 and 74 passing tests.
-- Remaining: the probe is not routed through SQL/optimizer plans; broader reference-scan equivalence, range access, and error equivalence for complex predicates remain open.
+- The later OP-5 integration connects this authorized probe to exact-equality optimizer hints and the TinyCC runner; the confined SQL acceptance exercises `SELECT id ... WHERE id = $1 LIMIT 1`. The catalog-index fixture compares point and range results against an independently filtered authorized scan and retains hidden/conditional-key `Unavailable` fallback checks.
+- Remaining: broader key types/coercions need SQL contracts and acceptance coverage; complex-predicate redaction-error equivalence and wider workloads remain open.
 
 ## AU-2 / AU-7: hidden-row UPDATE and DELETE match absent-row diagnostics — verified
 
@@ -212,4 +213,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 integrated acceptance refresh
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. It includes 291 engine unit tests, 177 commit tests, 75 transaction tests, and the hostile forged-handle executor paths.
-- Authorization plan gaps remain as recorded above: wider AU-3 SQL/optimizer equivalence, hostile IPC sequences, timing inference, and authority-change race schedules.
+- Authorization gaps remain as recorded above: broader AU-3 key/workload/error equivalence, AU-7 hostile IPC sequences and timing inference, and additional authority-change race schedules.
+
+## AU-3 / OP-5: authorized point and range access through optimizer — verified slice
+
+- The optimizer emits a unique point hint only for an exact supported equality on a statically readable unique key; the TinyCC SDK checks the hint against the parsed predicate, re-resolves relation identity, and calls the executor probe. The confined SQL DML acceptance exercises the point path and the two-sided non-unique range path.
+- `unique_constraint_uses_its_backing_index_for_invocation_writes` obtains the authorized reference scan and independently filters its rows, then compares row identity and sanitized cells with unique point and bounded range results. Hidden/conditional keys still yield `Unavailable` before key-value matching.
+- Verification: the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. Remaining: broaden key types/coercions and complex-predicate error-equivalence coverage.
