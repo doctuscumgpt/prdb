@@ -315,3 +315,8 @@
 - SQL target lookup now uses this scoped endpoint instead of ordinary schema/relation pages, so scoped grant administration does not require global identity-management or ordinary visibility. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused protocol and process regressions remain to be added; no test suite was run for this increment.
 - The authenticated columns page also permits declared-shape reads for the target table owner or inherited `MANAGE_GRANTS` holder without schema USAGE, enabling explicit-column grant binding.
 - The same authenticated metadata operations now expose target schema/relation and logical index pages to table owners and inherited table-scoped `INDEX` grantees for index DDL, including without schema USAGE. Workspace build, format, warning-denied Clippy, and diff checks pass; focused authorization/process regressions remain outstanding.
+
+## DS-SQL-48 tables.truncate control operation — verified slice
+
+- Added a strict version-1 `tables.truncate` PREPARE request with a table ID, connection-owned pending action, START dispatch to fenced storage, and a committed response carrying the operation ID, target ID, and commit sequence.
+- The authenticated gateway/supervisor lifecycle passes using production binaries; storage acceptance verifies durable completion and rejection behavior. The complete serial delegated-cgroup workspace suite passes with sandbox/process tests enabled (281 library tests and 177 commit tests passed, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

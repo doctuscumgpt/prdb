@@ -10,31 +10,34 @@ use crate::catalog::{
     family_schema,
 };
 use crate::commit::{
-    CatalogWrite, CommitError, commit_authorized_column_drop_ddl_with_fences,
-    commit_authorized_column_rename_ddl_with_fences, commit_authorized_constraint_ddl_with_fences,
-    commit_authorized_foreign_key_ddl_with_fences, commit_authorized_identity_ddl_with_fences,
-    commit_authorized_index_ddl_with_fences, commit_authorized_membership_ddl_with_fences,
-    commit_authorized_object_grant_ddl_with_fences, commit_authorized_policy_ddl_with_fences,
-    commit_authorized_schema_create_ddl_with_fences, commit_authorized_schema_drop_ddl_with_fences,
-    commit_authorized_schema_owner_ddl_with_fences,
+    CatalogWrite, CommitError, IndexWrite, RowWrite, TableTruncateCommitRequest,
+    commit_authorized_column_drop_ddl_with_fences, commit_authorized_column_rename_ddl_with_fences,
+    commit_authorized_constraint_ddl_with_fences, commit_authorized_foreign_key_ddl_with_fences,
+    commit_authorized_identity_ddl_with_fences, commit_authorized_index_ddl_with_fences,
+    commit_authorized_membership_ddl_with_fences, commit_authorized_object_grant_ddl_with_fences,
+    commit_authorized_policy_ddl_with_fences, commit_authorized_schema_create_ddl_with_fences,
+    commit_authorized_schema_drop_ddl_with_fences, commit_authorized_schema_owner_ddl_with_fences,
     commit_authorized_schema_rename_ddl_with_fences,
     commit_authorized_system_privilege_ddl_with_fences,
     commit_authorized_table_create_ddl_with_fences, commit_authorized_table_drop_ddl_with_fences,
     commit_authorized_table_owner_ddl_with_fences, commit_authorized_table_rename_ddl_with_fences,
-    commit_catalog_and_audit_with_fences,
+    commit_authorized_table_truncate_ddl_with_fences, commit_catalog_and_audit_with_fences,
+    record_aborted_outcome, validate_table_truncate_ddl_authority,
 };
 use crate::credentials::{
     MAX_TOKEN_LABEL_BYTES, TOKEN_SECRET_BYTES, decode_verifier_record, encode_new_verifier_record,
     encode_revoked_verifier_record, now_unix_micros,
 };
 use crate::ddl_fence::{DdlFenceCoordinator, DdlFenceManager};
+use crate::index_locator::IndexLocator;
 use crate::metadata::{EngineMetadata, Lifecycle};
 use crate::metadata_discovery::{
     InformationSchemaColumnsCursor, InformationSchemaColumnsScanPage,
     InformationSchemaSchemataPage, InformationSchemaTablesCursor, InformationSchemaTablesScanPage,
 };
 use crate::outcome::{InvocationOutcome, lookup_outcome};
-use crate::schema::{AUDIT, CATALOG, ENGINE_META, OUTCOMES};
+use crate::row_record::RowRecord;
+use crate::schema::{AUDIT, CATALOG, ENGINE_META, INDEXES, OUTCOMES, ROW_INDEXES, ROWS};
 use crate::snapshot::{MAX_CATALOG_FAMILY_SCAN, RowSnapshot};
 use crate::startup::{StartupError, validate_persisted_records};
 use crate::transaction::{InvocationCoordination, InvocationTransaction, TransactionError};
@@ -71,6 +74,9 @@ pub const MAX_DISCOVERED_POLICIES: usize = 4096;
 const MAX_DISCOVERED_POLICY_BYTES: usize = 1024 * 1024;
 pub const MAX_DISCOVERED_DEPENDENCIES: usize = 4096;
 const MAX_DISCOVERED_DEPENDENCY_BYTES: usize = 1024 * 1024;
+const MAX_TABLE_TRUNCATE_ROWS: usize = 65_536;
+const MAX_TABLE_TRUNCATE_INDEX_ENTRIES: usize = 65_536;
+const MAX_TABLE_TRUNCATE_BYTES: usize = 64 * 1024 * 1024;
 static TOKEN_REQUEST_LIMITERS: OnceLock<Mutex<HashMap<usize, Weak<TokenRequestLimiter>>>> =
     OnceLock::new();
 static ADMIN_CANCELLATION_LIMITERS: OnceLock<Mutex<HashMap<usize, Weak<TokenRequestLimiter>>>> =
@@ -638,6 +644,13 @@ pub struct DroppedSchema {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DroppedTable {
     pub table_id: [u8; 16],
+    pub commit_sequence: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TruncatedTable {
+    pub table_id: [u8; 16],
+    pub deleted_rows: usize,
     pub commit_sequence: u64,
 }
 
@@ -4120,6 +4133,404 @@ impl<'db> StorageManager<'db> {
             CommitError::DdlAuthorizationDenied => SchemaLifecycleError::Unauthorized,
             error => SchemaLifecycleError::Commit(error),
         })
+    }
+
+    /// Remove every row and physical index membership from a table atomically,
+    /// retaining its catalog definitions. Incoming foreign keys RESTRICT the
+    /// operation. The table's exclusive DDL fence covers the complete scan.
+    pub fn truncate_table(
+        &self,
+        invocation_id: [u8; 16],
+        authenticated_actor_id: [u8; 16],
+        table_id: [u8; 16],
+        retention_deadline_us: i64,
+        mut audit_event: AuditEvent,
+    ) -> Result<TruncatedTable, TableLifecycleError> {
+        if invocation_id == [0; 16]
+            || authenticated_actor_id == [0; 16]
+            || table_id == [0; 16]
+            || retention_deadline_us <= 0
+        {
+            return Err(TableLifecycleError::InvalidRequest);
+        }
+        if audit_event.actor_id != Some(authenticated_actor_id)
+            || audit_event.correlation_id != invocation_id
+            || audit_event.action != AuditAction::Ddl
+            || audit_event.result != AuditResult::Succeeded
+        {
+            return Err(TableLifecycleError::InvalidAudit);
+        }
+
+        let mut commit_started = false;
+        let result =
+            (|| {
+                let _fence_guard = self
+                    .ddl_fences
+                    .acquire_exclusive(&[table_id])
+                    .map_err(|_| TableLifecycleError::Commit(CommitError::DdlFenceUnavailable))?;
+                let read = self
+                    .database
+                    .begin_read()
+                    .map_err(|_| TableLifecycleError::Storage)?;
+                let catalog = read
+                    .open_table(CATALOG)
+                    .map_err(|_| TableLifecycleError::Storage)?;
+                let table_catalog_key = id_catalog_key(5, table_id);
+                let table_catalog_bytes = catalog
+                    .get(table_catalog_key.as_slice())
+                    .map_err(|_| TableLifecycleError::Storage)?
+                    .map(|value| value.value().to_vec())
+                    .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+                let object_catalog_key = id_catalog_key(2, table_id);
+                let object_catalog_bytes = catalog
+                    .get(object_catalog_key.as_slice())
+                    .map_err(|_| TableLifecycleError::Storage)?
+                    .map(|value| value.value().to_vec())
+                    .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+                let next_epoch = read_catalog_u64(&table_catalog_key, &table_catalog_bytes, 5, 3)?
+                    .checked_add(1)
+                    .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+                let next_object_version =
+                    read_catalog_u64(&object_catalog_key, &object_catalog_bytes, 2, 5)?
+                        .checked_add(1)
+                        .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+
+                let updated_table = rewrite_catalog_u64_field(
+                    &table_catalog_key,
+                    &table_catalog_bytes,
+                    5,
+                    3,
+                    next_epoch,
+                )?;
+                let updated_object = rewrite_catalog_u64_field(
+                    &object_catalog_key,
+                    &object_catalog_bytes,
+                    2,
+                    5,
+                    next_object_version,
+                )?;
+                let catalog_writes = [
+                    CatalogWrite {
+                        key: table_catalog_key,
+                        expected_value: Some(table_catalog_bytes),
+                        payload: Some(updated_table),
+                    },
+                    CatalogWrite {
+                        key: object_catalog_key,
+                        expected_value: Some(object_catalog_bytes),
+                        payload: Some(updated_object),
+                    },
+                ];
+                audit_event.target_ids = vec![table_id];
+                let audit_events = [audit_event];
+                validate_table_truncate_ddl_authority(
+                    self.database,
+                    authenticated_actor_id,
+                    table_id,
+                    &catalog_writes,
+                    &audit_events,
+                )
+                .map_err(|error| match error {
+                    CommitError::DdlAuthorizationDenied => TableLifecycleError::Unauthorized,
+                    error => TableLifecycleError::Commit(error),
+                })?;
+
+                // TRUNCATE RESTRICT follows the relation dependency graph, even if
+                // a referencing table currently has no rows.
+                let constraint_prefix = 8u16.to_be_bytes();
+                let mut scanned_constraints = 0usize;
+                for entry in catalog
+                    .range(constraint_prefix.as_slice()..)
+                    .map_err(|_| TableLifecycleError::Storage)?
+                {
+                    let (key, value) = entry.map_err(|_| TableLifecycleError::Storage)?;
+                    let key = key.value();
+                    if !key.starts_with(&constraint_prefix) {
+                        break;
+                    }
+                    scanned_constraints += 1;
+                    if scanned_constraints > MAX_CATALOG_FAMILY_SCAN {
+                        return Err(TableLifecycleError::Commit(CommitError::InvalidCatalog));
+                    }
+                    let key = key.to_vec();
+                    let bytes = value.value().to_vec();
+                    if read_catalog_u16(&key, &bytes, 8, 2)? != 5 {
+                        continue;
+                    }
+                    let source_table_id = read_catalog_id(&key, &bytes, 8, 1)?;
+                    let referenced_constraint_id = read_catalog_id(&key, &bytes, 8, 5)?;
+                    let referenced_key = id_catalog_key(8, referenced_constraint_id);
+                    let referenced_bytes = catalog
+                        .get(referenced_key.as_slice())
+                        .map_err(|_| TableLifecycleError::Storage)?
+                        .map(|value| value.value().to_vec())
+                        .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+                    if source_table_id != table_id
+                        && read_catalog_id(&referenced_key, &referenced_bytes, 8, 1)? == table_id
+                    {
+                        return Err(TableLifecycleError::Commit(
+                            CommitError::TableHasDependencies,
+                        ));
+                    }
+                }
+
+                let rows = read
+                    .open_table(ROWS)
+                    .map_err(|_| TableLifecycleError::Storage)?;
+                let indexes = read
+                    .open_table(INDEXES)
+                    .map_err(|_| TableLifecycleError::Storage)?;
+                let reverse_indexes = read
+                    .open_table(ROW_INDEXES)
+                    .map_err(|_| TableLifecycleError::Storage)?;
+                let mut row_writes = Vec::new();
+                let mut index_writes = Vec::new();
+                let mut row_keys = HashSet::<[u8; 32]>::new();
+                let mut row_versions = HashMap::<[u8; 32], u64>::new();
+                let mut total_bytes = 0usize;
+                for entry in rows
+                    .range(table_id.as_slice()..)
+                    .map_err(|_| TableLifecycleError::Storage)?
+                {
+                    let (key, value) = entry.map_err(|_| TableLifecycleError::Storage)?;
+                    let key = key.value();
+                    if !key.starts_with(&table_id) {
+                        break;
+                    }
+                    if key.len() != 32 {
+                        return Err(TableLifecycleError::Commit(CommitError::InvalidRow));
+                    }
+                    if row_writes.len() >= MAX_TABLE_TRUNCATE_ROWS {
+                        return Err(TableLifecycleError::Commit(
+                            CommitError::TableTruncateLimitExceeded,
+                        ));
+                    }
+                    let row_key: [u8; 32] = key
+                        .try_into()
+                        .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidRow))?;
+                    if row_key[16..] == [0; 16] {
+                        return Err(TableLifecycleError::Commit(CommitError::InvalidRow));
+                    }
+                    let row_bytes = value.value().to_vec();
+                    total_bytes = total_bytes.checked_add(row_bytes.len()).ok_or(
+                        TableLifecycleError::Commit(CommitError::TableTruncateLimitExceeded),
+                    )?;
+                    if total_bytes > MAX_TABLE_TRUNCATE_BYTES {
+                        return Err(TableLifecycleError::Commit(
+                            CommitError::TableTruncateLimitExceeded,
+                        ));
+                    }
+                    let row = RowRecord::decode(&row_bytes)
+                        .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidRow))?;
+                    row_keys.insert(row_key);
+                    row_versions.insert(row_key, row.row_version);
+                    row_writes.push(RowWrite {
+                        key: row_key,
+                        expected_version: Some(row.row_version),
+                        payload: None,
+                    });
+
+                    for reverse_entry in reverse_indexes
+                        .range(row_key.as_slice()..)
+                        .map_err(|_| TableLifecycleError::Storage)?
+                    {
+                        let (reverse_key, marker) =
+                            reverse_entry.map_err(|_| TableLifecycleError::Storage)?;
+                        let reverse_key = reverse_key.value();
+                        if !reverse_key.starts_with(&row_key) {
+                            break;
+                        }
+                        if reverse_key.len() <= row_key.len() || !marker.value().is_empty() {
+                            return Err(TableLifecycleError::Commit(CommitError::InvalidIndex));
+                        }
+                        let mut index_key = reverse_key[row_key.len()..].to_vec();
+                        index_key.extend_from_slice(&row_key[16..]);
+                        let locator_bytes = indexes
+                            .get(index_key.as_slice())
+                            .map_err(|_| TableLifecycleError::Storage)?
+                            .map(|value| value.value().to_vec())
+                            .ok_or(TableLifecycleError::Commit(CommitError::InvalidIndex))?;
+                        let locator = IndexLocator::decode_for_key(&index_key, &locator_bytes)
+                            .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidIndex))?;
+                        if locator.row_id != row_key[16..] || locator.row_version != row.row_version
+                        {
+                            return Err(TableLifecycleError::Commit(CommitError::InvalidIndex));
+                        }
+                        if index_writes.len() >= MAX_TABLE_TRUNCATE_INDEX_ENTRIES {
+                            return Err(TableLifecycleError::Commit(
+                                CommitError::TableTruncateLimitExceeded,
+                            ));
+                        }
+                        total_bytes = total_bytes
+                            .checked_add(index_key.len())
+                            .and_then(|bytes| bytes.checked_add(locator_bytes.len()))
+                            .ok_or(TableLifecycleError::Commit(
+                                CommitError::TableTruncateLimitExceeded,
+                            ))?;
+                        if total_bytes > MAX_TABLE_TRUNCATE_BYTES {
+                            return Err(TableLifecycleError::Commit(
+                                CommitError::TableTruncateLimitExceeded,
+                            ));
+                        }
+                        index_writes.push(IndexWrite {
+                            key: index_key,
+                            row_key,
+                            expected_version: Some(locator.row_version),
+                            present: false,
+                            unique: false,
+                            null_exempt: false,
+                        });
+                    }
+                }
+                let mut index_ids = HashSet::<[u8; 16]>::new();
+                let index_catalog_prefix = 9u16.to_be_bytes();
+                let mut scanned_index_definitions = 0usize;
+                for entry in catalog
+                    .range(index_catalog_prefix.as_slice()..)
+                    .map_err(|_| TableLifecycleError::Storage)?
+                {
+                    let (key, value) = entry.map_err(|_| TableLifecycleError::Storage)?;
+                    let key = key.value();
+                    if !key.starts_with(&index_catalog_prefix) {
+                        break;
+                    }
+                    scanned_index_definitions += 1;
+                    if scanned_index_definitions > MAX_CATALOG_FAMILY_SCAN {
+                        return Err(TableLifecycleError::Commit(CommitError::InvalidCatalog));
+                    }
+                    let key = key.to_vec();
+                    let bytes = value.value().to_vec();
+                    if read_catalog_id(&key, &bytes, 9, 1)? == table_id {
+                        let index_id: [u8; 16] = key[3..19].try_into().map_err(|_| {
+                            TableLifecycleError::Commit(CommitError::InvalidCatalog)
+                        })?;
+                        index_ids.insert(index_id);
+                    }
+                }
+                let expected_index_keys = index_writes
+                    .iter()
+                    .map(|write| write.key.clone())
+                    .collect::<HashSet<_>>();
+                let mut physical_index_keys = HashSet::<Vec<u8>>::new();
+                let mut scanned_physical_index_entries = 0usize;
+                for index_id in index_ids {
+                    for entry in indexes
+                        .range(index_id.as_slice()..)
+                        .map_err(|_| TableLifecycleError::Storage)?
+                    {
+                        let (key, value) = entry.map_err(|_| TableLifecycleError::Storage)?;
+                        let key = key.value();
+                        if !key.starts_with(&index_id) {
+                            break;
+                        }
+                        scanned_physical_index_entries += 1;
+                        if scanned_physical_index_entries > MAX_TABLE_TRUNCATE_INDEX_ENTRIES {
+                            return Err(TableLifecycleError::Commit(
+                                CommitError::TableTruncateLimitExceeded,
+                            ));
+                        }
+                        let index_key = key.to_vec();
+                        let locator = IndexLocator::decode_for_key(&index_key, value.value())
+                            .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidIndex))?;
+                        let mut row_key = [0; 32];
+                        row_key[..16].copy_from_slice(&table_id);
+                        row_key[16..].copy_from_slice(&locator.row_id);
+                        let row_version = row_versions
+                            .get(&row_key)
+                            .ok_or(TableLifecycleError::Commit(CommitError::InvalidIndex))?;
+                        if *row_version != locator.row_version {
+                            return Err(TableLifecycleError::Commit(CommitError::InvalidIndex));
+                        }
+                        let mut reverse_key = row_key.to_vec();
+                        reverse_key.extend_from_slice(&index_key[..index_key.len() - 16]);
+                        let reverse_marker = reverse_indexes
+                            .get(reverse_key.as_slice())
+                            .map_err(|_| TableLifecycleError::Storage)?
+                            .ok_or(TableLifecycleError::Commit(CommitError::InvalidIndex))?;
+                        if !reverse_marker.value().is_empty() {
+                            return Err(TableLifecycleError::Commit(CommitError::InvalidIndex));
+                        }
+                        physical_index_keys.insert(index_key);
+                    }
+                }
+                if physical_index_keys != expected_index_keys {
+                    return Err(TableLifecycleError::Commit(CommitError::InvalidIndex));
+                }
+                // Reject orphan reverse entries instead of leaving them behind in
+                // a supposedly empty table's physical index state.
+                let mut scanned_reverse_entries = 0usize;
+                for entry in reverse_indexes
+                    .range(table_id.as_slice()..)
+                    .map_err(|_| TableLifecycleError::Storage)?
+                {
+                    let (key, marker) = entry.map_err(|_| TableLifecycleError::Storage)?;
+                    let key = key.value();
+                    if !key.starts_with(&table_id) {
+                        break;
+                    }
+                    scanned_reverse_entries += 1;
+                    if scanned_reverse_entries > MAX_TABLE_TRUNCATE_INDEX_ENTRIES {
+                        return Err(TableLifecycleError::Commit(
+                            CommitError::TableTruncateLimitExceeded,
+                        ));
+                    }
+                    if key.len() <= 32 || !marker.value().is_empty() {
+                        return Err(TableLifecycleError::Commit(CommitError::InvalidIndex));
+                    }
+                    let row_key: [u8; 32] = key[..32]
+                        .try_into()
+                        .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidIndex))?;
+                    if !row_keys.contains(&row_key) {
+                        return Err(TableLifecycleError::Commit(CommitError::InvalidIndex));
+                    }
+                }
+                drop(reverse_indexes);
+                drop(indexes);
+                drop(rows);
+                drop(catalog);
+                drop(read);
+
+                commit_started = true;
+                let commit_sequence = commit_authorized_table_truncate_ddl_with_fences(
+                    self.database,
+                    TableTruncateCommitRequest {
+                        invocation_id,
+                        principal_id: authenticated_actor_id,
+                        table_id,
+                        retention_deadline_us,
+                        rows: &row_writes,
+                        indexes: &index_writes,
+                        catalog_writes: &catalog_writes,
+                        audit_events: &audit_events,
+                    },
+                )
+                .map_err(|error| match error {
+                    CommitError::DdlAuthorizationDenied => TableLifecycleError::Unauthorized,
+                    error => TableLifecycleError::Commit(error),
+                })?;
+                Ok(TruncatedTable {
+                    table_id,
+                    deleted_rows: row_writes.len(),
+                    commit_sequence,
+                })
+            })();
+        if result.is_err() && !commit_started {
+            let original_is_storage = matches!(
+                &result,
+                Err(TableLifecycleError::Storage)
+                    | Err(TableLifecycleError::Commit(CommitError::Storage(_)))
+            );
+            if !original_is_storage {
+                record_aborted_outcome(
+                    self.database,
+                    invocation_id,
+                    authenticated_actor_id,
+                    retention_deadline_us,
+                )
+                .map_err(TableLifecycleError::Commit)?;
+            }
+        }
+        result
     }
 
     /// Drop a table with RESTRICT semantics, removing owned definitions and rows atomically.

@@ -73,6 +73,12 @@ pub struct DropTableSql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TruncateTableSql {
+    pub schema: String,
+    pub table: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DropSchemaSql {
     pub schema: String,
     pub if_exists: bool,
@@ -1253,6 +1259,19 @@ pub fn parse_drop_table(sql: &str) -> Result<DropTableSql, DdlSqlError> {
         table,
         if_exists,
     })
+}
+
+/// Parse `TRUNCATE TABLE schema.table RESTRICT`.
+pub fn parse_truncate_table(sql: &str) -> Result<TruncateTableSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("truncate")?;
+    parser.word("table")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("restrict")?;
+    finish_statement(&mut parser)?;
+    Ok(TruncateTableSql { schema, table })
 }
 
 /// Parse `ALTER TABLE schema.table ADD {PRIMARY KEY|UNIQUE} (columns...)`.
@@ -2929,6 +2948,13 @@ mod tests {
                 if_exists: true,
             }
         );
+        assert_eq!(
+            parse_truncate_table("TRUNCATE TABLE app.events RESTRICT;").unwrap(),
+            TruncateTableSql {
+                schema: "app".into(),
+                table: "events".into(),
+            }
+        );
         for sql in [
             "ALTER TABLE events RENAME TO archived",
             "ALTER TABLE app.events RENAME archived",
@@ -2942,6 +2968,15 @@ mod tests {
                 parse_rename_table(sql).is_err() && parse_drop_table(sql).is_err(),
                 "accepted {sql}"
             );
+        }
+        for sql in [
+            "TRUNCATE app.events RESTRICT",
+            "TRUNCATE TABLE events RESTRICT",
+            "TRUNCATE TABLE app.events",
+            "TRUNCATE TABLE app.events CASCADE",
+            "TRUNCATE TABLE app.events RESTRICT; TRUNCATE TABLE app.other RESTRICT",
+        ] {
+            assert!(parse_truncate_table(sql).is_err(), "accepted {sql}");
         }
         assert_eq!(
             parse_table_owner_transfer("ALTER TABLE app.events OWNER TO ROLE owners;").unwrap(),

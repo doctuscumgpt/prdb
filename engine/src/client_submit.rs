@@ -2829,6 +2829,19 @@ impl AdminClient {
         .map(|(result, _)| result)
     }
 
+    pub fn truncate_table(
+        &mut self,
+        table_id: [u8; 16],
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        validate_admin_id(table_id)?;
+        self.execute_admin_operation(
+            "tables.truncate",
+            format!("{{\"table_id\":\"{}\"}}", lower_hex(&table_id)),
+            Some("table_id"),
+        )
+        .map(|(result, _)| result)
+    }
+
     /// Create a table with typed columns. The result preserves the server's
     /// column order and returns each generated column ID in that same order.
     pub fn create_table(
@@ -4923,6 +4936,16 @@ impl AdminClient {
         }
         let table_id = self.resolve_table_sql_name(&statement.schema, &statement.table)?;
         self.drop_table(table_id)
+    }
+
+    pub fn execute_truncate_table_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_truncate_table(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let table_id = self.resolve_table_sql_name(&statement.schema, &statement.table)?;
+        self.truncate_table(table_id)
     }
 
     /// Execute `DROP TABLE IF EXISTS`. If metadata cannot resolve the target,

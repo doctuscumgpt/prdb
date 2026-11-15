@@ -5372,6 +5372,422 @@ fn storage_manager_widens_varchar_atomically_and_keeps_index_current()
 }
 
 #[test]
+fn storage_manager_truncates_rows_and_index_memberships_atomically()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{
+        CreateIndexRequest, CreateTableRequest, TableColumnDefinition,
+    };
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let actor = id(0x61);
+    let admin_role = builtin_owner_id();
+    let setup = vec![
+        principal_write_with_name(actor, 1, 1, "truncate_table_owner"),
+        object_write_with_name(actor, 8, "truncate_table_owner"),
+        membership_write(actor, admin_role),
+        dependency_write(actor, admin_role, 5),
+    ];
+    let mut setup_audit = identity_audit_event(0x62, admin_role, id(0x63));
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0x63), admin_role, 9_999, &setup, &[setup_audit])?;
+
+    let create_schema_invocation = id(0x64);
+    let mut create_schema_audit = identity_audit_event(0x65, actor, id(0x66));
+    create_schema_audit.correlation_id = create_schema_invocation;
+    let schema = storage.create_schema(
+        create_schema_invocation,
+        actor,
+        "truncate_schema",
+        actor,
+        9_999,
+        create_schema_audit,
+    )?;
+    let create_table_invocation = id(0x67);
+    let mut create_table_audit = identity_audit_event(0x68, actor, id(0x69));
+    create_table_audit.correlation_id = create_table_invocation;
+    let table = storage.create_table(CreateTableRequest {
+        invocation_id: create_table_invocation,
+        authenticated_actor_id: actor,
+        schema_id: schema.schema_id,
+        name: "truncate_target".to_owned(),
+        columns: vec![TableColumnDefinition {
+            name: "value".to_owned(),
+            scalar_type: ScalarType::Integer,
+            nullable: true,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+        retention_deadline_us: 9_999,
+        audit_event: create_table_audit,
+    })?;
+    let schema = [ColumnSchema {
+        scalar_type: ScalarType::Integer,
+        nullable: true,
+    }];
+    let row_ids = [id(0x6a), id(0x6b)];
+    let write = database.begin_write()?;
+    {
+        let mut rows = write.open_table(ROWS)?;
+        for (row_id, value) in row_ids.iter().zip([11i32, 22]) {
+            let payload = encode_tuple(&schema, 1, &[Some(ScalarValue::Integer(value))])?;
+            let bytes = RowRecord {
+                row_version: table.commit_sequence,
+                payload,
+            }
+            .encode()?;
+            rows.insert(&table_row_key(table.table_id, *row_id)[..], &bytes[..])?;
+        }
+    }
+    write.commit()?;
+
+    let create_index_invocation = id(0x6c);
+    let mut create_index_audit = identity_audit_event(0x6d, actor, id(0x6e));
+    create_index_audit.correlation_id = create_index_invocation;
+    let index = storage.create_index(CreateIndexRequest {
+        invocation_id: create_index_invocation,
+        authenticated_actor_id: actor,
+        table_id: table.table_id,
+        name: "truncate_value_idx".to_owned(),
+        column_ids: table.column_ids.clone(),
+        unique: false,
+        retention_deadline_us: 9_999,
+        audit_event: create_index_audit,
+    })?;
+
+    let stale_invocation = id(0x6f);
+    let mut stale = storage.begin_invocation(stale_invocation, actor, 9_999, 1, 1024)?;
+    let stale_schema = stale.load_catalog_table_schema(table.table_id)?;
+    stale.load_catalog_indexes(&stale_schema)?;
+    let stale_payload = encode_tuple(
+        &stale_schema.columns,
+        stale_schema.schema_version,
+        &[Some(ScalarValue::Integer(33))],
+    )?;
+    let stale_row_id = id(0x70);
+    stale.stage_put(
+        prdb_engine::overlay::RowId {
+            table: table.table_id,
+            row: stale_row_id,
+        },
+        &stale_payload,
+    )?;
+    let denied_invocation = id(0x74);
+    let mut denied_audit = identity_audit_event(0x75, id(0x76), id(0x77));
+    denied_audit.correlation_id = denied_invocation;
+    assert_eq!(
+        storage.truncate_table(
+            denied_invocation,
+            id(0x76),
+            table.table_id,
+            9_999,
+            denied_audit
+        ),
+        Err(prdb_engine::storage_manager::TableLifecycleError::Unauthorized)
+    );
+    assert_eq!(
+        lookup_outcome(&database, denied_invocation, id(0x76), 1)?
+            .ok_or("unauthorized truncate outcome missing")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    let old_snapshot = database.begin_read()?;
+    let truncate_invocation = id(0x71);
+    let mut truncate_audit = identity_audit_event(0x72, actor, id(0x73));
+    truncate_audit.correlation_id = truncate_invocation;
+    let truncated = storage.truncate_table(
+        truncate_invocation,
+        actor,
+        table.table_id,
+        9_999,
+        truncate_audit,
+    )?;
+    assert_eq!(truncated.deleted_rows, 2);
+    assert_eq!(truncated.commit_sequence, commit_sequence(&database)?);
+
+    let old_rows = old_snapshot.open_table(ROWS)?;
+    let old_indexes = old_snapshot.open_table(schema::INDEXES)?;
+    let old_reverse = old_snapshot.open_table(schema::ROW_INDEXES)?;
+    for row_id in row_ids {
+        let row_key = table_row_key(table.table_id, row_id);
+        let row = old_rows
+            .get(&row_key[..])?
+            .ok_or("old snapshot lost a row")?;
+        let record = RowRecord::decode(row.value())?;
+        assert!(
+            old_indexes
+                .range(index.index_id.as_slice()..)?
+                .any(|entry| entry
+                    .map(|(key, _)| key.value().ends_with(&row_id))
+                    .unwrap_or(false))
+        );
+        assert!(
+            old_reverse
+                .range(row_key.as_slice()..)?
+                .next()
+                .transpose()?
+                .is_some()
+        );
+        assert_eq!(record.row_version, table.commit_sequence);
+    }
+    drop(old_reverse);
+    drop(old_indexes);
+    drop(old_rows);
+    drop(old_snapshot);
+
+    let read = database.begin_read()?;
+    let rows = read.open_table(ROWS)?;
+    let indexes = read.open_table(schema::INDEXES)?;
+    let reverse = read.open_table(schema::ROW_INDEXES)?;
+    assert!(
+        rows.get(&table_row_key(table.table_id, row_ids[0])[..])?
+            .is_none()
+    );
+    assert!(
+        indexes
+            .range(index.index_id.as_slice()..)?
+            .next()
+            .transpose()?
+            .is_none()
+    );
+    assert!(
+        reverse
+            .range(table.table_id.as_slice()..)?
+            .next()
+            .transpose()?
+            .is_none()
+    );
+    let catalog = read.open_table(CATALOG)?;
+    assert!(
+        catalog
+            .get(id_catalog_key(9, index.index_id).as_slice())?
+            .is_some()
+    );
+    drop(catalog);
+    drop(reverse);
+    drop(indexes);
+    drop(rows);
+    drop(read);
+    assert!(matches!(
+        stale.commit(),
+        Err(prdb_engine::transaction::TransactionError::Commit(
+            CommitError::Conflict
+        ))
+    ));
+    assert!(row(&database, &table_row_key(table.table_id, stale_row_id))?.is_none());
+    assert_eq!(
+        lookup_outcome(&database, truncate_invocation, actor, 1)?
+            .ok_or("truncate outcome missing")?
+            .status,
+        OutcomeStatus::Committed
+    );
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    Ok(())
+}
+
+#[test]
+fn storage_manager_truncate_restricts_real_incoming_foreign_key()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{
+        CreateTableForeignKeyDefinition, CreateTableRequest, TableColumnDefinition,
+        TableLifecycleError,
+    };
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let actor = id(0x91);
+    let admin_role = builtin_owner_id();
+    let setup = vec![
+        principal_write_with_name(actor, 1, 1, "truncate_fk_owner"),
+        object_write_with_name(actor, 8, "truncate_fk_owner"),
+        membership_write(actor, admin_role),
+        dependency_write(actor, admin_role, 5),
+    ];
+    let mut setup_audit = identity_audit_event(0x92, admin_role, id(0x93));
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage
+        .commit_catalog_and_audit(id(0x93), admin_role, 9_999, &setup, &[setup_audit])
+        .map_err(|error| format!("truncate FK setup: {error:?}"))?;
+
+    let schema_invocation = id(0x94);
+    let mut schema_audit = identity_audit_event(0x95, actor, id(0x96));
+    schema_audit.correlation_id = schema_invocation;
+    let schema = storage
+        .create_schema(
+            schema_invocation,
+            actor,
+            "truncate_fk_schema",
+            actor,
+            9_999,
+            schema_audit,
+        )
+        .map_err(|error| format!("truncate FK schema creation: {error:?}"))?;
+    let parent_invocation = id(0x97);
+    let mut parent_audit = identity_audit_event(0x98, actor, id(0x99));
+    parent_audit.correlation_id = parent_invocation;
+    let parent = storage
+        .create_table_with_primary_key(
+            CreateTableRequest {
+                invocation_id: parent_invocation,
+                authenticated_actor_id: actor,
+                schema_id: schema.schema_id,
+                name: "truncate_parent".to_owned(),
+                columns: vec![TableColumnDefinition {
+                    name: "id".to_owned(),
+                    scalar_type: ScalarType::Integer,
+                    nullable: false,
+                    generated_uuid_identity: false,
+                    default: None,
+                }],
+                retention_deadline_us: 9_999,
+                audit_event: parent_audit,
+            },
+            &["id".to_owned()],
+        )
+        .map_err(|error| format!("truncate FK parent creation: {error:?}"))?;
+    let target_constraint_id = {
+        let read = database.begin_read()?;
+        let catalog = read.open_table(CATALOG)?;
+        let prefix = 8u16.to_be_bytes();
+        catalog
+            .range(prefix.as_slice()..)?
+            .find_map(|entry| {
+                let (key, value) = entry.ok()?;
+                let key = key.value();
+                if !key.starts_with(&prefix) {
+                    return None;
+                }
+                let record = decode_registered_envelope(value.value()).ok()?;
+                (record.family_code == 8
+                    && record
+                        .fields
+                        .iter()
+                        .any(|field| field.tag == 1 && field.payload.as_slice() == parent.table_id)
+                    && record.fields.iter().any(|field| {
+                        field.tag == 2 && field.payload.as_slice() == 2u16.to_le_bytes()
+                    }))
+                .then(|| <[u8; 16]>::try_from(&key[3..19]).ok())?
+            })
+            .ok_or("created PRIMARY KEY constraint missing")?
+    };
+
+    let grant_invocation = id(0x9a);
+    let mut actor_epoch = principal_write_with_name(actor, 1, 2, "truncate_fk_owner");
+    {
+        let read = database.begin_read()?;
+        let catalog = read.open_table(CATALOG)?;
+        actor_epoch.expected_value = Some(
+            catalog
+                .get(id_catalog_key(10, actor).as_slice())?
+                .ok_or("truncate FK actor missing")?
+                .value()
+                .to_vec(),
+        );
+    }
+    let grant_writes = [
+        grant_write(actor, parent.table_id, 6, 1, parent.table_id, admin_role),
+        dependency_write(actor, parent.table_id, 5),
+        actor_epoch,
+    ];
+    let mut grant_audit = identity_audit_event(0x9b, admin_role, id(0x9c));
+    grant_audit.action = AuditAction::AuthorityChange;
+    grant_audit.correlation_id = grant_invocation;
+    storage
+        .commit_catalog_and_audit(
+            grant_invocation,
+            admin_role,
+            9_999,
+            &grant_writes,
+            &[grant_audit],
+        )
+        .map_err(|error| format!("truncate FK privilege setup: {error:?}"))?;
+
+    let child_invocation = id(0x9d);
+    let mut child_audit = identity_audit_event(0x9e, actor, id(0x9f));
+    child_audit.correlation_id = child_invocation;
+    let child = storage
+        .create_table_with_foreign_keys(
+            CreateTableRequest {
+                invocation_id: child_invocation,
+                authenticated_actor_id: actor,
+                schema_id: schema.schema_id,
+                name: "truncate_child".to_owned(),
+                columns: vec![TableColumnDefinition {
+                    name: "parent_id".to_owned(),
+                    scalar_type: ScalarType::Integer,
+                    nullable: true,
+                    generated_uuid_identity: false,
+                    default: None,
+                }],
+                retention_deadline_us: 9_999,
+                audit_event: child_audit,
+            },
+            None,
+            &[],
+            &[],
+            &[CreateTableForeignKeyDefinition {
+                source_columns: vec!["parent_id".to_owned()],
+                target_constraint_id,
+                target_columns: None,
+            }],
+        )
+        .map_err(|error| format!("truncate FK child creation: {error:?}"))?;
+    let _ = child;
+
+    let before_truncate = commit_sequence(&database)?;
+    let denied_actor = id(0xa3);
+    let denied_invocation = id(0xa4);
+    let mut denied_audit = identity_audit_event(0xa5, denied_actor, id(0xa6));
+    denied_audit.correlation_id = denied_invocation;
+    assert_eq!(
+        storage.truncate_table(
+            denied_invocation,
+            denied_actor,
+            parent.table_id,
+            9_999,
+            denied_audit,
+        ),
+        Err(TableLifecycleError::Unauthorized),
+        "an unauthorized caller cannot distinguish an incoming FK dependency"
+    );
+    assert_eq!(commit_sequence(&database)?, before_truncate);
+    assert_eq!(
+        lookup_outcome(&database, denied_invocation, denied_actor, 1)?
+            .ok_or("missing unauthorized truncate outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+
+    let truncate_invocation = id(0xa0);
+    let mut truncate_audit = identity_audit_event(0xa1, actor, id(0xa2));
+    truncate_audit.correlation_id = truncate_invocation;
+    assert_eq!(
+        storage.truncate_table(
+            truncate_invocation,
+            actor,
+            parent.table_id,
+            9_999,
+            truncate_audit,
+        ),
+        Err(TableLifecycleError::Commit(
+            CommitError::TableHasDependencies
+        )),
+        "TRUNCATE RESTRICT rejects an incoming FK even when both tables are empty"
+    );
+    assert_eq!(commit_sequence(&database)?, before_truncate);
+    assert_eq!(
+        lookup_outcome(&database, truncate_invocation, actor, 1)?
+            .ok_or("missing rejected truncate outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    Ok(())
+}
+
+#[test]
 fn storage_manager_sets_replaces_and_drops_column_defaults()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{

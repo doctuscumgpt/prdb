@@ -526,3 +526,8 @@
 
 - `admin-sql` accepts `ALTER INDEX schema.name RENAME TO new_name`, resolves the index through authenticated metadata, and submits the typed rename by stable ID. The change preserves index memberships and rejects schema-level name collisions atomically.
 - Delegated gateway/supervisor process coverage exercises rename, metadata readback, collision rejection, and subsequent index DDL. Parser/storage regressions, workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored; Cargo.lock is unchanged.
+
+## DS-SQL-48: TRUNCATE TABLE RESTRICT SQL — verified slice
+
+- Added bounded `TRUNCATE TABLE schema.table RESTRICT` parsing, authenticated metadata binding, `AdminClient::truncate_table`, and the `admin-sql` CLI route. The strict command rejects unqualified targets, omitted/unsupported drop modes, and multiple statements.
+- The gateway/supervisor process lifecycle executes the command and confirms the logical index remains available afterward. Focused parser, storage, and process tests pass. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite pass with sandbox/process tests enabled (281 library tests and 177 commit tests passed, zero ignored); Cargo.lock is unchanged.

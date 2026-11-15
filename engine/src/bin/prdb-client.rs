@@ -252,6 +252,7 @@ fn admin_sql(
     let rename_table_statement = prdb_engine::ddl_sql::parse_rename_table(sql).ok();
     let table_owner_statement = prdb_engine::ddl_sql::parse_table_owner_transfer(sql).ok();
     let drop_table_statement = prdb_engine::ddl_sql::parse_drop_table(sql).ok();
+    let truncate_table_statement = prdb_engine::ddl_sql::parse_truncate_table(sql).ok();
     let add_key_constraint_statement = prdb_engine::ddl_sql::parse_add_key_constraint(sql).ok();
     let add_foreign_key_statement = prdb_engine::ddl_sql::parse_add_foreign_key(sql).ok();
     let drop_constraint_statement = prdb_engine::ddl_sql::parse_drop_constraint(sql).ok();
@@ -285,6 +286,7 @@ fn admin_sql(
         && rename_table_statement.is_none()
         && table_owner_statement.is_none()
         && drop_table_statement.is_none()
+        && truncate_table_statement.is_none()
         && add_key_constraint_statement.is_none()
         && add_foreign_key_statement.is_none()
         && drop_constraint_statement.is_none()
@@ -840,6 +842,15 @@ fn admin_sql(
                 result.commit_sequence
             );
         }
+    } else if truncate_table_statement.is_some() {
+        let result = client
+            .execute_truncate_table_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "truncated table (operation {}, commit {})",
+            lower_hex(&result.operation_id),
+            result.commit_sequence
+        );
     } else {
         return Err("invalid administrative SQL: unsupported statement".to_owned());
     }

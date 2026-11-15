@@ -149,6 +149,40 @@ struct CatalogCommitRequest<'a> {
     audit_events: &'a [AuditEvent],
 }
 
+pub(crate) struct TableTruncateCommitRequest<'a> {
+    pub invocation_id: [u8; 16],
+    pub principal_id: [u8; 16],
+    pub table_id: [u8; 16],
+    pub retention_deadline_us: i64,
+    pub rows: &'a [RowWrite],
+    pub indexes: &'a [IndexWrite],
+    pub catalog_writes: &'a [CatalogWrite],
+    pub audit_events: &'a [AuditEvent],
+}
+
+pub(crate) fn validate_table_truncate_ddl_authority(
+    database: &Database,
+    principal_id: [u8; 16],
+    table_id: [u8; 16],
+    catalog_writes: &[CatalogWrite],
+    audit_events: &[AuditEvent],
+) -> Result<(), CommitError> {
+    if !catalog_writes
+        .iter()
+        .any(|write| write.key == id_catalog_key(5, table_id))
+    {
+        return Err(CommitError::InvalidCatalog);
+    }
+    table_rename_ddl_authority_guards(
+        database,
+        principal_id,
+        catalog_writes,
+        audit_events,
+        TableObjectMutationKind::Truncate,
+    )
+    .map(|_| ())
+}
+
 #[derive(Clone, Copy)]
 enum CatalogAuthorizationMode {
     Trusted,
@@ -170,6 +204,13 @@ enum CatalogAuthorizationMode {
     ColumnDropDdl,
     TableCreateDdl,
     ObjectGrantDdl,
+}
+
+#[derive(Clone, Copy)]
+enum TableObjectMutationKind {
+    Rename,
+    OwnerTransfer,
+    Truncate,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -197,6 +238,7 @@ pub enum CommitError {
     TableHasDependencies,
     ColumnHasDependencies,
     TableDropLimitExceeded,
+    TableTruncateLimitExceeded,
     ColumnAddLimitExceeded,
     DdlAuthorizationDenied,
     InvocationExpired,
@@ -7312,6 +7354,77 @@ pub fn commit_authorized_table_owner_ddl_with_fences(
     )
 }
 
+/// Atomically delete a table's rows and index memberships while retaining its
+/// definitions. The storage manager must hold the table's exclusive DDL fence
+/// across its bounded snapshot scan and this commit.
+pub(crate) fn commit_authorized_table_truncate_ddl_with_fences(
+    database: &Database,
+    request: TableTruncateCommitRequest<'_>,
+) -> Result<u64, CommitError> {
+    let TableTruncateCommitRequest {
+        invocation_id,
+        principal_id,
+        table_id,
+        retention_deadline_us,
+        rows,
+        indexes,
+        catalog_writes,
+        audit_events,
+    } = request;
+    if invocation_id == [0; 16]
+        || principal_id == [0; 16]
+        || table_id == [0; 16]
+        || !catalog_writes
+            .iter()
+            .any(|write| write.key == id_catalog_key(5, table_id))
+        || rows.iter().any(|write| {
+            write.key[..16] != table_id
+                || write.key[16..] == [0; 16]
+                || write.expected_version.is_none()
+                || write.payload.is_some()
+        })
+        || indexes.iter().any(|write| {
+            write.row_key[..16] != table_id || write.expected_version.is_none() || write.present
+        })
+    {
+        return Err(CommitError::InvalidWrite);
+    }
+    let catalog_guards = match table_rename_ddl_authority_guards(
+        database,
+        principal_id,
+        catalog_writes,
+        audit_events,
+        TableObjectMutationKind::Truncate,
+    ) {
+        Ok(guards) => guards,
+        Err(error) => {
+            if !matches!(error, CommitError::Storage(_)) {
+                record_aborted_outcome(
+                    database,
+                    invocation_id,
+                    principal_id,
+                    retention_deadline_us,
+                )?;
+            }
+            return Err(error);
+        }
+    };
+    commit_storage_changes(
+        database,
+        CommitRequest {
+            invocation_id,
+            principal_id,
+            retention_deadline_us,
+            rows,
+            indexes,
+            foreign_keys: &[],
+            catalog_guards: &catalog_guards,
+            catalog: catalog_writes,
+            audit: audit_events,
+        },
+    )
+}
+
 /// Authorize a stable-ID column rename and validate final table-local names.
 pub fn commit_authorized_column_rename_ddl_with_fences(
     database: &Database,
@@ -7699,7 +7812,7 @@ fn commit_catalog_and_audit_with_fences_inner(
                 principal_id,
                 catalog_writes,
                 audit_events,
-                false,
+                TableObjectMutationKind::Rename,
             ) {
                 Ok(guards) => guards,
                 Err(error) => {
@@ -7721,7 +7834,7 @@ fn commit_catalog_and_audit_with_fences_inner(
                 principal_id,
                 catalog_writes,
                 audit_events,
-                true,
+                TableObjectMutationKind::OwnerTransfer,
             ) {
                 Ok(guards) => guards,
                 Err(error) => {
@@ -10492,7 +10605,7 @@ fn table_rename_ddl_authority_guards(
     principal_id: [u8; 16],
     catalog_writes: &[CatalogWrite],
     audit_events: &[AuditEvent],
-    owner_transfer: bool,
+    mutation_kind: TableObjectMutationKind,
 ) -> Result<Vec<CatalogGuard>, CommitError> {
     if principal_id == [0; 16] || catalog_writes.len() != 2 || audit_events.is_empty() {
         return Err(CommitError::InvalidCatalog);
@@ -10557,14 +10670,22 @@ fn table_rename_ddl_authority_guards(
     let new_owner_id: [u8; 16] = catalog_field_bytes(&object_key, new_object_bytes, 2, 4)?
         .try_into()
         .map_err(|_| CommitError::InvalidCatalog)?;
-    let object_mutation_valid = if owner_transfer {
-        old_owner_id != new_owner_id
-            && old_name == new_name
-            && catalog_fields_equal_except(&old_object, &new_object, &[4, 5])
-    } else {
-        old_name != new_name
-            && is_canonical_catalog_name(&new_name)
-            && catalog_fields_equal_except(&old_object, &new_object, &[3, 5])
+    let object_mutation_valid = match mutation_kind {
+        TableObjectMutationKind::OwnerTransfer => {
+            old_owner_id != new_owner_id
+                && old_name == new_name
+                && catalog_fields_equal_except(&old_object, &new_object, &[4, 5])
+        }
+        TableObjectMutationKind::Rename => {
+            old_name != new_name
+                && is_canonical_catalog_name(&new_name)
+                && catalog_fields_equal_except(&old_object, &new_object, &[3, 5])
+        }
+        TableObjectMutationKind::Truncate => {
+            old_owner_id == new_owner_id
+                && old_name == new_name
+                && catalog_fields_equal_except(&old_object, &new_object, &[5])
+        }
     };
     if old_table.family_code != 5
         || new_table.family_code != 5

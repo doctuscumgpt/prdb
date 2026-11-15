@@ -2183,6 +2183,54 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     assert!(table_index_json.contains("\"name\":\"process_label_index\""));
     assert!(table_index_json.contains(&encode_id_hex(&added_label.column_id)));
     assert!(table_index_json.contains("\"unique\":false"));
+    let truncate_sql_path = root.join("truncate-table.sql");
+    std::fs::write(
+        &truncate_sql_path,
+        "TRUNCATE TABLE process_admin_schema.process_admin_table RESTRICT;",
+    )?;
+    let truncate_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            truncate_sql_path.to_str().ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        truncate_cli.status.success(),
+        "admin-sql TRUNCATE TABLE failed: {}",
+        String::from_utf8_lossy(&truncate_cli.stderr)
+    );
+    assert!(String::from_utf8_lossy(&truncate_cli.stdout).contains("truncated table"));
+    let retained_index_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "index-list",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--schema-id",
+            &encode_id_hex(&created_schema.identity_id),
+            "--table-id",
+            &encode_id_hex(&created_table.table_id),
+        ])
+        .output()?;
+    assert!(
+        retained_index_list.status.success(),
+        "index-list failed after TRUNCATE TABLE: {}",
+        String::from_utf8_lossy(&retained_index_list.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&retained_index_list.stdout)
+            .contains("\"name\":\"process_label_index\"")
+    );
     let drop_column_sql_path = root.join("drop-column.sql");
     std::fs::write(
         &drop_column_sql_path,
