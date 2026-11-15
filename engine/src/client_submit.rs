@@ -3415,24 +3415,55 @@ impl AdminClient {
     ) -> Result<AdminOperationResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_drop_identity(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
-        let kind = match statement.kind {
-            crate::ddl_sql::CreateIdentityKind::User => "user",
-            crate::ddl_sql::CreateIdentityKind::Role => "role",
-        };
-        let payload = format!(
-            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"metadata.identities.resolve\",\"arguments\":{{\"name\":\"{}\",\"kind\":\"{kind}\"}}}}",
-            statement.name
-        );
-        let response = self.transport.exchange(10, payload.into_bytes())?;
-        let fields = parse_flat_response(&response.payload)?;
-        if fields.len() != 1 {
-            return Err(ClientSubmitError::InvalidResponse);
+        if statement.if_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
         }
-        let identity_id = response_id(&fields, "identity_id")
-            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let identity_id = self.resolve_identity_sql_name(
+            &statement.name,
+            match statement.kind {
+                crate::ddl_sql::CreateIdentityKind::User => {
+                    crate::metadata_discovery::AdministrativeIdentityKind::User
+                }
+                crate::ddl_sql::CreateIdentityKind::Role => {
+                    crate::metadata_discovery::AdministrativeIdentityKind::Role
+                }
+            },
+        )?;
         match statement.kind {
             crate::ddl_sql::CreateIdentityKind::User => self.drop_user(identity_id),
             crate::ddl_sql::CreateIdentityKind::Role => self.drop_role(identity_id),
+        }
+    }
+
+    /// Drop a user or role conditionally. An unresolved identity is suppressed
+    /// only after current database-administrator authority is confirmed.
+    pub fn execute_drop_identity_if_exists_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<Option<AdminOperationResult>, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_drop_identity(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if !statement.if_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let kind = match statement.kind {
+            crate::ddl_sql::CreateIdentityKind::User => {
+                crate::metadata_discovery::AdministrativeIdentityKind::User
+            }
+            crate::ddl_sql::CreateIdentityKind::Role => {
+                crate::metadata_discovery::AdministrativeIdentityKind::Role
+            }
+        };
+        match self.resolve_identity_sql_name(&statement.name, kind) {
+            Ok(identity_id) => match statement.kind {
+                crate::ddl_sql::CreateIdentityKind::User => self.drop_user(identity_id).map(Some),
+                crate::ddl_sql::CreateIdentityKind::Role => self.drop_role(identity_id).map(Some),
+            },
+            Err(ClientSubmitError::InvalidAdministrativeRequest) => {
+                self.list_runtime_invocations_page(1, None)?;
+                Ok(None)
+            }
+            Err(error) => Err(error),
         }
     }
 

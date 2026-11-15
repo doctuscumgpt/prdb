@@ -341,18 +341,38 @@ fn admin_sql(
             result.commit_sequence,
         );
     } else if let Some(statement) = drop_identity_statement {
-        let result = client
-            .execute_drop_identity_sql(sql)
-            .map_err(|error| error.to_string())?;
-        let kind = match statement.kind {
-            prdb_engine::ddl_sql::CreateIdentityKind::User => "user",
-            prdb_engine::ddl_sql::CreateIdentityKind::Role => "role",
-        };
-        print_operation(
-            &format!("dropped {kind}"),
-            &result.operation_id,
-            result.commit_sequence,
-        );
+        if statement.if_exists {
+            match client
+                .execute_drop_identity_if_exists_sql(sql)
+                .map_err(|error| error.to_string())?
+            {
+                Some(result) => {
+                    let kind = match statement.kind {
+                        prdb_engine::ddl_sql::CreateIdentityKind::User => "user",
+                        prdb_engine::ddl_sql::CreateIdentityKind::Role => "role",
+                    };
+                    print_operation(
+                        &format!("dropped {kind}"),
+                        &result.operation_id,
+                        result.commit_sequence,
+                    );
+                }
+                None => println!("identity was absent; no operation committed"),
+            }
+        } else {
+            let result = client
+                .execute_drop_identity_sql(sql)
+                .map_err(|error| error.to_string())?;
+            let kind = match statement.kind {
+                prdb_engine::ddl_sql::CreateIdentityKind::User => "user",
+                prdb_engine::ddl_sql::CreateIdentityKind::Role => "role",
+            };
+            print_operation(
+                &format!("dropped {kind}"),
+                &result.operation_id,
+                result.commit_sequence,
+            );
+        }
     } else if let Some(statement) = set_user_login_statement {
         let result = client
             .execute_set_user_login_sql(sql)

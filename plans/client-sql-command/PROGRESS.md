@@ -446,3 +446,8 @@
 
 - `admin-sql` accepts `DROP ROW|CELL POLICY IF EXISTS name ON schema.table RESTRICT`. A resolved policy uses the normal typed drop operation; an unresolved target is suppressed only after an authenticated database-administrator check.
 - Permission and client SQL specifications and component progress are updated. Workspace build, formatting, warning-denied Clippy, and `git diff --check` pass. Tests were not added or run; Cargo.lock is unchanged.
+
+## Conditional DROP USER/ROLE SQL — implemented slice
+
+- `admin-sql` accepts `DROP USER|ROLE IF EXISTS name RESTRICT`. Resolved identities use existing typed RESTRICT operations; unresolved identities no-op only after a current database-administrator check.
+- Identity and client SQL specifications and component progress are updated. Workspace build, formatting, warning-denied Clippy, and `git diff --check` pass. Tests were not added or run; Cargo.lock is unchanged.

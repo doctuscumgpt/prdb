@@ -224,6 +224,7 @@ pub struct RenameIdentitySql {
 pub struct DropIdentitySql {
     pub kind: CreateIdentityKind,
     pub name: String,
+    pub if_exists: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -768,7 +769,7 @@ pub fn parse_rename_identity(sql: &str) -> Result<RenameIdentitySql, DdlSqlError
     })
 }
 
-/// Parse `DROP USER|ROLE name RESTRICT`.
+/// Parse `DROP USER|ROLE [IF EXISTS] name RESTRICT`.
 pub fn parse_drop_identity(sql: &str) -> Result<DropIdentitySql, DdlSqlError> {
     let mut parser = statement_parser(sql)?;
     parser.word("drop")?;
@@ -779,10 +780,21 @@ pub fn parse_drop_identity(sql: &str) -> Result<DropIdentitySql, DdlSqlError> {
         parser.word("role")?;
         CreateIdentityKind::Role
     };
+    let if_exists = if parser.peek_word("if") {
+        parser.word("if")?;
+        parser.word("exists")?;
+        true
+    } else {
+        false
+    };
     let name = parser.identifier()?;
     parser.word("restrict")?;
     finish_statement(&mut parser)?;
-    Ok(DropIdentitySql { kind, name })
+    Ok(DropIdentitySql {
+        kind,
+        name,
+        if_exists,
+    })
 }
 
 /// Parse `ALTER USER name LOGIN|NOLOGIN`.
@@ -3381,6 +3393,7 @@ mod tests {
             DropIdentitySql {
                 kind: CreateIdentityKind::User,
                 name: "service_loader".into(),
+                if_exists: false,
             }
         );
         assert_eq!(
@@ -3388,6 +3401,7 @@ mod tests {
             DropIdentitySql {
                 kind: CreateIdentityKind::Role,
                 name: "old_role".into(),
+                if_exists: false,
             }
         );
         for sql in [

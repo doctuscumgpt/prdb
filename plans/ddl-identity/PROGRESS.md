@@ -130,3 +130,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Behavior: `GRANT|REVOKE MANAGE_USERS|MANAGE_ROLES|CREATE_SCHEMA TO|FROM USER|ROLE name` resolves the grantee through authenticated metadata and dispatches the existing database-scoped typed privilege mutation. Storage retains database-admin authorization.
 - Regression evidence: parser cases reject unsupported privileges, malformed direction, ADMIN OPTION, and multiple statements. The delegated process lifecycle grants and revokes `MANAGE_ROLES` using SQL, then verifies inherited role authorization.
 - Verification: parser and delegated gateway/supervisor lifecycle regressions passed. Workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests and sandbox fixture, full serial delegated-cgroup workspace suite, and `git diff --check` passed. The suite enabled sandbox/process tests, reported 262 library tests, and ignored zero tests. One run hit the unrelated intermittent gateway reaper timing test; the focused test passed and a full retry passed. Cargo.lock is unchanged.
+
+## ID-SQL-7: conditional identity drops — implemented slice
+
+- Added `DROP USER|ROLE IF EXISTS name RESTRICT`. Present identities use the existing typed drop mutation and preserve management authorization and RESTRICT dependencies. An unresolved identity is suppressed only after the authenticated runtime-list read confirms database-administrator authority; the no-op creates no DDL outcome.
+- Updated identity and client SQL contracts. Workspace build, formatting, warning-denied Clippy, and `git diff --check` pass. No tests were added or run; Cargo.lock is unchanged.
