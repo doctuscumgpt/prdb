@@ -957,3 +957,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - SQL CHECK binding accepts `/` for same-type SMALLINT, INTEGER, and BIGINT operands at multiplicative precedence with `*` and `%`. Division truncates toward zero; NULL propagates; zero divisors and signed minimum divided by `-1` fail closed. DECIMAL division remains unsupported.
 - EIR1 now writes version 4 and decodes versions 1–3; division opcode 30 is version 4 only. Catalog expression metadata remains version 1. Focused SQL binding, evaluator, and codec regressions passed. The complete serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored); workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. Cargo.lock is unchanged.
+
+## DS-SQL-67: unary integer negation in CHECK expressions — implemented
+
+- SQL CHECK binding accepts unary `-` on SMALLINT, INTEGER, and BIGINT expressions. NULL propagates, and negating the signed minimum fails closed. Unary plus and DECIMAL arithmetic remain unsupported.
+- EIR1 writes version 5, reads versions 1–4, and gates unary negate opcode 31 to v5; catalog expression metadata remains v1. Focused parser, evaluator, and codec regressions passed. The complete serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process coverage enabled, zero ignored); workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. Cargo.lock is unchanged.

@@ -182,6 +182,20 @@ fn check_constraints_evaluate_checked_integer_arithmetic_and_propagate_null() {
         ),
         Err(AuthorizationError::EvaluationFailed)
     );
+
+    let negated = Expr::Equal(
+        Box::new(Expr::Negate(Box::new(Expr::Field(0)))),
+        Box::new(Expr::Literal(Some(ScalarValue::Integer(-4)))),
+    );
+    assert_eq!(
+        check_constraint_passes(&negated, &[Some(ScalarValue::Integer(4))], &ctx),
+        Ok(true)
+    );
+    assert_eq!(check_constraint_passes(&negated, &[None], &ctx), Ok(true));
+    assert_eq!(
+        check_constraint_passes(&negated, &[Some(ScalarValue::Integer(i32::MIN))], &ctx),
+        Err(AuthorizationError::EvaluationFailed)
+    );
 }
 
 #[test]

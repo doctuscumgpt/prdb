@@ -10826,7 +10826,7 @@ fn collect_expression_fields(expression: &Expr, ordinals: &mut HashSet<usize>) {
                 collect_expression_fields(expression, ordinals);
             }
         }
-        Expr::Not(expression) | Expr::IsNull(expression) => {
+        Expr::Not(expression) | Expr::IsNull(expression) | Expr::Negate(expression) => {
             collect_expression_fields(expression, ordinals);
         }
         Expr::Literal(_) | Expr::CurrentPrincipalId | Expr::HasRole(_) => {}

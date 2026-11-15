@@ -223,6 +223,7 @@ pub enum Expr {
     Multiply(Box<Expr>, Box<Expr>),
     Modulo(Box<Expr>, Box<Expr>),
     Divide(Box<Expr>, Box<Expr>),
+    Negate(Box<Expr>),
     And(Vec<Expr>),
     Or(Vec<Expr>),
     Not(Box<Expr>),
@@ -759,6 +760,31 @@ fn eval(
                 Truth::Unknown => Truth::Unknown,
             };
             Ok(truth_value(result))
+        }
+        Expr::Negate(expression) => {
+            let Value::Scalar(value) = child(expression, remaining)?;
+            let Some(value) = value else {
+                return Ok(Value::Scalar(None));
+            };
+            let value = match value {
+                ScalarValue::SmallInt(value) => ScalarValue::SmallInt(
+                    value
+                        .checked_neg()
+                        .ok_or(AuthorizationError::EvaluationFailed)?,
+                ),
+                ScalarValue::Integer(value) => ScalarValue::Integer(
+                    value
+                        .checked_neg()
+                        .ok_or(AuthorizationError::EvaluationFailed)?,
+                ),
+                ScalarValue::BigInt(value) => ScalarValue::BigInt(
+                    value
+                        .checked_neg()
+                        .ok_or(AuthorizationError::EvaluationFailed)?,
+                ),
+                _ => return Err(AuthorizationError::EvaluationFailed),
+            };
+            Ok(Value::Scalar(Some(value)))
         }
         Expr::IsNull(expression) => {
             let Value::Scalar(value) = child(expression, remaining)?;

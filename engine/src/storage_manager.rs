@@ -7455,7 +7455,7 @@ impl<'db> StorageManager<'db> {
                         collect_check_dependencies(item, column_ids, dependencies)?;
                     }
                 }
-                Expr::Not(inner) | Expr::IsNull(inner) => {
+                Expr::Not(inner) | Expr::IsNull(inner) | Expr::Negate(inner) => {
                     collect_check_dependencies(inner, column_ids, dependencies)?;
                 }
                 Expr::Literal(_) => {}
@@ -13835,7 +13835,7 @@ fn policy_expression_dependencies(
                     visit(expression, column_ids, dependencies)?;
                 }
             }
-            Expr::Not(inner) | Expr::IsNull(inner) => {
+            Expr::Not(inner) | Expr::IsNull(inner) | Expr::Negate(inner) => {
                 visit(inner, column_ids, dependencies)?;
             }
         }

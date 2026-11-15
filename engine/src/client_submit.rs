@@ -4826,7 +4826,7 @@ impl AdminClient {
                         collect_fields(expression, columns, dependencies)?;
                     }
                 }
-                Expr::Not(inner) | Expr::IsNull(inner) => {
+                Expr::Not(inner) | Expr::IsNull(inner) | Expr::Negate(inner) => {
                     collect_fields(inner, columns, dependencies)?;
                 }
                 Expr::Literal(_) => {}

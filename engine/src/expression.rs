@@ -4,7 +4,7 @@ use crate::catalog::decode_registered_envelope;
 use crate::tuple::{ColumnSchema, ScalarType, ScalarValue, encode_tuple};
 
 const MAGIC: &[u8; 4] = b"EIR1";
-const VERSION: u16 = 4;
+const VERSION: u16 = 5;
 const CATALOG_VERSION: u32 = 1;
 const HEADER_LEN: usize = 8;
 pub const MAX_EXPRESSION_BYTES: usize = 256 * 1024;
@@ -73,7 +73,9 @@ pub fn is_row_local_expression(expression: &Expr) -> bool {
         Expr::And(expressions) | Expr::Or(expressions) => {
             expressions.iter().all(is_row_local_expression)
         }
-        Expr::Not(inner) | Expr::IsNull(inner) => is_row_local_expression(inner),
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::Negate(inner) => {
+            is_row_local_expression(inner)
+        }
     }
 }
 
@@ -278,6 +280,16 @@ fn infer_type(
                 return Err(ExpressionCodecError::TypeMismatch);
             }
             Ok(InferredType::Known(ScalarType::Boolean))
+        }
+        Expr::Negate(child_expression) => {
+            let inferred = child(child_expression, dependencies, remaining)?;
+            match inferred {
+                InferredType::Known(
+                    ScalarType::SmallInt | ScalarType::Integer | ScalarType::BigInt,
+                )
+                | InferredType::Null => Ok(inferred),
+                InferredType::Known(_) => Err(ExpressionCodecError::TypeMismatch),
+            }
         }
         Expr::IsNull(child_expression) => {
             child(child_expression, dependencies, remaining)?;
@@ -574,6 +586,10 @@ impl Encoder {
             Expr::Multiply(left, right) => self.binary(28, left, right, depth),
             Expr::Modulo(left, right) => self.binary(29, left, right, depth),
             Expr::Divide(left, right) => self.binary(30, left, right, depth),
+            Expr::Negate(child) => {
+                self.byte(31)?;
+                self.node(child, depth + 1)
+            }
             Expr::And(expressions) => self.children(22, expressions, depth),
             Expr::Or(expressions) => self.children(23, expressions, depth),
             Expr::Not(child) => {
@@ -751,6 +767,7 @@ impl Decoder<'_> {
             28 if self.version >= 2 => self.binary(Expr::Multiply, depth),
             29 if self.version >= 3 => self.binary(Expr::Modulo, depth),
             30 if self.version >= 4 => self.binary(Expr::Divide, depth),
+            31 if self.version >= 5 => Ok(Expr::Negate(Box::new(self.node(depth + 1)?))),
             _ => Err(ExpressionCodecError::InvalidEncoding),
         }
     }

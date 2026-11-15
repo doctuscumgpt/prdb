@@ -309,6 +309,7 @@ pub enum CheckExpressionSql {
     Multiply(Box<CheckExpressionSql>, Box<CheckExpressionSql>),
     Modulo(Box<CheckExpressionSql>, Box<CheckExpressionSql>),
     Divide(Box<CheckExpressionSql>, Box<CheckExpressionSql>),
+    Negate(Box<CheckExpressionSql>),
     IsNull(Box<CheckExpressionSql>),
     IsNotNull(Box<CheckExpressionSql>),
     BooleanTest {
@@ -1790,6 +1791,7 @@ fn validate_column_check_expression(
             | CheckExpressionSql::Divide(left, right) => {
                 only_column(column, left) && only_column(column, right)
             }
+            CheckExpressionSql::Negate(expression) => only_column(column, expression),
             CheckExpressionSql::In { expression, .. }
             | CheckExpressionSql::Between { expression, .. } => only_column(column, expression),
             CheckExpressionSql::DistinctFrom {
@@ -1827,6 +1829,7 @@ pub fn bind_check_expression(
             | CheckExpressionSql::Divide(left, right) => {
                 has_policy_context(left) || has_policy_context(right)
             }
+            CheckExpressionSql::Negate(expression) => has_policy_context(expression),
             CheckExpressionSql::In { expression, .. }
             | CheckExpressionSql::Between { expression, .. } => has_policy_context(expression),
             CheckExpressionSql::DistinctFrom {
@@ -1922,6 +1925,7 @@ fn bind_expression(
                     left_hint.or(right_hint)
                 }
             }
+            CheckExpressionSql::Negate(expression) => comparison_hint(expression, lookup),
         }
     }
 
@@ -2033,6 +2037,24 @@ fn bind_expression(
                     _ => unreachable!(),
                 };
                 (expression, arithmetic_type)
+            }
+            Sql::Negate(inner) => {
+                let (inner, scalar_type) = bind(
+                    inner,
+                    expected.or_else(|| comparison_hint(inner, lookup)),
+                    lookup,
+                    role_lookup,
+                )?;
+                let null_literal = matches!(inner, Expr::Literal(None));
+                if !null_literal
+                    && !matches!(
+                        scalar_type,
+                        Some(ScalarType::SmallInt | ScalarType::Integer | ScalarType::BigInt)
+                    )
+                {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
+                (Expr::Negate(Box::new(inner)), scalar_type)
             }
             Sql::Literal(literal) => {
                 let (value, scalar_type) = match literal {
@@ -2864,6 +2886,14 @@ impl Parser {
     }
 
     fn check_value_atom(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
+        if self.peek() == Some(&Token::Minus)
+            && !matches!(self.tokens.get(self.position + 1), Some(Token::Number(_)))
+        {
+            self.position += 1;
+            return Ok(CheckExpressionSql::Negate(Box::new(
+                self.check_value_atom()?,
+            )));
+        }
         if self.peek() == Some(&Token::LeftParen) {
             self.position += 1;
             let expression = self.check_value_expression()?;
@@ -4033,6 +4063,23 @@ mod tests {
             })
             .is_ok()
         );
+        let negation =
+            parse_add_check_constraint("ALTER TABLE app.inventory ADD CHECK (-quantity <= 0)")
+                .unwrap();
+        assert_eq!(
+            bind_check_expression(&negation.expression, |name| {
+                (name == "quantity").then_some((0, ScalarType::Integer))
+            })
+            .unwrap(),
+            Expr::LessEqual(
+                Box::new(Expr::Negate(Box::new(Expr::Field(0)))),
+                Box::new(Expr::Literal(Some(ScalarValue::Integer(0)))),
+            )
+        );
+        let null_negation =
+            parse_add_check_constraint("ALTER TABLE app.inventory ADD CHECK (-NULL IS NULL)")
+                .unwrap();
+        assert!(bind_check_expression(&null_negation.expression, |_| None).is_ok());
         assert!(
             parse_add_check_constraint(
                 "ALTER TABLE app.inventory ADD CHECK (quantity + 'two' <= capacity)"
