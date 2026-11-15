@@ -2887,6 +2887,28 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             .contains("removed credential file")
     );
     assert!(!credential_path.exists());
+    let mut no_login_admin_credentials = read_client_credentials(&admin_cancel_credentials_path)?;
+    let mut no_login_admin = AdminClient::connect_authenticated(
+        address,
+        no_login_admin_credentials.token_id,
+        &mut no_login_admin_credentials.token_secret,
+    )?;
+    let no_login_user = no_login_admin
+        .execute_create_identity_sql("CREATE USER sql_service NOLOGIN")
+        .map_err(|error| format!("CREATE USER NOLOGIN failed: {error:?}"))?;
+    let token_expiry = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?
+        .saturating_add(60_000_000);
+    assert!(
+        no_login_admin
+            .issue_token(
+                no_login_user.identity_id,
+                "must stay disabled",
+                token_expiry
+            )
+            .is_err()
+    );
+    drop(no_login_admin);
+    drop(no_login_admin_credentials);
     remove_client_credentials(&admin_cancel_credentials_path)?;
     drop(admin);
 

@@ -18113,6 +18113,28 @@ fn storage_manager_authorizes_identity_ddl_and_preserves_a_login_admin()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_micros(),
     )?;
+    let mut create_no_login_audit = identity_audit_event(0xac, user_manager, user_manager);
+    create_no_login_audit.correlation_id = id(0xac);
+    let no_login_user = storage.create_user_no_login(
+        id(0xac),
+        user_manager,
+        "service_loader",
+        now + 3_600_000_000,
+        create_no_login_audit,
+    )?;
+    let mut no_login_token_audit = identity_audit_event(0xad, user_manager, no_login_user.user_id);
+    no_login_token_audit.action = AuditAction::TokenLifecycle;
+    no_login_token_audit.target_ids = vec![no_login_user.user_id];
+    let no_login_token = storage.issue_token(TokenIssueRequest {
+        invocation_id: id(0xad),
+        authenticated_actor_id: user_manager,
+        user_id: no_login_user.user_id,
+        label: "blocked no-login token",
+        expires_at_us: now + 3_600_000_000,
+        retention_deadline_us: now + 7_200_000_000,
+        audit_event: no_login_token_audit,
+    });
+    assert!(no_login_token.is_err(), "NOLOGIN identity received a token");
     let replacement_event = AuditEvent {
         event_id: id(0x96),
         actor_id: Some(user_manager),
@@ -18159,7 +18181,7 @@ fn storage_manager_authorizes_identity_ddl_and_preserves_a_login_admin()
             9_999,
             rename_audit,
         )?,
-        5
+        6
     );
 
     let user_token_secret = [0x47; 32];
@@ -18206,7 +18228,7 @@ fn storage_manager_authorizes_identity_ddl_and_preserves_a_login_admin()
             9_999,
             disable_audit,
         )?,
-        7
+        8
     );
     assert!(storage.list_tokens(user_manager, created_user)?[0].revoked);
 
@@ -18242,7 +18264,7 @@ fn storage_manager_authorizes_identity_ddl_and_preserves_a_login_admin()
             &admin_role_create,
             &[identity_audit_event(0x8a, admin_user, created_role)],
         )?,
-        8
+        9
     );
     let mut rename_role_audit = identity_audit_event(0x9a, admin_user, created_role);
     rename_role_audit.correlation_id = id(0x9a);
@@ -18255,9 +18277,9 @@ fn storage_manager_authorizes_identity_ddl_and_preserves_a_login_admin()
             9_999,
             rename_role_audit,
         )?,
-        9
+        10
     );
-    assert_eq!(commit_sequence(&database)?, 9);
+    assert_eq!(commit_sequence(&database)?, 10);
     Ok(())
 }
 

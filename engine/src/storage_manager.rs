@@ -957,6 +957,7 @@ pub struct RoleMembershipChange {
 #[derive(Clone, Copy)]
 enum NewPrincipalKind {
     User,
+    UserNoLogin,
     Role,
 }
 
@@ -6984,6 +6985,29 @@ impl<'db> StorageManager<'db> {
         })
     }
 
+    /// Create a NOLOGIN user through the authorized identity DDL path.
+    pub fn create_user_no_login(
+        &self,
+        invocation_id: [u8; 16],
+        authenticated_actor_id: [u8; 16],
+        name: &str,
+        retention_deadline_us: i64,
+        audit_event: AuditEvent,
+    ) -> Result<CreatedUser, IdentityLifecycleError> {
+        let (user_id, commit_sequence) = self.create_identity(
+            invocation_id,
+            authenticated_actor_id,
+            name,
+            NewPrincipalKind::UserNoLogin,
+            retention_deadline_us,
+            audit_event,
+        )?;
+        Ok(CreatedUser {
+            user_id,
+            commit_sequence,
+        })
+    }
+
     /// Create a non-login role through the authorized identity DDL path.
     pub fn create_role(
         &self,
@@ -7471,6 +7495,7 @@ impl<'db> StorageManager<'db> {
     ) -> Result<([u8; 16], u64), IdentityLifecycleError> {
         let (principal_kind, login_enabled, object_kind) = match kind {
             NewPrincipalKind::User => (1u16, true, 8u16),
+            NewPrincipalKind::UserNoLogin => (1u16, false, 8u16),
             NewPrincipalKind::Role => (2u16, false, 9u16),
         };
         if invocation_id == [0; 16]

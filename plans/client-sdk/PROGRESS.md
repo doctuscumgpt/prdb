@@ -248,7 +248,7 @@
 ## SDK-5 dependency: typed user and role AdminClient operations — implemented
 
 - Contract: [client protocol](../../specs/client-protocol.md) defines the strict PREPARE argument and START result shapes for users and roles; [client SDK](../../specs/client-sdk.md) keeps these credentials on the authenticated control connection and never retries uncertain STARTs.
-- Implementation: `AdminClient` exposes user/role create, rename, and drop, user login enable/disable, and role membership grant/revoke. Creation returns the assigned identity ID and commit sequence; user creation does not issue a credential. IDs and canonical lowercase identity names are validated locally. Shared PREPARE/START decoding verifies the operation ID, committed outcome, exact result shape, and canonical commit sequence.
+- Implementation: `AdminClient` exposes user/role create, rename, and drop, user login enable/disable, and role membership grant/revoke. Creation returns the assigned identity ID and commit sequence; user creation does not issue a credential; NOLOGIN is enforced during token issuance. IDs and canonical lowercase identity names are validated locally. Shared PREPARE/START decoding verifies the operation ID, committed outcome, exact result shape, and canonical commit sequence.
 - Regression: mock-TCP coverage checks all eight operation request schemas, PREPARE/START routing, identity result decoding, and existing lost-START reconciliation. Local validation tests cover identity names and nonzero IDs.
 - Verification: focused `client_admin` integration tests passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, warning-denied workspace Clippy, and the repeated `cargo test --workspace --locked` run passed in the Nix shell; the commit integration target reported 124 passed and 3 cgroup-dependent ignored. The first full-suite run hit the known intermittent `InvalidAudit` failure in the CHECK lifecycle test; that test passed alone and the complete rerun passed.
 - Remaining: typed helpers for schema rename, tables, constraints and foreign keys; CLI/credential-file lifecycle; and live ADMIN operations through the real multi-process gateway path remain open.
@@ -811,5 +811,5 @@
 
 ## SDK: CREATE USER/ROLE administrative SQL — implemented
 
-- Added a bounded parser/client helper for `CREATE USER name LOGIN` and `CREATE ROLE name`, dispatching the existing typed identity control operations. User creation does not issue a credential.
+- Added a bounded parser/client helper for `CREATE USER name LOGIN|NOLOGIN` and `CREATE ROLE name`, dispatching the existing typed identity control operations. User creation does not issue a credential; NOLOGIN is enforced during token issuance.
 - Parser, authenticated TCP typed-dispatch, and CLI pre-credential recognition regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, full serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed; see the identity DDL progress entry.

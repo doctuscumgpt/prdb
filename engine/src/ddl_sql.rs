@@ -160,6 +160,7 @@ pub enum CreateIdentityKind {
 pub struct CreateIdentitySql {
     pub kind: CreateIdentityKind,
     pub name: String,
+    pub login_enabled: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -485,11 +486,23 @@ pub fn parse_create_identity(sql: &str) -> Result<CreateIdentitySql, DdlSqlError
         CreateIdentityKind::Role
     };
     let name = parser.identifier()?;
-    if kind == CreateIdentityKind::User {
-        parser.word("login")?;
-    }
+    let login_enabled = if kind == CreateIdentityKind::User {
+        if parser.peek_word("login") {
+            parser.word("login")?;
+            true
+        } else {
+            parser.word("nologin")?;
+            false
+        }
+    } else {
+        false
+    };
     finish_statement(&mut parser)?;
-    Ok(CreateIdentitySql { kind, name })
+    Ok(CreateIdentitySql {
+        kind,
+        name,
+        login_enabled,
+    })
 }
 
 /// Parse the bounded SQL form `CREATE SCHEMA name AUTHORIZATION 'uuid'`.
@@ -2234,6 +2247,7 @@ mod tests {
             CreateIdentitySql {
                 kind: CreateIdentityKind::User,
                 name: "analyst".into(),
+                login_enabled: true,
             }
         );
         assert_eq!(
@@ -2241,18 +2255,24 @@ mod tests {
             CreateIdentitySql {
                 kind: CreateIdentityKind::Role,
                 name: "reporting".into(),
+                login_enabled: false,
             }
         );
         for sql in [
             "CREATE USER",
             "CREATE GROUP reporting",
             "CREATE USER analyst",
-            "CREATE USER analyst NOLOGIN",
             "CREATE USER app.analyst",
+            "CREATE ROLE reporting LOGIN",
             "CREATE ROLE reporting; CREATE USER analyst",
         ] {
             assert!(parse_create_identity(sql).is_err(), "accepted {sql}");
         }
+        assert!(
+            !parse_create_identity("CREATE USER service_loader NOLOGIN")
+                .unwrap()
+                .login_enabled
+        );
     }
 
     #[test]

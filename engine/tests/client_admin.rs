@@ -1001,6 +1001,13 @@ fn admin_client_creates_user_and_role_from_sql_names() {
         for (operation, name, id_field, operation_id, identity_id) in [
             ("users.create", "analyst", "user_id", [0x11; 16], [0xa1; 16]),
             (
+                "users.create_no_login",
+                "service_loader",
+                "user_id",
+                [0x13; 16],
+                [0xa3; 16],
+            ),
+            (
                 "roles.create",
                 "reporting",
                 "role_id",
@@ -1048,6 +1055,10 @@ fn admin_client_creates_user_and_role_from_sql_names() {
         .execute_create_identity_sql("CREATE USER analyst LOGIN")
         .unwrap();
     assert_eq!(user.identity_id, [0xa1; 16]);
+    let no_login_user = client
+        .execute_create_identity_sql("CREATE USER service_loader NOLOGIN")
+        .unwrap();
+    assert_eq!(no_login_user.identity_id, [0xa3; 16]);
     let role = client
         .execute_create_identity_sql("CREATE ROLE reporting;")
         .unwrap();

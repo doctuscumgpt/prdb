@@ -2051,6 +2051,14 @@ impl AdminClient {
         self.create_identity("users.create", name, "user_id")
     }
 
+    /// Create a user that cannot authenticate until a later LOGIN change.
+    pub fn create_user_no_login(
+        &mut self,
+        name: &str,
+    ) -> Result<AdminIdentityResult, ClientSubmitError> {
+        self.create_identity("users.create_no_login", name, "user_id")
+    }
+
     /// Create a role identity.
     pub fn create_role(&mut self, name: &str) -> Result<AdminIdentityResult, ClientSubmitError> {
         self.create_identity("roles.create", name, "role_id")
@@ -3014,7 +3022,10 @@ impl AdminClient {
         let statement = crate::ddl_sql::parse_create_identity(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
         match statement.kind {
-            crate::ddl_sql::CreateIdentityKind::User => self.create_user(&statement.name),
+            crate::ddl_sql::CreateIdentityKind::User if statement.login_enabled => {
+                self.create_user(&statement.name)
+            }
+            crate::ddl_sql::CreateIdentityKind::User => self.create_user_no_login(&statement.name),
             crate::ddl_sql::CreateIdentityKind::Role => self.create_role(&statement.name),
         }
     }
