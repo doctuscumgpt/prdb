@@ -972,3 +972,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. It exercised the real-redb DDL commit matrix, schema/index/constraint crash-recovery tests, and gateway/supervisor SQL DDL lifecycles.
 - Broader cross-component DDL race schedules and the complete ALTER matrix remain open.
+
+## 2026-11-16 delegated integration refresh
+
+- The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests, including all 179 real-redb commit integration tests and the authenticated metadata process tests. The run includes the DD-5 concurrent schema create/drop and name-index reader regression.
+- Broader cross-component DDL race schedules and the complete ALTER matrix remain open.

@@ -225,3 +225,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The catalog unique-index probe now has a regression where the index key is hidden and the equality input has the wrong scalar type. It returns the same `Unavailable` fallback as matching and nonmatching correctly typed inputs, confirming that key readability is checked before value encoding or comparison.
 - Verification: `cargo test --locked --test transaction unique_constraint_uses_its_backing_index_for_invocation_writes -- --exact --nocapture`, formatting check, and `git diff --check` passed. The complete delegated workspace suite passed immediately before this test-only addition; broader key-type/coercion and complex-predicate error-equivalence coverage remains open.
+
+## 2026-11-16 delegated integration refresh
+
+- The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests: 291 engine unit tests, 179 commit integration tests, and 75 transaction tests. Authorization coverage includes the unique-key fallback regression, hidden-row diagnostic equivalence, authority-change write invalidation, and the confined forged-handle paths.
+- Broader key-type/coercion and complex-predicate error equivalence, hostile IPC sequences, and timing inference remain open.

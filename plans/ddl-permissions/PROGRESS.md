@@ -114,3 +114,8 @@
 
 - A storage-level race starts an `ALTER, INDEX` grant batch against revocation of the actor's `MANAGE_GRANTS` grant. If the batch commits first, both privileges, their shared dependency, one grantee epoch increment, and a committed outcome are present. If revocation commits first, the batch aborts and none of those batch records are present. The revocation always commits.
 - Verification: the focused real-redb race, workspace format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed afterward with sandbox/process tests enabled and zero ignored tests; it reported 291 engine unit tests, 178 commit tests, and 75 transaction tests.
+
+## 2026-11-16 delegated integration refresh
+
+- The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests: 291 engine unit tests, 179 commit integration tests, and 75 transaction tests. It includes atomic multi-privilege grants racing `MANAGE_GRANTS` revocation plus the authenticated metadata grant/policy lifecycle.
+- Broader permission-change race schedules and administrative SQL forms outside the implemented subset remain open.
