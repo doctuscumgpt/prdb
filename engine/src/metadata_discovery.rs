@@ -88,6 +88,7 @@ pub struct VisibleColumn {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdministrativeIndex {
     pub index_id: [u8; 16],
+    pub name: String,
     pub column_ids: Vec<[u8; 16]>,
     pub unique: bool,
 }

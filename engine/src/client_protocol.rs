@@ -7624,6 +7624,8 @@ fn encode_metadata_page(
                 let row = rows.get(index).ok_or(ClientSessionError::ResourceLimit)?;
                 output.push_str("{\"index_id\":\"");
                 output.push_str(&encode_lower_hex_id(row.index_id));
+                output.push_str("\",\"name\":\"");
+                push_json_string(&mut output, &row.name);
                 output.push_str("\",\"column_ids\":[");
                 for (column_index, column_id) in row.column_ids.iter().enumerate() {
                     if column_index != 0 {

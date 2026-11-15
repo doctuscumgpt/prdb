@@ -1588,10 +1588,11 @@ impl AdminClient {
         let mut indexes = Vec::with_capacity(records.len());
         let mut previous_id = None;
         for mut record in records {
-            if record.len() != 3 {
+            if record.len() != 4 {
                 return Err(ClientSubmitError::InvalidResponse);
             }
             let index_id = response_id(&record, "index_id")?;
+            let name = response_string(&mut record, "name")?;
             let column_ids = match record.remove("column_ids") {
                 Some(ResponseValue::Array(values)) if !values.is_empty() => values
                     .into_iter()
@@ -1622,6 +1623,7 @@ impl AdminClient {
             previous_id = Some(index_id);
             indexes.push(crate::metadata_discovery::AdministrativeIndex {
                 index_id,
+                name,
                 column_ids,
                 unique,
             });
@@ -2951,6 +2953,56 @@ impl AdminClient {
             })
             .collect::<Result<Vec<_>, _>>()?;
         self.create_index(table_id, &statement.name, &column_ids, statement.unique)
+    }
+
+    /// Drop a schema-qualified index after resolving its generated ID through
+    /// authenticated administrative metadata.
+    pub fn execute_drop_index_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminIndexResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_drop_index(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        let mut relation_cursor = None;
+        let mut matched_index = None;
+        loop {
+            let relations = self.list_relations_page(
+                schema_id,
+                DEFAULT_METADATA_PAGE_SIZE,
+                relation_cursor.as_deref(),
+            )?;
+            let next_relation_cursor = relations.next_cursor;
+            for relation in relations.records {
+                let mut index_cursor = None;
+                loop {
+                    let indexes = self.list_indexes_page(
+                        schema_id,
+                        relation.relation_id,
+                        DEFAULT_METADATA_PAGE_SIZE,
+                        index_cursor.as_deref(),
+                    )?;
+                    let next_index_cursor = indexes.next_cursor;
+                    for index in indexes.records {
+                        if index.name == statement.name
+                            && matched_index.replace(index.index_id).is_some()
+                        {
+                            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+                        }
+                    }
+                    index_cursor = next_index_cursor;
+                    if index_cursor.is_none() {
+                        break;
+                    }
+                }
+            }
+            relation_cursor = next_relation_cursor;
+            if relation_cursor.is_none() {
+                break;
+            }
+        }
+        let index_id = matched_index.ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
+        self.drop_index(index_id)
     }
 
     /// Execute the supported SQL `CREATE TABLE` subset through the

@@ -433,7 +433,7 @@ fn admin_client_lists_logical_index_definitions_without_physical_details() {
         respond(
             &mut stream,
             &request,
-            br#"{"indexes":[{"index_id":"33333333333333333333333333333333","column_ids":["44444444444444444444444444444444"],"unique":true}],"next_cursor":null}"#,
+            br#"{"indexes":[{"index_id":"33333333333333333333333333333333","name":"users_by_name","column_ids":["44444444444444444444444444444444"],"unique":true}],"next_cursor":null}"#,
         );
     });
 
@@ -444,6 +444,7 @@ fn admin_client_lists_logical_index_definitions_without_physical_details() {
         .unwrap();
     assert_eq!(page.records.len(), 1);
     assert_eq!(page.records[0].index_id, [0x33; 16]);
+    assert_eq!(page.records[0].name, "users_by_name");
     assert_eq!(page.records[0].column_ids, vec![[0x44; 16]]);
     assert!(page.records[0].unique);
     assert_eq!(page.next_cursor, None);
@@ -852,8 +853,10 @@ fn admin_client_creates_index_from_qualified_sql_names() {
             ),
         ] {
             let request = read_frame(&mut stream, &mut decoder);
-            assert!(String::from_utf8_lossy(&request.payload)
-                .contains(&format!(r#""operation":"{operation}""#)));
+            assert!(
+                String::from_utf8_lossy(&request.payload)
+                    .contains(&format!(r#""operation":"{operation}""#))
+            );
             respond(&mut stream, &request, body.as_bytes());
         }
         let prepare = read_frame(&mut stream, &mut decoder);
@@ -903,6 +906,87 @@ fn admin_client_creates_index_from_qualified_sql_names() {
         .unwrap();
     assert_eq!(created.index_id, [0xe8; 16]);
     assert_eq!(created.commit_sequence, 83);
+    server.join().unwrap();
+}
+
+#[test]
+fn admin_client_drops_index_from_schema_qualified_sql_name() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        for (operation, body) in [
+            (
+                "metadata.schemas.list",
+                format!(
+                    r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                    "a3".repeat(16)
+                ),
+            ),
+            (
+                "metadata.relations.list",
+                format!(
+                    r#"{{"relations":[{{"relation_id":"{}","name":"employees"}}],"next_cursor":null}}"#,
+                    "b4".repeat(16)
+                ),
+            ),
+            (
+                "metadata.indexes.list",
+                format!(
+                    r#"{{"indexes":[{{"index_id":"{}","name":"employee_department","column_ids":["{}"],"unique":false}}],"next_cursor":null}}"#,
+                    "c5".repeat(16),
+                    "d6".repeat(16)
+                ),
+            ),
+        ] {
+            let request = read_frame(&mut stream, &mut decoder);
+            assert!(
+                String::from_utf8_lossy(&request.payload)
+                    .contains(&format!(r#""operation":"{operation}""#))
+            );
+            respond(&mut stream, &request, body.as_bytes());
+        }
+        let prepare = read_frame(&mut stream, &mut decoder);
+        let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+        assert!(payload.contains(r#""operation":"indexes.drop""#));
+        assert!(payload.contains(&format!(r#""index_id":"{}""#, "c5".repeat(16))));
+        respond(
+            &mut stream,
+            &prepare,
+            format!(
+                r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                "e7".repeat(16)
+            )
+            .as_bytes(),
+        );
+        let start = read_frame(&mut stream, &mut decoder);
+        respond(
+            &mut stream,
+            &start,
+            format!(
+                r#"{{"operation_id":"{}","outcome":"committed","index_id":"{}","commit_sequence":"84"}}"#,
+                "e7".repeat(16),
+                "c5".repeat(16)
+            )
+            .as_bytes(),
+        );
+    });
+
+    let mut secret = [5; 32];
+    let mut client = AdminClient::connect_authenticated_with_timeout(
+        address,
+        [6; 16],
+        &mut secret,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let dropped = client
+        .execute_drop_index_sql("DROP INDEX app.employee_department RESTRICT")
+        .unwrap();
+    assert_eq!(dropped.index_id, [0xc5; 16]);
+    assert_eq!(dropped.commit_sequence, 84);
     server.join().unwrap();
 }
 

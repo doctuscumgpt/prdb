@@ -58,7 +58,7 @@ The Rust `RequestedScopeBuilder` consumes permission-filtered `VisibleSchema`, `
 
 ## Administrative CREATE INDEX SQL
 
-`AdminClient::execute_create_index_sql` accepts one bounded `CREATE [UNIQUE] INDEX name ON schema.table [USING BTREE] (column, ...)` statement. It resolves schema, relation, and ordered column names through authenticated metadata, then calls the existing typed index-create operation on the same control connection. Storage remains authoritative for DDL permission, uniqueness, and catalog validation. DROP INDEX SQL is not exposed yet; the typed index-drop API remains available.
+`AdminClient::execute_create_index_sql` accepts one bounded `CREATE [UNIQUE] INDEX name ON schema.table [USING BTREE] (column, ...)` statement. It resolves schema, relation, and ordered column names through authenticated metadata, then calls the existing typed index-create operation on the same control connection. Storage remains authoritative for DDL permission, uniqueness, and catalog validation. `execute_drop_index_sql` accepts `DROP INDEX schema.name RESTRICT`, enumerates visible relations and their name-bearing index metadata, and dispatches the existing typed index-drop operation by generated ID. Missing or ambiguous names reject before mutation.
 
 ## Buffer Lifetime and Workload
 

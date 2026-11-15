@@ -3505,14 +3505,27 @@ impl<'db> InvocationTransaction<'db> {
         let mut descriptions = Vec::with_capacity(indexes.len());
         let mut encoded_bytes = 0usize;
         for index in indexes {
+            let object = self
+                .read_catalog_record(&catalog_id_key(2, index.index_id))?
+                .ok_or(TransactionError::CorruptCatalog)?;
+            if object.family_code != 2
+                || catalog_u16(&object, 1)? != 7
+                || catalog_optional_id(&object, 2)? != Some(schema_id)
+            {
+                return Err(TransactionError::CorruptCatalog);
+            }
+            let name = String::from_utf8(catalog_field(&object, 3)?.to_vec())
+                .map_err(|_| TransactionError::CorruptCatalog)?;
             encoded_bytes = encoded_bytes
                 .saturating_add(17)
-                .saturating_add(index.column_ids.len().saturating_mul(16));
+                .saturating_add(index.column_ids.len().saturating_mul(16))
+                .saturating_add(name.len());
             if descriptions.len() >= 4096 || encoded_bytes > 1024 * 1024 {
                 return Err(TransactionError::InvalidMetadataRequest);
             }
             descriptions.push(crate::metadata_discovery::AdministrativeIndex {
                 index_id: index.index_id,
+                name,
                 column_ids: index.column_ids,
                 unique: index.unique,
             });

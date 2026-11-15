@@ -145,6 +145,12 @@ pub struct CreateIndexSql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DropIndexSql {
+    pub schema: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckExpressionSql {
     Column(String),
     Literal(CheckLiteralSql),
@@ -440,6 +446,19 @@ pub fn parse_create_index(sql: &str) -> Result<CreateIndexSql, DdlSqlError> {
         columns,
         unique,
     })
+}
+
+/// Parse a bounded schema-qualified DROP INDEX with explicit RESTRICT.
+pub fn parse_drop_index(sql: &str) -> Result<DropIndexSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("drop")?;
+    parser.word("index")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let name = parser.identifier()?;
+    parser.word("restrict")?;
+    finish_statement(&mut parser)?;
+    Ok(DropIndexSql { schema, name })
 }
 
 /// Parse the bounded SQL form `CREATE SCHEMA name AUTHORIZATION 'uuid'`.
@@ -2155,6 +2174,25 @@ mod tests {
             "CREATE INDEX employee_department ON app.employees (department_id); DROP INDEX app.employee_department RESTRICT",
         ] {
             assert!(parse_create_index(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_bounded_drop_index_sql() {
+        assert_eq!(
+            parse_drop_index("DROP INDEX app.employee_department RESTRICT;").unwrap(),
+            DropIndexSql {
+                schema: "app".into(),
+                name: "employee_department".into(),
+            }
+        );
+        for sql in [
+            "DROP INDEX employee_department RESTRICT",
+            "DROP INDEX app.employee_department",
+            "DROP INDEX app.employee_department CASCADE",
+            "DROP INDEX app.employee_department RESTRICT; DROP TABLE app.users RESTRICT",
+        ] {
+            assert!(parse_drop_index(sql).is_err(), "accepted {sql}");
         }
     }
 

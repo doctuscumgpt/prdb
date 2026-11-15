@@ -617,7 +617,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Implementation: the typed create operation carries FK source-column names and target constraint IDs. Storage publishes the new table, FK constraint/object/dependency records, target table write-epoch changes, audit, and durable outcome atomically. Commit validation guards target catalog records and checks authority.
 - Regression: parser tests cover multiple FK clauses and invalid arity, duplicate/unknown columns, qualification, and multiple statements. Authenticated TCP coverage checks metadata binding and typed arguments; storage coverage verifies atomic catalog/dependency/epoch publication and startup validation. No stale tests were found; existing negative syntax tests remain relevant.
 - Validation: focused parser, authenticated AdminClient, and storage regressions passed. Locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests, sandbox fixture build, and the full serial delegated-cgroup workspace suite passed (all sandbox/process tests enabled, zero ignored); `git diff --check` passed.
-- Next: add DROP INDEX SQL by exposing index names through authenticated metadata and resolving the qualified target before typed drop.
+- Next: add operational SQL transaction support for bounded INSERT/UPDATE/DELETE statements through the existing confined query executor.
 
 
 ## DS-13: ALTER COLUMN SET/DROP DEFAULT SQL — implemented
@@ -642,3 +642,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: parser tests accept supported forms and reject unsupported methods, duplicate/empty columns, unqualified relations, and multiple statements. Authenticated TCP coverage verifies the name, table ID, ordered column IDs, and uniqueness flag. CLI coverage verifies syntax recognition before credentials/network. No stale tests were identified; existing malformed-input regressions remain applicable.
 - Verification: focused parser, authenticated AdminClient, and CLI tests passed. Locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests, sandbox-query fixture build, complete serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed.
 - Limit: DROP INDEX SQL remains unsupported until index names can be resolved through authenticated metadata.
+
+
+## DS-16: DROP INDEX SQL and name-bearing administrative metadata — implemented
+
+- Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). `DROP INDEX schema.name RESTRICT` resolves the schema and enumerates its visible relations and logical indexes through authenticated metadata, then submits the resolved generated ID to typed index drop.
+- Implementation: administrative index metadata now includes the logical name while continuing to omit physical locators and memberships. The client searches all paginated visible relations/indexes, rejects absent or ambiguous matches, and invokes the existing typed operation.
+- Regression: parser cases cover qualification, mandatory RESTRICT, and single-statement bounds. Authenticated TCP tests verify name-bearing metadata decoding and name-to-ID drop dispatch; CLI coverage verifies syntax recognition before credentials/network. Existing malformed-syntax and storage authorization tests remain relevant; no stale tests were identified.
+- Validation: focused parser, metadata client, AdminClient drop, and CLI tests passed. Full workspace validation for this increment is pending.
