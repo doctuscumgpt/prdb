@@ -8,6 +8,7 @@
 - Follow-up: SQL grantee lookup now uses `metadata.grant_identities.resolve`, scoped to the target schema/table and available to its owner, inherited `MANAGE_GRANTS` holder, or database administrator. This removes the unrelated global `MANAGE_USERS`/`MANAGE_ROLES` requirement from object-grant SQL; the typed mutation still revalidates grant authority.
 - Follow-up: the endpoint now resolves schema/table names and the grantee together, returning IDs only after scoped grant authority succeeds. Object-grant SQL no longer depends on ordinary schema/relation discovery merely to identify its target.
 - Follow-up: declared column metadata is now available to the target table owner or inherited `MANAGE_GRANTS` holder without schema USAGE, allowing explicit-column grant SQL to bind its column names without broadening data access.
+- The shared scoped-authority matcher now checks privilege codes in the catalog key's privilege segment and object scope separately. This restores the intended inherited `MANAGE_GRANTS` lookup and is reused for scoped `INDEX` metadata; workspace build and warning-denied Clippy pass.
 
 ## DP-SQL-2: single-column grant SQL
 

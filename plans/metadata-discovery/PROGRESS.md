@@ -219,3 +219,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The authenticated columns read now exposes a target table's declared shape to its owner or inherited scoped `MANAGE_GRANTS` holder without requiring schema USAGE. This lets object-grant SQL bind named columns while keeping the information limited to the object the caller may administer.
 - Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused authorization and process regressions remain to be added; no test suite was run for this increment.
+
+## INDEX-authorized DDL metadata — implemented slice
+
+- Scoped table owners and inherited `INDEX` grantees can resolve the schema/table and inspect only the declared columns and logical indexes needed for index DDL. The schema is discoverable from table ownership or a direct/inherited INDEX grant even without schema USAGE; data discovery remains unchanged.
+- Workspace build, format, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused authorization/process regressions remain to be added; no test suite was run.

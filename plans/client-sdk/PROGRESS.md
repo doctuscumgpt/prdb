@@ -895,3 +895,8 @@
 
 - Added `execute_drop_index_if_exists_sql`; a resolved target uses the existing typed drop path, while unresolved index/schema names become a no-op only after an authenticated administrator check. Ambiguous matches and present-object dependency failures propagate.
 - Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed. Focused client/process regressions remain to be added; no test suite was run.
+
+## AdminClient INDEX-grantee metadata binding — implemented slice
+
+- Existing CREATE/DROP/REBUILD INDEX SQL name binding now receives target metadata for table owners and inherited `INDEX` grantees, including target tables without schema USAGE. The typed index mutations still enforce current authority at commit.
+- Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused client/process regressions remain to be added; no test suite was run.

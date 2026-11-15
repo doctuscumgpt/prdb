@@ -764,3 +764,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended bounded index-drop SQL parsing and `admin-sql` dispatch with `DROP INDEX IF EXISTS schema.name RESTRICT`. Present indexes retain typed authorization and dependency checks; unresolved names are a no-op only after the authenticated server confirms database-administrator authority. Ambiguous index-name resolution remains an error.
 - Updated the schema DDL and SQL command contracts. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused parser and delegated process regressions remain to be added; no test suite was run for this increment.
+
+## DS-SQL-32: index-authorized SQL target metadata — implemented slice
+
+- Administrative schema/relation/column/index discovery now recognizes table ownership and inherited table-scoped `INDEX` grants. `admin-sql` can bind CREATE/DROP/REBUILD INDEX names and columns without granting row access or requiring schema USAGE. Metadata discovery also returns the relevant schema name for index-authorized tables.
+- Corrected the privilege/scope key matching in the scoped object-DDL metadata authority helper. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused protocol, authorization, and gateway/supervisor regressions remain to be added; no test suite was run for this increment.

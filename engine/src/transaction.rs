@@ -3661,6 +3661,16 @@ impl<'db> InvocationTransaction<'db> {
         name: &str,
         kind: crate::metadata_discovery::AdministrativeIdentityKind,
     ) -> Result<Option<[u8; 16]>, TransactionError> {
+        self.resolve_catalog_object_ddl_identity_name(object_id, name, kind, 11)
+    }
+
+    fn resolve_catalog_object_ddl_identity_name(
+        &mut self,
+        object_id: [u8; 16],
+        name: &str,
+        kind: crate::metadata_discovery::AdministrativeIdentityKind,
+        privilege_code: u16,
+    ) -> Result<Option<[u8; 16]>, TransactionError> {
         if name.is_empty()
             || name.len() > 128
             || !(name.as_bytes()[0].is_ascii_lowercase() || name.as_bytes()[0] == b'_')
@@ -3668,6 +3678,7 @@ impl<'db> InvocationTransaction<'db> {
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
             || object_id == [0; 16]
+            || !matches!(privilege_code, 9 | 11)
         {
             return Err(TransactionError::InvalidMetadataRequest);
         }
@@ -3736,9 +3747,9 @@ impl<'db> InvocationTransaction<'db> {
                     || key[19] != 1
                     || key[20..36] != *target
                     || key[36] != 1
-                    || key[37..39] != 10u16.to_be_bytes()
+                    || key[37..39] != privilege_code.to_be_bytes()
                     || key[39] != 1
-                    || key[40..42] != 11u16.to_be_bytes()
+                    || key[40..42] != 1u16.to_be_bytes()
                     || key[42] != 1
                     || key[43..59] != if *schema_scope { *target } else { object_id }
                 {
@@ -3968,7 +3979,7 @@ impl<'db> InvocationTransaction<'db> {
         let mut schemas = Vec::new();
         let mut encoded_bytes = 0usize;
         for record in records {
-            if record.family_code != 2 || catalog_u16(&record, 1)? != 1 {
+            if record.family_code != 2 {
                 continue;
             }
             if record.logical_key.len() != 19
@@ -3977,13 +3988,30 @@ impl<'db> InvocationTransaction<'db> {
             {
                 return Err(TransactionError::CorruptCatalog);
             }
-            let schema_id: [u8; 16] = record.logical_key[3..19]
+            let object_id: [u8; 16] = record.logical_key[3..19]
                 .try_into()
                 .map_err(|_| TransactionError::CorruptCatalog)?;
+            let object_kind = catalog_u16(&record, 1)?;
             let owner_id = catalog_id(&record, 4)?;
             if !database_admin && owner_id != self.principal_id && !roles.contains(&owner_id) {
                 continue;
             }
+            let schema_id = match object_kind {
+                1 => object_id,
+                3 if !database_admin => {
+                    let Some(schema_id) = catalog_optional_id(&record, 2)? else {
+                        return Err(TransactionError::CorruptCatalog);
+                    };
+                    let schema_object = self
+                        .read_catalog_record(&catalog_id_key(2, schema_id))?
+                        .ok_or(TransactionError::CorruptCatalog)?;
+                    if schema_object.family_code != 2 || catalog_u16(&schema_object, 1)? != 1 {
+                        return Err(TransactionError::CorruptCatalog);
+                    }
+                    schema_id
+                }
+                _ => continue,
+            };
             let schema = self.read_discovery_schema(schema_id)?;
             encoded_bytes = encoded_bytes
                 .saturating_add(16)
@@ -3992,6 +4020,70 @@ impl<'db> InvocationTransaction<'db> {
                 return Err(TransactionError::InvalidMetadataRequest);
             }
             schemas.push(schema);
+        }
+        if !database_admin {
+            let mut authority_subjects = roles.clone();
+            authority_subjects.insert(self.principal_id);
+            let mut discovered_schema_ids = schemas
+                .iter()
+                .map(|schema: &VisibleSchema| schema.schema_id)
+                .collect::<HashSet<_>>();
+            for grant in self.scan_catalog_family(12)? {
+                if grant.logical_key.len() != 59
+                    || grant.logical_key[2] != 1
+                    || grant.logical_key[19] != 1
+                    || grant.logical_key[36] != 1
+                    || grant.logical_key[39] != 1
+                    || grant.logical_key[42] != 1
+                {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                if grant.logical_key[37..39] != 9u16.to_be_bytes()
+                    || grant.logical_key[40..42] != 1u16.to_be_bytes()
+                {
+                    continue;
+                }
+                let grantee_id: [u8; 16] = grant.logical_key[3..19]
+                    .try_into()
+                    .map_err(|_| TransactionError::CorruptCatalog)?;
+                if !authority_subjects.contains(&grantee_id) {
+                    continue;
+                }
+                let object_id: [u8; 16] = grant.logical_key[20..36]
+                    .try_into()
+                    .map_err(|_| TransactionError::CorruptCatalog)?;
+                let target_id: [u8; 16] = grant.logical_key[43..59]
+                    .try_into()
+                    .map_err(|_| TransactionError::CorruptCatalog)?;
+                if object_id == [0; 16]
+                    || object_id != target_id
+                    || grant.logical_key[36] != 1
+                    || catalog_u64(&grant, 2)? == 0
+                    || catalog_id(&grant, 1)? == [0; 16]
+                {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                let table_object = self
+                    .read_catalog_record(&catalog_id_key(2, object_id))?
+                    .ok_or(TransactionError::CorruptCatalog)?;
+                if table_object.family_code != 2 || catalog_u16(&table_object, 1)? != 3 {
+                    return Err(TransactionError::CorruptCatalog);
+                }
+                let Some(schema_id) = catalog_optional_id(&table_object, 2)? else {
+                    return Err(TransactionError::CorruptCatalog);
+                };
+                let schema = self.read_discovery_schema(schema_id)?;
+                if !discovered_schema_ids.insert(schema_id) {
+                    continue;
+                }
+                encoded_bytes = encoded_bytes
+                    .saturating_add(16)
+                    .saturating_add(schema.name.len());
+                if schemas.len() >= 4096 || encoded_bytes > 1024 * 1024 {
+                    return Err(TransactionError::InvalidMetadataRequest);
+                }
+                schemas.push(schema);
+            }
         }
         schemas.push(VisibleSchema {
             schema_id: INFORMATION_SCHEMA_ID,
@@ -4002,24 +4094,24 @@ impl<'db> InvocationTransaction<'db> {
         Ok(schemas)
     }
 
-    /// List relations in a schema administratively visible to this control
-    /// principal. `None` means the schema is outside the principal's
-    /// administrative authority; callers may then apply ordinary grants.
+    /// List relations in a schema visible to this control principal through
+    /// ordinary discovery, schema ownership, policy DDL, or scoped index DDL.
+    /// `None` means no relation is visible under any of those authorities.
     pub(crate) fn list_catalog_administrative_relations(
         &mut self,
         schema_id: [u8; 16],
     ) -> Result<Option<Vec<VisibleRelation>>, TransactionError> {
         let roles = self.load_catalog_role_closure(self.principal_id)?;
         let schema_admin = self.has_schema_metadata_authority(schema_id, &roles)?;
-        if !schema_admin {
+        let has_schema_usage = if !schema_admin {
             let (_, schema_grants) = self.load_catalog_schema_usage_grants(self.principal_id)?;
-            if !schema_grants.iter().any(|grant| {
+            schema_grants.iter().any(|grant| {
                 grant.operation == Operation::Usage
                     && grant.target == AccessTarget::Schema(schema_id)
-            }) {
-                return Ok(None);
-            }
-        }
+            })
+        } else {
+            true
+        };
         let mut relation_ids = self.scan_relation_ids_for_schema(schema_id)?;
         if relation_ids.is_empty() {
             for record in self.scan_catalog_family(5)? {
@@ -4043,6 +4135,8 @@ impl<'db> InvocationTransaction<'db> {
         }
         let mut visible_relation_ids = if schema_admin {
             relation_ids.iter().copied().collect::<HashSet<_>>()
+        } else if !has_schema_usage {
+            HashSet::new()
         } else {
             let mut visible = HashSet::new();
             let mut continuation = None;
@@ -4069,10 +4163,17 @@ impl<'db> InvocationTransaction<'db> {
         };
         if !schema_admin {
             for relation_id in &relation_ids {
-                if self.has_catalog_policy_ddl_authority(schema_id, *relation_id, &roles)? {
+                let policy_authority = has_schema_usage
+                    && self.has_catalog_policy_ddl_authority(schema_id, *relation_id, &roles)?;
+                if policy_authority
+                    || self.current_principal_has_index_ddl_authority(*relation_id)?
+                {
                     visible_relation_ids.insert(*relation_id);
                 }
             }
+        }
+        if !schema_admin && !has_schema_usage && visible_relation_ids.is_empty() {
+            return Ok(None);
         }
         let mut relations = Vec::new();
         let mut encoded_bytes = 0usize;
@@ -4092,9 +4193,8 @@ impl<'db> InvocationTransaction<'db> {
         Ok(Some(relations))
     }
 
-    /// Describe the declared shape of a relation in a schema administratively
-    /// visible to this control principal. `None` means ordinary grant checks
-    /// must decide whether the pair is visible.
+    /// Describe a relation's declared shape for ordinary discovery or an
+    /// authorized DDL target, including MANAGE_GRANTS and INDEX authorities.
     pub(crate) fn describe_catalog_administrative_columns(
         &mut self,
         schema_id: [u8; 16],
@@ -4122,6 +4222,7 @@ impl<'db> InvocationTransaction<'db> {
                 && self.has_catalog_policy_ddl_authority(schema_id, relation_id, &roles)?;
             if !has_policy_metadata
                 && !self.current_principal_has_grant_ddl_authority(relation_id)?
+                && !self.current_principal_has_index_ddl_authority(relation_id)?
             {
                 return Ok(None);
             }
@@ -4146,8 +4247,8 @@ impl<'db> InvocationTransaction<'db> {
         Ok(Some(columns))
     }
 
-    /// List logical indexes for a relation when this control principal has
-    /// current administrative authority over its schema. Physical storage
+    /// List logical indexes for a relation when this control principal owns
+    /// its schema or has scoped index DDL authority. Physical storage
     /// identifiers and membership records are never returned.
     pub(crate) fn list_catalog_administrative_indexes(
         &mut self,
@@ -4155,14 +4256,15 @@ impl<'db> InvocationTransaction<'db> {
         relation_id: [u8; 16],
     ) -> Result<Option<Vec<crate::metadata_discovery::AdministrativeIndex>>, TransactionError> {
         let roles = self.load_catalog_role_closure(self.principal_id)?;
-        if !self.has_schema_metadata_authority(schema_id, &roles)? {
-            return Ok(None);
-        }
+        let schema_admin = self.has_schema_metadata_authority(schema_id, &roles)?;
         let table_key = catalog_id_key(5, relation_id);
         let Some(table) = self.read_catalog_record(&table_key)? else {
             return Ok(None);
         };
         if table.family_code != 5 || catalog_id(&table, 1)? != schema_id {
+            return Ok(None);
+        }
+        if !schema_admin && !self.current_principal_has_index_ddl_authority(relation_id)? {
             return Ok(None);
         }
         self.read_discovery_relation(schema_id, relation_id)?;
@@ -4851,6 +4953,21 @@ impl<'db> InvocationTransaction<'db> {
         &mut self,
         object_id: [u8; 16],
     ) -> Result<bool, TransactionError> {
+        self.current_principal_has_object_ddl_authority(object_id, 11)
+    }
+
+    fn current_principal_has_index_ddl_authority(
+        &mut self,
+        object_id: [u8; 16],
+    ) -> Result<bool, TransactionError> {
+        self.current_principal_has_object_ddl_authority(object_id, 9)
+    }
+
+    fn current_principal_has_object_ddl_authority(
+        &mut self,
+        object_id: [u8; 16],
+        privilege_code: u16,
+    ) -> Result<bool, TransactionError> {
         let principal = self
             .read_catalog_record(&catalog_id_key(10, self.principal_id))?
             .ok_or(TransactionError::CorruptCatalog)?;
@@ -4859,10 +4976,11 @@ impl<'db> InvocationTransaction<'db> {
         }
         let name = std::str::from_utf8(catalog_field(&principal, 2)?)
             .map_err(|_| TransactionError::CorruptCatalog)?;
-        let Some(identity_id) = self.resolve_catalog_grant_identity_name(
+        let Some(identity_id) = self.resolve_catalog_object_ddl_identity_name(
             object_id,
             name,
             crate::metadata_discovery::AdministrativeIdentityKind::User,
+            privilege_code,
         )?
         else {
             return Ok(false);
