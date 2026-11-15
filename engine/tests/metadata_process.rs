@@ -4454,6 +4454,18 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         );
         assert!(String::from_utf8_lossy(&drop_policy_sql.stdout).contains("dropped "));
     }
+    assert!(admin
+        .execute_drop_policy_if_exists_sql(
+            "DROP ROW POLICY IF EXISTS process_missing ON process_admin_schema.process_admin_table RESTRICT"
+        )
+        .map_err(|error| format!("conditional missing policy drop: {error:?}"))?
+        .is_none());
+    assert!(admin
+        .execute_drop_policy_if_exists_sql(
+            "DROP ROW POLICY IF EXISTS process_missing ON process_admin_schema.process_admin_table RESTRICT"
+        )
+        .map_err(|error| format!("repeated conditional missing policy drop: {error:?}"))?
+        .is_none());
     admin.set_table_owner(created_table.table_id, admin_user_id)?;
     admin.grant_object_privilege(
         transfer_owner.identity_id,

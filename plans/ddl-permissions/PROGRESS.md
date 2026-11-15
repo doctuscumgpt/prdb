@@ -88,3 +88,8 @@
 
 - Policy SQL now accepts `column IS DISTINCT FROM literal` and `column IS NOT DISTINCT FROM literal`, including NULL. Lowering composes existing null checks and inequality expressions so policies receive a definite Boolean result for nullable columns.
 - Parser/binder regressions cover text and NULL comparisons plus rejected malformed operands. The focused test, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and full serial delegated-cgroup suite pass with sandbox/process coverage and zero ignored tests. Cargo.lock is unchanged.
+
+## DP-SQL-7: repeated absent conditional policy drop — verified
+
+- The authenticated gateway/supervisor metadata lifecycle now executes `DROP ROW POLICY IF EXISTS` for the same absent target twice. Both requests return a no-op without creating a policy mutation, while the neighboring existing-target drops still use the ordinary authorized path.
+- Verification: `nix develop --no-update-lock-file --command cargo test -p prdb-engine --test metadata_process authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes -- --exact --nocapture` passed (1 test). The broader workspace checks were not rerun for this test-only increment.
