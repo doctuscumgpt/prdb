@@ -2764,6 +2764,30 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&grant_object_cli.stderr)
     );
     assert!(String::from_utf8_lossy(&grant_object_cli.stdout).contains("granted object privilege"));
+    let grant_list_schema = encode_id_hex(&created_schema.identity_id);
+    let grant_list_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "grant-list",
+            "--address",
+            &object_grant_address,
+            "--credentials",
+            object_grant_credentials,
+            "--schema-id",
+            &grant_list_schema,
+            "--table-id",
+            &object_grant_table,
+        ])
+        .output()?;
+    assert!(
+        grant_list_cli.status.success(),
+        "grant-list CLI failed: {}",
+        String::from_utf8_lossy(&grant_list_cli.stderr)
+    );
+    let grant_list_json = String::from_utf8_lossy(&grant_list_cli.stdout);
+    assert!(grant_list_json.contains(&format!("\"grantee_id\":\"{object_grant_grantee}\"")));
+    assert!(grant_list_json.contains(&format!("\"grantor_id\":\"{admin_owner_id_text}\"")));
+    assert!(grant_list_json.contains("\"privilege\":\"select\""));
+    assert!(grant_list_json.contains(&format!("\"target_id\":\"{object_grant_column}\"")));
     let revoke_object_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
             "object-revoke",

@@ -421,3 +421,8 @@
 
 - `admin-sql` now accepts the qualified conditional schema-drop form and reports when an authorized no-op finds no target. Present schemas retain the existing typed RESTRICT path. The DDL process regression covers administrator and non-administrator behavior.
 - The focused delegated process regression, workspace build, format, warning-denied Clippy, and full serial delegated-cgroup workspace suite passed; see [DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+## Grant provenance CLI — verified
+
+- Added `prdb-client grant-list` over the existing authenticated `metadata.grants.list` pages. The JSON includes direct grantee/grantor IDs, privilege, target scope, and target ID; it does not expand role inheritance or expose names.
+- A gateway/supervisor regression invokes the CLI after a real grant and checks the returned grantor, grantee, privilege, and column target. The red process run failed because `grant-list` was not a recognized command; the updated focused gateway/supervisor lifecycle passes and checks the grantee ID, grantor ID, privilege, and column target. Workspace build, format, warning-denied Clippy, cgroup probe with writable `cpu memory pids`, and full serial delegated-cgroup workspace suite passed with zero ignored tests; see [metadata discovery progress](../metadata-discovery/PROGRESS.md). Cargo.lock is unchanged.

@@ -56,6 +56,7 @@ Token secrets are saved only to mode-0600 credential files and are never printed
     [--limit N] [--cursor HEX]\n\n\
   prdb-client constraint-list --address IP:PORT --credentials ADMIN_FILE --schema-id HEX --table-id HEX\n\
   prdb-client index-list --address IP:PORT --credentials ADMIN_FILE --schema-id HEX --table-id HEX\n\
+  prdb-client grant-list --address IP:PORT --credentials ADMIN_FILE --schema-id HEX --table-id HEX\n\
   prdb-client runtime-list --address IP:PORT --credentials ADMIN_FILE\n\
     [--limit N] [--cursor HEX]\n\n\
   prdb-client audit-list --address IP:PORT --credentials ADMIN_FILE\n\
@@ -175,6 +176,7 @@ fn run() -> Result<(), String> {
         "dependency-list" => dependency_list(address, credentials_path, &mut fields),
         "constraint-list" => constraint_list(address, credentials_path, &mut fields),
         "index-list" => index_list(address, credentials_path, &mut fields),
+        "grant-list" => grant_list(address, credentials_path, &mut fields),
         "runtime-list" => runtime_list(address, credentials_path, &mut fields),
         "audit-list" => audit_list(address, credentials_path, &mut fields),
         "schema-create" | "schema-rename" | "schema-drop" | "schema-owner-set" | "table-create"
@@ -2500,6 +2502,52 @@ fn index_list(
             break;
         }
         page_number = page_number.saturating_add(1);
+    }
+    println!("]}}");
+    Ok(())
+}
+
+fn grant_list(
+    address: SocketAddr,
+    credentials_path: PathBuf,
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<(), String> {
+    let schema_id = parse_id(&take_text(fields, "--schema-id")?)?;
+    let table_id = parse_id(&take_text(fields, "--table-id")?)?;
+    reject_unknown(fields)?;
+    let mut administrator =
+        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
+    let mut client = AdminClient::connect_authenticated(
+        address,
+        administrator.token_id,
+        &mut administrator.token_secret,
+    )
+    .map_err(|error| error.to_string())?;
+    print!("{{\"grants\":[");
+    let mut first_grant = true;
+    let mut cursor = None;
+    loop {
+        let page = client
+            .list_grants_page(schema_id, table_id, 128, cursor.as_deref())
+            .map_err(|error| error.to_string())?;
+        for grant in &page.records {
+            if !first_grant {
+                print!(",");
+            }
+            first_grant = false;
+            print!(
+                "{{\"grantee_id\":{},\"grantor_id\":{},\"privilege\":{},\"target_scope\":{},\"target_id\":{}}}",
+                json_string(&lower_hex(&grant.grantee_id)),
+                json_string(&lower_hex(&grant.grantor_id)),
+                json_string(grant.privilege.as_wire_name()),
+                json_string(grant.target_scope.as_wire_name()),
+                json_string(&lower_hex(&grant.target_id)),
+            );
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
     }
     println!("]}}");
     Ok(())
