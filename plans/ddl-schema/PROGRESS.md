@@ -769,3 +769,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Administrative schema/relation/column/index discovery now recognizes table ownership and inherited table-scoped `INDEX` grants. `admin-sql` can bind CREATE/DROP/REBUILD INDEX names and columns without granting row access or requiring schema USAGE. Metadata discovery also returns the relevant schema name for index-authorized tables.
 - Corrected the privilege/scope key matching in the scoped object-DDL metadata authority helper. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused protocol, authorization, and gateway/supervisor regressions remain to be added; no test suite was run for this increment.
+
+## DS-SQL-33: conditional column drops — implemented slice
+
+- Added `ALTER TABLE schema.table DROP COLUMN IF EXISTS column RESTRICT`. A resolved column follows the existing typed drop path and its dependency, rewrite-budget, and authorization checks. An unresolved schema/table/column is a no-op only after database-administrator authority is confirmed; no DDL outcome is created.
+- Updated the schema DDL and client SQL contracts. Workspace build, formatting, warning-denied Clippy, and `git diff --check` pass. No tests were added or run; Cargo.lock is unchanged.

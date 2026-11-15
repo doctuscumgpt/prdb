@@ -664,16 +664,31 @@ fn admin_sql(
             lower_hex(&result.operation_id),
             result.commit_sequence
         );
-    } else if drop_column_statement.is_some() {
-        let result = client
-            .execute_drop_column_sql(sql)
-            .map_err(|error| error.to_string())?;
-        println!(
-            "dropped column {} (operation {}, commit {})",
-            lower_hex(&result.column_id),
-            lower_hex(&result.operation_id),
-            result.commit_sequence
-        );
+    } else if let Some(statement) = drop_column_statement {
+        if statement.if_exists {
+            match client
+                .execute_drop_column_if_exists_sql(sql)
+                .map_err(|error| error.to_string())?
+            {
+                Some(result) => println!(
+                    "dropped column {} (operation {}, commit {})",
+                    lower_hex(&result.column_id),
+                    lower_hex(&result.operation_id),
+                    result.commit_sequence
+                ),
+                None => println!("column was absent; no operation committed"),
+            }
+        } else {
+            let result = client
+                .execute_drop_column_sql(sql)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "dropped column {} (operation {}, commit {})",
+                lower_hex(&result.column_id),
+                lower_hex(&result.operation_id),
+                result.commit_sequence
+            );
+        }
     } else if let Some(statement) = add_key_constraint_statement {
         let result = client
             .execute_add_key_constraint_sql(sql)

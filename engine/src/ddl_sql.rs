@@ -168,6 +168,7 @@ pub struct DropColumnSql {
     pub schema: String,
     pub table: String,
     pub column: String,
+    pub if_exists: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1983,6 +1984,13 @@ pub fn parse_drop_column(sql: &str) -> Result<DropColumnSql, DdlSqlError> {
     parser.take(Token::Dot)?;
     let table = parser.identifier()?;
     parser.word("drop")?;
+    let if_exists = if parser.peek_word("if") {
+        parser.word("if")?;
+        parser.word("exists")?;
+        true
+    } else {
+        false
+    };
     parser.word("column")?;
     let column = parser.identifier()?;
     parser.word("restrict")?;
@@ -1991,6 +1999,7 @@ pub fn parse_drop_column(sql: &str) -> Result<DropColumnSql, DdlSqlError> {
         schema,
         table,
         column,
+        if_exists,
     })
 }
 
@@ -3718,7 +3727,8 @@ mod tests {
             DropColumnSql {
                 schema: "app".into(),
                 table: "events".into(),
-                column: "obsolete".into()
+                column: "obsolete".into(),
+                if_exists: false,
             }
         );
         for sql in [

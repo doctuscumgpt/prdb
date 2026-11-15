@@ -4516,10 +4516,51 @@ impl AdminClient {
     ) -> Result<AdminTableColumnResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_drop_column(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
-        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
-        let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
+        if statement.if_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let (table_id, column_id) = self.resolve_drop_column_sql_target(
+            &statement.schema,
+            &statement.table,
+            &statement.column,
+        )?;
+        self.drop_column(table_id, column_id)
+    }
+
+    /// Execute `ALTER TABLE ... DROP COLUMN IF EXISTS`. Unresolved targets are
+    /// suppressed only after current database-administrator authority is checked.
+    pub fn execute_drop_column_if_exists_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<Option<AdminTableColumnResult>, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_drop_column(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if !statement.if_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        match self.resolve_drop_column_sql_target(
+            &statement.schema,
+            &statement.table,
+            &statement.column,
+        ) {
+            Ok((table_id, column_id)) => self.drop_column(table_id, column_id).map(Some),
+            Err(ClientSubmitError::InvalidAdministrativeRequest) => {
+                self.list_runtime_invocations_page(1, None)?;
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn resolve_drop_column_sql_target(
+        &mut self,
+        schema: &str,
+        table: &str,
+        column: &str,
+    ) -> Result<([u8; 16], [u8; 16]), ClientSubmitError> {
+        let schema_id = self.resolve_schema_sql_name(schema)?;
+        let table_id = self.resolve_table_sql_name_in_schema(schema_id, table)?;
         let mut cursor = None;
-        let mut visible_columns = Vec::new();
         loop {
             let page = self.list_columns_page(
                 schema_id,
@@ -4527,17 +4568,14 @@ impl AdminClient {
                 DEFAULT_METADATA_PAGE_SIZE,
                 cursor.as_deref(),
             )?;
-            visible_columns.extend(page.records);
+            if let Some(found) = page.records.iter().find(|record| record.name == column) {
+                return Ok((table_id, found.column_id));
+            }
             cursor = page.next_cursor;
             if cursor.is_none() {
-                break;
+                return Err(ClientSubmitError::InvalidAdministrativeRequest);
             }
         }
-        let column = visible_columns
-            .iter()
-            .find(|column| column.name == statement.column)
-            .ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
-        self.drop_column(table_id, column.column_id)
     }
 
     pub fn execute_rename_table_sql(

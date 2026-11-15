@@ -451,3 +451,8 @@
 
 - `admin-sql` accepts `DROP USER|ROLE IF EXISTS name RESTRICT`. Resolved identities use existing typed RESTRICT operations; unresolved identities no-op only after a current database-administrator check.
 - Identity and client SQL specifications and component progress are updated. Workspace build, formatting, warning-denied Clippy, and `git diff --check` pass. Tests were not added or run; Cargo.lock is unchanged.
+
+## Conditional DROP COLUMN SQL — implemented slice
+
+- `admin-sql` accepts `ALTER TABLE schema.table DROP COLUMN IF EXISTS column RESTRICT`. Resolved columns go through the typed storage mutation; unresolved targets are suppressed only after a current database-administrator check.
+- Schema DDL and client SQL specifications and progress records are updated. Workspace build, formatting, warning-denied Clippy, and `git diff --check` pass. Tests were not added or run; Cargo.lock is unchanged.
