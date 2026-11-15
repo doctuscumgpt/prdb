@@ -3176,7 +3176,7 @@ impl AdminClient {
         self.create_foreign_key(source_table_id, &source_column_ids, target_constraint_id)
     }
 
-    /// Drop a foreign key from the selected table using its generated ID.
+    /// Drop a generated constraint ID from the selected table.
     /// Constraint names are not supported by the current typed catalog API.
     pub fn execute_drop_constraint_sql(
         &mut self,
@@ -3187,7 +3187,7 @@ impl AdminClient {
         let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
         let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
         let mut cursor = None;
-        let mut found_foreign_key = false;
+        let mut found_kind = None;
         loop {
             let page = self.list_constraints_page(
                 schema_id,
@@ -3195,20 +3195,35 @@ impl AdminClient {
                 DEFAULT_METADATA_PAGE_SIZE,
                 cursor.as_deref(),
             )?;
-            found_foreign_key |= page.records.iter().any(|constraint| {
-                constraint.constraint_id == statement.constraint_id
-                    && constraint.kind
-                        == crate::metadata_discovery::AdministrativeConstraintKind::ForeignKey
-            });
+            if let Some(constraint) = page
+                .records
+                .iter()
+                .find(|constraint| constraint.constraint_id == statement.constraint_id)
+            {
+                found_kind = Some(constraint.kind);
+            }
             cursor = page.next_cursor;
             if cursor.is_none() {
                 break;
             }
         }
-        if !found_foreign_key {
-            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        match found_kind.ok_or(ClientSubmitError::InvalidAdministrativeRequest)? {
+            crate::metadata_discovery::AdministrativeConstraintKind::PrimaryKey => {
+                self.drop_primary_key(statement.constraint_id)
+            }
+            crate::metadata_discovery::AdministrativeConstraintKind::Unique => {
+                self.drop_unique_constraint(statement.constraint_id)
+            }
+            crate::metadata_discovery::AdministrativeConstraintKind::Check => {
+                self.drop_check_constraint(statement.constraint_id)
+            }
+            crate::metadata_discovery::AdministrativeConstraintKind::ForeignKey => {
+                self.drop_foreign_key(statement.constraint_id)
+            }
+            crate::metadata_discovery::AdministrativeConstraintKind::NotNull => {
+                Err(ClientSubmitError::InvalidAdministrativeRequest)
+            }
         }
-        self.drop_foreign_key(statement.constraint_id)
     }
 
     /// Add a bounded CHECK expression using qualified SQL names and the

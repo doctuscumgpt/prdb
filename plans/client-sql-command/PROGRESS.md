@@ -234,3 +234,9 @@
 
 - Added bounded single-statement parsing for `ALTER TABLE schema.table ALTER COLUMN column SET DEFAULT literal` and `DROP DEFAULT`, including fail-closed malformed and multiple-statement cases.
 - The command validates syntax before credentials/network and routes accepted statements through the authenticated AdminClient. Parser/binder, TCP binding, CLI process recognition, locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests/fixture, and complete serial delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed.
+
+
+## admin-sql: generated-ID DROP CONSTRAINT lifecycle — implemented
+
+- The bounded DROP CONSTRAINT SQL route now recognizes table-scoped generated IDs for PRIMARY KEY, UNIQUE, CHECK, and FOREIGN KEY constraints and dispatches by authenticated metadata kind.
+- The CLI process regression verifies generated-ID DROP syntax is recognized before credentials or network. Parser and AdminClient TCP coverage passed; locked build/fmt/Clippy, TinyCC SDK tests/fixture, and the complete serial delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed.

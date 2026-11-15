@@ -1646,6 +1646,91 @@ fn admin_client_drops_only_a_foreign_key_attached_to_the_selected_table() {
 }
 
 #[test]
+fn admin_client_drops_primary_key_from_generated_constraint_sql() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        for (operation, body) in [
+            (
+                "metadata.schemas.list",
+                format!(
+                    r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                    "a3".repeat(16)
+                ),
+            ),
+            (
+                "metadata.relations.list",
+                format!(
+                    r#"{{"relations":[{{"relation_id":"{}","name":"orders"}}],"next_cursor":null}}"#,
+                    "b4".repeat(16)
+                ),
+            ),
+            (
+                "metadata.constraints.list",
+                format!(
+                    r#"{{"constraints":[{{"constraint_id":"{}","kind":"primary_key","column_ids":["{}"],"referenced_table_id":null,"referenced_column_ids":[]}}],"next_cursor":null}}"#,
+                    "c5".repeat(16),
+                    "d6".repeat(16)
+                ),
+            ),
+        ] {
+            let request = read_frame(&mut stream, &mut decoder);
+            assert!(
+                String::from_utf8_lossy(&request.payload)
+                    .contains(&format!(r#""operation":"{operation}""#))
+            );
+            respond(&mut stream, &request, body.as_bytes());
+        }
+        let prepare = read_frame(&mut stream, &mut decoder);
+        let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+        assert!(payload.contains(r#""operation":"constraints.drop_primary_key""#));
+        assert!(payload.contains(&format!(
+            r#""arguments":{{"constraint_id":"{}"}}"#,
+            "c5".repeat(16)
+        )));
+        respond(
+            &mut stream,
+            &prepare,
+            format!(
+                r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                "e7".repeat(16)
+            )
+            .as_bytes(),
+        );
+        let start = read_frame(&mut stream, &mut decoder);
+        respond(
+            &mut stream,
+            &start,
+            format!(
+                r#"{{"operation_id":"{}","outcome":"committed","constraint_id":"{}","commit_sequence":"82"}}"#,
+                "e7".repeat(16),
+                "c5".repeat(16)
+            )
+            .as_bytes(),
+        );
+    });
+
+    let mut secret = [5; 32];
+    let mut client = AdminClient::connect_authenticated_with_timeout(
+        address,
+        [6; 16],
+        &mut secret,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let dropped = client
+        .execute_drop_constraint_sql(
+            "ALTER TABLE app.orders DROP CONSTRAINT 'c5c5c5c5-c5c5-c5c5-c5c5-c5c5c5c5c5c5'",
+        )
+        .unwrap();
+    assert_eq!(dropped.commit_sequence, 82);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_binds_check_sql_names_to_eir_dependencies() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

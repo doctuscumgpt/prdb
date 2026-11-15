@@ -617,7 +617,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Implementation: the typed create operation carries FK source-column names and target constraint IDs. Storage publishes the new table, FK constraint/object/dependency records, target table write-epoch changes, audit, and durable outcome atomically. Commit validation guards target catalog records and checks authority.
 - Regression: parser tests cover multiple FK clauses and invalid arity, duplicate/unknown columns, qualification, and multiple statements. Authenticated TCP coverage checks metadata binding and typed arguments; storage coverage verifies atomic catalog/dependency/epoch publication and startup validation. No stale tests were found; existing negative syntax tests remain relevant.
 - Validation: focused parser, authenticated AdminClient, and storage regressions passed. Locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests, sandbox fixture build, and the full serial delegated-cgroup workspace suite passed (all sandbox/process tests enabled, zero ignored); `git diff --check` passed.
-- Next: expose the existing typed current-default operations through bounded ALTER COLUMN SQL, preserving future-insert-only semantics.
+- Next: expose generated-ID DROP CONSTRAINT SQL for PRIMARY KEY, UNIQUE, and CHECK alongside the existing FOREIGN KEY lifecycle.
 
 
 ## DS-13: ALTER COLUMN SET/DROP DEFAULT SQL — implemented
@@ -626,3 +626,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Red evidence: the new parser regression failed to compile because the bounded ALTER DEFAULT parser did not exist.
 - Implementation: parser and binder support typed defaults, including exact DECIMAL scaling, and the authenticated client/CLI route to existing storage operations.
 - Verification: parser/binder, authenticated AdminClient TCP, and CLI pre-credential tests passed. Locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests and sandbox fixture, and the complete serial delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed.
+
+
+## DS-14: DROP CONSTRAINT SQL lifecycle — implemented
+
+- Contract: [schema DDL](../../specs/ddl-schema.md), [client SDK](../../specs/client-sdk.md), and [client SQL command](../../specs/client-sql-command.md). `DROP CONSTRAINT 'generated-id'` must first verify the generated ID belongs to the selected table, then dispatch the corresponding typed drop operation for PRIMARY KEY, UNIQUE, CHECK, or FOREIGN KEY.
+- Red evidence: the new authenticated AdminClient regression for dropping a table's PRIMARY KEY failed because SQL supported only FOREIGN KEY kinds.
+- Implementation: metadata kind selection now dispatches to the existing typed drop API for each droppable constraint kind and rejects NOT NULL or IDs absent from the selected relation.
+- Regression: authenticated TCP coverage verifies the generated ID is matched to the selected table’s PK before `constraints.drop_primary_key` is sent; existing FK-drop coverage remains green, and CLI syntax validation passes before credential/network access.
+- Verification: focused client/parser/CLI tests, locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace suite passed; all sandbox/process tests ran with zero ignored. `git diff --check` passed.

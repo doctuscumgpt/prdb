@@ -791,3 +791,9 @@
 
 - Added an authenticated SQL helper that resolves the relation and column metadata, binds a context-typed default literal, and calls the existing typed set/drop operation. Existing rows are not rewritten.
 - Parser/binder, authenticated TCP, CLI recognition, locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests/fixture, and complete serial delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed.
+
+
+## SDK: DROP CONSTRAINT SQL for generated key/check/FK IDs — implemented
+
+- `execute_drop_constraint_sql` now resolves the generated ID within the selected table and dispatches to the typed PK, UNIQUE, CHECK, or FK drop operation.
+- The primary-key authenticated TCP regression observed the prior rejection before implementation and now verifies typed PK drop dispatch. Existing FK drop remains covered. Focused TCP/CLI tests, locked build/fmt/Clippy, TinyCC checks, and the full serial delegated-cgroup suite passed with zero ignored tests; `git diff --check` passed.
