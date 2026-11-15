@@ -256,3 +256,10 @@
 - Implementation: the supervisor samples its bounded staging registry under its short lock, and the authenticated gateway includes the aggregate in the runtime page. The typed SDK and `prdb-client runtime-list` decode and emit all six values.
 - Regression: aggregate unit coverage checks workload classes, queue counts, reserved bytes, and started reservations. Typed client tests verify pagination and decoding; the real gateway/supervisor process test confirms the live started count and byte field.
 - Verification: focused aggregation, client, and delegated process tests passed; workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests and sandbox fixture passed. The full serial delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed.
+
+## OM-3 administrator point-status CLI — implemented
+
+- Contract: [operational metadata](../../specs/operational-metadata.md) allows database administrators to reconcile invocation state, including retained durable outcomes after restart. `prdb-client admin-status --address IP:PORT --credentials ADMIN_FILE --invocation-id HEX` now exposes the existing authenticated administrator status operation and prints only the state.
+- Implementation: the CLI uses `AdminClient::status`, preserving the protocol's current-authority checks and non-disclosing unknown/expired behavior. Owner-scoped `status` remains available through the query client.
+- Regression: the client CLI package test verifies command recognition and rejects a malformed invocation ID before reading credentials or opening a gateway connection.
+- Verification: the focused CLI test and the real gateway/supervisor `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` test passed. The cgroup probe reported a writable delegated parent with `cpu`, `memory`, and `pids` enabled. Workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests, sandbox-query fixture build, and the full serial delegated-cgroup workspace suite passed; sandbox and process tests ran. `git diff --check` passed and Cargo.lock is unchanged.

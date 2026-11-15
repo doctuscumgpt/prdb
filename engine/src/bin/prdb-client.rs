@@ -38,6 +38,7 @@ const USAGE: &str = "Usage:\n\
   prdb-client status --address IP:PORT --credentials FILE --invocation-id HEX\n\n\
   prdb-client cancel --address IP:PORT --credentials FILE --invocation-id HEX\n\n\
   prdb-client admin-cancel --address IP:PORT --credentials ADMIN_FILE --invocation-id HEX\n\n\
+  prdb-client admin-status --address IP:PORT --credentials ADMIN_FILE --invocation-id HEX\n\n\
   prdb-client scope --address IP:PORT --credentials FILE --schema NAME --output FILE \\\n    [--relation NAME --operations select,insert,update,delete [--columns NAME,...]]\n\n\
   prdb-client credential-remove --credentials FILE\n\n\
 Submission output is provisional until a committed terminal event. START is never retried;\n\
@@ -162,6 +163,7 @@ fn run() -> Result<(), String> {
         "admin-sql" => admin_sql(address, credentials_path, &mut fields),
         "status" => status(address, credentials_path, &mut fields),
         "cancel" => cancel(address, credentials_path, &mut fields),
+        "admin-status" => admin_status(address, credentials_path, &mut fields),
         "admin-cancel" => admin_cancel(address, credentials_path, &mut fields),
         "scope" => scope(address, credentials_path, &mut fields),
         "discover" => discover(address, credentials_path, &mut fields),
@@ -2147,6 +2149,28 @@ fn admin_cancel(
         .cancel_invocation(invocation_id)
         .map_err(|error| error.to_string())?;
     println!("{}", cancellation_result_name(result));
+    Ok(())
+}
+
+fn admin_status(
+    address: SocketAddr,
+    credentials_path: PathBuf,
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<(), String> {
+    let invocation_id = parse_id(&take_text(fields, "--invocation-id")?)?;
+    reject_unknown(fields)?;
+    let mut credentials =
+        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
+    let mut client = AdminClient::connect_authenticated(
+        address,
+        credentials.token_id,
+        &mut credentials.token_secret,
+    )
+    .map_err(|error| error.to_string())?;
+    let status = client
+        .status(invocation_id)
+        .map_err(|error| error.to_string())?;
+    println!("{}", status_name(status));
     Ok(())
 }
 

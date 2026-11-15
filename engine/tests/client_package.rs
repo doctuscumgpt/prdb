@@ -695,6 +695,38 @@ fn admin_sql_cli_rejects_unsupported_ddl_before_credentials_or_network() {
 }
 
 #[test]
+fn admin_status_cli_validates_invocation_id_before_credentials_or_network() {
+    let temp = unique_temp_dir();
+    fs::create_dir(&temp).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-status",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            temp.join("missing.cred").to_str().unwrap(),
+            "--invocation-id",
+            "not-an-id",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("unknown command"), "{stderr}");
+    assert!(
+        stderr.contains("--invocation-id must be 32 lowercase hexadecimal digits"),
+        "{stderr}"
+    );
+    assert!(matches!(
+        listener.accept(),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
+}
+
+#[test]
 fn run_sql_local_failures_do_not_connect_and_gateway_failures_clean_workspace() {
     let temp = unique_temp_dir();
     fs::create_dir(&temp).unwrap();

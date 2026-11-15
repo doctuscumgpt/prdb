@@ -1359,6 +1359,29 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&admin_cancel_command.stdout).trim(),
         "committed"
     );
+    let admin_status_address_text = address.to_string();
+    let admin_status_command = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-status",
+            "--address",
+            &admin_status_address_text,
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--invocation-id",
+            &committed_invocation_id_text,
+        ])
+        .output()?;
+    assert!(
+        admin_status_command.status.success(),
+        "admin-status CLI failed: {}",
+        String::from_utf8_lossy(&admin_status_command.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&admin_status_command.stdout).trim(),
+        "committed"
+    );
     let created_role = admin.create_role("process_admin_role")?;
     assert_ne!(created_role.identity_id, [0; 16]);
     let renamed = admin.rename_role(created_role.identity_id, "process_admin_role_v2")?;
