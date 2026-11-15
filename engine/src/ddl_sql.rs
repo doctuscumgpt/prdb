@@ -34,6 +34,7 @@ pub struct CreateTableForeignKeySql {
 pub struct CreateSchemaSql {
     pub schema: String,
     pub owner: CreateSchemaOwnerSql,
+    pub if_not_exists: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1023,6 +1024,14 @@ pub fn parse_create_schema(sql: &str) -> Result<CreateSchemaSql, DdlSqlError> {
     };
     parser.word("create")?;
     parser.word("schema")?;
+    let if_not_exists = if parser.peek_word("if") {
+        parser.word("if")?;
+        parser.word("not")?;
+        parser.word("exists")?;
+        true
+    } else {
+        false
+    };
     let schema = parser.identifier()?;
     let owner = if parser.peek_word("authorization") {
         parser.word("authorization")?;
@@ -1052,7 +1061,11 @@ pub fn parse_create_schema(sql: &str) -> Result<CreateSchemaSql, DdlSqlError> {
         CreateSchemaOwnerSql::CurrentUser
     };
     finish_statement(&mut parser)?;
-    Ok(CreateSchemaSql { schema, owner })
+    Ok(CreateSchemaSql {
+        schema,
+        owner,
+        if_not_exists,
+    })
 }
 
 pub fn parse_rename_schema(sql: &str) -> Result<RenameSchemaSql, DdlSqlError> {
@@ -2677,6 +2690,18 @@ mod tests {
         assert_eq!(
             parse_create_schema("CREATE SCHEMA app;").unwrap().owner,
             CreateSchemaOwnerSql::CurrentUser
+        );
+        let conditional =
+            parse_create_schema("CREATE SCHEMA IF NOT EXISTS app AUTHORIZATION ROLE app_admin;")
+                .unwrap();
+        assert!(conditional.if_not_exists);
+        assert_eq!(conditional.schema, "app");
+        assert_eq!(
+            conditional.owner,
+            CreateSchemaOwnerSql::Identity {
+                name: "app_admin".into(),
+                kind: SqlIdentityKind::Role,
+            }
         );
         assert_eq!(
             parse_create_schema("CREATE SCHEMA app AUTHORIZATION USER app_owner")

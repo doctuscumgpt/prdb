@@ -486,3 +486,8 @@
 
 - Table-scoped ALTER grantees can bind table names without schema USAGE for SQL rename and drop. The typed commit guard validates direct/inherited table or schema grants through publication; ownership transfer remains available through the typed operation, while SQL owner-name resolution retains its own identity-discovery requirements.
 - The gateway/supervisor process test verifies table rename and RESTRICT drop as a non-owner ALTER grantee. The focused delegated process test and formatting pass; Cargo.lock is unchanged.
+
+## CREATE SCHEMA IF NOT EXISTS — verified extension
+
+- `admin-sql` now accepts `CREATE SCHEMA IF NOT EXISTS` with existing owner syntax. It creates an absent schema through the typed path; an existing schema is an administrator-only no-op with no committed DDL operation.
+- Parser and gateway/supervisor process regressions cover create, repeat no-op, and non-admin rejection. Focused parser and delegated process tests, workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

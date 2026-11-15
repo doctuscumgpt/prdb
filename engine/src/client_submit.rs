@@ -4044,6 +4044,39 @@ impl AdminClient {
     ) -> Result<AdminIdentityResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_create_schema(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if statement.if_not_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        self.create_schema_from_sql_statement(statement)
+    }
+
+    /// Execute `CREATE SCHEMA IF NOT EXISTS`. Existing schemas are an
+    /// administrator-only no-op; absent schemas use the ordinary create path.
+    pub fn execute_create_schema_if_not_exists_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<Option<AdminIdentityResult>, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_create_schema(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if !statement.if_not_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        match self.resolve_schema_sql_name(&statement.schema) {
+            Ok(_) => {
+                self.list_runtime_invocations_page(1, None)?;
+                Ok(None)
+            }
+            Err(ClientSubmitError::InvalidAdministrativeRequest) => {
+                self.create_schema_from_sql_statement(statement).map(Some)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn create_schema_from_sql_statement(
+        &mut self,
+        statement: crate::ddl_sql::CreateSchemaSql,
+    ) -> Result<AdminIdentityResult, ClientSubmitError> {
         let owner_id = match statement.owner {
             crate::ddl_sql::CreateSchemaOwnerSql::CurrentUser => None,
             crate::ddl_sql::CreateSchemaOwnerSql::Id(owner_id) => Some(owner_id),

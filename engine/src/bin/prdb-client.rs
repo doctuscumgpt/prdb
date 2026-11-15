@@ -519,16 +519,31 @@ fn admin_sql(
             lower_hex(&result.operation_id),
             result.commit_sequence
         );
-    } else if schema_statement.is_some() {
-        let result = client
-            .execute_create_schema_sql(sql)
-            .map_err(|error| error.to_string())?;
-        println!(
-            "created schema {} (operation {}, commit {})",
-            lower_hex(&result.identity_id),
-            lower_hex(&result.operation_id),
-            result.commit_sequence
-        );
+    } else if let Some(statement) = schema_statement {
+        if statement.if_not_exists {
+            match client
+                .execute_create_schema_if_not_exists_sql(sql)
+                .map_err(|error| error.to_string())?
+            {
+                Some(result) => println!(
+                    "created schema {} (operation {}, commit {})",
+                    lower_hex(&result.identity_id),
+                    lower_hex(&result.operation_id),
+                    result.commit_sequence
+                ),
+                None => println!("schema already exists; no operation committed"),
+            }
+        } else {
+            let result = client
+                .execute_create_schema_sql(sql)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "created schema {} (operation {}, commit {})",
+                lower_hex(&result.identity_id),
+                lower_hex(&result.operation_id),
+                result.commit_sequence
+            );
+        }
     } else if rename_schema_statement.is_some() {
         let result = client
             .execute_rename_schema_sql(sql)
@@ -547,8 +562,7 @@ fn admin_sql(
             &result.operation_id,
             result.commit_sequence,
         );
-    } else if drop_schema_statement.is_some() {
-        let statement = drop_schema_statement.expect("checked above");
+    } else if let Some(statement) = drop_schema_statement {
         if statement.if_exists {
             match client
                 .execute_drop_schema_if_exists_sql(sql)
@@ -599,8 +613,7 @@ fn admin_sql(
             lower_hex(&result.operation_id),
             result.commit_sequence
         );
-    } else if drop_constraint_statement.is_some() {
-        let statement = drop_constraint_statement.expect("recognized above");
+    } else if let Some(statement) = drop_constraint_statement {
         if statement.if_exists {
             match client
                 .execute_drop_constraint_if_exists_sql(sql)

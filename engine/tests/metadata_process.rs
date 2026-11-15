@@ -2472,7 +2472,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     );
     std::fs::write(
         &schema_owner_sql_path,
-        "CREATE SCHEMA process_sql_owned AUTHORIZATION process_table_owner_renamed;",
+        "CREATE SCHEMA IF NOT EXISTS process_sql_owned AUTHORIZATION process_table_owner_renamed;",
     )?;
     let create_owned_schema_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
@@ -2493,6 +2493,47 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&create_owned_schema_sql.stderr)
     );
     assert!(String::from_utf8_lossy(&create_owned_schema_sql.stdout).contains("created schema"));
+    let repeated_create_owned_schema_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--sql-file",
+            schema_owner_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        repeated_create_owned_schema_sql.status.success(),
+        "CREATE SCHEMA IF NOT EXISTS repeat failed: {}",
+        String::from_utf8_lossy(&repeated_create_owned_schema_sql.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&repeated_create_owned_schema_sql.stdout)
+            .contains("schema already exists; no operation committed")
+    );
+    let non_admin_create_existing_schema = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            transfer_credential_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            schema_owner_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        !non_admin_create_existing_schema.status.success(),
+        "non-administrator CREATE SCHEMA IF NOT EXISTS suppressed an existing target"
+    );
     std::fs::write(
         &schema_owner_sql_path,
         "DROP SCHEMA process_sql_owned RESTRICT;",

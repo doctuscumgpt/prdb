@@ -900,3 +900,8 @@
 
 - Existing CREATE/DROP/REBUILD INDEX SQL name binding now receives target metadata for table owners and inherited `INDEX` grantees, including target tables without schema USAGE. The typed index mutations still enforce current authority at commit.
 - Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused client/process regressions remain to be added; no test suite was run.
+
+## Conditional schema creation SQL — implemented extension
+
+- Added `AdminClient::execute_create_schema_if_not_exists_sql`; existing schemas no-op only after current database-administrator authority is confirmed, while absent schemas use the ordinary schema-create operation. The regular create method rejects conditional syntax so callers cannot accidentally discard the no-op result.
+- Parser and production process coverage pass for initial create, administrator repeat, and non-admin rejection. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md) for commands and contract links; Cargo.lock is unchanged.

@@ -804,3 +804,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Typed table rename, owner transfer, and drop guards now accept effective table- or schema-scoped `ALTER` grants in addition to ownership/database administration. Direct and inherited grant records are retained as commit guards so revocation cannot authorize stale DDL. Column rename uses the same scoped authority.
 - Updated table rename/drop/owner-transfer contracts. The production gateway/supervisor test grants table ALTER, renames the target through `admin-sql` without schema USAGE, exercises owner transfer through the typed ADMIN operation, restores ownership, and drops a separate table through `admin-sql` as an ALTER grantee. The focused delegated process test and formatting pass. Cargo.lock is unchanged.
+
+## DS-SQL-39: CREATE SCHEMA IF NOT EXISTS — verified extension
+
+- Extended bounded schema SQL with `CREATE SCHEMA IF NOT EXISTS`. An absent schema follows the ordinary typed `schemas.create` authorization and publication path. If the schema already resolves, only a database administrator receives a no-op; it creates no DDL outcome and does not resolve or apply an optional owner clause.
+- Updated schema DDL, client SDK, and client SQL contracts. Parser coverage and the production gateway/supervisor lifecycle verify create, administrator repeat no-op, and non-administrator denial. The targeted parser and delegated process tests, workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
