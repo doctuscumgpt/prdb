@@ -3678,7 +3678,7 @@ impl<'db> InvocationTransaction<'db> {
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
             || object_id == [0; 16]
-            || !matches!(privilege_code, 9 | 11)
+            || !matches!(privilege_code, 8 | 9 | 11)
         {
             return Err(TransactionError::InvalidMetadataRequest);
         }
@@ -4303,10 +4303,10 @@ impl<'db> InvocationTransaction<'db> {
         Ok(Some(descriptions))
     }
 
-    /// Describe a table's logical constraints to a current schema owner or
-    /// database administrator. CHECK expression bodies are validated but
-    /// omitted. Foreign-key endpoints are returned only when the target
-    /// schema is also administratively visible.
+    /// Describe a table's logical constraints to its schema/table owner, a
+    /// table-scoped ALTER grantee, or a database administrator. CHECK
+    /// expression bodies are validated but omitted. Foreign-key endpoints are
+    /// returned only when the target schema is also administratively visible.
     pub(crate) fn list_catalog_administrative_constraints(
         &mut self,
         schema_id: [u8; 16],
@@ -4314,14 +4314,25 @@ impl<'db> InvocationTransaction<'db> {
     ) -> Result<Option<Vec<crate::metadata_discovery::AdministrativeConstraint>>, TransactionError>
     {
         let roles = self.load_catalog_role_closure(self.principal_id)?;
-        if !self.has_schema_metadata_authority(schema_id, &roles)? {
-            return Ok(None);
-        }
         let table_key = catalog_id_key(5, relation_id);
         let Some(table) = self.read_catalog_record(&table_key)? else {
             return Ok(None);
         };
         if table.family_code != 5 || catalog_id(&table, 1)? != schema_id {
+            return Ok(None);
+        }
+        let mut subjects = roles.clone();
+        subjects.insert(self.principal_id);
+        let schema_authority = self.has_schema_metadata_authority(schema_id, &roles)?;
+        let table_object = self
+            .read_catalog_record(&catalog_id_key(2, relation_id))?
+            .ok_or(TransactionError::CorruptCatalog)?;
+        if table_object.family_code != 2 || catalog_u16(&table_object, 1)? != 3 {
+            return Err(TransactionError::CorruptCatalog);
+        }
+        let owner_authority = subjects.contains(&catalog_id(&table_object, 4)?);
+        let alter_authority = self.current_principal_has_object_ddl_authority(relation_id, 8)?;
+        if !schema_authority && !owner_authority && !alter_authority {
             return Ok(None);
         }
         self.read_discovery_relation(schema_id, relation_id)?;

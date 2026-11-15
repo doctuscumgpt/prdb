@@ -224,3 +224,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Scoped table owners and inherited `INDEX` grantees can resolve the schema/table and inspect only the declared columns and logical indexes needed for index DDL. The schema is discoverable from table ownership or a direct/inherited INDEX grant even without schema USAGE; data discovery remains unchanged.
 - Workspace build, format, warning-denied all-target Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. Focused authorization/process regressions remain to be added; no test suite was run.
+
+## ALTER-authorized constraint metadata — implemented slice
+
+- Constraint ID/kind/source-column discovery now includes schema owners, table owners, database administrators, and inherited table-scoped `ALTER` grantees. CHECK bodies remain omitted, and foreign-key target details still require visibility of the target schema.
+- Metadata discovery, SDK, and SQL contracts are updated. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass; no tests were added or run. Cargo.lock is unchanged.

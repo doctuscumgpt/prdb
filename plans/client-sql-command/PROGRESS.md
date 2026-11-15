@@ -461,3 +461,8 @@
 
 - `admin-sql` accepts `ALTER TABLE schema.table DROP CONSTRAINT IF EXISTS 'generated-id'`. A visible generated constraint ID follows its matching typed drop operation; an unresolved ID is suppressed only after a current database-administrator check.
 - CLI dispatch and client SQL documentation are updated. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass. No tests were added or run; Cargo.lock is unchanged.
+
+## ALTER-authorized constraint SQL binding — implemented slice
+
+- The authenticated `constraint-list` / `admin-sql` metadata route now supports table owners and inherited table-scoped `ALTER` grantees, so constraint DDL can bind generated IDs under its regular typed authority.
+- Client SDK and metadata contracts are updated. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass; no tests were added or run. Cargo.lock is unchanged.

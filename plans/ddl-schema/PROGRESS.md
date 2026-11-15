@@ -779,3 +779,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `ALTER TABLE schema.table DROP CONSTRAINT IF EXISTS 'generated-id'`. Resolved IDs retain generated-ID table binding and dispatch through the typed PRIMARY KEY, UNIQUE, CHECK, or FOREIGN KEY drop path; unresolved IDs require database-administrator authority for a no-op.
 - Updated the schema DDL contract. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass. No tests were added or run; Cargo.lock is unchanged.
+
+## DS-SQL-35: ALTER-authorized constraint binding — implemented slice
+
+- Constraint metadata binding for SQL DDL now recognizes table ownership and inherited table-scoped `ALTER`, matching the typed constraint mutation authority. CHECK bodies remain omitted and hidden FK target details stay redacted.
+- Updated metadata-discovery, SDK, and DDL contracts. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass; no tests were added or run. Cargo.lock is unchanged.
