@@ -1359,6 +1359,15 @@ fn admin_client_creates_and_drops_schemas() {
         let (mut stream, _) = listener.accept().unwrap();
         let mut decoder = ClientFrameDecoder::default();
         establish_control_session(&mut stream, &mut decoder);
+        let resolve = read_frame(&mut stream, &mut decoder);
+        let resolve_payload = String::from_utf8(resolve.payload.clone()).unwrap();
+        assert!(resolve_payload.contains("\"operation\":\"metadata.identities.resolve\""));
+        assert!(resolve_payload.contains("\"name\":\"app_owner\",\"kind\":\"user\""));
+        respond(
+            &mut stream,
+            &resolve,
+            format!("{{\"identity_id\":\"{}\"}}", "01".repeat(16)).as_bytes(),
+        );
         for (operation, arguments, operation_id, result) in [
             (
                 "schemas.create",
@@ -1421,6 +1430,41 @@ fn admin_client_creates_and_drops_schemas() {
             let start = read_frame(&mut stream, &mut decoder);
             respond(&mut stream, &start, result.as_bytes());
         }
+        let resolve_role = read_frame(&mut stream, &mut decoder);
+        let resolve_role_payload = String::from_utf8(resolve_role.payload.clone()).unwrap();
+        assert!(resolve_role_payload.contains("\"name\":\"app_admin\",\"kind\":\"role\""));
+        respond(
+            &mut stream,
+            &resolve_role,
+            format!("{{\"identity_id\":\"{}\"}}", "02".repeat(16)).as_bytes(),
+        );
+        let prepare = read_frame(&mut stream, &mut decoder);
+        let prepare_payload = String::from_utf8(prepare.payload.clone()).unwrap();
+        assert!(prepare_payload.contains("\"operation\":\"schemas.create\""));
+        assert!(prepare_payload.contains(&format!(
+            "\"arguments\":{{\"name\":\"role_schema\",\"owner_id\":\"{}\"}}",
+            "02".repeat(16)
+        )));
+        respond(
+            &mut stream,
+            &prepare,
+            format!(
+                "{{\"operation_id\":\"{}\",\"state\":\"prepared\"}}",
+                hex(&[0x66; 16])
+            )
+            .as_bytes(),
+        );
+        let start = read_frame(&mut stream, &mut decoder);
+        respond(
+            &mut stream,
+            &start,
+            format!(
+                "{{\"operation_id\":\"{}\",\"outcome\":\"committed\",\"schema_id\":\"{}\",\"commit_sequence\":\"47\"}}",
+                hex(&[0x66; 16]),
+                "a4".repeat(16)
+            )
+            .as_bytes(),
+        );
     });
 
     let mut secret = [5; 32];
@@ -1432,9 +1476,7 @@ fn admin_client_creates_and_drops_schemas() {
     )
     .unwrap();
     let schema = client
-        .execute_create_schema_sql(
-            "CREATE SCHEMA analytics AUTHORIZATION '01010101-0101-0101-0101-010101010101';",
-        )
+        .execute_create_schema_sql("CREATE SCHEMA analytics AUTHORIZATION USER app_owner;")
         .unwrap();
     assert_eq!(schema.identity_id, [0xa3; 16]);
     client
@@ -1444,6 +1486,10 @@ fn admin_client_creates_and_drops_schemas() {
         .set_schema_owner(schema.identity_id, [1; 16])
         .unwrap();
     client.drop_schema(schema.identity_id).unwrap();
+    let role_schema = client
+        .execute_create_schema_sql("CREATE SCHEMA role_schema AUTHORIZATION ROLE app_admin;")
+        .unwrap();
+    assert_eq!(role_schema.identity_id, [0xa4; 16]);
     server.join().unwrap();
 }
 

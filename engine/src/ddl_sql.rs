@@ -33,7 +33,13 @@ pub struct CreateTableForeignKeySql {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateSchemaSql {
     pub schema: String,
-    pub owner_id: [u8; 16],
+    pub owner: CreateSchemaOwnerSql,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CreateSchemaOwnerSql {
+    Id([u8; 16]),
+    Identity { name: String, is_role: bool },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -914,7 +920,7 @@ pub fn parse_object_privilege(sql: &str) -> Result<ObjectPrivilegeSql, DdlSqlErr
     })
 }
 
-/// Parse the bounded SQL form `CREATE SCHEMA name AUTHORIZATION 'uuid'`.
+/// Parse bounded schema creation with a UUID or explicitly typed owner.
 pub fn parse_create_schema(sql: &str) -> Result<CreateSchemaSql, DdlSqlError> {
     if sql.is_empty() || sql.len() > MAX_DDL_BYTES || sql.as_bytes().contains(&0) {
         return Err(DdlSqlError::InvalidStatement);
@@ -927,22 +933,28 @@ pub fn parse_create_schema(sql: &str) -> Result<CreateSchemaSql, DdlSqlError> {
     parser.word("schema")?;
     let schema = parser.identifier()?;
     parser.word("authorization")?;
-    let owner = match parser.peek() {
-        Some(Token::String(value)) => value.clone(),
-        _ => return Err(DdlSqlError::InvalidStatement),
-    };
-    parser.position += 1;
-    let owner_id = parse_uuid(&owner)?;
-    if owner_id == [0; 16] {
-        return Err(DdlSqlError::InvalidStatement);
-    }
-    if parser.peek() == Some(&Token::Semicolon) {
+    let owner = if let Some(Token::String(value)) = parser.peek() {
+        let owner_id = parse_uuid(value)?;
+        if owner_id == [0; 16] {
+            return Err(DdlSqlError::InvalidStatement);
+        }
         parser.position += 1;
-    }
-    if parser.peek().is_some() {
-        return Err(DdlSqlError::InvalidStatement);
-    }
-    Ok(CreateSchemaSql { schema, owner_id })
+        CreateSchemaOwnerSql::Id(owner_id)
+    } else {
+        let is_role = if parser.peek_word("user") {
+            parser.word("user")?;
+            false
+        } else {
+            parser.word("role")?;
+            true
+        };
+        CreateSchemaOwnerSql::Identity {
+            name: parser.identifier()?,
+            is_role,
+        }
+    };
+    finish_statement(&mut parser)?;
+    Ok(CreateSchemaSql { schema, owner })
 }
 
 pub fn parse_rename_schema(sql: &str) -> Result<RenameSchemaSql, DdlSqlError> {
@@ -2486,15 +2498,34 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.schema, "app");
         assert_eq!(
-            parsed.owner_id,
-            [
+            parsed.owner,
+            CreateSchemaOwnerSql::Id([
                 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
                 0xee, 0xff,
-            ]
+            ])
+        );
+        assert_eq!(
+            parse_create_schema("CREATE SCHEMA app AUTHORIZATION USER app_owner")
+                .unwrap()
+                .owner,
+            CreateSchemaOwnerSql::Identity {
+                name: "app_owner".into(),
+                is_role: false,
+            }
+        );
+        assert_eq!(
+            parse_create_schema("CREATE SCHEMA app AUTHORIZATION ROLE app_admin")
+                .unwrap()
+                .owner,
+            CreateSchemaOwnerSql::Identity {
+                name: "app_admin".into(),
+                is_role: true,
+            }
         );
         for sql in [
             "CREATE SCHEMA app",
             "CREATE SCHEMA app AUTHORIZATION app_owner",
+            "CREATE SCHEMA app AUTHORIZATION GROUP app_owner",
             "CREATE SCHEMA app AUTHORIZATION '00000000-0000-0000-0000-000000000000'",
             "CREATE SCHEMA app AUTHORIZATION '00112233445566778899aabbccddeeff'; CREATE SCHEMA b AUTHORIZATION '00112233445566778899aabbccddeeff'",
         ] {

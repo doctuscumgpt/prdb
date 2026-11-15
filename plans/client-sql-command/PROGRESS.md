@@ -1,5 +1,10 @@
 # `prdb-client run-sql` Progress
 
+## Name-resolved CREATE SCHEMA ownership
+
+- `admin-sql` accepts typed `AUTHORIZATION USER owner_name` and `AUTHORIZATION ROLE owner_name`; it resolves the identity over authenticated metadata and then uses the existing `schemas.create` operation. The explicit UUID owner form remains available.
+- Verification: focused parser and authenticated TCP tests passed for both USER and ROLE resolution, as did the gateway/supervisor process lifecycle that creates and drops a schema owned by a renamed user. Locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK/fixture, delegated cgroup probe, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed; Cargo.lock is unchanged.
+
 ## Implemented
 
 - `CREATE ROW|CELL POLICY` now resolves recipients and `HAS_ROLE` names through a table/schema scoped identity read. Storage returns no identity for absent names or callers without database-admin, ownership, or scoped `MANAGE_POLICIES` authority. Policy DDL authority now exposes the target relation's declared shape through authenticated metadata; the process regression grants schema USAGE but no SELECT to the table owner.

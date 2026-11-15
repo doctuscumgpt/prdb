@@ -3659,15 +3659,26 @@ impl AdminClient {
         )
     }
 
-    /// Execute bounded CREATE SCHEMA SQL with an explicit UUID owner through
-    /// the authenticated administrative control channel.
+    /// Execute bounded CREATE SCHEMA SQL through the authenticated control
+    /// channel, resolving explicitly typed user and role owners as needed.
     pub fn execute_create_schema_sql(
         &mut self,
         sql: &str,
     ) -> Result<AdminIdentityResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_create_schema(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
-        self.create_schema(&statement.schema, statement.owner_id)
+        let owner_id = match statement.owner {
+            crate::ddl_sql::CreateSchemaOwnerSql::Id(owner_id) => owner_id,
+            crate::ddl_sql::CreateSchemaOwnerSql::Identity { name, is_role } => {
+                let kind = if is_role {
+                    crate::metadata_discovery::AdministrativeIdentityKind::Role
+                } else {
+                    crate::metadata_discovery::AdministrativeIdentityKind::User
+                };
+                self.resolve_identity_sql_name(&name, kind)?
+            }
+        };
+        self.create_schema(&statement.schema, owner_id)
     }
 
     pub fn execute_rename_schema_sql(
