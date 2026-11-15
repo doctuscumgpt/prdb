@@ -1143,3 +1143,8 @@
 
 - CHECK creation accepts an optional normalized object name. The authorized constraint commit guard enforces per-table uniqueness after authority validation, returns `DuplicateConstraintName`, records the durable ABORTED outcome, and leaves the existing constraint set unchanged.
 - A real-redb regression creates a named CHECK, verifies the persisted object name, rejects a duplicate name, checks the aborted outcome, and confirms the original definition remains. The focused test and full serial delegated-cgroup suite pass; Cargo.lock is unchanged.
+
+## DS-SQL-50: named CHECK constraints in CREATE TABLE — verified
+
+- Added an atomic table-creation path that carries optional names alongside CHECK expressions and stores supplied names on constraint objects while retaining generated names for unnamed checks.
+- Real-redb regression confirms the named catalog object is published with the table. The production gateway/supervisor lifecycle now creates and reads a named CHECK. The full serial delegated-cgroup workspace suite passes with sandbox and process tests enabled (282 library tests and 177 commit tests; no ignored tests).

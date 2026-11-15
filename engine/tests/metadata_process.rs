@@ -5042,7 +5042,7 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
         "non-administrator must not suppress an absent-schema result"
     );
     let cli_output = execute_admin_sql(
-        "CREATE TABLE selfref_app.nodes (tenant_id INTEGER, id INTEGER, parent_tenant_id INTEGER, parent_id INTEGER, PRIMARY KEY (tenant_id, id), FOREIGN KEY (parent_tenant_id, parent_id) REFERENCES selfref_app.nodes (tenant_id, id));",
+        "CREATE TABLE selfref_app.nodes (tenant_id INTEGER, id INTEGER, parent_tenant_id INTEGER, parent_id INTEGER, PRIMARY KEY (tenant_id, id), CONSTRAINT node_tenant_nonnegative CHECK (tenant_id >= 0), FOREIGN KEY (parent_tenant_id, parent_id) REFERENCES selfref_app.nodes (tenant_id, id));",
     )?;
     assert!(
         cli_output.status.success(),
@@ -5072,6 +5072,15 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
                 == prdb_engine::metadata_discovery::AdministrativeConstraintKind::ForeignKey
         })
         .ok_or("self-referencing FK was absent from process metadata")?;
+    let named_check = constraints
+        .records
+        .iter()
+        .find(|constraint| {
+            constraint.kind == prdb_engine::metadata_discovery::AdministrativeConstraintKind::Check
+                && constraint.name == "node_tenant_nonnegative"
+        })
+        .ok_or("named CREATE TABLE CHECK was absent from process metadata")?;
+    assert_ne!(named_check.constraint_id, [0; 16]);
     assert_eq!(foreign_key.referenced_table_id, Some(table_id));
     assert_eq!(
         foreign_key.column_ids,

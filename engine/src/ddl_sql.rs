@@ -20,6 +20,7 @@ pub struct CreateTableSql {
     pub primary_key_columns: Option<Vec<String>>,
     pub unique_constraints: Vec<Vec<String>>,
     pub check_constraints: Vec<CheckExpressionSql>,
+    pub check_constraint_names: Vec<Option<String>>,
     pub foreign_keys: Vec<CreateTableForeignKeySql>,
 }
 
@@ -409,9 +410,16 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
     let mut primary_key_columns = None;
     let mut unique_constraints = Vec::new();
     let mut check_constraints = Vec::new();
+    let mut check_constraint_names = Vec::new();
     let mut foreign_keys = Vec::new();
     let mut saw_table_constraint = false;
     loop {
+        let constraint_name = if parser.peek_word("constraint") {
+            parser.word("constraint")?;
+            Some(parser.identifier()?)
+        } else {
+            None
+        };
         if parser.peek_word("primary")
             || parser.peek_word("unique")
             || parser.peek_word("check")
@@ -419,9 +427,17 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
         {
             saw_table_constraint = true;
             if parser.peek_word("check") {
+                if constraint_name.is_some() && check_constraints.len() >= crate::tuple::MAX_COLUMNS
+                {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
                 let expression = parser.check_constraint_expression()?;
                 check_constraints.push(expression);
+                check_constraint_names.push(constraint_name);
             } else if parser.peek_word("foreign") {
+                if constraint_name.is_some() {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
                 if foreign_keys.len() >= crate::tuple::MAX_COLUMNS {
                     return Err(DdlSqlError::InvalidStatement);
                 }
@@ -447,6 +463,9 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
                     referenced_columns,
                 });
             } else {
+                if constraint_name.is_some() {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
                 let kind = if parser.peek_word("primary") {
                     parser.word("primary")?;
                     parser.word("key")?;
@@ -525,10 +544,20 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
                 parser.word("primary")?;
                 parser.word("key")?;
                 primary_key = true;
-            } else if parser.peek_word("check") {
+            } else if parser.peek_word("check") || parser.peek_word("constraint") {
+                let constraint_name = if parser.peek_word("constraint") {
+                    parser.word("constraint")?;
+                    Some(parser.identifier()?)
+                } else {
+                    None
+                };
+                if check_constraints.len() >= crate::tuple::MAX_COLUMNS {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
                 let expression = parser.check_constraint_expression()?;
                 validate_column_check_expression(&name, &expression)?;
                 check_constraints.push(expression);
+                check_constraint_names.push(constraint_name);
             } else if parser.peek_word("references") {
                 if foreign_keys.len() >= crate::tuple::MAX_COLUMNS {
                     return Err(DdlSqlError::InvalidStatement);
@@ -609,6 +638,16 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
     for expression in &check_constraints {
         validate_check_columns(expression, &columns)?;
     }
+    if check_constraint_names.len() != check_constraints.len()
+        || check_constraint_names
+            .iter()
+            .flatten()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            != check_constraint_names.iter().flatten().count()
+    {
+        return Err(DdlSqlError::InvalidStatement);
+    }
     if foreign_keys.iter().any(|foreign_key| {
         foreign_key
             .columns
@@ -625,6 +664,7 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
         primary_key_columns,
         unique_constraints,
         check_constraints,
+        check_constraint_names,
         foreign_keys,
     })
 }
@@ -3120,6 +3160,26 @@ mod tests {
             "CREATE TABLE app.events (id INTEGER, CHECK (id))",
             "CREATE TABLE app.events (amount DECIMAL(8,2), CHECK (amount >= 0.001))",
             "CREATE TABLE app.events (amount TEXT, CHECK (amount >= 0))",
+        ] {
+            assert!(parse_create_table(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_named_create_table_check_constraints() {
+        let parsed = parse_create_table(
+            "CREATE TABLE app.events (id INTEGER, label TEXT CONSTRAINT label_nonempty CHECK (label IS NOT NULL), CONSTRAINT id_positive CHECK (id > 0));",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.check_constraint_names,
+            vec![Some("label_nonempty".into()), Some("id_positive".into())]
+        );
+        assert_eq!(parsed.check_constraints.len(), 2);
+        for sql in [
+            "CREATE TABLE app.events (id INTEGER, CONSTRAINT repeated CHECK (id > 0), CONSTRAINT repeated CHECK (id < 10))",
+            "CREATE TABLE app.events (id INTEGER, CONSTRAINT named_unique UNIQUE (id))",
+            "CREATE TABLE app.events (id INTEGER, CONSTRAINT 9bad CHECK (id > 0))",
         ] {
             assert!(parse_create_table(sql).is_err(), "accepted {sql}");
         }

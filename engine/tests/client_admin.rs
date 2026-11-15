@@ -2743,17 +2743,27 @@ fn admin_client_executes_create_table_sql_on_authenticated_control_channel() {
         assert!(payload.contains(r#""generated_uuid_identity":true"#));
         assert!(payload.contains(r#""primary_key_columns":["id"]"#));
         assert!(payload.contains(r#""unique_constraints":[["amount"]]"#));
+        assert!(payload.contains(r#""operation_version":3"#));
+        assert!(payload.contains(r#""check_constraint_names":["amount_valid","title_nonempty"]"#));
         assert!(payload.contains(r#""type":"decimal(8,2)""#));
         assert!(payload.contains(r#""default":{"kind":"literal","value":"-1.20"}"#));
         assert!(payload.contains(r#""value":"hello 'sql'""#));
         let decoded = decode_client_admin_command(&prepare.payload).unwrap();
         assert!(matches!(
             decoded,
-            ClientAdminCommand::PrepareCreateTable { check_expressions, .. }
-                if check_expressions == [prdb_engine::authorization::Expr::GreaterEqual(
-                    Box::new(prdb_engine::authorization::Expr::Field(1)),
-                    Box::new(prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Decimal(-120)))),
-                )]
+            ClientAdminCommand::PrepareCreateTable { check_expressions, check_constraint_names, .. }
+                if check_constraint_names == [Some("amount_valid".to_owned()), Some("title_nonempty".to_owned())]
+                    && check_expressions == [
+                        prdb_engine::authorization::Expr::GreaterEqual(
+                            Box::new(prdb_engine::authorization::Expr::Field(1)),
+                            Box::new(prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Decimal(-120)))),
+                        ),
+                        prdb_engine::authorization::Expr::Not(Box::new(
+                            prdb_engine::authorization::Expr::IsNull(Box::new(
+                                prdb_engine::authorization::Expr::Field(2),
+                            )),
+                        )),
+                    ]
         ));
         let operation_id = [0x81; 16];
         respond(
@@ -2783,7 +2793,7 @@ fn admin_client_executes_create_table_sql_on_authenticated_control_channel() {
     .unwrap();
     let created = client
         .execute_create_table_sql(
-            "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY PRIMARY KEY, amount DECIMAL(8, 2) DEFAULT -1.20 UNIQUE CHECK (amount >= -1.20), title TEXT DEFAULT 'hello ''sql''', owner UUID DEFAULT CURRENT_PRINCIPAL_ID());",
+            "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY PRIMARY KEY, amount DECIMAL(8, 2) DEFAULT -1.20 UNIQUE CONSTRAINT amount_valid CHECK (amount >= -1.20), title TEXT DEFAULT 'hello ''sql''' CONSTRAINT title_nonempty CHECK (title IS NOT NULL), owner UUID DEFAULT CURRENT_PRINCIPAL_ID());",
         )
         .unwrap();
     assert_eq!(created.table_id, [0xa5; 16]);

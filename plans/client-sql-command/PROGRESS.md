@@ -536,3 +536,8 @@
 
 - `admin-sql` accepts `ALTER TABLE schema.table ADD CONSTRAINT name CHECK (...)` and resolves `DROP CONSTRAINT name` through the authenticated constraint page before dispatching the stable-ID typed drop. Generated-ID drop remains available.
 - The production gateway/supervisor lifecycle creates, reads back, and drops a named CHECK through separate service processes. Focused parser/client tests, build, formatting, warning-denied Clippy, and the full serial delegated-cgroup workspace suite pass; Cargo.lock is unchanged.
+
+## DS-SQL-50: named CHECK constraints in CREATE TABLE — verified
+
+- `admin-sql` CREATE TABLE accepts named column-level and table-level CHECK clauses and routes them through the atomic typed creation operation. Duplicate names are rejected locally before submission; storage validates and persists the names.
+- Parser and authenticated AdminClient request tests pass. The production gateway/supervisor fixture now includes a named CHECK. The full serial delegated-cgroup workspace suite passes with sandbox and process tests enabled (282 library tests and 177 commit tests; no ignored tests).

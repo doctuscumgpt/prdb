@@ -2853,7 +2853,7 @@ impl AdminClient {
         name: &str,
         columns: &[AdminColumnDefinition],
     ) -> Result<AdminTableResult, ClientSubmitError> {
-        self.create_table_internal(schema_id, name, columns, None, &[], &[], &[])
+        self.create_table_internal(schema_id, name, columns, None, &[], &[], &[], &[])
     }
 
     pub fn create_table_with_primary_key(
@@ -2868,6 +2868,7 @@ impl AdminClient {
             name,
             columns,
             Some(primary_key_columns),
+            &[],
             &[],
             &[],
             &[],
@@ -2890,6 +2891,7 @@ impl AdminClient {
             unique_constraints,
             &[],
             &[],
+            &[],
         )
     }
 
@@ -2909,6 +2911,7 @@ impl AdminClient {
             primary_key_columns,
             unique_constraints,
             check_constraints,
+            &[],
             &[],
         )
     }
@@ -2932,6 +2935,31 @@ impl AdminClient {
             unique_constraints,
             check_constraints,
             foreign_keys,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_table_with_named_checks_and_foreign_keys(
+        &mut self,
+        schema_id: [u8; 16],
+        name: &str,
+        columns: &[AdminColumnDefinition],
+        primary_key_columns: Option<&[String]>,
+        unique_constraints: &[Vec<String>],
+        check_constraints: &[crate::authorization::Expr],
+        check_constraint_names: &[Option<String>],
+        foreign_keys: &[AdminTableForeignKeyDefinition],
+    ) -> Result<AdminTableResult, ClientSubmitError> {
+        self.create_table_internal(
+            schema_id,
+            name,
+            columns,
+            primary_key_columns,
+            unique_constraints,
+            check_constraints,
+            foreign_keys,
+            check_constraint_names,
         )
     }
 
@@ -2945,6 +2973,7 @@ impl AdminClient {
         unique_constraints: &[Vec<String>],
         check_constraints: &[crate::authorization::Expr],
         foreign_keys: &[AdminTableForeignKeyDefinition],
+        check_constraint_names: &[Option<String>],
     ) -> Result<AdminTableResult, ClientSubmitError> {
         validate_admin_id(schema_id)?;
         validate_admin_name(name)?;
@@ -3007,6 +3036,18 @@ impl AdminClient {
             format!(",\"unique_constraints\":[{constraints}]")
         };
         if check_constraints.len() > crate::tuple::MAX_COLUMNS
+            || (!check_constraint_names.is_empty()
+                && check_constraint_names.len() != check_constraints.len())
+            || check_constraint_names
+                .iter()
+                .flatten()
+                .any(|name| !is_normalized_index_name(name))
+            || check_constraint_names
+                .iter()
+                .flatten()
+                .collect::<HashSet<_>>()
+                .len()
+                != check_constraint_names.iter().flatten().count()
             || check_constraints.iter().any(|expression| {
                 !crate::expression::is_row_local_expression(expression)
                     || crate::expression::encode_expression(expression).is_err()
@@ -3027,6 +3068,16 @@ impl AdminClient {
                 .collect::<Result<Vec<_>, _>>()?
                 .join(",");
             format!(",\"check_expressions_eir1\":[{checks}]")
+        };
+        let check_names_json = if check_constraint_names.is_empty() {
+            String::new()
+        } else {
+            let names = check_constraint_names
+                .iter()
+                .map(|name| json_quote(name.as_deref().unwrap_or_default()))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(",\"check_constraint_names\":[{names}]")
         };
         if foreign_keys.len() > crate::tuple::MAX_COLUMNS
             || foreign_keys.iter().any(|foreign_key| {
@@ -3112,7 +3163,9 @@ impl AdminClient {
                 )
             }
         };
-        let operation_version = if foreign_keys
+        let operation_version = if !check_constraint_names.is_empty() {
+            3
+        } else if foreign_keys
             .iter()
             .any(|foreign_key| foreign_key.target_columns.is_some())
         {
@@ -3121,7 +3174,7 @@ impl AdminClient {
             1
         };
         let prepare = format!(
-            "{{\"phase\":\"prepare\",\"operation_version\":{operation_version},\"operation\":\"tables.create\",\"arguments\":{{\"schema_id\":\"{}\",\"name\":\"{name}\",\"columns\":{encoded_columns}{primary_key_json}{unique_json}{checks_json}{foreign_keys_json}}}}}",
+            "{{\"phase\":\"prepare\",\"operation_version\":{operation_version},\"operation\":\"tables.create\",\"arguments\":{{\"schema_id\":\"{}\",\"name\":\"{name}\",\"columns\":{encoded_columns}{primary_key_json}{unique_json}{checks_json}{check_names_json}{foreign_keys_json}}}}}",
             lower_hex(&schema_id)
         );
         let prepared = self.transport.exchange(10, prepare.into_bytes())?;
@@ -4186,13 +4239,19 @@ impl AdminClient {
                 target_columns: None,
             });
         }
-        self.create_table_with_checks_constraints_and_foreign_keys(
+        let names = if statement.check_constraint_names.iter().any(Option::is_some) {
+            statement.check_constraint_names.as_slice()
+        } else {
+            &[]
+        };
+        self.create_table_with_named_checks_and_foreign_keys(
             schema_id,
             &statement.table,
             &statement.columns,
             statement.primary_key_columns.as_deref(),
             &statement.unique_constraints,
             &checks,
+            names,
             &foreign_keys,
         )
     }

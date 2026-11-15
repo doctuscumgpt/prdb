@@ -941,3 +941,9 @@
 
 - Added `AdminClient::execute_rename_index_sql` and typed `rename_index` control support. The helper resolves a schema-qualified index through authenticated metadata and preserves its stable ID while changing its logical name.
 - Delegated production process coverage and real-redb storage coverage pass, including a duplicate-name rejection. Workspace build, formatting, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored; Cargo.lock is unchanged.
+
+## DS-SQL-50: named CHECK constraints in CREATE TABLE — verified
+
+- Updated `execute_create_table_sql` to bind optional constraint names to the corresponding CHECK EIR1 expressions and submit the versioned atomic CREATE TABLE request. Existing unnamed SQL and typed AdminClient operations keep their prior wire versions.
+- Authenticated control-channel regression verifies names and expressions remain aligned, including a mix of column- and table-level CHECK forms.
+- Production gateway/supervisor process coverage and storage persistence pass. The full serial delegated-cgroup workspace suite passes with sandbox and process tests enabled (282 library tests and 177 commit tests; no ignored tests).

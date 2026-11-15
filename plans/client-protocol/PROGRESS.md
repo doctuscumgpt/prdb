@@ -325,3 +325,8 @@
 
 - `constraints.create_check` version 2 accepts an optional normalized constraint name while version 1 retains its prior payload. The strict decoder and connection-owned PREPARE/START action carry the name to authorized storage. `metadata.constraints.list` now returns the catalog object name with each stable constraint ID.
 - Protocol decoding is covered for both payload versions; the production gateway/supervisor named CHECK create/list/drop flow and full workspace suite pass. Cargo.lock is unchanged.
+
+## DS-SQL-50: named CHECK constraints in CREATE TABLE — verified
+
+- Added `tables.create` operation version 3 with an expression-aligned `check_constraint_names` string array; empty entries preserve unnamed checks. Versions 1 and 2 remain valid for existing unnamed requests.
+- AdminClient serialization and decoder regression cover named column/table checks; full delegated workspace validation is recorded below.

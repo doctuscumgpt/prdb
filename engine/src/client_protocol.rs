@@ -316,6 +316,7 @@ enum PendingAdminAction {
         primary_key_columns: Option<Vec<String>>,
         unique_constraints: Vec<Vec<String>>,
         check_expressions: Vec<crate::authorization::Expr>,
+        check_constraint_names: Vec<Option<String>>,
         foreign_keys: Vec<crate::storage_manager::CreateTableForeignKeyDefinition>,
     },
     RenameIdentity {
@@ -773,6 +774,7 @@ pub enum ClientAdminCommand {
         primary_key_columns: Option<Vec<String>>,
         unique_constraints: Vec<Vec<String>>,
         check_expressions: Vec<crate::authorization::Expr>,
+        check_constraint_names: Vec<Option<String>>,
         foreign_keys: Vec<crate::storage_manager::CreateTableForeignKeyDefinition>,
     },
     PrepareRenameIdentity {
@@ -985,6 +987,7 @@ pub fn decode_client_admin_command(
     let mut primary_key_columns = None;
     let mut unique_constraints = None;
     let mut check_expressions = None;
+    let mut check_constraint_names = None;
     let mut table_foreign_key_sources = None;
     let mut table_foreign_key_targets = None;
     let mut table_foreign_key_target_columns = None;
@@ -1064,6 +1067,11 @@ pub fn decode_client_admin_command(
                             .collect::<Result<Vec<_>, ClientControlError>>()?;
                         check_expressions = Some(expressions);
                         args.insert(arg, "<structured-check-expressions>".to_owned());
+                    } else if arg == "check_constraint_names"
+                        && parser.text.get(parser.offset) == Some(&b'[')
+                    {
+                        check_constraint_names = Some(parser.parse_string_array()?);
+                        args.insert(arg, "<structured-check-names>".to_owned());
                     } else if arg == "foreign_key_source_columns"
                         && parser.text.get(parser.offset) == Some(&b'[')
                     {
@@ -2445,9 +2453,9 @@ pub fn decode_client_admin_command(
             })
         }
         Some("prepare")
-            if matches!(version, Some(1 | 2)) && operation.as_deref() == Some("tables.create") =>
+            if matches!(version, Some(1..=3)) && operation.as_deref() == Some("tables.create") =>
         {
-            if operation_id.is_some() || !(4..=10).contains(&seen.len()) {
+            if operation_id.is_some() || !(4..=11).contains(&seen.len()) {
                 return Err(ClientControlError::UnknownKey);
             }
             let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
@@ -2485,6 +2493,36 @@ pub fn decode_client_admin_command(
                 return Err(ClientControlError::InvalidPrepare);
             }
             let check_expressions = check_expressions.unwrap_or_default();
+            let names_marker = args.remove("check_constraint_names");
+            if names_marker.as_deref()
+                != check_constraint_names
+                    .as_ref()
+                    .map(|_| "<structured-check-names>")
+                || (version != Some(3) && check_constraint_names.is_some())
+                || (version == Some(3) && check_constraint_names.is_none())
+            {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            let check_constraint_names = check_constraint_names
+                .unwrap_or_default()
+                .into_iter()
+                .map(|name| if name.is_empty() { None } else { Some(name) })
+                .collect::<Vec<_>>();
+            if (!check_constraint_names.is_empty()
+                && check_constraint_names.len() != check_expressions.len())
+                || check_constraint_names
+                    .iter()
+                    .flatten()
+                    .any(|name| !is_canonical_admin_principal_name(name))
+                || check_constraint_names
+                    .iter()
+                    .flatten()
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    != check_constraint_names.iter().flatten().count()
+            {
+                return Err(ClientControlError::InvalidPrepare);
+            }
             let source_marker = args.remove("foreign_key_source_columns");
             if source_marker.as_deref()
                 != table_foreign_key_sources
@@ -2600,6 +2638,7 @@ pub fn decode_client_admin_command(
                 primary_key_columns,
                 unique_constraints,
                 check_expressions,
+                check_constraint_names,
                 foreign_keys,
             })
         }
@@ -6055,6 +6094,7 @@ impl ClientConnectionSession {
                 primary_key_columns,
                 unique_constraints,
                 check_expressions,
+                check_constraint_names,
                 foreign_keys,
             } => {
                 if self.pending_admin_operation.is_some() {
@@ -6078,6 +6118,7 @@ impl ClientConnectionSession {
                         primary_key_columns,
                         unique_constraints,
                         check_expressions,
+                        check_constraint_names,
                         foreign_keys,
                     },
                 });
@@ -7340,6 +7381,7 @@ impl ClientConnectionSession {
                         primary_key_columns,
                         unique_constraints,
                         check_expressions,
+                        check_constraint_names,
                         foreign_keys,
                     } => {
                         let create_request = crate::storage_manager::CreateTableRequest {
@@ -7360,11 +7402,12 @@ impl ClientConnectionSession {
                             },
                         };
                         let created = storage
-                            .create_table_with_foreign_keys(
+                            .create_table_with_named_checks_and_foreign_keys(
                                 create_request,
                                 primary_key_columns.as_deref(),
                                 &unique_constraints,
                                 &check_expressions,
+                                &check_constraint_names,
                                 &foreign_keys,
                             )
                             .map_err(ClientSessionError::TableLifecycle)?;

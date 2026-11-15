@@ -1849,7 +1849,7 @@ fn storage_manager_creates_typed_table_with_atomic_check_constraint()
     let mut audit = identity_audit_event(0xd7, actor, id(0xd8));
     audit.correlation_id = invocation_id;
     let created = storage
-        .create_table_with_checks_and_constraints(
+        .create_table_with_named_checks_and_foreign_keys(
             CreateTableRequest {
                 invocation_id,
                 authenticated_actor_id: actor,
@@ -1891,12 +1891,31 @@ fn storage_manager_creates_typed_table_with_atomic_check_constraint()
                     ScalarValue::Text("a".to_owned()),
                 ))),
             )],
+            &[Some("ledger_label_minimum".to_owned())],
+            &[],
         )
         .map_err(|error| format!("table creation failed: {error:?}"))?;
     assert_eq!(created.column_ids.len(), 3);
     assert_eq!(created.commit_sequence, 2);
     let read = database.begin_read()?;
     let catalog = read.open_table(CATALOG)?;
+    let check_constraint =
+        prdb_engine::catalog_index::scan_constraint_ids_for_table(&read, created.table_id, 1)?
+            .into_iter()
+            .next()
+            .ok_or("missing named CHECK constraint")?;
+    let check_object = catalog
+        .get(id_catalog_key(2, check_constraint).as_slice())?
+        .ok_or("missing named CHECK object")?;
+    assert_eq!(
+        decode_registered_envelope(check_object.value())?
+            .fields
+            .iter()
+            .find(|field| field.tag == 3)
+            .ok_or("CHECK object name missing")?
+            .payload,
+        b"ledger_label_minimum"
+    );
     let table_record = catalog
         .get(id_catalog_key(5, created.table_id).as_slice())?
         .ok_or("missing table record")?;
