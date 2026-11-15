@@ -3964,14 +3964,47 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
         AdminClient::connect_authenticated(address, token_id, &mut authenticated_secret)?;
     assert_eq!(authenticated_secret, [0; 32]);
     let created_schema = admin.execute_create_schema_sql("CREATE SCHEMA selfref_app")?;
-    let created = admin.execute_create_table_sql(
+    let credentials_path = root.join("selfref-admin.cred");
+    write_client_credentials(
+        &credentials_path,
+        &ClientCredentials {
+            token_id,
+            token_secret,
+        },
+    )?;
+    let sql_path = root.join("selfref-create-table.sql");
+    std::fs::write(
+        &sql_path,
         "CREATE TABLE selfref_app.nodes (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES selfref_app.nodes (id));",
     )?;
-    let columns =
-        admin.list_columns_page(created_schema.identity_id, created.table_id, 16, None)?;
+    let cli_output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            credentials_path
+                .to_str()
+                .ok_or("non-UTF-8 credentials path")?,
+            "--sql-file",
+            sql_path.to_str().ok_or("non-UTF-8 SQL path")?,
+        ])
+        .output()?;
+    assert!(
+        cli_output.status.success(),
+        "admin-sql self-referencing CREATE TABLE failed: {}",
+        String::from_utf8_lossy(&cli_output.stderr)
+    );
+    let cli_stdout = String::from_utf8_lossy(&cli_output.stdout);
+    let table_id_text = cli_stdout
+        .split_whitespace()
+        .nth(2)
+        .ok_or("admin-sql output omitted the created table ID")?;
+    let table_id = decode_id_hex(table_id_text).ok_or("admin-sql returned an invalid table ID")?;
+    let columns = admin.list_columns_page(created_schema.identity_id, table_id, 16, None)?;
     assert_eq!(columns.records.len(), 2);
     let constraints =
-        admin.list_constraints_page(created_schema.identity_id, created.table_id, 16, None)?;
+        admin.list_constraints_page(created_schema.identity_id, table_id, 16, None)?;
     let foreign_key = constraints
         .records
         .iter()
@@ -3980,7 +4013,7 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
                 == prdb_engine::metadata_discovery::AdministrativeConstraintKind::ForeignKey
         })
         .ok_or("self-referencing FK was absent from process metadata")?;
-    assert_eq!(foreign_key.referenced_table_id, Some(created.table_id));
+    assert_eq!(foreign_key.referenced_table_id, Some(table_id));
     assert_eq!(foreign_key.column_ids, vec![columns.records[1].column_id]);
     assert_eq!(
         foreign_key.referenced_column_ids,
