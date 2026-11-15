@@ -259,3 +259,7 @@
 ## ID-SQL-2: identity rename SQL
 
 - `ALTER USER|ROLE old_name RENAME TO new_name` resolves the current name through the authenticated identity metadata operation, then calls the existing typed rename API. Parser and CLI syntax regressions pass, and the full delegated gateway/supervisor lifecycle test executes SQL rename successfully. Full delegated-cgroup workspace suite, build, formatting, Clippy, and TinyCC checks pass.
+
+## ID-SQL-3: identity drop SQL
+
+- `DROP USER|ROLE name RESTRICT` resolves one name through the same authenticated metadata operation and invokes the existing typed RESTRICT drop. Parser and delegated process regressions pass; build, format, Clippy, TinyCC, and full serial delegated-cgroup workspace checks pass.

@@ -1056,3 +1056,7 @@
 ## ID-SQL-2: authenticated principal name lookup
 
 - Added `resolve_token_administrative_identity_name`, which authenticates each request and resolves one indexed principal name in the pinned catalog snapshot after checking `MANAGE_USERS` or `MANAGE_ROLES` (or database-admin membership). The full real-redb/process lifecycle suite passes in the delegated-cgroup workspace run; hidden and absent names share the null result.
+
+## ID-SQL-3: DROP identity SQL dispatch
+
+- SQL calls the existing identity drop lifecycle. RESTRICT reference checks, user credential revocation, role membership validation, and permanent user/role tombstones remain enforced in storage. The delegated gateway/supervisor SQL lifecycle passes and the full serial delegated-cgroup workspace suite passes.

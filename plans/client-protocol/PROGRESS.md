@@ -239,3 +239,7 @@
 
 - Added `metadata.identities.resolve`, a bounded single-name read for user/role identity resolution. The storage call reauthenticates the control token, checks the matching management privilege or database-admin membership, and returns null for both hidden and absent identities.
 - Specified in [client protocol](../../specs/client-protocol.md). Exact-shape decoder tests pass, and the delegated gateway/supervisor lifecycle test exercises the lookup through `admin-sql`. Full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+
+## ID-SQL-3: DROP identity SQL dispatch
+
+- Reuses the exact authenticated `metadata.identities.resolve` read and existing `users.drop`/`roles.drop` mutations; storage remains authoritative for RESTRICT and tombstone checks. The full cross-process lifecycle and serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored tests.

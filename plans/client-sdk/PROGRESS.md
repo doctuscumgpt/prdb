@@ -816,3 +816,7 @@
 ## ID-SQL-2: identity rename SQL
 
 - Added `AdminClient::execute_rename_identity_sql` and routed `admin-sql` ALTER USER/ROLE RENAME to existing typed operations after exact authenticated name resolution. Parser, decoder, CLI pre-credential, and delegated gateway/supervisor process regressions pass; full workspace, Clippy, and TinyCC checks pass.
+
+## ID-SQL-3: identity drop SQL
+
+- Added `AdminClient::execute_drop_identity_sql` and routed `admin-sql` DROP USER/ROLE RESTRICT to the existing typed lifecycle. Parser and delegated gateway/supervisor process coverage pass, as do workspace build, format, Clippy, TinyCC SDK and fixture checks, and the full serial delegated-cgroup workspace suite.

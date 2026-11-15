@@ -2732,15 +2732,21 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     assert!(dropped_table.commit_sequence > dropped_source_table.commit_sequence);
     let dropped_schema = admin.drop_schema(created_schema.identity_id)?;
     assert!(dropped_schema.commit_sequence > dropped_table.commit_sequence);
+    let drop_sql_path = root.join("drop-user.sql");
+    std::fs::write(
+        &drop_sql_path,
+        "DROP USER process_table_owner_renamed RESTRICT;",
+    )?;
+    let drop_sql_path_text = drop_sql_path.to_str().ok_or("SQL path is not UTF-8")?;
     let drop_user_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
-            "user-drop",
+            "admin-sql",
             "--address",
             &address_text,
             "--credentials",
             admin_cli_credentials,
-            "--id",
-            &transfer_user_id_text,
+            "--sql-file",
+            drop_sql_path_text,
         ])
         .output()?;
     assert!(
@@ -2748,7 +2754,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         "user-drop CLI failed: {}",
         String::from_utf8_lossy(&drop_user_cli.stderr)
     );
-    assert!(String::from_utf8_lossy(&drop_user_cli.stdout).contains("dropped identity"));
+    assert!(String::from_utf8_lossy(&drop_user_cli.stdout).contains("dropped user"));
     let mut dropped_user_credentials = read_client_credentials(&transfer_credential_path)?;
     assert!(
         SubmissionClient::connect_authenticated(

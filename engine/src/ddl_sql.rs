@@ -171,6 +171,12 @@ pub struct RenameIdentitySql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DropIdentitySql {
+    pub kind: CreateIdentityKind,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckExpressionSql {
     Column(String),
     Literal(CheckLiteralSql),
@@ -533,6 +539,23 @@ pub fn parse_rename_identity(sql: &str) -> Result<RenameIdentitySql, DdlSqlError
         old_name,
         new_name,
     })
+}
+
+/// Parse `DROP USER|ROLE name RESTRICT`.
+pub fn parse_drop_identity(sql: &str) -> Result<DropIdentitySql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("drop")?;
+    let kind = if parser.peek_word("user") {
+        parser.word("user")?;
+        CreateIdentityKind::User
+    } else {
+        parser.word("role")?;
+        CreateIdentityKind::Role
+    };
+    let name = parser.identifier()?;
+    parser.word("restrict")?;
+    finish_statement(&mut parser)?;
+    Ok(DropIdentitySql { kind, name })
 }
 
 /// Parse the bounded SQL form `CREATE SCHEMA name AUTHORIZATION 'uuid'`.
@@ -2330,6 +2353,32 @@ mod tests {
             "ALTER USER analyst RENAME TO analyst_admin; DROP USER other RESTRICT",
         ] {
             assert!(parse_rename_identity(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_bounded_identity_drop_sql() {
+        assert_eq!(
+            parse_drop_identity("DROP USER service_loader RESTRICT;").unwrap(),
+            DropIdentitySql {
+                kind: CreateIdentityKind::User,
+                name: "service_loader".into(),
+            }
+        );
+        assert_eq!(
+            parse_drop_identity("DROP ROLE old_role RESTRICT").unwrap(),
+            DropIdentitySql {
+                kind: CreateIdentityKind::Role,
+                name: "old_role".into(),
+            }
+        );
+        for sql in [
+            "DROP USER service_loader",
+            "DROP USER service_loader CASCADE",
+            "DROP ROLE RESTRICT",
+            "DROP ROLE old_role RESTRICT; CREATE ROLE other",
+        ] {
+            assert!(parse_drop_identity(sql).is_err(), "accepted {sql}");
         }
     }
 
