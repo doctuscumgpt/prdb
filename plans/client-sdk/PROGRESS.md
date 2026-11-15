@@ -869,3 +869,8 @@
 
 - `AdminClient::list_runtime_invocations_page` requests runtime-list version 5 and decodes the supervisor's process-local result-payload byte counter. `prdb-client runtime-list` emits the same counter in JSON.
 - Focused typed client and production gateway/supervisor CLI checks passed. The full serial delegated-cgroup workspace suite also passed with sandbox/process tests enabled; workspace format, build, warning-denied all-target Clippy, TinyCC SDK tests/fixture, and `git diff --check` passed.
+
+## Admin runtime gateway client-write result bytes — implemented slice
+
+- `AdminClient::list_runtime_invocations_page` requests runtime-list version 6 and decodes both supervisor-relayed and gateway-written result byte totals. `prdb-client runtime-list` emits both process-local counters.
+- Focused typed page decoding and real gateway/supervisor CLI coverage passed, including a lower bound from the actual `QUERY_READY` payload. Workspace format, build, warning-denied all-target Clippy, TinyCC SDK tests/fixture, delegated cgroup probe, full serial delegated-cgroup workspace suite, and `git diff --check` passed. Cargo.lock is unchanged.

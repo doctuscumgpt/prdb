@@ -4857,6 +4857,19 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         assert!(runtime_output.contains("\"fence_waits\":[]"));
         assert!(runtime_output.contains("\"fence_waits_truncated\":false"));
         assert!(runtime_output.contains("\"gateway_result_bytes_relayed_total\":"));
+        let gateway_bytes = runtime_output
+            .split_once("\"gateway_result_bytes_sent_to_clients_total\":")
+            .and_then(|(_, suffix)| {
+                suffix
+                    .split(|character: char| !character.is_ascii_digit())
+                    .next()
+            })
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or("runtime-list omitted the gateway client-write byte counter")?;
+        assert!(
+            gateway_bytes >= b"QUERY_READY".len() as u64,
+            "gateway byte counter did not include the successfully delivered ready event"
+        );
         assert!(runtime_output.contains("\"pending_submissions\":0"));
         assert!(runtime_output.contains("\"starting_submissions\":0"));
         assert!(runtime_output.contains("\"started_submissions\":1"));

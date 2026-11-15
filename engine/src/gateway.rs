@@ -11,10 +11,59 @@ use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
+
+static GATEWAY_RESULT_BYTES_SENT_TO_CLIENTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Result payload bytes completely written to external client streams since
+/// this gateway process started. Client frame headers are excluded.
+pub fn gateway_result_bytes_sent_to_clients_total() -> u64 {
+    GATEWAY_RESULT_BYTES_SENT_TO_CLIENTS_TOTAL.load(Ordering::Relaxed)
+}
+
+fn record_gateway_result_bytes_sent_to_clients(bytes: usize) {
+    let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+    saturating_add_counter(&GATEWAY_RESULT_BYTES_SENT_TO_CLIENTS_TOTAL, bytes);
+}
+
+fn saturating_add_counter(counter: &AtomicU64, amount: u64) {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_add(amount);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn append_gateway_result_counter(payload: &[u8], count: u64) -> Option<Vec<u8>> {
+    let end = payload
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())?
+        + 1;
+    if payload.get(end - 1) != Some(&b'}') {
+        return None;
+    }
+    if !payload
+        .windows(b"\"gateway_result_bytes_relayed_total\":".len())
+        .any(|window| window == b"\"gateway_result_bytes_relayed_total\":")
+        || !payload
+            .windows(b"\"invocations\":".len())
+            .any(|window| window == b"\"invocations\":")
+    {
+        return Some(payload.to_vec());
+    }
+    let suffix = format!(",\"gateway_result_bytes_sent_to_clients_total\":{count}}}");
+    let capacity = end.checked_add(suffix.len())?;
+    let mut output = Vec::with_capacity(capacity);
+    output.extend_from_slice(&payload[..end - 1]);
+    output.extend_from_slice(suffix.as_bytes());
+    Some(output)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GatewayListenerConfig {
@@ -546,6 +595,16 @@ fn serve_tcp_client_connection_inner<C: GatewayClientStream, S: Read + Write>(
             return Ok(());
         };
         let client_kind = request.kind;
+        let runtime_list_v6 = client_kind == 10
+            && matches!(
+                crate::client_protocol::decode_client_admin_command(&request.payload),
+                Ok(
+                    crate::client_protocol::ClientAdminCommand::ListRuntimeInvocations {
+                        response_version: 6,
+                        ..
+                    }
+                )
+            );
         if control_only && !matches!(client_kind, 1 | 2 | 8 | 9 | 10 | 11) {
             write_client_error(client, request.request_id, "invalid_request")?;
             return Ok(());
@@ -624,11 +683,20 @@ fn serve_tcp_client_connection_inner<C: GatewayClientStream, S: Read + Write>(
         if response.operation != ipc_request.operation {
             return Err(GatewayConnectionError::MismatchedServiceResponse);
         }
+        let response_payload = if runtime_list_v6 {
+            crate::gateway::append_gateway_result_counter(
+                &response.payload,
+                gateway_result_bytes_sent_to_clients_total(),
+            )
+            .ok_or(GatewayConnectionError::MismatchedServiceResponse)?
+        } else {
+            response.payload
+        };
         let mut response_frame = crate::client_protocol::ClientFrame {
             kind: 100,
             request_id: response.request_id,
             response_sequence: 0,
-            payload: response.payload,
+            payload: response_payload,
         };
         let mut response = Zeroizing::new(
             response_frame
@@ -719,6 +787,7 @@ fn relay_gateway_result_events_with_limit<C: GatewayClientStream, S: Read + Writ
             .checked_add(1)
             .ok_or(GatewayConnectionError::UnexpectedServiceEvent)?;
         let terminal = kind == 103;
+        let result_payload_bytes = (kind == 102).then_some(event.payload.len());
         let bytes = crate::client_protocol::ClientFrame {
             kind,
             request_id: start_request_id,
@@ -730,6 +799,9 @@ fn relay_gateway_result_events_with_limit<C: GatewayClientStream, S: Read + Writ
         client
             .write_all(&bytes)
             .map_err(GatewayConnectionError::Io)?;
+        if let Some(payload_bytes) = result_payload_bytes {
+            record_gateway_result_bytes_sent_to_clients(payload_bytes);
+        }
         if terminal {
             return Ok(());
         }
@@ -1257,6 +1329,7 @@ mod result_relay_tests {
 
     #[test]
     fn result_relay_rejects_cumulative_output_over_budget() {
+        let before = super::gateway_result_bytes_sent_to_clients_total();
         let (mut relay_service, mut supervisor_service) = UnixStream::pair().unwrap();
         for payload in [b"abc".as_slice(), b"d".as_slice()] {
             write_frame(
@@ -1288,6 +1361,34 @@ mod result_relay_tests {
         let frames = decoder.push(&client.0).unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].kind, 102);
+        assert!(super::gateway_result_bytes_sent_to_clients_total() >= before.saturating_add(3));
         assert_eq!(frames[0].payload, b"abc");
+    }
+
+    #[test]
+    fn gateway_runtime_counter_is_added_to_a_version_six_object() {
+        assert_eq!(
+            super::append_gateway_result_counter(
+                br#"{"invocations":[],"gateway_result_bytes_relayed_total":41}"#,
+                42
+            )
+            .unwrap(),
+            br#"{"invocations":[],"gateway_result_bytes_relayed_total":41,"gateway_result_bytes_sent_to_clients_total":42}"#
+        );
+        assert!(super::append_gateway_result_counter(b"[]", 42).is_none());
+        assert!(super::append_gateway_result_counter(b"", 42).is_none());
+        assert_eq!(
+            super::append_gateway_result_counter(br#"{"error":"unauthorized"}"#, 42).unwrap(),
+            br#"{"error":"unauthorized"}"#
+        );
+    }
+
+    #[test]
+    fn gateway_result_byte_counter_saturates() {
+        let counter = std::sync::atomic::AtomicU64::new(u64::MAX - 1);
+        super::saturating_add_counter(&counter, 1);
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), u64::MAX);
+        super::saturating_add_counter(&counter, 1);
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), u64::MAX);
     }
 }

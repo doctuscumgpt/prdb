@@ -422,6 +422,7 @@ pub struct RuntimeInvocationPage {
     pub fence_waits: Vec<RuntimeFenceWait>,
     pub fence_waits_truncated: bool,
     pub gateway_result_bytes_relayed_total: u64,
+    pub gateway_result_bytes_sent_to_clients_total: u64,
     pub supervisor_queue: crate::supervisor::StagingRuntimeUsage,
     pub next_cursor: Option<String>,
 }
@@ -1307,11 +1308,11 @@ impl AdminClient {
             arguments.push('"');
         }
         let payload = format!(
-            "{{\"phase\":\"read\",\"operation_version\":5,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
+            "{{\"phase\":\"read\",\"operation_version\":6,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
         );
         let response = self.transport.exchange(10, payload.into_bytes())?;
         let mut fields = parse_flat_response(&response.payload)?;
-        if fields.len() != 20 {
+        if fields.len() != 21 {
             return Err(ClientSubmitError::InvalidResponse);
         }
         let observed_at_us = response_u64(&mut fields, "observed_at_us")?
@@ -1465,6 +1466,9 @@ impl AdminClient {
         let gateway_result_bytes_relayed_total =
             response_u64(&mut fields, "gateway_result_bytes_relayed_total")?
                 .ok_or(ClientSubmitError::InvalidResponse)?;
+        let gateway_result_bytes_sent_to_clients_total =
+            response_u64(&mut fields, "gateway_result_bytes_sent_to_clients_total")?
+                .ok_or(ClientSubmitError::InvalidResponse)?;
         let mut supervisor_queue = match fields.remove("supervisor_queue") {
             Some(ResponseValue::Object(fields)) if fields.len() == 7 => fields,
             _ => return Err(ClientSubmitError::InvalidResponse),
@@ -1589,6 +1593,7 @@ impl AdminClient {
             fence_waits: decoded_waits,
             fence_waits_truncated,
             gateway_result_bytes_relayed_total,
+            gateway_result_bytes_sent_to_clients_total,
             supervisor_queue,
             next_cursor,
         })

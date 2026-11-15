@@ -284,3 +284,10 @@
 - Implementation: the supervisor result relay increments one atomic counter only after a complete result frame is written. The authorized runtime response, typed client, and CLI expose the counter; earlier runtime response versions retain their shapes.
 - Regression: supervisor IPC tests check successful payload accounting and saturation; client protocol/TCP paging and real gateway/supervisor CLI tests cover version 5 and field decoding.
 - Verification: focused supervisor, protocol, TCP, and process checks passed. Workspace format, build, warning-denied all-target Clippy, maintained TinyCC SDK tests and sandbox fixture, delegated cgroup probe, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled. `git diff --check` passed; Cargo.lock is unchanged.
+
+## OM-2 gateway client-write result byte counter — implemented slice
+
+- Contract: runtime-list version 6 adds a gateway-process saturating total for result payload bytes completely written to external client streams. It excludes frame headers and partial/failed writes, and socket write completion does not claim remote application receipt or persistence.
+- Implementation: the gateway increments the counter only after a successful `write_all` for a RESULT_DATA frame and appends it only to a successful administrator runtime response. Runtime-list versions 1–5 retain their response shapes.
+- Regression: gateway unit coverage verifies byte accounting, saturation, successful-response-only field injection, and malformed JSON rejection. Typed TCP pagination and protocol decoder tests cover version 6. The real gateway/supervisor CLI lifecycle verifies the counter includes the delivered `QUERY_READY` payload.
+- Verification: focused gateway, AdminClient, and protocol decoder tests passed; the delegated gateway/supervisor lifecycle passed and confirmed the actual ready-event byte count. Workspace format, build, warning-denied all-target Clippy, maintained TinyCC SDK tests and sandbox fixture, delegated cgroup probe, and full serial delegated-cgroup workspace suite passed. `git diff --check` passed; Cargo.lock is unchanged.

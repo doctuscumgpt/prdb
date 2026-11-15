@@ -303,3 +303,8 @@
 - Version 5 adds an administrator-only process-local total of result payload bytes successfully written from supervisor to gateway channels; prior operation versions preserve their response shapes.
 - The request decoder accepts version 5, while the typed client requires and decodes the new field. Focused decoder, TCP client, and gateway/supervisor process checks passed.
 - Full serial delegated-cgroup workspace validation passed with sandbox/process tests enabled. Workspace format, build, warning-denied all-target Clippy, TinyCC SDK tests/fixture, and `git diff --check` passed.
+
+## Runtime-list version 6 gateway client-write result bytes — implemented slice
+
+- Version 6 retains the supervisor relay counter and adds a gateway-local result payload byte counter to successful administrator pages. The gateway appends the field after the supervisor response; unauthorized responses and versions 1–5 preserve their prior shapes.
+- The strict request decoder, typed client page decoder, gateway helper, and production process lifecycle cover the added field. Workspace format, build, warning-denied all-target Clippy, TinyCC SDK tests/fixture, delegated cgroup probe, full serial delegated-cgroup workspace suite, and `git diff --check` passed. Cargo.lock is unchanged.

@@ -185,3 +185,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression: `stalled_partial_frame_does_not_block_another_gateway_connection` opens two TCP clients with two bounded workers. The first sends only 12 bytes of its HELLO frame; the second receives a HELLO response over its own Unix service stream before the stalled peer completes a frame.
 - Verification: the focused regression passed, workspace format and warning-denied Clippy passed, and the full serial delegated-cgroup workspace suite passed with zero ignored tests. `git diff --check` passed.
 - Scope: confirms that an incomplete pre-authentication frame does not block a second worker. Existing regressions separately cover idle/write deadlines, slow result readers, and control-path progress under output pressure.
+
+## GW-2 result payload bytes written to clients — implemented slice
+
+- The gateway now maintains a saturating process-local counter of RESULT_DATA payload bytes after a complete TCP client frame is written. Frame headers and failed writes are excluded; the metric describes completed socket writes, not remote application consumption.
+- Successful administrator runtime-list version 6 responses include the counter. Unauthorized responses and versions 1–5 do not expose or require the gateway field.
+- Gateway unit coverage verifies the byte delta and counter saturation; the separate gateway/supervisor process lifecycle verifies the live runtime-list field includes the delivered ready event. Workspace format, build, warning-denied all-target Clippy, TinyCC SDK tests and sandbox fixture, delegated cgroup probe, and full serial delegated-cgroup workspace suite passed. `git diff --check` passed; Cargo.lock is unchanged.

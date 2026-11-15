@@ -2670,9 +2670,10 @@ fn runtime_list(
         print!("],\"blockers_truncated\":{}}}", wait.blockers_truncated);
     }
     print!(
-        "],\"fence_waits_truncated\":{},\"gateway_result_bytes_relayed_total\":{},\"supervisor_queue\":{{\"pending_submissions\":{},\"starting_submissions\":{},\"started_submissions\":{},\"queued_operational_starts\":{},\"queued_analytical_starts\":{},\"oldest_queued_start_wait_us\":{},\"reserved_submission_bytes\":{}}},",
+        "],\"fence_waits_truncated\":{},\"gateway_result_bytes_relayed_total\":{},\"gateway_result_bytes_sent_to_clients_total\":{},\"supervisor_queue\":{{\"pending_submissions\":{},\"starting_submissions\":{},\"started_submissions\":{},\"queued_operational_starts\":{},\"queued_analytical_starts\":{},\"oldest_queued_start_wait_us\":{},\"reserved_submission_bytes\":{}}},",
         page.fence_waits_truncated,
         page.gateway_result_bytes_relayed_total,
+        page.gateway_result_bytes_sent_to_clients_total,
         page.supervisor_queue.pending_submissions,
         page.supervisor_queue.starting_submissions,
         page.supervisor_queue.started_submissions,
