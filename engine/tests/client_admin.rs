@@ -2160,7 +2160,10 @@ fn admin_client_binds_check_sql_names_to_eir_dependencies() {
                                     Box::new(prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Integer(-2)))),
                                 ),
                                 prdb_engine::authorization::Expr::IsNull(Box::new(
-                                    prdb_engine::authorization::Expr::Field(1),
+                                    prdb_engine::authorization::Expr::GreaterEqual(
+                                        Box::new(prdb_engine::authorization::Expr::Field(1)),
+                                        Box::new(prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Integer(-2)))),
+                                    ),
                                 )),
                             ]),
                         ]),
@@ -2175,7 +2178,10 @@ fn admin_client_binds_check_sql_names_to_eir_dependencies() {
                                 Box::new(prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Integer(-2)))),
                             ),
                             prdb_engine::authorization::Expr::IsNull(Box::new(
-                                prdb_engine::authorization::Expr::Field(1),
+                            prdb_engine::authorization::Expr::GreaterEqual(
+                                Box::new(prdb_engine::authorization::Expr::Field(1)),
+                                Box::new(prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Integer(-2)))),
+                            ),
                             )),
                         ]),
                     ])),
@@ -2206,7 +2212,7 @@ fn admin_client_binds_check_sql_names_to_eir_dependencies() {
     .unwrap();
     let created = client
         .execute_add_check_constraint_sql(
-            "ALTER TABLE app.events ADD CONSTRAINT positive_amount CHECK ((enabled AND (deleted >= -2 OR deleted IS NULL)) IS TRUE)",
+            "ALTER TABLE app.events ADD CONSTRAINT positive_amount CHECK ((enabled AND (deleted >= -2 OR (deleted >= -2) IS NULL)) IS TRUE)",
         )
         .unwrap();
     assert_eq!(created.constraint_id, [0xe8; 16]);

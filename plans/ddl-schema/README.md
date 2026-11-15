@@ -31,6 +31,7 @@ Fix bounded DDL text/structured schemas, normalized identifier limits, scalar wi
 | DS-SQL-55 | Administrators can express null-safe equality checks | Add `IS [NOT] DISTINCT FROM` against one typed literal in CREATE TABLE and ALTER CHECK parsing; lower to bounded EIR1 null checks/comparisons without changing protocol encoding |
 | DS-SQL-56 | Administrators can test Boolean values including SQL UNKNOWN in CHECK and policy SQL | Accept `IS [NOT] TRUE`, `FALSE`, and `UNKNOWN` only on BOOLEAN columns; lower the two-valued tests to existing EIR1 null, equality, AND, and NOT nodes |
 | DS-SQL-57 | Boolean truth tests accept grouped predicates and policy expressions | Bind any Boolean-valued operand, including parenthesized comparisons/conjunctions and policy-context functions where allowed, while keeping EIR node and statement-size bounds |
+| DS-SQL-58 | Null tests accept supported scalar expressions | Bind `IS [NOT] NULL` against any supported scalar expression in CREATE TABLE CHECK and ALTER CHECK SQL, preserving EIR1 null semantics and column dependency binding |
 
 ## Acceptance and Handoff
 

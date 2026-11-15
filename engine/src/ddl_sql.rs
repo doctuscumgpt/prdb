@@ -304,8 +304,8 @@ pub enum CheckExpressionSql {
     Literal(CheckLiteralSql),
     CurrentPrincipalId,
     HasRole(String),
-    IsNull(String),
-    IsNotNull(String),
+    IsNull(Box<CheckExpressionSql>),
+    IsNotNull(Box<CheckExpressionSql>),
     BooleanTest {
         expression: Box<CheckExpressionSql>,
         test: CheckBooleanTest,
@@ -1765,9 +1765,10 @@ fn validate_column_check_expression(
 ) -> Result<(), DdlSqlError> {
     fn only_column(column: &str, expression: &CheckExpressionSql) -> bool {
         match expression {
-            CheckExpressionSql::Column(name)
-            | CheckExpressionSql::IsNull(name)
-            | CheckExpressionSql::IsNotNull(name) => name == column,
+            CheckExpressionSql::Column(name) => name == column,
+            CheckExpressionSql::IsNull(expression) | CheckExpressionSql::IsNotNull(expression) => {
+                only_column(column, expression)
+            }
             CheckExpressionSql::BooleanTest { expression, .. } => only_column(column, expression),
             CheckExpressionSql::Literal(_) => true,
             CheckExpressionSql::CurrentPrincipalId | CheckExpressionSql::HasRole(_) => false,
@@ -1810,10 +1811,10 @@ pub fn bind_check_expression(
                 items.iter().any(has_policy_context)
             }
             CheckExpressionSql::BooleanTest { expression, .. } => has_policy_context(expression),
-            CheckExpressionSql::Column(_)
-            | CheckExpressionSql::Literal(_)
-            | CheckExpressionSql::IsNull(_)
-            | CheckExpressionSql::IsNotNull(_) => false,
+            CheckExpressionSql::IsNull(expression) | CheckExpressionSql::IsNotNull(expression) => {
+                has_policy_context(expression)
+            }
+            CheckExpressionSql::Column(_) | CheckExpressionSql::Literal(_) => false,
         }
     }
     if has_policy_context(expression) {
@@ -2000,9 +2001,9 @@ fn bind_expression(
                 };
                 (Expr::Literal(value), scalar_type)
             }
-            Sql::IsNull(name) | Sql::IsNotNull(name) => {
-                let (ordinal, _) = lookup(name).ok_or(DdlSqlError::InvalidStatement)?;
-                let is_null = Expr::IsNull(Box::new(Expr::Field(ordinal)));
+            Sql::IsNull(value) | Sql::IsNotNull(value) => {
+                let (value, _) = bind(value, None, lookup, role_lookup)?;
+                let is_null = Expr::IsNull(Box::new(value));
                 let expression = if matches!(expression, Sql::IsNotNull(_)) {
                     Expr::Not(Box::new(is_null))
                 } else {
@@ -2688,14 +2689,11 @@ impl Parser {
                 negated,
             })
         } else {
-            let CheckExpressionSql::Column(column) = left else {
-                return Err(DdlSqlError::InvalidStatement);
-            };
             self.word("null")?;
             Ok(if negated {
-                CheckExpressionSql::IsNotNull(column)
+                CheckExpressionSql::IsNotNull(Box::new(left))
             } else {
-                CheckExpressionSql::IsNull(column)
+                CheckExpressionSql::IsNull(Box::new(left))
             })
         }
     }
@@ -3532,7 +3530,9 @@ mod tests {
             vec![
                 CheckExpressionSql::Or(vec![
                     CheckExpressionSql::Column("active".into()),
-                    CheckExpressionSql::IsNull("deleted_at".into()),
+                    CheckExpressionSql::IsNull(Box::new(CheckExpressionSql::Column(
+                        "deleted_at".into(),
+                    ))),
                 ]),
                 CheckExpressionSql::Compare {
                     operator: CheckComparisonOperator::GreaterEqual,
@@ -3948,6 +3948,32 @@ mod tests {
     fn parses_and_binds_boolean_truth_tests() {
         use crate::authorization::Expr;
 
+        let is_null =
+            parse_add_check_constraint("ALTER TABLE app.jobs ADD CHECK ((active = TRUE) IS NULL)")
+                .unwrap();
+        let equal_true = Expr::Equal(
+            Box::new(Expr::Field(0)),
+            Box::new(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+        );
+        assert_eq!(
+            bind_check_expression(&is_null.expression, |name| {
+                (name == "active").then_some((0, ScalarType::Boolean))
+            })
+            .unwrap(),
+            Expr::IsNull(Box::new(equal_true.clone()))
+        );
+        let is_not_null = parse_add_check_constraint(
+            "ALTER TABLE app.jobs ADD CHECK ((active = TRUE) IS NOT NULL)",
+        )
+        .unwrap();
+        assert_eq!(
+            bind_check_expression(&is_not_null.expression, |name| {
+                (name == "active").then_some((0, ScalarType::Boolean))
+            })
+            .unwrap(),
+            Expr::Not(Box::new(Expr::IsNull(Box::new(equal_true))))
+        );
+
         let compound =
             parse_add_check_constraint("ALTER TABLE app.jobs ADD CHECK ((active = TRUE) IS TRUE)")
                 .unwrap();
@@ -4108,8 +4134,12 @@ mod tests {
                 expression: CheckExpressionSql::And(vec![
                     CheckExpressionSql::Column("active".into()),
                     CheckExpressionSql::Or(vec![
-                        CheckExpressionSql::IsNull("deleted".into()),
-                        CheckExpressionSql::IsNotNull("deleted".into()),
+                        CheckExpressionSql::IsNull(Box::new(CheckExpressionSql::Column(
+                            "deleted".into(),
+                        ))),
+                        CheckExpressionSql::IsNotNull(Box::new(CheckExpressionSql::Column(
+                            "deleted".into(),
+                        ))),
                     ]),
                 ]),
             }

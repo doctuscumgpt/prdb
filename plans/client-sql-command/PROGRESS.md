@@ -559,3 +559,7 @@
 ## DS-SQL-57: Truth tests on grouped Boolean expressions — verified
 
 - Bounded CHECK and policy parsing now accepts a parenthesized Boolean predicate before `IS [NOT] TRUE/FALSE/UNKNOWN`; binding verifies the resulting type and preserves policy-context restrictions. Parser/binder, authenticated client, and full serial delegated-cgroup regressions pass with sandbox/process coverage and zero ignored tests; workspace build, format, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
+
+## DS-SQL-58: Null tests on supported expressions — verified
+
+- `admin-sql` CHECK expressions now allow `IS [NOT] NULL` after any supported scalar expression. Binding resolves the expression against authenticated column metadata and sends the existing EIR1 representation; parser/binder and authenticated AdminClient serialization regressions pass. The full serial delegated-cgroup workspace suite passes with sandbox/process coverage and zero ignored tests; workspace build, format, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
