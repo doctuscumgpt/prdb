@@ -155,6 +155,7 @@ pub enum DefaultLiteralSql {
 pub struct AddColumnSql {
     pub schema: String,
     pub table: String,
+    pub if_not_exists: bool,
     pub column: AdminColumnDefinition,
 }
 
@@ -1959,6 +1960,14 @@ pub fn parse_add_column(sql: &str) -> Result<AddColumnSql, DdlSqlError> {
     let table = parser.identifier()?;
     parser.word("add")?;
     parser.word("column")?;
+    let if_not_exists = if parser.peek_word("if") {
+        parser.word("if")?;
+        parser.word("not")?;
+        parser.word("exists")?;
+        true
+    } else {
+        false
+    };
     let name = parser.identifier()?;
     let scalar_type = parser.scalar_type()?;
     let mut nullable = true;
@@ -1985,6 +1994,7 @@ pub fn parse_add_column(sql: &str) -> Result<AddColumnSql, DdlSqlError> {
     Ok(AddColumnSql {
         schema,
         table,
+        if_not_exists,
         column: AdminColumnDefinition {
             name,
             scalar_type,
@@ -3758,6 +3768,7 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.schema, "app");
         assert_eq!(parsed.table, "events");
+        assert!(!parsed.if_not_exists);
         assert_eq!(parsed.column.name, "label");
         assert_eq!(
             parsed.column.scalar_type,
@@ -3770,6 +3781,9 @@ mod tests {
                 "unknown".into()
             )))
         );
+        let conditional =
+            parse_add_column("ALTER TABLE app.events ADD COLUMN IF NOT EXISTS label TEXT").unwrap();
+        assert!(conditional.if_not_exists);
         for sql in [
             "ALTER TABLE app.events ADD COLUMN label TEXT NOT NULL",
             "ALTER TABLE app.events ADD COLUMN label TEXT DEFAULT CURRENT_PRINCIPAL_ID()",

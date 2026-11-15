@@ -703,16 +703,31 @@ fn admin_sql(
             lower_hex(&result.operation_id),
             result.commit_sequence
         );
-    } else if add_column_statement.is_some() {
-        let result = client
-            .execute_add_column_sql(sql)
-            .map_err(|error| error.to_string())?;
-        println!(
-            "added column {} (operation {}, commit {})",
-            lower_hex(&result.column_id),
-            lower_hex(&result.operation_id),
-            result.commit_sequence
-        );
+    } else if let Some(statement) = add_column_statement {
+        if statement.if_not_exists {
+            match client
+                .execute_add_column_if_not_exists_sql(sql)
+                .map_err(|error| error.to_string())?
+            {
+                Some(result) => println!(
+                    "added column {} (operation {}, commit {})",
+                    lower_hex(&result.column_id),
+                    lower_hex(&result.operation_id),
+                    result.commit_sequence
+                ),
+                None => println!("column already exists; no operation committed"),
+            }
+        } else {
+            let result = client
+                .execute_add_column_sql(sql)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "added column {} (operation {}, commit {})",
+                lower_hex(&result.column_id),
+                lower_hex(&result.operation_id),
+                result.commit_sequence
+            );
+        }
     } else if rename_column_statement.is_some() {
         let result = client
             .execute_rename_column_sql(sql)

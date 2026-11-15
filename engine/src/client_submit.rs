@@ -4614,8 +4614,48 @@ impl AdminClient {
     ) -> Result<AdminTableColumnResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_add_column(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if statement.if_not_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
         let table_id = self.resolve_table_sql_name(&statement.schema, &statement.table)?;
         self.add_column(table_id, &statement.column)
+    }
+
+    /// Execute `ADD COLUMN IF NOT EXISTS`. Existing columns are a no-op only
+    /// after confirming database-administrator authority.
+    pub fn execute_add_column_if_not_exists_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<Option<AdminTableColumnResult>, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_add_column(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if !statement.if_not_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
+        let mut cursor = None;
+        loop {
+            let page = self.list_columns_page(
+                schema_id,
+                table_id,
+                DEFAULT_METADATA_PAGE_SIZE,
+                cursor.as_deref(),
+            )?;
+            if page
+                .records
+                .iter()
+                .any(|column| column.name == statement.column.name)
+            {
+                self.list_runtime_invocations_page(1, None)?;
+                return Ok(None);
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        self.add_column(table_id, &statement.column).map(Some)
     }
 
     /// Rename one declared column using qualified SQL names and the existing

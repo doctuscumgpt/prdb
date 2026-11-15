@@ -819,3 +819,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `CREATE [UNIQUE] INDEX IF NOT EXISTS` to bounded SQL. An absent index uses the regular typed build; a resolved existing logical index no-ops only for a database administrator, with no DDL outcome and no definition reconciliation.
 - Updated schema DDL, client SDK, and client SQL contracts. Parser and production gateway/supervisor lifecycle tests cover conditional creation and administrator repeat no-op. Targeted tests pass; Cargo.lock is unchanged.
+
+## DS-SQL-42: conditional column addition — verified
+
+- Added `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. An absent column uses the existing typed add-column operation; a resolved existing column is a database-administrator-only no-op and does not compare or reconcile the requested definition.
+- Updated the schema DDL, client SDK, and client SQL contracts. The parser unit test and delegated production gateway/supervisor process test pass. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

@@ -915,3 +915,8 @@
 
 - Added `AdminClient::execute_create_index_if_not_exists_sql`, returning `None` only for a resolved existing index after current database-admin authorization. Absent indexes use existing metadata binding and typed creation.
 - Parser and production process coverage pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
+
+## DS-SQL-42: conditional column addition — verified
+
+- Added conditional column creation to authenticated `admin-sql`; existing-column no-ops require database-administrator authority and create no DDL outcome.
+- Updated the SDK contract. The parser unit test and delegated production gateway/supervisor process test pass. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

@@ -501,3 +501,8 @@
 
 - `admin-sql` supports the conditional modifier for ordinary and unique indexes. Existing indexes no-op only for a database administrator; absent indexes follow the normal typed index-create path.
 - Parser and gateway/supervisor process tests pass for initial create and administrator repeat. Cargo.lock is unchanged.
+
+## DS-SQL-42: conditional column addition — verified
+
+- Added `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` to bounded `admin-sql`. Existing columns no-op only after database-administrator authority is confirmed; absent columns follow typed `tables.add_column`.
+- Updated the SQL command and client SDK contracts. The parser unit test and delegated production gateway/supervisor process test pass. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

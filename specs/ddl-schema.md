@@ -89,6 +89,7 @@ Constraint outcomes can reveal that a hidden conflicting/referenced key exists. 
 
 ```sql
 ALTER TABLE app.employees ADD COLUMN title TEXT;
+ALTER TABLE app.employees ADD COLUMN IF NOT EXISTS title TEXT;
 ALTER TABLE app.employees RENAME COLUMN title TO job_title;
 ALTER TABLE app.employees ALTER COLUMN active SET DEFAULT TRUE;
 ALTER TABLE app.employees ALTER COLUMN salary SET NOT NULL;
@@ -101,6 +102,8 @@ DROP TABLE app.staff RESTRICT;
 ```
 
 Support nullable column addition, typed literal defaults, rename, default changes, `SET/DROP NOT NULL`, `SET/DROP DEFAULT`, constraint add/drop, ownership transfer, and restricted column/table drop. Adding a non-null field requires a valid literal default and validating existing rows. Existing rows acquire the add-column default as of that DDL change; later default changes affect future inserts only. Context-dependent defaults are not allowed for backfilling existing rows. Type-changing rewrites, computed columns, partitioning, temporary tables, user-created views, triggers, stored procedures, explicit sequences, and `TRUNCATE` are deferred.
+
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` is an authenticated SQL convenience. An absent column follows the ordinary typed `tables.add_column` path. A resolved existing column is a no-op only for a database administrator, after authority confirmation; the no-op creates no DDL outcome and does not compare or reconcile the requested definition. Other failures are not suppressed.
 
 Changing nullability on an existing column is available through `tables.alter_column_nullability` with a table ID, column ID, and string `nullable` value (`"true"` or `"false"`). It preserves the tuple schema version because its encoded layout does not change; the table write epoch advances to invalidate stale writers. `SET NOT NULL` scans current persisted rows under the exclusive table fence and aborts with a constraint violation if any value is NULL. Validation is bounded to 65,536 rows and 64 MiB of row-record bytes per commit; larger tables fail without publication. `DROP NOT NULL` removes the matching internal constraint when present and marks the column nullable.
 

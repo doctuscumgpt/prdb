@@ -1958,7 +1958,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let add_column_sql_path = root.join("add-column.sql");
     std::fs::write(
         &add_column_sql_path,
-        "ALTER TABLE process_admin_schema.process_admin_table ADD COLUMN label VARCHAR(30) NOT NULL DEFAULT 'unknown';",
+        "ALTER TABLE process_admin_schema.process_admin_table ADD COLUMN IF NOT EXISTS label VARCHAR(30) NOT NULL DEFAULT 'unknown';",
     )?;
     let add_column_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
@@ -1995,6 +1995,35 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     );
     assert!(!added_label.nullable);
     assert!(added_columns.next_cursor.is_none());
+    let add_column_if_missing_path = root.join("add-column-if-not-exists.sql");
+    std::fs::write(
+        &add_column_if_missing_path,
+        "ALTER TABLE process_admin_schema.process_admin_table ADD COLUMN IF NOT EXISTS label TEXT;",
+    )?;
+    let add_column_if_missing = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            add_column_if_missing_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        add_column_if_missing.status.success(),
+        "admin-sql conditional ADD COLUMN failed: {}",
+        String::from_utf8_lossy(&add_column_if_missing.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&add_column_if_missing.stdout)
+            .contains("column already exists; no operation committed")
+    );
     let dependency_sql_path = root.join("column-dependency.sql");
     std::fs::write(
         &dependency_sql_path,
