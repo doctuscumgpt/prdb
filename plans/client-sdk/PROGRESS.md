@@ -958,3 +958,8 @@
 
 - Added AdminClient named create methods and SQL binding for PK, UNIQUE, and FK names. The protocol requests preserve existing v1 methods and use v2 only for names. Authenticated mock-session coverage passes; full production process coverage is recorded in [schema DDL progress](../ddl-schema/PROGRESS.md).
 - The full serial delegated-cgroup workspace suite passes with zero ignored, including authenticated v2 request binding and production process coverage; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+## DS-SQL-53: finite-set CHECK SQL binding — implemented slice
+
+- Shared CHECK parsing/binding now supports column `IN` and `NOT IN` with 1–64 typed scalar literals, including NULL. The binder lowers these to existing EIR1 comparisons and Boolean nodes, leaving evaluation and SQL UNKNOWN behavior on the established authorization path. Limits align with the EIR1 expression-node budget.
+- Parser/binder regressions cover typed values, mismatched types, invalid lists, NULL, and the 64/65-value boundary. The focused test, locked workspace build, format check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite pass; the suite had zero ignored tests and included sandbox/process coverage. See [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

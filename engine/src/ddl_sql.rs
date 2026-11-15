@@ -10,6 +10,7 @@ use crate::{
 };
 
 const MAX_DDL_BYTES: usize = 65_536;
+const MAX_CHECK_IN_VALUES: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateTableSql {
@@ -309,6 +310,11 @@ pub enum CheckExpressionSql {
         operator: CheckComparisonOperator,
         left: Box<CheckExpressionSql>,
         right: Box<CheckExpressionSql>,
+    },
+    In {
+        column: String,
+        values: Vec<CheckLiteralSql>,
+        negated: bool,
     },
     Not(Box<CheckExpressionSql>),
     And(Vec<CheckExpressionSql>),
@@ -1744,6 +1750,7 @@ fn validate_column_check_expression(
             CheckExpressionSql::Compare { left, right, .. } => {
                 only_column(column, left) && only_column(column, right)
             }
+            CheckExpressionSql::In { column: name, .. } => name == column,
             CheckExpressionSql::Not(inner) => only_column(column, inner),
             CheckExpressionSql::And(items) | CheckExpressionSql::Or(items) => {
                 items.iter().all(|item| only_column(column, item))
@@ -1769,6 +1776,7 @@ pub fn bind_check_expression(
             CheckExpressionSql::Compare { left, right, .. } => {
                 has_policy_context(left) || has_policy_context(right)
             }
+            CheckExpressionSql::In { .. } => false,
             CheckExpressionSql::Not(inner) => has_policy_context(inner),
             CheckExpressionSql::And(items) | CheckExpressionSql::Or(items) => {
                 items.iter().any(has_policy_context)
@@ -1832,6 +1840,7 @@ fn bind_expression(
             }
             CheckExpressionSql::IsNull(_)
             | CheckExpressionSql::IsNotNull(_)
+            | CheckExpressionSql::In { .. }
             | CheckExpressionSql::Compare { .. }
             | CheckExpressionSql::Not(_)
             | CheckExpressionSql::And(_)
@@ -2010,6 +2019,38 @@ fn bind_expression(
                     CheckComparisonOperator::GreaterEqual => {
                         Expr::GreaterEqual(Box::new(left), Box::new(right))
                     }
+                };
+                (expression, Some(ScalarType::Boolean))
+            }
+            Sql::In {
+                column,
+                values,
+                negated,
+            } => {
+                let (ordinal, column_type) = lookup(column).ok_or(DdlSqlError::InvalidStatement)?;
+                let mut alternatives = Vec::with_capacity(values.len());
+                for value in values {
+                    let (literal, literal_type) = bind(
+                        &Sql::Literal(value.clone()),
+                        Some(column_type),
+                        lookup,
+                        role_lookup,
+                    )?;
+                    if literal_type
+                        .is_some_and(|literal_type| !scalar_compatible(column_type, literal_type))
+                    {
+                        return Err(DdlSqlError::InvalidStatement);
+                    }
+                    alternatives.push(Expr::Equal(
+                        Box::new(Expr::Field(ordinal)),
+                        Box::new(literal),
+                    ));
+                }
+                let expression = Expr::Or(alternatives);
+                let expression = if *negated {
+                    Expr::Not(Box::new(expression))
+                } else {
+                    expression
                 };
                 (expression, Some(ScalarType::Boolean))
             }
@@ -2395,6 +2436,44 @@ impl Parser {
                 CheckExpressionSql::IsNotNull(column)
             } else {
                 CheckExpressionSql::IsNull(column)
+            })
+        } else if self.peek_word("in")
+            || (self.peek_word("not")
+                && matches!(self.tokens.get(self.position + 1), Some(Token::Word(word)) if word == "in"))
+        {
+            let CheckExpressionSql::Column(column) = left else {
+                return Err(DdlSqlError::InvalidStatement);
+            };
+            let negated = if self.peek_word("not") {
+                self.position += 1;
+                true
+            } else {
+                false
+            };
+            self.word("in")?;
+            self.take(Token::LeftParen)?;
+            let mut values = Vec::new();
+            loop {
+                if values.len() == MAX_CHECK_IN_VALUES {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
+                let CheckExpressionSql::Literal(value) = self.check_value_atom()? else {
+                    return Err(DdlSqlError::InvalidStatement);
+                };
+                values.push(value);
+                if self.peek() == Some(&Token::RightParen) {
+                    break;
+                }
+                self.take(Token::Comma)?;
+            }
+            if values.is_empty() {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+            self.take(Token::RightParen)?;
+            Ok(CheckExpressionSql::In {
+                column,
+                values,
+                negated,
             })
         } else {
             let operator = match self.peek() {
@@ -3460,6 +3539,90 @@ mod tests {
                 parse_add_check_constraint(&statement).unwrap().expression,
                 CheckExpressionSql::Compare { operator, .. } if operator == expected
             ));
+        }
+    }
+
+    #[test]
+    fn parses_and_binds_check_in_predicates_with_typed_literals() {
+        use crate::authorization::Expr;
+
+        let parsed = parse_create_table(
+            "CREATE TABLE app.jobs (state VARCHAR(8), CHECK (state IN ('new', 'running', 'done')))",
+        )
+        .unwrap();
+        let expected = CheckExpressionSql::In {
+            column: "state".into(),
+            values: vec![
+                CheckLiteralSql::String("new".into()),
+                CheckLiteralSql::String("running".into()),
+                CheckLiteralSql::String("done".into()),
+            ],
+            negated: false,
+        };
+        assert_eq!(parsed.check_constraints, vec![expected.clone()]);
+        assert_eq!(
+            bind_check_expression(&expected, |name| {
+                (name == "state").then_some((0, ScalarType::Varchar { max_chars: 8 }))
+            })
+            .unwrap(),
+            Expr::Or(vec![
+                Expr::Equal(
+                    Box::new(Expr::Field(0)),
+                    Box::new(Expr::Literal(Some(ScalarValue::Varchar("new".into())))),
+                ),
+                Expr::Equal(
+                    Box::new(Expr::Field(0)),
+                    Box::new(Expr::Literal(Some(ScalarValue::Varchar("running".into())))),
+                ),
+                Expr::Equal(
+                    Box::new(Expr::Field(0)),
+                    Box::new(Expr::Literal(Some(ScalarValue::Varchar("done".into())))),
+                ),
+            ])
+        );
+
+        let negative = parse_add_check_constraint(
+            "ALTER TABLE app.jobs ADD CHECK (priority NOT IN (1, 2, NULL))",
+        )
+        .unwrap();
+        assert!(matches!(
+            negative.expression,
+            CheckExpressionSql::In {
+                ref column,
+                ref values,
+                negated: true
+            } if column == "priority" && values.len() == 3
+        ));
+        for sql in [
+            "CREATE TABLE app.jobs (state TEXT, CHECK (state IN ()))",
+            "CREATE TABLE app.jobs (state TEXT, CHECK (state IN ('ok', other)))",
+            "CREATE TABLE app.jobs (state TEXT, CHECK ('ok' IN ('ok')))",
+        ] {
+            assert!(parse_create_table(sql).is_err(), "accepted {sql}");
+        }
+        assert!(
+            bind_check_expression(&negative.expression, |name| {
+                (name == "priority").then_some((0, ScalarType::Integer))
+            })
+            .is_ok()
+        );
+        assert!(
+            bind_check_expression(&negative.expression, |name| {
+                (name == "priority").then_some((0, ScalarType::Boolean))
+            })
+            .is_err()
+        );
+        for count in [MAX_CHECK_IN_VALUES, MAX_CHECK_IN_VALUES + 1] {
+            let values = (0..count)
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql =
+                format!("CREATE TABLE app.jobs (priority INTEGER, CHECK (priority IN ({values})))");
+            assert_eq!(
+                parse_create_table(&sql).is_ok(),
+                count == MAX_CHECK_IN_VALUES
+            );
         }
     }
 

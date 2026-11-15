@@ -73,3 +73,8 @@
 
 - Added `DROP ROW|CELL POLICY IF EXISTS name ON schema.table RESTRICT`. Present targets dispatch the existing typed `policies.drop` mutation and retain policy authorization. Unresolved schemas, tables, or policies become a no-op only after the authenticated runtime-list read confirms database-administrator authority; no DDL outcome is created for the no-op.
 - Updated permission and client SQL contracts and the `admin-sql` CLI dispatch. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass. No tests were added or run; Cargo.lock is unchanged.
+
+## DP-SQL-8: finite-set policy predicates — implemented slice
+
+- Shared policy SQL parsing and binding now accepts column `IN` and `NOT IN` over 1–64 typed literals, including NULL. The expressions lower to existing EIR1 nodes and retain fail-closed policy evaluation semantics.
+- Parser/binder regression coverage is shared with CHECK SQL. The focused test, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and full serial delegated-cgroup workspace suite pass with sandbox/process coverage and zero ignored tests. Cargo.lock is unchanged.

@@ -26,6 +26,7 @@ Fix bounded DDL text/structured schemas, normalized identifier limits, scalar wi
 | DS-SQL-50 | A named CHECK in CREATE TABLE is published atomically with its name and expression | Parse column- and table-level `CONSTRAINT name CHECK` forms, bind names to expressions in a versioned `tables.create` request, persist names in catalog objects in the same table-creation commit, and reject duplicate names within one statement |
 | DS-SQL-51 | Named PRIMARY KEY, UNIQUE, and FOREIGN KEY definitions are discoverable and droppable by name | Extend CREATE TABLE naming across all constraint kinds, carry aligned names in `tables.create` v4, persist names in the atomic catalog commit, reject statement-wide collisions, expose names through constraint metadata, and resolve SQL DROP CONSTRAINT by name |
 | DS-SQL-52 | ALTER TABLE can add named PRIMARY KEY, UNIQUE, and FOREIGN KEY constraints | Accept `ADD CONSTRAINT name` before key/FK clauses, add v2 typed operations while preserving v1, persist names on their catalog objects, reject table-local collisions after authorization, and resolve every name through constraint metadata |
+| DS-SQL-53 | Administrators can express common finite-set checks in SQL | Add typed-literal column `IN` and `NOT IN` predicates to CREATE TABLE and ALTER CHECK parsing, cap lists at 64 values within the EIR1 evaluation budget, bind literals to the column type, and preserve SQL UNKNOWN semantics through the existing Boolean evaluator |
 
 ## Acceptance and Handoff
 

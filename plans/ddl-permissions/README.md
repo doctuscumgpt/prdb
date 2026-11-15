@@ -19,6 +19,7 @@ Specify bounded permission syntax/structured operations and typed policy IR shar
 | DP-5 | Atomic drop/create replacement has no missing-policy window; concurrent privilege revocation aborts stale admin commit | Publish definitions/dependencies/authority epochs/audit/outcome in one redb transaction with current actor revalidation |
 | DP-6 | Real manager fixture reveals mixed salaries and denies mismatched old/new ALLOW pairs, defaults and self-escalation | End-to-end runtime tests for mandatory composition, per-column policies, generated identity exception, immutable policy inputs and bounded snapshot revocation |
 | DP-7 | A newly added policy-driving field freezes future query updates; inaccessible policy text stays private | Coordinate schema/write restrictions, filtered discovery and privileged-only provenance/definition inspection |
+| DP-SQL-8 | Administrators can write finite-set policy predicates without enumerating OR comparisons | Accept column `IN`/`NOT IN` with 1–64 typed literals, bind to the declared type, and lower to existing EIR1 Boolean operations under its node budget |
 
 ## Acceptance and Handoff
 
