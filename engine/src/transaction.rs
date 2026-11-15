@@ -10812,7 +10812,10 @@ fn collect_expression_fields(expression: &Expr, ordinals: &mut HashSet<usize>) {
         | Expr::Less(left, right)
         | Expr::LessEqual(left, right)
         | Expr::Greater(left, right)
-        | Expr::GreaterEqual(left, right) => {
+        | Expr::GreaterEqual(left, right)
+        | Expr::Add(left, right)
+        | Expr::Subtract(left, right)
+        | Expr::Multiply(left, right) => {
             collect_expression_fields(left, ordinals);
             collect_expression_fields(right, ordinals);
         }

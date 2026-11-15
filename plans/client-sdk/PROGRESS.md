@@ -1009,3 +1009,8 @@
 ## DS-SQL-63: Comparisons accept grouped right operands — verified
 
 - Authenticated CHECK SQL accepts a parenthesized scalar expression on the right of a comparison and binds both sides through existing type checking. The parser/binder and full delegated-cgroup workspace suite pass with sandbox/process coverage and zero ignored tests; workspace build, format check, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
+
+## SQL CHECK integer arithmetic — implemented slice
+
+- The typed SQL CHECK binder accepts same-type SMALLINT, INTEGER, and BIGINT `+`, `-`, and `*` expressions and emits bounded EIR1 version 2 nodes. NULL operands preserve SQL null propagation; overflow fails closed during CHECK evaluation. The decoder remains compatible with EIR1 version 1.
+- Verification: workspace check, format, and warning-denied all-target Clippy passed in the pinned Nix shell. Tests were not run in this turn.

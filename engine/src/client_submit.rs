@@ -4801,7 +4801,10 @@ impl AdminClient {
                 | Expr::Less(left, right)
                 | Expr::LessEqual(left, right)
                 | Expr::Greater(left, right)
-                | Expr::GreaterEqual(left, right) => {
+                | Expr::GreaterEqual(left, right)
+                | Expr::Add(left, right)
+                | Expr::Subtract(left, right)
+                | Expr::Multiply(left, right) => {
                     collect_fields(left, columns, dependencies)?;
                     collect_fields(right, columns, dependencies)?;
                 }

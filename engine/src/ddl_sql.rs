@@ -304,6 +304,9 @@ pub enum CheckExpressionSql {
     Literal(CheckLiteralSql),
     CurrentPrincipalId,
     HasRole(String),
+    Add(Box<CheckExpressionSql>, Box<CheckExpressionSql>),
+    Subtract(Box<CheckExpressionSql>, Box<CheckExpressionSql>),
+    Multiply(Box<CheckExpressionSql>, Box<CheckExpressionSql>),
     IsNull(Box<CheckExpressionSql>),
     IsNotNull(Box<CheckExpressionSql>),
     BooleanTest {
@@ -416,6 +419,7 @@ enum Token {
     LessEqual,
     Greater,
     GreaterEqual,
+    Star,
 }
 
 pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
@@ -1775,6 +1779,11 @@ fn validate_column_check_expression(
             CheckExpressionSql::Compare { left, right, .. } => {
                 only_column(column, left) && only_column(column, right)
             }
+            CheckExpressionSql::Add(left, right)
+            | CheckExpressionSql::Subtract(left, right)
+            | CheckExpressionSql::Multiply(left, right) => {
+                only_column(column, left) && only_column(column, right)
+            }
             CheckExpressionSql::In { expression, .. }
             | CheckExpressionSql::Between { expression, .. } => only_column(column, expression),
             CheckExpressionSql::DistinctFrom {
@@ -1803,6 +1812,11 @@ pub fn bind_check_expression(
         match expression {
             CheckExpressionSql::CurrentPrincipalId | CheckExpressionSql::HasRole(_) => true,
             CheckExpressionSql::Compare { left, right, .. } => {
+                has_policy_context(left) || has_policy_context(right)
+            }
+            CheckExpressionSql::Add(left, right)
+            | CheckExpressionSql::Subtract(left, right)
+            | CheckExpressionSql::Multiply(left, right) => {
                 has_policy_context(left) || has_policy_context(right)
             }
             CheckExpressionSql::In { expression, .. }
@@ -1887,6 +1901,17 @@ fn bind_expression(
             | CheckExpressionSql::And(_)
             | CheckExpressionSql::Or(_) => Some(ScalarType::Boolean),
             CheckExpressionSql::Literal(CheckLiteralSql::Null) => None,
+            CheckExpressionSql::Add(left, right)
+            | CheckExpressionSql::Subtract(left, right)
+            | CheckExpressionSql::Multiply(left, right) => {
+                let left_hint = comparison_hint(left, lookup);
+                let right_hint = comparison_hint(right, lookup);
+                if matches!(left.as_ref(), CheckExpressionSql::Literal(_)) {
+                    right_hint.or(left_hint)
+                } else {
+                    left_hint.or(right_hint)
+                }
+            }
         }
     }
 
@@ -1958,6 +1983,41 @@ fn bind_expression(
                 Expr::HasRole(role_lookup(name).ok_or(DdlSqlError::InvalidStatement)?),
                 Some(ScalarType::Boolean),
             ),
+            Sql::Add(left, right) | Sql::Subtract(left, right) | Sql::Multiply(left, right) => {
+                let left_is_null_literal =
+                    matches!(left.as_ref(), Sql::Literal(CheckLiteralSql::Null));
+                let right_is_null_literal =
+                    matches!(right.as_ref(), Sql::Literal(CheckLiteralSql::Null));
+                let (left, right, left_type, right_type) =
+                    if matches!(left.as_ref(), Sql::Literal(_)) {
+                        let (right, right_type) = bind(right, None, lookup, role_lookup)?;
+                        let (left, left_type) = bind(left, right_type, lookup, role_lookup)?;
+                        (left, right, left_type, right_type)
+                    } else {
+                        let (left, left_type) = bind(left, None, lookup, role_lookup)?;
+                        let (right, right_type) = bind(right, left_type, lookup, role_lookup)?;
+                        (left, right, left_type, right_type)
+                    };
+                let arithmetic_type = match (left_type, right_type) {
+                    (Some(left), Some(right)) if left == right => Some(left),
+                    (None, Some(right)) if left_is_null_literal => Some(right),
+                    (Some(left), None) if right_is_null_literal => Some(left),
+                    _ => None,
+                };
+                if !matches!(
+                    arithmetic_type,
+                    Some(ScalarType::SmallInt | ScalarType::Integer | ScalarType::BigInt)
+                ) {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
+                let expression = match expression {
+                    Sql::Add(_, _) => Expr::Add(Box::new(left), Box::new(right)),
+                    Sql::Subtract(_, _) => Expr::Subtract(Box::new(left), Box::new(right)),
+                    Sql::Multiply(_, _) => Expr::Multiply(Box::new(left), Box::new(right)),
+                    _ => unreachable!(),
+                };
+                (expression, arithmetic_type)
+            }
             Sql::Literal(literal) => {
                 let (value, scalar_type) = match literal {
                     CheckLiteralSql::Null => (None, None),
@@ -2575,6 +2635,7 @@ impl Parser {
             if self.peek_word("is")
                 || self.peek_word("between")
                 || self.peek_word("in")
+                || matches!(self.peek(), Some(Token::Plus | Token::Minus | Token::Star))
                 || (self.peek_word("not")
                     && matches!(self.tokens.get(self.position + 1), Some(Token::Word(word)) if word == "between" || word == "in"))
                 || matches!(
@@ -2589,6 +2650,7 @@ impl Parser {
                     )
                 )
             {
+                let expression = self.check_value_expression_tail(expression)?;
                 return self.check_value_predicate(expression);
             }
             return Ok(expression);
@@ -2597,8 +2659,45 @@ impl Parser {
     }
 
     fn check_predicate(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
-        let left = self.check_value_atom()?;
+        let left = self.check_value_expression()?;
         self.check_value_predicate(left)
+    }
+
+    fn check_value_expression(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
+        let expression = self.check_value_term()?;
+        self.check_value_expression_tail(expression)
+    }
+
+    fn check_value_expression_tail(
+        &mut self,
+        mut expression: CheckExpressionSql,
+    ) -> Result<CheckExpressionSql, DdlSqlError> {
+        while self.peek() == Some(&Token::Star) {
+            self.position += 1;
+            let right = self.check_value_atom()?;
+            expression = CheckExpressionSql::Multiply(Box::new(expression), Box::new(right));
+        }
+        loop {
+            let constructor = match self.peek() {
+                Some(Token::Plus) => CheckExpressionSql::Add,
+                Some(Token::Minus) => CheckExpressionSql::Subtract,
+                _ => break,
+            };
+            self.position += 1;
+            let right = self.check_value_term()?;
+            expression = constructor(Box::new(expression), Box::new(right));
+        }
+        Ok(expression)
+    }
+
+    fn check_value_term(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
+        let mut expression = self.check_value_atom()?;
+        while self.peek() == Some(&Token::Star) {
+            self.position += 1;
+            let right = self.check_value_atom()?;
+            expression = CheckExpressionSql::Multiply(Box::new(expression), Box::new(right));
+        }
+        Ok(expression)
     }
 
     fn check_value_predicate(
@@ -2618,9 +2717,9 @@ impl Parser {
                 false
             };
             self.word("between")?;
-            let lower = self.check_unary()?;
+            let lower = self.check_value_expression()?;
             self.word("and")?;
-            let upper = self.check_unary()?;
+            let upper = self.check_value_expression()?;
             Ok(CheckExpressionSql::Between {
                 expression: Box::new(left),
                 lower: Box::new(lower),
@@ -2644,7 +2743,7 @@ impl Parser {
                 if values.len() == MAX_CHECK_IN_VALUES {
                     return Err(DdlSqlError::InvalidStatement);
                 }
-                values.push(Box::new(self.check_unary()?));
+                values.push(Box::new(self.check_value_expression()?));
                 if self.peek() == Some(&Token::RightParen) {
                     break;
                 }
@@ -2671,11 +2770,7 @@ impl Parser {
             };
             if let Some(operator) = operator {
                 self.position += 1;
-                let right = if self.peek() == Some(&Token::LeftParen) {
-                    self.check_unary()?
-                } else {
-                    self.check_value_atom()?
-                };
+                let right = self.check_value_expression()?;
                 Ok(CheckExpressionSql::Compare {
                     operator,
                     left: Box::new(left),
@@ -2732,6 +2827,12 @@ impl Parser {
     }
 
     fn check_value_atom(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
+        if self.peek() == Some(&Token::LeftParen) {
+            self.position += 1;
+            let expression = self.check_value_expression()?;
+            self.take(Token::RightParen)?;
+            return Ok(expression);
+        }
         if self.peek_word("current_principal_id") {
             self.position += 1;
             self.take(Token::LeftParen)?;
@@ -3154,6 +3255,10 @@ fn tokenize(sql: &str) -> Result<Vec<Token>, DdlSqlError> {
             }
             b'+' => {
                 tokens.push(Token::Plus);
+                cursor += 1;
+            }
+            b'*' => {
+                tokens.push(Token::Star);
                 cursor += 1;
             }
             b'\'' => {

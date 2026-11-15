@@ -218,6 +218,9 @@ pub enum Expr {
     LessEqual(Box<Expr>, Box<Expr>),
     Greater(Box<Expr>, Box<Expr>),
     GreaterEqual(Box<Expr>, Box<Expr>),
+    Add(Box<Expr>, Box<Expr>),
+    Subtract(Box<Expr>, Box<Expr>),
+    Multiply(Box<Expr>, Box<Expr>),
     And(Vec<Expr>),
     Or(Vec<Expr>),
     Not(Box<Expr>),
@@ -619,6 +622,71 @@ fn eval(
                 _ => unreachable!(),
             };
             Ok(Value::Scalar(Some(ScalarValue::Boolean(result))))
+        }
+        Expr::Add(left, right) | Expr::Subtract(left, right) | Expr::Multiply(left, right) => {
+            let Value::Scalar(left) = child(left, remaining)?;
+            let Value::Scalar(right) = child(right, remaining)?;
+            let Some((left, right)) = left.zip(right) else {
+                return Ok(Value::Scalar(None));
+            };
+            let value = match (expression, left, right) {
+                (Expr::Add(_, _), ScalarValue::SmallInt(a), ScalarValue::SmallInt(b)) => {
+                    ScalarValue::SmallInt(
+                        a.checked_add(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
+                (Expr::Subtract(_, _), ScalarValue::SmallInt(a), ScalarValue::SmallInt(b)) => {
+                    ScalarValue::SmallInt(
+                        a.checked_sub(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
+                (Expr::Multiply(_, _), ScalarValue::SmallInt(a), ScalarValue::SmallInt(b)) => {
+                    ScalarValue::SmallInt(
+                        a.checked_mul(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
+                (Expr::Add(_, _), ScalarValue::Integer(a), ScalarValue::Integer(b)) => {
+                    ScalarValue::Integer(
+                        a.checked_add(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
+                (Expr::Subtract(_, _), ScalarValue::Integer(a), ScalarValue::Integer(b)) => {
+                    ScalarValue::Integer(
+                        a.checked_sub(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
+                (Expr::Multiply(_, _), ScalarValue::Integer(a), ScalarValue::Integer(b)) => {
+                    ScalarValue::Integer(
+                        a.checked_mul(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
+                (Expr::Add(_, _), ScalarValue::BigInt(a), ScalarValue::BigInt(b)) => {
+                    ScalarValue::BigInt(
+                        a.checked_add(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
+                (Expr::Subtract(_, _), ScalarValue::BigInt(a), ScalarValue::BigInt(b)) => {
+                    ScalarValue::BigInt(
+                        a.checked_sub(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
+                (Expr::Multiply(_, _), ScalarValue::BigInt(a), ScalarValue::BigInt(b)) => {
+                    ScalarValue::BigInt(
+                        a.checked_mul(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
+                _ => return Err(AuthorizationError::EvaluationFailed),
+            };
+            Ok(Value::Scalar(Some(value)))
         }
         Expr::And(expressions) => {
             let mut result = Truth::True;

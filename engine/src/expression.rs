@@ -4,7 +4,8 @@ use crate::catalog::decode_registered_envelope;
 use crate::tuple::{ColumnSchema, ScalarType, ScalarValue, encode_tuple};
 
 const MAGIC: &[u8; 4] = b"EIR1";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
+const CATALOG_VERSION: u32 = 1;
 const HEADER_LEN: usize = 8;
 pub const MAX_EXPRESSION_BYTES: usize = 256 * 1024;
 pub const MAX_EXPRESSION_NODES: usize = 256;
@@ -61,7 +62,10 @@ pub fn is_row_local_expression(expression: &Expr) -> bool {
         | Expr::Less(left, right)
         | Expr::LessEqual(left, right)
         | Expr::Greater(left, right)
-        | Expr::GreaterEqual(left, right) => {
+        | Expr::GreaterEqual(left, right)
+        | Expr::Add(left, right)
+        | Expr::Subtract(left, right)
+        | Expr::Multiply(left, right) => {
             is_row_local_expression(left) && is_row_local_expression(right)
         }
         Expr::And(expressions) | Expr::Or(expressions) => {
@@ -211,6 +215,27 @@ fn infer_type(
             }
             dependencies.insert(*role_id);
             Ok(InferredType::Known(ScalarType::Boolean))
+        }
+        Expr::Add(left, right) | Expr::Subtract(left, right) | Expr::Multiply(left, right) => {
+            let left_type = child(left, dependencies, remaining)?;
+            let right_type = child(right, dependencies, remaining)?;
+            let arithmetic_type = match (left_type, right_type) {
+                (InferredType::Known(left), InferredType::Known(right)) if left == right => {
+                    Some(left)
+                }
+                (InferredType::Null, InferredType::Known(right)) => Some(right),
+                (InferredType::Known(left), InferredType::Null) => Some(left),
+                _ => None,
+            };
+            let Some(arithmetic_type) = arithmetic_type.filter(|scalar_type| {
+                matches!(
+                    scalar_type,
+                    ScalarType::SmallInt | ScalarType::Integer | ScalarType::BigInt
+                )
+            }) else {
+                return Err(ExpressionCodecError::TypeMismatch);
+            };
+            Ok(InferredType::Known(arithmetic_type))
         }
         Expr::Equal(left, right)
         | Expr::NotEqual(left, right)
@@ -364,7 +389,7 @@ pub fn decode_catalog_expression_record(
         4 => ExpressionPurpose::PolicyCheck,
         _ => return Err(ExpressionCodecError::InvalidCatalogRecord),
     };
-    if catalog_u32(record, 2)? != VERSION as u32 {
+    if catalog_u32(record, 2)? != CATALOG_VERSION {
         return Err(ExpressionCodecError::UnsupportedVersion);
     }
     let result_type_id = catalog_bytes(record, 3)?
@@ -459,7 +484,8 @@ pub fn decode_expression(bytes: &[u8]) -> Result<Expr, ExpressionCodecError> {
     if &bytes[..4] != MAGIC {
         return Err(ExpressionCodecError::InvalidEncoding);
     }
-    if u16::from_le_bytes(bytes[4..6].try_into().unwrap()) != VERSION {
+    let version = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
+    if !(1..=VERSION).contains(&version) {
         return Err(ExpressionCodecError::UnsupportedVersion);
     }
     if bytes[6..8] != [0; 2] {
@@ -469,6 +495,7 @@ pub fn decode_expression(bytes: &[u8]) -> Result<Expr, ExpressionCodecError> {
         bytes,
         offset: HEADER_LEN,
         nodes: 0,
+        version,
     };
     let expression = decoder.node(1)?;
     if decoder.offset != bytes.len() {
@@ -536,6 +563,9 @@ impl Encoder {
             Expr::LessEqual(left, right) => self.binary(19, left, right, depth),
             Expr::Greater(left, right) => self.binary(20, left, right, depth),
             Expr::GreaterEqual(left, right) => self.binary(21, left, right, depth),
+            Expr::Add(left, right) => self.binary(26, left, right, depth),
+            Expr::Subtract(left, right) => self.binary(27, left, right, depth),
+            Expr::Multiply(left, right) => self.binary(28, left, right, depth),
             Expr::And(expressions) => self.children(22, expressions, depth),
             Expr::Or(expressions) => self.children(23, expressions, depth),
             Expr::Not(child) => {
@@ -649,6 +679,7 @@ struct Decoder<'a> {
     bytes: &'a [u8],
     offset: usize,
     nodes: usize,
+    version: u16,
 }
 
 impl Decoder<'_> {
@@ -707,6 +738,9 @@ impl Decoder<'_> {
             23 => self.children(true, depth),
             24 => Ok(Expr::Not(Box::new(self.node(depth + 1)?))),
             25 => Ok(Expr::IsNull(Box::new(self.node(depth + 1)?))),
+            26 if self.version >= 2 => self.binary(Expr::Add, depth),
+            27 if self.version >= 2 => self.binary(Expr::Subtract, depth),
+            28 if self.version >= 2 => self.binary(Expr::Multiply, depth),
             _ => Err(ExpressionCodecError::InvalidEncoding),
         }
     }

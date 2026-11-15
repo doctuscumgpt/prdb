@@ -583,3 +583,8 @@
 ## DS-SQL-63: Comparisons accept grouped right operands — verified
 
 - `admin-sql` CHECK comparisons now accept a parenthesized supported scalar expression on the right and bind it against the left operand's type. Parser/binder and full serial delegated-cgroup workspace checks pass with sandbox/process coverage and zero ignored tests; workspace build, format, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
+
+## SQL CHECK integer arithmetic — implemented slice
+
+- `CREATE TABLE` and `ALTER TABLE ... ADD CHECK` expression parsing accepts integer `+`, `-`, and `*`, including grouped scalar expressions and normal multiplication precedence. DDL SQL still uses the separately authenticated control path.
+- Verification: workspace check, format, and warning-denied all-target Clippy passed in the pinned Nix shell. Tests were not run in this turn.

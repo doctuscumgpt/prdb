@@ -941,3 +941,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Bounded CHECK comparison parsing now accepts a parenthesized supported scalar expression on the right, matching the existing grouped-expression support on the left. Existing contextual literal binding and same-type validation produce the same EIR1 nodes; protocol and storage formats are unchanged.
 - Regression coverage binds `enabled = (priority >= 1)` to typed EIR1 and rejects incompatible types through the existing binder. The full serial delegated-cgroup workspace suite passes (289 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored); workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.
+
+## DS-SQL-64: checked integer arithmetic in CHECK expressions — implemented
+
+- SQL CHECK binding now accepts SMALLINT, INTEGER, and BIGINT `+`, `-`, and `*`, with multiplication precedence, same-type operands, and contextual integer literal binding. NULL propagates. Runtime overflow fails closed as an expression evaluation error.
+- EIR1 encoding writes version 2 for the new arithmetic opcodes and continues to decode version 1 expressions. Catalog expression metadata remains version 1. Decimal arithmetic and division remain unsupported.
+- Verification: `cargo check --workspace --locked --offline`, `cargo fmt --all`, and warning-denied all-target Clippy passed in the pinned Nix shell. Tests were not run in this turn.
