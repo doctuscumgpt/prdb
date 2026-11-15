@@ -874,3 +874,8 @@
 
 - `AdminClient::list_runtime_invocations_page` requests runtime-list version 6 and decodes both supervisor-relayed and gateway-written result byte totals. `prdb-client runtime-list` emits both process-local counters.
 - Focused typed page decoding and real gateway/supervisor CLI coverage passed, including a lower bound from the actual `QUERY_READY` payload. Workspace format, build, warning-denied all-target Clippy, TinyCC SDK tests/fixture, delegated cgroup probe, full serial delegated-cgroup workspace suite, and `git diff --check` passed. Cargo.lock is unchanged.
+
+## AdminClient conditional table-drop SQL — verified
+
+- Added `execute_drop_table_if_exists_sql`; resolved tables use the existing typed drop path, while unresolved schema/table names are suppressed only after an authenticated administrator-only runtime metadata check. Other failures propagate.
+- Parser and gateway/supervisor process coverage include the administrator no-op and non-administrator denial. Workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, delegated cgroup probe, and full serial delegated-cgroup suite passed; see [DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

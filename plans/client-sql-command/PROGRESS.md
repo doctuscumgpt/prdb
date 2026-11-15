@@ -411,3 +411,8 @@
 
 - The gateway/supervisor metadata lifecycle adds a column, creates an index on it, verifies SQL `DROP COLUMN ... RESTRICT` is rejected while the index depends on it, drops the index, and then drops the column through `admin-sql`. Authenticated metadata confirms only the original column remains.
 - The focused delegated process test passed. Workspace build, format check, warning-denied Clippy, and `git diff --check` passed; `Cargo.lock` is unchanged. See [schema DDL progress](../ddl-schema/PROGRESS.md).
+
+## `DROP TABLE IF EXISTS` administrative SQL — verified
+
+- `admin-sql` now accepts the qualified conditional drop form and reports when an authorized no-op finds no target. Present tables follow the existing typed RESTRICT drop flow. The DDL process regression covers administrator and non-administrator behavior.
+- The focused gateway/supervisor process test passed with administrator and non-administrator cases. Workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, delegated cgroup probe, and the full serial delegated-cgroup workspace suite passed; see [DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

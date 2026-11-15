@@ -4426,10 +4426,35 @@ impl AdminClient {
         &mut self,
         sql: &str,
     ) -> Result<AdminOperationResult, ClientSubmitError> {
-        let (schema, table) = crate::ddl_sql::parse_drop_table(sql)
+        let statement = crate::ddl_sql::parse_drop_table(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
-        let table_id = self.resolve_table_sql_name(&schema, &table)?;
+        if statement.if_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let table_id = self.resolve_table_sql_name(&statement.schema, &statement.table)?;
         self.drop_table(table_id)
+    }
+
+    /// Execute `DROP TABLE IF EXISTS`. If metadata cannot resolve the target,
+    /// suppress absence only after the server confirms database-administrator
+    /// authority; present tables still use the ordinary authorized drop path.
+    pub fn execute_drop_table_if_exists_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<Option<AdminOperationResult>, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_drop_table(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if !statement.if_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        match self.resolve_table_sql_name(&statement.schema, &statement.table) {
+            Ok(table_id) => self.drop_table(table_id).map(Some),
+            Err(ClientSubmitError::InvalidAdministrativeRequest) => {
+                self.list_runtime_invocations_page(1, None)?;
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn resolve_schema_sql_name(&mut self, name: &str) -> Result<[u8; 16], ClientSubmitError> {

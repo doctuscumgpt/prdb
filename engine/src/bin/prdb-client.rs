@@ -618,15 +618,31 @@ fn admin_sql(
             lower_hex(&result.operation_id),
             result.commit_sequence
         );
+    } else if let Some(statement) = drop_table_statement {
+        if statement.if_exists {
+            match client
+                .execute_drop_table_if_exists_sql(sql)
+                .map_err(|error| error.to_string())?
+            {
+                Some(result) => println!(
+                    "dropped table (operation {}, commit {})",
+                    lower_hex(&result.operation_id),
+                    result.commit_sequence
+                ),
+                None => println!("table did not exist"),
+            }
+        } else {
+            let result = client
+                .execute_drop_table_sql(sql)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "dropped table (operation {}, commit {})",
+                lower_hex(&result.operation_id),
+                result.commit_sequence
+            );
+        }
     } else {
-        let result = client
-            .execute_drop_table_sql(sql)
-            .map_err(|error| error.to_string())?;
-        println!(
-            "dropped table (operation {}, commit {})",
-            lower_hex(&result.operation_id),
-            result.commit_sequence
-        );
+        return Err("invalid administrative SQL: unsupported statement".to_owned());
     }
     Ok(())
 }

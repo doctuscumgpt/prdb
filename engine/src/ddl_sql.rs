@@ -64,6 +64,13 @@ pub struct RenameTableSql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DropTableSql {
+    pub schema: String,
+    pub table: String,
+    pub if_exists: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnerTransferSql {
     pub schema: String,
     pub table: Option<String>,
@@ -1107,16 +1114,27 @@ pub fn parse_table_owner_transfer(sql: &str) -> Result<OwnerTransferSql, DdlSqlE
     })
 }
 
-pub fn parse_drop_table(sql: &str) -> Result<(String, String), DdlSqlError> {
+pub fn parse_drop_table(sql: &str) -> Result<DropTableSql, DdlSqlError> {
     let mut parser = statement_parser(sql)?;
     parser.word("drop")?;
     parser.word("table")?;
+    let if_exists = if parser.peek_word("if") {
+        parser.word("if")?;
+        parser.word("exists")?;
+        true
+    } else {
+        false
+    };
     let schema = parser.identifier()?;
     parser.take(Token::Dot)?;
     let table = parser.identifier()?;
     parser.word("restrict")?;
     finish_statement(&mut parser)?;
-    Ok((schema, table))
+    Ok(DropTableSql {
+        schema,
+        table,
+        if_exists,
+    })
 }
 
 /// Parse `ALTER TABLE schema.table ADD {PRIMARY KEY|UNIQUE} (columns...)`.
@@ -2694,13 +2712,27 @@ mod tests {
         );
         assert_eq!(
             parse_drop_table("DROP TABLE app.events RESTRICT").unwrap(),
-            ("app".into(), "events".into())
+            DropTableSql {
+                schema: "app".into(),
+                table: "events".into(),
+                if_exists: false,
+            }
+        );
+        assert_eq!(
+            parse_drop_table("DROP TABLE IF EXISTS app.events RESTRICT;").unwrap(),
+            DropTableSql {
+                schema: "app".into(),
+                table: "events".into(),
+                if_exists: true,
+            }
         );
         for sql in [
             "ALTER TABLE events RENAME TO archived",
             "ALTER TABLE app.events RENAME archived",
             "DROP TABLE app.events",
             "DROP TABLE app.events CASCADE",
+            "DROP TABLE IF app.events RESTRICT",
+            "DROP TABLE IF NOT EXISTS app.events RESTRICT",
             "DROP TABLE app.events RESTRICT; DROP TABLE app.other RESTRICT",
         ] {
             assert!(

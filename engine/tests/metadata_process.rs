@@ -4148,6 +4148,35 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
             ])
             .output()
     };
+    let absent_drop = execute_admin_sql("DROP TABLE IF EXISTS selfref_app.not_present RESTRICT;")?;
+    assert!(
+        absent_drop.status.success(),
+        "administrator DROP TABLE IF EXISTS failed: {}",
+        String::from_utf8_lossy(&absent_drop.stderr)
+    );
+    assert!(String::from_utf8_lossy(&absent_drop.stdout).contains("table did not exist"));
+    let drop_probe_user = admin.create_user("drop_probe_user")?;
+    let token_expiry_us = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?
+        .saturating_add(3_600_000_000);
+    let drop_probe_token = admin.issue_token(
+        drop_probe_user.identity_id,
+        "drop-if-exists authorization test",
+        token_expiry_us,
+    )?;
+    let mut drop_probe_secret = *drop_probe_token.token_secret();
+    let mut drop_probe_admin = AdminClient::connect_authenticated(
+        address,
+        drop_probe_token.token_id,
+        &mut drop_probe_secret,
+    )?;
+    assert!(
+        drop_probe_admin
+            .execute_drop_table_if_exists_sql(
+                "DROP TABLE IF EXISTS selfref_app.not_present RESTRICT",
+            )
+            .is_err(),
+        "non-administrator must not suppress an absent-table result"
+    );
     let cli_output = execute_admin_sql(
         "CREATE TABLE selfref_app.nodes (tenant_id INTEGER, id INTEGER, parent_tenant_id INTEGER, parent_id INTEGER, PRIMARY KEY (tenant_id, id), FOREIGN KEY (parent_tenant_id, parent_id) REFERENCES selfref_app.nodes (tenant_id, id));",
     )?;
