@@ -6775,6 +6775,16 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
         "a hidden key must not distinguish a matching value from a missing value"
     );
+    assert_eq!(
+        invocation.probe_catalog_unique_index(
+            table_id,
+            index_id,
+            &[Some(ScalarValue::Boolean(true))],
+            &hidden_projection,
+        )?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
+        "a hidden key must not reveal whether an equality input has the indexed type"
+    );
     let conditional_policies = [
         policies[0].clone(),
         Policy {

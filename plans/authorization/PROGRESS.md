@@ -220,3 +220,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - The optimizer emits a unique point hint only for an exact supported equality on a statically readable unique key; the TinyCC SDK checks the hint against the parsed predicate, re-resolves relation identity, and calls the executor probe. The confined SQL DML acceptance exercises the point path and the two-sided non-unique range path.
 - `unique_constraint_uses_its_backing_index_for_invocation_writes` obtains the authorized reference scan and independently filters its rows, then compares row identity and sanitized cells with unique point and bounded range results. Hidden/conditional keys still yield `Unavailable` before key-value matching.
 - Verification: the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. Remaining: broaden key types/coercions and complex-predicate error-equivalence coverage.
+
+## AU-3: hidden-key type-error equivalence — verified slice
+
+- The catalog unique-index probe now has a regression where the index key is hidden and the equality input has the wrong scalar type. It returns the same `Unavailable` fallback as matching and nonmatching correctly typed inputs, confirming that key readability is checked before value encoding or comparison.
+- Verification: `cargo test --locked --test transaction unique_constraint_uses_its_backing_index_for_invocation_writes -- --exact --nocapture`, formatting check, and `git diff --check` passed. The complete delegated workspace suite passed immediately before this test-only addition; broader key-type/coercion and complex-predicate error-equivalence coverage remains open.
