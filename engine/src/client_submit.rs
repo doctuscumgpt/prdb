@@ -2999,15 +2999,12 @@ impl AdminClient {
         self.create_index(table_id, &statement.name, &column_ids, statement.unique)
     }
 
-    /// Drop a schema-qualified index after resolving its generated ID through
-    /// authenticated administrative metadata.
-    pub fn execute_drop_index_sql(
+    fn resolve_index_sql_name(
         &mut self,
-        sql: &str,
-    ) -> Result<AdminIndexResult, ClientSubmitError> {
-        let statement = crate::ddl_sql::parse_drop_index(sql)
-            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
-        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        schema_name: &str,
+        index_name: &str,
+    ) -> Result<crate::metadata_discovery::AdministrativeIndex, ClientSubmitError> {
+        let schema_id = self.resolve_schema_sql_name(schema_name)?;
         let mut relation_cursor = None;
         let mut matched_index = None;
         loop {
@@ -3028,9 +3025,7 @@ impl AdminClient {
                     )?;
                     let next_index_cursor = indexes.next_cursor;
                     for index in indexes.records {
-                        if index.name == statement.name
-                            && matched_index.replace(index.index_id).is_some()
-                        {
+                        if index.name == index_name && matched_index.replace(index).is_some() {
                             return Err(ClientSubmitError::InvalidAdministrativeRequest);
                         }
                     }
@@ -3045,8 +3040,31 @@ impl AdminClient {
                 break;
             }
         }
-        let index_id = matched_index.ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
-        self.drop_index(index_id)
+        matched_index.ok_or(ClientSubmitError::InvalidAdministrativeRequest)
+    }
+
+    /// Rebuild a schema-qualified index after resolving its logical definition
+    /// through authenticated administrative metadata.
+    pub fn execute_rebuild_index_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminIndexResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_rebuild_index(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let index = self.resolve_index_sql_name(&statement.schema, &statement.name)?;
+        self.rebuild_index(index.index_id, &index.column_ids, index.unique)
+    }
+
+    /// Drop a schema-qualified index after resolving its generated ID through
+    /// authenticated administrative metadata.
+    pub fn execute_drop_index_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminIndexResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_drop_index(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let index = self.resolve_index_sql_name(&statement.schema, &statement.name)?;
+        self.drop_index(index.index_id)
     }
 
     /// Create a user or role from bounded SQL through the existing typed ADMIN

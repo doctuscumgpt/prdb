@@ -220,6 +220,7 @@ fn admin_sql(
         std::str::from_utf8(&sql_bytes).map_err(|_| "SQL input must be valid UTF-8".to_owned())?;
     let table_statement = prdb_engine::ddl_sql::parse_create_table(sql).ok();
     let create_index_statement = prdb_engine::ddl_sql::parse_create_index(sql).ok();
+    let rebuild_index_statement = prdb_engine::ddl_sql::parse_rebuild_index(sql).ok();
     let create_identity_statement = prdb_engine::ddl_sql::parse_create_identity(sql).ok();
     let rename_identity_statement = prdb_engine::ddl_sql::parse_rename_identity(sql).ok();
     let drop_identity_statement = prdb_engine::ddl_sql::parse_drop_identity(sql).ok();
@@ -249,6 +250,7 @@ fn admin_sql(
     let drop_column_statement = prdb_engine::ddl_sql::parse_drop_column(sql).ok();
     if table_statement.is_none()
         && create_index_statement.is_none()
+        && rebuild_index_statement.is_none()
         && create_identity_statement.is_none()
         && rename_identity_statement.is_none()
         && drop_identity_statement.is_none()
@@ -419,6 +421,15 @@ fn admin_sql(
             .map_err(|error| error.to_string())?;
         print_operation(
             "dropped index",
+            &result.operation_id,
+            result.commit_sequence,
+        );
+    } else if rebuild_index_statement.is_some() {
+        let result = client
+            .execute_rebuild_index_sql(sql)
+            .map_err(|error| error.to_string())?;
+        print_operation(
+            "rebuilt index",
             &result.operation_id,
             result.commit_sequence,
         );

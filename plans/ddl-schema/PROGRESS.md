@@ -655,3 +655,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added bounded `ALTER SCHEMA ... OWNER TO USER|ROLE ...` and `ALTER TABLE schema.table OWNER TO USER|ROLE ...` parsing and dispatch through authenticated object/identity resolution to existing typed owner-transfer operations. The delegated metadata lifecycle exercises both SQL forms and restores its fixture ownership after each change.
 - Verification: focused parser tests and the delegated gateway/supervisor metadata lifecycle passed. Locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored; `git diff --check` passed. Cargo.lock is unchanged.
+
+## DS-SQL-18: REBUILD INDEX SQL — verified
+
+- `REBUILD INDEX schema.name` resolves one unambiguous logical index through authenticated metadata across visible relations in the schema, then sends its stable ID, ordered column IDs, and uniqueness profile to the existing `indexes.rebuild` operation. Storage validates and atomically republishes memberships under its current DDL authority/fencing rules.
+- Regression: the parser rejects unqualified, extra-clause, and multi-statement forms. The gateway/supervisor metadata lifecycle rebuilds a named index through `admin-sql` and checks the committed result.
+- Verification: focused parser and delegated process tests passed. Locked offline workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed; Cargo.lock is unchanged.

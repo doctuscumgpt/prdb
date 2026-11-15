@@ -2929,6 +2929,32 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             false,
         )
         .map_err(|error| format!("process ADMIN create_index failed: {error}"))?;
+    let rebuild_index_sql_path = root.join("rebuild-index.sql");
+    std::fs::write(
+        &rebuild_index_sql_path,
+        "REBUILD INDEX process_admin_schema.process_admin_index;",
+    )?;
+    let rebuild_index_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            rebuild_index_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        rebuild_index_sql.status.success(),
+        "REBUILD INDEX SQL failed: {}",
+        String::from_utf8_lossy(&rebuild_index_sql.stderr)
+    );
+    assert!(String::from_utf8_lossy(&rebuild_index_sql.stdout).contains("rebuilt index"));
     let rebuilt_index = admin
         .rebuild_index(created_index.index_id, &created_table.column_ids, true)
         .map_err(|error| format!("process ADMIN rebuild_index failed: {error}"))?;

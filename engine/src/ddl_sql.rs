@@ -158,6 +158,12 @@ pub struct DropIndexSql {
     pub name: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RebuildIndexSql {
+    pub schema: String,
+    pub name: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CreateIdentityKind {
     User,
@@ -557,6 +563,18 @@ pub fn parse_drop_index(sql: &str) -> Result<DropIndexSql, DdlSqlError> {
     parser.word("restrict")?;
     finish_statement(&mut parser)?;
     Ok(DropIndexSql { schema, name })
+}
+
+/// Parse a bounded schema-qualified index rebuild request.
+pub fn parse_rebuild_index(sql: &str) -> Result<RebuildIndexSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("rebuild")?;
+    parser.word("index")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let name = parser.identifier()?;
+    finish_statement(&mut parser)?;
+    Ok(RebuildIndexSql { schema, name })
 }
 
 /// Parse the bounded administrative `CREATE USER` or `CREATE ROLE` form.
@@ -2905,6 +2923,24 @@ mod tests {
             "DROP INDEX app.employee_department RESTRICT; DROP TABLE app.users RESTRICT",
         ] {
             assert!(parse_drop_index(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_bounded_rebuild_index_sql() {
+        assert_eq!(
+            parse_rebuild_index("REBUILD INDEX app.employee_department;").unwrap(),
+            RebuildIndexSql {
+                schema: "app".into(),
+                name: "employee_department".into(),
+            }
+        );
+        for sql in [
+            "REBUILD INDEX employee_department",
+            "REBUILD INDEX app.employee_department RESTRICT",
+            "REBUILD INDEX app.employee_department; DROP TABLE app.users RESTRICT",
+        ] {
+            assert!(parse_rebuild_index(sql).is_err(), "accepted {sql}");
         }
     }
 

@@ -114,9 +114,10 @@ Default drop mode is `RESTRICT`: dependencies prevent removing an object still r
 CREATE INDEX employees_department ON app.employees USING BTREE (department_id, name);
 CREATE UNIQUE INDEX employees_unique_name ON app.employees (department_id, name);
 DROP INDEX app.employees_department RESTRICT;
+REBUILD INDEX app.employees_department;
 ```
 
-Index names live in the table's schema. Initial indexes are B-trees on one or more plain columns, ascending with nulls last. A unique index uses the same null/commit-validation semantics as `UNIQUE`. Primary/unique constraints own backing indexes; their indexes cannot be dropped independently while required. Expression, partial, covering, full-text, custom access methods, and `CREATE INDEX CONCURRENTLY` are deferred.
+Index names live in the table's schema. Initial indexes are B-trees on one or more plain columns, ascending with nulls last. `REBUILD INDEX schema.name` resolves the logical index through authenticated metadata and republishes its existing definition and memberships through `indexes.rebuild`; it validates the complete membership set and advances the table write epoch, even when the definition is unchanged. A unique index uses the same null/commit-validation semantics as `UNIQUE`. Primary/unique constraints own backing indexes; their indexes cannot be dropped independently while required. Expression, partial, covering, full-text, custom access methods, and `CREATE INDEX CONCURRENTLY` are deferred.
 
 For ordinary index creation, removal, and rebuild, the storage manager accepts an actor identity only from a trusted authenticated administrative caller, then independently verifies that the actor is an enabled user with table ownership, an inherited owner role, an `INDEX` grant, or membership in the reserved database-administrator role. The commit guards the actor, role-membership, grant, and table-owner records used by that decision so concurrent revocation or ownership changes abort stale DDL. This narrow route handles index-definition and matching index-object records; every other administrative action needs its own permission check before control-channel exposure.
 

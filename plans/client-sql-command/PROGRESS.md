@@ -316,3 +316,9 @@
 ## DP-SQL-5: CREATE OR REPLACE ROW/CELL POLICY — verified
 
 - `CREATE OR REPLACE` resolves a same-name policy across row and cell kinds and dispatches the dedicated atomic `policies.replace` protocol operation. The production process lifecycle replaces a row policy with a cell policy; the full serial delegated-cgroup workspace suite, warning-denied Clippy, build, format, TinyCC, and release-profile checks passed with zero ignored tests.
+
+## DP-SQL-7: named REBUILD INDEX SQL — verified
+
+- Added bounded `REBUILD INDEX schema.name` to `admin-sql`. The client searches paginated authenticated logical-index metadata within the named schema, rejects missing or ambiguous names, and dispatches the existing `indexes.rebuild` operation using the current ordered column IDs and uniqueness flag.
+- Red/green evidence: parser coverage rejects unqualified names, unsupported clauses, and multiple statements; the separate gateway/supervisor lifecycle successfully rebuilds a logical index by name through SQL.
+- Verification: focused parser and delegated process tests passed. Locked offline workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed; Cargo.lock is unchanged.
