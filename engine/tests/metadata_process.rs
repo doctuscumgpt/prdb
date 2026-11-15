@@ -1200,6 +1200,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         .next_cursor
         .ok_or("expected a second schema visible through ownership")?;
     let mut revocation_admin_secret = admin_control_secret;
+    let mut reconnect_admin_secret = admin_control_secret;
     let mut administrator =
         AdminClient::connect_authenticated(address, token_id, &mut revocation_admin_secret)?;
     administrator
@@ -1209,8 +1210,25 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         owner_metadata.list_schemas_page(1, Some(&owner_schema_cursor)),
         Err(prdb_engine::client_submit::ClientSubmitError::ServerRejected(_))
     ));
+    let administrator_cursor = administrator
+        .list_schemas_page(1, None)
+        .map_err(|error| format!("administrator schema cursor start failed: {error:?}"))?
+        .next_cursor
+        .ok_or("expected a second administrator schema page")?;
     drop(owner_metadata);
     drop(administrator);
+    let mut reconnected_admin =
+        AdminClient::connect_authenticated(address, token_id, &mut reconnect_admin_secret)
+            .map_err(|error| format!("administrator reconnect failed: {error:?}"))?;
+    let replayed_cursor = reconnected_admin.list_schemas_page(1, Some(&administrator_cursor));
+    assert!(
+        matches!(
+            &replayed_cursor,
+            Err(prdb_engine::client_submit::ClientSubmitError::ServerRejected(_))
+        ),
+        "replayed administrator cursor was not rejected: {replayed_cursor:?}"
+    );
+    drop(reconnected_admin);
 
     let mut restricted_admin_secret = restricted_secret;
     let mut restricted_metadata =

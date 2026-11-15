@@ -270,3 +270,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. All three authenticated metadata process tests passed, including the MD-6 schema-owner transfer between administrative policy pages.
 - Confined SQL SELECT over all three public projections, including predicates/limits and API parity, is covered by the maintained fixture acceptance recorded in SM-6 / MD-4 above. Cursor continuation across process restart remains unimplemented.
+
+## MD-3 / MD-6: administrative cursor session binding — verified slice
+
+- The authenticated gateway/supervisor metadata lifecycle obtains a valid administrator schema continuation, closes that authenticated connection, reconnects with the same credential, and verifies the old continuation is rejected. The neighboring MD-6 case also verifies ownership transfer invalidates an existing owner's continuation.
+- Verification: `cargo test --locked --test metadata_process authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes -- --exact --nocapture` passed in the delegated user service. The latest full serial delegated-cgroup workspace suite also passed before this focused test-only addition. Continuation across process restart remains unimplemented.
