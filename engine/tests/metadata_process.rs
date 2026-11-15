@@ -4537,12 +4537,43 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         "DROP POLICY as MANAGE_POLICIES holder failed: {}",
         String::from_utf8_lossy(&drop_managed_policy_sql.stderr)
     );
-    admin.revoke_object_privilege(
-        transfer_owner.identity_id,
-        created_table.table_id,
-        AdminObjectPrivilege::ManagePolicies,
-        AdminObjectGrantTarget::Object,
+    let cursor_policy_one = admin.execute_create_policy_sql(
+        "CREATE ROW POLICY process_cursor_policy_one ON process_admin_schema.process_admin_table FOR SELECT TO ROLE process_policy_role AS ALLOW USING (HAS_ROLE('process_policy_role'))",
     )?;
+    let cursor_policy_two = admin.execute_create_policy_sql(
+        "CREATE ROW POLICY process_cursor_policy_two ON process_admin_schema.process_admin_table FOR SELECT TO ROLE process_policy_role AS ALLOW USING (HAS_ROLE('process_policy_role'))",
+    )?;
+    admin.set_schema_owner(created_schema.identity_id, transfer_owner.identity_id)?;
+    let mut cursor_owner_credentials = read_client_credentials(&transfer_credential_path)?;
+    let mut cursor_owner = AdminClient::connect_authenticated(
+        address,
+        cursor_owner_credentials.token_id,
+        &mut cursor_owner_credentials.token_secret,
+    )?;
+    let first_policy_page = cursor_owner.list_policies_page(
+        created_schema.identity_id,
+        created_table.table_id,
+        1,
+        None,
+    )?;
+    assert_eq!(first_policy_page.records.len(), 1);
+    let revoked_policy_cursor = first_policy_page
+        .next_cursor
+        .ok_or("expected a policy cursor before schema ownership is transferred")?;
+    admin.set_schema_owner(created_schema.identity_id, admin_user_id)?;
+    assert!(matches!(
+        cursor_owner.list_policies_page(
+            created_schema.identity_id,
+            created_table.table_id,
+            1,
+            Some(&revoked_policy_cursor),
+        ),
+        Err(prdb_engine::client_submit::ClientSubmitError::ServerRejected(_))
+    ));
+    drop(cursor_owner);
+    drop(cursor_owner_credentials);
+    admin.drop_policy(cursor_policy_one.policy_id)?;
+    admin.drop_policy(cursor_policy_two.policy_id)?;
     assert!(
         admin
             .list_policies_page(created_schema.identity_id, created_table.table_id, 64, None)?

@@ -259,3 +259,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The complete serial delegated-cgroup workspace suite passed with zero ignored tests. This includes 75 transaction tests for authorized schema/relation/column discovery, cursor scoping, `information_schema` projection, plus all three authenticated metadata process tests.
 - Remaining administrative SQL binding and process-bound discovery handle work stays as recorded in the component plan.
+
+## MD-6: schema-owner authority revocation between pages — verified
+
+- The authenticated gateway/supervisor lifecycle now creates two policies, grants schema ownership to a non-administrator, opens a one-record administrative policy page, then transfers schema ownership back before continuing. The old owner’s continuation is rejected after current authority is rechecked.
+- This exercises authority revocation while the catalog result itself remains unchanged; policy DDL permission is not treated as administrative discovery authority.
+- Verification: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` passed through the production gateway and supervisor. The full delegated-cgroup workspace suite was last run at the prior acceptance checkpoint; it was not rerun for this focused process regression.
