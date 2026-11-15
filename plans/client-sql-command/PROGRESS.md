@@ -579,3 +579,7 @@
 ## DS-SQL-62: Finite-set and range operands accept expressions — verified
 
 - `admin-sql` CHECK SQL accepts supported scalar expressions in `IN` lists and for both `BETWEEN` bounds. Binding checks contextual types and canonical EIR1 bounds; parser/binder and full serial delegated-cgroup workspace checks pass with sandbox/process coverage and zero ignored tests. Workspace build, format, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
+
+## DS-SQL-63: Comparisons accept grouped right operands — verified
+
+- `admin-sql` CHECK comparisons now accept a parenthesized supported scalar expression on the right and bind it against the left operand's type. Parser/binder and full serial delegated-cgroup workspace checks pass with sandbox/process coverage and zero ignored tests; workspace build, format, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.

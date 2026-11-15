@@ -1005,3 +1005,7 @@
 ## DS-SQL-62: Finite-set and range operands accept expressions — verified
 
 - Authenticated CHECK SQL accepts supported scalar expressions inside `IN` lists and as `BETWEEN` bounds, with contextually checked types and bounded EIR1 lowering. Parser/binder and full delegated-cgroup workspace checks pass with sandbox/process coverage and zero ignored tests; workspace build, format check, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
+
+## DS-SQL-63: Comparisons accept grouped right operands — verified
+
+- Authenticated CHECK SQL accepts a parenthesized scalar expression on the right of a comparison and binds both sides through existing type checking. The parser/binder and full delegated-cgroup workspace suite pass with sandbox/process coverage and zero ignored tests; workspace build, format check, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.

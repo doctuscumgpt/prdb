@@ -2671,7 +2671,11 @@ impl Parser {
             };
             if let Some(operator) = operator {
                 self.position += 1;
-                let right = self.check_value_atom()?;
+                let right = if self.peek() == Some(&Token::LeftParen) {
+                    self.check_unary()?
+                } else {
+                    self.check_value_atom()?
+                };
                 Ok(CheckExpressionSql::Compare {
                     operator,
                     left: Box::new(left),
@@ -3736,6 +3740,26 @@ mod tests {
             Expr::GreaterEqual(
                 Box::new(Expr::Field(0)),
                 Box::new(Expr::Literal(Some(ScalarValue::Decimal(-125)))),
+            )
+        );
+
+        let grouped = parse_add_check_constraint(
+            "ALTER TABLE app.events ADD CHECK (enabled = (priority >= 1))",
+        )
+        .unwrap();
+        assert_eq!(
+            bind_check_expression(&grouped.expression, |name| match name {
+                "enabled" => Some((0, ScalarType::Boolean)),
+                "priority" => Some((1, ScalarType::Integer)),
+                _ => None,
+            })
+            .unwrap(),
+            Expr::Equal(
+                Box::new(Expr::Field(0)),
+                Box::new(Expr::GreaterEqual(
+                    Box::new(Expr::Field(1)),
+                    Box::new(Expr::Literal(Some(ScalarValue::Integer(1)))),
+                )),
             )
         );
 
