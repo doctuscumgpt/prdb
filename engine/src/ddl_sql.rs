@@ -136,6 +136,15 @@ pub struct DropColumnSql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateIndexSql {
+    pub schema: String,
+    pub table: String,
+    pub name: String,
+    pub columns: Vec<String>,
+    pub unique: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CheckExpressionSql {
     Column(String),
     Literal(CheckLiteralSql),
@@ -386,6 +395,50 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
         unique_constraints,
         check_constraints,
         foreign_keys,
+    })
+}
+
+/// Parse a bounded ordinary or unique B-tree index definition.
+pub fn parse_create_index(sql: &str) -> Result<CreateIndexSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("create")?;
+    let unique = if parser.peek_word("unique") {
+        parser.word("unique")?;
+        true
+    } else {
+        false
+    };
+    parser.word("index")?;
+    let name = parser.identifier()?;
+    parser.word("on")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    if parser.peek_word("using") {
+        parser.word("using")?;
+        parser.word("btree")?;
+    }
+    parser.take(Token::LeftParen)?;
+    let mut columns = vec![parser.identifier()?];
+    while parser.peek() == Some(&Token::Comma) {
+        parser.position += 1;
+        if columns.len() >= crate::tuple::MAX_COLUMNS {
+            return Err(DdlSqlError::InvalidStatement);
+        }
+        columns.push(parser.identifier()?);
+    }
+    parser.take(Token::RightParen)?;
+    finish_statement(&mut parser)?;
+    let mut seen = std::collections::HashSet::new();
+    if columns.iter().any(|column| !seen.insert(column)) {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    Ok(CreateIndexSql {
+        schema,
+        table,
+        name,
+        columns,
+        unique,
     })
 }
 
@@ -2070,6 +2123,38 @@ mod tests {
             "ALTER TABLE app.events ALTER COLUMN label DROP DEFAULT; ALTER TABLE app.events ALTER COLUMN label DROP DEFAULT",
         ] {
             assert!(parse_alter_column_default(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_bounded_create_index_sql() {
+        assert_eq!(
+            parse_create_index(
+                "CREATE INDEX employee_department ON app.employees USING BTREE (department_id, name);"
+            )
+            .unwrap(),
+            CreateIndexSql {
+                schema: "app".into(),
+                table: "employees".into(),
+                name: "employee_department".into(),
+                columns: vec!["department_id".into(), "name".into()],
+                unique: false,
+            }
+        );
+        let unique = parse_create_index(
+            "CREATE UNIQUE INDEX employee_department ON app.employees (department_id, name)",
+        )
+        .unwrap();
+        assert!(unique.unique);
+        assert_eq!(unique.columns, ["department_id", "name"]);
+        for sql in [
+            "CREATE INDEX employee_department ON employees (department_id)",
+            "CREATE INDEX employee_department ON app.employees USING HASH (department_id)",
+            "CREATE INDEX employee_department ON app.employees (department_id, department_id)",
+            "CREATE INDEX employee_department ON app.employees ()",
+            "CREATE INDEX employee_department ON app.employees (department_id); DROP INDEX app.employee_department RESTRICT",
+        ] {
+            assert!(parse_create_index(sql).is_err(), "accepted {sql}");
         }
     }
 

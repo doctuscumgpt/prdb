@@ -2913,6 +2913,46 @@ impl AdminClient {
         })
     }
 
+    /// Create an ordinary or unique B-tree index from qualified SQL names.
+    /// Relation and column names are resolved through authenticated metadata;
+    /// storage remains the authority for authorization and index validation.
+    pub fn execute_create_index_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminIndexResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_create_index(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
+        let mut cursor = None;
+        let mut visible_columns = Vec::new();
+        loop {
+            let page = self.list_columns_page(
+                schema_id,
+                table_id,
+                DEFAULT_METADATA_PAGE_SIZE,
+                cursor.as_deref(),
+            )?;
+            visible_columns.extend(page.records);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let column_ids = statement
+            .columns
+            .iter()
+            .map(|name| {
+                visible_columns
+                    .iter()
+                    .find(|column| &column.name == name)
+                    .map(|column| column.column_id)
+                    .ok_or(ClientSubmitError::InvalidAdministrativeRequest)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.create_index(table_id, &statement.name, &column_ids, statement.unique)
+    }
+
     /// Execute the supported SQL `CREATE TABLE` subset through the
     /// authenticated administrative control channel. The SQL is parsed locally
     /// into the same typed operation as `create_table`; storage remains the

@@ -797,3 +797,8 @@
 
 - `execute_drop_constraint_sql` now resolves the generated ID within the selected table and dispatches to the typed PK, UNIQUE, CHECK, or FK drop operation.
 - The primary-key authenticated TCP regression observed the prior rejection before implementation and now verifies typed PK drop dispatch. Existing FK drop remains covered. Focused TCP/CLI tests, locked build/fmt/Clippy, TinyCC checks, and the full serial delegated-cgroup suite passed with zero ignored tests; `git diff --check` passed.
+
+## SDK: CREATE INDEX administrative SQL — implemented
+
+- Added `AdminClient::execute_create_index_sql` to resolve qualified schema/table names and ordered columns from authenticated metadata, then invoke the existing typed index-create operation.
+- Parser, authenticated TCP argument-binding, and CLI syntax-recognition regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, complete serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed; see the DDL component progress entry. DROP INDEX remains a separate follow-up requiring metadata index names.

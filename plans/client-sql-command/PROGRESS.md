@@ -240,3 +240,8 @@
 
 - The bounded DROP CONSTRAINT SQL route now recognizes table-scoped generated IDs for PRIMARY KEY, UNIQUE, CHECK, and FOREIGN KEY constraints and dispatches by authenticated metadata kind.
 - The CLI process regression verifies generated-ID DROP syntax is recognized before credentials or network. Parser and AdminClient TCP coverage passed; locked build/fmt/Clippy, TinyCC SDK tests/fixture, and the complete serial delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed.
+
+## admin-sql: CREATE INDEX — implemented
+
+- Added bounded `CREATE [UNIQUE] INDEX ... ON schema.table [USING BTREE] (column, ...)` parsing and routing through authenticated metadata binding to typed index creation.
+- Parser, authenticated TCP, and pre-credential CLI recognition regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, complete serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed; see the DDL component progress entry. DROP INDEX SQL remains unsupported pending name-bearing index metadata.

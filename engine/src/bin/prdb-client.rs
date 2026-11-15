@@ -219,6 +219,7 @@ fn admin_sql(
     let sql =
         std::str::from_utf8(&sql_bytes).map_err(|_| "SQL input must be valid UTF-8".to_owned())?;
     let table_statement = prdb_engine::ddl_sql::parse_create_table(sql).ok();
+    let create_index_statement = prdb_engine::ddl_sql::parse_create_index(sql).ok();
     let schema_statement = prdb_engine::ddl_sql::parse_create_schema(sql).ok();
     let rename_schema_statement = prdb_engine::ddl_sql::parse_rename_schema(sql).ok();
     let drop_schema_statement = prdb_engine::ddl_sql::parse_drop_schema(sql).ok();
@@ -235,6 +236,7 @@ fn admin_sql(
     let rename_column_statement = prdb_engine::ddl_sql::parse_rename_column(sql).ok();
     let drop_column_statement = prdb_engine::ddl_sql::parse_drop_column(sql).ok();
     if table_statement.is_none()
+        && create_index_statement.is_none()
         && schema_statement.is_none()
         && rename_schema_statement.is_none()
         && drop_schema_statement.is_none()
@@ -261,7 +263,17 @@ fn admin_sql(
         &mut administrator.token_secret,
     )
     .map_err(|error| error.to_string())?;
-    if let Some(statement) = table_statement {
+    if create_index_statement.is_some() {
+        let result = client
+            .execute_create_index_sql(sql)
+            .map_err(|error| error.to_string())?;
+        println!(
+            "created index {} (operation {}, commit {})",
+            lower_hex(&result.index_id),
+            lower_hex(&result.operation_id),
+            result.commit_sequence
+        );
+    } else if let Some(statement) = table_statement {
         let result = client
             .execute_create_table_sql(sql)
             .map_err(|error| error.to_string())?;

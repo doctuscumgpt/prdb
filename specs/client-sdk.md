@@ -56,6 +56,10 @@ The requested set is only a ceiling. At START storage intersects it with the cur
 
 The Rust `RequestedScopeBuilder` consumes permission-filtered `VisibleSchema`, `VisibleRelation`, and `VisibleColumn` records from metadata discovery. Selecting a relation operation produces a table capability; selecting a column operation produces a column capability. Both automatically include that schema's USAGE capability. It emits canonical PSC1 ordering, collapses repeated identical selections, and enforces the 200-capability limit atomically. It cannot discover objects itself or establish authority: callers must obtain records through the authorized discovery APIs, and storage validates every submitted ID and grant independently.
 
+## Administrative CREATE INDEX SQL
+
+`AdminClient::execute_create_index_sql` accepts one bounded `CREATE [UNIQUE] INDEX name ON schema.table [USING BTREE] (column, ...)` statement. It resolves schema, relation, and ordered column names through authenticated metadata, then calls the existing typed index-create operation on the same control connection. Storage remains authoritative for DDL permission, uniqueness, and catalog validation. DROP INDEX SQL is not exposed yet; the typed index-drop API remains available.
+
 ## Buffer Lifetime and Workload
 
 Borrow SDK result values from immutable authorized batches until explicit batch release; do not allocate/copy every cell by default. The C API must make ownership and invalidation visible, and copied input validation remains necessary at the trust boundary. Follow [memory storage](memory-storage.md); no API exposes disk-page pointers or ring buffers.

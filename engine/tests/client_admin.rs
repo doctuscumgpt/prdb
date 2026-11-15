@@ -820,6 +820,93 @@ fn admin_client_sends_typed_index_prepare_start_and_status_requests() {
 }
 
 #[test]
+fn admin_client_creates_index_from_qualified_sql_names() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        for (operation, body) in [
+            (
+                "metadata.schemas.list",
+                format!(
+                    r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                    "a3".repeat(16)
+                ),
+            ),
+            (
+                "metadata.relations.list",
+                format!(
+                    r#"{{"relations":[{{"relation_id":"{}","name":"employees"}}],"next_cursor":null}}"#,
+                    "b4".repeat(16)
+                ),
+            ),
+            (
+                "metadata.columns.list",
+                format!(
+                    r#"{{"columns":[{{"column_id":"{}","name":"department_id","ordinal":0,"scalar_type":"integer","nullable":false}},{{"column_id":"{}","name":"name","ordinal":1,"scalar_type":"text","nullable":false}}],"next_cursor":null}}"#,
+                    "c5".repeat(16),
+                    "c6".repeat(16)
+                ),
+            ),
+        ] {
+            let request = read_frame(&mut stream, &mut decoder);
+            assert!(String::from_utf8_lossy(&request.payload)
+                .contains(&format!(r#""operation":"{operation}""#)));
+            respond(&mut stream, &request, body.as_bytes());
+        }
+        let prepare = read_frame(&mut stream, &mut decoder);
+        let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+        assert!(payload.contains(r#""operation":"indexes.create""#));
+        assert!(payload.contains(r#""name":"employee_department""#));
+        assert!(payload.contains(&format!(
+            r#""table_id":"{}","name":"employee_department","column_ids":["{}","{}"],"unique":false"#,
+            "b4".repeat(16),
+            "c5".repeat(16),
+            "c6".repeat(16)
+        )));
+        respond(
+            &mut stream,
+            &prepare,
+            format!(
+                r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                "d7".repeat(16)
+            )
+            .as_bytes(),
+        );
+        let start = read_frame(&mut stream, &mut decoder);
+        respond(
+            &mut stream,
+            &start,
+            format!(
+                r#"{{"operation_id":"{}","outcome":"committed","index_id":"{}","commit_sequence":"83"}}"#,
+                "d7".repeat(16),
+                "e8".repeat(16)
+            )
+            .as_bytes(),
+        );
+    });
+
+    let mut secret = [5; 32];
+    let mut client = AdminClient::connect_authenticated_with_timeout(
+        address,
+        [6; 16],
+        &mut secret,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let created = client
+        .execute_create_index_sql(
+            "CREATE INDEX employee_department ON app.employees USING BTREE (department_id, name)",
+        )
+        .unwrap();
+    assert_eq!(created.index_id, [0xe8; 16]);
+    assert_eq!(created.commit_sequence, 83);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_returns_operation_id_when_start_reply_is_lost() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

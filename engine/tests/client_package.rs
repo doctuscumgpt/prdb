@@ -451,6 +451,32 @@ fn admin_sql_cli_rejects_unsupported_ddl_before_credentials_or_network() {
     ));
     fs::write(
         &sql_path,
+        "CREATE UNIQUE INDEX employee_department ON app.employees USING BTREE (department_id, name)",
+    )
+    .unwrap();
+    let recognized_create_index = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            temp.join("missing.cred").to_str().unwrap(),
+            "--sql-file",
+            sql_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!recognized_create_index.status.success());
+    assert!(
+        !String::from_utf8_lossy(&recognized_create_index.stderr)
+            .contains("invalid administrative SQL")
+    );
+    assert!(matches!(
+        listener.accept(),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
+    fs::write(
+        &sql_path,
         "ALTER TABLE app.events ADD COLUMN note TEXT DEFAULT 'new'",
     )
     .unwrap();
