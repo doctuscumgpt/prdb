@@ -1907,6 +1907,33 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     assert!(
         String::from_utf8_lossy(&schema_transfer_command.stdout).contains("changed schema owner")
     );
+    let schema_owner_sql_path = root.join("schema-owner.sql");
+    std::fs::write(
+        &schema_owner_sql_path,
+        "ALTER SCHEMA process_admin_schema OWNER TO USER process_table_owner_renamed;",
+    )?;
+    let schema_owner_sql_command = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--sql-file",
+            schema_owner_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        schema_owner_sql_command.status.success(),
+        "schema owner SQL failed: {}",
+        String::from_utf8_lossy(&schema_owner_sql_command.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&schema_owner_sql_command.stdout).contains("changed schema owner")
+    );
+    admin.set_schema_owner(created_schema.identity_id, admin_user_id)?;
     let transferred = admin.set_table_owner(created_table.table_id, transfer_owner.identity_id)?;
     assert!(transferred.commit_sequence > 0);
     let table_id_text = encode_id_hex(&created_table.table_id);
@@ -1932,6 +1959,33 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&transfer_command.stderr)
     );
     assert!(String::from_utf8_lossy(&transfer_command.stdout).contains("changed table owner"));
+    let table_owner_sql_path = root.join("table-owner.sql");
+    std::fs::write(
+        &table_owner_sql_path,
+        "ALTER TABLE process_admin_schema.process_admin_table OWNER TO USER process_table_owner_renamed;",
+    )?;
+    let table_owner_sql_command = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--sql-file",
+            table_owner_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        table_owner_sql_command.status.success(),
+        "table owner SQL failed: {}",
+        String::from_utf8_lossy(&table_owner_sql_command.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&table_owner_sql_command.stdout).contains("changed table owner")
+    );
+    admin.set_table_owner(created_table.table_id, admin_user_id)?;
     let added_column = admin.add_column(
         created_table.table_id,
         &AdminColumnDefinition {

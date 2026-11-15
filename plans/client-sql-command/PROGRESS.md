@@ -283,3 +283,7 @@
 ## DP-SQL-2: single-column grant SQL
 
 - Extended table grant syntax to select one named column for SELECT, INSERT, UPDATE, or REFERENCES. The client resolves the column through authenticated metadata and submits the existing typed column grant. Multi-column forms remain a follow-up so the current single-target protocol preserves one-operation publication. Parser and delegated process grant/revoke tests pass; workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored.
+
+## DS-SQL-17: schema and table OWNER SQL — implemented
+
+- `admin-sql` recognizes bounded schema/table OWNER statements with explicit USER or ROLE targets, resolves names through authenticated metadata, and dispatches typed owner changes. Parser and delegated gateway/supervisor regressions pass; workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, and the full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored.

@@ -49,6 +49,14 @@ pub struct RenameTableSql {
     pub new_name: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnerTransferSql {
+    pub schema: String,
+    pub table: Option<String>,
+    pub owner_name: String,
+    pub owner_is_role: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyConstraintKind {
     PrimaryKey,
@@ -827,6 +835,30 @@ pub fn parse_rename_schema(sql: &str) -> Result<RenameSchemaSql, DdlSqlError> {
     Ok(RenameSchemaSql { schema, new_name })
 }
 
+pub fn parse_schema_owner_transfer(sql: &str) -> Result<OwnerTransferSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("schema")?;
+    let schema = parser.identifier()?;
+    parser.word("owner")?;
+    parser.word("to")?;
+    let owner_is_role = if parser.peek_word("user") {
+        parser.word("user")?;
+        false
+    } else {
+        parser.word("role")?;
+        true
+    };
+    let owner_name = parser.identifier()?;
+    finish_statement(&mut parser)?;
+    Ok(OwnerTransferSql {
+        schema,
+        table: None,
+        owner_name,
+        owner_is_role,
+    })
+}
+
 pub fn parse_drop_schema(sql: &str) -> Result<String, DdlSqlError> {
     let mut parser = statement_parser(sql)?;
     parser.word("drop")?;
@@ -852,6 +884,32 @@ pub fn parse_rename_table(sql: &str) -> Result<RenameTableSql, DdlSqlError> {
         schema,
         table,
         new_name,
+    })
+}
+
+pub fn parse_table_owner_transfer(sql: &str) -> Result<OwnerTransferSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("table")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let table = parser.identifier()?;
+    parser.word("owner")?;
+    parser.word("to")?;
+    let owner_is_role = if parser.peek_word("user") {
+        parser.word("user")?;
+        false
+    } else {
+        parser.word("role")?;
+        true
+    };
+    let owner_name = parser.identifier()?;
+    finish_statement(&mut parser)?;
+    Ok(OwnerTransferSql {
+        schema,
+        table: Some(table),
+        owner_name,
+        owner_is_role,
     })
 }
 
@@ -2131,6 +2189,21 @@ mod tests {
                 "accepted {sql}"
             );
         }
+        assert_eq!(
+            parse_schema_owner_transfer("ALTER SCHEMA app OWNER TO USER owner_name").unwrap(),
+            OwnerTransferSql {
+                schema: "app".into(),
+                table: None,
+                owner_name: "owner_name".into(),
+                owner_is_role: false,
+            }
+        );
+        for sql in [
+            "ALTER SCHEMA app OWNER TO owner_name",
+            "ALTER SCHEMA app OWNER TO USER owner_name CASCADE",
+        ] {
+            assert!(parse_schema_owner_transfer(sql).is_err(), "accepted {sql}");
+        }
     }
 
     #[test]
@@ -2158,6 +2231,22 @@ mod tests {
                 parse_rename_table(sql).is_err() && parse_drop_table(sql).is_err(),
                 "accepted {sql}"
             );
+        }
+        assert_eq!(
+            parse_table_owner_transfer("ALTER TABLE app.events OWNER TO ROLE owners;").unwrap(),
+            OwnerTransferSql {
+                schema: "app".into(),
+                table: Some("events".into()),
+                owner_name: "owners".into(),
+                owner_is_role: true,
+            }
+        );
+        for sql in [
+            "ALTER TABLE app.events OWNER TO owners",
+            "ALTER TABLE events OWNER TO ROLE owners",
+            "ALTER TABLE app.events OWNER TO ROLE owners CASCADE",
+        ] {
+            assert!(parse_table_owner_transfer(sql).is_err(), "accepted {sql}");
         }
     }
 

@@ -840,3 +840,7 @@
 ## DP-SQL-2: single-column grant SQL
 
 - Added one-column SELECT/INSERT/UPDATE/REFERENCES grant resolution through authenticated `metadata.columns.list` and the existing typed column grant. Multi-column SQL remains pending. Parser and delegated process grant/revoke tests pass; workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored.
+
+## DS-SQL-17: ownership transfer SQL — implemented
+
+- Added AdminClient helpers that resolve schema/table names and a typed USER/ROLE identity name, then invoke existing `schemas.owner`/`tables.owner` mutations. Parser, delegated process, workspace build, format, Clippy, TinyCC, and full delegated suite checks pass.

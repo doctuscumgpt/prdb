@@ -230,8 +230,10 @@ fn admin_sql(
     let drop_index_statement = prdb_engine::ddl_sql::parse_drop_index(sql).ok();
     let schema_statement = prdb_engine::ddl_sql::parse_create_schema(sql).ok();
     let rename_schema_statement = prdb_engine::ddl_sql::parse_rename_schema(sql).ok();
+    let schema_owner_statement = prdb_engine::ddl_sql::parse_schema_owner_transfer(sql).ok();
     let drop_schema_statement = prdb_engine::ddl_sql::parse_drop_schema(sql).ok();
     let rename_table_statement = prdb_engine::ddl_sql::parse_rename_table(sql).ok();
+    let table_owner_statement = prdb_engine::ddl_sql::parse_table_owner_transfer(sql).ok();
     let drop_table_statement = prdb_engine::ddl_sql::parse_drop_table(sql).ok();
     let add_key_constraint_statement = prdb_engine::ddl_sql::parse_add_key_constraint(sql).ok();
     let add_foreign_key_statement = prdb_engine::ddl_sql::parse_add_foreign_key(sql).ok();
@@ -255,8 +257,10 @@ fn admin_sql(
         && drop_index_statement.is_none()
         && schema_statement.is_none()
         && rename_schema_statement.is_none()
+        && schema_owner_statement.is_none()
         && drop_schema_statement.is_none()
         && rename_table_statement.is_none()
+        && table_owner_statement.is_none()
         && drop_table_statement.is_none()
         && add_key_constraint_statement.is_none()
         && add_foreign_key_statement.is_none()
@@ -424,6 +428,15 @@ fn admin_sql(
             lower_hex(&result.operation_id),
             result.commit_sequence
         );
+    } else if schema_owner_statement.is_some() {
+        let result = client
+            .execute_schema_owner_transfer_sql(sql)
+            .map_err(|error| error.to_string())?;
+        print_operation(
+            "changed schema owner",
+            &result.operation_id,
+            result.commit_sequence,
+        );
     } else if drop_schema_statement.is_some() {
         let result = client
             .execute_drop_schema_sql(sql)
@@ -441,6 +454,15 @@ fn admin_sql(
             "renamed table (operation {}, commit {})",
             lower_hex(&result.operation_id),
             result.commit_sequence
+        );
+    } else if table_owner_statement.is_some() {
+        let result = client
+            .execute_table_owner_transfer_sql(sql)
+            .map_err(|error| error.to_string())?;
+        print_operation(
+            "changed table owner",
+            &result.operation_id,
+            result.commit_sequence,
         );
     } else if add_foreign_key_statement.is_some() {
         let result = client

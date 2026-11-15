@@ -3383,6 +3383,22 @@ impl AdminClient {
         self.rename_schema(schema_id, &statement.new_name)
     }
 
+    pub fn execute_schema_owner_transfer_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_schema_owner_transfer(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
+        let kind = if statement.owner_is_role {
+            crate::metadata_discovery::AdministrativeIdentityKind::Role
+        } else {
+            crate::metadata_discovery::AdministrativeIdentityKind::User
+        };
+        let owner_id = self.resolve_identity_sql_name(&statement.owner_name, kind)?;
+        self.set_schema_owner(schema_id, owner_id)
+    }
+
     pub fn execute_drop_schema_sql(
         &mut self,
         sql: &str,
@@ -3810,6 +3826,26 @@ impl AdminClient {
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
         let table_id = self.resolve_table_sql_name(&statement.schema, &statement.table)?;
         self.rename_table(table_id, &statement.new_name)
+    }
+
+    pub fn execute_table_owner_transfer_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_table_owner_transfer(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let table = statement
+            .table
+            .as_deref()
+            .ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
+        let table_id = self.resolve_table_sql_name(&statement.schema, table)?;
+        let kind = if statement.owner_is_role {
+            crate::metadata_discovery::AdministrativeIdentityKind::Role
+        } else {
+            crate::metadata_discovery::AdministrativeIdentityKind::User
+        };
+        let owner_id = self.resolve_identity_sql_name(&statement.owner_name, kind)?;
+        self.set_table_owner(table_id, owner_id)
     }
 
     pub fn execute_drop_table_sql(
