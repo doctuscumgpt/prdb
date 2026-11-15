@@ -318,13 +318,13 @@ pub enum CheckExpressionSql {
     },
     In {
         expression: Box<CheckExpressionSql>,
-        values: Vec<CheckLiteralSql>,
+        values: Vec<Box<CheckExpressionSql>>,
         negated: bool,
     },
     Between {
         expression: Box<CheckExpressionSql>,
-        lower: CheckLiteralSql,
-        upper: CheckLiteralSql,
+        lower: Box<CheckExpressionSql>,
+        upper: Box<CheckExpressionSql>,
         negated: bool,
     },
     DistinctFrom {
@@ -2101,18 +2101,13 @@ fn bind_expression(
                 let column_type = column_type.ok_or(DdlSqlError::InvalidStatement)?;
                 let mut alternatives = Vec::with_capacity(values.len());
                 for value in values {
-                    let (literal, literal_type) = bind(
-                        &Sql::Literal(value.clone()),
-                        Some(column_type),
-                        lookup,
-                        role_lookup,
-                    )?;
-                    if literal_type
-                        .is_some_and(|literal_type| !scalar_compatible(column_type, literal_type))
+                    let (value, value_type) = bind(value, Some(column_type), lookup, role_lookup)?;
+                    if value_type
+                        .is_some_and(|value_type| !scalar_compatible(column_type, value_type))
                     {
                         return Err(DdlSqlError::InvalidStatement);
                     }
-                    alternatives.push(Expr::Equal(Box::new(left.clone()), Box::new(literal)));
+                    alternatives.push(Expr::Equal(Box::new(left.clone()), Box::new(value)));
                 }
                 let expression = Expr::Or(alternatives);
                 let expression = if *negated {
@@ -2130,21 +2125,18 @@ fn bind_expression(
             } => {
                 let (left, column_type) = bind(expression, None, lookup, role_lookup)?;
                 let column_type = column_type.ok_or(DdlSqlError::InvalidStatement)?;
-                let bind_bound =
-                    |literal: &CheckLiteralSql, role_lookup: &mut _| -> Result<Expr, DdlSqlError> {
-                        let (bound, bound_type) = bind(
-                            &Sql::Literal(literal.clone()),
-                            Some(column_type),
-                            lookup,
-                            role_lookup,
-                        )?;
-                        if bound_type
-                            .is_some_and(|bound_type| !scalar_compatible(column_type, bound_type))
-                        {
-                            return Err(DdlSqlError::InvalidStatement);
-                        }
-                        Ok(bound)
-                    };
+                let bind_bound = |bound_expression: &CheckExpressionSql,
+                                  role_lookup: &mut _|
+                 -> Result<Expr, DdlSqlError> {
+                    let (bound, bound_type) =
+                        bind(bound_expression, Some(column_type), lookup, role_lookup)?;
+                    if bound_type
+                        .is_some_and(|bound_type| !scalar_compatible(column_type, bound_type))
+                    {
+                        return Err(DdlSqlError::InvalidStatement);
+                    }
+                    Ok(bound)
+                };
                 let lower = bind_bound(lower, role_lookup)?;
                 let upper = bind_bound(upper, role_lookup)?;
                 let expression = Expr::And(vec![
@@ -2626,17 +2618,13 @@ impl Parser {
                 false
             };
             self.word("between")?;
-            let CheckExpressionSql::Literal(lower) = self.check_value_atom()? else {
-                return Err(DdlSqlError::InvalidStatement);
-            };
+            let lower = self.check_unary()?;
             self.word("and")?;
-            let CheckExpressionSql::Literal(upper) = self.check_value_atom()? else {
-                return Err(DdlSqlError::InvalidStatement);
-            };
+            let upper = self.check_unary()?;
             Ok(CheckExpressionSql::Between {
                 expression: Box::new(left),
-                lower,
-                upper,
+                lower: Box::new(lower),
+                upper: Box::new(upper),
                 negated,
             })
         } else if self.peek_word("in")
@@ -2656,10 +2644,7 @@ impl Parser {
                 if values.len() == MAX_CHECK_IN_VALUES {
                     return Err(DdlSqlError::InvalidStatement);
                 }
-                let CheckExpressionSql::Literal(value) = self.check_value_atom()? else {
-                    return Err(DdlSqlError::InvalidStatement);
-                };
-                values.push(value);
+                values.push(Box::new(self.check_unary()?));
                 if self.peek() == Some(&Token::RightParen) {
                     break;
                 }
@@ -3798,9 +3783,15 @@ mod tests {
         let expected = CheckExpressionSql::In {
             expression: Box::new(CheckExpressionSql::Column("state".into())),
             values: vec![
-                CheckLiteralSql::String("new".into()),
-                CheckLiteralSql::String("running".into()),
-                CheckLiteralSql::String("done".into()),
+                Box::new(CheckExpressionSql::Literal(CheckLiteralSql::String(
+                    "new".into(),
+                ))),
+                Box::new(CheckExpressionSql::Literal(CheckLiteralSql::String(
+                    "running".into(),
+                ))),
+                Box::new(CheckExpressionSql::Literal(CheckLiteralSql::String(
+                    "done".into(),
+                ))),
             ],
             negated: false,
         };
@@ -3838,12 +3829,9 @@ mod tests {
                 negated: true
             } if expression.as_ref() == &CheckExpressionSql::Column("priority".into()) && values.len() == 3
         ));
-        for sql in [
-            "CREATE TABLE app.jobs (state TEXT, CHECK (state IN ()))",
-            "CREATE TABLE app.jobs (state TEXT, CHECK (state IN ('ok', other)))",
-        ] {
-            assert!(parse_create_table(sql).is_err(), "accepted {sql}");
-        }
+        assert!(
+            parse_create_table("CREATE TABLE app.jobs (state TEXT, CHECK (state IN ()))").is_err()
+        );
         let literal =
             parse_add_check_constraint("ALTER TABLE app.jobs ADD CHECK ('ok' IN ('ok'))").unwrap();
         assert!(bind_check_expression(&literal.expression, |_| None).is_ok());
@@ -3854,6 +3842,18 @@ mod tests {
         assert!(
             bind_check_expression(&grouped.expression, |name| {
                 (name == "priority").then_some((0, ScalarType::Integer))
+            })
+            .is_ok()
+        );
+        let columns = parse_create_table(
+            "CREATE TABLE app.jobs (state TEXT, previous_state TEXT, CHECK (state IN ('new', previous_state)))",
+        )
+        .unwrap();
+        assert!(
+            bind_check_expression(&columns.check_constraints[0], |name| match name {
+                "state" => Some((0, ScalarType::Text)),
+                "previous_state" => Some((1, ScalarType::Text)),
+                _ => None,
             })
             .is_ok()
         );
@@ -3905,8 +3905,12 @@ mod tests {
             parsed.expression,
             CheckExpressionSql::Between {
                 expression: Box::new(CheckExpressionSql::Column("priority".into())),
-                lower: CheckLiteralSql::Number("1".into()),
-                upper: CheckLiteralSql::Number("9".into()),
+                lower: Box::new(CheckExpressionSql::Literal(CheckLiteralSql::Number(
+                    "1".into(),
+                ))),
+                upper: Box::new(CheckExpressionSql::Literal(CheckLiteralSql::Number(
+                    "9".into(),
+                ))),
                 negated: false,
             }
         );
@@ -3941,12 +3945,10 @@ mod tests {
             })
             .is_ok()
         );
-        for sql in [
-            "ALTER TABLE app.jobs ADD CHECK (priority BETWEEN 1)",
-            "ALTER TABLE app.jobs ADD CHECK (priority BETWEEN 1 AND other)",
-        ] {
-            assert!(parse_add_check_constraint(sql).is_err(), "accepted {sql}");
-        }
+        assert!(
+            parse_add_check_constraint("ALTER TABLE app.jobs ADD CHECK (priority BETWEEN 1)")
+                .is_err()
+        );
         assert!(
             bind_check_expression(&parsed.expression, |name| {
                 (name == "priority").then_some((0, ScalarType::Boolean))
@@ -3962,6 +3964,23 @@ mod tests {
                 (name == "priority").then_some((0, ScalarType::Integer))
             })
             .is_ok()
+        );
+        let bounds = parse_add_check_constraint(
+            "ALTER TABLE app.jobs ADD CHECK (priority BETWEEN minimum AND maximum)",
+        )
+        .unwrap();
+        assert_eq!(
+            bind_check_expression(&bounds.expression, |name| match name {
+                "priority" => Some((0, ScalarType::Integer)),
+                "minimum" => Some((1, ScalarType::Integer)),
+                "maximum" => Some((2, ScalarType::Integer)),
+                _ => None,
+            })
+            .unwrap(),
+            Expr::And(vec![
+                Expr::GreaterEqual(Box::new(Expr::Field(0)), Box::new(Expr::Field(1))),
+                Expr::LessEqual(Box::new(Expr::Field(0)), Box::new(Expr::Field(2))),
+            ])
         );
     }
 

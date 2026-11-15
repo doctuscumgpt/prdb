@@ -931,3 +931,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - `IS [NOT] DISTINCT FROM` now binds supported scalar expressions on both sides with contextual type checking. The lowering explicitly handles null/null, null/value, value/null, and value/value cases using existing EIR1 nodes, producing two-valued results; the completed expression is checked against canonical EIR1 bounds. Column-level CHECK and policy-context validation recurse through both operands.
 - Regression coverage includes expression/expression binding, mismatched types, literal compatibility, and encoding. The full serial delegated-cgroup workspace suite passes (289 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored); workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.
+
+## DS-SQL-62: finite-set and range operands accept expressions — verified
+
+- `IN` lists now accept up to 64 supported scalar expressions, and `BETWEEN` accepts supported scalar expressions for both bounds. Binding contextually checks each operand against the tested expression's type, retains SQL UNKNOWN behavior, and validates the complete lowered tree against canonical EIR1 limits. Existing scalar literal forms remain supported.
+- Regression coverage checks column references in IN lists and range bounds, grouped Boolean operands, literal lists, type mismatches, the 64/65-item boundary, and a repeated-expression EIR overflow. The full serial delegated-cgroup workspace suite passes (289 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored); workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.

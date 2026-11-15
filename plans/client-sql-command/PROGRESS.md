@@ -575,3 +575,7 @@
 ## DS-SQL-61: Null-safe distinctness on both expressions — verified
 
 - `admin-sql` CHECK SQL binds supported scalar expressions on both sides of `IS [NOT] DISTINCT FROM` and preserves two-valued null-safe behavior using existing EIR1 nodes. Parser/binder and full serial delegated-cgroup workspace checks pass with sandbox/process coverage and zero ignored tests; workspace build, format, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
+
+## DS-SQL-62: Finite-set and range operands accept expressions — verified
+
+- `admin-sql` CHECK SQL accepts supported scalar expressions in `IN` lists and for both `BETWEEN` bounds. Binding checks contextual types and canonical EIR1 bounds; parser/binder and full serial delegated-cgroup workspace checks pass with sandbox/process coverage and zero ignored tests. Workspace build, format, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
