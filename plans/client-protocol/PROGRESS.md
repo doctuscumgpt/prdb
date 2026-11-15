@@ -281,3 +281,8 @@
 
 - `metadata.policies.resolve` accepts the bounded `any` kind for authorized same-name replacement lookup. `policies.replace` carries the full typed successor definition and old policy ID in one PREPARE/START lifecycle; START returns the new ID after storage commits the replacement atomically.
 - The decoder test covers the `any` lookup shape; the delegated gateway/supervisor lifecycle exercises `policies.replace` across row/cell kinds. Full serial delegated-cgroup workspace tests passed with zero ignored tests, as did build, format, warning-denied Clippy, TinyCC, and release-profile validation.
+
+## Runtime-list version 3 supervisor queue summary — verified
+
+- Added optional protocol operation version 3 with a six-field aggregate of pending, starting, and started staging submissions; queued starts by operational/analytical workload class; and reserved upload bytes. Version 1 and 2 response shapes remain supported; the decoder rejects version 4.
+- Decoder/version coverage, typed client pagination tests, and the delegated gateway/supervisor process regression pass. The full serial delegated-cgroup workspace suite passed with zero ignored tests; format, build, warning-denied Clippy, TinyCC, and `git diff --check` passed.

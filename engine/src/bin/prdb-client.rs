@@ -2524,8 +2524,14 @@ fn runtime_list(
         print!("],\"blockers_truncated\":{}}}", wait.blockers_truncated);
     }
     print!(
-        "],\"fence_waits_truncated\":{},",
-        page.fence_waits_truncated
+        "],\"fence_waits_truncated\":{},\"supervisor_queue\":{{\"pending_submissions\":{},\"starting_submissions\":{},\"started_submissions\":{},\"queued_operational_starts\":{},\"queued_analytical_starts\":{},\"reserved_submission_bytes\":{}}},",
+        page.fence_waits_truncated,
+        page.supervisor_queue.pending_submissions,
+        page.supervisor_queue.starting_submissions,
+        page.supervisor_queue.started_submissions,
+        page.supervisor_queue.queued_operational_starts,
+        page.supervisor_queue.queued_analytical_starts,
+        page.supervisor_queue.reserved_submission_bytes
     );
     match page.next_cursor {
         Some(cursor) => println!("\"next_cursor\":{}}}", json_string(&cursor)),

@@ -1436,7 +1436,7 @@ pub fn decode_client_admin_command(
             Ok(ClientAdminCommand::ListAuditEvents { page_limit, cursor })
         }
         Some("read")
-            if matches!(version, Some(1 | 2))
+            if matches!(version, Some(1..=3))
                 && operation.as_deref() == Some("runtime.invocations.list") =>
         {
             if operation_id.is_some() || seen.len() != 4 {
@@ -4111,6 +4111,18 @@ impl ClientConnectionSession {
         request: ClientFrame,
         retention_deadline_us: i64,
     ) -> Result<ClientFrame, ClientSessionError> {
+        self.handle_admin_request_with_staging(storage, None, request, retention_deadline_us)
+    }
+
+    /// Execute ADMIN requests with the supervisor-local queue projection
+    /// available to version-three runtime-list responses.
+    pub fn handle_admin_request_with_staging(
+        &mut self,
+        storage: &StorageManager<'_>,
+        staging: Option<&crate::supervisor::StagingStore>,
+        request: ClientFrame,
+        retention_deadline_us: i64,
+    ) -> Result<ClientFrame, ClientSessionError> {
         if request.response_sequence != 0 || request.kind != 10 {
             return Err(ClientSessionError::UnsupportedRequest);
         }
@@ -4635,6 +4647,26 @@ impl ClientConnectionSession {
                         truncated: page.fence_waits_truncated,
                     },
                 );
+                if response_version >= 3 {
+                    let usage = staging
+                        .map(crate::supervisor::StagingStore::runtime_usage_summary)
+                        .transpose()
+                        .map_err(ClientSessionError::Staging)?
+                        .unwrap_or_default();
+                    payload.push_str(",\"supervisor_queue\":{\"pending_submissions\":");
+                    payload.push_str(&usage.pending_submissions.to_string());
+                    payload.push_str(",\"starting_submissions\":");
+                    payload.push_str(&usage.starting_submissions.to_string());
+                    payload.push_str(",\"started_submissions\":");
+                    payload.push_str(&usage.started_submissions.to_string());
+                    payload.push_str(",\"queued_operational_starts\":");
+                    payload.push_str(&usage.queued_operational_starts.to_string());
+                    payload.push_str(",\"queued_analytical_starts\":");
+                    payload.push_str(&usage.queued_analytical_starts.to_string());
+                    payload.push_str(",\"reserved_submission_bytes\":");
+                    payload.push_str(&usage.reserved_submission_bytes.to_string());
+                    payload.push('}');
+                }
                 payload.push_str(" ,\"next_cursor\":");
                 if let Some(cursor) = page.continuation {
                     payload.push('"');

@@ -1063,8 +1063,9 @@ fn dispatch_gateway_client_request_inner<'db>(
             .handle_cancel_prepared_request(manager, staging, frame(9, request.payload.clone()))
             .map_err(GatewayRequestError::Client)?,
         Operation::SubmitAdministrativeOperation => session
-            .handle_admin_request(
+            .handle_admin_request_with_staging(
                 manager,
+                Some(staging),
                 frame(10, request.payload.clone()),
                 admission
                     .retention_deadline_us()

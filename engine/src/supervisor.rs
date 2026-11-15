@@ -64,6 +64,18 @@ pub struct StagingLimits {
     pub reservation_ttl: Duration,
 }
 
+/// Best-effort, identifier-free operational view of supervisor staging and
+/// START queue usage. The snapshot never includes principals or invocation IDs.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StagingRuntimeUsage {
+    pub pending_submissions: u64,
+    pub starting_submissions: u64,
+    pub started_submissions: u64,
+    pub queued_operational_starts: u64,
+    pub queued_analytical_starts: u64,
+    pub reserved_submission_bytes: u64,
+}
+
 impl Default for StagingLimits {
     fn default() -> Self {
         Self {
@@ -333,6 +345,45 @@ impl StagingStore {
             metadata_validator,
             state: Mutex::new(StagingState::default()),
         })
+    }
+
+    /// Copy bounded aggregate queue usage for an authorized runtime response.
+    /// No identifiers or per-principal data escape the staging lock.
+    pub fn runtime_usage_summary(&self) -> Result<StagingRuntimeUsage, StagingError> {
+        let state = self.state.lock().map_err(|_| StagingError::Poisoned)?;
+        let mut summary = StagingRuntimeUsage {
+            reserved_submission_bytes: state.global_reserved_bytes,
+            ..StagingRuntimeUsage::default()
+        };
+        for reservation in state.reservations.values() {
+            match reservation.state {
+                ReservationState::Uploading
+                | ReservationState::Sealing
+                | ReservationState::DiscardRequested
+                | ReservationState::Sealed => {
+                    summary.pending_submissions = summary.pending_submissions.saturating_add(1);
+                }
+                ReservationState::Starting => {
+                    summary.starting_submissions = summary.starting_submissions.saturating_add(1);
+                }
+                ReservationState::Started => {
+                    summary.started_submissions = summary.started_submissions.saturating_add(1);
+                }
+            }
+        }
+        for queued in state.start_queue.values() {
+            match queued.workload_class {
+                WorkloadClass::Operational => {
+                    summary.queued_operational_starts =
+                        summary.queued_operational_starts.saturating_add(1);
+                }
+                WorkloadClass::Analytical => {
+                    summary.queued_analytical_starts =
+                        summary.queued_analytical_starts.saturating_add(1);
+                }
+            }
+        }
+        Ok(summary)
     }
 
     /// Reserve one invocation ID for this authenticated connection. This only
@@ -1270,7 +1321,28 @@ mod tests {
         artifact: &[u8],
         parameters: &[u8],
     ) -> [u8; 16] {
-        let reservation = store.prepare(owner, request(artifact, parameters)).unwrap();
+        upload_and_seal_for_class(
+            store,
+            owner,
+            artifact,
+            parameters,
+            WorkloadClass::Operational,
+        )
+    }
+
+    fn upload_and_seal_for_class(
+        store: &StagingStore,
+        owner: StagingOwner,
+        artifact: &[u8],
+        parameters: &[u8],
+        workload_class: WorkloadClass,
+    ) -> [u8; 16] {
+        let reservation = store
+            .prepare(
+                owner,
+                request_for_class(artifact, parameters, workload_class),
+            )
+            .unwrap();
         store
             .upload_chunk(
                 owner,
@@ -1293,6 +1365,70 @@ mod tests {
         }
         store.seal(owner, reservation.invocation_id).unwrap();
         reservation.invocation_id
+    }
+
+    #[test]
+    fn runtime_usage_summary_reports_bounded_queue_and_reservation_totals() {
+        let staging = store(Arc::new(AcceptMetadata));
+        let operational_owner = make_owner(201, 202);
+        let analytical_owner = make_owner(203, 204);
+        let operational_id = upload_and_seal_for_class(
+            &staging,
+            operational_owner,
+            b"one",
+            b"p",
+            WorkloadClass::Operational,
+        );
+        let analytical_id = upload_and_seal_for_class(
+            &staging,
+            analytical_owner,
+            b"two",
+            b"ab",
+            WorkloadClass::Analytical,
+        );
+        {
+            let mut state = staging.state.lock().unwrap();
+            state.start_queue.insert(
+                1,
+                StartQueueEntry {
+                    invocation_id: operational_id,
+                    principal_id: operational_owner.principal_id(),
+                    workload_class: WorkloadClass::Operational,
+                },
+            );
+            state.start_queue.insert(
+                2,
+                StartQueueEntry {
+                    invocation_id: analytical_id,
+                    principal_id: analytical_owner.principal_id(),
+                    workload_class: WorkloadClass::Analytical,
+                },
+            );
+        }
+        assert_eq!(
+            staging.runtime_usage_summary().unwrap(),
+            StagingRuntimeUsage {
+                pending_submissions: 2,
+                starting_submissions: 0,
+                started_submissions: 0,
+                queued_operational_starts: 1,
+                queued_analytical_starts: 1,
+                reserved_submission_bytes: 73,
+            }
+        );
+
+        let started_store = store(Arc::new(AcceptMetadata));
+        let started_owner = make_owner(205, 206);
+        let started_id = upload_and_seal(&started_store, started_owner, b"started", b"");
+        started_store
+            .start_with(started_owner, started_id, |_| Ok::<(), ()>(()))
+            .unwrap();
+        let usage = started_store.runtime_usage_summary().unwrap();
+        assert_eq!(usage.pending_submissions, 0);
+        assert_eq!(usage.starting_submissions, 0);
+        assert_eq!(usage.started_submissions, 1);
+        assert_eq!(usage.queued_operational_starts, 0);
+        assert_eq!(usage.queued_analytical_starts, 0);
     }
 
     #[test]

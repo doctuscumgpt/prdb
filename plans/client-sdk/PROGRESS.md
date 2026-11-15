@@ -853,3 +853,8 @@
 ## DP-SQL-3: bounded policy creation SQL — implemented
 
 - Added `AdminClient::execute_create_policy_sql` to bind field names/ordinals, resolve recipient and `HAS_ROLE` names through authenticated identity metadata, and invoke `policies.create`. Parser, delegated process, workspace build, format, Clippy, TinyCC, and full delegated suite checks pass. The current resolver requires the corresponding identity-management privilege or database-admin membership; DROP policy SQL remains pending.
+
+## Admin runtime supervisor queue summary — implemented
+
+- `AdminClient::list_runtime_invocations_page` requests runtime-list version 3 and decodes the six-field supervisor queue aggregate. `prdb-client runtime-list` includes the same summary as JSON; fields are bounded counts and reserved upload bytes without identifiers.
+- Typed pagination and decoding tests and the real gateway/supervisor process test pass. Workspace build, format, warning-denied Clippy, TinyCC SDK tests and sandbox fixture, and the full serial delegated-cgroup workspace suite pass with zero ignored tests.

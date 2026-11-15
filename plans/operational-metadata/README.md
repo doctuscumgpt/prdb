@@ -13,7 +13,7 @@ Define bounded registry schemas/status projections, observation times/consistenc
 | ID | Observable test first | Minimum implementation and evidence |
 | --- | --- | --- |
 | OM-1 | Own status succeeds while another user's/unknown ID stays non-disclosing | Authenticate every control request, project bounded invocation fields and distinguish live activity from storage-confirmed terminal status |
-| OM-2 | Admin runtime pages carry observation/consistency labels and revocation stops later pages | Bounded invocation/transaction/wait/memory/counter registries; add a job registry only when supported asynchronous jobs exist |
+| OM-2 | Admin runtime pages carry observation/consistency labels and revocation stops later pages | Bounded invocation/transaction/wait/memory/counter registries, including a privacy-preserving supervisor staging queue summary for pending/starting/started submissions, queued starts by workload class, and reserved upload bytes; add a job registry only when supported asynchronous jobs exist |
 | OM-3 | Registry absence after restart or retention expiry cannot become ABORTED | Query durable outcomes after lost replies, return UNKNOWN/EXPIRED and preserve committed-but-undelivered results |
 | OM-4 | Both cancellation/commit orders return accepted or too-late/resolved outcome accurately | Route cancellation to synchronized storage state; an accepted control acknowledgement is not proof of rollback |
 | OM-5 | Admin change and required audit/outbox either both persist or neither does | Atomic audit records for DDL, membership/grants/policies and credentials; bounded/rate-limited auth failure and admin cancel events, no secrets |

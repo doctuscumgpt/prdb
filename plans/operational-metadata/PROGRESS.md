@@ -249,3 +249,10 @@
 - Regression: `denied_monitoring_pressure_does_not_starve_commit_or_cancellation` now performs at least 512 authorized `get_administrative_invocation_status` lookups for the cancellation target. Each result must be a valid live, committing, or terminal status; the same run continues owner and cross-owner status checks plus authorized and denied page reads.
 - Verification: the focused delegated-cgroup regression passed. Workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests and sandbox fixture, release-profile build, delegated cgroup probe, and the full serial delegated-cgroup workspace suite passed with zero ignored tests. The suite reported 233 engine unit tests and 172 commit tests passing; `git diff --check` passed.
 - Remaining: broader pressure coverage for other monitoring APIs and OM-2 registry families; exact redb retained-byte/cache telemetry remains unavailable, and there is no asynchronous job API to monitor.
+
+## OM-2 supervisor staging queue summary — verified slice
+
+- Contract: authenticated administrator runtime-list version 3 includes a best-effort `supervisor_queue` aggregate: pending, starting, and started submissions; queued operational and analytical starts; and reserved upload bytes. It carries no submission IDs or principal data; older response versions retain their prior shape.
+- Implementation: the supervisor samples its bounded staging registry under its short lock, and the authenticated gateway includes the aggregate in the runtime page. The typed SDK and `prdb-client runtime-list` decode and emit all six values.
+- Regression: aggregate unit coverage checks workload classes, queue counts, reserved bytes, and started reservations. Typed client tests verify pagination and decoding; the real gateway/supervisor process test confirms the live started count and byte field.
+- Verification: focused aggregation, client, and delegated process tests passed; workspace build, format check, warning-denied Clippy, maintained TinyCC SDK tests and sandbox fixture passed. The full serial delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed.
