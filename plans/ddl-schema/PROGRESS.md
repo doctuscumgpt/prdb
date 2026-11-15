@@ -782,5 +782,5 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 ## DS-SQL-35: ALTER-authorized constraint binding — implemented slice
 
-- Constraint metadata binding for SQL DDL now recognizes table ownership and inherited table-scoped `ALTER`, matching the typed constraint mutation authority. CHECK bodies remain omitted and hidden FK target details stay redacted.
+- Constraint metadata binding for SQL DDL now recognizes table ownership and inherited table-scoped `ALTER`, matching the typed constraint mutation authority. These principals can resolve the target schema/table and declared columns without data grants or schema USAGE. CHECK bodies remain omitted and hidden FK target details stay redacted.
 - Updated metadata-discovery, SDK, and DDL contracts. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass; no tests were added or run. Cargo.lock is unchanged.

@@ -4038,7 +4038,9 @@ impl<'db> InvocationTransaction<'db> {
                 {
                     return Err(TransactionError::CorruptCatalog);
                 }
-                if grant.logical_key[37..39] != 9u16.to_be_bytes()
+                let privilege_code =
+                    u16::from_be_bytes([grant.logical_key[37], grant.logical_key[38]]);
+                if !matches!(privilege_code, 8 | 9)
                     || grant.logical_key[40..42] != 1u16.to_be_bytes()
                 {
                     continue;
@@ -4095,7 +4097,7 @@ impl<'db> InvocationTransaction<'db> {
     }
 
     /// List relations in a schema visible to this control principal through
-    /// ordinary discovery, schema ownership, policy DDL, or scoped index DDL.
+    /// ordinary discovery, schema ownership, policy DDL, or scoped table DDL.
     /// `None` means no relation is visible under any of those authorities.
     pub(crate) fn list_catalog_administrative_relations(
         &mut self,
@@ -4166,7 +4168,9 @@ impl<'db> InvocationTransaction<'db> {
                 let policy_authority = has_schema_usage
                     && self.has_catalog_policy_ddl_authority(schema_id, *relation_id, &roles)?;
                 if policy_authority
+                    || self.has_catalog_table_owner_authority(*relation_id, &roles)?
                     || self.current_principal_has_index_ddl_authority(*relation_id)?
+                    || self.current_principal_has_alter_ddl_authority(*relation_id)?
                 {
                     visible_relation_ids.insert(*relation_id);
                 }
@@ -4194,7 +4198,8 @@ impl<'db> InvocationTransaction<'db> {
     }
 
     /// Describe a relation's declared shape for ordinary discovery or an
-    /// authorized DDL target, including MANAGE_GRANTS and INDEX authorities.
+    /// authorized DDL target, including MANAGE_GRANTS, INDEX, and ALTER
+    /// authorities.
     pub(crate) fn describe_catalog_administrative_columns(
         &mut self,
         schema_id: [u8; 16],
@@ -4221,8 +4226,10 @@ impl<'db> InvocationTransaction<'db> {
             let has_policy_metadata = has_usage
                 && self.has_catalog_policy_ddl_authority(schema_id, relation_id, &roles)?;
             if !has_policy_metadata
+                && !self.has_catalog_table_owner_authority(relation_id, &roles)?
                 && !self.current_principal_has_grant_ddl_authority(relation_id)?
                 && !self.current_principal_has_index_ddl_authority(relation_id)?
+                && !self.current_principal_has_alter_ddl_authority(relation_id)?
             {
                 return Ok(None);
             }
@@ -4960,6 +4967,21 @@ impl<'db> InvocationTransaction<'db> {
         Ok(owner_id == self.principal_id || roles.contains(&owner_id))
     }
 
+    fn has_catalog_table_owner_authority(
+        &mut self,
+        table_id: [u8; 16],
+        roles: &HashSet<[u8; 16]>,
+    ) -> Result<bool, TransactionError> {
+        let Some(object) = self.read_catalog_record(&catalog_id_key(2, table_id))? else {
+            return Ok(false);
+        };
+        if object.family_code != 2 || catalog_u16(&object, 1)? != 3 {
+            return Ok(false);
+        }
+        let owner_id = catalog_id(&object, 4)?;
+        Ok(owner_id == self.principal_id || roles.contains(&owner_id))
+    }
+
     fn current_principal_has_grant_ddl_authority(
         &mut self,
         object_id: [u8; 16],
@@ -4972,6 +4994,13 @@ impl<'db> InvocationTransaction<'db> {
         object_id: [u8; 16],
     ) -> Result<bool, TransactionError> {
         self.current_principal_has_object_ddl_authority(object_id, 9)
+    }
+
+    fn current_principal_has_alter_ddl_authority(
+        &mut self,
+        object_id: [u8; 16],
+    ) -> Result<bool, TransactionError> {
+        self.current_principal_has_object_ddl_authority(object_id, 8)
     }
 
     fn current_principal_has_object_ddl_authority(

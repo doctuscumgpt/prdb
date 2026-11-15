@@ -227,5 +227,5 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 ## ALTER-authorized constraint metadata — implemented slice
 
-- Constraint ID/kind/source-column discovery now includes schema owners, table owners, database administrators, and inherited table-scoped `ALTER` grantees. CHECK bodies remain omitted, and foreign-key target details still require visibility of the target schema.
+- Constraint ID/kind/source-column discovery now includes schema owners, table owners, database administrators, and inherited table-scoped `ALTER` grantees. ALTER principals can resolve the target schema/table and declared columns without data grants or schema USAGE. CHECK bodies remain omitted, and foreign-key target details still require visibility of the target schema.
 - Metadata discovery, SDK, and SQL contracts are updated. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass; no tests were added or run. Cargo.lock is unchanged.

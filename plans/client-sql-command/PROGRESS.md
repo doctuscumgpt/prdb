@@ -464,5 +464,5 @@
 
 ## ALTER-authorized constraint SQL binding — implemented slice
 
-- The authenticated `constraint-list` / `admin-sql` metadata route now supports table owners and inherited table-scoped `ALTER` grantees, so constraint DDL can bind generated IDs under its regular typed authority.
+- The authenticated `constraint-list` / `admin-sql` metadata route now supports table owners and inherited table-scoped `ALTER` grantees, including schema/table/column name binding without data grants or schema USAGE, so constraint DDL can use its regular typed authority.
 - Client SDK and metadata contracts are updated. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass; no tests were added or run. Cargo.lock is unchanged.
