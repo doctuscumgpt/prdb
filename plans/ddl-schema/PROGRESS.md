@@ -834,3 +834,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Generalized `metadata.alter_identities.resolve` to schema and table object IDs. Schema owners and effective schema ALTER grantees can bind SQL destination owner names without global identity-management authority; typed operations continue to revalidate the change.
 - The delegated gateway/supervisor lifecycle grants schema ALTER and transfers schema ownership through `admin-sql` as that grantee. The process test, workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## DS-SQL-46: ALTER INDEX RENAME — verified extension
+
+- Added schema-qualified `ALTER INDEX schema.name RENAME TO new_name` across bounded SQL parsing, authenticated metadata binding, the typed `indexes.rename` operation, and atomic family-2 catalog publication. Rename preserves the stable index ID and physical definition; the existing index DDL authorization path checks owner/INDEX/database-admin authority and schema name uniqueness.
+- Storage coverage verifies old-name removal, new-name resolution, stable ID, audit/commit sequence, and successful rebuild after rename. Delegated gateway/supervisor SQL coverage verifies metadata readback and collision rejection without losing the renamed index. Workspace build, formatting, warning-denied Clippy, and full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored; `git diff --check` passes and Cargo.lock is unchanged.

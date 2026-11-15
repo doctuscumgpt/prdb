@@ -7905,6 +7905,7 @@ fn index_ddl_authority_guards(
     let read = database.begin_read().map_err(storage_error)?;
     let catalog = read.open_table(CATALOG).map_err(storage_error)?;
     let mut changed_index_ids = HashSet::<[u8; 16]>::new();
+    let mut index_definition_write_ids = HashSet::<[u8; 16]>::new();
     let mut index_definition_states = HashMap::<[u8; 16], (bool, bool)>::new();
     let mut affected_tables = HashSet::<[u8; 16]>::new();
     let mut changed_object_ids = HashSet::<[u8; 16]>::new();
@@ -7935,6 +7936,50 @@ fn index_ddl_authority_guards(
                 changed_object_ids.insert(object_id);
                 object_record_states
                     .insert(object_id, (current.is_some(), write.payload.is_some()));
+                if current.as_deref() != write.payload.as_deref()
+                    && current.as_deref().is_some_and(|bytes| {
+                        catalog_field_u16(&write.key, bytes, 2, 1).ok() == Some(7)
+                    })
+                    && write.payload.as_deref().is_some_and(|bytes| {
+                        catalog_field_u16(&write.key, bytes, 2, 1).ok() == Some(7)
+                    })
+                {
+                    let old = current.as_deref().ok_or(CommitError::InvalidCatalog)?;
+                    let new = write
+                        .payload
+                        .as_deref()
+                        .ok_or(CommitError::InvalidCatalog)?;
+                    let old_version = catalog_field_u64(&write.key, old, 2, 5)?;
+                    if catalog_field_bytes(&write.key, old, 2, 2)?
+                        != catalog_field_bytes(&write.key, new, 2, 2)?
+                        || catalog_field_bytes(&write.key, old, 2, 4)?
+                            != catalog_field_bytes(&write.key, new, 2, 4)?
+                        || catalog_field_u16(&write.key, old, 2, 6)?
+                            != catalog_field_u16(&write.key, new, 2, 6)?
+                        || catalog_field_bytes(&write.key, old, 2, 3)?
+                            == catalog_field_bytes(&write.key, new, 2, 3)?
+                        || catalog_field_u64(&write.key, new, 2, 5)?
+                            != old_version
+                                .checked_add(1)
+                                .ok_or(CommitError::InvalidCatalog)?
+                    {
+                        return Err(CommitError::InvalidCatalog);
+                    }
+                    let index_key = id_catalog_key(9, object_id);
+                    let index_bytes = catalog
+                        .get(index_key.as_slice())
+                        .map_err(storage_error)?
+                        .ok_or(CommitError::InvalidCatalog)?
+                        .value()
+                        .to_vec();
+                    let (decoded_id, table_id) = decode_index_definition(&index_key, &index_bytes)?;
+                    if decoded_id != object_id {
+                        return Err(CommitError::InvalidCatalog);
+                    }
+                    changed_index_ids.insert(object_id);
+                    index_definition_states.insert(object_id, (true, true));
+                    affected_tables.insert(table_id);
+                }
             }
             9 => {
                 if write.key.len() != 19 {
@@ -7943,9 +7988,10 @@ fn index_ddl_authority_guards(
                 let index_id: [u8; 16] = write.key[3..19]
                     .try_into()
                     .map_err(|_| CommitError::InvalidCatalog)?;
-                if !changed_index_ids.insert(index_id) {
+                if !index_definition_write_ids.insert(index_id) {
                     return Err(CommitError::InvalidCatalog);
                 }
+                changed_index_ids.insert(index_id);
                 index_definition_states
                     .insert(index_id, (current.is_some(), write.payload.is_some()));
                 for bytes in [current.as_deref(), write.payload.as_deref()]
@@ -7984,7 +8030,7 @@ fn index_ddl_authority_guards(
             .any(|(index_id, state)| match state {
                 (false, true) => object_record_states.get(index_id) != Some(&(false, true)),
                 (true, false) => object_record_states.get(index_id) != Some(&(true, false)),
-                (true, true) => object_record_states.contains_key(index_id),
+                (true, true) => false,
                 _ => true,
             })
         || changed_owned_child_dependents

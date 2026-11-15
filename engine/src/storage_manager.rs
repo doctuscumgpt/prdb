@@ -838,6 +838,16 @@ pub struct CreateIndexRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RenameIndexRequest {
+    pub invocation_id: [u8; 16],
+    pub authenticated_actor_id: [u8; 16],
+    pub index_id: [u8; 16],
+    pub name: String,
+    pub retention_deadline_us: i64,
+    pub audit_event: AuditEvent,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AlterColumnDefaultRequest {
     pub invocation_id: [u8; 16],
     pub authenticated_actor_id: [u8; 16],
@@ -926,6 +936,12 @@ pub struct RebuildIndexRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RebuiltIndex {
+    pub index_id: [u8; 16],
+    pub commit_sequence: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RenamedIndex {
     pub index_id: [u8; 16],
     pub commit_sequence: u64,
 }
@@ -8535,9 +8551,10 @@ impl<'db> StorageManager<'db> {
 
     /// Authorize ordinary index DDL for a principal authenticated by the
     /// trusted administrative channel, then commit it under the shared DDL
-    /// fences. Supports family-9 index definitions and matching family-2 index
-    /// objects. Other catalog DDL remains on the trusted internal entry point
-    /// until its action-specific authority rules are implemented.
+    /// fences. Supports family-9 index definitions, matching family-2 index
+    /// objects, and validated logical index-name changes. Other catalog DDL
+    /// remains on the trusted internal entry point until its action-specific
+    /// authority rules are implemented.
     pub fn commit_authorized_index_ddl(
         &self,
         invocation_id: [u8; 16],
@@ -8555,6 +8572,115 @@ impl<'db> StorageManager<'db> {
             catalog_writes,
             audit_events,
         )
+    }
+
+    /// Rename an ordinary index without rebuilding its physical memberships.
+    /// The index object and audit event publish through the same authorized
+    /// index DDL path used by create, drop, and rebuild.
+    pub fn rename_index(
+        &self,
+        request: RenameIndexRequest,
+    ) -> Result<RenamedIndex, IndexLifecycleError> {
+        let RenameIndexRequest {
+            invocation_id,
+            authenticated_actor_id,
+            index_id,
+            name,
+            retention_deadline_us,
+            mut audit_event,
+        } = request;
+        if invocation_id == [0; 16]
+            || authenticated_actor_id == [0; 16]
+            || index_id == [0; 16]
+            || !is_normalized_principal_name(&name)
+            || retention_deadline_us <= 0
+        {
+            return Err(IndexLifecycleError::InvalidRequest);
+        }
+        if audit_event.actor_id != Some(authenticated_actor_id)
+            || audit_event.correlation_id != invocation_id
+            || audit_event.action != AuditAction::Ddl
+            || audit_event.result != AuditResult::Succeeded
+        {
+            return Err(IndexLifecycleError::InvalidAudit);
+        }
+        let read = self
+            .database
+            .begin_read()
+            .map_err(|_| IndexLifecycleError::Storage)?;
+        let catalog = read
+            .open_table(CATALOG)
+            .map_err(|_| IndexLifecycleError::Storage)?;
+        let index_key = id_catalog_key(9, index_id);
+        let index_bytes = catalog
+            .get(index_key.as_slice())
+            .map_err(|_| IndexLifecycleError::Storage)?
+            .map(|value| value.value().to_vec())
+            .ok_or(IndexLifecycleError::Commit(CommitError::InvalidCatalog))?;
+        read_catalog_record(&index_key, &index_bytes, 9).map_err(IndexLifecycleError::from)?;
+        let table_id =
+            read_catalog_id(&index_key, &index_bytes, 9, 1).map_err(IndexLifecycleError::from)?;
+        let table_key = id_catalog_key(5, table_id);
+        let table_bytes = catalog
+            .get(table_key.as_slice())
+            .map_err(|_| IndexLifecycleError::Storage)?
+            .map(|value| value.value().to_vec())
+            .ok_or(IndexLifecycleError::Commit(CommitError::InvalidCatalog))?;
+        read_catalog_record(&table_key, &table_bytes, 5).map_err(IndexLifecycleError::from)?;
+        let schema_id =
+            read_catalog_id(&table_key, &table_bytes, 5, 1).map_err(IndexLifecycleError::from)?;
+        let object_key = id_catalog_key(2, index_id);
+        let object_bytes = catalog
+            .get(object_key.as_slice())
+            .map_err(|_| IndexLifecycleError::Storage)?
+            .map(|value| value.value().to_vec())
+            .ok_or(IndexLifecycleError::Commit(CommitError::InvalidCatalog))?;
+        read_catalog_record(&object_key, &object_bytes, 2).map_err(IndexLifecycleError::from)?;
+        if read_catalog_u16(&object_key, &object_bytes, 2, 1).map_err(IndexLifecycleError::from)?
+            != 7
+            || read_catalog_id(&object_key, &object_bytes, 2, 2)
+                .map_err(IndexLifecycleError::from)?
+                != schema_id
+            || read_catalog_field(&object_key, &object_bytes, 2, 3)
+                .map_err(IndexLifecycleError::from)?
+                == name.as_bytes()
+        {
+            return Err(IndexLifecycleError::InvalidRequest);
+        }
+        let next_object_version = read_catalog_u64(&object_key, &object_bytes, 2, 5)
+            .map_err(IndexLifecycleError::from)?
+            .checked_add(1)
+            .ok_or(IndexLifecycleError::Commit(CommitError::InvalidCatalog))?;
+        let object_payload = rewrite_catalog_fields(
+            &object_key,
+            &object_bytes,
+            2,
+            &[
+                (3, WireType::Text, name.into_bytes()),
+                (5, WireType::U64, next_object_version.to_le_bytes().to_vec()),
+            ],
+        )
+        .map_err(IndexLifecycleError::from)?;
+        drop(catalog);
+        drop(read);
+        audit_event.target_ids = vec![index_id];
+        let commit_sequence = self
+            .commit_authorized_index_ddl(
+                invocation_id,
+                authenticated_actor_id,
+                retention_deadline_us,
+                &[CatalogWrite {
+                    key: object_key,
+                    expected_value: Some(object_bytes),
+                    payload: Some(object_payload),
+                }],
+                &[audit_event],
+            )
+            .map_err(IndexLifecycleError::Commit)?;
+        Ok(RenamedIndex {
+            index_id,
+            commit_sequence,
+        })
     }
 
     /// Create and backfill one ordinary index through the authorized index DDL

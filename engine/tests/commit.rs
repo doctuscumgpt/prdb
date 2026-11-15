@@ -8558,7 +8558,7 @@ fn storage_manager_atomically_creates_table_with_foreign_key_to_existing_key()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{
         CreateIndexRequest, CreateTableForeignKeyDefinition, CreateTableRequest,
-        RebuildIndexRequest, TableColumnDefinition,
+        RebuildIndexRequest, RenameIndexRequest, TableColumnDefinition,
     };
 
     let fixture = Fixture::new();
@@ -8679,6 +8679,40 @@ fn storage_manager_atomically_creates_table_with_foreign_key_to_existing_key()
         retention_deadline_us: 9_999,
         audit_event: create_index_audit,
     })?;
+    let rename_index_invocation = id(0xf6);
+    let mut rename_index_audit = identity_audit_event(0xf7, actor, id(80));
+    rename_index_audit.correlation_id = rename_index_invocation;
+    let renamed_index = storage.rename_index(RenameIndexRequest {
+        invocation_id: rename_index_invocation,
+        authenticated_actor_id: actor,
+        index_id: created_index.index_id,
+        name: "renamed_post_self_fk_index".to_owned(),
+        retention_deadline_us: 9_999,
+        audit_event: rename_index_audit,
+    });
+    assert!(
+        renamed_index.is_ok(),
+        "ordinary index rename failed: {renamed_index:?}"
+    );
+    let renamed_index = renamed_index.unwrap();
+    assert_eq!(renamed_index.index_id, created_index.index_id);
+    assert_eq!(
+        renamed_index.commit_sequence,
+        created_index.commit_sequence + 1
+    );
+    let renamed_index_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_index_id_by_name(&renamed_index_snapshot, id(80), "post_self_fk_index")?,
+        None
+    );
+    assert_eq!(
+        lookup_index_id_by_name(
+            &renamed_index_snapshot,
+            id(80),
+            "renamed_post_self_fk_index"
+        )?,
+        Some(created_index.index_id)
+    );
     let rebuild_index_invocation = id(0xf4);
     let mut rebuild_index_audit = identity_audit_event(0xf5, actor, id(80));
     rebuild_index_audit.correlation_id = rebuild_index_invocation;

@@ -936,3 +936,8 @@
 
 - Added `AdminClient::execute_create_identity_if_not_exists_sql` and documented its administrator-only no-op for existing identities and ordinary typed path for absent identities.
 - Parser and delegated gateway/supervisor process coverage pass. Locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite pass (sandbox/process tests enabled; zero ignored); Cargo.lock is unchanged.
+
+## DS-SQL-46: ALTER INDEX RENAME — verified extension
+
+- Added `AdminClient::execute_rename_index_sql` and typed `rename_index` control support. The helper resolves a schema-qualified index through authenticated metadata and preserves its stable ID while changing its logical name.
+- Delegated production process coverage and real-redb storage coverage pass, including a duplicate-name rejection. Workspace build, formatting, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored; Cargo.lock is unchanged.

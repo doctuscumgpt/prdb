@@ -3354,6 +3354,18 @@ impl AdminClient {
         self.rebuild_index(index.index_id, &column_ids, statement.unique)
     }
 
+    /// Rename a schema-qualified index after resolving its stable ID through
+    /// authenticated administrative metadata.
+    pub fn execute_rename_index_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<AdminIndexResult, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_rename_index(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        let (_, index) = self.resolve_index_sql_name(&statement.schema, &statement.name)?;
+        self.rename_index(index.index_id, &statement.new_name)
+    }
+
     /// Drop a schema-qualified index after resolving its generated ID through
     /// authenticated administrative metadata.
     pub fn execute_drop_index_sql(
@@ -5705,6 +5717,25 @@ impl AdminClient {
         self.execute_index_ddl(
             "indexes.drop",
             format!("{{\"index_id\":\"{}\"}}", lower_hex(&index_id)),
+            Some(index_id),
+        )
+    }
+
+    /// Rename an ordinary index through the authenticated control channel.
+    pub fn rename_index(
+        &mut self,
+        index_id: [u8; 16],
+        name: &str,
+    ) -> Result<AdminIndexResult, ClientSubmitError> {
+        if index_id == [0; 16] || !is_normalized_index_name(name) {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        self.execute_index_ddl(
+            "indexes.rename",
+            format!(
+                "{{\"index_id\":\"{}\",\"name\":\"{name}\"}}",
+                lower_hex(&index_id)
+            ),
             Some(index_id),
         )
     }

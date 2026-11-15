@@ -3772,6 +3772,75 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&create_index_sql.stderr)
     );
     assert!(String::from_utf8_lossy(&create_index_sql.stdout).contains("created index "));
+    let original_sql_index = admin
+        .list_indexes_page(created_schema.identity_id, created_table.table_id, 64, None)?
+        .records
+        .into_iter()
+        .find(|index| index.name == "process_admin_sql_index")
+        .ok_or("created index is missing from metadata")?;
+    let rename_index_sql_path = root.join("rename-index.sql");
+    std::fs::write(
+        &rename_index_sql_path,
+        "ALTER INDEX process_admin_schema.process_admin_sql_index RENAME TO process_admin_renamed_sql_index;",
+    )?;
+    let rename_index_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            rename_index_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        rename_index_sql.status.success(),
+        "ALTER INDEX RENAME SQL failed: {}",
+        String::from_utf8_lossy(&rename_index_sql.stderr)
+    );
+    assert!(String::from_utf8_lossy(&rename_index_sql.stdout).contains("renamed index"));
+    let renamed_index = admin
+        .list_indexes_page(created_schema.identity_id, created_table.table_id, 64, None)?
+        .records
+        .into_iter()
+        .find(|index| index.name == "process_admin_renamed_sql_index")
+        .ok_or("renamed index is missing from metadata")?;
+    assert_eq!(renamed_index.name, "process_admin_renamed_sql_index");
+    assert_eq!(renamed_index.index_id, original_sql_index.index_id);
+    let duplicate_rename_index_sql_path = root.join("rename-index-collision.sql");
+    std::fs::write(
+        &duplicate_rename_index_sql_path,
+        "ALTER INDEX process_admin_schema.process_admin_renamed_sql_index RENAME TO process_admin_index;",
+    )?;
+    let duplicate_rename_index_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            duplicate_rename_index_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(!duplicate_rename_index_sql.status.success());
+    assert!(
+        admin
+            .list_indexes_page(created_schema.identity_id, created_table.table_id, 64, None)?
+            .records
+            .iter()
+            .any(|index| index.index_id == original_sql_index.index_id
+                && index.name == "process_admin_renamed_sql_index")
+    );
     let alter_index_sql_path = root.join("alter-index.sql");
     std::fs::write(
         &alter_index_sql_path,
@@ -3842,7 +3911,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let drop_index_sql_path = root.join("drop-index.sql");
     std::fs::write(
         &drop_index_sql_path,
-        "DROP INDEX process_admin_schema.process_admin_sql_index RESTRICT;",
+        "DROP INDEX process_admin_schema.process_admin_renamed_sql_index RESTRICT;",
     )?;
     let drop_index_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([

@@ -206,6 +206,13 @@ pub struct AlterIndexRebuildSql {
     pub unique: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RenameIndexSql {
+    pub schema: String,
+    pub name: String,
+    pub new_name: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CreateIdentityKind {
     User,
@@ -737,6 +744,25 @@ pub fn parse_alter_index_rebuild(sql: &str) -> Result<AlterIndexRebuildSql, DdlS
         name,
         columns,
         unique,
+    })
+}
+
+/// Parse a bounded schema-qualified index rename.
+pub fn parse_rename_index(sql: &str) -> Result<RenameIndexSql, DdlSqlError> {
+    let mut parser = statement_parser(sql)?;
+    parser.word("alter")?;
+    parser.word("index")?;
+    let schema = parser.identifier()?;
+    parser.take(Token::Dot)?;
+    let name = parser.identifier()?;
+    parser.word("rename")?;
+    parser.word("to")?;
+    let new_name = parser.identifier()?;
+    finish_statement(&mut parser)?;
+    Ok(RenameIndexSql {
+        schema,
+        name,
+        new_name,
     })
 }
 
@@ -3432,6 +3458,26 @@ mod tests {
             "ALTER INDEX app.employee_department REBUILD UNIQUE (department_id); DROP INDEX app.other RESTRICT",
         ] {
             assert!(parse_alter_index_rebuild(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_bounded_rename_index_sql() {
+        assert_eq!(
+            parse_rename_index("ALTER INDEX app.employee_department RENAME TO employee_team;")
+                .unwrap(),
+            RenameIndexSql {
+                schema: "app".into(),
+                name: "employee_department".into(),
+                new_name: "employee_team".into(),
+            }
+        );
+        for sql in [
+            "ALTER INDEX employee_department RENAME TO employee_team",
+            "ALTER INDEX app.employee_department RENAME employee_team",
+            "ALTER INDEX app.employee_department RENAME TO employee_team; DROP INDEX app.other RESTRICT",
+        ] {
+            assert!(parse_rename_index(sql).is_err(), "accepted {sql}");
         }
     }
 

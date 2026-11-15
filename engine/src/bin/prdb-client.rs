@@ -234,6 +234,7 @@ fn admin_sql(
     let create_index_statement = prdb_engine::ddl_sql::parse_create_index(sql).ok();
     let rebuild_index_statement = prdb_engine::ddl_sql::parse_rebuild_index(sql).ok();
     let alter_index_rebuild_statement = prdb_engine::ddl_sql::parse_alter_index_rebuild(sql).ok();
+    let rename_index_statement = prdb_engine::ddl_sql::parse_rename_index(sql).ok();
     let create_identity_statement = prdb_engine::ddl_sql::parse_create_identity(sql).ok();
     let rename_identity_statement = prdb_engine::ddl_sql::parse_rename_identity(sql).ok();
     let drop_identity_statement = prdb_engine::ddl_sql::parse_drop_identity(sql).ok();
@@ -265,6 +266,7 @@ fn admin_sql(
         && create_index_statement.is_none()
         && rebuild_index_statement.is_none()
         && alter_index_rebuild_statement.is_none()
+        && rename_index_statement.is_none()
         && create_identity_statement.is_none()
         && rename_identity_statement.is_none()
         && drop_identity_statement.is_none()
@@ -526,6 +528,15 @@ fn admin_sql(
             .map_err(|error| error.to_string())?;
         print_operation(
             "rebuilt index definition",
+            &result.operation_id,
+            result.commit_sequence,
+        );
+    } else if rename_index_statement.is_some() {
+        let result = client
+            .execute_rename_index_sql(sql)
+            .map_err(|error| error.to_string())?;
+        print_operation(
+            "renamed index",
             &result.operation_id,
             result.commit_sequence,
         );

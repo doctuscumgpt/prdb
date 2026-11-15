@@ -521,3 +521,8 @@
 
 - `admin-sql` accepts `CREATE USER|ROLE IF NOT EXISTS`. Existing identities require database-administrator authority and create no DDL outcome; absent identities follow normal typed creation. Existing LOGIN state is preserved.
 - Parser and delegated gateway/supervisor process coverage pass. Locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite pass (sandbox/process tests enabled; zero ignored); Cargo.lock is unchanged.
+
+## DS-SQL-46: ALTER INDEX RENAME — verified extension
+
+- `admin-sql` accepts `ALTER INDEX schema.name RENAME TO new_name`, resolves the index through authenticated metadata, and submits the typed rename by stable ID. The change preserves index memberships and rejects schema-level name collisions atomically.
+- Delegated gateway/supervisor process coverage exercises rename, metadata readback, collision rejection, and subsequent index DDL. Parser/storage regressions, workspace build, format check, warning-denied Clippy, and the full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored; Cargo.lock is unchanged.
