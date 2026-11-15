@@ -1306,7 +1306,7 @@ impl AdminClient {
             arguments.push('"');
         }
         let payload = format!(
-            "{{\"phase\":\"read\",\"operation_version\":3,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
+            "{{\"phase\":\"read\",\"operation_version\":4,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
         );
         let response = self.transport.exchange(10, payload.into_bytes())?;
         let mut fields = parse_flat_response(&response.payload)?;
@@ -1462,7 +1462,7 @@ impl AdminClient {
         let outcomes_pruned_total = response_u64(&mut fields, "outcomes_pruned_total")?
             .ok_or(ClientSubmitError::InvalidResponse)?;
         let mut supervisor_queue = match fields.remove("supervisor_queue") {
-            Some(ResponseValue::Object(fields)) if fields.len() == 6 => fields,
+            Some(ResponseValue::Object(fields)) if fields.len() == 7 => fields,
             _ => return Err(ClientSubmitError::InvalidResponse),
         };
         let supervisor_queue = crate::supervisor::StagingRuntimeUsage {
@@ -1480,6 +1480,11 @@ impl AdminClient {
             queued_analytical_starts: response_u64(
                 &mut supervisor_queue,
                 "queued_analytical_starts",
+            )?
+            .ok_or(ClientSubmitError::InvalidResponse)?,
+            oldest_queued_start_wait_us: response_u64(
+                &mut supervisor_queue,
+                "oldest_queued_start_wait_us",
             )?
             .ok_or(ClientSubmitError::InvalidResponse)?,
             reserved_submission_bytes: response_u64(

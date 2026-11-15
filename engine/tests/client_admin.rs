@@ -299,10 +299,10 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
         assert_eq!(request.kind, 10);
         assert_eq!(
             std::str::from_utf8(&request.payload).unwrap(),
-            r#"{"phase":"read","operation_version":3,"operation":"runtime.invocations.list","arguments":{"limit":"1"}}"#
+            r#"{"phase":"read","operation_version":4,"operation":"runtime.invocations.list","arguments":{"limit":"1"}}"#
         );
         let first_response = format!(
-            "{{\"observed_at_us\":1000,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"transaction_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"active\",\"workload_class\":\"operational\",\"started_at_us\":900,\"age_us\":100,\"deadline_at_us\":1200,\"staged_rows\":1,\"staged_value_bytes\":12,\"snapshot_pin_count\":1,\"cancellation_requested\":false,\"cancellation_reason_code\":null}}],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":500,\"invocations_admitted_total\":2,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"admin_cancellations_denied_total\":2,\"invocation_policy_denials_total\":3,\"invocation_staged_value_bytes_total\":32,\"invocation_commit_latency_buckets\":[11,12,13,14,15,16],\"outcome_maintenance_passes_total\":7,\"outcome_maintenance_failures_total\":8,\"outcomes_pruned_total\":9,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":50,\"resource_ids\":[\"{}\"],\"resources_truncated\":false,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":false,\"supervisor_queue\":{{\"pending_submissions\":4,\"starting_submissions\":1,\"started_submissions\":2,\"queued_operational_starts\":3,\"queued_analytical_starts\":5,\"reserved_submission_bytes\":4096}},\"next_cursor\":\"{server_cursor}\"}}",
+            "{{\"observed_at_us\":1000,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"transaction_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"active\",\"workload_class\":\"operational\",\"started_at_us\":900,\"age_us\":100,\"deadline_at_us\":1200,\"staged_rows\":1,\"staged_value_bytes\":12,\"snapshot_pin_count\":1,\"cancellation_requested\":false,\"cancellation_reason_code\":null}}],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":500,\"invocations_admitted_total\":2,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"admin_cancellations_denied_total\":2,\"invocation_policy_denials_total\":3,\"invocation_staged_value_bytes_total\":32,\"invocation_commit_latency_buckets\":[11,12,13,14,15,16],\"outcome_maintenance_passes_total\":7,\"outcome_maintenance_failures_total\":8,\"outcomes_pruned_total\":9,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":50,\"resource_ids\":[\"{}\"],\"resources_truncated\":false,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":false,\"supervisor_queue\":{{\"pending_submissions\":4,\"starting_submissions\":1,\"started_submissions\":2,\"queued_operational_starts\":3,\"queued_analytical_starts\":5,\"oldest_queued_start_wait_us\":6000,\"reserved_submission_bytes\":4096}},\"next_cursor\":\"{server_cursor}\"}}",
             "10".repeat(16),
             "30".repeat(16),
             "20".repeat(16),
@@ -316,14 +316,14 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
         assert_eq!(
             std::str::from_utf8(&request.payload).unwrap(),
             format!(
-                "{{\"phase\":\"read\",\"operation_version\":3,\"operation\":\"runtime.invocations.list\",\"arguments\":{{\"limit\":\"1\",\"cursor\":\"{server_cursor}\"}}}}"
+                "{{\"phase\":\"read\",\"operation_version\":4,\"operation\":\"runtime.invocations.list\",\"arguments\":{{\"limit\":\"1\",\"cursor\":\"{server_cursor}\"}}}}"
             )
         );
         respond(
             &mut stream,
             &request,
             format!(
-                "{{\"observed_at_us\":1001,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"transaction_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"committing\",\"workload_class\":\"analytical\",\"started_at_us\":901,\"age_us\":100,\"deadline_at_us\":null,\"staged_rows\":2,\"staged_value_bytes\":24,\"snapshot_pin_count\":1,\"cancellation_requested\":true,\"cancellation_reason_code\":7}}],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":600,\"invocations_admitted_total\":2,\"invocation_conflicts_total\":2,\"admin_cancellations_accepted_total\":2,\"admin_cancellations_denied_total\":4,\"invocation_policy_denials_total\":5,\"invocation_staged_value_bytes_total\":64,\"invocation_commit_latency_buckets\":[21,22,23,24,25,26],\"outcome_maintenance_passes_total\":10,\"outcome_maintenance_failures_total\":11,\"outcomes_pruned_total\":12,\"fence_waits\":[],\"fence_waits_truncated\":false,\"supervisor_queue\":{{\"pending_submissions\":0,\"starting_submissions\":0,\"started_submissions\":1,\"queued_operational_starts\":0,\"queued_analytical_starts\":0,\"reserved_submission_bytes\":0}},\"next_cursor\":null}}",
+                "{{\"observed_at_us\":1001,\"consistency\":\"best_effort\",\"invocations\":[{{\"invocation_id\":\"{}\",\"transaction_id\":\"{}\",\"principal_id\":\"{}\",\"state\":\"committing\",\"workload_class\":\"analytical\",\"started_at_us\":901,\"age_us\":100,\"deadline_at_us\":null,\"staged_rows\":2,\"staged_value_bytes\":24,\"snapshot_pin_count\":1,\"cancellation_requested\":true,\"cancellation_reason_code\":7}}],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":600,\"invocations_admitted_total\":2,\"invocation_conflicts_total\":2,\"admin_cancellations_accepted_total\":2,\"admin_cancellations_denied_total\":4,\"invocation_policy_denials_total\":5,\"invocation_staged_value_bytes_total\":64,\"invocation_commit_latency_buckets\":[21,22,23,24,25,26],\"outcome_maintenance_passes_total\":10,\"outcome_maintenance_failures_total\":11,\"outcomes_pruned_total\":12,\"fence_waits\":[],\"fence_waits_truncated\":false,\"supervisor_queue\":{{\"pending_submissions\":0,\"starting_submissions\":0,\"started_submissions\":1,\"queued_operational_starts\":0,\"queued_analytical_starts\":0,\"oldest_queued_start_wait_us\":0,\"reserved_submission_bytes\":0}},\"next_cursor\":null}}",
                 "11".repeat(16),
                 "31".repeat(16),
                 "20".repeat(16)
@@ -393,6 +393,7 @@ fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
             started_submissions: 2,
             queued_operational_starts: 3,
             queued_analytical_starts: 5,
+            oldest_queued_start_wait_us: 6000,
             reserved_submission_bytes: 4096,
         }
     );

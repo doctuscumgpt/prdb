@@ -858,3 +858,9 @@
 
 - `AdminClient::list_runtime_invocations_page` requests runtime-list version 3 and decodes the six-field supervisor queue aggregate. `prdb-client runtime-list` includes the same summary as JSON; fields are bounded counts and reserved upload bytes without identifiers.
 - Typed pagination and decoding tests and the real gateway/supervisor process test pass. Workspace build, format, warning-denied Clippy, TinyCC SDK tests and sandbox fixture, and the full serial delegated-cgroup workspace suite pass with zero ignored tests.
+
+## Admin runtime oldest queued START age — implemented slice
+
+- Each queued START ticket records its monotonic queue-entry time. The identifier-free runtime summary reports the age of the oldest queued ticket, or zero for an empty queue; it does not affect scheduling.
+- The field is exposed only in runtime-list protocol version 4 and decoded by the typed administrator client and CLI JSON projection.
+- Focused staging-summary and client TCP paging tests passed. The delegated gateway/supervisor lifecycle also passed and verified the CLI output for an empty queue. Workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.

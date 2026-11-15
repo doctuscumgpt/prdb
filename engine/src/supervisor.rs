@@ -73,6 +73,7 @@ pub struct StagingRuntimeUsage {
     pub started_submissions: u64,
     pub queued_operational_starts: u64,
     pub queued_analytical_starts: u64,
+    pub oldest_queued_start_wait_us: u64,
     pub reserved_submission_bytes: u64,
 }
 
@@ -261,6 +262,7 @@ struct StartQueueEntry {
     invocation_id: [u8; 16],
     principal_id: [u8; 16],
     workload_class: WorkloadClass,
+    queued_at: Instant,
 }
 
 pub struct StagingStore {
@@ -350,6 +352,13 @@ impl StagingStore {
     /// Copy bounded aggregate queue usage for an authorized runtime response.
     /// No identifiers or per-principal data escape the staging lock.
     pub fn runtime_usage_summary(&self) -> Result<StagingRuntimeUsage, StagingError> {
+        self.runtime_usage_summary_at(Instant::now())
+    }
+
+    fn runtime_usage_summary_at(
+        &self,
+        observed_at: Instant,
+    ) -> Result<StagingRuntimeUsage, StagingError> {
         let state = self.state.lock().map_err(|_| StagingError::Poisoned)?;
         let mut summary = StagingRuntimeUsage {
             reserved_submission_bytes: state.global_reserved_bytes,
@@ -382,6 +391,14 @@ impl StagingStore {
                         summary.queued_analytical_starts.saturating_add(1);
                 }
             }
+            summary.oldest_queued_start_wait_us = summary.oldest_queued_start_wait_us.max(
+                u64::try_from(
+                    observed_at
+                        .saturating_duration_since(queued.queued_at)
+                        .as_micros(),
+                )
+                .unwrap_or(u64::MAX),
+            );
         }
         Ok(summary)
     }
@@ -700,6 +717,7 @@ impl StagingStore {
                 invocation_id,
                 principal_id: reservation.principal_id,
                 workload_class: reservation.metadata.workload_class,
+                queued_at: Instant::now(),
             };
             let sealed_data = Arc::clone(
                 reservation
@@ -1386,6 +1404,7 @@ mod tests {
             b"ab",
             WorkloadClass::Analytical,
         );
+        let observed_at = Instant::now();
         {
             let mut state = staging.state.lock().unwrap();
             state.start_queue.insert(
@@ -1394,6 +1413,9 @@ mod tests {
                     invocation_id: operational_id,
                     principal_id: operational_owner.principal_id(),
                     workload_class: WorkloadClass::Operational,
+                    queued_at: observed_at
+                        .checked_sub(Duration::from_micros(2_000))
+                        .unwrap(),
                 },
             );
             state.start_queue.insert(
@@ -1402,17 +1424,21 @@ mod tests {
                     invocation_id: analytical_id,
                     principal_id: analytical_owner.principal_id(),
                     workload_class: WorkloadClass::Analytical,
+                    queued_at: observed_at
+                        .checked_sub(Duration::from_micros(4_000))
+                        .unwrap(),
                 },
             );
         }
         assert_eq!(
-            staging.runtime_usage_summary().unwrap(),
+            staging.runtime_usage_summary_at(observed_at).unwrap(),
             StagingRuntimeUsage {
                 pending_submissions: 2,
                 starting_submissions: 0,
                 started_submissions: 0,
                 queued_operational_starts: 1,
                 queued_analytical_starts: 1,
+                oldest_queued_start_wait_us: 4_000,
                 reserved_submission_bytes: 73,
             }
         );

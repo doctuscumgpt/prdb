@@ -4861,6 +4861,7 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         assert!(runtime_output.contains("\"started_submissions\":1"));
         assert!(runtime_output.contains("\"queued_operational_starts\":0"));
         assert!(runtime_output.contains("\"queued_analytical_starts\":0"));
+        assert!(runtime_output.contains("\"oldest_queued_start_wait_us\":0"));
         assert!(runtime_output.contains("\"reserved_submission_bytes\":"));
         assert!(runtime_output.contains("\"pinned_snapshot_count\":1"));
         assert!(runtime_output.contains("\"oldest_snapshot_pin_age_us\":"));

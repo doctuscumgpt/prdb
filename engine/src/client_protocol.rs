@@ -1446,7 +1446,7 @@ pub fn decode_client_admin_command(
             Ok(ClientAdminCommand::ListAuditEvents { page_limit, cursor })
         }
         Some("read")
-            if matches!(version, Some(1..=3))
+            if matches!(version, Some(1..=4))
                 && operation.as_deref() == Some("runtime.invocations.list") =>
         {
             if operation_id.is_some() || seen.len() != 4 {
@@ -4820,6 +4820,10 @@ impl ClientConnectionSession {
                     payload.push_str(&usage.queued_operational_starts.to_string());
                     payload.push_str(",\"queued_analytical_starts\":");
                     payload.push_str(&usage.queued_analytical_starts.to_string());
+                    if response_version >= 4 {
+                        payload.push_str(",\"oldest_queued_start_wait_us\":");
+                        payload.push_str(&usage.oldest_queued_start_wait_us.to_string());
+                    }
                     payload.push_str(",\"reserved_submission_bytes\":");
                     payload.push_str(&usage.reserved_submission_bytes.to_string());
                     payload.push('}');

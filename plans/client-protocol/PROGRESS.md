@@ -290,5 +290,10 @@
 
 ## Runtime-list version 3 supervisor queue summary — verified
 
-- Added optional protocol operation version 3 with a six-field aggregate of pending, starting, and started staging submissions; queued starts by operational/analytical workload class; and reserved upload bytes. Version 1 and 2 response shapes remain supported; the decoder rejects version 4.
+- Added optional protocol operation version 3 with a six-field aggregate of pending, starting, and started staging submissions; queued starts by operational/analytical workload class; and reserved upload bytes. Version 1 and 2 response shapes remain supported at that increment.
 - Decoder/version coverage, typed client pagination tests, and the delegated gateway/supervisor process regression pass. The full serial delegated-cgroup workspace suite passed with zero ignored tests; format, build, warning-denied Clippy, TinyCC, and `git diff --check` passed.
+
+## Runtime-list version 4 queued START age — implemented slice
+
+- Version 4 extends the identifier-free supervisor queue aggregate with `oldest_queued_start_wait_us`; prior versions retain their existing response shape.
+- The request decoder accepts version 4 and the typed client uses it. Protocol decoder, typed TCP paging, and the real gateway/supervisor administrative lifecycle passed, including CLI JSON verification for an empty queue. Workspace build, format, warning-denied Clippy, maintained TinyCC tests/fixture, and full serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests.
