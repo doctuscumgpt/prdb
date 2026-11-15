@@ -6795,6 +6795,94 @@ fn schema_name_index_tracks_renames_per_snapshot() -> Result<(), Box<dyn std::er
 }
 
 #[test]
+fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
+-> Result<(), Box<dyn std::error::Error>> {
+    const SCHEMA_COUNT: usize = 64;
+    const READER_ROUNDS: usize = 128;
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let actor = id(0x41);
+    let admin_role = builtin_owner_id();
+    let setup = [
+        principal_write_with_name(actor, 1, 1, "dictionary_pressure_actor"),
+        object_write_with_name(actor, 8, "dictionary_pressure_actor"),
+        grant_write(actor, id(0x33), 14, 1, id(0x33), admin_role),
+        dependency_write(actor, id(0x33), 5),
+    ];
+    let mut setup_audit = identity_audit_event(0xf1, admin_role, actor);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0xf1), admin_role, 9_999, &setup, &[setup_audit])?;
+
+    let names = (0..SCHEMA_COUNT)
+        .map(|index| format!("dictionary_pressure_{index:03}"))
+        .collect::<Vec<_>>();
+    let retained_snapshot = database.begin_read()?;
+    for name in &names {
+        assert_eq!(lookup_schema_id_by_name(&retained_snapshot, name)?, None);
+    }
+
+    let start = Arc::new(Barrier::new(2));
+    let reader_names = names.clone();
+    let reader_database = &database;
+    let reader_start = Arc::clone(&start);
+    let reader = std::thread::scope(|scope| {
+        let reader = scope.spawn(move || {
+            reader_start.wait();
+            let mut observations = 0;
+            for _ in 0..READER_ROUNDS {
+                let snapshot = reader_database
+                    .begin_read()
+                    .expect("reader snapshot should open during schema DDL");
+                for name in &reader_names {
+                    if let Some(schema_id) = lookup_schema_id_by_name(&snapshot, name)
+                        .expect("schema name lookup should succeed during DDL")
+                    {
+                        assert_ne!(schema_id, [0; 16]);
+                    }
+                }
+                observations += 1;
+            }
+            observations
+        });
+
+        start.wait();
+        for (index, name) in names.iter().enumerate() {
+            let create_id = id(0x40 + index as u8);
+            let mut create_audit = identity_audit_event(1 + index as u8, actor, id(0));
+            create_audit.correlation_id = create_id;
+            let created =
+                storage.create_schema(create_id, actor, name, actor, 9_999, create_audit)?;
+            {
+                let snapshot = database.begin_read()?;
+                assert_eq!(
+                    lookup_schema_id_by_name(&snapshot, name)?,
+                    Some(created.schema_id)
+                );
+            }
+
+            let drop_id = id(0x80 + index as u8);
+            let mut drop_audit = identity_audit_event(65 + index as u8, actor, created.schema_id);
+            drop_audit.correlation_id = drop_id;
+            storage.drop_schema(drop_id, actor, created.schema_id, 9_999, drop_audit)?;
+            let snapshot = database.begin_read()?;
+            assert_eq!(lookup_schema_id_by_name(&snapshot, name)?, None);
+        }
+
+        Ok::<_, Box<dyn std::error::Error>>(reader.join().expect("schema-index reader panicked"))
+    })?;
+
+    assert_eq!(reader, READER_ROUNDS);
+    for name in &names {
+        assert_eq!(lookup_schema_id_by_name(&retained_snapshot, name)?, None);
+        let current_snapshot = database.begin_read()?;
+        assert_eq!(lookup_schema_id_by_name(&current_snapshot, name)?, None);
+    }
+    Ok(())
+}
+
+#[test]
 fn membership_indexes_track_both_directions_per_snapshot() -> Result<(), Box<dyn std::error::Error>>
 {
     let fixture = Fixture::new();

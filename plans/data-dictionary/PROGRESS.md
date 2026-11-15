@@ -358,3 +358,10 @@
 - The pinned `catalog_ddl_codecs` target completed a 300-second campaign with 19,914,102 executions and no crash or sanitizer finding. The run reached 2,937 coverage counters and 6,397 features; the accumulated 1,538-input corpus was minimized to 1,304 coverage-preserving inputs, while retaining the four named hand-authored seeds.
 - The isolated nightly 1.101 compiler emitted a deprecation warning for `AtomicU64::fetch_update` in `gateway.rs`; the repository-pinned stable format, Clippy, build, and workspace test checks had passed independently. No production or Cargo dependency change was made for the fuzz run.
 - Longer continuous campaigns and deterministic regressions for any future crash remain hardening work.
+
+## DD-5: schema-name index under concurrent DDL pressure — verified slice
+
+- `schema_create_drop_pressure_preserves_pinned_name_index_snapshots` keeps a pre-DDL reader open while 64 schemas are created and dropped. For every cycle, a fresh snapshot resolves the schema after creation and observes its removal after drop; the retained snapshot continues to observe all names as absent.
+- A concurrent reader opens 128 snapshots and resolves all 64 names while the writer publishes the 128 DDL changes, exercising mixed secondary-index reads and catalog publication. The test also checks the create/drop sequence leaves every name absent in the current catalog.
+- Verification: the focused real-redb integration test passed in the pinned Nix shell; `cargo fmt --all -- --check`, workspace Clippy with warnings denied, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with zero ignored tests, including all 179 commit integration tests, in 2m56s.
+- Remaining: longer-duration mixed catalog-DDL/read campaigns and continued codec fuzzing remain hardening work.
