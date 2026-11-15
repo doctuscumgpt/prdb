@@ -600,14 +600,29 @@ fn admin_sql(
             result.commit_sequence
         );
     } else if drop_constraint_statement.is_some() {
-        let result = client
-            .execute_drop_constraint_sql(sql)
-            .map_err(|error| error.to_string())?;
-        println!(
-            "dropped constraint (operation {}, commit {})",
-            lower_hex(&result.operation_id),
-            result.commit_sequence
-        );
+        let statement = drop_constraint_statement.expect("recognized above");
+        if statement.if_exists {
+            match client
+                .execute_drop_constraint_if_exists_sql(sql)
+                .map_err(|error| error.to_string())?
+            {
+                Some(result) => println!(
+                    "dropped constraint (operation {}, commit {})",
+                    lower_hex(&result.operation_id),
+                    result.commit_sequence
+                ),
+                None => println!("constraint did not exist"),
+            }
+        } else {
+            let result = client
+                .execute_drop_constraint_sql(sql)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "dropped constraint (operation {}, commit {})",
+                lower_hex(&result.operation_id),
+                result.commit_sequence
+            );
+        }
     } else if add_check_constraint_statement.is_some() {
         let result = client
             .execute_add_check_constraint_sql(sql)

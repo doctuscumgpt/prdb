@@ -4271,6 +4271,40 @@ impl AdminClient {
     ) -> Result<AdminOperationResult, ClientSubmitError> {
         let statement = crate::ddl_sql::parse_drop_constraint(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if statement.if_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let kind = self.resolve_drop_constraint_sql_target(&statement)?;
+        Self::drop_constraint_sql_target(self, statement.constraint_id, kind)
+    }
+
+    /// Execute `DROP CONSTRAINT IF EXISTS`. An unresolved constraint is
+    /// suppressed only after the server confirms database-administrator authority.
+    pub fn execute_drop_constraint_if_exists_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<Option<AdminOperationResult>, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_drop_constraint(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if !statement.if_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        match self.resolve_drop_constraint_sql_target(&statement) {
+            Ok(kind) => {
+                Self::drop_constraint_sql_target(self, statement.constraint_id, kind).map(Some)
+            }
+            Err(ClientSubmitError::InvalidAdministrativeRequest) => {
+                self.list_runtime_invocations_page(1, None)?;
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn resolve_drop_constraint_sql_target(
+        &mut self,
+        statement: &crate::ddl_sql::DropConstraintSql,
+    ) -> Result<crate::metadata_discovery::AdministrativeConstraintKind, ClientSubmitError> {
         let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
         let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
         let mut cursor = None;
@@ -4294,18 +4328,26 @@ impl AdminClient {
                 break;
             }
         }
-        match found_kind.ok_or(ClientSubmitError::InvalidAdministrativeRequest)? {
+        found_kind.ok_or(ClientSubmitError::InvalidAdministrativeRequest)
+    }
+
+    fn drop_constraint_sql_target(
+        &mut self,
+        constraint_id: [u8; 16],
+        kind: crate::metadata_discovery::AdministrativeConstraintKind,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        match kind {
             crate::metadata_discovery::AdministrativeConstraintKind::PrimaryKey => {
-                self.drop_primary_key(statement.constraint_id)
+                self.drop_primary_key(constraint_id)
             }
             crate::metadata_discovery::AdministrativeConstraintKind::Unique => {
-                self.drop_unique_constraint(statement.constraint_id)
+                self.drop_unique_constraint(constraint_id)
             }
             crate::metadata_discovery::AdministrativeConstraintKind::Check => {
-                self.drop_check_constraint(statement.constraint_id)
+                self.drop_check_constraint(constraint_id)
             }
             crate::metadata_discovery::AdministrativeConstraintKind::ForeignKey => {
-                self.drop_foreign_key(statement.constraint_id)
+                self.drop_foreign_key(constraint_id)
             }
             crate::metadata_discovery::AdministrativeConstraintKind::NotNull => {
                 Err(ClientSubmitError::InvalidAdministrativeRequest)

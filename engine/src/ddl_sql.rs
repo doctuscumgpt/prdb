@@ -113,6 +113,7 @@ pub struct DropConstraintSql {
     pub schema: String,
     pub table: String,
     pub constraint_id: [u8; 16],
+    pub if_exists: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1265,6 +1266,13 @@ pub fn parse_drop_constraint(sql: &str) -> Result<DropConstraintSql, DdlSqlError
     let table = parser.identifier()?;
     parser.word("drop")?;
     parser.word("constraint")?;
+    let if_exists = if parser.peek_word("if") {
+        parser.word("if")?;
+        parser.word("exists")?;
+        true
+    } else {
+        false
+    };
     let constraint_id = match parser.peek() {
         Some(Token::String(value)) => {
             let parsed = parse_uuid(value)?;
@@ -1281,6 +1289,7 @@ pub fn parse_drop_constraint(sql: &str) -> Result<DropConstraintSql, DdlSqlError
         schema,
         table,
         constraint_id,
+        if_exists,
     })
 }
 
@@ -2890,6 +2899,7 @@ mod tests {
                     0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89,
                     0xab, 0xcd, 0xef,
                 ],
+                if_exists: false,
             }
         );
         for sql in [

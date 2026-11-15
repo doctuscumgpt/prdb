@@ -774,3 +774,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `ALTER TABLE schema.table DROP COLUMN IF EXISTS column RESTRICT`. A resolved column follows the existing typed drop path and its dependency, rewrite-budget, and authorization checks. An unresolved schema/table/column is a no-op only after database-administrator authority is confirmed; no DDL outcome is created.
 - Updated the schema DDL and client SQL contracts. Workspace build, formatting, warning-denied Clippy, and `git diff --check` pass. No tests were added or run; Cargo.lock is unchanged.
+
+## DS-SQL-34: conditional constraint drops — implemented slice
+
+- Added `ALTER TABLE schema.table DROP CONSTRAINT IF EXISTS 'generated-id'`. Resolved IDs retain generated-ID table binding and dispatch through the typed PRIMARY KEY, UNIQUE, CHECK, or FOREIGN KEY drop path; unresolved IDs require database-administrator authority for a no-op.
+- Updated the schema DDL contract. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass. No tests were added or run; Cargo.lock is unchanged.

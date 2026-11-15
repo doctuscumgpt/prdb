@@ -456,3 +456,8 @@
 
 - `admin-sql` accepts `ALTER TABLE schema.table DROP COLUMN IF EXISTS column RESTRICT`. Resolved columns go through the typed storage mutation; unresolved targets are suppressed only after a current database-administrator check.
 - Schema DDL and client SQL specifications and progress records are updated. Workspace build, formatting, warning-denied Clippy, and `git diff --check` pass. Tests were not added or run; Cargo.lock is unchanged.
+
+## Conditional DROP CONSTRAINT SQL — implemented slice
+
+- `admin-sql` accepts `ALTER TABLE schema.table DROP CONSTRAINT IF EXISTS 'generated-id'`. A visible generated constraint ID follows its matching typed drop operation; an unresolved ID is suppressed only after a current database-administrator check.
+- CLI dispatch and client SQL documentation are updated. Workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass. No tests were added or run; Cargo.lock is unchanged.
