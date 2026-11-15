@@ -230,3 +230,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests: 291 engine unit tests, 179 commit integration tests, and 75 transaction tests. Authorization coverage includes the unique-key fallback regression, hidden-row diagnostic equivalence, authority-change write invalidation, and the confined forged-handle paths.
 - Broader key-type/coercion and complex-predicate error equivalence, hostile IPC sequences, and timing inference remain open.
+
+## AU-3: hidden BYTEA key mismatch matrix — verified slice
+
+- Expanded `unique_constraint_uses_its_backing_index_for_invocation_writes` to try every other supported scalar type against a hidden BYTEA unique key. Boolean, integer widths, decimal, text/varchar, UUID, date, and timestamp inputs all return the same `Unavailable` result as matching and nonmatching BYTEA inputs.
+- Verification: the focused real-redb transaction regression passed; workspace format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 engine unit tests, 179 commit tests, 75 transaction tests, and three metadata process tests.
+- Remaining: complex-predicate and coercion equivalence beyond the supported unique-key scalar types, plus hostile IPC and timing-inference coverage.

@@ -6775,16 +6775,30 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
         "a hidden key must not distinguish a matching value from a missing value"
     );
-    assert_eq!(
-        invocation.probe_catalog_unique_index(
-            table_id,
-            index_id,
-            &[Some(ScalarValue::Boolean(true))],
-            &hidden_projection,
-        )?,
-        prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
-        "a hidden key must not reveal whether an equality input has the indexed type"
-    );
+    let wrong_key_types = [
+        ScalarValue::Boolean(true),
+        ScalarValue::SmallInt(7),
+        ScalarValue::Integer(7),
+        ScalarValue::BigInt(7),
+        ScalarValue::Decimal(7),
+        ScalarValue::Text("duplicate".to_owned()),
+        ScalarValue::Varchar("duplicate".to_owned()),
+        ScalarValue::Uuid([7; 16]),
+        ScalarValue::Date(7),
+        ScalarValue::TimestampTz(7),
+    ];
+    for value in wrong_key_types {
+        assert_eq!(
+            invocation.probe_catalog_unique_index(
+                table_id,
+                index_id,
+                &[Some(value)],
+                &hidden_projection,
+            )?,
+            prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
+            "a hidden BYTEA key must not reveal whether a mismatched equality type is accepted"
+        );
+    }
     let conditional_policies = [
         policies[0].clone(),
         Policy {
