@@ -299,6 +299,7 @@ enum PendingAdminAction {
         primary_key_columns: Option<Vec<String>>,
         unique_constraints: Vec<Vec<String>>,
         check_expressions: Vec<crate::authorization::Expr>,
+        foreign_keys: Vec<crate::storage_manager::CreateTableForeignKeyDefinition>,
     },
     RenameIdentity {
         identity_id: [u8; 16],
@@ -690,6 +691,7 @@ pub enum ClientAdminCommand {
         primary_key_columns: Option<Vec<String>>,
         unique_constraints: Vec<Vec<String>>,
         check_expressions: Vec<crate::authorization::Expr>,
+        foreign_keys: Vec<crate::storage_manager::CreateTableForeignKeyDefinition>,
     },
     PrepareRenameIdentity {
         identity_id: [u8; 16],
@@ -861,6 +863,8 @@ pub fn decode_client_admin_command(
     let mut primary_key_columns = None;
     let mut unique_constraints = None;
     let mut check_expressions = None;
+    let mut table_foreign_key_sources = None;
+    let mut table_foreign_key_targets = None;
     let mut foreign_key_source_columns = None;
     let mut constraint_column_ids = None;
     let mut index_unique = None;
@@ -937,6 +941,16 @@ pub fn decode_client_admin_command(
                             .collect::<Result<Vec<_>, ClientControlError>>()?;
                         check_expressions = Some(expressions);
                         args.insert(arg, "<structured-check-expressions>".to_owned());
+                    } else if arg == "foreign_key_source_columns"
+                        && parser.text.get(parser.offset) == Some(&b'[')
+                    {
+                        table_foreign_key_sources = Some(parser.parse_string_array_array()?);
+                        args.insert(arg, "<structured-foreign-key-sources>".to_owned());
+                    } else if arg == "foreign_key_target_constraint_ids"
+                        && parser.text.get(parser.offset) == Some(&b'[')
+                    {
+                        table_foreign_key_targets = Some(parser.parse_id_array()?);
+                        args.insert(arg, "<structured-foreign-key-targets>".to_owned());
                     } else if arg == "source_column_ids"
                         && parser.text.get(parser.offset) == Some(&b'[')
                     {
@@ -2006,7 +2020,7 @@ pub fn decode_client_admin_command(
             })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("tables.create") => {
-            if operation_id.is_some() || !(4..=7).contains(&seen.len()) {
+            if operation_id.is_some() || !(4..=9).contains(&seen.len()) {
                 return Err(ClientControlError::UnknownKey);
             }
             let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
@@ -2044,6 +2058,51 @@ pub fn decode_client_admin_command(
                 return Err(ClientControlError::InvalidPrepare);
             }
             let check_expressions = check_expressions.unwrap_or_default();
+            let source_marker = args.remove("foreign_key_source_columns");
+            if source_marker.as_deref()
+                != table_foreign_key_sources
+                    .as_ref()
+                    .map(|_| "<structured-foreign-key-sources>")
+            {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            let target_marker = args.remove("foreign_key_target_constraint_ids");
+            if target_marker.as_deref()
+                != table_foreign_key_targets
+                    .as_ref()
+                    .map(|_| "<structured-foreign-key-targets>")
+            {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            let source_columns = table_foreign_key_sources.unwrap_or_default();
+            let target_constraint_ids = table_foreign_key_targets.unwrap_or_default();
+            if source_columns.len() != target_constraint_ids.len() {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            let foreign_keys = source_columns
+                .into_iter()
+                .zip(target_constraint_ids)
+                .map(|(source_columns, target_constraint_id)| {
+                    if source_columns.is_empty()
+                        || source_columns.len() > columns.len()
+                        || target_constraint_id == [0; 16]
+                        || source_columns
+                            .iter()
+                            .collect::<std::collections::HashSet<_>>()
+                            .len()
+                            != source_columns.len()
+                        || source_columns
+                            .iter()
+                            .any(|name| !columns.iter().any(|column| column.name == *name))
+                    {
+                        return Err(ClientControlError::InvalidPrepare);
+                    }
+                    Ok(crate::storage_manager::CreateTableForeignKeyDefinition {
+                        source_columns,
+                        target_constraint_id,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             if columns_value != "<structured-columns>"
                 || !is_canonical_admin_principal_name(&name)
                 || columns.is_empty()
@@ -2076,6 +2135,7 @@ pub fn decode_client_admin_command(
                     .enumerate()
                     .any(|(index, names)| unique_constraints[..index].contains(names))
                 || check_expressions.len() > crate::tuple::MAX_COLUMNS
+                || foreign_keys.len() > crate::tuple::MAX_COLUMNS
             {
                 return Err(ClientControlError::InvalidPrepare);
             }
@@ -2086,6 +2146,7 @@ pub fn decode_client_admin_command(
                 primary_key_columns,
                 unique_constraints,
                 check_expressions,
+                foreign_keys,
             })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("users.rename") => {
@@ -5114,6 +5175,7 @@ impl ClientConnectionSession {
                 primary_key_columns,
                 unique_constraints,
                 check_expressions,
+                foreign_keys,
             } => {
                 if self.pending_admin_operation.is_some() {
                     return Err(ClientSessionError::WrongMode);
@@ -5136,6 +5198,7 @@ impl ClientConnectionSession {
                         primary_key_columns,
                         unique_constraints,
                         check_expressions,
+                        foreign_keys,
                     },
                 });
                 self.json_response(
@@ -6294,6 +6357,7 @@ impl ClientConnectionSession {
                         primary_key_columns,
                         unique_constraints,
                         check_expressions,
+                        foreign_keys,
                     } => {
                         let create_request = crate::storage_manager::CreateTableRequest {
                             invocation_id: operation_id,
@@ -6313,11 +6377,12 @@ impl ClientConnectionSession {
                             },
                         };
                         let created = storage
-                            .create_table_with_checks_and_constraints(
+                            .create_table_with_foreign_keys(
                                 create_request,
                                 primary_key_columns.as_deref(),
                                 &unique_constraints,
                                 &check_expressions,
+                                &foreign_keys,
                             )
                             .map_err(ClientSessionError::TableLifecycle)?;
                         let mut payload = format!(

@@ -778,3 +778,10 @@
 
 - `ALTER TABLE ... ADD FOREIGN KEY` resolves source and target metadata, chooses the visible ordered PK/UNIQUE target, and uses the existing typed operation. `DROP CONSTRAINT 'generated-id'` confirms the FK belongs to the selected relation before removal.
 - Authenticated TCP and CLI syntax recognition regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed.
+
+
+## SDK: atomic CREATE TABLE FOREIGN KEY SQL — implemented
+
+- `AdminClient::execute_create_table_sql` resolves each referenced schema, table, ordered columns, and visible PRIMARY KEY/UNIQUE constraint through the authenticated metadata channel, then sends table and FK definitions in one typed create request.
+- Storage validates `REFERENCES` authority and atomically publishes FK records, target dependencies, and referenced-table write-epoch changes alongside the new table.
+- Authenticated TCP and storage regressions passed. Locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests and sandbox fixture build, and the complete serial delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed.

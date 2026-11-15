@@ -19,6 +19,15 @@ pub struct CreateTableSql {
     pub primary_key_columns: Option<Vec<String>>,
     pub unique_constraints: Vec<Vec<String>>,
     pub check_constraints: Vec<CheckExpressionSql>,
+    pub foreign_keys: Vec<CreateTableForeignKeySql>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateTableForeignKeySql {
+    pub columns: Vec<String>,
+    pub referenced_schema: String,
+    pub referenced_table: String,
+    pub referenced_columns: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -187,13 +196,43 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
     let mut primary_key_columns = None;
     let mut unique_constraints = Vec::new();
     let mut check_constraints = Vec::new();
+    let mut foreign_keys = Vec::new();
     let mut saw_table_constraint = false;
     loop {
-        if parser.peek_word("primary") || parser.peek_word("unique") || parser.peek_word("check") {
+        if parser.peek_word("primary")
+            || parser.peek_word("unique")
+            || parser.peek_word("check")
+            || parser.peek_word("foreign")
+        {
             saw_table_constraint = true;
             if parser.peek_word("check") {
                 let expression = parser.check_constraint_expression()?;
                 check_constraints.push(expression);
+            } else if parser.peek_word("foreign") {
+                if foreign_keys.len() >= crate::tuple::MAX_COLUMNS {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
+                parser.word("foreign")?;
+                parser.word("key")?;
+                let columns = parse_column_name_list(&mut parser)?;
+                parser.word("references")?;
+                let referenced_schema = parser.identifier()?;
+                parser.take(Token::Dot)?;
+                let referenced_table = parser.identifier()?;
+                let referenced_columns = parse_column_name_list(&mut parser)?;
+                if columns.len() > crate::tuple::MAX_COLUMNS
+                    || columns.len() != referenced_columns.len()
+                    || has_duplicates(&columns)
+                    || has_duplicates(&referenced_columns)
+                {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
+                foreign_keys.push(CreateTableForeignKeySql {
+                    columns,
+                    referenced_schema,
+                    referenced_table,
+                    referenced_columns,
+                });
             } else {
                 let kind = if parser.peek_word("primary") {
                     parser.word("primary")?;
@@ -313,6 +352,14 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
     for expression in &check_constraints {
         validate_check_columns(expression, &columns)?;
     }
+    if foreign_keys.iter().any(|foreign_key| {
+        foreign_key
+            .columns
+            .iter()
+            .any(|name| !columns.iter().any(|column| &column.name == name))
+    }) {
+        return Err(DdlSqlError::InvalidStatement);
+    }
     Ok(CreateTableSql {
         schema,
         table,
@@ -320,6 +367,7 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
         primary_key_columns,
         unique_constraints,
         check_constraints,
+        foreign_keys,
     })
 }
 
@@ -1900,6 +1948,39 @@ mod tests {
             "CREATE TABLE app.t (id UUID, PRIMARY KEY (id, id))",
             "CREATE TABLE app.t (id UUID, PRIMARY KEY (id), extra INTEGER)",
             "CREATE TABLE app.t (id UUID PRIMARY KEY)",
+        ] {
+            assert!(parse_create_table(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_table_level_foreign_key_constraints() {
+        let parsed = parse_create_table(
+            "CREATE TABLE app.order_lines (customer_id INTEGER, order_id BIGINT, FOREIGN KEY (customer_id) REFERENCES crm.customers (id), FOREIGN KEY (order_id) REFERENCES app.orders (id));",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.foreign_keys,
+            vec![
+                CreateTableForeignKeySql {
+                    columns: vec!["customer_id".into()],
+                    referenced_schema: "crm".into(),
+                    referenced_table: "customers".into(),
+                    referenced_columns: vec!["id".into()],
+                },
+                CreateTableForeignKeySql {
+                    columns: vec!["order_id".into()],
+                    referenced_schema: "app".into(),
+                    referenced_table: "orders".into(),
+                    referenced_columns: vec!["id".into()],
+                },
+            ]
+        );
+        for sql in [
+            "CREATE TABLE app.order_lines (customer_id INTEGER, FOREIGN KEY (missing) REFERENCES crm.customers (id))",
+            "CREATE TABLE app.order_lines (customer_id INTEGER, FOREIGN KEY (customer_id, customer_id) REFERENCES crm.customers (id, other))",
+            "CREATE TABLE app.order_lines (customer_id INTEGER, FOREIGN KEY (customer_id) REFERENCES customers (id))",
+            "CREATE TABLE app.order_lines (customer_id INTEGER, FOREIGN KEY (customer_id) REFERENCES crm.customers (id)); CREATE TABLE app.x (id INTEGER)",
         ] {
             assert!(parse_create_table(sql).is_err(), "accepted {sql}");
         }

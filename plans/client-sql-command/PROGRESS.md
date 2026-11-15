@@ -221,3 +221,10 @@
 
 - `admin-sql` recognizes qualified ADD FOREIGN KEY and DROP CONSTRAINT by generated ID. Metadata binding requires a visible ordered PRIMARY KEY or UNIQUE target and confirms drop ownership by source table.
 - Parser, authenticated AdminClient create/drop, and CLI pre-credential regressions passed. Locked workspace build, format check, warning-denied all-target Clippy, complete serial delegated-cgroup workspace suite (sandbox/process tests enabled; zero ignored), and `git diff --check` passed.
+
+
+## admin-sql: atomic CREATE TABLE FOREIGN KEY definitions — implemented
+
+- The existing `CREATE TABLE` command accepts multiple table-level `FOREIGN KEY (...) REFERENCES schema.table (...)` clauses and routes them through `AdminClient` metadata binding and one typed create operation.
+- Regression coverage verifies parser constraints, authenticated metadata/typed request binding, and atomic storage publication. No obsolete tests were identified; negative parser tests still cover unsupported/malformed input.
+- Focused parser, authenticated client, and storage checks passed. Locked workspace build, formatting, warning-denied all-target Clippy, TinyCC SDK tests and sandbox fixture build, and the complete serial delegated-cgroup workspace suite passed with zero ignored tests; `git diff --check` passed.

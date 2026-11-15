@@ -2375,6 +2375,110 @@ fn admin_client_adds_renames_and_drops_columns() {
 }
 
 #[test]
+fn admin_client_creates_table_with_foreign_key_in_one_typed_operation() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        for (operation, body) in [
+            (
+                "metadata.schemas.list",
+                format!(
+                    r#"{{"schemas":[{{"schema_id":"{}","name":"app"}}],"next_cursor":null}}"#,
+                    "a3".repeat(16)
+                ),
+            ),
+            (
+                "metadata.schemas.list",
+                format!(
+                    r#"{{"schemas":[{{"schema_id":"{}","name":"crm"}}],"next_cursor":null}}"#,
+                    "a4".repeat(16)
+                ),
+            ),
+            (
+                "metadata.relations.list",
+                format!(
+                    r#"{{"relations":[{{"relation_id":"{}","name":"customers"}}],"next_cursor":null}}"#,
+                    "b5".repeat(16)
+                ),
+            ),
+            (
+                "metadata.columns.list",
+                format!(
+                    r#"{{"columns":[{{"column_id":"{}","name":"id","ordinal":0,"scalar_type":"integer","nullable":false}}],"next_cursor":null}}"#,
+                    "c6".repeat(16)
+                ),
+            ),
+            (
+                "metadata.constraints.list",
+                format!(
+                    r#"{{"constraints":[{{"constraint_id":"{}","kind":"primary_key","column_ids":["{}"],"referenced_table_id":null,"referenced_column_ids":[]}}],"next_cursor":null}}"#,
+                    "d7".repeat(16),
+                    "c6".repeat(16)
+                ),
+            ),
+        ] {
+            let request = read_frame(&mut stream, &mut decoder);
+            assert!(
+                String::from_utf8_lossy(&request.payload)
+                    .contains(&format!(r#""operation":"{operation}""#))
+            );
+            respond(&mut stream, &request, body.as_bytes());
+        }
+        let prepare = read_frame(&mut stream, &mut decoder);
+        let payload = String::from_utf8(prepare.payload.clone()).unwrap();
+        assert!(payload.contains(r#""operation":"tables.create""#));
+        assert!(payload.contains(&format!(
+            r#""foreign_key_source_columns":[["customer_id"]],"foreign_key_target_constraint_ids":["{}"]"#,
+            "d7".repeat(16)
+        )));
+        assert!(matches!(
+            decode_client_admin_command(&prepare.payload),
+            Ok(ClientAdminCommand::PrepareCreateTable { foreign_keys, .. })
+                if foreign_keys == [prdb_engine::storage_manager::CreateTableForeignKeyDefinition {
+                    source_columns: vec!["customer_id".to_owned()],
+                    target_constraint_id: [0xd7; 16],
+                }]
+        ));
+        respond(
+            &mut stream,
+            &prepare,
+            format!(
+                r#"{{"operation_id":"{}","state":"prepared"}}"#,
+                "e8".repeat(16)
+            )
+            .as_bytes(),
+        );
+        let start = read_frame(&mut stream, &mut decoder);
+        respond(
+            &mut stream,
+            &start,
+            format!(r#"{{"operation_id":"{}","outcome":"committed","table_id":"{}","column_ids":["{}"],"commit_sequence":"81"}}"#, "e8".repeat(16), "f9".repeat(16), "ca".repeat(16)).as_bytes(),
+        );
+    });
+
+    let mut secret = [5; 32];
+    let mut client = AdminClient::connect_authenticated_with_timeout(
+        address,
+        [6; 16],
+        &mut secret,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let created = client
+        .execute_create_table_sql(
+            "CREATE TABLE app.order_lines (customer_id INTEGER, FOREIGN KEY (customer_id) REFERENCES crm.customers (id))",
+        )
+        .unwrap();
+    assert_eq!(created.table_id, [0xf9; 16]);
+    assert_eq!(created.column_ids, [[0xca; 16]]);
+    assert_eq!(created.commit_sequence, 81);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_changes_table_owner_nullability_and_defaults() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

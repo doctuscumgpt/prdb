@@ -164,6 +164,12 @@ pub struct AdminColumnDefinition {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTableForeignKeyDefinition {
+    pub source_columns: Vec<String>,
+    pub target_constraint_id: [u8; 16],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdminColumnDefault {
     Null,
     Literal(crate::tuple::ScalarValue),
@@ -2609,7 +2615,7 @@ impl AdminClient {
         name: &str,
         columns: &[AdminColumnDefinition],
     ) -> Result<AdminTableResult, ClientSubmitError> {
-        self.create_table_internal(schema_id, name, columns, None, &[], &[])
+        self.create_table_internal(schema_id, name, columns, None, &[], &[], &[])
     }
 
     pub fn create_table_with_primary_key(
@@ -2624,6 +2630,7 @@ impl AdminClient {
             name,
             columns,
             Some(primary_key_columns),
+            &[],
             &[],
             &[],
         )
@@ -2644,6 +2651,7 @@ impl AdminClient {
             primary_key_columns,
             unique_constraints,
             &[],
+            &[],
         )
     }
 
@@ -2663,9 +2671,33 @@ impl AdminClient {
             primary_key_columns,
             unique_constraints,
             check_constraints,
+            &[],
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_table_with_checks_constraints_and_foreign_keys(
+        &mut self,
+        schema_id: [u8; 16],
+        name: &str,
+        columns: &[AdminColumnDefinition],
+        primary_key_columns: Option<&[String]>,
+        unique_constraints: &[Vec<String>],
+        check_constraints: &[crate::authorization::Expr],
+        foreign_keys: &[AdminTableForeignKeyDefinition],
+    ) -> Result<AdminTableResult, ClientSubmitError> {
+        self.create_table_internal(
+            schema_id,
+            name,
+            columns,
+            primary_key_columns,
+            unique_constraints,
+            check_constraints,
+            foreign_keys,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn create_table_internal(
         &mut self,
         schema_id: [u8; 16],
@@ -2674,6 +2706,7 @@ impl AdminClient {
         primary_key_columns: Option<&[String]>,
         unique_constraints: &[Vec<String>],
         check_constraints: &[crate::authorization::Expr],
+        foreign_keys: &[AdminTableForeignKeyDefinition],
     ) -> Result<AdminTableResult, ClientSubmitError> {
         validate_admin_id(schema_id)?;
         validate_admin_name(name)?;
@@ -2757,8 +2790,53 @@ impl AdminClient {
                 .join(",");
             format!(",\"check_expressions_eir1\":[{checks}]")
         };
+        if foreign_keys.len() > crate::tuple::MAX_COLUMNS
+            || foreign_keys.iter().any(|foreign_key| {
+                foreign_key.source_columns.is_empty()
+                    || foreign_key.source_columns.len() > columns.len()
+                    || foreign_key.target_constraint_id == [0; 16]
+                    || foreign_key
+                        .source_columns
+                        .iter()
+                        .collect::<HashSet<_>>()
+                        .len()
+                        != foreign_key.source_columns.len()
+                    || foreign_key.source_columns.iter().any(|column_name| {
+                        !columns.iter().any(|column| &column.name == column_name)
+                    })
+            })
+        {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let foreign_keys_json = if foreign_keys.is_empty() {
+            String::new()
+        } else {
+            let source_columns = foreign_keys
+                .iter()
+                .map(|foreign_key| {
+                    format!(
+                        "[{}]",
+                        foreign_key
+                            .source_columns
+                            .iter()
+                            .map(|column| json_quote(column))
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let target_constraints = foreign_keys
+                .iter()
+                .map(|foreign_key| format!("\"{}\"", lower_hex(&foreign_key.target_constraint_id)))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                ",\"foreign_key_source_columns\":[{source_columns}],\"foreign_key_target_constraint_ids\":[{target_constraints}]"
+            )
+        };
         let prepare = format!(
-            "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tables.create\",\"arguments\":{{\"schema_id\":\"{}\",\"name\":\"{name}\",\"columns\":{encoded_columns}{primary_key_json}{unique_json}{checks_json}}}}}",
+            "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tables.create\",\"arguments\":{{\"schema_id\":\"{}\",\"name\":\"{name}\",\"columns\":{encoded_columns}{primary_key_json}{unique_json}{checks_json}{foreign_keys_json}}}}}",
             lower_hex(&schema_id)
         );
         let prepared = self.transport.exchange(10, prepare.into_bytes())?;
@@ -2860,13 +2938,78 @@ impl AdminClient {
                 .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.create_table_with_checks_and_constraints(
+        let mut foreign_keys = Vec::with_capacity(statement.foreign_keys.len());
+        for foreign_key in &statement.foreign_keys {
+            let target_schema_id = self.resolve_schema_sql_name(&foreign_key.referenced_schema)?;
+            let target_table_id = self.resolve_table_sql_name_in_schema(
+                target_schema_id,
+                &foreign_key.referenced_table,
+            )?;
+            let mut column_cursor = None;
+            let mut target_columns = Vec::new();
+            loop {
+                let page = self.list_columns_page(
+                    target_schema_id,
+                    target_table_id,
+                    DEFAULT_METADATA_PAGE_SIZE,
+                    column_cursor.as_deref(),
+                )?;
+                target_columns.extend(page.records);
+                column_cursor = page.next_cursor;
+                if column_cursor.is_none() {
+                    break;
+                }
+            }
+            let target_column_ids = foreign_key
+                .referenced_columns
+                .iter()
+                .map(|name| {
+                    target_columns
+                        .iter()
+                        .find(|column| &column.name == name)
+                        .map(|column| column.column_id)
+                        .ok_or(ClientSubmitError::InvalidAdministrativeRequest)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut constraint_cursor = None;
+            let mut target_constraints = Vec::new();
+            loop {
+                let page = self.list_constraints_page(
+                    target_schema_id,
+                    target_table_id,
+                    DEFAULT_METADATA_PAGE_SIZE,
+                    constraint_cursor.as_deref(),
+                )?;
+                target_constraints.extend(page.records);
+                constraint_cursor = page.next_cursor;
+                if constraint_cursor.is_none() {
+                    break;
+                }
+            }
+            let target_constraint_id = target_constraints
+                .iter()
+                .find(|constraint| {
+                    matches!(
+                        constraint.kind,
+                        crate::metadata_discovery::AdministrativeConstraintKind::PrimaryKey
+                            | crate::metadata_discovery::AdministrativeConstraintKind::Unique
+                    ) && constraint.column_ids == target_column_ids
+                })
+                .map(|constraint| constraint.constraint_id)
+                .ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
+            foreign_keys.push(AdminTableForeignKeyDefinition {
+                source_columns: foreign_key.columns.clone(),
+                target_constraint_id,
+            });
+        }
+        self.create_table_with_checks_constraints_and_foreign_keys(
             schema_id,
             &statement.table,
             &statement.columns,
             statement.primary_key_columns.as_deref(),
             &statement.unique_constraints,
             &checks,
+            &foreign_keys,
         )
     }
 

@@ -8554,6 +8554,122 @@ fn storage_manager_creates_foreign_key_and_advances_both_table_epochs()
 }
 
 #[test]
+fn storage_manager_atomically_creates_table_with_foreign_key_to_existing_key()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{
+        CreateTableForeignKeyDefinition, CreateTableRequest, TableColumnDefinition,
+    };
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let admin_role = builtin_owner_id();
+    let actor = id(0xea);
+    let mut setup_writes = foreign_key_catalog_writes(false, true)
+        .into_iter()
+        .filter(|write| {
+            write.key != id_catalog_key(8, id(86)) && write.key != id_catalog_key(2, id(86))
+        })
+        .collect::<Vec<_>>();
+    setup_writes.extend([
+        principal_write_with_name(actor, 1, 1, "fk_create_table_admin"),
+        object_write_with_name(actor, 8, "fk_create_table_admin"),
+        membership_write(actor, admin_role),
+        dependency_write(actor, admin_role, 5),
+        grant_write(actor, id(81), 6, 1, id(81), admin_role),
+        dependency_write(actor, id(81), 5),
+    ]);
+    let mut setup_audit = identity_audit_event(0xeb, admin_role, id(80));
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0xeb), admin_role, 9_999, &setup_writes, &[setup_audit])?;
+
+    let mut probe = storage.begin_invocation(id(0xec), actor, 9_999, 1, 1024)?;
+    let target_schema = probe.load_catalog_table_schema(id(81))?;
+    let target_type = target_schema.columns[0].scalar_type;
+    drop(probe);
+
+    let invocation_id = id(0xed);
+    let mut audit = identity_audit_event(0xee, actor, id(80));
+    audit.correlation_id = invocation_id;
+    let created_result = storage.create_table_with_foreign_keys(
+        CreateTableRequest {
+            invocation_id,
+            authenticated_actor_id: actor,
+            schema_id: id(80),
+            name: "new_child".to_owned(),
+            columns: vec![TableColumnDefinition {
+                name: "parent_id".to_owned(),
+                scalar_type: target_type,
+                nullable: true,
+                generated_uuid_identity: false,
+                default: None,
+            }],
+            retention_deadline_us: 9_999,
+            audit_event: audit,
+        },
+        None,
+        &[],
+        &[],
+        &[CreateTableForeignKeyDefinition {
+            source_columns: vec!["parent_id".to_owned()],
+            target_constraint_id: id(85),
+        }],
+    );
+    let created = created_result
+        .map_err(|error| format!("atomic CREATE TABLE FOREIGN KEY failed: {error:?}"))?;
+    assert_eq!(created.commit_sequence, 2);
+    assert_eq!(
+        lookup_outcome(&database, invocation_id, actor, 1)?
+            .ok_or("missing CREATE TABLE FK outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    let new_fk = catalog
+        .iter()?
+        .filter_map(|entry| entry.ok())
+        .find_map(|(key, value)| {
+            let key = key.value();
+            if key.len() == 19 && key[..2] == 8u16.to_be_bytes() && key[2] == 1 {
+                let record = decode_registered_envelope(value.value()).ok()?;
+                let source_table = record.fields.iter().find(|field| field.tag == 1)?;
+                (source_table.payload.as_slice() == created.table_id)
+                    .then(|| <[u8; 16]>::try_from(&key[3..19]).ok())?
+            } else {
+                None
+            }
+        })
+        .ok_or("new table FOREIGN KEY record missing")?;
+    assert!(
+        catalog
+            .get(dependency_write(new_fk, id(85), 3).key.as_slice())?
+            .is_some()
+    );
+    let target_table = decode_registered_envelope(
+        catalog
+            .get(id_catalog_key(5, id(81)).as_slice())?
+            .ok_or("target table missing")?
+            .value(),
+    )?;
+    let target_epoch = u64::from_le_bytes(
+        target_table
+            .fields
+            .iter()
+            .find(|field| field.tag == 3)
+            .ok_or("target table epoch missing")?
+            .payload
+            .as_slice()
+            .try_into()?,
+    );
+    assert_eq!(target_epoch, 2);
+    drop(catalog);
+    drop(read);
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    Ok(())
+}
+
+#[test]
 fn foreign_key_creation_racing_orphan_child_insert_is_atomic()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{CreateForeignKeyRequest, TableLifecycleError};
