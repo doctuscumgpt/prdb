@@ -3849,6 +3849,7 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
     let instance_dir = root.join("instance");
     let mut setup = initialize(&instance_dir, "selfref_process_admin", i64::MAX)?;
     let token_id = setup.token_id();
+    let admin_user_id = setup.admin_user_id();
     let token_secret = setup.take_secret().ok_or("bootstrap secret missing")?;
     drop(setup.acknowledge()?);
 
@@ -3973,23 +3974,28 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
         },
     )?;
     let sql_path = root.join("selfref-create-table.sql");
-    std::fs::write(
-        &sql_path,
+    let address_text = address.to_string();
+    let execute_admin_sql = |sql: &str| -> std::io::Result<std::process::Output> {
+        std::fs::write(&sql_path, sql)?;
+        Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "admin-sql",
+                "--address",
+                &address_text,
+                "--credentials",
+                credentials_path
+                    .to_str()
+                    .ok_or_else(|| std::io::Error::other("non-UTF-8 credentials path"))?,
+                "--sql-file",
+                sql_path
+                    .to_str()
+                    .ok_or_else(|| std::io::Error::other("non-UTF-8 SQL path"))?,
+            ])
+            .output()
+    };
+    let cli_output = execute_admin_sql(
         "CREATE TABLE selfref_app.nodes (tenant_id INTEGER, id INTEGER, parent_tenant_id INTEGER, parent_id INTEGER, PRIMARY KEY (tenant_id, id), FOREIGN KEY (parent_tenant_id, parent_id) REFERENCES selfref_app.nodes (tenant_id, id));",
     )?;
-    let cli_output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
-        .args([
-            "admin-sql",
-            "--address",
-            &address.to_string(),
-            "--credentials",
-            credentials_path
-                .to_str()
-                .ok_or("non-UTF-8 credentials path")?,
-            "--sql-file",
-            sql_path.to_str().ok_or("non-UTF-8 SQL path")?,
-        ])
-        .output()?;
     assert!(
         cli_output.status.success(),
         "admin-sql self-referencing CREATE TABLE failed: {}",
@@ -4023,20 +4029,7 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
         vec![columns.records[0].column_id, columns.records[1].column_id]
     );
     assert!(constraints.next_cursor.is_none());
-    std::fs::write(&sql_path, "DROP TABLE selfref_app.nodes RESTRICT;")?;
-    let drop_output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
-        .args([
-            "admin-sql",
-            "--address",
-            &address.to_string(),
-            "--credentials",
-            credentials_path
-                .to_str()
-                .ok_or("non-UTF-8 credentials path")?,
-            "--sql-file",
-            sql_path.to_str().ok_or("non-UTF-8 SQL path")?,
-        ])
-        .output()?;
+    let drop_output = execute_admin_sql("DROP TABLE selfref_app.nodes RESTRICT;")?;
     assert!(
         drop_output.status.success(),
         "admin-sql DROP TABLE failed: {}",
@@ -4050,6 +4043,60 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
             .iter()
             .all(|relation| relation.name != "nodes")
     );
+    let parent_create =
+        execute_admin_sql("CREATE TABLE selfref_app.parents (id INTEGER PRIMARY KEY);")?;
+    assert!(
+        parent_create.status.success(),
+        "admin-sql CREATE TABLE parent failed: {}",
+        String::from_utf8_lossy(&parent_create.stderr)
+    );
+    let parent_table_id = decode_id_hex(
+        String::from_utf8_lossy(&parent_create.stdout)
+            .split_whitespace()
+            .nth(2)
+            .ok_or("admin-sql parent output omitted the table ID")?,
+    )
+    .ok_or("admin-sql returned an invalid parent table ID")?;
+    admin.grant_object_privilege(
+        admin_user_id,
+        parent_table_id,
+        AdminObjectPrivilege::References,
+        AdminObjectGrantTarget::AllColumns,
+    )?;
+    let child_create = execute_admin_sql(
+        "CREATE TABLE selfref_app.children (parent_id INTEGER REFERENCES selfref_app.parents (id));",
+    )?;
+    assert!(
+        child_create.status.success(),
+        "admin-sql CREATE TABLE child failed: {}",
+        String::from_utf8_lossy(&child_create.stderr)
+    );
+    let restricted_drop = execute_admin_sql("DROP TABLE selfref_app.parents RESTRICT;")?;
+    assert!(!restricted_drop.status.success());
+    let relations = admin.list_relations_page(created_schema.identity_id, 16, None)?;
+    assert!(
+        relations
+            .records
+            .iter()
+            .any(|relation| relation.name == "parents")
+    );
+    assert!(
+        relations
+            .records
+            .iter()
+            .any(|relation| relation.name == "children")
+    );
+    for statement in [
+        "DROP TABLE selfref_app.children RESTRICT;",
+        "DROP TABLE selfref_app.parents RESTRICT;",
+    ] {
+        let output = execute_admin_sql(statement)?;
+        assert!(
+            output.status.success(),
+            "admin-sql dependency cleanup failed for {statement}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     drop(admin);
 
     assert!(gateway.stop()?.success());
