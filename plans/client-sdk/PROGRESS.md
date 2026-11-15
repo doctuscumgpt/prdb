@@ -997,3 +997,7 @@
 ## DS-SQL-60: Finite-set and range predicates on supported expressions — verified
 
 - Authenticated CHECK SQL accepts supported scalar expressions before `IN`/`NOT IN` and `BETWEEN`/`NOT BETWEEN`. Binding contextually types literals, preserves column dependencies, and validates canonical EIR1 node/depth/byte bounds after lowering. Parser/binder and full delegated-cgroup workspace checks pass with sandbox/process coverage and zero ignored tests; workspace build, format check, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
+
+## DS-SQL-61: Null-safe distinctness on both expressions — verified
+
+- Authenticated CHECK binding accepts supported expressions on both sides of `IS [NOT] DISTINCT FROM`, checks compatible types, and lowers all NULL/value combinations through bounded EIR1 nodes. The parser/binder and full delegated-cgroup workspace suite pass with sandbox/process coverage and zero ignored tests; workspace build, format check, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.

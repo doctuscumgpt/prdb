@@ -926,3 +926,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - CHECK SQL now accepts any supported scalar expression before `IN`/`NOT IN` and `BETWEEN`/`NOT BETWEEN`, with context-typed literal lists/bounds. Binding recursively preserves column dependencies and policy-context restrictions, lowers through existing EIR1 nodes, and validates the final canonical encoding so operand replication cannot exceed node, depth, or byte limits.
 - Regression coverage includes grouped Boolean expressions, literal-only IN, the 64-item boundary, and rejection when a complex repeated operand exceeds the EIR1 node budget. The full serial delegated-cgroup workspace suite passes (289 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored); workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.
+
+## DS-SQL-61: null-safe distinctness on both expressions — verified
+
+- `IS [NOT] DISTINCT FROM` now binds supported scalar expressions on both sides with contextual type checking. The lowering explicitly handles null/null, null/value, value/null, and value/value cases using existing EIR1 nodes, producing two-valued results; the completed expression is checked against canonical EIR1 bounds. Column-level CHECK and policy-context validation recurse through both operands.
+- Regression coverage includes expression/expression binding, mismatched types, literal compatibility, and encoding. The full serial delegated-cgroup workspace suite passes (289 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored); workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.

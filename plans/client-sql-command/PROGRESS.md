@@ -571,3 +571,7 @@
 ## DS-SQL-60: Finite-set and range predicates on supported expressions — verified
 
 - `admin-sql` CHECK expressions now accept supported scalar expressions before `IN`/`NOT IN` and `BETWEEN`/`NOT BETWEEN`, contextually typing literal lists and range bounds. The binder checks encoded EIR1 limits after lowering; parser/binder and full serial delegated-cgroup workspace checks pass with sandbox/process coverage and zero ignored tests. Workspace build, format, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.
+
+## DS-SQL-61: Null-safe distinctness on both expressions — verified
+
+- `admin-sql` CHECK SQL binds supported scalar expressions on both sides of `IS [NOT] DISTINCT FROM` and preserves two-valued null-safe behavior using existing EIR1 nodes. Parser/binder and full serial delegated-cgroup workspace checks pass with sandbox/process coverage and zero ignored tests; workspace build, format, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.

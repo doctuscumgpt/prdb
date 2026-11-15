@@ -34,6 +34,7 @@ Fix bounded DDL text/structured schemas, normalized identifier limits, scalar wi
 | DS-SQL-58 | Null tests accept supported scalar expressions | Bind `IS [NOT] NULL` against any supported scalar expression in CREATE TABLE CHECK and ALTER CHECK SQL, preserving EIR1 null semantics and column dependency binding |
 | DS-SQL-59 | Null-safe distinctness tests accept supported left expressions | Bind `IS [NOT] DISTINCT FROM` with any supported scalar expression on the left and one typed literal on the right, preserving two-valued NULL semantics through existing EIR1 nodes |
 | DS-SQL-60 | Finite-set and range predicates accept supported expressions | Bind `IN`/`NOT IN` and `BETWEEN`/`NOT BETWEEN` against supported scalar expressions, contextually type literals, and reject expanded EIR1 trees that exceed the canonical node/depth/byte bounds |
+| DS-SQL-61 | Null-safe distinctness accepts expressions on both sides | Bind both operands of `IS [NOT] DISTINCT FROM` as supported typed scalar expressions and lower the four NULL/value combinations to a two-valued EIR1 predicate within canonical bounds |
 
 ## Acceptance and Handoff
 
