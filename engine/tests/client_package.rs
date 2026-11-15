@@ -94,7 +94,7 @@ fn admin_sql_cli_runs_create_table_over_authenticated_control_mode() {
     let sql_path = temp.join("create.sql");
     fs::write(
         &sql_path,
-        "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY PRIMARY KEY, amount DECIMAL(5,2) DEFAULT 1.20 UNIQUE CHECK (amount >= 0.75));",
+        "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY PRIMARY KEY, amount DECIMAL(5,2) DEFAULT 1.20 UNIQUE CHECK (amount >= 0.75), customer_id INTEGER REFERENCES crm.customers (id));",
     )
     .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -136,6 +136,53 @@ fn admin_sql_cli_runs_create_table_over_authenticated_control_mode() {
             .as_bytes(),
         );
 
+        let target_schema = read_client_frame(&mut stream, &mut decoder);
+        assert!(
+            String::from_utf8_lossy(&target_schema.payload)
+                .contains(r#""operation":"metadata.schemas.list""#)
+        );
+        write_server_response(
+            &mut stream,
+            &target_schema,
+            format!(
+                r#"{{"schemas":[{{"schema_id":"{}","name":"crm"}}],"next_cursor":null}}"#,
+                "12".repeat(16)
+            )
+            .as_bytes(),
+        );
+
+        for (operation, response) in [
+            (
+                "metadata.relations.list",
+                format!(
+                    r#"{{"relations":[{{"relation_id":"{}","name":"customers"}}],"next_cursor":null}}"#,
+                    "13".repeat(16)
+                ),
+            ),
+            (
+                "metadata.columns.list",
+                format!(
+                    r#"{{"columns":[{{"column_id":"{}","name":"id","ordinal":0,"scalar_type":"integer","nullable":false}}],"next_cursor":null}}"#,
+                    "14".repeat(16)
+                ),
+            ),
+            (
+                "metadata.constraints.list",
+                format!(
+                    r#"{{"constraints":[{{"constraint_id":"{}","kind":"primary_key","column_ids":["{}"],"referenced_table_id":null,"referenced_column_ids":[]}}],"next_cursor":null}}"#,
+                    "15".repeat(16),
+                    "14".repeat(16)
+                ),
+            ),
+        ] {
+            let request = read_client_frame(&mut stream, &mut decoder);
+            assert!(
+                String::from_utf8_lossy(&request.payload)
+                    .contains(&format!(r#""operation":"{operation}""#))
+            );
+            write_server_response(&mut stream, &request, response.as_bytes());
+        }
+
         let prepare = read_client_frame(&mut stream, &mut decoder);
         assert_eq!(prepare.kind, 10);
         let payload = String::from_utf8(prepare.payload.clone()).unwrap();
@@ -145,6 +192,10 @@ fn admin_sql_cli_runs_create_table_over_authenticated_control_mode() {
         assert!(payload.contains(r#""unique_constraints":[["amount"]]"#));
         assert!(payload.contains(r#""check_expressions_eir1":[""#));
         assert!(payload.contains(r#""value":"1.20""#));
+        assert!(payload.contains(&format!(
+            r#""foreign_key_source_columns":[["customer_id"]],"foreign_key_target_constraint_ids":["{}"]"#,
+            "15".repeat(16)
+        )));
         let operation_id = [0x22; 16];
         write_server_response(
             &mut stream,
@@ -160,7 +211,7 @@ fn admin_sql_cli_runs_create_table_over_authenticated_control_mode() {
         write_server_response(
             &mut stream,
             &start,
-            format!(r#"{{"operation_id":"{}","outcome":"committed","table_id":"{}","column_ids":["{}","{}"],"commit_sequence":"77"}}"#, hex(&operation_id), "33".repeat(16), "44".repeat(16), "55".repeat(16)).as_bytes(),
+            format!(r#"{{"operation_id":"{}","outcome":"committed","table_id":"{}","column_ids":["{}","{}","{}"],"commit_sequence":"77"}}"#, hex(&operation_id), "33".repeat(16), "44".repeat(16), "55".repeat(16), "56".repeat(16)).as_bytes(),
         );
     });
 
@@ -183,7 +234,7 @@ fn admin_sql_cli_runs_create_table_over_authenticated_control_mode() {
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains(&"33".repeat(16)));
-    assert!(stdout.contains("with 2 columns"));
+    assert!(stdout.contains("with 3 columns"));
     assert!(stdout.contains("commit 77"));
     server.join().unwrap();
     fs::remove_dir_all(temp).unwrap();

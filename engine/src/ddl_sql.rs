@@ -475,6 +475,24 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
                 let expression = parser.check_constraint_expression()?;
                 validate_column_check_expression(&name, &expression)?;
                 check_constraints.push(expression);
+            } else if parser.peek_word("references") {
+                if foreign_keys.len() >= crate::tuple::MAX_COLUMNS {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
+                parser.word("references")?;
+                let referenced_schema = parser.identifier()?;
+                parser.take(Token::Dot)?;
+                let referenced_table = parser.identifier()?;
+                let referenced_columns = parse_column_name_list(&mut parser)?;
+                if referenced_columns.len() != 1 {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
+                foreign_keys.push(CreateTableForeignKeySql {
+                    columns: vec![name.clone()],
+                    referenced_schema,
+                    referenced_table,
+                    referenced_columns,
+                });
             } else {
                 break;
             }
@@ -3670,6 +3688,37 @@ mod tests {
             "CREATE TABLE app.order_lines (customer_id INTEGER, FOREIGN KEY (customer_id, customer_id) REFERENCES crm.customers (id, other))",
             "CREATE TABLE app.order_lines (customer_id INTEGER, FOREIGN KEY (customer_id) REFERENCES customers (id))",
             "CREATE TABLE app.order_lines (customer_id INTEGER, FOREIGN KEY (customer_id) REFERENCES crm.customers (id)); CREATE TABLE app.x (id INTEGER)",
+        ] {
+            assert!(parse_create_table(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_column_level_foreign_key_constraints() {
+        let parsed = parse_create_table(
+            "CREATE TABLE app.order_lines (customer_id INTEGER REFERENCES crm.customers (id), order_id BIGINT, FOREIGN KEY (order_id) REFERENCES app.orders (id));",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.foreign_keys,
+            vec![
+                CreateTableForeignKeySql {
+                    columns: vec!["customer_id".into()],
+                    referenced_schema: "crm".into(),
+                    referenced_table: "customers".into(),
+                    referenced_columns: vec!["id".into()],
+                },
+                CreateTableForeignKeySql {
+                    columns: vec!["order_id".into()],
+                    referenced_schema: "app".into(),
+                    referenced_table: "orders".into(),
+                    referenced_columns: vec!["id".into()],
+                },
+            ]
+        );
+        for sql in [
+            "CREATE TABLE app.order_lines (customer_id INTEGER REFERENCES customers (id))",
+            "CREATE TABLE app.order_lines (customer_id INTEGER REFERENCES crm.customers (id, region_id))",
         ] {
             assert!(parse_create_table(sql).is_err(), "accepted {sql}");
         }

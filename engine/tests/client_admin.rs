@@ -2954,7 +2954,7 @@ fn admin_client_creates_table_with_foreign_key_in_one_typed_operation() {
     .unwrap();
     let created = client
         .execute_create_table_sql(
-            "CREATE TABLE app.order_lines (customer_id INTEGER, FOREIGN KEY (customer_id) REFERENCES crm.customers (id))",
+            "CREATE TABLE app.order_lines (customer_id INTEGER REFERENCES crm.customers (id))",
         )
         .unwrap();
     assert_eq!(created.table_id, [0xf9; 16]);
