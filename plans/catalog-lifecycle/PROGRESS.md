@@ -210,6 +210,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: all 33 serial `bootstrap_binary` tests passed, including both sides of the exchange process-exit cases. Formatting, locked offline workspace build, warning-denied all-target Clippy, and `git diff --check` passed.
 - Limit: these abrupt process exits run with the same live kernel and filesystem and do not simulate power loss.
 
+## 2026-11 delegated acceptance checkpoint
+
+- The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. All 33 `bootstrap_binary` tests passed, covering backup validation, v1 migration, physical redb upgrade, restore, publication retry, and process-exit recovery cases.
+- Power-loss/filesystem fault evidence and archived prior-release binary/data fixtures remain open as already recorded above.
+
 
 ## DS-SQL-51: normalized explicit constraint object names — verified
 
@@ -219,3 +224,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## DS-SQL-52: ALTER constraint name uniqueness — implemented
 
 - The authorized constraint commit checks PK/UNIQUE/CHECK names after ALTER authority and checks FK names after source ALTER plus REFERENCES authorization. Real-redb, process metadata, and name-based drop coverage passes. The full serial delegated-cgroup workspace suite passes with zero ignored; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+## 2026-11 delegated acceptance checkpoint
+
+- The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. All 33 `bootstrap_binary` tests passed, covering backup validation, v1 migration, physical redb upgrade, restore, publication retry, and process-exit recovery cases.
+- Power-loss/filesystem fault evidence and archived prior-release binary/data fixtures remain open as already recorded above.

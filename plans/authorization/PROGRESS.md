@@ -198,3 +198,13 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Implementation: no production change was needed; membership and identity guards reject the stale finalization, while identity drop revokes the token atomically.
 - Verification: focused regression passed. Locked workspace build, rustfmt check, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed in the pinned Rust/Cargo 1.95.0 Nix shell. The suite reported 233 engine unit tests, 173 commit integration tests, 75 transaction integration tests, all remaining workspace targets green, and zero ignored tests. The fixture includes a usable login-enabled administrator credential required by final-admin validation.
 - Remaining: repeat races for identity and other authority-changing DDL, and broader concurrent schedules.
+
+## 2026-11 delegated acceptance checkpoint
+
+- The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. Relevant direct coverage includes 13 authorization unit tests, 177 commit tests, and 75 transaction tests; the full run also exercised the confined forged-handle and two-principal cell-redaction paths.
+- This is a validation checkpoint for the existing authorization implementation. AU-3 broader SQL/optimizer equivalence, AU-7 wider hostile IPC sequences, and remaining authority-change race schedules remain open.
+
+## 2026-11 delegated acceptance checkpoint
+
+- The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. Relevant direct coverage includes 13 authorization unit tests, 177 commit tests, and 75 transaction tests; the full run also exercised confined forged-handle and two-principal cell-redaction paths.
+- AU-3 broader SQL/optimizer equivalence, AU-7 wider hostile IPC sequences, and remaining authority-change race schedules remain open.

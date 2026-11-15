@@ -326,3 +326,13 @@
 - Corpus: independent valid database-record and default-expression CAT1 fixtures, standalone EIR1 current-principal expression bytes, and malformed CAT1 framing. No crash artifacts were produced; generated non-crash discoveries were not retained, leaving only the curated seeds checked in.
 - Verification: helper-driven nightly fuzz build passed; the seeded campaign completed 1,662,361 executions in 31 seconds, reached 2,475 coverage counters / 4,145 features, and reported no crashes or sanitizer findings. Fuzz-target rustfmt, `cargo fmt --all -- --check`, locked workspace build, warning-denied Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite passed; the suite reported zero ignored tests.
 - Remaining: longer continuous campaigns and minimizing any future crash into a deterministic regression remain required hardening work.
+
+## 2026-11 delegated acceptance checkpoint
+
+- The complete serial delegated-cgroup workspace suite passed with zero ignored tests. Catalog wire-fixture coverage passed (22 tests), startup catalog/index integrity coverage passed (54 tests), and transaction catalog loading and retained-snapshot coverage passed (75 tests).
+- DD-5 long-reader reclamation pressure and continued fuzz campaigns remain open; this checkpoint does not change those plan statuses.
+
+## 2026-11 delegated acceptance checkpoint
+
+- The complete serial delegated-cgroup workspace suite passed with zero ignored tests. Catalog wire-fixture coverage passed (22 tests), startup catalog/index integrity coverage passed (54 tests), and transaction catalog loading and retained-snapshot coverage passed (75 tests).
+- DD-5 long-reader reclamation pressure and continued fuzz campaigns remain open; this checkpoint does not change those plan statuses.

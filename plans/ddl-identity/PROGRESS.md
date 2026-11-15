@@ -145,3 +145,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The authenticated gateway/supervisor lifecycle now covers `DROP USER|ROLE IF EXISTS` for absent and existing identities. Missing targets are a no-op, existing targets use the typed RESTRICT drop, and a repeated drop remains a no-op. The check reconnects after a deliberately failed token issuance so it exercises a fresh ADMIN session.
 - Verification: `nix develop --no-update-lock-file --command cargo test -p prdb-engine --test metadata_process authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes -- --exact --nocapture` passed (1 test). Workspace-wide checks were not rerun for this test-only increment.
+
+## 2026-11 delegated acceptance checkpoint
+
+- The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. The authenticated gateway/supervisor lifecycle now also covers repeated `DROP USER|ROLE IF EXISTS` for absent and present targets; see ID-SQL-7 above.
+- Broader identity-authority race schedules remain open.

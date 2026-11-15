@@ -93,3 +93,8 @@
 
 - The authenticated gateway/supervisor metadata lifecycle now executes `DROP ROW POLICY IF EXISTS` for the same absent target twice. Both requests return a no-op without creating a policy mutation, while the neighboring existing-target drops still use the ordinary authorized path.
 - Verification: `nix develop --no-update-lock-file --command cargo test -p prdb-engine --test metadata_process authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes -- --exact --nocapture` passed (1 test). The broader workspace checks were not rerun for this test-only increment.
+
+## 2026-11 delegated acceptance checkpoint
+
+- The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. The authenticated gateway/supervisor lifecycle covers repeated absent `DROP ROW POLICY IF EXISTS` calls alongside existing-target policy drops; see DP-SQL-7 above.
+- Broader permission-change race schedules remain open.

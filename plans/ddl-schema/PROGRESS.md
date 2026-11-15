@@ -962,3 +962,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - SQL CHECK binding accepts unary `-` on SMALLINT, INTEGER, and BIGINT expressions. NULL propagates, and negating the signed minimum fails closed. Unary plus and DECIMAL arithmetic remain unsupported.
 - EIR1 writes version 5, reads versions 1–4, and gates unary negate opcode 31 to v5; catalog expression metadata remains v1. Focused parser, evaluator, and codec regressions passed. The complete serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process coverage enabled, zero ignored); workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. Cargo.lock is unchanged.
+
+## 2026-11 delegated acceptance checkpoint
+
+- The full serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. This includes the real-redb DDL commit matrix, schema/index/constraint crash-recovery checks, and cross-process SQL DDL lifecycles.
+- Broader cross-component DDL race acceptance remains open; this pass covers the current suite, not every planned schedule.

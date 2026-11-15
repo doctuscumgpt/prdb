@@ -254,3 +254,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Administrative constraint pages now include the catalog object's current name in stable-ID order, including generated names for unnamed constraints. Existing CHECK-expression omission and foreign-key target redaction remain in effect.
 - The client decoder enforces the expanded bounded record shape, and the authenticated gateway/supervisor SQL lifecycle reads back a named CHECK before dropping it by name. Full serial delegated-cgroup workspace verification passes; Cargo.lock is unchanged.
+
+## 2026-11 delegated acceptance checkpoint
+
+- The complete serial delegated-cgroup workspace suite passed with zero ignored tests. This includes 75 transaction tests for authorized schema/relation/column discovery, cursor scoping, `information_schema` projection, plus all three authenticated metadata process tests.
+- Remaining administrative SQL binding and process-bound discovery handle work stays as recorded in the component plan.
