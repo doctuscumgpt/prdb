@@ -19936,6 +19936,185 @@ fn storage_manager_authorizes_object_grants_and_linearizes_revocation_races()
 }
 
 #[test]
+fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{
+        ObjectGrantPrivilege, ObjectGrantTarget, SetObjectGrantBatchRequest, SetObjectGrantRequest,
+    };
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let database_admin = builtin_owner_id();
+    let table_owner = id(0x74);
+    let grant_manager = id(0x75);
+    let grantee = id(0x78);
+    let invocation_id = id(0x84);
+    let revoke_id = id(0x85);
+    let table_id = id(16);
+    let mut table_owner_object = object_write_with_owner(table_id, 3, table_owner);
+    let old_table_object = database
+        .begin_read()?
+        .open_table(CATALOG)?
+        .get(id_catalog_key(2, table_id).as_slice())?
+        .ok_or("missing target table object")?
+        .value()
+        .to_vec();
+    table_owner_object.expected_value = Some(old_table_object);
+    let mut setup_audit = audit_event(100);
+    setup_audit.actor_id = Some(database_admin);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage
+        .commit_catalog_and_audit(
+            id(100),
+            database_admin,
+            9_999,
+            &[
+                principal_write_with_name(table_owner, 1, 1, "batch_table_owner"),
+                object_write_with_name(table_owner, 8, "batch_table_owner"),
+                principal_write_with_name(grant_manager, 1, 1, "batch_grant_manager"),
+                object_write_with_name(grant_manager, 8, "batch_grant_manager"),
+                principal_write_with_name(grantee, 1, 1, "batch_grantee"),
+                object_write_with_name(grantee, 8, "batch_grantee"),
+                table_owner_object,
+            ],
+            &[setup_audit],
+        )
+        .map_err(|error| format!("initialize batch grant authority: {error:?}"))?;
+    let mut manager_grant_audit = identity_audit_event(0x82, table_owner, grant_manager);
+    manager_grant_audit.correlation_id = id(0x83);
+    manager_grant_audit.action = AuditAction::AuthorityChange;
+    storage
+        .set_object_grant(SetObjectGrantRequest {
+            invocation_id: id(0x83),
+            authenticated_actor_id: table_owner,
+            grantee_id: grant_manager,
+            object_id: table_id,
+            privilege: ObjectGrantPrivilege::ManageGrants,
+            target: ObjectGrantTarget::Object,
+            grant: true,
+            retention_deadline_us: 9_999,
+            audit_event: manager_grant_audit,
+        })
+        .map_err(|error| format!("grant MANAGE_GRANTS for batch race: {error:?}"))?;
+
+    let barrier = Arc::new(Barrier::new(2));
+    let (batch_result, revoke_result) = std::thread::scope(|scope| {
+        let batch_barrier = barrier.clone();
+        let batch_storage = &storage;
+        let batch_thread = scope.spawn(move || {
+            let mut audit = identity_audit_event(0x86, grant_manager, grantee);
+            audit.correlation_id = invocation_id;
+            audit.action = AuditAction::AuthorityChange;
+            batch_barrier.wait();
+            batch_storage.set_object_grants_batch(SetObjectGrantBatchRequest {
+                invocation_id,
+                authenticated_actor_id: grant_manager,
+                grantee_id: grantee,
+                object_id: table_id,
+                privileges: vec![ObjectGrantPrivilege::Alter, ObjectGrantPrivilege::Index],
+                target: ObjectGrantTarget::Object,
+                grant: true,
+                retention_deadline_us: 9_999,
+                audit_event: audit,
+            })
+        });
+
+        let mut audit = identity_audit_event(0x87, table_owner, grant_manager);
+        audit.correlation_id = revoke_id;
+        audit.action = AuditAction::AuthorityChange;
+        barrier.wait();
+        let revoke = storage.set_object_grant(SetObjectGrantRequest {
+            invocation_id: revoke_id,
+            authenticated_actor_id: table_owner,
+            grantee_id: grant_manager,
+            object_id: table_id,
+            privilege: ObjectGrantPrivilege::ManageGrants,
+            target: ObjectGrantTarget::Object,
+            grant: false,
+            retention_deadline_us: 9_999,
+            audit_event: audit,
+        });
+        let batch = batch_thread
+            .join()
+            .expect("object-grant batch thread panicked");
+        (batch, revoke)
+    });
+
+    let batch_committed = match batch_result {
+        Ok(_) => true,
+        Err(CommitError::DdlAuthorizationDenied | CommitError::Conflict) => false,
+        Err(error) => return Err(format!("unexpected batch race result: {error:?}").into()),
+    };
+    let revoke_sequence =
+        revoke_result.map_err(|error| format!("revoke MANAGE_GRANTS during batch: {error:?}"))?;
+    assert_eq!(commit_sequence(&database)?, revoke_sequence);
+
+    let alter_key = grant_write(grantee, table_id, 8, 1, table_id, grant_manager).key;
+    let index_key = grant_write(grantee, table_id, 9, 1, table_id, grant_manager).key;
+    let dependency_key = dependency_write(grantee, table_id, 5).key;
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    assert_eq!(
+        catalog.get(alter_key.as_slice())?.is_some(),
+        batch_committed
+    );
+    assert_eq!(
+        catalog.get(index_key.as_slice())?.is_some(),
+        batch_committed
+    );
+    assert_eq!(
+        catalog.get(dependency_key.as_slice())?.is_some(),
+        batch_committed
+    );
+    assert!(
+        catalog
+            .get(
+                grant_write(grant_manager, table_id, 11, 1, table_id, database_admin)
+                    .key
+                    .as_slice()
+            )?
+            .is_none()
+    );
+    let grantee_record = decode_registered_envelope(
+        catalog
+            .get(id_catalog_key(10, grantee).as_slice())?
+            .ok_or("missing batch grantee principal")?
+            .value(),
+    )?;
+    let grantee_epoch = u64::from_le_bytes(
+        grantee_record
+            .fields
+            .iter()
+            .find(|field| field.tag == 4)
+            .ok_or("missing grantee epoch")?
+            .payload
+            .as_slice()
+            .try_into()?,
+    );
+    assert_eq!(grantee_epoch, if batch_committed { 2 } else { 1 });
+    drop(catalog);
+    drop(read);
+    assert_eq!(
+        lookup_outcome(&database, invocation_id, grant_manager, 1)?
+            .ok_or("missing object-grant batch outcome")?
+            .status,
+        if batch_committed {
+            OutcomeStatus::Committed
+        } else {
+            OutcomeStatus::Aborted
+        }
+    );
+    assert_eq!(
+        lookup_outcome(&database, revoke_id, table_owner, 1)?
+            .ok_or("missing MANAGE_GRANTS revoke outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+    Ok(())
+}
+
+#[test]
 fn role_membership_revocation_aborts_a_staged_role_authorized_writer()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::authorization::{

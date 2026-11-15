@@ -23,6 +23,7 @@ Specify bounded permission syntax/structured operations and typed policy IR shar
 | DP-SQL-9 | Administrators can write inclusive policy range predicates | Accept column `BETWEEN`/`NOT BETWEEN` with typed bounds and lower to existing inclusive comparisons while preserving NULL/UNKNOWN policy behavior |
 | DP-SQL-10 | Administrators can define null-safe policy comparisons | Accept `IS [NOT] DISTINCT FROM` with typed scalar literals and lower to existing EIR1 null checks/comparisons |
 | DP-SQL-11 | Administrators can grant or revoke several object privileges as one change | Parse a bounded privilege list and publish every grant, dependency, epoch, audit event, and outcome in one authenticated catalog transaction |
+| DP-8 | Concurrent MANAGE_GRANTS revocation cannot leave a partially published privilege batch | Race a multi-privilege grant with revocation of the actor's grant authority; require all grants, provenance, epoch, and outcome to agree on one commit order |
 
 ## Acceptance and Handoff
 
