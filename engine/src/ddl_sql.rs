@@ -307,6 +307,7 @@ pub enum CheckExpressionSql {
     Add(Box<CheckExpressionSql>, Box<CheckExpressionSql>),
     Subtract(Box<CheckExpressionSql>, Box<CheckExpressionSql>),
     Multiply(Box<CheckExpressionSql>, Box<CheckExpressionSql>),
+    Modulo(Box<CheckExpressionSql>, Box<CheckExpressionSql>),
     IsNull(Box<CheckExpressionSql>),
     IsNotNull(Box<CheckExpressionSql>),
     BooleanTest {
@@ -420,6 +421,7 @@ enum Token {
     Greater,
     GreaterEqual,
     Star,
+    Percent,
 }
 
 pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
@@ -1781,7 +1783,8 @@ fn validate_column_check_expression(
             }
             CheckExpressionSql::Add(left, right)
             | CheckExpressionSql::Subtract(left, right)
-            | CheckExpressionSql::Multiply(left, right) => {
+            | CheckExpressionSql::Multiply(left, right)
+            | CheckExpressionSql::Modulo(left, right) => {
                 only_column(column, left) && only_column(column, right)
             }
             CheckExpressionSql::In { expression, .. }
@@ -1816,7 +1819,8 @@ pub fn bind_check_expression(
             }
             CheckExpressionSql::Add(left, right)
             | CheckExpressionSql::Subtract(left, right)
-            | CheckExpressionSql::Multiply(left, right) => {
+            | CheckExpressionSql::Multiply(left, right)
+            | CheckExpressionSql::Modulo(left, right) => {
                 has_policy_context(left) || has_policy_context(right)
             }
             CheckExpressionSql::In { expression, .. }
@@ -1903,7 +1907,8 @@ fn bind_expression(
             CheckExpressionSql::Literal(CheckLiteralSql::Null) => None,
             CheckExpressionSql::Add(left, right)
             | CheckExpressionSql::Subtract(left, right)
-            | CheckExpressionSql::Multiply(left, right) => {
+            | CheckExpressionSql::Multiply(left, right)
+            | CheckExpressionSql::Modulo(left, right) => {
                 let left_hint = comparison_hint(left, lookup);
                 let right_hint = comparison_hint(right, lookup);
                 if matches!(left.as_ref(), CheckExpressionSql::Literal(_)) {
@@ -1983,7 +1988,10 @@ fn bind_expression(
                 Expr::HasRole(role_lookup(name).ok_or(DdlSqlError::InvalidStatement)?),
                 Some(ScalarType::Boolean),
             ),
-            Sql::Add(left, right) | Sql::Subtract(left, right) | Sql::Multiply(left, right) => {
+            Sql::Add(left, right)
+            | Sql::Subtract(left, right)
+            | Sql::Multiply(left, right)
+            | Sql::Modulo(left, right) => {
                 let left_is_null_literal =
                     matches!(left.as_ref(), Sql::Literal(CheckLiteralSql::Null));
                 let right_is_null_literal =
@@ -2014,6 +2022,7 @@ fn bind_expression(
                     Sql::Add(_, _) => Expr::Add(Box::new(left), Box::new(right)),
                     Sql::Subtract(_, _) => Expr::Subtract(Box::new(left), Box::new(right)),
                     Sql::Multiply(_, _) => Expr::Multiply(Box::new(left), Box::new(right)),
+                    Sql::Modulo(_, _) => Expr::Modulo(Box::new(left), Box::new(right)),
                     _ => unreachable!(),
                 };
                 (expression, arithmetic_type)
@@ -2635,7 +2644,10 @@ impl Parser {
             if self.peek_word("is")
                 || self.peek_word("between")
                 || self.peek_word("in")
-                || matches!(self.peek(), Some(Token::Plus | Token::Minus | Token::Star))
+                || matches!(
+                    self.peek(),
+                    Some(Token::Plus | Token::Minus | Token::Star | Token::Percent)
+                )
                 || (self.peek_word("not")
                     && matches!(self.tokens.get(self.position + 1), Some(Token::Word(word)) if word == "between" || word == "in"))
                 || matches!(
@@ -2670,13 +2682,9 @@ impl Parser {
 
     fn check_value_expression_tail(
         &mut self,
-        mut expression: CheckExpressionSql,
+        expression: CheckExpressionSql,
     ) -> Result<CheckExpressionSql, DdlSqlError> {
-        while self.peek() == Some(&Token::Star) {
-            self.position += 1;
-            let right = self.check_value_atom()?;
-            expression = CheckExpressionSql::Multiply(Box::new(expression), Box::new(right));
-        }
+        let mut expression = self.check_value_term_tail(expression)?;
         loop {
             let constructor = match self.peek() {
                 Some(Token::Plus) => CheckExpressionSql::Add,
@@ -2691,11 +2699,23 @@ impl Parser {
     }
 
     fn check_value_term(&mut self) -> Result<CheckExpressionSql, DdlSqlError> {
-        let mut expression = self.check_value_atom()?;
-        while self.peek() == Some(&Token::Star) {
+        let expression = self.check_value_atom()?;
+        self.check_value_term_tail(expression)
+    }
+
+    fn check_value_term_tail(
+        &mut self,
+        mut expression: CheckExpressionSql,
+    ) -> Result<CheckExpressionSql, DdlSqlError> {
+        while matches!(self.peek(), Some(Token::Star | Token::Percent)) {
+            let modulo = self.peek() == Some(&Token::Percent);
             self.position += 1;
             let right = self.check_value_atom()?;
-            expression = CheckExpressionSql::Multiply(Box::new(expression), Box::new(right));
+            expression = if modulo {
+                CheckExpressionSql::Modulo(Box::new(expression), Box::new(right))
+            } else {
+                CheckExpressionSql::Multiply(Box::new(expression), Box::new(right))
+            };
         }
         Ok(expression)
     }
@@ -3263,6 +3283,10 @@ fn tokenize(sql: &str) -> Result<Vec<Token>, DdlSqlError> {
             }
             b'*' => {
                 tokens.push(Token::Star);
+                cursor += 1;
+            }
+            b'%' => {
+                tokens.push(Token::Percent);
                 cursor += 1;
             }
             b'\'' => {
@@ -3947,6 +3971,22 @@ mod tests {
                     Box::new(Expr::Field(1)),
                 )),
                 Box::new(Expr::Field(2)),
+            )
+        );
+        let modulo =
+            parse_add_check_constraint("ALTER TABLE app.inventory ADD CHECK (quantity % 2 = 0)")
+                .unwrap();
+        assert_eq!(
+            bind_check_expression(&modulo.expression, |name| {
+                (name == "quantity").then_some((0, ScalarType::Integer))
+            })
+            .unwrap(),
+            Expr::Equal(
+                Box::new(Expr::Modulo(
+                    Box::new(Expr::Field(0)),
+                    Box::new(Expr::Literal(Some(ScalarValue::Integer(2)))),
+                )),
+                Box::new(Expr::Literal(Some(ScalarValue::Integer(0)))),
             )
         );
         assert!(

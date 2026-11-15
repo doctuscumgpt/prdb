@@ -92,6 +92,50 @@ fn check_constraints_evaluate_checked_integer_arithmetic_and_propagate_null() {
         check_constraint_passes(&overflow, &[Some(ScalarValue::Integer(i32::MAX))], &ctx),
         Err(AuthorizationError::EvaluationFailed)
     );
+
+    let even = Expr::Equal(
+        Box::new(Expr::Modulo(
+            Box::new(Expr::Field(0)),
+            Box::new(Expr::Literal(Some(ScalarValue::Integer(2)))),
+        )),
+        Box::new(Expr::Literal(Some(ScalarValue::Integer(0)))),
+    );
+    assert_eq!(
+        check_constraint_passes(&even, &[Some(ScalarValue::Integer(4))], &ctx),
+        Ok(true)
+    );
+    assert_eq!(
+        check_constraint_passes(&even, &[Some(ScalarValue::Integer(3))], &ctx),
+        Ok(false)
+    );
+    assert_eq!(check_constraint_passes(&even, &[None], &ctx), Ok(true));
+
+    let divide_by_zero = Expr::Equal(
+        Box::new(Expr::Modulo(
+            Box::new(Expr::Field(0)),
+            Box::new(Expr::Literal(Some(ScalarValue::Integer(0)))),
+        )),
+        Box::new(Expr::Literal(Some(ScalarValue::Integer(0)))),
+    );
+    assert_eq!(
+        check_constraint_passes(&divide_by_zero, &[Some(ScalarValue::Integer(4))], &ctx),
+        Err(AuthorizationError::EvaluationFailed)
+    );
+    let signed_overflow = Expr::Equal(
+        Box::new(Expr::Modulo(
+            Box::new(Expr::Field(0)),
+            Box::new(Expr::Literal(Some(ScalarValue::Integer(-1)))),
+        )),
+        Box::new(Expr::Literal(Some(ScalarValue::Integer(0)))),
+    );
+    assert_eq!(
+        check_constraint_passes(
+            &signed_overflow,
+            &[Some(ScalarValue::Integer(i32::MIN))],
+            &ctx
+        ),
+        Err(AuthorizationError::EvaluationFailed)
+    );
 }
 
 #[test]

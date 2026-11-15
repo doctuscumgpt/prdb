@@ -38,6 +38,7 @@ Fix bounded DDL text/structured schemas, normalized identifier limits, scalar wi
 | DS-SQL-62 | Finite-set and range values accept scalar expressions | Allow supported scalar expressions inside `IN` lists and as `BETWEEN` bounds, contextually bind them to the tested operand type, preserve SQL UNKNOWN semantics, and enforce final EIR1 bounds |
 | DS-SQL-63 | Comparisons accept grouped expressions on both sides | Extend comparison parsing to accept a parenthesized supported scalar expression as the right operand, then use existing contextual binding and type checks without changing EIR1 |
 | DS-SQL-64 | CHECK constraints can enforce bounded integer arithmetic rules | Add typed SMALLINT/INTEGER/BIGINT `+`, `-`, and `*` scalar expressions with SQL NULL propagation and checked overflow; encode arithmetic as bounded EIR1 nodes and keep DECIMAL arithmetic/division out of scope |
+| DS-SQL-65 | CHECK constraints can test integer remainders | Add typed SMALLINT/INTEGER/BIGINT `%` expressions at multiplicative precedence, preserve SQL NULL propagation, fail closed for zero divisors and signed overflow, and extend EIR compatibility without changing catalog metadata |
 
 ## Acceptance and Handoff
 

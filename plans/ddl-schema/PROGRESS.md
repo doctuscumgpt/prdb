@@ -947,3 +947,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - SQL CHECK binding now accepts SMALLINT, INTEGER, and BIGINT `+`, `-`, and `*`, with multiplication precedence, same-type operands, and contextual integer literal binding. NULL propagates. Runtime overflow fails closed as an expression evaluation error.
 - EIR1 encoding writes version 2 for the new arithmetic opcodes and continues to decode version 1 expressions. Catalog expression metadata remains version 1. Decimal arithmetic and division remain unsupported.
 - Regression coverage checks SQL precedence/type binding, checked evaluation, NULL propagation, overflow failure, EIR v2 round-trip, and EIR v1 decode compatibility. Focused regressions and the full serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process coverage enabled, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed; Cargo.lock is unchanged.
+
+## DS-SQL-65: integer modulo in CHECK expressions — implemented
+
+- SQL CHECK binding accepts `%` for same-type SMALLINT, INTEGER, and BIGINT operands at the same multiplicative precedence as `*`. NULL propagates; division by zero and signed minimum modulo `-1` fail closed as evaluation errors.
+- EIR1 now writes version 3 and decodes versions 1 and 2; modulo opcode 29 is version 3 only. Catalog expression metadata remains version 1. Focused SQL binding, evaluator, and codec regressions passed. The complete serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored); workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. Cargo.lock is unchanged.

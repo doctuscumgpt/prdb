@@ -221,6 +221,7 @@ pub enum Expr {
     Add(Box<Expr>, Box<Expr>),
     Subtract(Box<Expr>, Box<Expr>),
     Multiply(Box<Expr>, Box<Expr>),
+    Modulo(Box<Expr>, Box<Expr>),
     And(Vec<Expr>),
     Or(Vec<Expr>),
     Not(Box<Expr>),
@@ -623,7 +624,10 @@ fn eval(
             };
             Ok(Value::Scalar(Some(ScalarValue::Boolean(result))))
         }
-        Expr::Add(left, right) | Expr::Subtract(left, right) | Expr::Multiply(left, right) => {
+        Expr::Add(left, right)
+        | Expr::Subtract(left, right)
+        | Expr::Multiply(left, right)
+        | Expr::Modulo(left, right) => {
             let Value::Scalar(left) = child(left, remaining)?;
             let Value::Scalar(right) = child(right, remaining)?;
             let Some((left, right)) = left.zip(right) else {
@@ -648,6 +652,12 @@ fn eval(
                             .ok_or(AuthorizationError::EvaluationFailed)?,
                     )
                 }
+                (Expr::Modulo(_, _), ScalarValue::SmallInt(a), ScalarValue::SmallInt(b)) => {
+                    ScalarValue::SmallInt(
+                        a.checked_rem(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
                 (Expr::Add(_, _), ScalarValue::Integer(a), ScalarValue::Integer(b)) => {
                     ScalarValue::Integer(
                         a.checked_add(b)
@@ -666,6 +676,12 @@ fn eval(
                             .ok_or(AuthorizationError::EvaluationFailed)?,
                     )
                 }
+                (Expr::Modulo(_, _), ScalarValue::Integer(a), ScalarValue::Integer(b)) => {
+                    ScalarValue::Integer(
+                        a.checked_rem(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
                 (Expr::Add(_, _), ScalarValue::BigInt(a), ScalarValue::BigInt(b)) => {
                     ScalarValue::BigInt(
                         a.checked_add(b)
@@ -681,6 +697,12 @@ fn eval(
                 (Expr::Multiply(_, _), ScalarValue::BigInt(a), ScalarValue::BigInt(b)) => {
                     ScalarValue::BigInt(
                         a.checked_mul(b)
+                            .ok_or(AuthorizationError::EvaluationFailed)?,
+                    )
+                }
+                (Expr::Modulo(_, _), ScalarValue::BigInt(a), ScalarValue::BigInt(b)) => {
+                    ScalarValue::BigInt(
+                        a.checked_rem(b)
                             .ok_or(AuthorizationError::EvaluationFailed)?,
                     )
                 }

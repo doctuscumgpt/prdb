@@ -10815,7 +10815,8 @@ fn collect_expression_fields(expression: &Expr, ordinals: &mut HashSet<usize>) {
         | Expr::GreaterEqual(left, right)
         | Expr::Add(left, right)
         | Expr::Subtract(left, right)
-        | Expr::Multiply(left, right) => {
+        | Expr::Multiply(left, right)
+        | Expr::Modulo(left, right) => {
             collect_expression_fields(left, ordinals);
             collect_expression_fields(right, ordinals);
         }

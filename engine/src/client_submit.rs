@@ -4815,7 +4815,8 @@ impl AdminClient {
                 | Expr::GreaterEqual(left, right)
                 | Expr::Add(left, right)
                 | Expr::Subtract(left, right)
-                | Expr::Multiply(left, right) => {
+                | Expr::Multiply(left, right)
+                | Expr::Modulo(left, right) => {
                     collect_fields(left, columns, dependencies)?;
                     collect_fields(right, columns, dependencies)?;
                 }
