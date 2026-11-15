@@ -454,6 +454,7 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
         };
         let mut nullable = true;
         let mut default = None;
+        let mut unique = false;
         loop {
             if parser.peek_word("not") && nullable {
                 parser.word("not")?;
@@ -462,6 +463,9 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
             } else if parser.peek_word("default") && default.is_none() {
                 parser.word("default")?;
                 default = Some(parser.default_value(scalar_type)?);
+            } else if parser.peek_word("unique") && !unique {
+                parser.word("unique")?;
+                unique = true;
             } else {
                 break;
             }
@@ -473,12 +477,19 @@ pub fn parse_create_table(sql: &str) -> Result<CreateTableSql, DdlSqlError> {
             nullable = false;
         }
         columns.push(AdminColumnDefinition {
-            name,
+            name: name.clone(),
             scalar_type,
             nullable,
             generated_uuid_identity,
             default,
         });
+        if unique {
+            let key_columns = vec![name];
+            if unique_constraints.contains(&key_columns) {
+                return Err(DdlSqlError::InvalidStatement);
+            }
+            unique_constraints.push(key_columns);
+        }
         if parser.peek() == Some(&Token::Comma) {
             parser.position += 1;
             continue;
@@ -2757,6 +2768,30 @@ mod tests {
             "CREATE TABLE app.events (id INTEGER, CHECK (id))",
             "CREATE TABLE app.events (amount DECIMAL(8,2), CHECK (amount >= 0.001))",
             "CREATE TABLE app.events (amount TEXT, CHECK (amount >= 0))",
+        ] {
+            assert!(parse_create_table(sql).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_column_level_unique_as_a_single_column_constraint() {
+        let parsed = parse_create_table(
+            "CREATE TABLE app.accounts (id UUID GENERATED ALWAYS AS IDENTITY, email TEXT UNIQUE NOT NULL, nickname TEXT DEFAULT 'guest', PRIMARY KEY (id));",
+        )
+        .unwrap();
+        assert_eq!(parsed.primary_key_columns, Some(vec!["id".into()]));
+        assert_eq!(parsed.unique_constraints, vec![vec![String::from("email")]]);
+        assert!(!parsed.columns[1].nullable);
+        assert_eq!(
+            parsed.columns[2].default,
+            Some(AdminColumnDefault::Literal(ScalarValue::Text(
+                "guest".into()
+            )))
+        );
+
+        for sql in [
+            "CREATE TABLE app.accounts (email TEXT UNIQUE UNIQUE)",
+            "CREATE TABLE app.accounts (email TEXT UNIQUE, UNIQUE (email))",
         ] {
             assert!(parse_create_table(sql).is_err(), "accepted {sql}");
         }

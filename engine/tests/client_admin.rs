@@ -2750,7 +2750,7 @@ fn admin_client_executes_create_table_sql_on_authenticated_control_channel() {
     .unwrap();
     let created = client
         .execute_create_table_sql(
-            "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY, amount DECIMAL(8, 2) DEFAULT -1.20, title TEXT DEFAULT 'hello ''sql''', owner UUID DEFAULT CURRENT_PRINCIPAL_ID(), PRIMARY KEY (id), UNIQUE (amount), CHECK (amount >= -1.20));",
+            "CREATE TABLE app.events (id UUID GENERATED ALWAYS AS IDENTITY, amount DECIMAL(8, 2) DEFAULT -1.20 UNIQUE, title TEXT DEFAULT 'hello ''sql''', owner UUID DEFAULT CURRENT_PRINCIPAL_ID(), PRIMARY KEY (id), CHECK (amount >= -1.20));",
         )
         .unwrap();
     assert_eq!(created.table_id, [0xa5; 16]);

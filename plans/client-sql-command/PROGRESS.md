@@ -16,6 +16,11 @@
 - `CREATE SCHEMA ... AUTHORIZATION name` and `ALTER SCHEMA ... OWNER TO name` now use the authenticated, non-enumerating identity lookup for either users or roles. The server exposes the identity only if the caller has management authority for its resolved kind.
 - Verification: focused parser/protocol/client/process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests and sandbox fixture, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (269 library tests, 174 commit tests, 75 transaction tests; all other targets passed). The cgroup probe reported writable `cpu memory pids`; `git diff --check` passed and Cargo.lock is unchanged.
 
+## CREATE TABLE column-level UNIQUE
+
+- The bounded `admin-sql` parser accepts column-level `UNIQUE` and sends the same one-column typed unique-constraint definition used by table-level syntax. Parser coverage rejects duplicate inline/table definitions, and authenticated AdminClient plus CLI coverage exercise the inline form.
+- Verification: the red/green parser regression, authenticated AdminClient request test, CLI recognition test, locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests and fixture, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. The suite reported 270 library tests, 174 commit tests, and 75 transaction tests, with all other targets passing. `git diff --check` passed and Cargo.lock is unchanged.
+
 ## Implemented
 
 - `CREATE ROW|CELL POLICY` now resolves recipients and `HAS_ROLE` names through a table/schema scoped identity read. Storage returns no identity for absent names or callers without database-admin, ownership, or scoped `MANAGE_POLICIES` authority. Policy DDL authority now exposes the target relation's declared shape through authenticated metadata; the process regression grants schema USAGE but no SELECT to the table owner.
