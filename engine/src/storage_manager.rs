@@ -785,6 +785,7 @@ pub struct CreateCheckConstraintRequest {
     pub invocation_id: [u8; 16],
     pub authenticated_actor_id: [u8; 16],
     pub table_id: [u8; 16],
+    pub name: Option<String>,
     pub expression: crate::authorization::Expr,
     pub dependency_column_ids: Vec<[u8; 16]>,
     pub retention_deadline_us: i64,
@@ -9930,6 +9931,7 @@ impl<'db> StorageManager<'db> {
             invocation_id,
             authenticated_actor_id,
             table_id,
+            name,
             expression,
             dependency_column_ids,
             retention_deadline_us,
@@ -9939,6 +9941,9 @@ impl<'db> StorageManager<'db> {
             || authenticated_actor_id == [0; 16]
             || table_id == [0; 16]
             || retention_deadline_us <= 0
+            || name
+                .as_deref()
+                .is_some_and(|value| !is_normalized_principal_name(value))
             || dependency_column_ids.len() > crate::tuple::MAX_COLUMNS
             || dependency_column_ids.contains(&[0; 16])
             || dependency_column_ids
@@ -10097,15 +10102,8 @@ impl<'db> StorageManager<'db> {
             ],
         )
         .map_err(|_| TableLifecycleError::InvalidRequest)?;
-        let object_write = |object_id: [u8; 16], kind: u16, prefix: &str| {
+        let object_write = |object_id: [u8; 16], kind: u16, name: String| {
             let key = id_catalog_key(2, object_id);
-            let name = format!(
-                "{prefix}_{}",
-                object_id
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>()
-            );
             let payload = encode_envelope(
                 &family_schema(2).ok_or(TableLifecycleError::Storage)?,
                 &key,
@@ -10150,13 +10148,35 @@ impl<'db> StorageManager<'db> {
                 expected_value: None,
                 payload: Some(constraint_payload),
             },
-            object_write(constraint_id, 6, "check_constraint")?,
+            object_write(
+                constraint_id,
+                6,
+                name.clone().unwrap_or_else(|| {
+                    format!(
+                        "check_constraint_{}",
+                        constraint_id
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>()
+                    )
+                }),
+            )?,
             CatalogWrite {
                 key: expression_key,
                 expected_value: None,
                 payload: Some(expression_payload),
             },
-            object_write(expression_id, 5, "check_expression")?,
+            object_write(
+                expression_id,
+                5,
+                format!(
+                    "check_expression_{}",
+                    expression_id
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                ),
+            )?,
             new_dependency_write(constraint_id, expression_id, 2)?,
         ];
         for column_id in &dependency_column_ids {

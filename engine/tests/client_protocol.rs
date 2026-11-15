@@ -565,12 +565,24 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
         ),
         Ok(ClientAdminCommand::PrepareCreateCheckConstraint {
             table_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+            name: None,
             expression: prdb_engine::authorization::Expr::Literal(Some(
                 prdb_engine::tuple::ScalarValue::Boolean(true),
             )),
             dependency_column_ids: vec![],
         })
     );
+    assert!(matches!(
+        decode_client_admin_command(
+            format!(
+                "{{\"phase\":\"prepare\",\"operation_version\":2,\"operation\":\"constraints.create_check\",\"arguments\":{{\"table_id\":\"000102030405060708090a0b0c0d0e0f\",\"name\":\"positive_amount\",\"expression_eir1\":\"{check_eir_hex}\",\"dependency_column_ids\":[]}}}}"
+            )
+            .as_bytes()
+        ),
+        Ok(ClientAdminCommand::PrepareCreateCheckConstraint {
+            name: Some(name), ..
+        }) if name == "positive_amount"
+    ));
     assert_eq!(
         decode_client_admin_command(
             br#"{"phase":"prepare","operation_version":1,"operation":"constraints.drop_check","arguments":{"constraint_id":"000102030405060708090a0b0c0d0e0f"}}"#

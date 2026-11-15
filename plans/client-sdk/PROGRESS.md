@@ -736,7 +736,7 @@
 
 - Contract: qualified `ALTER TABLE schema.table ADD CHECK (...)` resolves names over authenticated metadata and submits EIR1 through the existing typed CHECK operation. The accepted expression subset includes Boolean fields, `IS [NOT] NULL`, `NOT`, `AND`, `OR`, parentheses, and typed scalar comparisons/literals.
 - Binding: fields use the metadata column ordinal in EIR1 and their stable column IDs as dependency declarations. Storage continues to validate expression type, dependencies, authority, and existing rows.
-- Limit: expressions remain bounded to deterministic row-local EIR1; named constraints and FOREIGN KEY SQL remain unsupported.
+- Limit at this milestone: expressions remain bounded to deterministic row-local EIR1; named constraints in CREATE TABLE and FOREIGN KEY SQL remain unsupported. Named ALTER CHECK support is recorded in DS-SQL-49.
 - Verification: focused authenticated TCP coverage verified metadata resolution, ordinal binding, stable dependency IDs, typed CHECK PREPARE, and generated results. Locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace suite (sandbox/process tests enabled), and `git diff --check` passed.
 
 ## Administrative SQL: ALTER COLUMN SET/DROP NOT NULL — implemented
@@ -768,7 +768,7 @@
 ## Administrative SQL: atomic CREATE TABLE CHECK — implemented
 
 - `execute_create_table_sql` now accepts bounded final table-level CHECK clauses, validates referenced names against declared columns, binds them to column ordinals, and encodes EIR1 in the existing typed `tables.create` operation. Storage writes check objects and dependency edges in the same atomic create commit.
-- Added parser, client protocol, authenticated AdminClient, CLI, and storage regressions. Typed scalar comparisons and literals are supported; named constraints and FOREIGN KEY SQL remain outside this subset.
+- Added parser, client protocol, authenticated AdminClient, CLI, and storage regressions. Typed scalar comparisons and literals are supported; named constraints in CREATE TABLE and FOREIGN KEY SQL remain outside this subset. Named ALTER CHECK support is recorded in DS-SQL-49.
 - Focused regressions, locked workspace build, format check, warning-denied all-target Clippy, full serial delegated-cgroup workspace tests (including sandbox/process tests with zero ignored), maintained TinyCC SDK tests, sandbox fixture build, and `git diff --check` passed.
 
 

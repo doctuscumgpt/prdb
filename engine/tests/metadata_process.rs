@@ -2231,6 +2231,66 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&retained_index_list.stdout)
             .contains("\"name\":\"process_label_index\"")
     );
+    let named_check_sql_path = root.join("add-named-check-constraint.sql");
+    std::fs::write(
+        &named_check_sql_path,
+        "ALTER TABLE process_admin_schema.process_admin_table ADD CONSTRAINT process_label_present CHECK (label IS NOT NULL);",
+    )?;
+    let named_check_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            named_check_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        named_check_cli.status.success(),
+        "admin-sql named CHECK creation failed: {}",
+        String::from_utf8_lossy(&named_check_cli.stderr)
+    );
+    let listed_named_constraint = admin
+        .list_constraints_page(created_schema.identity_id, created_table.table_id, 16, None)?
+        .records
+        .into_iter()
+        .find(|constraint| constraint.name == "process_label_present")
+        .ok_or("authenticated constraint metadata omitted the named CHECK")?;
+    assert_eq!(
+        listed_named_constraint.kind,
+        prdb_engine::metadata_discovery::AdministrativeConstraintKind::Check
+    );
+    let drop_named_check_sql_path = root.join("drop-named-check-constraint.sql");
+    std::fs::write(
+        &drop_named_check_sql_path,
+        "ALTER TABLE process_admin_schema.process_admin_table DROP CONSTRAINT process_label_present;",
+    )?;
+    let drop_named_check_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            drop_named_check_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        drop_named_check_cli.status.success(),
+        "admin-sql named CHECK drop failed: {}",
+        String::from_utf8_lossy(&drop_named_check_cli.stderr)
+    );
     let drop_column_sql_path = root.join("drop-column.sql");
     std::fs::write(
         &drop_column_sql_path,

@@ -4392,6 +4392,12 @@ impl<'db> InvocationTransaction<'db> {
             let constraint_id: [u8; 16] = record.logical_key[3..19]
                 .try_into()
                 .map_err(|_| TransactionError::CorruptCatalog)?;
+            let object = self
+                .read_catalog_record(&catalog_id_key(2, constraint_id))?
+                .ok_or(TransactionError::CorruptCatalog)?;
+            let name = std::str::from_utf8(catalog_field(&object, 3)?)
+                .map_err(|_| TransactionError::CorruptCatalog)?
+                .to_owned();
             let kind = match catalog_u16(&record, 2)? {
                 1 => crate::metadata_discovery::AdministrativeConstraintKind::NotNull,
                 2 => crate::metadata_discovery::AdministrativeConstraintKind::PrimaryKey,
@@ -4427,6 +4433,7 @@ impl<'db> InvocationTransaction<'db> {
             }
             encoded_bytes = encoded_bytes
                 .saturating_add(18)
+                .saturating_add(name.len())
                 .saturating_add(kind.as_wire_name().len())
                 .saturating_add(column_ids.len().saturating_mul(16))
                 .saturating_add(1)
@@ -4437,6 +4444,7 @@ impl<'db> InvocationTransaction<'db> {
             }
             descriptions.push(crate::metadata_discovery::AdministrativeConstraint {
                 constraint_id,
+                name,
                 kind,
                 column_ids,
                 referenced_table_id,

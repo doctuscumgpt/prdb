@@ -10685,6 +10685,7 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
                 invocation_id,
                 authenticated_actor_id: actor,
                 table_id: id(82),
+                name: None,
                 expression: prdb_engine::authorization::Expr::CurrentPrincipalId,
                 dependency_column_ids: vec![],
                 retention_deadline_us: 9_999,
@@ -10703,6 +10704,7 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
                 invocation_id: invalid_row_check_id,
                 authenticated_actor_id: actor,
                 table_id: id(82),
+                name: None,
                 expression: prdb_engine::authorization::Expr::IsNull(Box::new(
                     prdb_engine::authorization::Expr::Field(0),
                 )),
@@ -10744,6 +10746,7 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
             invocation_id,
             authenticated_actor_id: actor,
             table_id: id(82),
+            name: Some("always_true".to_owned()),
             expression: prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Boolean(true))),
             dependency_column_ids: vec![],
             retention_deadline_us: 9_999,
@@ -10751,6 +10754,75 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
         })
         .map_err(|error| format!("CHECK constraint creation failed: {error:?}"))?;
     assert_eq!(created.commit_sequence, 3);
+    let duplicate_id = id(0xf0);
+    let mut duplicate_audit = identity_audit_event(0xf1, actor, id(82));
+    duplicate_audit.correlation_id = duplicate_id;
+    assert!(matches!(
+        storage.create_check_constraint(
+            prdb_engine::storage_manager::CreateCheckConstraintRequest {
+                invocation_id: duplicate_id,
+                authenticated_actor_id: actor,
+                table_id: id(82),
+                name: Some("always_true".to_owned()),
+                expression: prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Boolean(
+                    true
+                ))),
+                dependency_column_ids: vec![],
+                retention_deadline_us: 9_999,
+                audit_event: duplicate_audit,
+            }
+        ),
+        Err(prdb_engine::storage_manager::TableLifecycleError::Commit(
+            CommitError::DuplicateConstraintName
+        ))
+    ));
+    assert_eq!(
+        lookup_outcome(&database, duplicate_id, actor, 1)?
+            .ok_or("missing duplicate named CHECK rejection outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    let unauthorized_id = id(0xf2);
+    let unauthorized_actor = id(0xf3);
+    let mut unauthorized_audit = identity_audit_event(0xf4, unauthorized_actor, id(82));
+    unauthorized_audit.correlation_id = unauthorized_id;
+    assert!(matches!(
+        storage.create_check_constraint(
+            prdb_engine::storage_manager::CreateCheckConstraintRequest {
+                invocation_id: unauthorized_id,
+                authenticated_actor_id: unauthorized_actor,
+                table_id: id(82),
+                name: Some("always_true".to_owned()),
+                expression: prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Boolean(
+                    true
+                ))),
+                dependency_column_ids: vec![],
+                retention_deadline_us: 9_999,
+                audit_event: unauthorized_audit,
+            }
+        ),
+        Err(prdb_engine::storage_manager::TableLifecycleError::Unauthorized)
+    ));
+    assert_eq!(
+        lookup_outcome(&database, unauthorized_id, unauthorized_actor, 1)?
+            .ok_or("missing unauthorized named CHECK outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    let named_constraint_read = database.begin_read()?;
+    let named_constraint_catalog = named_constraint_read.open_table(CATALOG)?;
+    let named_constraint_object = named_constraint_catalog
+        .get(id_catalog_key(2, created.constraint_id).as_slice())?
+        .ok_or("named CHECK object missing")?;
+    assert_eq!(
+        decode_registered_envelope(named_constraint_object.value())?
+            .fields
+            .iter()
+            .find(|field| field.tag == 3)
+            .ok_or("named CHECK object name missing")?
+            .payload,
+        b"always_true"
+    );
     let constraint_snapshot = database.begin_read()?;
     assert_eq!(
         prdb_engine::catalog_index::scan_constraint_ids_for_table(&constraint_snapshot, id(82), 1)?,
@@ -10904,6 +10976,7 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
                     invocation_id: check_invocation,
                     authenticated_actor_id: actor,
                     table_id: id(82),
+                    name: None,
                     expression: prdb_engine::authorization::Expr::IsNull(Box::new(
                         prdb_engine::authorization::Expr::Field(0),
                     )),
@@ -26853,6 +26926,7 @@ fn process_crash_during_drop_table_recovers_all_or_none() -> Result<(), Box<dyn 
             invocation_id: id(0x17),
             authenticated_actor_id: ACTOR_ID,
             table_id: table.table_id,
+            name: None,
             expression: prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Boolean(true))),
             dependency_column_ids: Vec::new(),
             retention_deadline_us: i64::MAX,
@@ -27791,6 +27865,7 @@ fn process_crash_during_check_constraint_creation_recovers_all_or_none()
             invocation_id: CONSTRAINT_INVOCATION_ID,
             authenticated_actor_id: ACTOR_ID,
             table_id: TABLE_ID,
+            name: None,
             expression: prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Boolean(true))),
             dependency_column_ids: vec![],
             retention_deadline_us: i64::MAX,
@@ -28121,6 +28196,7 @@ fn process_crash_during_check_constraint_drop_recovers_all_or_none()
             invocation_id: id(0xdf),
             authenticated_actor_id: ACTOR_ID,
             table_id: TABLE_ID,
+            name: None,
             expression: prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Boolean(true))),
             dependency_column_ids: vec![],
             retention_deadline_us: i64::MAX,

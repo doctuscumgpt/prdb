@@ -227,6 +227,7 @@ enum PendingAdminAction {
     },
     CreateCheckConstraint {
         table_id: [u8; 16],
+        name: Option<String>,
         expression: crate::authorization::Expr,
         dependency_column_ids: Vec<[u8; 16]>,
     },
@@ -683,6 +684,7 @@ pub enum ClientAdminCommand {
     },
     PrepareCreateCheckConstraint {
         table_id: [u8; 16],
+        name: Option<String>,
         expression: crate::authorization::Expr,
         dependency_column_ids: Vec<[u8; 16]>,
     },
@@ -1977,8 +1979,10 @@ pub fn decode_client_admin_command(
             })
         }
         Some("prepare")
-            if version == Some(1) && operation.as_deref() == Some("constraints.create_check") =>
+            if matches!(version, Some(1 | 2))
+                && operation.as_deref() == Some("constraints.create_check") =>
         {
+            let has_name = version == Some(2);
             if operation_id.is_some() || seen.len() != 4 {
                 return Err(ClientControlError::UnknownKey);
             }
@@ -1988,6 +1992,11 @@ pub fn decode_client_admin_command(
                     .remove("table_id")
                     .ok_or(ClientControlError::MissingKey)?,
             )?;
+            let name = if has_name {
+                Some(args.remove("name").ok_or(ClientControlError::MissingKey)?)
+            } else {
+                None
+            };
             let expression_bytes = decode_lower_hex_bytes(
                 &args
                     .remove("expression_eir1")
@@ -2006,6 +2015,7 @@ pub fn decode_client_admin_command(
             }
             Ok(ClientAdminCommand::PrepareCreateCheckConstraint {
                 table_id,
+                name,
                 expression,
                 dependency_column_ids,
             })
@@ -5684,6 +5694,7 @@ impl ClientConnectionSession {
             }
             ClientAdminCommand::PrepareCreateCheckConstraint {
                 table_id,
+                name,
                 expression,
                 dependency_column_ids,
             } => {
@@ -5703,6 +5714,7 @@ impl ClientConnectionSession {
                     operation_id,
                     action: PendingAdminAction::CreateCheckConstraint {
                         table_id,
+                        name,
                         expression,
                         dependency_column_ids,
                     },
@@ -6927,6 +6939,7 @@ impl ClientConnectionSession {
                     }
                     PendingAdminAction::CreateCheckConstraint {
                         table_id,
+                        name,
                         expression,
                         dependency_column_ids,
                     } => {
@@ -6936,6 +6949,7 @@ impl ClientConnectionSession {
                                     invocation_id: operation_id,
                                     authenticated_actor_id: actor_id,
                                     table_id,
+                                    name,
                                     expression,
                                     dependency_column_ids,
                                     retention_deadline_us,
@@ -8641,7 +8655,11 @@ fn encode_metadata_page(
                 let row = rows.get(index).ok_or(ClientSessionError::ResourceLimit)?;
                 output.push_str("{\"constraint_id\":\"");
                 output.push_str(&encode_lower_hex_id(row.constraint_id));
-                output.push_str("\",\"kind\":\"");
+                output.push_str("\",\"name\":");
+                output.push('"');
+                push_json_string(&mut output, &row.name);
+                output.push('"');
+                output.push_str(",\"kind\":\"");
                 output.push_str(row.kind.as_wire_name());
                 output.push_str("\",\"column_ids\":[");
                 for (column_index, column_id) in row.column_ids.iter().enumerate() {

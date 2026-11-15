@@ -121,6 +121,7 @@ pub struct DropConstraintSql {
     pub schema: String,
     pub table: String,
     pub constraint_id: [u8; 16],
+    pub constraint_name: Option<String>,
     pub if_exists: bool,
 }
 
@@ -128,6 +129,7 @@ pub struct DropConstraintSql {
 pub struct AddCheckConstraintSql {
     pub schema: String,
     pub table: String,
+    pub name: Option<String>,
     pub expression: CheckExpressionSql,
 }
 
@@ -1351,9 +1353,7 @@ pub fn parse_add_foreign_key(sql: &str) -> Result<AddForeignKeySql, DdlSqlError>
     })
 }
 
-/// Parse qualified `ALTER TABLE ... DROP CONSTRAINT 'generated-id'`.
-/// The current catalog has generated constraint IDs and no user constraint
-/// names, so SQL identifies the object using the ID returned by its creation.
+/// Parse qualified `ALTER TABLE ... DROP CONSTRAINT name|'generated-id'`.
 pub fn parse_drop_constraint(sql: &str) -> Result<DropConstraintSql, DdlSqlError> {
     let mut parser = statement_parser(sql)?;
     parser.word("alter")?;
@@ -1370,22 +1370,24 @@ pub fn parse_drop_constraint(sql: &str) -> Result<DropConstraintSql, DdlSqlError
     } else {
         false
     };
-    let constraint_id = match parser.peek() {
+    let (constraint_id, constraint_name) = match parser.peek() {
         Some(Token::String(value)) => {
             let parsed = parse_uuid(value)?;
             parser.position += 1;
-            parsed
+            (parsed, None)
         }
+        Some(Token::Word(_)) => ([0; 16], Some(parser.identifier()?)),
         _ => return Err(DdlSqlError::InvalidStatement),
     };
     finish_statement(&mut parser)?;
-    if constraint_id == [0; 16] {
+    if constraint_id == [0; 16] && constraint_name.is_none() {
         return Err(DdlSqlError::InvalidStatement);
     }
     Ok(DropConstraintSql {
         schema,
         table,
         constraint_id,
+        constraint_name,
         if_exists,
     })
 }
@@ -1560,7 +1562,7 @@ pub fn parse_drop_policy(sql: &str) -> Result<DropPolicySql, DdlSqlError> {
     })
 }
 
-/// Parse `ALTER TABLE schema.table ADD CHECK (expression)` using a bounded
+/// Parse `ALTER TABLE schema.table ADD [CONSTRAINT name] CHECK (expression)` using a bounded
 /// Boolean grammar over columns, typed comparisons, literals, and NULL tests.
 pub fn parse_add_check_constraint(sql: &str) -> Result<AddCheckConstraintSql, DdlSqlError> {
     let mut parser = statement_parser(sql)?;
@@ -1570,11 +1572,18 @@ pub fn parse_add_check_constraint(sql: &str) -> Result<AddCheckConstraintSql, Dd
     parser.take(Token::Dot)?;
     let table = parser.identifier()?;
     parser.word("add")?;
+    let name = if parser.peek_word("constraint") {
+        parser.word("constraint")?;
+        Some(parser.identifier()?)
+    } else {
+        None
+    };
     let expression = parser.check_constraint_expression()?;
     finish_statement(&mut parser)?;
     Ok(AddCheckConstraintSql {
         schema,
         table,
+        name,
         expression,
     })
 }
@@ -3061,6 +3070,7 @@ mod tests {
                     0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89,
                     0xab, 0xcd, 0xef,
                 ],
+                constraint_name: None,
                 if_exists: false,
             }
         );
@@ -3070,12 +3080,17 @@ mod tests {
         .unwrap()
         .if_exists);
         for sql in [
-            "ALTER TABLE app.orders DROP CONSTRAINT fk_orders_customer",
             "ALTER TABLE orders DROP CONSTRAINT '0123456789abcdef0123456789abcdef'",
             "ALTER TABLE app.orders DROP CONSTRAINT '00000000000000000000000000000000'",
         ] {
             assert!(parse_drop_constraint(sql).is_err(), "accepted {sql}");
         }
+        let named = parse_drop_constraint(
+            "ALTER TABLE app.orders DROP CONSTRAINT IF EXISTS fk_orders_customer",
+        )
+        .unwrap();
+        assert_eq!(named.constraint_name.as_deref(), Some("fk_orders_customer"));
+        assert!(named.if_exists);
     }
 
     #[test]
@@ -3299,6 +3314,7 @@ mod tests {
             AddCheckConstraintSql {
                 schema: "app".into(),
                 table: "events".into(),
+                name: None,
                 expression: CheckExpressionSql::And(vec![
                     CheckExpressionSql::Column("active".into()),
                     CheckExpressionSql::Or(vec![
@@ -3308,10 +3324,23 @@ mod tests {
                 ]),
             }
         );
+        let named = parse_add_check_constraint(
+            "ALTER TABLE app.events ADD CONSTRAINT positive_amount CHECK (amount > 0)",
+        )
+        .unwrap();
+        assert_eq!(named.name.as_deref(), Some("positive_amount"));
+        let named_drop =
+            parse_drop_constraint("ALTER TABLE app.orders DROP CONSTRAINT positive_amount")
+                .unwrap();
+        assert_eq!(
+            named_drop.constraint_name.as_deref(),
+            Some("positive_amount")
+        );
+        assert_eq!(named_drop.constraint_id, [0; 16]);
         for sql in [
             "ALTER TABLE app.events ADD CHECK (active); ALTER TABLE app.events ADD CHECK (active)",
             "ALTER TABLE events ADD CHECK (active)",
-            "ALTER TABLE app.events ADD CONSTRAINT c CHECK (active)",
+            "ALTER TABLE app.events ADD CONSTRAINT CHECK (active)",
             "ALTER TABLE app.events ADD CHECK (missing IS NULL OR)",
         ] {
             assert!(parse_add_check_constraint(sql).is_err(), "accepted {sql}");

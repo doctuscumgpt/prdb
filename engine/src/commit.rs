@@ -241,6 +241,7 @@ pub enum CommitError {
     TableTruncateLimitExceeded,
     ColumnAddLimitExceeded,
     DdlAuthorizationDenied,
+    DuplicateConstraintName,
     InvocationExpired,
     InvocationCancelled,
     InvalidCatalog,
@@ -9447,8 +9448,16 @@ fn table_create_ddl_authority_guards(
                     .map(|byte| format!("{byte:02x}"))
                     .collect::<String>()
             );
+            let actual_name = catalog_field_bytes(key, bytes, 2, 3)?;
+            let named_check = kind == 6
+                && actual_name.len() <= 128
+                && !actual_name.is_empty()
+                && (actual_name[0].is_ascii_lowercase() || actual_name[0] == b'_')
+                && actual_name.iter().all(|byte| {
+                    byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_'
+                });
             if catalog_field_u16(key, bytes, 2, 1)? != kind
-                || catalog_field_bytes(key, bytes, 2, 3)? != expected_name.as_bytes()
+                || (actual_name != expected_name.as_bytes() && !named_check)
                 || catalog_field_bytes(key, bytes, 2, 4)? != principal_id
                 || catalog_field_u64(key, bytes, 2, 5)? != 1
                 || catalog_field_u16(key, bytes, 2, 6)? != 1
@@ -14252,6 +14261,62 @@ fn constraint_ddl_authority_guards(
         }
         if !has_alter {
             return Err(CommitError::DdlAuthorizationDenied);
+        }
+    }
+
+    let mut new_constraint_names = HashMap::<[u8; 16], HashSet<Vec<u8>>>::new();
+    for (constraint_id, change) in &constraint_changes {
+        if change.kind != 4 || !change.adding {
+            continue;
+        }
+        let object_key = id_catalog_key(2, *constraint_id);
+        let object_write = catalog_writes
+            .iter()
+            .find(|write| write.key == object_key)
+            .ok_or(CommitError::InvalidCatalog)?;
+        let object_bytes = object_write
+            .payload
+            .as_deref()
+            .ok_or(CommitError::InvalidCatalog)?;
+        let name = catalog_field_bytes(&object_key, object_bytes, 2, 3)?.to_vec();
+        if !new_constraint_names
+            .entry(change.table_id)
+            .or_default()
+            .insert(name.clone())
+        {
+            return Err(CommitError::DuplicateConstraintName);
+        }
+        let constraint_prefix = 8u16.to_be_bytes();
+        for entry in catalog
+            .range(constraint_prefix.as_slice()..)
+            .map_err(storage_error)?
+        {
+            let (key, value) = entry.map_err(storage_error)?;
+            let key = key.value();
+            if key.len() != 19 || key[..2] != constraint_prefix {
+                break;
+            }
+            let existing_id: [u8; 16] = key[3..]
+                .try_into()
+                .map_err(|_| CommitError::InvalidCatalog)?;
+            let existing_key = id_catalog_key(8, existing_id);
+            if catalog_field_bytes(&existing_key, value.value(), 8, 1)? != change.table_id {
+                continue;
+            }
+            if constraint_changes
+                .get(&existing_id)
+                .is_some_and(|existing_change| !existing_change.adding)
+            {
+                continue;
+            }
+            let existing_object_key = id_catalog_key(2, existing_id);
+            let existing_object = catalog
+                .get(existing_object_key.as_slice())
+                .map_err(storage_error)?
+                .ok_or(CommitError::InvalidCatalog)?;
+            if catalog_field_bytes(&existing_object_key, existing_object.value(), 2, 3)? == name {
+                return Err(CommitError::DuplicateConstraintName);
+            }
         }
     }
 

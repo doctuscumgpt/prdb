@@ -249,3 +249,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Generalized the non-enumerating owner-name resolver to schema and table object scopes. Effective schema ALTER authority now permits the same target-scoped USER/ROLE resolution as table ALTER authority; untyped schema owners use the global unique-name index under that scope.
 - The delegated process test exercises schema owner-name resolution as a schema ALTER grantee. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## DS-SQL-49 constraint object names — verified
+
+- Administrative constraint pages now include the catalog object's current name in stable-ID order, including generated names for unnamed constraints. Existing CHECK-expression omission and foreign-key target redaction remain in effect.
+- The client decoder enforces the expanded bounded record shape, and the authenticated gateway/supervisor SQL lifecycle reads back a named CHECK before dropping it by name. Full serial delegated-cgroup workspace verification passes; Cargo.lock is unchanged.

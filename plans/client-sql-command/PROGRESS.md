@@ -531,3 +531,8 @@
 
 - Added bounded `TRUNCATE TABLE schema.table RESTRICT` parsing, authenticated metadata binding, `AdminClient::truncate_table`, and the `admin-sql` CLI route. The strict command rejects unqualified targets, omitted/unsupported drop modes, and multiple statements.
 - The gateway/supervisor process lifecycle executes the command and confirms the logical index remains available afterward. Focused parser, storage, and process tests pass. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite pass with sandbox/process tests enabled (281 library tests and 177 commit tests passed, zero ignored); Cargo.lock is unchanged.
+
+## DS-SQL-49 named CHECK SQL lifecycle — verified
+
+- `admin-sql` accepts `ALTER TABLE schema.table ADD CONSTRAINT name CHECK (...)` and resolves `DROP CONSTRAINT name` through the authenticated constraint page before dispatching the stable-ID typed drop. Generated-ID drop remains available.
+- The production gateway/supervisor lifecycle creates, reads back, and drops a named CHECK through separate service processes. Focused parser/client tests, build, formatting, warning-denied Clippy, and the full serial delegated-cgroup workspace suite pass; Cargo.lock is unchanged.

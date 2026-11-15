@@ -1824,10 +1824,12 @@ impl AdminClient {
         let mut constraints = Vec::with_capacity(records.len());
         let mut previous_id = None;
         for mut record in records {
-            if record.len() != 5 {
+            if record.len() != 6 {
                 return Err(ClientSubmitError::InvalidResponse);
             }
             let constraint_id = response_id(&record, "constraint_id")?;
+            let name = take_string(&record, "name").ok_or(ClientSubmitError::InvalidResponse)?;
+            validate_admin_name(&name)?;
             let kind = match record.remove("kind") {
                 Some(ResponseValue::String(value)) => match value.as_str() {
                     "not_null" => crate::metadata_discovery::AdministrativeConstraintKind::NotNull,
@@ -1895,6 +1897,7 @@ impl AdminClient {
             previous_id = Some(constraint_id);
             constraints.push(crate::metadata_discovery::AdministrativeConstraint {
                 constraint_id,
+                name,
                 kind,
                 column_ids,
                 referenced_table_id,
@@ -4466,8 +4469,8 @@ impl AdminClient {
         if statement.if_exists {
             return Err(ClientSubmitError::InvalidAdministrativeRequest);
         }
-        let kind = self.resolve_drop_constraint_sql_target(&statement)?;
-        Self::drop_constraint_sql_target(self, statement.constraint_id, kind)
+        let (constraint_id, kind) = self.resolve_drop_constraint_sql_target(&statement)?;
+        Self::drop_constraint_sql_target(self, constraint_id, kind)
     }
 
     /// Execute `DROP CONSTRAINT IF EXISTS`. An unresolved constraint is
@@ -4482,8 +4485,8 @@ impl AdminClient {
             return Err(ClientSubmitError::InvalidAdministrativeRequest);
         }
         match self.resolve_drop_constraint_sql_target(&statement) {
-            Ok(kind) => {
-                Self::drop_constraint_sql_target(self, statement.constraint_id, kind).map(Some)
+            Ok((constraint_id, kind)) => {
+                Self::drop_constraint_sql_target(self, constraint_id, kind).map(Some)
             }
             Err(ClientSubmitError::InvalidAdministrativeRequest) => {
                 self.list_runtime_invocations_page(1, None)?;
@@ -4496,7 +4499,13 @@ impl AdminClient {
     fn resolve_drop_constraint_sql_target(
         &mut self,
         statement: &crate::ddl_sql::DropConstraintSql,
-    ) -> Result<crate::metadata_discovery::AdministrativeConstraintKind, ClientSubmitError> {
+    ) -> Result<
+        (
+            [u8; 16],
+            crate::metadata_discovery::AdministrativeConstraintKind,
+        ),
+        ClientSubmitError,
+    > {
         let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
         let table_id = self.resolve_table_sql_name_in_schema(schema_id, &statement.table)?;
         let mut cursor = None;
@@ -4508,12 +4517,13 @@ impl AdminClient {
                 DEFAULT_METADATA_PAGE_SIZE,
                 cursor.as_deref(),
             )?;
-            if let Some(constraint) = page
-                .records
-                .iter()
-                .find(|constraint| constraint.constraint_id == statement.constraint_id)
-            {
-                found_kind = Some(constraint.kind);
+            if let Some(constraint) = page.records.iter().find(|constraint| {
+                statement.constraint_name.as_ref().map_or_else(
+                    || constraint.constraint_id == statement.constraint_id,
+                    |name| constraint.name == *name,
+                )
+            }) {
+                found_kind = Some((constraint.constraint_id, constraint.kind));
             }
             cursor = page.next_cursor;
             if cursor.is_none() {
@@ -4619,11 +4629,12 @@ impl AdminClient {
             Ok(())
         }
         collect_fields(&expression, &visible_columns, &mut dependencies)?;
-        self.create_check_constraint(
-            table_id,
-            &expression,
-            &dependencies.into_iter().collect::<Vec<_>>(),
-        )
+        let dependencies = dependencies.into_iter().collect::<Vec<_>>();
+        if let Some(name) = statement.name.as_deref() {
+            self.create_named_check_constraint(table_id, name, &expression, &dependencies)
+        } else {
+            self.create_check_constraint(table_id, &expression, &dependencies)
+        }
     }
 
     /// Set or drop NOT NULL using qualified SQL names and the existing typed
@@ -5356,6 +5367,27 @@ impl AdminClient {
         expression: &crate::authorization::Expr,
         dependency_column_ids: &[[u8; 16]],
     ) -> Result<AdminCheckConstraintResult, ClientSubmitError> {
+        self.create_check_constraint_inner(table_id, None, expression, dependency_column_ids)
+    }
+
+    pub fn create_named_check_constraint(
+        &mut self,
+        table_id: [u8; 16],
+        name: &str,
+        expression: &crate::authorization::Expr,
+        dependency_column_ids: &[[u8; 16]],
+    ) -> Result<AdminCheckConstraintResult, ClientSubmitError> {
+        validate_admin_name(name)?;
+        self.create_check_constraint_inner(table_id, Some(name), expression, dependency_column_ids)
+    }
+
+    fn create_check_constraint_inner(
+        &mut self,
+        table_id: [u8; 16],
+        name: Option<&str>,
+        expression: &crate::authorization::Expr,
+        dependency_column_ids: &[[u8; 16]],
+    ) -> Result<AdminCheckConstraintResult, ClientSubmitError> {
         validate_admin_id(table_id)?;
         validate_admin_id_list_allow_empty(dependency_column_ids, crate::tuple::MAX_COLUMNS)?;
         if !crate::expression::is_row_local_expression(expression) {
@@ -5363,14 +5395,26 @@ impl AdminClient {
         }
         let expression_bytes = crate::expression::encode_expression(expression)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
-        let (result, generated_ids) = self.execute_admin_operation_with_generated_ids(
-            "constraints.create_check",
+        let arguments = if let Some(name) = name {
+            format!(
+                "{{\"table_id\":\"{}\",\"name\":{},\"expression_eir1\":\"{}\",\"dependency_column_ids\":{}}}",
+                lower_hex(&table_id),
+                json_quote(name),
+                lower_hex(&expression_bytes),
+                encode_id_array(dependency_column_ids)
+            )
+        } else {
             format!(
                 "{{\"table_id\":\"{}\",\"expression_eir1\":\"{}\",\"dependency_column_ids\":{}}}",
                 lower_hex(&table_id),
                 lower_hex(&expression_bytes),
                 encode_id_array(dependency_column_ids)
-            ),
+            )
+        };
+        let (result, generated_ids) = self.execute_admin_operation_with_generated_ids_version(
+            if name.is_some() { 2 } else { 1 },
+            "constraints.create_check",
+            arguments,
             &["constraint_id", "expression_id"],
             &[],
         )?;
@@ -5693,8 +5737,25 @@ impl AdminClient {
         generated_id_fields: &[&str],
         expected_response_fields: &[AdminExpectedResponseField<'_>],
     ) -> Result<(AdminOperationResult, Vec<[u8; 16]>), ClientSubmitError> {
+        self.execute_admin_operation_with_generated_ids_version(
+            1,
+            operation,
+            arguments,
+            generated_id_fields,
+            expected_response_fields,
+        )
+    }
+
+    fn execute_admin_operation_with_generated_ids_version(
+        &mut self,
+        operation_version: u32,
+        operation: &str,
+        arguments: String,
+        generated_id_fields: &[&str],
+        expected_response_fields: &[AdminExpectedResponseField<'_>],
+    ) -> Result<(AdminOperationResult, Vec<[u8; 16]>), ClientSubmitError> {
         let prepare = format!(
-            "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"{operation}\",\"arguments\":{arguments}}}"
+            "{{\"phase\":\"prepare\",\"operation_version\":{operation_version},\"operation\":\"{operation}\",\"arguments\":{arguments}}}"
         );
         let prepared = self.transport.exchange(10, prepare.into_bytes())?;
         let fields = parse_flat_response(&prepared.payload)?;

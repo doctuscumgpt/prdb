@@ -1138,3 +1138,8 @@
 - Added a fenced storage operation that validates bounded row/index state, rejects external FK dependencies, and publishes row deletions, physical index/reverse-index removals, table epoch advancement, object-version advancement, audit, and terminal outcome atomically. Table/column/constraint/policy/index definitions remain intact.
 - Focused real-redb tests verify old-reader retention, current row/index cleanup, stale-writer conflict, authorization denial, and empty-table FK RESTRICT rejection. Both focused storage tests pass.
 - Workspace build, formatting check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite pass with sandbox/process coverage enabled (281 library tests and 177 commit tests passed, zero ignored). `git diff --check` passes; Cargo.lock is unchanged.
+
+## DS-SQL-49 named CHECK object names — verified
+
+- CHECK creation accepts an optional normalized object name. The authorized constraint commit guard enforces per-table uniqueness after authority validation, returns `DuplicateConstraintName`, records the durable ABORTED outcome, and leaves the existing constraint set unchanged.
+- A real-redb regression creates a named CHECK, verifies the persisted object name, rejects a duplicate name, checks the aborted outcome, and confirms the original definition remains. The focused test and full serial delegated-cgroup suite pass; Cargo.lock is unchanged.

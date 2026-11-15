@@ -129,6 +129,7 @@ impl AdministrativeConstraintKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdministrativeConstraint {
     pub constraint_id: [u8; 16],
+    pub name: String,
     pub kind: AdministrativeConstraintKind,
     pub column_ids: Vec<[u8; 16]>,
     pub referenced_table_id: Option<[u8; 16]>,

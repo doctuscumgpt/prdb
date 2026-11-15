@@ -499,7 +499,7 @@ fn admin_client_lists_constraints_and_accepts_redacted_foreign_key_targets() {
         respond(
             &mut stream,
             &request,
-            br#"{"constraints":[{"constraint_id":"33333333333333333333333333333333","kind":"foreign_key","column_ids":["44444444444444444444444444444444"],"referenced_table_id":null,"referenced_column_ids":[]}],"next_cursor":null}"#,
+            br#"{"constraints":[{"constraint_id":"33333333333333333333333333333333","name":"fk_orders_customer","kind":"foreign_key","column_ids":["44444444444444444444444444444444"],"referenced_table_id":null,"referenced_column_ids":[]}],"next_cursor":null}"#,
         );
     });
 
@@ -1860,7 +1860,7 @@ fn admin_client_binds_foreign_key_sql_to_visible_columns_and_unique_target() {
             (
                 "metadata.constraints.list",
                 format!(
-                    r#"{{"constraints":[{{"constraint_id":"{}","kind":"primary_key","column_ids":["{}"],"referenced_table_id":null,"referenced_column_ids":[]}}],"next_cursor":null}}"#,
+                    r#"{{"constraints":[{{"constraint_id":"{}","name":"pk_orders","kind":"primary_key","column_ids":["{}"],"referenced_table_id":null,"referenced_column_ids":[]}}],"next_cursor":null}}"#,
                     "d7".repeat(16),
                     "c6".repeat(16)
                 ),
@@ -1944,7 +1944,7 @@ fn admin_client_drops_only_a_foreign_key_attached_to_the_selected_table() {
             (
                 "metadata.constraints.list",
                 format!(
-                    r#"{{"constraints":[{{"constraint_id":"{}","kind":"foreign_key","column_ids":["{}"],"referenced_table_id":"{}","referenced_column_ids":["{}"]}}],"next_cursor":null}}"#,
+                    r#"{{"constraints":[{{"constraint_id":"{}","name":"fk_orders_customer","kind":"foreign_key","column_ids":["{}"],"referenced_table_id":"{}","referenced_column_ids":["{}"]}}],"next_cursor":null}}"#,
                     "c5".repeat(16),
                     "c6".repeat(16),
                     "d7".repeat(16),
@@ -2026,7 +2026,7 @@ fn admin_client_drops_primary_key_from_generated_constraint_sql() {
             (
                 "metadata.constraints.list",
                 format!(
-                    r#"{{"constraints":[{{"constraint_id":"{}","kind":"primary_key","column_ids":["{}"],"referenced_table_id":null,"referenced_column_ids":[]}}],"next_cursor":null}}"#,
+                    r#"{{"constraints":[{{"constraint_id":"{}","name":"pk_orders","kind":"primary_key","column_ids":["{}"],"referenced_table_id":null,"referenced_column_ids":[]}}],"next_cursor":null}}"#,
                     "c5".repeat(16),
                     "d6".repeat(16)
                 ),
@@ -2127,6 +2127,8 @@ fn admin_client_binds_check_sql_names_to_eir_dependencies() {
         let prepare = read_frame(&mut stream, &mut decoder);
         let payload = String::from_utf8(prepare.payload.clone()).unwrap();
         assert!(payload.contains(r#""operation":"constraints.create_check""#));
+        assert!(payload.contains(r#""operation_version":2"#));
+        assert!(payload.contains(r#""name":"positive_amount""#));
         assert!(payload.contains(&format!(
             r#""dependency_column_ids":["{}","{}"]"#,
             "c5".repeat(16),
@@ -2175,7 +2177,7 @@ fn admin_client_binds_check_sql_names_to_eir_dependencies() {
     .unwrap();
     let created = client
         .execute_add_check_constraint_sql(
-            "ALTER TABLE app.events ADD CHECK (enabled AND (deleted >= -2 OR deleted IS NULL))",
+            "ALTER TABLE app.events ADD CONSTRAINT positive_amount CHECK (enabled AND (deleted >= -2 OR deleted IS NULL))",
         )
         .unwrap();
     assert_eq!(created.constraint_id, [0xe8; 16]);
@@ -3014,7 +3016,7 @@ fn admin_client_creates_table_with_foreign_key_in_one_typed_operation() {
             (
                 "metadata.constraints.list",
                 format!(
-                    r#"{{"constraints":[{{"constraint_id":"{}","kind":"primary_key","column_ids":["{}"],"referenced_table_id":null,"referenced_column_ids":[]}}],"next_cursor":null}}"#,
+                    r#"{{"constraints":[{{"constraint_id":"{}","name":"pk_orders","kind":"primary_key","column_ids":["{}"],"referenced_table_id":null,"referenced_column_ids":[]}}],"next_cursor":null}}"#,
                     "d7".repeat(16),
                     "c6".repeat(16)
                 ),

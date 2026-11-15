@@ -320,3 +320,8 @@
 
 - Added a strict version-1 `tables.truncate` PREPARE request with a table ID, connection-owned pending action, START dispatch to fenced storage, and a committed response carrying the operation ID, target ID, and commit sequence.
 - The authenticated gateway/supervisor lifecycle passes using production binaries; storage acceptance verifies durable completion and rejection behavior. The complete serial delegated-cgroup workspace suite passes with sandbox/process tests enabled (281 library tests and 177 commit tests passed, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## DS-SQL-49 named CHECK protocol — verified
+
+- `constraints.create_check` version 2 accepts an optional normalized constraint name while version 1 retains its prior payload. The strict decoder and connection-owned PREPARE/START action carry the name to authorized storage. `metadata.constraints.list` now returns the catalog object name with each stable constraint ID.
+- Protocol decoding is covered for both payload versions; the production gateway/supervisor named CHECK create/list/drop flow and full workspace suite pass. Cargo.lock is unchanged.

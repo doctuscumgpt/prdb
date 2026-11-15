@@ -169,7 +169,7 @@ fn admin_sql_cli_runs_create_table_over_authenticated_control_mode() {
             (
                 "metadata.constraints.list",
                 format!(
-                    r#"{{"constraints":[{{"constraint_id":"{}","kind":"primary_key","column_ids":["{}"],"referenced_table_id":null,"referenced_column_ids":[]}}],"next_cursor":null}}"#,
+                    r#"{{"constraints":[{{"constraint_id":"{}","name":"primary_key_constraint_15151515151515151515151515151515","kind":"primary_key","column_ids":["{}"],"referenced_table_id":null,"referenced_column_ids":[]}}],"next_cursor":null}}"#,
                     "15".repeat(16),
                     "14".repeat(16)
                 ),
