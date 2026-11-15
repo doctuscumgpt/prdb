@@ -968,3 +968,8 @@
 
 - Shared CHECK/policy SQL parsing now supports column `BETWEEN`/`NOT BETWEEN` with two typed scalar literal bounds. Binding lowers predicates to the existing inclusive comparison and Boolean EIR1 operations.
 - Parser/binder regression covers integer and text ranges, inclusive operators, negation, malformed bounds, and type mismatch. The focused test, locked workspace build, format check, warning-denied all-target Clippy, and full serial delegated-cgroup suite pass with sandbox/process coverage and zero ignored tests. See [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+## DS-SQL-55: null-safe CHECK SQL binding — implemented slice
+
+- Shared CHECK and policy SQL parsing/binding now supports `IS [NOT] DISTINCT FROM` with typed scalar literals, including NULL. Lowering uses existing EIR1 null checks and inequality nodes, keeping null-safe results Boolean.
+- Parser/binder regressions cover positive and negative forms, NULL, and malformed operands. The focused test, locked workspace build, format check, warning-denied all-target Clippy, and full serial delegated-cgroup suite pass with sandbox/process coverage and zero ignored tests. See [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

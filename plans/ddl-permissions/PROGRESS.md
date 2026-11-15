@@ -83,3 +83,8 @@
 
 - The shared policy expression grammar now accepts column `BETWEEN` and `NOT BETWEEN` with two typed literal bounds. Existing inclusive comparison nodes and SQL UNKNOWN evaluation preserve policy behavior without changing EIR1.
 - Parser/binder regression coverage includes numeric/text bounds, negation, malformed forms, and type mismatch. The focused test, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and full serial delegated-cgroup suite pass with sandbox/process coverage and zero ignored tests. Cargo.lock is unchanged.
+
+## DP-SQL-10: null-safe policy comparisons — implemented slice
+
+- Policy SQL now accepts `column IS DISTINCT FROM literal` and `column IS NOT DISTINCT FROM literal`, including NULL. Lowering composes existing null checks and inequality expressions so policies receive a definite Boolean result for nullable columns.
+- Parser/binder regressions cover text and NULL comparisons plus rejected malformed operands. The focused test, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and full serial delegated-cgroup suite pass with sandbox/process coverage and zero ignored tests. Cargo.lock is unchanged.

@@ -894,3 +894,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - CHECK SQL now accepts column `BETWEEN` and `NOT BETWEEN` with typed scalar literal bounds in CREATE TABLE and ALTER CHECK forms. Binding lowers each form to inclusive `>=` and `<=` comparisons joined by AND, with NOT applied to the conjunction for the negative form. The existing evaluator supplies SQL UNKNOWN behavior for NULL values and bounds.
 - Regression coverage checks inclusive comparison binding, text and integer type binding, NOT BETWEEN, type mismatch, and malformed bound expressions. The focused parser/binder test passes. `cargo build --workspace --locked`, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite pass; the suite ran 285 library tests and 177 commit tests plus all other targets with sandbox/process coverage enabled and zero ignored tests. Cargo.lock is unchanged.
+
+## DS-SQL-55: null-safe CHECK comparisons — implemented slice
+
+- CHECK SQL now accepts `column IS DISTINCT FROM literal` and `column IS NOT DISTINCT FROM literal`, including NULL. Binding lowers NULL comparisons to `IS NULL` forms and non-NULL comparisons to `IS NULL OR <>`; the negative form negates that complete Boolean result, preserving two-valued null-safe semantics using existing EIR1 nodes.
+- Regression coverage checks text and NULL binding and rejects missing or non-literal operands. The focused parser/binder test passes. Workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup suite pass with sandbox/process coverage and zero ignored tests (286 library tests and 177 commit tests). Cargo.lock is unchanged.

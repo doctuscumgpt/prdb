@@ -322,6 +322,11 @@ pub enum CheckExpressionSql {
         upper: CheckLiteralSql,
         negated: bool,
     },
+    DistinctFrom {
+        column: String,
+        value: CheckLiteralSql,
+        negated: bool,
+    },
     Not(Box<CheckExpressionSql>),
     And(Vec<CheckExpressionSql>),
     Or(Vec<CheckExpressionSql>),
@@ -1758,6 +1763,7 @@ fn validate_column_check_expression(
             }
             CheckExpressionSql::In { column: name, .. } => name == column,
             CheckExpressionSql::Between { column: name, .. } => name == column,
+            CheckExpressionSql::DistinctFrom { column: name, .. } => name == column,
             CheckExpressionSql::Not(inner) => only_column(column, inner),
             CheckExpressionSql::And(items) | CheckExpressionSql::Or(items) => {
                 items.iter().all(|item| only_column(column, item))
@@ -1785,6 +1791,7 @@ pub fn bind_check_expression(
             }
             CheckExpressionSql::In { .. } => false,
             CheckExpressionSql::Between { .. } => false,
+            CheckExpressionSql::DistinctFrom { .. } => false,
             CheckExpressionSql::Not(inner) => has_policy_context(inner),
             CheckExpressionSql::And(items) | CheckExpressionSql::Or(items) => {
                 items.iter().any(has_policy_context)
@@ -1850,6 +1857,7 @@ fn bind_expression(
             | CheckExpressionSql::IsNotNull(_)
             | CheckExpressionSql::In { .. }
             | CheckExpressionSql::Between { .. }
+            | CheckExpressionSql::DistinctFrom { .. }
             | CheckExpressionSql::Compare { .. }
             | CheckExpressionSql::Not(_)
             | CheckExpressionSql::And(_)
@@ -2095,6 +2103,44 @@ fn bind_expression(
                     Expr::Not(Box::new(expression))
                 } else {
                     expression
+                };
+                (expression, Some(ScalarType::Boolean))
+            }
+            Sql::DistinctFrom {
+                column,
+                value,
+                negated,
+            } => {
+                let (ordinal, column_type) = lookup(column).ok_or(DdlSqlError::InvalidStatement)?;
+                let (literal, literal_type) = bind(
+                    &Sql::Literal(value.clone()),
+                    Some(column_type),
+                    lookup,
+                    role_lookup,
+                )?;
+                if literal_type
+                    .is_some_and(|literal_type| !scalar_compatible(column_type, literal_type))
+                {
+                    return Err(DdlSqlError::InvalidStatement);
+                }
+                let field = Expr::Field(ordinal);
+                let expression = if literal_type.is_none() {
+                    let is_null = Expr::IsNull(Box::new(field));
+                    if *negated {
+                        is_null
+                    } else {
+                        Expr::Not(Box::new(is_null))
+                    }
+                } else {
+                    let distinct = Expr::Or(vec![
+                        Expr::IsNull(Box::new(field.clone())),
+                        Expr::NotEqual(Box::new(field), Box::new(literal)),
+                    ]);
+                    if *negated {
+                        Expr::Not(Box::new(distinct))
+                    } else {
+                        distinct
+                    }
                 };
                 (expression, Some(ScalarType::Boolean))
             }
@@ -2469,18 +2515,31 @@ impl Parser {
                 return Err(DdlSqlError::InvalidStatement);
             };
             self.position += 1;
-            let is_not = if self.peek_word("not") {
+            let negated = if self.peek_word("not") {
                 self.position += 1;
                 true
             } else {
                 false
             };
-            self.word("null")?;
-            Ok(if is_not {
-                CheckExpressionSql::IsNotNull(column)
+            if self.peek_word("distinct") {
+                self.word("distinct")?;
+                self.word("from")?;
+                let CheckExpressionSql::Literal(value) = self.check_value_atom()? else {
+                    return Err(DdlSqlError::InvalidStatement);
+                };
+                Ok(CheckExpressionSql::DistinctFrom {
+                    column,
+                    value,
+                    negated,
+                })
             } else {
-                CheckExpressionSql::IsNull(column)
-            })
+                self.word("null")?;
+                Ok(if negated {
+                    CheckExpressionSql::IsNotNull(column)
+                } else {
+                    CheckExpressionSql::IsNull(column)
+                })
+            }
         } else if self.peek_word("between")
             || (self.peek_word("not")
                 && matches!(self.tokens.get(self.position + 1), Some(Token::Word(word)) if word == "between"))
@@ -3757,6 +3816,61 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn parses_and_binds_null_safe_distinctness_predicates() {
+        use crate::authorization::Expr;
+
+        let distinct = parse_add_check_constraint(
+            "ALTER TABLE app.items ADD CHECK (code IS DISTINCT FROM 'retired')",
+        )
+        .unwrap();
+        assert_eq!(
+            distinct.expression,
+            CheckExpressionSql::DistinctFrom {
+                column: "code".into(),
+                value: CheckLiteralSql::String("retired".into()),
+                negated: false,
+            }
+        );
+        assert_eq!(
+            bind_check_expression(&distinct.expression, |name| {
+                (name == "code").then_some((0, ScalarType::Text))
+            })
+            .unwrap(),
+            Expr::Or(vec![
+                Expr::IsNull(Box::new(Expr::Field(0))),
+                Expr::NotEqual(
+                    Box::new(Expr::Field(0)),
+                    Box::new(Expr::Literal(Some(ScalarValue::Text("retired".into())))),
+                ),
+            ])
+        );
+
+        let not_distinct = parse_create_table(
+            "CREATE TABLE app.items (code UUID CHECK (code IS NOT DISTINCT FROM NULL))",
+        )
+        .unwrap();
+        assert!(matches!(
+            not_distinct.check_constraints.first(),
+            Some(CheckExpressionSql::DistinctFrom { negated: true, .. })
+        ));
+        assert_eq!(
+            bind_check_expression(&not_distinct.check_constraints[0], |name| {
+                (name == "code").then_some((0, ScalarType::Uuid))
+            })
+            .unwrap(),
+            Expr::IsNull(Box::new(Expr::Field(0)))
+        );
+
+        for sql in [
+            "ALTER TABLE app.items ADD CHECK (code IS DISTINCT)",
+            "ALTER TABLE app.items ADD CHECK (code IS DISTINCT FROM other)",
+            "ALTER TABLE app.items ADD CHECK ('x' IS DISTINCT FROM 'y')",
+        ] {
+            assert!(parse_add_check_constraint(sql).is_err(), "accepted {sql}");
+        }
     }
 
     #[test]
