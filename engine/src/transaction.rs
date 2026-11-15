@@ -3497,9 +3497,11 @@ impl<'db> InvocationTransaction<'db> {
                     || key[40..42] != 1u16.to_be_bytes()
                     || key[42] != 1
                     || key[43..59] != object_id
-                    || catalog_u64(&grant, 2)? == 0
                 {
                     continue;
+                }
+                if catalog_u64(&grant, 2)? == 0 {
+                    return Err(TransactionError::CorruptCatalog);
                 }
                 let grantee: [u8; 16] = key[3..19]
                     .try_into()
@@ -4615,6 +4617,9 @@ impl<'db> InvocationTransaction<'db> {
         }
         let mut subjects = roles.clone();
         subjects.insert(self.principal_id);
+        if roles.contains(&crate::bootstrap::database_admin_role_id()) {
+            return Ok(true);
+        }
         if subjects.contains(&catalog_id(&schema_object, 4)?)
             || subjects.contains(&catalog_id(&table_object, 4)?)
         {
@@ -4633,6 +4638,7 @@ impl<'db> InvocationTransaction<'db> {
                 let key = &grant.logical_key;
                 if grant.family_code != 12
                     || key.len() != 59
+                    || key[0..2] != 12u16.to_be_bytes()
                     || key[2] != 1
                     || key[19] != 1
                     || key[20..36] != object_id
@@ -4642,12 +4648,9 @@ impl<'db> InvocationTransaction<'db> {
                     || key[40..42] != 1u16.to_be_bytes()
                     || key[42] != 1
                     || key[43..59] != object_id
+                    || catalog_u64(&grant, 2)? == 0
                 {
                     continue;
-                }
-                let grantor_id = catalog_id(&grant, 1)?;
-                if grantor_id == [0; 16] || catalog_u64(&grant, 2)? == 0 {
-                    return Err(TransactionError::CorruptCatalog);
                 }
                 let grantee: [u8; 16] = key[3..19]
                     .try_into()
@@ -4656,6 +4659,9 @@ impl<'db> InvocationTransaction<'db> {
                     return Err(TransactionError::CorruptCatalog);
                 }
                 if subjects.contains(&grantee) {
+                    if catalog_id(&grant, 1)? == [0; 16] {
+                        return Err(TransactionError::CorruptCatalog);
+                    }
                     return Ok(true);
                 }
             }
