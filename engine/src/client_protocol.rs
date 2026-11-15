@@ -9276,7 +9276,7 @@ mod runtime_wait_tests {
     use crate::ddl_fence::{DdlFenceWaitCategory, DdlFenceWaitStatus};
 
     #[test]
-    fn runtime_list_versions_one_through_seven_decode_and_later_versions_reject() {
+    fn runtime_list_versions_one_through_eight_decode_and_later_versions_reject() {
         for version in 1..=8 {
             let request = format!(
                 "{{\"phase\":\"read\",\"operation_version\":{version},\"operation\":\"runtime.invocations.list\",\"arguments\":{{\"limit\":\"1\"}}}}"

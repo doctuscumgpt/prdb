@@ -1201,6 +1201,14 @@ fn record_completed_start_wait(state: &mut StagingState, entry: StartQueueEntry,
     }
     let elapsed_us = u64::try_from(now.saturating_duration_since(entry.queued_at).as_micros())
         .unwrap_or(u64::MAX);
+    record_start_wait_sample(state, entry.workload_class, elapsed_us);
+}
+
+fn record_start_wait_sample(
+    state: &mut StagingState,
+    workload_class: WorkloadClass,
+    elapsed_us: u64,
+) {
     let bucket = if elapsed_us <= 1_000 {
         0
     } else if elapsed_us <= 5_000 {
@@ -1214,7 +1222,7 @@ fn record_completed_start_wait(state: &mut StagingState, entry: StartQueueEntry,
     } else {
         5
     };
-    let buckets = match entry.workload_class {
+    let buckets = match workload_class {
         WorkloadClass::Operational => &mut state.operational_start_wait_buckets,
         WorkloadClass::Analytical => &mut state.analytical_start_wait_buckets,
     };
@@ -1520,30 +1528,10 @@ mod tests {
         let operational_boundaries = [
             1_000, 1_001, 5_000, 5_001, 10_000, 10_001, 50_000, 50_001, 100_000, 100_001,
         ];
-        for (index, elapsed_us) in operational_boundaries.into_iter().enumerate() {
-            record_completed_start_wait(
-                &mut state,
-                StartQueueEntry {
-                    invocation_id: [(index + 1) as u8; 16],
-                    principal_id: [30; 16],
-                    workload_class: WorkloadClass::Operational,
-                    queued_at: observed_at - Duration::from_micros(elapsed_us),
-                    was_blocked: true,
-                },
-                observed_at,
-            );
+        for elapsed_us in operational_boundaries {
+            record_start_wait_sample(&mut state, WorkloadClass::Operational, elapsed_us);
         }
-        record_completed_start_wait(
-            &mut state,
-            StartQueueEntry {
-                invocation_id: [20; 16],
-                principal_id: [31; 16],
-                workload_class: WorkloadClass::Analytical,
-                queued_at: observed_at - Duration::from_micros(5_001),
-                was_blocked: true,
-            },
-            observed_at,
-        );
+        record_start_wait_sample(&mut state, WorkloadClass::Analytical, 5_001);
         record_completed_start_wait(
             &mut state,
             StartQueueEntry {
@@ -1571,7 +1559,7 @@ mod tests {
             state.operational_start_wait_buckets,
             [u64::MAX, 2, 2, 2, 2, 1]
         );
-        assert_eq!(state.analytical_start_wait_buckets, [0, 1, 0, 0, 0, 0]);
+        assert_eq!(state.analytical_start_wait_buckets, [0, 0, 1, 0, 0, 0]);
     }
 
     #[test]

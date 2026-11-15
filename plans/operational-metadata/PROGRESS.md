@@ -324,3 +324,10 @@
 - Owner invocation pages include the current staged row count and encoded row-payload bytes for each live invocation. The projection remains principal-filtered, includes no global totals, transaction IDs, workload class, or administrator counters, and owner cursors already become stale when write-set usage changes.
 - Operation version 2 returns both usage counters while version 1 keeps its original response shape. The typed SDK accepts older owner-list rows without usage fields as zero; a partial pair is rejected. `prdb-client invocation-list` includes both values in its JSON output.
 - Regression coverage verifies nonzero owner-visible usage, write-set cursor invalidation, cross-owner non-disclosure, and CLI JSON fields. The focused owner-list regression and full serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process coverage enabled, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed; Cargo.lock is unchanged.
+
+
+## OM-3 completed start-wait histograms — verified
+
+- Runtime-list operation version 8 exposes separate bounded completed-start wait histograms for operational and analytical work. The client and protocol fixture cover the v8 request and both six-bucket arrays; the protocol spec now records the additive response shape.
+- Red evidence: the first full suite run failed on the 5,001 microsecond bucket boundary and on the stale v7 client fixture. The bucket test now supplies exact elapsed values to the shared sampler, and 5,001 microseconds is asserted in the `5,001–10,000` bucket.
+- Verification: focused histogram and runtime-list decoder tests passed; locked workspace build, formatting, warning-denied Clippy, TinyCC SDK tests and sandbox fixture, release-profile validation, cgroup probe, and the full serial delegated-cgroup workspace suite passed with zero ignored tests.
