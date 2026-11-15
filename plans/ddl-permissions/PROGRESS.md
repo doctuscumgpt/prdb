@@ -6,6 +6,11 @@
 - Parser tests cover schema/table forms and reject scope mismatches, malformed directions, grant option, and multiple statements. The delegated gateway/supervisor lifecycle covers SQL USAGE grant/revoke.
 - Locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed; Cargo.lock is unchanged.
 
+## DP-SQL-2: single-column grant SQL
+
+- The bounded grammar now accepts one column target for table SELECT/INSERT/UPDATE/REFERENCES and binds it to an authenticated column ID before using the existing `objects.grant` or `objects.revoke` operation. Multiple column targets are still available only through typed APIs.
+- Parser rejection and delegated process grant/revoke regressions pass. Locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed; Cargo.lock is unchanged.
+
 ## DP-1 / DP-2 / NP-6: column grant authority through separate service processes — verified
 
 - Contract: [permission DDL](../../specs/ddl-permissions.md) and [client protocol](../../specs/client-protocol.md). An authenticated identity cannot grant privileges without current object ownership, inherited `MANAGE_GRANTS`, or database-administrator authority. An owner may grant a specific existing column privilege to a user.

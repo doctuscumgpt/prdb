@@ -279,3 +279,7 @@
 ## DP-SQL-1: object-level grant SQL
 
 - Added bounded schema/table object privilege GRANT/REVOKE parsing and routing through authenticated object and identity resolution to the existing typed grant operation. Column-targeted grants remain typed-only. Parser and delegated process tests pass; locked workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored.
+
+## DP-SQL-2: single-column grant SQL
+
+- Extended table grant syntax to select one named column for SELECT, INSERT, UPDATE, or REFERENCES. The client resolves the column through authenticated metadata and submits the existing typed column grant. Multi-column forms remain a follow-up so the current single-target protocol preserves one-operation publication. Parser and delegated process grant/revoke tests pass; workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored.

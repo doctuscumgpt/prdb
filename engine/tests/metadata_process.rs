@@ -1540,6 +1540,50 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&revoke_object_privilege_sql.stdout)
             .contains("revoked object privilege")
     );
+    std::fs::write(
+        &object_privilege_sql_path,
+        "GRANT SELECT (key) ON TABLE process_ddl.records TO USER process_member_user;",
+    )?;
+    let grant_column_privilege_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            object_privilege_sql_path_text,
+        ])
+        .output()?;
+    assert!(
+        grant_column_privilege_sql.status.success(),
+        "column privilege GRANT SQL failed: {}",
+        String::from_utf8_lossy(&grant_column_privilege_sql.stderr)
+    );
+    std::fs::write(
+        &object_privilege_sql_path,
+        "REVOKE SELECT (key) ON TABLE process_ddl.records FROM USER process_member_user;",
+    )?;
+    let revoke_column_privilege_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            object_privilege_sql_path_text,
+        ])
+        .output()?;
+    assert!(
+        revoke_column_privilege_sql.status.success(),
+        "column privilege REVOKE SQL failed: {}",
+        String::from_utf8_lossy(&revoke_column_privilege_sql.stderr)
+    );
     let dropped_table = admin.drop_table(ddl_table.table_id)?;
     assert!(dropped_table.commit_sequence > ddl_constraint.commit_sequence);
     assert!(

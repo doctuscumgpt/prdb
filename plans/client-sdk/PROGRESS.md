@@ -836,3 +836,7 @@
 ## DP-SQL-1: object-level grant SQL
 
 - Added `AdminClient::execute_object_privilege_sql` for one schema/table object-level grant or revoke by SQL names. Column-level requests remain available through typed methods. Parser, production process, workspace build, format, Clippy, TinyCC and full delegated suite pass.
+
+## DP-SQL-2: single-column grant SQL
+
+- Added one-column SELECT/INSERT/UPDATE/REFERENCES grant resolution through authenticated `metadata.columns.list` and the existing typed column grant. Multi-column SQL remains pending. Parser and delegated process grant/revoke tests pass; workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, and full serial delegated-cgroup workspace suite pass with sandbox/process tests enabled and zero ignored.

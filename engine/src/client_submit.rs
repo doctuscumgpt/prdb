@@ -3190,6 +3190,36 @@ impl AdminClient {
         } else {
             schema_id
         };
+        let target = if let Some(column_name) = &statement.column_name {
+            let table_id = object_id;
+            let mut cursor = None;
+            let mut matched = None;
+            loop {
+                let page = self.list_columns_page(
+                    schema_id,
+                    table_id,
+                    DEFAULT_METADATA_PAGE_SIZE,
+                    cursor.as_deref(),
+                )?;
+                if let Some(column) = page
+                    .records
+                    .iter()
+                    .find(|column| column.name == *column_name)
+                {
+                    matched = Some(column.column_id);
+                    break;
+                }
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            AdminObjectGrantTarget::Column(
+                matched.ok_or(ClientSubmitError::InvalidAdministrativeRequest)?,
+            )
+        } else {
+            AdminObjectGrantTarget::Object
+        };
         let privilege = match statement.privilege.as_str() {
             "usage" => AdminObjectPrivilege::Usage,
             "select" => AdminObjectPrivilege::Select,
@@ -3205,19 +3235,9 @@ impl AdminClient {
             _ => return Err(ClientSubmitError::InvalidAdministrativeRequest),
         };
         if statement.grant {
-            self.grant_object_privilege(
-                grantee_id,
-                object_id,
-                privilege,
-                AdminObjectGrantTarget::Object,
-            )
+            self.grant_object_privilege(grantee_id, object_id, privilege, target)
         } else {
-            self.revoke_object_privilege(
-                grantee_id,
-                object_id,
-                privilege,
-                AdminObjectGrantTarget::Object,
-            )
+            self.revoke_object_privilege(grantee_id, object_id, privilege, target)
         }
     }
 

@@ -204,6 +204,7 @@ pub struct ObjectPrivilegeSql {
     pub privilege: String,
     pub schema_name: String,
     pub table_name: Option<String>,
+    pub column_name: Option<String>,
     pub grantee_name: String,
     pub grantee_is_role: bool,
 }
@@ -708,6 +709,22 @@ pub fn parse_object_privilege(sql: &str) -> Result<ObjectPrivilegeSql, DdlSqlErr
     ) {
         return Err(DdlSqlError::InvalidStatement);
     }
+    let column_name = if parser.peek() == Some(&Token::LeftParen) {
+        parser.take(Token::LeftParen)?;
+        let column = parser.identifier()?;
+        parser.take(Token::RightParen)?;
+        Some(column)
+    } else {
+        None
+    };
+    if column_name.is_some()
+        && !matches!(
+            privilege.as_str(),
+            "select" | "insert" | "update" | "references"
+        )
+    {
+        return Err(DdlSqlError::InvalidStatement);
+    }
     parser.word("on")?;
     let is_table = if parser.peek_word("schema") {
         parser.word("schema")?;
@@ -730,6 +747,9 @@ pub fn parse_object_privilege(sql: &str) -> Result<ObjectPrivilegeSql, DdlSqlErr
                     | "manage_grants"
             ))
     {
+        return Err(DdlSqlError::InvalidStatement);
+    }
+    if column_name.is_some() && !is_table {
         return Err(DdlSqlError::InvalidStatement);
     }
     let schema_name = parser.identifier()?;
@@ -758,6 +778,7 @@ pub fn parse_object_privilege(sql: &str) -> Result<ObjectPrivilegeSql, DdlSqlErr
         privilege,
         schema_name,
         table_name,
+        column_name,
         grantee_name,
         grantee_is_role,
     })
@@ -2685,6 +2706,7 @@ mod tests {
                 privilege: "usage".into(),
                 schema_name: "app".into(),
                 table_name: None,
+                column_name: None,
                 grantee_name: "managers".into(),
                 grantee_is_role: true,
             }
@@ -2697,6 +2719,7 @@ mod tests {
                 privilege: "select".into(),
                 schema_name: "app".into(),
                 table_name: Some("employees".into()),
+                column_name: None,
                 grantee_name: "reader".into(),
                 grantee_is_role: false,
             }
@@ -2707,6 +2730,19 @@ mod tests {
             "GRANT SELECT ON SCHEMA app TO USER reader WITH GRANT OPTION",
             "REVOKE USAGE ON SCHEMA app TO ROLE managers",
             "GRANT DELETE ON TABLE app.t TO ROLE r; REVOKE DELETE ON TABLE app.t FROM ROLE r",
+        ] {
+            assert!(parse_object_privilege(sql).is_err(), "accepted {sql}");
+        }
+        assert_eq!(
+            parse_object_privilege("GRANT SELECT (salary) ON TABLE app.employees TO ROLE readers")
+                .unwrap()
+                .column_name,
+            Some("salary".into())
+        );
+        for sql in [
+            "GRANT SELECT (a, b) ON TABLE app.t TO ROLE r",
+            "GRANT DELETE (salary) ON TABLE app.t TO ROLE r",
+            "GRANT SELECT (a) ON SCHEMA app TO ROLE r",
         ] {
             assert!(parse_object_privilege(sql).is_err(), "accepted {sql}");
         }
