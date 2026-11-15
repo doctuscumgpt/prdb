@@ -3335,10 +3335,6 @@ impl<'db> InvocationTransaction<'db> {
         }
         let roles = self.load_catalog_role_closure(self.principal_id)?;
         let is_database_admin = roles.contains(&crate::bootstrap::database_admin_role_id());
-        let privilege_code = match kind {
-            crate::metadata_discovery::AdministrativeIdentityKind::User => 12u16,
-            crate::metadata_discovery::AdministrativeIdentityKind::Role => 13u16,
-        };
         let metadata_bytes = self
             .pinned_snapshot()?
             .get_engine_metadata_value()
@@ -3348,14 +3344,14 @@ impl<'db> InvocationTransaction<'db> {
             .map_err(|error| TransactionError::Storage(error.to_string()))?;
         let mut subjects = roles.clone();
         subjects.insert(self.principal_id);
-        let has_management_privilege = if is_database_admin {
-            true
-        } else {
-            let mut granted = false;
-            for subject in subjects {
+        let manages_identity_kind = |this: &mut Self, privilege_code: u16| {
+            if is_database_admin {
+                return Ok(true);
+            }
+            for subject in &subjects {
                 let mut key = 12u16.to_be_bytes().to_vec();
                 key.extend_from_slice(&[1]);
-                key.extend_from_slice(&subject);
+                key.extend_from_slice(subject);
                 key.extend_from_slice(&[1]);
                 key.extend_from_slice(&metadata.database_id);
                 key.extend_from_slice(&[1]);
@@ -3364,20 +3360,28 @@ impl<'db> InvocationTransaction<'db> {
                 key.extend_from_slice(&1u16.to_be_bytes());
                 key.extend_from_slice(&[1]);
                 key.extend_from_slice(&metadata.database_id);
-                if let Some(record) = self.read_catalog_record(&key)? {
+                if let Some(record) = this.read_catalog_record(&key)? {
                     if record.family_code != 12
                         || catalog_id(&record, 1)? == [0; 16]
                         || catalog_u64(&record, 2)? == 0
                     {
                         return Err(TransactionError::CorruptCatalog);
                     }
-                    granted = true;
-                    break;
+                    return Ok(true);
                 }
             }
-            granted
+            Ok(false)
         };
-        if !has_management_privilege {
+        let manages_users = manages_identity_kind(self, 12)?;
+        let manages_roles = manages_identity_kind(self, 13)?;
+        let can_lookup_any = match kind {
+            crate::metadata_discovery::AdministrativeIdentityKind::User => manages_users,
+            crate::metadata_discovery::AdministrativeIdentityKind::Role => manages_roles,
+            crate::metadata_discovery::AdministrativeIdentityKind::Either => {
+                manages_users || manages_roles
+            }
+        };
+        if !can_lookup_any {
             return Ok(None);
         }
         let snapshot = self.pinned_snapshot()?;
@@ -3404,12 +3408,20 @@ impl<'db> InvocationTransaction<'db> {
         if principal.family_code != 10 {
             return Err(TransactionError::CorruptCatalog);
         }
-        let expected_kind = match kind {
-            crate::metadata_discovery::AdministrativeIdentityKind::User => 1,
-            crate::metadata_discovery::AdministrativeIdentityKind::Role => 2,
-        };
-        if catalog_u16(&principal, 1)? != expected_kind || catalog_field(&principal, 2)? != bytes {
+        let principal_kind = catalog_u16(&principal, 1)?;
+        if catalog_field(&principal, 2)? != bytes {
             return Err(TransactionError::CorruptCatalog);
+        }
+        let can_inspect_kind = match (kind, principal_kind) {
+            (crate::metadata_discovery::AdministrativeIdentityKind::User, 1) => manages_users,
+            (crate::metadata_discovery::AdministrativeIdentityKind::Role, 2) => manages_roles,
+            (crate::metadata_discovery::AdministrativeIdentityKind::Either, 1) => manages_users,
+            (crate::metadata_discovery::AdministrativeIdentityKind::Either, 2) => manages_roles,
+            (_, 1 | 2) => false,
+            _ => return Err(TransactionError::CorruptCatalog),
+        };
+        if !can_inspect_kind {
+            return Ok(None);
         }
         Ok(Some(identity_id))
     }
@@ -3545,6 +3557,9 @@ impl<'db> InvocationTransaction<'db> {
         let expected_kind = match kind {
             crate::metadata_discovery::AdministrativeIdentityKind::User => 1,
             crate::metadata_discovery::AdministrativeIdentityKind::Role => 2,
+            crate::metadata_discovery::AdministrativeIdentityKind::Either => {
+                return Err(TransactionError::InvalidMetadataRequest);
+            }
         };
         if catalog_u16(&principal, 1)? != expected_kind || catalog_field(&principal, 2)? != bytes {
             return Err(TransactionError::CorruptCatalog);

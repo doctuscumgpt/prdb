@@ -98,6 +98,7 @@ pub struct AdministrativeIndex {
 pub enum AdministrativeIdentityKind {
     User,
     Role,
+    Either,
 }
 
 /// Constraint kinds exposed by administrative table description.

@@ -1362,7 +1362,7 @@ fn admin_client_creates_and_drops_schemas() {
         let resolve = read_frame(&mut stream, &mut decoder);
         let resolve_payload = String::from_utf8(resolve.payload.clone()).unwrap();
         assert!(resolve_payload.contains("\"operation\":\"metadata.identities.resolve\""));
-        assert!(resolve_payload.contains("\"name\":\"app_owner\",\"kind\":\"user\""));
+        assert!(resolve_payload.contains("\"name\":\"app_owner\",\"kind\":\"either\""));
         respond(
             &mut stream,
             &resolve,
@@ -1503,7 +1503,7 @@ fn admin_client_creates_and_drops_schemas() {
     )
     .unwrap();
     let schema = client
-        .execute_create_schema_sql("CREATE SCHEMA analytics AUTHORIZATION USER app_owner;")
+        .execute_create_schema_sql("CREATE SCHEMA analytics AUTHORIZATION app_owner;")
         .unwrap();
     assert_eq!(schema.identity_id, [0xa3; 16]);
     client

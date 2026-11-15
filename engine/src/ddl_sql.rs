@@ -36,11 +36,18 @@ pub struct CreateSchemaSql {
     pub owner: CreateSchemaOwnerSql,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SqlIdentityKind {
+    Either,
+    User,
+    Role,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateSchemaOwnerSql {
     CurrentUser,
     Id([u8; 16]),
-    Identity { name: String, is_role: bool },
+    Identity { name: String, kind: SqlIdentityKind },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,7 +68,7 @@ pub struct OwnerTransferSql {
     pub schema: String,
     pub table: Option<String>,
     pub owner_name: String,
-    pub owner_is_role: bool,
+    pub owner_kind: SqlIdentityKind,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -943,16 +950,18 @@ pub fn parse_create_schema(sql: &str) -> Result<CreateSchemaSql, DdlSqlError> {
             parser.position += 1;
             CreateSchemaOwnerSql::Id(owner_id)
         } else {
-            let is_role = if parser.peek_word("user") {
+            let kind = if parser.peek_word("user") {
                 parser.word("user")?;
-                false
-            } else {
+                SqlIdentityKind::User
+            } else if parser.peek_word("role") {
                 parser.word("role")?;
-                true
+                SqlIdentityKind::Role
+            } else {
+                SqlIdentityKind::Either
             };
             CreateSchemaOwnerSql::Identity {
                 name: parser.identifier()?,
-                is_role,
+                kind,
             }
         }
     } else {
@@ -981,12 +990,14 @@ pub fn parse_schema_owner_transfer(sql: &str) -> Result<OwnerTransferSql, DdlSql
     let schema = parser.identifier()?;
     parser.word("owner")?;
     parser.word("to")?;
-    let owner_is_role = if parser.peek_word("user") {
+    let owner_kind = if parser.peek_word("user") {
         parser.word("user")?;
-        false
-    } else {
+        SqlIdentityKind::User
+    } else if parser.peek_word("role") {
         parser.word("role")?;
-        true
+        SqlIdentityKind::Role
+    } else {
+        SqlIdentityKind::Either
     };
     let owner_name = parser.identifier()?;
     finish_statement(&mut parser)?;
@@ -994,7 +1005,7 @@ pub fn parse_schema_owner_transfer(sql: &str) -> Result<OwnerTransferSql, DdlSql
         schema,
         table: None,
         owner_name,
-        owner_is_role,
+        owner_kind,
     })
 }
 
@@ -1035,12 +1046,12 @@ pub fn parse_table_owner_transfer(sql: &str) -> Result<OwnerTransferSql, DdlSqlE
     let table = parser.identifier()?;
     parser.word("owner")?;
     parser.word("to")?;
-    let owner_is_role = if parser.peek_word("user") {
+    let owner_kind = if parser.peek_word("user") {
         parser.word("user")?;
-        false
+        SqlIdentityKind::User
     } else {
         parser.word("role")?;
-        true
+        SqlIdentityKind::Role
     };
     let owner_name = parser.identifier()?;
     finish_statement(&mut parser)?;
@@ -1048,7 +1059,7 @@ pub fn parse_table_owner_transfer(sql: &str) -> Result<OwnerTransferSql, DdlSqlE
         schema,
         table: Some(table),
         owner_name,
-        owner_is_role,
+        owner_kind,
     })
 }
 
@@ -2519,7 +2530,7 @@ mod tests {
                 .owner,
             CreateSchemaOwnerSql::Identity {
                 name: "app_owner".into(),
-                is_role: false,
+                kind: SqlIdentityKind::User,
             }
         );
         assert_eq!(
@@ -2528,11 +2539,19 @@ mod tests {
                 .owner,
             CreateSchemaOwnerSql::Identity {
                 name: "app_admin".into(),
-                is_role: true,
+                kind: SqlIdentityKind::Role,
+            }
+        );
+        assert_eq!(
+            parse_create_schema("CREATE SCHEMA app AUTHORIZATION app_owner")
+                .unwrap()
+                .owner,
+            CreateSchemaOwnerSql::Identity {
+                name: "app_owner".into(),
+                kind: SqlIdentityKind::Either,
             }
         );
         for sql in [
-            "CREATE SCHEMA app AUTHORIZATION app_owner",
             "CREATE SCHEMA app AUTHORIZATION GROUP app_owner",
             "CREATE SCHEMA app AUTHORIZATION '00000000-0000-0000-0000-000000000000'",
             "CREATE SCHEMA app AUTHORIZATION '00112233445566778899aabbccddeeff'; CREATE SCHEMA b AUTHORIZATION '00112233445566778899aabbccddeeff'",
@@ -2572,15 +2591,23 @@ mod tests {
                 schema: "app".into(),
                 table: None,
                 owner_name: "owner_name".into(),
-                owner_is_role: false,
+                owner_kind: SqlIdentityKind::User,
             }
         );
-        for sql in [
-            "ALTER SCHEMA app OWNER TO owner_name",
-            "ALTER SCHEMA app OWNER TO USER owner_name CASCADE",
-        ] {
-            assert!(parse_schema_owner_transfer(sql).is_err(), "accepted {sql}");
-        }
+        assert_eq!(
+            parse_schema_owner_transfer("ALTER SCHEMA app OWNER TO owner_name").unwrap(),
+            OwnerTransferSql {
+                schema: "app".into(),
+                table: None,
+                owner_name: "owner_name".into(),
+                owner_kind: SqlIdentityKind::Either,
+            }
+        );
+        let invalid = "ALTER SCHEMA app OWNER TO USER owner_name CASCADE";
+        assert!(
+            parse_schema_owner_transfer(invalid).is_err(),
+            "accepted {invalid}"
+        );
     }
 
     #[test]
@@ -2615,7 +2642,7 @@ mod tests {
                 schema: "app".into(),
                 table: Some("events".into()),
                 owner_name: "owners".into(),
-                owner_is_role: true,
+                owner_kind: SqlIdentityKind::Role,
             }
         );
         for sql in [

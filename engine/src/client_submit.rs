@@ -3370,6 +3370,7 @@ impl AdminClient {
         let kind = match kind {
             crate::metadata_discovery::AdministrativeIdentityKind::User => "user",
             crate::metadata_discovery::AdministrativeIdentityKind::Role => "role",
+            crate::metadata_discovery::AdministrativeIdentityKind::Either => "either",
         };
         let payload = format!(
             "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"metadata.identities.resolve\",\"arguments\":{{\"name\":\"{name}\",\"kind\":\"{kind}\"}}}}"
@@ -3393,6 +3394,7 @@ impl AdminClient {
         let kind = match kind {
             crate::metadata_discovery::AdministrativeIdentityKind::User => "user",
             crate::metadata_discovery::AdministrativeIdentityKind::Role => "role",
+            crate::metadata_discovery::AdministrativeIdentityKind::Either => "either",
         };
         let payload = format!(
             "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"metadata.policy_identities.resolve\",\"arguments\":{{\"schema_id\":\"{}\",\"table_id\":\"{}\",\"name\":{},\"kind\":\"{kind}\"}}}}",
@@ -3681,11 +3683,17 @@ impl AdminClient {
         let owner_id = match statement.owner {
             crate::ddl_sql::CreateSchemaOwnerSql::CurrentUser => None,
             crate::ddl_sql::CreateSchemaOwnerSql::Id(owner_id) => Some(owner_id),
-            crate::ddl_sql::CreateSchemaOwnerSql::Identity { name, is_role } => {
-                let kind = if is_role {
-                    crate::metadata_discovery::AdministrativeIdentityKind::Role
-                } else {
-                    crate::metadata_discovery::AdministrativeIdentityKind::User
+            crate::ddl_sql::CreateSchemaOwnerSql::Identity { name, kind } => {
+                let kind = match kind {
+                    crate::ddl_sql::SqlIdentityKind::User => {
+                        crate::metadata_discovery::AdministrativeIdentityKind::User
+                    }
+                    crate::ddl_sql::SqlIdentityKind::Role => {
+                        crate::metadata_discovery::AdministrativeIdentityKind::Role
+                    }
+                    crate::ddl_sql::SqlIdentityKind::Either => {
+                        crate::metadata_discovery::AdministrativeIdentityKind::Either
+                    }
                 };
                 Some(self.resolve_identity_sql_name(&name, kind)?)
             }
@@ -3710,10 +3718,16 @@ impl AdminClient {
         let statement = crate::ddl_sql::parse_schema_owner_transfer(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
         let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
-        let kind = if statement.owner_is_role {
-            crate::metadata_discovery::AdministrativeIdentityKind::Role
-        } else {
-            crate::metadata_discovery::AdministrativeIdentityKind::User
+        let kind = match statement.owner_kind {
+            crate::ddl_sql::SqlIdentityKind::User => {
+                crate::metadata_discovery::AdministrativeIdentityKind::User
+            }
+            crate::ddl_sql::SqlIdentityKind::Role => {
+                crate::metadata_discovery::AdministrativeIdentityKind::Role
+            }
+            crate::ddl_sql::SqlIdentityKind::Either => {
+                crate::metadata_discovery::AdministrativeIdentityKind::Either
+            }
         };
         let owner_id = self.resolve_identity_sql_name(&statement.owner_name, kind)?;
         self.set_schema_owner(schema_id, owner_id)
@@ -4159,10 +4173,16 @@ impl AdminClient {
             .as_deref()
             .ok_or(ClientSubmitError::InvalidAdministrativeRequest)?;
         let table_id = self.resolve_table_sql_name(&statement.schema, table)?;
-        let kind = if statement.owner_is_role {
-            crate::metadata_discovery::AdministrativeIdentityKind::Role
-        } else {
-            crate::metadata_discovery::AdministrativeIdentityKind::User
+        let kind = match statement.owner_kind {
+            crate::ddl_sql::SqlIdentityKind::User => {
+                crate::metadata_discovery::AdministrativeIdentityKind::User
+            }
+            crate::ddl_sql::SqlIdentityKind::Role => {
+                crate::metadata_discovery::AdministrativeIdentityKind::Role
+            }
+            crate::ddl_sql::SqlIdentityKind::Either => {
+                crate::metadata_discovery::AdministrativeIdentityKind::Either
+            }
         };
         let owner_id = self.resolve_identity_sql_name(&statement.owner_name, kind)?;
         self.set_table_owner(table_id, owner_id)

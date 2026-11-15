@@ -11,6 +11,11 @@
 - Parser, protocol decoder, and authenticated request coverage verifies the owner field is omitted, so the server assigns the actor at START. The gateway/supervisor process lifecycle executes and removes a default-owned schema through `admin-sql`.
 - Verification: focused tests, workspace build, format check, warning-denied Clippy, TinyCC SDK/fixture, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `Cargo.lock` is unchanged.
 
+## Untyped schema-owner resolution
+
+- `CREATE SCHEMA ... AUTHORIZATION name` and `ALTER SCHEMA ... OWNER TO name` now use the authenticated, non-enumerating identity lookup for either users or roles. The server exposes the identity only if the caller has management authority for its resolved kind.
+- Verification: focused parser/protocol/client/process tests passed. Locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests and sandbox fixture, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (269 library tests, 174 commit tests, 75 transaction tests; all other targets passed). The cgroup probe reported writable `cpu memory pids`; `git diff --check` passed and Cargo.lock is unchanged.
+
 ## Implemented
 
 - `CREATE ROW|CELL POLICY` now resolves recipients and `HAS_ROLE` names through a table/schema scoped identity read. Storage returns no identity for absent names or callers without database-admin, ownership, or scoped `MANAGE_POLICIES` authority. Policy DDL authority now exposes the target relation's declared shape through authenticated metadata; the process regression grants schema USAGE but no SELECT to the table owner.

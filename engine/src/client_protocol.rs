@@ -1089,6 +1089,7 @@ pub fn decode_client_admin_command(
             let kind = match args.remove("kind").as_deref() {
                 Some("user") => crate::metadata_discovery::AdministrativeIdentityKind::User,
                 Some("role") => crate::metadata_discovery::AdministrativeIdentityKind::Role,
+                Some("either") => crate::metadata_discovery::AdministrativeIdentityKind::Either,
                 _ => return Err(ClientControlError::InvalidPrepare),
             };
             if !args.is_empty() {

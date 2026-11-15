@@ -356,6 +356,15 @@ fn identity_name_resolver_decoder_requires_one_kind_and_name() {
             policy_scope: None,
         }) if name == "analyst"
     ));
+    let either_request = br#"{"phase":"read","operation_version":1,"operation":"metadata.identities.resolve","arguments":{"name":"app_owner","kind":"either"}}"#;
+    assert!(matches!(
+        decode_client_admin_command(either_request),
+        Ok(ClientAdminCommand::ResolveIdentityName {
+            name,
+            kind: prdb_engine::metadata_discovery::AdministrativeIdentityKind::Either,
+            policy_scope: None,
+        }) if name == "app_owner"
+    ));
     for invalid in [
         br#"{"phase":"read","operation_version":1,"operation":"metadata.identities.resolve","arguments":{"name":"analyst","kind":"user","extra":"x"}}"#.as_slice(),
         br#"{"phase":"read","operation_version":1,"operation":"metadata.identities.resolve","arguments":{"name":"analyst","kind":"users"}}"#.as_slice(),

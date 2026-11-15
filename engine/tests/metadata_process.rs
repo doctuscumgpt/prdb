@@ -2083,7 +2083,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let schema_owner_sql_path = root.join("schema-owner.sql");
     std::fs::write(
         &schema_owner_sql_path,
-        "ALTER SCHEMA process_admin_schema OWNER TO USER process_table_owner_renamed;",
+        "ALTER SCHEMA process_admin_schema OWNER TO process_table_owner_renamed;",
     )?;
     let schema_owner_sql_command = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
@@ -2108,7 +2108,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     );
     std::fs::write(
         &schema_owner_sql_path,
-        "CREATE SCHEMA process_sql_owned AUTHORIZATION USER process_table_owner_renamed;",
+        "CREATE SCHEMA process_sql_owned AUTHORIZATION process_table_owner_renamed;",
     )?;
     let create_owned_schema_sql = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
