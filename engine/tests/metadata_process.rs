@@ -5857,6 +5857,7 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         assert!(runtime_output.contains("\"invocation_policy_denials_total\":0"));
         assert!(runtime_output.contains("\"invocation_staged_value_bytes_total\":0"));
         assert!(runtime_output.contains("\"invocation_commit_latency_buckets\":[0,0,0,0,0,0]"));
+        assert!(runtime_output.contains("\"invocation_redb_write_acquisition_buckets\":["));
         let runtime_counter = |name: &str| {
             let field = format!("\"{name}\":");
             runtime_output

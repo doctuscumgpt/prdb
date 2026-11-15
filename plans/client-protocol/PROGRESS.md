@@ -341,3 +341,8 @@
 
 - `constraints.create_primary_key`, `constraints.create_unique`, and `foreign_keys.create` version 2 accept a required normalized name; v1 remains unchanged. Pending actions carry names to the authorized storage paths. Decoder and authenticated request regressions pass.
 - The full serial delegated-cgroup workspace suite passes with zero ignored, including protocol v2 decoding and production process coverage; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+## OM-2 runtime-list v7 write acquisition metric — verified slice
+
+- Runtime-list version 7 retains v1–v6 fields and conditionally adds the storage `invocation_redb_write_acquisition_buckets` histogram. Older response versions retain their prior JSON shapes; the decoder accepts versions through 7.
+- JSON serialization regression checks the new six-count field and legacy omission; authenticated TCP and production process coverage exercise v7, including preservation of the gateway-provided v6 field. The full serial delegated-cgroup workspace suite passes with sandbox/process tests enabled and zero ignored tests; workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.

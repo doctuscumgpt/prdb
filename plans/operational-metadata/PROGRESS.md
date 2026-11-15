@@ -313,3 +313,8 @@
 
 - Extended the monitoring pressure regression to hold 129 live invocations for one owner and exercise maximum-size (128-record) owner and administrator runtime pages with continuations on every pressure iteration. The same run retains 129-event full audit-page pressure while a separate durable commit and accepted cancellation complete.
 - The focused delegated-cgroup regression, locked workspace build, formatting check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.
+
+## OM-2 managed redb write acquisition latency — verified slice
+
+- Managed invocation commits now time the elapsed call around `redb::Database::begin_write()` and record it in six saturating, noncumulative buckets using the existing commit-latency ranges. Validation failures before write-transaction acquisition are excluded; timing describes the API call and internal setup rather than pure lock wait.
+- Runtime-list version 7 exposes the storage counter to database administrators; the gateway preserves the v6 sent-bytes metric for v7 responses. Protocol and authenticated client regressions check version 7, array shape, emitted JSON, and bucket boundaries/saturation. The focused production gateway/supervisor process test and full serial delegated-cgroup workspace suite pass (288 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.

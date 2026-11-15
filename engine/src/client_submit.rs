@@ -416,6 +416,7 @@ pub struct RuntimeInvocationPage {
     pub invocation_policy_denials_total: u64,
     pub invocation_staged_value_bytes_total: u64,
     pub invocation_commit_latency_buckets: [u64; 6],
+    pub invocation_redb_write_acquisition_buckets: [u64; 6],
     pub outcome_maintenance_passes_total: u64,
     pub outcome_maintenance_failures_total: u64,
     pub outcomes_pruned_total: u64,
@@ -1308,11 +1309,11 @@ impl AdminClient {
             arguments.push('"');
         }
         let payload = format!(
-            "{{\"phase\":\"read\",\"operation_version\":6,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
+            "{{\"phase\":\"read\",\"operation_version\":7,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
         );
         let response = self.transport.exchange(10, payload.into_bytes())?;
         let mut fields = parse_flat_response(&response.payload)?;
-        if fields.len() != 21 {
+        if fields.len() != 22 {
             return Err(ClientSubmitError::InvalidResponse);
         }
         let observed_at_us = response_u64(&mut fields, "observed_at_us")?
@@ -1443,6 +1444,20 @@ impl AdminClient {
                 .ok_or(ClientSubmitError::InvalidResponse)?;
         let invocation_commit_latency_buckets =
             match fields.remove("invocation_commit_latency_buckets") {
+                Some(ResponseValue::Array(values)) if values.len() == 6 => {
+                    let mut buckets = [0; 6];
+                    for (index, value) in values.into_iter().enumerate() {
+                        let ResponseValue::Number(count) = value else {
+                            return Err(ClientSubmitError::InvalidResponse);
+                        };
+                        buckets[index] = count;
+                    }
+                    buckets
+                }
+                _ => return Err(ClientSubmitError::InvalidResponse),
+            };
+        let invocation_redb_write_acquisition_buckets =
+            match fields.remove("invocation_redb_write_acquisition_buckets") {
                 Some(ResponseValue::Array(values)) if values.len() == 6 => {
                     let mut buckets = [0; 6];
                     for (index, value) in values.into_iter().enumerate() {
@@ -1587,6 +1602,7 @@ impl AdminClient {
             invocation_policy_denials_total,
             invocation_staged_value_bytes_total,
             invocation_commit_latency_buckets,
+            invocation_redb_write_acquisition_buckets,
             outcome_maintenance_passes_total,
             outcome_maintenance_failures_total,
             outcomes_pruned_total,

@@ -1159,3 +1159,8 @@
 
 - Added named storage paths for PRIMARY KEY, UNIQUE, and FOREIGN KEY creation. Catalog objects retain normalized names; authorized commits reject per-table duplicates while preserving unnamed APIs and generated labels. Real-redb PK, UNIQUE, and FK regressions pass, including old-reader and DDL-fence behavior in the key tests.
 - The full serial delegated-cgroup workspace suite passes with zero ignored, along with workspace build, format check, warning-denied Clippy, and the production named ALTER lifecycle; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+## OM-2 managed redb write acquisition latency — verified slice
+
+- Managed invocation commit publication now records elapsed time around `redb::Database::begin_write()` in six bounded noncumulative counters. The sample is emitted after the call returns and counts attempts reaching the acquisition point; validation failures before it do not count.
+- A storage-manager regression checks all bucket boundaries and saturation, and a managed-write integration assertion confirms successful commits record acquisition samples. The full serial delegated-cgroup workspace suite passes with sandbox/process tests enabled and zero ignored tests. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.

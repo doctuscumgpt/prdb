@@ -25,6 +25,7 @@ use redb::{
     WriteTransaction,
 };
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 type IndexTableMap = HashMap<[u8; 16], [u8; 16]>;
 type ExpectedTableRows = HashMap<[u8; 16], Vec<([u8; 32], u64)>>;
@@ -5419,7 +5420,7 @@ pub fn commit_storage_changes(
     database: &Database,
     request: CommitRequest<'_>,
 ) -> Result<u64, CommitError> {
-    commit_storage_changes_with_gate(database, request, || true)
+    commit_storage_changes_with_gate(database, request, || true, |_| {})
 }
 
 /// Publish storage changes only if `before_durable_commit` grants the
@@ -5429,6 +5430,7 @@ pub(crate) fn commit_storage_changes_with_gate(
     database: &Database,
     request: CommitRequest<'_>,
     before_durable_commit: impl FnOnce() -> bool,
+    on_write_acquisition: impl FnOnce(Duration),
 ) -> Result<u64, CommitError> {
     let expected_rows =
         match build_constraint_validation_rows(database, request.catalog, request.rows) {
@@ -5456,7 +5458,7 @@ pub(crate) fn commit_storage_changes_with_gate(
             false,
             false,
             false,
-            before_durable_commit,
+            (before_durable_commit, on_write_acquisition),
         );
     }
     let plan = IndexDdlPlan {
@@ -5470,7 +5472,7 @@ pub(crate) fn commit_storage_changes_with_gate(
         false,
         false,
         false,
-        before_durable_commit,
+        (before_durable_commit, on_write_acquisition),
     )
 }
 
@@ -5489,7 +5491,7 @@ fn commit_storage_changes_with_index_ddl(
         require_usable_admin_credential,
         check_table_name_uniqueness,
         check_column_name_uniqueness,
-        || true,
+        (|| true, |_| {}),
     )
 }
 
@@ -5500,7 +5502,7 @@ fn commit_storage_changes_inner_with_admin_credential_check(
     require_usable_admin_credential: bool,
     check_table_name_uniqueness: bool,
     check_column_name_uniqueness: bool,
-    before_durable_commit: impl FnOnce() -> bool,
+    commit_callbacks: (impl FnOnce() -> bool, impl FnOnce(Duration)),
 ) -> Result<u64, CommitError> {
     let result = commit_storage_changes_inner_unchecked(
         database,
@@ -5509,7 +5511,7 @@ fn commit_storage_changes_inner_with_admin_credential_check(
         require_usable_admin_credential,
         check_table_name_uniqueness,
         check_column_name_uniqueness,
-        before_durable_commit,
+        commit_callbacks,
     );
     if matches!(&result, Err(CommitError::Storage(_))) {
         crate::storage_manager::mark_database_uncertain(database);
@@ -5524,8 +5526,9 @@ fn commit_storage_changes_inner_unchecked(
     require_usable_admin_credential: bool,
     check_table_name_uniqueness: bool,
     check_column_name_uniqueness: bool,
-    before_durable_commit: impl FnOnce() -> bool,
+    commit_callbacks: (impl FnOnce() -> bool, impl FnOnce(Duration)),
 ) -> Result<u64, CommitError> {
+    let (before_durable_commit, on_write_acquisition) = commit_callbacks;
     let CommitRequest {
         invocation_id,
         principal_id,
@@ -5638,7 +5641,10 @@ fn commit_storage_changes_inner_unchecked(
         return Err(CommitError::InvalidAudit);
     }
 
-    let mut transaction = database.begin_write().map_err(storage_error)?;
+    let lock_wait_started = Instant::now();
+    let write_transaction = database.begin_write();
+    on_write_acquisition(lock_wait_started.elapsed());
+    let mut transaction = write_transaction.map_err(storage_error)?;
     transaction
         .set_durability(redb::Durability::Immediate)
         .map_err(storage_error)?;
@@ -16220,10 +16226,15 @@ mod durable_commit_gate_tests {
         };
         let mut gate_calls = 0;
         assert_eq!(
-            commit_storage_changes_with_gate(&database, request([0x66; 16]), || {
-                gate_calls += 1;
-                false
-            }),
+            commit_storage_changes_with_gate(
+                &database,
+                request([0x66; 16]),
+                || {
+                    gate_calls += 1;
+                    false
+                },
+                |_| {}
+            ),
             Err(CommitError::InvocationCancelled)
         );
         assert_eq!(gate_calls, 1);
@@ -16239,7 +16250,7 @@ mod durable_commit_gate_tests {
         }
 
         assert_eq!(
-            commit_storage_changes_with_gate(&database, request([0x77; 16]), || true),
+            commit_storage_changes_with_gate(&database, request([0x77; 16]), || true, |_| {}),
             Ok(1)
         );
         {

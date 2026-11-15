@@ -1614,7 +1614,7 @@ pub fn decode_client_admin_command(
             Ok(ClientAdminCommand::ListAuditEvents { page_limit, cursor })
         }
         Some("read")
-            if matches!(version, Some(1..=6))
+            if matches!(version, Some(1..=7))
                 && operation.as_deref() == Some("runtime.invocations.list") =>
         {
             if operation_id.is_some() || seen.len() != 4 {
@@ -5235,6 +5235,9 @@ impl ClientConnectionSession {
                         invocation_staged_value_bytes_total: page
                             .invocation_staged_value_bytes_total,
                         invocation_commit_latency_buckets: page.invocation_commit_latency_buckets,
+                        invocation_redb_write_acquisition_buckets: page
+                            .invocation_redb_write_acquisition_buckets,
+                        include_write_lock_wait: response_version >= 7,
                         include_outcome_maintenance: response_version >= 2,
                         outcome_maintenance_passes_total: page.outcome_maintenance_passes_total,
                         outcome_maintenance_failures_total: page.outcome_maintenance_failures_total,
@@ -8681,6 +8684,8 @@ struct RuntimeInvocationSummary<'a> {
     invocation_policy_denials_total: u64,
     invocation_staged_value_bytes_total: u64,
     invocation_commit_latency_buckets: [u64; 6],
+    invocation_redb_write_acquisition_buckets: [u64; 6],
+    include_write_lock_wait: bool,
     include_outcome_maintenance: bool,
     outcome_maintenance_passes_total: u64,
     outcome_maintenance_failures_total: u64,
@@ -8714,6 +8719,20 @@ fn encode_fence_waits(output: &mut String, summary: RuntimeInvocationSummary<'_>
         output.push_str(&bucket.to_string());
     }
     output.push(']');
+    if summary.include_write_lock_wait {
+        output.push_str(",\"invocation_redb_write_acquisition_buckets\":[");
+        for (index, bucket) in summary
+            .invocation_redb_write_acquisition_buckets
+            .iter()
+            .enumerate()
+        {
+            if index != 0 {
+                output.push(',');
+            }
+            output.push_str(&bucket.to_string());
+        }
+        output.push(']');
+    }
     if summary.include_outcome_maintenance {
         output.push_str(",\"outcome_maintenance_passes_total\":");
         output.push_str(&summary.outcome_maintenance_passes_total.to_string());
@@ -9217,8 +9236,27 @@ impl ClientResponseSequences {
 
 #[cfg(test)]
 mod runtime_wait_tests {
-    use super::encode_fence_waits;
+    use super::{ClientAdminCommand, decode_client_admin_command, encode_fence_waits};
     use crate::ddl_fence::{DdlFenceWaitCategory, DdlFenceWaitStatus};
+
+    #[test]
+    fn runtime_list_versions_one_through_seven_decode_and_later_versions_reject() {
+        for version in 1..=7 {
+            let request = format!(
+                "{{\"phase\":\"read\",\"operation_version\":{version},\"operation\":\"runtime.invocations.list\",\"arguments\":{{\"limit\":\"1\"}}}}"
+            );
+            assert!(matches!(
+                decode_client_admin_command(request.as_bytes()).unwrap(),
+                ClientAdminCommand::ListRuntimeInvocations {
+                    response_version,
+                    page_limit: 1,
+                    cursor: None,
+                } if response_version == version
+            ));
+        }
+        let unsupported = br#"{"phase":"read","operation_version":8,"operation":"runtime.invocations.list","arguments":{"limit":"1"}}"#;
+        assert!(decode_client_admin_command(unsupported).is_err());
+    }
 
     #[test]
     fn runtime_wait_json_uses_opaque_ids_and_explicit_truncation_flags() {
@@ -9244,6 +9282,8 @@ mod runtime_wait_tests {
                 invocation_policy_denials_total: 3,
                 invocation_staged_value_bytes_total: 8,
                 invocation_commit_latency_buckets: [1, 2, 3, 4, 5, 6],
+                invocation_redb_write_acquisition_buckets: [6, 5, 4, 3, 2, 1],
+                include_write_lock_wait: true,
                 include_outcome_maintenance: true,
                 outcome_maintenance_passes_total: 7,
                 outcome_maintenance_failures_total: 8,
@@ -9255,7 +9295,7 @@ mod runtime_wait_tests {
         assert_eq!(
             output,
             format!(
-                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"invocations_admitted_total\":7,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"admin_cancellations_denied_total\":2,\"invocation_policy_denials_total\":3,\"invocation_staged_value_bytes_total\":8,\"invocation_commit_latency_buckets\":[1,2,3,4,5,6],\"outcome_maintenance_passes_total\":7,\"outcome_maintenance_failures_total\":8,\"outcomes_pruned_total\":9,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
+                "{{\"invocations\":[],\"pinned_snapshot_count\":2,\"oldest_snapshot_pin_age_us\":23,\"invocations_admitted_total\":7,\"invocation_conflicts_total\":1,\"admin_cancellations_accepted_total\":1,\"admin_cancellations_denied_total\":2,\"invocation_policy_denials_total\":3,\"invocation_staged_value_bytes_total\":8,\"invocation_commit_latency_buckets\":[1,2,3,4,5,6],\"invocation_redb_write_acquisition_buckets\":[6,5,4,3,2,1],\"outcome_maintenance_passes_total\":7,\"outcome_maintenance_failures_total\":8,\"outcomes_pruned_total\":9,\"fence_waits\":[{{\"wait_id\":\"{}\",\"category\":\"ddl\",\"waited_us\":23 ,\"resource_ids\":[\"{}\"],\"resources_truncated\":true ,\"blocker_ids\":[\"{}\"],\"blockers_truncated\":false}}],\"fence_waits_truncated\":true",
                 "01".repeat(16),
                 "02".repeat(16),
                 "03".repeat(16)
@@ -9274,6 +9314,8 @@ mod runtime_wait_tests {
                 invocation_policy_denials_total: 0,
                 invocation_staged_value_bytes_total: 0,
                 invocation_commit_latency_buckets: [0; 6],
+                invocation_redb_write_acquisition_buckets: [0; 6],
+                include_write_lock_wait: false,
                 include_outcome_maintenance: false,
                 outcome_maintenance_passes_total: 9,
                 outcome_maintenance_failures_total: 2,

@@ -337,6 +337,7 @@ pub struct AdministrativeInvocationPage {
     pub invocation_policy_denials_total: u64,
     pub invocation_staged_value_bytes_total: u64,
     pub invocation_commit_latency_buckets: [u64; 6],
+    pub invocation_redb_write_acquisition_buckets: [u64; 6],
     pub outcome_maintenance_passes_total: u64,
     pub outcome_maintenance_failures_total: u64,
     pub outcomes_pruned_total: u64,
@@ -1949,6 +1950,7 @@ struct LiveInvocationRegistry {
     invocation_policy_denials_total: u64,
     invocation_staged_value_bytes_total: u64,
     invocation_commit_latency_buckets: [u64; 6],
+    invocation_redb_write_acquisition_buckets: [u64; 6],
     outcome_maintenance_passes_total: u64,
     outcome_maintenance_failures_total: u64,
     outcomes_pruned_total: u64,
@@ -1991,6 +1993,7 @@ struct AdministrativeInvocationProjection {
     invocation_policy_denials_total: u64,
     invocation_staged_value_bytes_total: u64,
     invocation_commit_latency_buckets: [u64; 6],
+    invocation_redb_write_acquisition_buckets: [u64; 6],
     outcome_maintenance_passes_total: u64,
     outcome_maintenance_failures_total: u64,
     outcomes_pruned_total: u64,
@@ -2035,6 +2038,24 @@ impl LiveInvocationRegistry {
         };
         self.invocation_commit_latency_buckets[bucket] =
             self.invocation_commit_latency_buckets[bucket].saturating_add(1);
+    }
+
+    fn record_invocation_redb_write_acquisition(&mut self, elapsed: Duration) {
+        let bucket = if elapsed <= Duration::from_micros(1_000) {
+            0
+        } else if elapsed <= Duration::from_micros(5_000) {
+            1
+        } else if elapsed <= Duration::from_micros(10_000) {
+            2
+        } else if elapsed <= Duration::from_micros(50_000) {
+            3
+        } else if elapsed <= Duration::from_micros(100_000) {
+            4
+        } else {
+            5
+        };
+        self.invocation_redb_write_acquisition_buckets[bucket] =
+            self.invocation_redb_write_acquisition_buckets[bucket].saturating_add(1);
     }
 
     fn record_outcome_maintenance(
@@ -2105,6 +2126,17 @@ impl InvocationAdmissionMetrics {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         live.record_invocation_commit_latency(elapsed);
+    }
+
+    pub(crate) fn record_write_acquisition(&self, elapsed: Duration) {
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let mut live = state
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        live.record_invocation_redb_write_acquisition(elapsed);
     }
 }
 
@@ -2391,6 +2423,8 @@ impl InvocationAdmissionState {
             invocation_policy_denials_total: live.invocation_policy_denials_total,
             invocation_staged_value_bytes_total: live.invocation_staged_value_bytes_total,
             invocation_commit_latency_buckets: live.invocation_commit_latency_buckets,
+            invocation_redb_write_acquisition_buckets: live
+                .invocation_redb_write_acquisition_buckets,
             outcome_maintenance_passes_total: live.outcome_maintenance_passes_total,
             outcome_maintenance_failures_total: live.outcome_maintenance_failures_total,
             outcomes_pruned_total: live.outcomes_pruned_total,
@@ -2607,6 +2641,7 @@ fn invocation_registry(
             invocation_policy_denials_total: 0,
             invocation_staged_value_bytes_total: 0,
             invocation_commit_latency_buckets: [0; 6],
+            invocation_redb_write_acquisition_buckets: [0; 6],
             outcome_maintenance_passes_total: 0,
             outcome_maintenance_failures_total: 0,
             outcomes_pruned_total: 0,
@@ -12939,6 +12974,8 @@ impl<'db> StorageManager<'db> {
             invocation_policy_denials_total: projection.invocation_policy_denials_total,
             invocation_staged_value_bytes_total: projection.invocation_staged_value_bytes_total,
             invocation_commit_latency_buckets: projection.invocation_commit_latency_buckets,
+            invocation_redb_write_acquisition_buckets: projection
+                .invocation_redb_write_acquisition_buckets,
             outcome_maintenance_passes_total: projection.outcome_maintenance_passes_total,
             outcome_maintenance_failures_total: projection.outcome_maintenance_failures_total,
             outcomes_pruned_total: projection.outcomes_pruned_total,
@@ -14220,6 +14257,7 @@ mod commit_cancellation_boundary_tests {
                 invocation_policy_denials_total: 0,
                 invocation_staged_value_bytes_total: 0,
                 invocation_commit_latency_buckets: [0; 6],
+                invocation_redb_write_acquisition_buckets: [0; 6],
                 outcome_maintenance_passes_total: 0,
                 outcome_maintenance_failures_total: 0,
                 outcomes_pruned_total: 0,
@@ -14276,6 +14314,7 @@ mod commit_cancellation_boundary_tests {
                 invocation_policy_denials_total: u64::MAX,
                 invocation_staged_value_bytes_total: u64::MAX,
                 invocation_commit_latency_buckets: [u64::MAX; 6],
+                invocation_redb_write_acquisition_buckets: [u64::MAX; 6],
                 outcome_maintenance_passes_total: u64::MAX,
                 outcome_maintenance_failures_total: u64::MAX,
                 outcomes_pruned_total: u64::MAX,
@@ -14357,6 +14396,7 @@ mod commit_cancellation_boundary_tests {
             invocation_policy_denials_total: 0,
             invocation_staged_value_bytes_total: 0,
             invocation_commit_latency_buckets: [0; 6],
+            invocation_redb_write_acquisition_buckets: [0; 6],
             outcome_maintenance_passes_total: 0,
             outcome_maintenance_failures_total: 0,
             outcomes_pruned_total: 0,
@@ -14374,6 +14414,37 @@ mod commit_cancellation_boundary_tests {
     }
 
     #[test]
+    fn invocation_redb_write_acquisition_uses_fixed_non_cumulative_buckets() {
+        let mut live = LiveInvocationRegistry {
+            generation: 1,
+            invocations_admitted_total: 0,
+            invocation_conflicts_total: 0,
+            admin_cancellations_accepted_total: 0,
+            admin_cancellations_denied_total: 0,
+            invocation_policy_denials_total: 0,
+            invocation_staged_value_bytes_total: 0,
+            invocation_commit_latency_buckets: [0; 6],
+            invocation_redb_write_acquisition_buckets: [0; 6],
+            outcome_maintenance_passes_total: 0,
+            outcome_maintenance_failures_total: 0,
+            outcomes_pruned_total: 0,
+            entries: std::collections::HashMap::new(),
+        };
+        for micros in [
+            1_000, 1_001, 5_000, 5_001, 10_000, 10_001, 50_000, 50_001, 100_000, 100_001,
+        ] {
+            live.record_invocation_redb_write_acquisition(Duration::from_micros(micros));
+        }
+        assert_eq!(
+            live.invocation_redb_write_acquisition_buckets,
+            [1, 2, 2, 2, 2, 1]
+        );
+        live.invocation_redb_write_acquisition_buckets[5] = u64::MAX;
+        live.record_invocation_redb_write_acquisition(Duration::from_secs(1));
+        assert_eq!(live.invocation_redb_write_acquisition_buckets[5], u64::MAX);
+    }
+
+    #[test]
     fn outcome_maintenance_counters_count_passes_failures_and_removals() {
         let mut live = LiveInvocationRegistry {
             generation: 1,
@@ -14384,6 +14455,7 @@ mod commit_cancellation_boundary_tests {
             invocation_policy_denials_total: 0,
             invocation_staged_value_bytes_total: 0,
             invocation_commit_latency_buckets: [0; 6],
+            invocation_redb_write_acquisition_buckets: [0; 6],
             outcome_maintenance_passes_total: 0,
             outcome_maintenance_failures_total: 0,
             outcomes_pruned_total: 0,

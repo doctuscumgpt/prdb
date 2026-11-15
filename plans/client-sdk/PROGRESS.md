@@ -973,3 +973,8 @@
 
 - Shared CHECK and policy SQL parsing/binding now supports `IS [NOT] DISTINCT FROM` with typed scalar literals, including NULL. Lowering uses existing EIR1 null checks and inequality nodes, keeping null-safe results Boolean.
 - Parser/binder regressions cover positive and negative forms, NULL, and malformed operands. The focused test, locked workspace build, format check, warning-denied all-target Clippy, and full serial delegated-cgroup suite pass with sandbox/process coverage and zero ignored tests. See [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+## OM-2 runtime-list v7 write acquisition metric — verified slice
+
+- `AdminClient::list_runtime_invocations_page` now requests runtime-list version 7 and strictly decodes the storage `invocation_redb_write_acquisition_buckets` array; `prdb-client runtime-list` includes the field in its JSON page.
+- The authenticated TCP regression checks version 7, array decoding, and all six returned values. The full serial delegated-cgroup workspace suite passes with sandbox/process tests enabled and zero ignored tests; workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. See [operational metadata progress](../operational-metadata/PROGRESS.md).

@@ -8851,6 +8851,7 @@ impl<'db> InvocationTransaction<'db> {
         }
         self.check_deadline()?;
         let ddl_fences = self.coordination.ddl_fences.clone();
+        let write_lock_wait_metrics = self.coordination.admission_metrics.clone();
         let entries = self.overlay.into_entries()?;
         let mut writes = Vec::with_capacity(entries.len());
         for (id, payload) in entries {
@@ -8938,6 +8939,11 @@ impl<'db> InvocationTransaction<'db> {
                         commit_started.set(true);
                     }
                     started
+                },
+                move |elapsed| {
+                    if let Some(metrics) = write_lock_wait_metrics {
+                        metrics.record_write_acquisition(elapsed);
+                    }
                 },
             )
         });

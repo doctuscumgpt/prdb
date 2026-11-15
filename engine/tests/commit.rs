@@ -11191,6 +11191,13 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
         .as_micros() as i64;
     let runtime_page = storage.list_runtime_invocations(actor, runtime_now_us, 1, None)?;
     assert!(runtime_page.invocation_conflicts_total >= 1);
+    assert!(
+        runtime_page
+            .invocation_redb_write_acquisition_buckets
+            .iter()
+            .sum::<u64>()
+            >= 1
+    );
     prdb_engine::startup::validate_persisted_records(&database)?;
     Ok(())
 }

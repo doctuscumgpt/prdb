@@ -595,12 +595,12 @@ fn serve_tcp_client_connection_inner<C: GatewayClientStream, S: Read + Write>(
             return Ok(());
         };
         let client_kind = request.kind;
-        let runtime_list_v6 = client_kind == 10
+        let runtime_list_v6_or_later = client_kind == 10
             && matches!(
                 crate::client_protocol::decode_client_admin_command(&request.payload),
                 Ok(
                     crate::client_protocol::ClientAdminCommand::ListRuntimeInvocations {
-                        response_version: 6,
+                        response_version: 6..,
                         ..
                     }
                 )
@@ -683,7 +683,7 @@ fn serve_tcp_client_connection_inner<C: GatewayClientStream, S: Read + Write>(
         if response.operation != ipc_request.operation {
             return Err(GatewayConnectionError::MismatchedServiceResponse);
         }
-        let response_payload = if runtime_list_v6 {
+        let response_payload = if runtime_list_v6_or_later {
             crate::gateway::append_gateway_result_counter(
                 &response.payload,
                 gateway_result_bytes_sent_to_clients_total(),

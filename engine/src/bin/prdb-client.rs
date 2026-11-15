@@ -2991,6 +2991,17 @@ fn runtime_list(
         }
         print!("{bucket}");
     }
+    print!("],\"invocation_redb_write_acquisition_buckets\":[");
+    for (index, bucket) in page
+        .invocation_redb_write_acquisition_buckets
+        .iter()
+        .enumerate()
+    {
+        if index != 0 {
+            print!(",");
+        }
+        print!("{bucket}");
+    }
     print!(
         "],\"outcome_maintenance_passes_total\":{},\"outcome_maintenance_failures_total\":{},\"outcomes_pruned_total\":{},\"fence_waits\":[",
         page.outcome_maintenance_passes_total,
