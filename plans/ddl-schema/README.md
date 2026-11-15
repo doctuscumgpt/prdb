@@ -29,6 +29,7 @@ Fix bounded DDL text/structured schemas, normalized identifier limits, scalar wi
 | DS-SQL-53 | Administrators can express common finite-set checks in SQL | Add typed-literal column `IN` and `NOT IN` predicates to CREATE TABLE and ALTER CHECK parsing, cap lists at 64 values within the EIR1 evaluation budget, bind literals to the column type, and preserve SQL UNKNOWN semantics through the existing Boolean evaluator |
 | DS-SQL-54 | Administrators can declare inclusive scalar ranges in SQL constraints | Add column `BETWEEN` and `NOT BETWEEN` over typed literals to CREATE TABLE and ALTER CHECK parsing, lower to inclusive comparisons using existing EIR1 nodes, and preserve NULL/UNKNOWN behavior |
 | DS-SQL-55 | Administrators can express null-safe equality checks | Add `IS [NOT] DISTINCT FROM` against one typed literal in CREATE TABLE and ALTER CHECK parsing; lower to bounded EIR1 null checks/comparisons without changing protocol encoding |
+| DS-SQL-56 | Administrators can test Boolean values including SQL UNKNOWN in CHECK and policy SQL | Accept `IS [NOT] TRUE`, `FALSE`, and `UNKNOWN` only on BOOLEAN columns; lower the two-valued tests to existing EIR1 null, equality, AND, and NOT nodes |
 
 ## Acceptance and Handoff
 

@@ -978,3 +978,6 @@
 
 - `AdminClient::list_runtime_invocations_page` now requests runtime-list version 7 and strictly decodes the storage `invocation_redb_write_acquisition_buckets` array; `prdb-client runtime-list` includes the field in its JSON page.
 - The authenticated TCP regression checks version 7, array decoding, and all six returned values. The full serial delegated-cgroup workspace suite passes with sandbox/process tests enabled and zero ignored tests; workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. See [operational metadata progress](../operational-metadata/PROGRESS.md).
+# DS-SQL-56: Boolean truth tests in SQL expression binding — verified
+
+- The bounded CREATE TABLE, ALTER CHECK, and policy expression binder accepts Boolean-column `IS [NOT] TRUE`, `FALSE`, and `UNKNOWN`, with EIR1 lowering and no wire-format change. The focused regression and full serial delegated-cgroup workspace suite pass with sandbox/process coverage and zero ignored tests; workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.

@@ -899,3 +899,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - CHECK SQL now accepts `column IS DISTINCT FROM literal` and `column IS NOT DISTINCT FROM literal`, including NULL. Binding lowers NULL comparisons to `IS NULL` forms and non-NULL comparisons to `IS NULL OR <>`; the negative form negates that complete Boolean result, preserving two-valued null-safe semantics using existing EIR1 nodes.
 - Regression coverage checks text and NULL binding and rejects missing or non-literal operands. The focused parser/binder test passes. Workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup suite pass with sandbox/process coverage and zero ignored tests (286 library tests and 177 commit tests). Cargo.lock is unchanged.
+
+## DS-SQL-56: Boolean truth tests in CHECK and policy SQL — verified
+
+- Contract: boolean columns accept `IS [NOT] TRUE`, `FALSE`, and `UNKNOWN` in CREATE TABLE CHECK, ALTER CHECK, and policy expression SQL. Binding rejects non-BOOLEAN columns. SQL truth tests always return Boolean: TRUE/FALSE tests return false for NULL, UNKNOWN tests match NULL, and NOT forms negate those results.
+- Red/green: the new parser regression failed before implementation on `active IS TRUE`; it now checks all six forms, exact EIR lowering, non-Boolean rejection, and malformed forms. Implementation uses existing EIR1 null checks, equality, AND, and NOT nodes without changing protocol or storage formats.
+- Verification: the focused parser/binder regression and complete serial delegated-cgroup workspace suite pass (289 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored). Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` pass. Cargo.lock is unchanged.

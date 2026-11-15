@@ -552,3 +552,6 @@
 
 - `admin-sql` accepts `ADD CONSTRAINT name` before PRIMARY KEY, UNIQUE, and FOREIGN KEY clauses, resolves relation/column/target metadata, and submits named typed operations. Name-based DROP uses the existing authenticated constraint resolver. The production process lifecycle covers create, metadata readback, and drop for each kind.
 - The full serial delegated-cgroup workspace suite passes with zero ignored, including named ALTER create/read/drop across gateway and supervisor processes; see [schema DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+# DS-SQL-56: Boolean truth tests in administrative SQL — verified
+
+- Documented `IS [NOT] TRUE`, `FALSE`, and `UNKNOWN` for bounded CHECK and policy expressions. Client binding accepts only BOOLEAN columns and lowers to the existing EIR1 expression form. The focused regression and full serial delegated-cgroup workspace suite pass with sandbox/process coverage and zero ignored tests; workspace build, format, warning-denied Clippy, and `git diff --check` pass. See [schema DDL progress](../ddl-schema/PROGRESS.md); Cargo.lock is unchanged.

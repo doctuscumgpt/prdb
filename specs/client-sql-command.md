@@ -25,6 +25,8 @@ prdb-client run-sql --address IP:PORT --credentials FILE \
 
 ## Administrative DDL Input
 
+CHECK and policy expression SQL accepts boolean-column tests `column IS [NOT] TRUE`, `FALSE`, or `UNKNOWN`. Binding requires BOOLEAN metadata and lowers tests to the existing EIR1 representation. `IS TRUE`/`IS FALSE` produce false for NULL; `IS UNKNOWN` matches NULL. Unsupported truth-test names, non-column operands, and non-BOOLEAN columns are rejected before submission.
+
 `CREATE TABLE` name binding exposes a schema name to an effective schema-scoped `CREATE` grantee without schema `USAGE`; this metadata read does not expose the schema's existing relations or columns. The table is still created through the typed control operation, which rechecks current authority.
 
 `prdb-client constraint-list --address IP:PORT --credentials ADMIN_FILE --schema-id HEX --table-id HEX` returns all authenticated constraint metadata for the table as one JSON array. It follows the bounded metadata pages of 128 records on one authenticated control connection, so continuation tokens remain connection-local and are not exposed as CLI cursors. Each record exposes the catalog object `name`, stable `constraint_id`, constraint `kind`, ordered `column_ids`, and (for discoverable foreign keys) the referenced table and ordered column IDs. CHECK expressions and hidden target details are omitted. Generated IDs remain supported with `ALTER TABLE schema.table DROP CONSTRAINT 'generated-id'`; any explicitly named PRIMARY KEY, UNIQUE, CHECK, or FOREIGN KEY constraint can be dropped by name.
