@@ -492,14 +492,29 @@ fn admin_sql(
             result.commit_sequence,
         );
     } else if drop_schema_statement.is_some() {
-        let result = client
-            .execute_drop_schema_sql(sql)
-            .map_err(|error| error.to_string())?;
-        println!(
-            "dropped schema (operation {}, commit {})",
-            lower_hex(&result.operation_id),
-            result.commit_sequence
-        );
+        let statement = drop_schema_statement.expect("checked above");
+        if statement.if_exists {
+            match client
+                .execute_drop_schema_if_exists_sql(sql)
+                .map_err(|error| error.to_string())?
+            {
+                Some(result) => println!(
+                    "dropped schema (operation {}, commit {})",
+                    lower_hex(&result.operation_id),
+                    result.commit_sequence
+                ),
+                None => println!("schema did not exist"),
+            }
+        } else {
+            let result = client
+                .execute_drop_schema_sql(sql)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "dropped schema (operation {}, commit {})",
+                lower_hex(&result.operation_id),
+                result.commit_sequence
+            );
+        }
     } else if rename_table_statement.is_some() {
         let result = client
             .execute_rename_table_sql(sql)

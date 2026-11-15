@@ -3971,10 +3971,34 @@ impl AdminClient {
         &mut self,
         sql: &str,
     ) -> Result<AdminOperationResult, ClientSubmitError> {
-        let schema_name = crate::ddl_sql::parse_drop_schema(sql)
+        let statement = crate::ddl_sql::parse_drop_schema(sql)
             .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
-        let schema_id = self.resolve_schema_sql_name(&schema_name)?;
+        if statement.if_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let schema_id = self.resolve_schema_sql_name(&statement.schema)?;
         self.drop_schema(schema_id)
+    }
+
+    /// Execute `DROP SCHEMA IF EXISTS`. An unresolved schema is suppressed only
+    /// after the server confirms database-administrator authority.
+    pub fn execute_drop_schema_if_exists_sql(
+        &mut self,
+        sql: &str,
+    ) -> Result<Option<AdminOperationResult>, ClientSubmitError> {
+        let statement = crate::ddl_sql::parse_drop_schema(sql)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if !statement.if_exists {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        match self.resolve_schema_sql_name(&statement.schema) {
+            Ok(schema_id) => self.drop_schema(schema_id).map(Some),
+            Err(ClientSubmitError::InvalidAdministrativeRequest) => {
+                self.list_runtime_invocations_page(1, None)?;
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Add a PRIMARY KEY or UNIQUE constraint using qualified SQL names and

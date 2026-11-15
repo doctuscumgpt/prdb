@@ -416,3 +416,8 @@
 
 - `admin-sql` now accepts the qualified conditional drop form and reports when an authorized no-op finds no target. Present tables follow the existing typed RESTRICT drop flow. The DDL process regression covers administrator and non-administrator behavior.
 - The focused gateway/supervisor process test passed with administrator and non-administrator cases. Workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, delegated cgroup probe, and the full serial delegated-cgroup workspace suite passed; see [DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+## `DROP SCHEMA IF EXISTS` administrative SQL — verified
+
+- `admin-sql` now accepts the qualified conditional schema-drop form and reports when an authorized no-op finds no target. Present schemas retain the existing typed RESTRICT path. The DDL process regression covers administrator and non-administrator behavior.
+- The focused delegated process regression, workspace build, format, warning-denied Clippy, and full serial delegated-cgroup workspace suite passed; see [DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

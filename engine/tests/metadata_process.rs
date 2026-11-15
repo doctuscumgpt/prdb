@@ -4155,6 +4155,13 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
         String::from_utf8_lossy(&absent_drop.stderr)
     );
     assert!(String::from_utf8_lossy(&absent_drop.stdout).contains("table did not exist"));
+    let absent_schema_drop = execute_admin_sql("DROP SCHEMA IF EXISTS absent_schema RESTRICT;")?;
+    assert!(
+        absent_schema_drop.status.success(),
+        "administrator DROP SCHEMA IF EXISTS failed: {}",
+        String::from_utf8_lossy(&absent_schema_drop.stderr)
+    );
+    assert!(String::from_utf8_lossy(&absent_schema_drop.stdout).contains("schema did not exist"));
     let drop_probe_user = admin.create_user("drop_probe_user")?;
     let token_expiry_us = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?
         .saturating_add(3_600_000_000);
@@ -4176,6 +4183,12 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
             )
             .is_err(),
         "non-administrator must not suppress an absent-table result"
+    );
+    assert!(
+        drop_probe_admin
+            .execute_drop_schema_if_exists_sql("DROP SCHEMA IF EXISTS absent_schema RESTRICT")
+            .is_err(),
+        "non-administrator must not suppress an absent-schema result"
     );
     let cli_output = execute_admin_sql(
         "CREATE TABLE selfref_app.nodes (tenant_id INTEGER, id INTEGER, parent_tenant_id INTEGER, parent_id INTEGER, PRIMARY KEY (tenant_id, id), FOREIGN KEY (parent_tenant_id, parent_id) REFERENCES selfref_app.nodes (tenant_id, id));",

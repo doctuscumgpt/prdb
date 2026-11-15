@@ -879,3 +879,7 @@
 
 - Added `execute_drop_table_if_exists_sql`; resolved tables use the existing typed drop path, while unresolved schema/table names are suppressed only after an authenticated administrator-only runtime metadata check. Other failures propagate.
 - Parser and gateway/supervisor process coverage include the administrator no-op and non-administrator denial. Workspace build, format, warning-denied Clippy, TinyCC SDK tests/fixture, delegated cgroup probe, and full serial delegated-cgroup suite passed; see [DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.
+
+## AdminClient conditional schema-drop SQL — verified
+
+- Added `execute_drop_schema_if_exists_sql`; resolved schemas follow the existing typed drop path, and absence is suppressed only after an authenticated database-administrator check. The focused parser and delegated process regressions, workspace build, format, warning-denied Clippy, and full serial delegated-cgroup workspace suite passed; see [DDL progress](../ddl-schema/PROGRESS.md). Cargo.lock is unchanged.

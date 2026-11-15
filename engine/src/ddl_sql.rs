@@ -71,6 +71,12 @@ pub struct DropTableSql {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DropSchemaSql {
+    pub schema: String,
+    pub if_exists: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnerTransferSql {
     pub schema: String,
     pub table: Option<String>,
@@ -1060,14 +1066,21 @@ pub fn parse_schema_owner_transfer(sql: &str) -> Result<OwnerTransferSql, DdlSql
     })
 }
 
-pub fn parse_drop_schema(sql: &str) -> Result<String, DdlSqlError> {
+pub fn parse_drop_schema(sql: &str) -> Result<DropSchemaSql, DdlSqlError> {
     let mut parser = statement_parser(sql)?;
     parser.word("drop")?;
     parser.word("schema")?;
+    let if_exists = if parser.peek_word("if") {
+        parser.word("if")?;
+        parser.word("exists")?;
+        true
+    } else {
+        false
+    };
     let schema = parser.identifier()?;
     parser.word("restrict")?;
     finish_statement(&mut parser)?;
-    Ok(schema)
+    Ok(DropSchemaSql { schema, if_exists })
 }
 
 pub fn parse_rename_table(sql: &str) -> Result<RenameTableSql, DdlSqlError> {
@@ -2661,13 +2674,25 @@ mod tests {
         );
         assert_eq!(
             parse_drop_schema("DROP SCHEMA app RESTRICT").unwrap(),
-            "app"
+            DropSchemaSql {
+                schema: "app".into(),
+                if_exists: false,
+            }
+        );
+        assert_eq!(
+            parse_drop_schema("DROP SCHEMA IF EXISTS app RESTRICT;").unwrap(),
+            DropSchemaSql {
+                schema: "app".into(),
+                if_exists: true,
+            }
         );
         for sql in [
             "ALTER SCHEMA app RENAME application",
             "ALTER SCHEMA app RENAME TO \"Mixed\"",
             "DROP SCHEMA app",
             "DROP SCHEMA app CASCADE",
+            "DROP SCHEMA IF app RESTRICT",
+            "DROP SCHEMA IF NOT EXISTS app RESTRICT",
             "DROP SCHEMA app RESTRICT; DROP SCHEMA b RESTRICT",
         ] {
             assert!(
