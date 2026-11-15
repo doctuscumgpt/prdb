@@ -413,3 +413,9 @@
 - Each queued START ticket records its monotonic queue-entry time. The administrator runtime summary reports the age of the oldest currently queued ticket, or zero when none are queued; the sample carries no submission or principal identifiers and does not alter scheduling.
 - The deterministic staging test and typed client TCP paging regression passed. The real gateway/supervisor lifecycle verified that `prdb-client runtime-list` returns the new field for an empty queue.
 - Workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, delegated cgroup probe, and full serial delegated-cgroup workspace tests passed with sandbox/process tests enabled and zero ignored tests.
+
+## OM-2 relayed result payload byte counter — implemented slice
+
+- The supervisor's result-channel write path increments a saturating process-local counter after successfully writing each `GatewayResultData` payload. It excludes frame headers and does not claim external client delivery.
+- A focused IPC regression verifies the payload-byte delta and counter saturation. Runtime-list version 5 exposes the aggregate only to database administrators.
+- The full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled. Workspace format, build, warning-denied all-target Clippy, TinyCC SDK tests/fixture, cgroup preflight, and `git diff --check` passed.

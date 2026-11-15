@@ -864,3 +864,8 @@
 - Each queued START ticket records its monotonic queue-entry time. The identifier-free runtime summary reports the age of the oldest queued ticket, or zero for an empty queue; it does not affect scheduling.
 - The field is exposed only in runtime-list protocol version 4 and decoded by the typed administrator client and CLI JSON projection.
 - Focused staging-summary and client TCP paging tests passed. The delegated gateway/supervisor lifecycle also passed and verified the CLI output for an empty queue. Workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+
+## Admin runtime relayed result bytes — implemented slice
+
+- `AdminClient::list_runtime_invocations_page` requests runtime-list version 5 and decodes the supervisor's process-local result-payload byte counter. `prdb-client runtime-list` emits the same counter in JSON.
+- Focused typed client and production gateway/supervisor CLI checks passed. The full serial delegated-cgroup workspace suite also passed with sandbox/process tests enabled; workspace format, build, warning-denied all-target Clippy, TinyCC SDK tests/fixture, and `git diff --check` passed.

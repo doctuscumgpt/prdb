@@ -1446,7 +1446,7 @@ pub fn decode_client_admin_command(
             Ok(ClientAdminCommand::ListAuditEvents { page_limit, cursor })
         }
         Some("read")
-            if matches!(version, Some(1..=4))
+            if matches!(version, Some(1..=5))
                 && operation.as_deref() == Some("runtime.invocations.list") =>
         {
             if operation_id.is_some() || seen.len() != 4 {
@@ -4804,6 +4804,12 @@ impl ClientConnectionSession {
                         truncated: page.fence_waits_truncated,
                     },
                 );
+                if response_version >= 5 {
+                    payload.push_str(",\"gateway_result_bytes_relayed_total\":");
+                    payload.push_str(
+                        &crate::supervisor_ipc::gateway_result_bytes_relayed_total().to_string(),
+                    );
+                }
                 if response_version >= 3 {
                     let usage = staging
                         .map(crate::supervisor::StagingStore::runtime_usage_summary)

@@ -421,6 +421,7 @@ pub struct RuntimeInvocationPage {
     pub outcomes_pruned_total: u64,
     pub fence_waits: Vec<RuntimeFenceWait>,
     pub fence_waits_truncated: bool,
+    pub gateway_result_bytes_relayed_total: u64,
     pub supervisor_queue: crate::supervisor::StagingRuntimeUsage,
     pub next_cursor: Option<String>,
 }
@@ -1306,11 +1307,11 @@ impl AdminClient {
             arguments.push('"');
         }
         let payload = format!(
-            "{{\"phase\":\"read\",\"operation_version\":4,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
+            "{{\"phase\":\"read\",\"operation_version\":5,\"operation\":\"runtime.invocations.list\",\"arguments\":{{{arguments}}}}}"
         );
         let response = self.transport.exchange(10, payload.into_bytes())?;
         let mut fields = parse_flat_response(&response.payload)?;
-        if fields.len() != 19 {
+        if fields.len() != 20 {
             return Err(ClientSubmitError::InvalidResponse);
         }
         let observed_at_us = response_u64(&mut fields, "observed_at_us")?
@@ -1461,6 +1462,9 @@ impl AdminClient {
                 .ok_or(ClientSubmitError::InvalidResponse)?;
         let outcomes_pruned_total = response_u64(&mut fields, "outcomes_pruned_total")?
             .ok_or(ClientSubmitError::InvalidResponse)?;
+        let gateway_result_bytes_relayed_total =
+            response_u64(&mut fields, "gateway_result_bytes_relayed_total")?
+                .ok_or(ClientSubmitError::InvalidResponse)?;
         let mut supervisor_queue = match fields.remove("supervisor_queue") {
             Some(ResponseValue::Object(fields)) if fields.len() == 7 => fields,
             _ => return Err(ClientSubmitError::InvalidResponse),
@@ -1584,6 +1588,7 @@ impl AdminClient {
             outcomes_pruned_total,
             fence_waits: decoded_waits,
             fence_waits_truncated,
+            gateway_result_bytes_relayed_total,
             supervisor_queue,
             next_cursor,
         })

@@ -277,3 +277,10 @@
 - Implementation: each bounded queue ticket records its monotonic insertion instant; the runtime aggregate computes the maximum elapsed duration and publishes it through the versioned admin protocol, typed client, and `runtime-list` JSON.
 - Verification: the deterministic staging-summary test checks the oldest of two queued tickets; protocol decoder and client TCP paging tests pass; the gateway/supervisor lifecycle verifies the version-four CLI field is zero for an empty queue. Workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, delegated cgroup probe, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed; Cargo.lock is unchanged.
 - Limit: queue age covers only tickets waiting for START eligibility. It does not provide per-invocation timing or a service latency guarantee.
+
+## OM-2 supervisor result payload byte counter — implemented slice
+
+- Contract: administrator runtime-list version 5 reports a process-local, saturating total of result payload bytes successfully written by the supervisor to gateway result channels. It excludes frame overhead and does not assert client receipt or persistence.
+- Implementation: the supervisor result relay increments one atomic counter only after a complete result frame is written. The authorized runtime response, typed client, and CLI expose the counter; earlier runtime response versions retain their shapes.
+- Regression: supervisor IPC tests check successful payload accounting and saturation; client protocol/TCP paging and real gateway/supervisor CLI tests cover version 5 and field decoding.
+- Verification: focused supervisor, protocol, TCP, and process checks passed. Workspace format, build, warning-denied all-target Clippy, maintained TinyCC SDK tests and sandbox fixture, delegated cgroup probe, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled. `git diff --check` passed; Cargo.lock is unchanged.

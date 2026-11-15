@@ -297,3 +297,9 @@
 
 - Version 4 extends the identifier-free supervisor queue aggregate with `oldest_queued_start_wait_us`; prior versions retain their existing response shape.
 - The request decoder accepts version 4 and the typed client uses it. Protocol decoder, typed TCP paging, and the real gateway/supervisor administrative lifecycle passed, including CLI JSON verification for an empty queue. Workspace build, format, warning-denied Clippy, maintained TinyCC tests/fixture, and full serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests.
+
+## Runtime-list version 5 supervisor result bytes — implemented slice
+
+- Version 5 adds an administrator-only process-local total of result payload bytes successfully written from supervisor to gateway channels; prior operation versions preserve their response shapes.
+- The request decoder accepts version 5, while the typed client requires and decodes the new field. Focused decoder, TCP client, and gateway/supervisor process checks passed.
+- Full serial delegated-cgroup workspace validation passed with sandbox/process tests enabled. Workspace format, build, warning-denied all-target Clippy, TinyCC SDK tests/fixture, and `git diff --check` passed.

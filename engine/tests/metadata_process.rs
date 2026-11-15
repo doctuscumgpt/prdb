@@ -4856,6 +4856,7 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         assert!(runtime_output.contains("\"age_us\":"));
         assert!(runtime_output.contains("\"fence_waits\":[]"));
         assert!(runtime_output.contains("\"fence_waits_truncated\":false"));
+        assert!(runtime_output.contains("\"gateway_result_bytes_relayed_total\":"));
         assert!(runtime_output.contains("\"pending_submissions\":0"));
         assert!(runtime_output.contains("\"starting_submissions\":0"));
         assert!(runtime_output.contains("\"started_submissions\":1"));

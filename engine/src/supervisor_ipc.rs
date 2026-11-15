@@ -26,7 +26,7 @@ use crate::transaction::{InvocationTransaction, TransactionError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use zeroize::Zeroize;
 
@@ -34,6 +34,30 @@ use zeroize::Zeroize;
 use std::os::unix::net::{UnixListener, UnixStream};
 
 pub const MAX_SUPERVISOR_REQUESTS_PER_CONNECTION: usize = 16;
+
+static GATEWAY_RESULT_BYTES_RELAYED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Payload bytes written from the supervisor to gateway result channels since
+/// this process started. Frame headers and failed writes are excluded.
+pub fn gateway_result_bytes_relayed_total() -> u64 {
+    GATEWAY_RESULT_BYTES_RELAYED_TOTAL.load(Ordering::Relaxed)
+}
+
+fn record_gateway_result_bytes(bytes: usize) {
+    let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+    saturating_add_counter(&GATEWAY_RESULT_BYTES_RELAYED_TOTAL, bytes);
+}
+
+fn saturating_add_counter(counter: &AtomicU64, amount: u64) {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_add(amount);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum SupervisorRequestError {
@@ -230,6 +254,7 @@ pub fn send_gateway_result_data_event<W: Write>(
     if payload.len() > crate::client_protocol::CLIENT_MAX_PAYLOAD_BYTES {
         return Err(crate::ipc::FrameError::PayloadTooLarge);
     }
+    let payload_bytes = payload.len();
     crate::ipc::write_frame(
         stream,
         &IpcFrame {
@@ -237,7 +262,9 @@ pub fn send_gateway_result_data_event<W: Write>(
             request_id: start_request_id,
             payload,
         },
-    )
+    )?;
+    record_gateway_result_bytes(payload_bytes);
+    Ok(())
 }
 
 /// Commit or abort through storage's terminal authority, then emit TERMINAL
@@ -892,7 +919,9 @@ fn write_gateway_result_data_event(
         payload: payload.to_vec(),
     };
     crate::ipc::write_frame(service, &frame)
-        .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()))
+        .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()))?;
+    record_gateway_result_bytes(payload.len());
+    Ok(())
 }
 
 /// Route one client operation over a provisioned gateway IPC connection.
@@ -1932,7 +1961,10 @@ fn abort_invocation(
 
 #[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
 mod worker_result_event_tests {
-    use super::{finish_started_after_callback, write_gateway_result_data_event};
+    use super::{
+        finish_started_after_callback, gateway_result_bytes_relayed_total, saturating_add_counter,
+        write_gateway_result_data_event,
+    };
     use crate::ipc::{IpcFrame, Operation, read_frame};
     use std::io::Cursor;
     use std::sync::Arc;
@@ -2094,8 +2126,10 @@ mod worker_result_event_tests {
 
     #[test]
     fn result_relay_emits_only_correlated_gateway_data_events() {
+        let before = gateway_result_bytes_relayed_total();
         let mut encoded = Cursor::new(Vec::new());
         write_gateway_result_data_event(&mut encoded, 17, b"provisional").unwrap();
+        assert!(gateway_result_bytes_relayed_total() >= before.saturating_add(11));
         encoded.set_position(0);
         assert_eq!(
             read_frame(&mut encoded).unwrap(),
@@ -2106,6 +2140,17 @@ mod worker_result_event_tests {
             })
         );
         assert_eq!(read_frame(&mut encoded).unwrap(), None);
+    }
+
+    #[test]
+    fn gateway_result_byte_counter_saturates() {
+        let counter = std::sync::atomic::AtomicU64::new(u64::MAX - 2);
+        saturating_add_counter(&counter, 1);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX - 1);
+        saturating_add_counter(&counter, 4);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+        saturating_add_counter(&counter, 1);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
     }
 
     struct AcceptMetadata;
