@@ -1123,3 +1123,8 @@
 
 - Generalized the authenticated storage lookup to accept a schema or table object ID and check the matching ownership/schema/table ALTER authority before resolving one destination identity.
 - Verified through the real delegated schema owner-transfer SQL path and workspace build/format/Clippy checks; `git diff --check` passes and Cargo.lock is unchanged.
+
+## OM-7 maximum audit-page pressure — verified
+
+- Extended the storage monitoring pressure regression to repeatedly decode/copy the maximum 128-event audit page from a 129-event history while a separate invocation commits and a live invocation is cancelled and confirmed ABORTED.
+- The focused delegated-cgroup commit test, workspace build, formatting check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

@@ -303,3 +303,8 @@
 
 - Added focused status coverage for an unconfigured sink, a configured sink with one pending event and its oldest age, and the same event after durable delivery. The test verifies the status projection follows stored sink identity and delivery markers without exposing event contents.
 - The targeted real-redb audit-sink test passed; `Cargo.lock` is unchanged. Offline instance locking and malformed marker validation remain implemented in the status path.
+
+## OM-7 maximum audit-page pressure — verified
+
+- Strengthened `denied_monitoring_pressure_does_not_starve_commit_or_cancellation` to issue the full 128-event administrator audit page on each pressure iteration while durable commit and managed cancellation proceed. The fixture seeds 129 audit events and asserts exactly 128 records plus a continuation, exercising the page bound under sustained monitoring load.
+- The focused delegated-cgroup regression, workspace build, formatting check, warning-denied all-target Clippy, and `git diff --check` pass; Cargo.lock is unchanged.

@@ -14348,6 +14348,18 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
     let mut setup_audit = audit_event(230);
     setup_audit.actor_id = Some(admin_role);
     storage.commit_catalog_and_audit(id(230), admin_role, 9_999, &admin_records, &[setup_audit])?;
+    let audit_history = (1..=129)
+        .map(|event_number| AuditEvent {
+            event_id: [event_number; 16],
+            actor_id: Some(admin_id),
+            correlation_id: [event_number + 1; 16],
+            occurred_at_us: 1_700_000_000_000_000,
+            action: AuditAction::Ddl,
+            result: AuditResult::Succeeded,
+            target_ids: vec![[0xfe; 16]],
+        })
+        .collect::<Vec<_>>();
+    storage.commit_catalog_and_audit(id(231), admin_id, 9_999, &[], &audit_history)?;
     let now_us = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_micros() as i64;
@@ -14426,9 +14438,18 @@ fn denied_monitoring_pressure_does_not_starve_commit_or_cancellation()
                     .list_runtime_invocations(admin_id, now_us, 1, None)
                     .expect("authorized runtime page remains available under pressure");
                 admin_runtime_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                pressure_storage
-                    .list_audit_events(admin_id, 1, None)
+                let audit_page = pressure_storage
+                    .list_audit_events(
+                        admin_id,
+                        prdb_engine::storage_manager::MAX_ADMIN_AUDIT_PAGE,
+                        None,
+                    )
                     .expect("authorized audit page remains available under pressure");
+                assert_eq!(
+                    audit_page.events.len(),
+                    prdb_engine::storage_manager::MAX_ADMIN_AUDIT_PAGE
+                );
+                assert!(audit_page.continuation.is_some());
                 admin_audit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if !signaled_started {
                     started_tx
