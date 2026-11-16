@@ -398,3 +398,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added a deterministic DDL-first schedule to `storage_manager_widens_varchar_atomically_and_keeps_index_current`: a write invocation pins and stages against the 64-character schema, the owner widens the column to 128, and the stale write is rejected with a durable ABORTED outcome and no row publication.
 - Verification: focused regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 library tests, 195 commit tests, 78 transaction tests, plus all other targets). Cargo.lock is unchanged.
+
+## AU-7: forged relation handles reject STAGE UPDATE — verified slice
+
+- Extended the confined direct-IPC fixture to submit a valid-shaped, never-issued relation handle through `STAGE UPDATE`, in addition to `OPEN SCAN` and `STAGE INSERT`. The hostile query bypasses the SDK and must have every operation rejected before any mutation is staged.
+- Verification: TinyCC-compiled the fixture and ran `sandboxed_direct_executor_ipc_rejects_forged_relation_handle` inside the delegated `systemd --user` cgroup service; it passed (1 passed, 0 failed, 0 ignored). `git diff --check` passed.
