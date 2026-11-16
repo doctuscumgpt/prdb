@@ -294,3 +294,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `startup_rejects_missing_bootstrap_descriptor_before_admission`. The regression removes the required family-1 database descriptor directly from a valid image; both persisted-record validation and `StorageManager::new` reject it as `InvalidCatalog`.
 - Verification: focused real-redb startup regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests.
+
+## Plan handoff status — reconciled with implemented upgrade paths
+
+- Updated the plan's acceptance section to reflect the implemented CL-1 through CL-6 behavior documented above, including the supported atomic filename exchange and explicit source retention. Removed stale language that said the publication design still needed pre-implementation reconciliation.
+- Preserved the actual open evidence: power-loss/device-cache durability, archived prior-release binaries/data directories, and broader filesystem fault campaigns. No claim of power-loss acceptance is made.
+- Verification: checked the changed progress link and the statements against the CL-4/CL-5/CL-6 evidence entries; `git diff --check` passed.
