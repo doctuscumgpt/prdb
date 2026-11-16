@@ -1055,3 +1055,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Upgraded the metadata-only widening regression to race the ALTER against a staged write using the old VARCHAR width. Writer-first is ordered before widening; widen-first durably aborts the stale write. The test checks durable outcomes, row presence, retained old column parameters, stable tuple/index schema versions and keys, and the final table epoch.
 - Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
 - Remaining: additional ALTER combinations remain open.
+
+## DS-5 / DS-7: ADD COLUMN racing a staged writer — verified slice
+
+- Upgraded the ADD COLUMN backfill regression to race publication against an insert staged from the old schema. If the insert commits first, ADD COLUMN backfills its new field from the immutable default; if DDL wins, the stale insert durably aborts. The test also verifies pinned pre-DDL readers, retained post-DDL rows, index membership, and durable outcomes.
+- Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
+- Remaining: additional ALTER combinations remain open.

@@ -6427,21 +6427,40 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
     let add_invocation = id(0x68);
     let mut add_audit = identity_audit_event(0x69, actor, id(0x6a));
     add_audit.correlation_id = add_invocation;
-    let added_result = storage.add_table_column(AddTableColumnRequest {
-        invocation_id: add_invocation,
-        authenticated_actor_id: actor,
-        table_id: table.table_id,
-        column: TableColumnDefinition {
-            name: "label".to_owned(),
-            scalar_type: ScalarType::Text,
-            nullable: false,
-            generated_uuid_identity: false,
-            default: Some(TableColumnDefault::Literal(Some(ScalarValue::Text(
-                "ready".to_owned(),
-            )))),
-        },
-        retention_deadline_us: 9_999,
-        audit_event: add_audit,
+    let add_table_id = table.table_id;
+    let add_barrier = Arc::new(Barrier::new(3));
+    let storage_ref = &storage;
+    let (stale_write_result, added_result) = std::thread::scope(|scope| {
+        let writer_barrier = Arc::clone(&add_barrier);
+        let writer = scope.spawn(move || {
+            writer_barrier.wait();
+            stale_writer.commit()
+        });
+        let ddl_barrier = Arc::clone(&add_barrier);
+        let ddl = scope.spawn(move || {
+            ddl_barrier.wait();
+            storage_ref.add_table_column(AddTableColumnRequest {
+                invocation_id: add_invocation,
+                authenticated_actor_id: actor,
+                table_id: add_table_id,
+                column: TableColumnDefinition {
+                    name: "label".to_owned(),
+                    scalar_type: ScalarType::Text,
+                    nullable: false,
+                    generated_uuid_identity: false,
+                    default: Some(TableColumnDefault::Literal(Some(ScalarValue::Text(
+                        "ready".to_owned(),
+                    )))),
+                },
+                retention_deadline_us: 9_999,
+                audit_event: add_audit,
+            })
+        });
+        add_barrier.wait();
+        (
+            writer.join().expect("ADD COLUMN writer panicked"),
+            ddl.join().expect("ADD COLUMN DDL panicked"),
+        )
     });
     assert!(
         added_result.is_ok(),
@@ -6449,6 +6468,39 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
     );
     let added = added_result?;
     assert_eq!(added.schema_version, 2);
+    let added_schema_columns = [
+        prdb_engine::tuple::ColumnSchema {
+            scalar_type: ScalarType::Integer,
+            nullable: false,
+        },
+        prdb_engine::tuple::ColumnSchema {
+            scalar_type: ScalarType::Text,
+            nullable: false,
+        },
+    ];
+    let stale_write_sequence = match stale_write_result {
+        Ok(sequence) => Some(sequence),
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => None,
+        Err(error) => return Err(Box::new(error)),
+    };
+    if let Some(sequence) = stale_write_sequence {
+        assert!(sequence < added.commit_sequence);
+    }
+    assert_eq!(
+        lookup_outcome(&database, stale_writer_invocation, actor, 1)?
+            .ok_or("missing staged ADD COLUMN writer outcome")?
+            .status,
+        if stale_write_sequence.is_some() {
+            OutcomeStatus::Committed
+        } else {
+            OutcomeStatus::Aborted
+        }
+    );
+    assert_eq!(
+        row(&database, &table_row_key(table.table_id, stale_row_id.row))?.is_some(),
+        stale_write_sequence.is_some()
+    );
+    assert_eq!(commit_sequence(&database)?, added.commit_sequence);
     let retained_default_snapshot = database.begin_read()?;
     for generation in 0..64u8 {
         let churn_invocation = id(0x80 + generation);
@@ -6509,23 +6561,24 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
             Some(ScalarValue::Text("ready".to_owned())),
         ]
     );
-    let stale_result = stale_writer.commit();
-    assert!(
-        matches!(
-            stale_result,
-            Err(prdb_engine::transaction::TransactionError::Commit(
-                CommitError::Conflict
-            ))
-        ),
-        "stale writer returned {stale_result:?}"
-    );
-    assert!(row(&database, &table_row_key(table.table_id, stale_row_id.row))?.is_none());
-    assert_eq!(
-        lookup_outcome(&database, stale_writer_invocation, actor, 1)?
-            .ok_or("missing stale writer outcome")?
-            .status,
-        OutcomeStatus::Aborted
-    );
+    if stale_write_sequence.is_some() {
+        let row_after_add = row(&database, &table_row_key(table.table_id, stale_row_id.row))?
+            .ok_or("ADD COLUMN race lost the writer-first row")?;
+        let tuple = prdb_engine::tuple::decode_tuple(
+            &added_schema_columns,
+            added.schema_version,
+            &row_after_add.payload,
+        )?;
+        assert_eq!(
+            tuple.values,
+            [
+                Some(ScalarValue::Integer(99)),
+                Some(ScalarValue::Text("ready".to_owned()))
+            ]
+        );
+    } else {
+        assert!(row(&database, &table_row_key(table.table_id, stale_row_id.row))?.is_none());
+    }
     let stored = row(&database, &table_row_key(table.table_id, row_id.row))?
         .ok_or("backfilled row is missing")?;
     let tuple = prdb_engine::tuple::decode_tuple(
@@ -6550,16 +6603,6 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
         ]
     );
     let added_schema_ids = [table.column_ids[0], added.column_id];
-    let added_schema_columns = [
-        prdb_engine::tuple::ColumnSchema {
-            scalar_type: ScalarType::Integer,
-            nullable: false,
-        },
-        prdb_engine::tuple::ColumnSchema {
-            scalar_type: ScalarType::Text,
-            nullable: false,
-        },
-    ];
     let indexed_key = prdb_engine::index_key::derive_index_key(
         index_id,
         row_id.row,
