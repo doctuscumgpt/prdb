@@ -300,3 +300,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `token_authenticated_catalog_scans_redact_cells_per_principal` to confirm the authenticated database administrator owns the created table, has no data grant in the fixture, and still receives no row from either direct catalog-authorized lookup or scan. Both read-only invocations complete normally with committed outcomes and expose no row payload.
 - Verification: focused real-redb regression passed. Formatting, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process integration tests enabled and zero ignored tests.
+
+## AU-7 / MD-5: same-principal cross-invocation row-handle replay rejected — verified slice
+
+- Extended `catalog_authorized_scan_builds_its_projection_from_pinned_records` to replay a valid row handle through a second invocation using the same principal. Both `STAGE DELETE` and `STAGE UPDATE` reject it as `InvalidMetadataRequest`; persisted row bytes remain unchanged. This complements the existing cross-principal replay checks.
+- Verification: focused real-redb IPC regression, formatting, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process integration tests enabled and zero ignored tests.

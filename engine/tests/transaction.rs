@@ -3904,6 +3904,55 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
     ));
     drop(replay_connection);
     replay_invocation.abort()?;
+
+    let mut same_principal_replay_invocation =
+        InvocationTransaction::begin(&database, [0xa1; 16], principal_id, 9_999, 1, 64)?;
+    let mut same_principal_replay_connection =
+        same_principal_replay_invocation.open_executor_metadata_connection();
+    let same_principal_row_replay = IpcFrame {
+        operation: IpcOperation::StageDelete as u16,
+        request_id: 75,
+        payload: StageDeleteRequest {
+            handle: first_page.rows[0].handle.clone(),
+        }
+        .encode(),
+    };
+    assert!(matches!(
+        dispatch_executor_request(
+            ServiceRole::Executor,
+            &mut same_principal_replay_connection,
+            &same_principal_row_replay,
+        ),
+        Err(ExecutorRequestError::Transaction(
+            TransactionError::InvalidMetadataRequest
+        ))
+    ));
+    let same_principal_row_update_replay = IpcFrame {
+        operation: IpcOperation::StageUpdate as u16,
+        request_id: 76,
+        payload: StageUpdateRequest {
+            handle: first_page.rows[0].handle.clone(),
+            patches: vec![FieldPatch {
+                ordinal: 0,
+                value: Some(ScalarValue::Bytea(
+                    b"forged cross-invocation update".to_vec(),
+                )),
+            }],
+        }
+        .encode()?,
+    };
+    assert!(matches!(
+        dispatch_executor_request(
+            ServiceRole::Executor,
+            &mut same_principal_replay_connection,
+            &same_principal_row_update_replay,
+        ),
+        Err(ExecutorRequestError::Transaction(
+            TransactionError::InvalidMetadataRequest
+        ))
+    ));
+    drop(same_principal_replay_connection);
+    same_principal_replay_invocation.abort()?;
     assert_eq!(
         database
             .begin_read()?
@@ -3912,7 +3961,7 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
             .expect("forged IPC requests leave the seeded row present")
             .value(),
         replay_target_before,
-        "cross-principal DELETE and UPDATE requests must not change the stored row"
+        "cross-principal and cross-invocation DELETE and UPDATE requests must not change the stored row"
     );
     let next_cursor = first_page
         .continuation

@@ -306,3 +306,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The catalog-authorized scan IPC regression now submits a real row handle from one principal's invocation to `STAGE DELETE` in another principal's invocation. The request fails as `InvalidMetadataRequest`, demonstrating that row capabilities remain scoped across principals at the IPC boundary.
 - Verification: focused real-redb regression and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. Workspace build, format check, and warning-denied all-target Clippy passed.
+
+## MD-5 / AU-7: row handles reject same-principal cross-invocation replay — verified slice
+
+- The executor IPC regression now replays a valid row handle from one invocation through both `STAGE DELETE` and `STAGE UPDATE` in a second invocation for the same principal. Both requests fail with `InvalidMetadataRequest`, and the seeded row bytes are unchanged.
+- Verification: focused real-redb IPC regression, formatting, locked workspace build, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
