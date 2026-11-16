@@ -8094,7 +8094,7 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
 }
 
 #[test]
-fn authorized_integer_unique_probe_matches_reference_without_implicit_coercion()
+fn authorized_composite_integer_varchar_unique_probe_matches_reference()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::authorization::AccessTarget;
 
@@ -8102,11 +8102,66 @@ fn authorized_integer_unique_probe_matches_reference_without_implicit_coercion()
     let database = initialize(&fixture.path())?;
     let table_id = [0x31; 16];
     let column_id = [0x67; 16];
+    let varchar_column_id = [0x68; 16];
     let index_id = [0x57; 16];
     let schema_id = [145; 16];
     let type_id = [0x41; 16];
-    let (index_key, index_value) =
-        index_catalog_record_with_constraint(index_id, table_id, column_id, 1, true, None)?;
+    let varchar_type_id = [0x42; 16];
+    let index_key = catalog_id_key(9, index_id);
+    let mut indexed_columns = 2u32.to_le_bytes().to_vec();
+    indexed_columns.extend_from_slice(&column_id);
+    indexed_columns.extend_from_slice(&varchar_column_id);
+    let index_value = catalog_record_payload(
+        9,
+        &index_key,
+        &[
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::Id,
+                payload: table_id.to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::Ids,
+                payload: indexed_columns,
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::U16,
+                payload: 1u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::Bool,
+                payload: vec![1],
+            },
+            CatalogField {
+                tag: 5,
+                wire_type: WireType::U16,
+                payload: 1u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 7,
+                wire_type: WireType::Id,
+                payload: index_id.to_vec(),
+            },
+            CatalogField {
+                tag: 8,
+                wire_type: WireType::U16,
+                payload: 1u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 9,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 10,
+                wire_type: WireType::U64,
+                payload: 1u64.to_le_bytes().to_vec(),
+            },
+        ],
+    )?;
     let table_key = catalog_id_key(5, table_id);
     let table_value = catalog_record_payload(
         5,
@@ -8186,6 +8241,55 @@ fn authorized_integer_unique_probe_matches_reference_without_implicit_coercion()
             },
         ],
     )?;
+    let varchar_column_key = catalog_id_key(6, varchar_column_id);
+    let mut varchar_parameters = [0; 8];
+    varchar_parameters[4..].copy_from_slice(&64u32.to_le_bytes());
+    let varchar_column_value = catalog_record_payload(
+        6,
+        &varchar_column_key,
+        &[
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::Id,
+                payload: table_id.to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::Text,
+                payload: b"varchar_key".to_vec(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::Id,
+                payload: varchar_type_id.to_vec(),
+            },
+            CatalogField {
+                tag: 5,
+                wire_type: WireType::Bytes,
+                payload: varchar_parameters.to_vec(),
+            },
+            CatalogField {
+                tag: 6,
+                wire_type: WireType::Bool,
+                payload: vec![1],
+            },
+            CatalogField {
+                tag: 8,
+                wire_type: WireType::U16,
+                payload: 0u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 9,
+                wire_type: WireType::U64,
+                payload: 1u64.to_le_bytes().to_vec(),
+            },
+        ],
+    )?;
     let type_key = catalog_id_key(4, type_id);
     let type_value = catalog_record_payload(
         4,
@@ -8223,20 +8327,62 @@ fn authorized_integer_unique_probe_matches_reference_without_implicit_coercion()
             },
         ],
     )?;
+    let varchar_type_key = catalog_id_key(4, varchar_type_id);
+    let varchar_type_value = catalog_record_payload(
+        4,
+        &varchar_type_key,
+        &[
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::U16,
+                payload: 7u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::U16,
+                payload: 2u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 5,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 6,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+        ],
+    )?;
     let (table_object_key, table_object_value) =
         object_catalog_record_with_name(table_id, 3, "integer_probe_table");
     let (column_object_key, column_object_value) =
         object_catalog_record_with_name(column_id, 4, "integer_probe_column");
+    let (varchar_object_key, varchar_object_value) =
+        object_catalog_record_with_name(varchar_column_id, 4, "varchar_probe_column");
     {
         let write = database.begin_write()?;
         let mut catalog = write.open_table(CATALOG)?;
         for (key, value) in [
             (table_key, table_value),
             (column_key, column_value),
+            (varchar_column_key, varchar_column_value),
             (type_key, type_value),
+            (varchar_type_key, varchar_type_value),
             (index_key, index_value),
             (table_object_key, table_object_value),
             (column_object_key, column_object_value),
+            (varchar_object_key, varchar_object_value),
         ] {
             catalog.insert(key.as_slice(), value.as_slice())?;
         }
@@ -8250,12 +8396,18 @@ fn authorized_integer_unique_probe_matches_reference_without_implicit_coercion()
     let target_payload = encode_tuple(
         &schema.columns,
         schema.schema_version,
-        &[Some(ScalarValue::Integer(42))],
+        &[
+            Some(ScalarValue::Integer(42)),
+            Some(ScalarValue::Varchar("match".to_owned())),
+        ],
     )?;
     let other_payload = encode_tuple(
         &schema.columns,
         schema.schema_version,
-        &[Some(ScalarValue::Integer(7))],
+        &[
+            Some(ScalarValue::Integer(7)),
+            Some(ScalarValue::Varchar("other".to_owned())),
+        ],
     )?;
     seed.stage_put(
         prdb_engine::overlay::RowId {
@@ -8290,6 +8442,13 @@ fn authorized_integer_unique_probe_matches_reference_without_implicit_coercion()
                     column_id,
                 },
             ),
+            (
+                Operation::Select,
+                AccessTarget::Column {
+                    table_id,
+                    column_id: varchar_column_id,
+                },
+            ),
         ]
         .into_iter()
         .collect(),
@@ -8313,6 +8472,14 @@ fn authorized_integer_unique_probe_matches_reference_without_implicit_coercion()
                 column_id,
             },
         },
+        Grant {
+            subject: Subject::Principal(principal_id),
+            operation: Operation::Select,
+            target: AccessTarget::Column {
+                table_id,
+                column_id: varchar_column_id,
+            },
+        },
     ];
     let policies = [
         Policy {
@@ -8334,6 +8501,17 @@ fn authorized_integer_unique_probe_matches_reference_without_implicit_coercion()
             using: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
             with_check: None,
         },
+        Policy {
+            subjects: vec![Subject::Principal(principal_id)],
+            operation: Operation::Select,
+            target: AccessTarget::Column {
+                table_id,
+                column_id: varchar_column_id,
+            },
+            effect: Effect::Allow,
+            using: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+            with_check: None,
+        },
     ];
     let projection = AuthorizedProjection {
         columns: &schema.columns,
@@ -8347,13 +8525,16 @@ fn authorized_integer_unique_probe_matches_reference_without_implicit_coercion()
         policy_driving_columns: &[],
         dependencies: &[],
     };
-    let target_cell = SanitizedCell::Value(ScalarValue::Integer(42));
+    let target_cells = [
+        SanitizedCell::Value(ScalarValue::Integer(42)),
+        SanitizedCell::Value(ScalarValue::Varchar("match".to_owned())),
+    ];
     let mut reference_matches = Vec::new();
     let mut cursor = None;
     loop {
         let page = invocation.scan_authorized(table_id, cursor.as_ref(), 8, &projection)?;
         reference_matches.extend(page.rows.into_iter().filter_map(|(row_id, cells)| {
-            (cells.first() == Some(&target_cell)).then_some((row_id, cells))
+            (cells.as_slice() == target_cells).then_some((row_id, cells))
         }));
         let Some(next) = page.continuation else {
             break;
@@ -8362,7 +8543,15 @@ fn authorized_integer_unique_probe_matches_reference_without_implicit_coercion()
     }
     assert_eq!(reference_matches.len(), 1);
     assert!(matches!(
-        invocation.probe_catalog_unique_index(table_id, index_id, &[Some(ScalarValue::Integer(42))], &projection)?,
+        invocation.probe_catalog_unique_index(
+            table_id,
+            index_id,
+            &[
+                Some(ScalarValue::Integer(42)),
+                Some(ScalarValue::Varchar("match".to_owned())),
+            ],
+            &projection,
+        )?,
         prdb_engine::transaction::AuthorizedUniqueIndexProbe::Match { id, cells }
             if id == reference_matches[0].0 && cells == reference_matches[0].1
     ));
@@ -8370,7 +8559,10 @@ fn authorized_integer_unique_probe_matches_reference_without_implicit_coercion()
         invocation.probe_catalog_unique_index(
             table_id,
             index_id,
-            &[Some(ScalarValue::Integer(99))],
+            &[
+                Some(ScalarValue::Integer(99)),
+                Some(ScalarValue::Varchar("match".to_owned())),
+            ],
             &projection
         )?,
         prdb_engine::transaction::AuthorizedUniqueIndexProbe::NoMatch,
@@ -8386,17 +8578,24 @@ fn authorized_integer_unique_probe_matches_reference_without_implicit_coercion()
         schema_id: mismatch_schema.schema_id,
         ..projection
     };
-    assert!(matches!(
-        mismatched_invocation.probe_catalog_unique_index(
-            table_id,
-            index_id,
-            &[Some(ScalarValue::Text("42".to_owned()))],
-            &mismatch_projection
+    let integer_mismatch_result = mismatched_invocation.probe_catalog_unique_index(
+        table_id,
+        index_id,
+        &[
+            Some(ScalarValue::Text("42".to_owned())),
+            Some(ScalarValue::Varchar("match".to_owned())),
+        ],
+        &mismatch_projection,
+    );
+    assert!(
+        matches!(
+            &integer_mismatch_result,
+            Err(TransactionError::Tuple(
+                prdb_engine::tuple::TupleError::TypeMismatch
+            ))
         ),
-        Err(TransactionError::Tuple(
-            prdb_engine::tuple::TupleError::TypeMismatch
-        ))
-    ));
+        "unexpected INTEGER key mismatch result: {integer_mismatch_result:?}"
+    );
     Ok(())
 }
 
