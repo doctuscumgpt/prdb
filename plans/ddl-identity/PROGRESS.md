@@ -317,3 +317,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` to attempt rotation of a known active token and an unknown token as a principal without `MANAGE_USERS`. Each attempt uses a fresh authenticated ADMIN session; both return the same generic `unavailable` message and neither alters the existing token.
 - Verification: focused delegated `metadata_process` test passed with the restricted metadata fixture and documented runtime paths. Workspace formatting, warning-denied all-target Clippy, and `git diff --check` passed.
+
+
+## 2026-11-16 full delegated workspace verification after identity rotation probes
+
+- `cargo test --workspace --locked -- --test-threads=1` passed inside the delegated `systemd --user` service with the documented TinyCC fixtures and runtime profile. Sandbox and process integration tests were enabled; zero tests were ignored. The run includes storage and authenticated ADMIN checks that unauthorized rotations of existing and unknown token IDs return the same generic response.
