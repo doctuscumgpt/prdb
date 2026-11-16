@@ -6542,9 +6542,13 @@ fn storage_manager_truncate_restricts_real_incoming_foreign_key()
 #[test]
 fn storage_manager_sets_replaces_and_drops_column_defaults()
 -> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::authorization::{
+        AccessTarget, AuthorizationContext, Effect, Expr, Grant, Operation, Policy, Subject,
+    };
     use prdb_engine::storage_manager::{
         CreateTableRequest, TableColumnDefault, TableColumnDefinition,
     };
+    use prdb_engine::transaction::{InsertInput, InvocationTransaction};
 
     let fixture = Fixture::new();
     let database = initialize(&fixture.path())?;
@@ -6660,18 +6664,159 @@ fn storage_manager_sets_replaces_and_drops_column_defaults()
             .status,
         write_status
     );
-    let replace_invocation = id(0x52);
-    let mut replace_audit = identity_audit_event(0x53, actor, id(0x54));
+
+    let default_insert_invocation = id(0x5f);
+    let default_row = prdb_engine::overlay::RowId {
+        table: default_table_id,
+        row: id(0x60),
+    };
+    let mut default_insert =
+        InvocationTransaction::begin(&database, default_insert_invocation, actor, 9_999, 1, 1024)?;
+    let default_schema = default_insert.load_catalog_table_schema(default_table_id)?;
+    default_insert.load_catalog_indexes(&default_schema)?;
+    let default_context = AuthorizationContext {
+        principal_id: actor,
+        role_ids: std::collections::HashSet::from([admin_role]),
+        scope: std::collections::HashSet::from([
+            (
+                Operation::Usage,
+                AccessTarget::Schema(default_schema.schema_id),
+            ),
+            (Operation::Insert, AccessTarget::Table(default_table_id)),
+            (
+                Operation::Insert,
+                AccessTarget::Column {
+                    table_id: default_table_id,
+                    column_id: default_column_id,
+                },
+            ),
+        ]),
+    };
+    let default_grants = [
+        Grant {
+            subject: Subject::Principal(actor),
+            operation: Operation::Usage,
+            target: AccessTarget::Schema(default_schema.schema_id),
+        },
+        Grant {
+            subject: Subject::Principal(actor),
+            operation: Operation::Insert,
+            target: AccessTarget::Table(default_table_id),
+        },
+        Grant {
+            subject: Subject::Principal(actor),
+            operation: Operation::Insert,
+            target: AccessTarget::Column {
+                table_id: default_table_id,
+                column_id: default_column_id,
+            },
+        },
+    ];
+    let default_policies = [
+        Policy {
+            subjects: vec![Subject::Principal(actor)],
+            operation: Operation::Insert,
+            target: AccessTarget::Table(default_table_id),
+            effect: Effect::Allow,
+            using: None,
+            with_check: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+        },
+        Policy {
+            subjects: vec![Subject::Principal(actor)],
+            operation: Operation::Insert,
+            target: AccessTarget::Column {
+                table_id: default_table_id,
+                column_id: default_column_id,
+            },
+            effect: Effect::Allow,
+            using: None,
+            with_check: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+        },
+    ];
+    let default_projection = prdb_engine::authorization::AuthorizedProjection {
+        columns: &default_schema.columns,
+        column_ids: &default_schema.column_ids,
+        schema_version: default_schema.schema_version,
+        schema_id: default_schema.schema_id,
+        context: &default_context,
+        grants: &default_grants,
+        policies: &default_policies,
+        checks: &[],
+        policy_driving_columns: &[],
+        dependencies: &[],
+    };
+    default_insert.stage_insert_authorized_from_catalog_defaults(
+        default_row,
+        &default_projection,
+        &[InsertInput::Default],
+        &default_schema,
+    )?;
+
+    let replace_invocation = id(0x61);
+    let mut replace_audit = identity_audit_event(0x62, actor, id(0x63));
     replace_audit.correlation_id = replace_invocation;
-    storage.alter_column_default(prdb_engine::storage_manager::AlterColumnDefaultRequest {
-        invocation_id: replace_invocation,
-        authenticated_actor_id: actor,
-        table_id: default_table_id,
-        column_id: default_column_id,
-        default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(43)))),
-        retention_deadline_us: 9_999,
-        audit_event: replace_audit,
-    })?;
+    let replace_barrier = Arc::new(Barrier::new(2));
+    let (default_insert_result, replace_result) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&replace_barrier);
+        let storage = &storage;
+        let ddl = scope.spawn(move || {
+            barrier.wait();
+            storage.alter_column_default(prdb_engine::storage_manager::AlterColumnDefaultRequest {
+                invocation_id: replace_invocation,
+                authenticated_actor_id: actor,
+                table_id: default_table_id,
+                column_id: default_column_id,
+                default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(43)))),
+                retention_deadline_us: 9_999,
+                audit_event: replace_audit,
+            })
+        });
+        replace_barrier.wait();
+        let insert = default_insert.commit();
+        let ddl = ddl.join().expect("default replacement thread panicked");
+        (insert, ddl)
+    });
+    assert!(
+        replace_result.is_ok(),
+        "replacing the catalog default failed: {replace_result:?}"
+    );
+    let replace_sequence = replace_result?;
+    let (default_insert_sequence, default_insert_status) = match default_insert_result {
+        Ok(sequence) => (Some(sequence), OutcomeStatus::Committed),
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            (None, OutcomeStatus::Aborted)
+        }
+        Err(error) => panic!("unexpected DEFAULT insert result: {error:?}"),
+    };
+    if let Some(sequence) = default_insert_sequence {
+        assert!(sequence < replace_sequence);
+    }
+    let default_row_value = row(&database, &table_row_key(default_table_id, default_row.row))?;
+    assert_eq!(
+        default_row_value.as_ref().map(|stored| {
+            decode_tuple(
+                &default_schema.columns,
+                default_schema.schema_version,
+                &stored.payload,
+            )
+            .expect("stored default row must decode")
+            .values
+        }),
+        (default_insert_status == OutcomeStatus::Committed)
+            .then(|| vec![Some(ScalarValue::Integer(42))])
+    );
+    assert_eq!(
+        lookup_outcome(&database, default_insert_invocation, actor, 1)?
+            .ok_or("missing catalog DEFAULT insert outcome")?
+            .status,
+        default_insert_status
+    );
+    assert_eq!(
+        lookup_outcome(&database, replace_invocation, actor, 1)?
+            .ok_or("missing default replacement outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
     let drop_invocation = id(0x55);
     let stale_drop_writer_invocation = id(0x5d);
     let stale_drop_row_id = prdb_engine::overlay::RowId {

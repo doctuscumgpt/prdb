@@ -1103,3 +1103,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added a tuple-codec round trip for both signs of the 38-digit DECIMAL limit, the minimum and maximum supported DATE day values, and the minimum and maximum UTC TIMESTAMPTZ microseconds. The regression rejects a 39-digit DECIMAL and timestamp values one microsecond outside either endpoint; existing range coverage rejects DATE overflow.
 - Verification: focused tuple regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets). `git diff --check` passed.
+
+## DS-5 / AU-5: catalog DEFAULT insert racing default replacement — verified slice
+
+- Extended `storage_manager_sets_replaces_and_drops_column_defaults` to stage an authorized INSERT using the stored catalog DEFAULT, then race its commit against replacing that default. If the insert wins, it stores the old value before DDL; if replacement wins, the stale insert has a durable ABORTED outcome and no row is published.
+- Verification: focused real-redb race, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 189 commit, 76 transaction tests, plus all remaining targets).
