@@ -327,6 +327,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Extended `unique_constraint_uses_its_backing_index_for_invocation_writes` with a well-typed `SMALLINT 1 % 0` policy predicate. The unique-index probe returns `Unavailable` without evaluating it; the authorized reference scan reports generic `EvaluationFailed` and durably aborts the invocation.
 - Verification: focused real-redb transaction regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).
 
+## AU-3 / DS-SQL-67: negation-overflow fallback uses the authorized reference path — verified slice
+
+- Extended `unique_constraint_uses_its_backing_index_for_invocation_writes` with a compound SELECT policy that negates `SMALLINT::MIN` before a principal predicate. The unique-index probe remains `Unavailable`; the authorized reference scan returns the same generic `EvaluationFailed` used for other policy errors and records a durable ABORTED outcome.
+- Verification: focused real-redb transaction regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (294 unit tests, 190 commit tests, 76 transaction tests, plus all remaining targets).
+- Remaining: broader coercion/workload equivalence, additional failing predicate paths, hostile IPC sequences, and timing analysis remain open.
+
 ## AU-6 / ID-5: identity rename invalidates stale authorization snapshots — verified slice
 
 - The role-authorized writer regression now races an authenticated staged update with user rename and also forces a rename-first commit order. Stale writes conflict with durable ABORTED outcomes and leave stored row bytes unchanged; a writer that commits first is ordered before rename. The same credential continues to admit the renamed stable identity.

@@ -7413,6 +7413,62 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         OutcomeStatus::Aborted,
         "the modulo-erroring reference predicate must durably abort the invocation"
     );
+    let negation_error_policies = [
+        policies[0].clone(),
+        Policy {
+            using: Some(Expr::And(vec![
+                Expr::Equal(
+                    Box::new(Expr::Negate(Box::new(Expr::Literal(Some(
+                        ScalarValue::SmallInt(i16::MIN),
+                    ))))),
+                    Box::new(Expr::Literal(Some(ScalarValue::SmallInt(0)))),
+                ),
+                Expr::Equal(
+                    Box::new(Expr::CurrentPrincipalId),
+                    Box::new(Expr::Literal(Some(ScalarValue::Uuid([9; 16])))),
+                ),
+            ])),
+            ..policies[1].clone()
+        },
+    ];
+    let negation_error_projection = AuthorizedProjection {
+        columns: projection.columns,
+        column_ids: projection.column_ids,
+        schema_version: projection.schema_version,
+        schema_id: projection.schema_id,
+        context: projection.context,
+        grants: projection.grants,
+        policies: &negation_error_policies,
+        checks: projection.checks,
+        policy_driving_columns: &[column_id],
+        dependencies: projection.dependencies,
+    };
+    let mut negation_error_invocation =
+        InvocationTransaction::begin(&database, [0x4a; 16], [9; 16], 9_999, 8, 512)?;
+    negation_error_invocation.load_catalog_table_schema(table_id)?;
+    assert_eq!(
+        negation_error_invocation.probe_catalog_unique_index(
+            table_id,
+            index_id,
+            &[Some(ScalarValue::Bytea(b"duplicate".to_vec()))],
+            &negation_error_projection,
+        )?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
+        "an overflowing-negation policy must force the authorized reference scan"
+    );
+    assert!(matches!(
+        negation_error_invocation.scan_authorized(table_id, None, 8, &negation_error_projection),
+        Err(TransactionError::Authorization(
+            prdb_engine::authorization::AuthorizationError::EvaluationFailed
+        ))
+    ));
+    assert_eq!(
+        prdb_engine::outcome::lookup_outcome(&database, [0x4a; 16], [9; 16], 1)?
+            .unwrap()
+            .status,
+        OutcomeStatus::Aborted,
+        "the overflowing-negation reference predicate must durably abort the invocation"
+    );
     assert_eq!(
         invocation.probe_catalog_unique_index(
             table_id,
