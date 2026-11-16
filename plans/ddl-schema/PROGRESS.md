@@ -1061,3 +1061,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Upgraded the ADD COLUMN backfill regression to race publication against an insert staged from the old schema. If the insert commits first, ADD COLUMN backfills its new field from the immutable default; if DDL wins, the stale insert durably aborts. The test also verifies pinned pre-DDL readers, retained post-DDL rows, index membership, and durable outcomes.
 - Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
 - Remaining: additional ALTER combinations remain open.
+
+## DS-SQL-48 / DS-7: TRUNCATE races an indexed staged insert — verified slice
+
+- Extended `storage_manager_truncates_rows_and_index_memberships_atomically` to race TRUNCATE against a staged insert carrying its catalog-derived index membership. If the insert commits first, TRUNCATE counts and removes it; if TRUNCATE wins, the writer durably conflicts. Both orders leave no row or index membership in the current snapshot, preserve the retained pre-TRUNCATE snapshot, and agree on the durable outcome and commit sequence.
+- Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.

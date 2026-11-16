@@ -5837,13 +5837,21 @@ fn storage_manager_truncates_rows_and_index_memberships_atomically()
         &[Some(ScalarValue::Integer(33))],
     )?;
     let stale_row_id = id(0x70);
-    stale.stage_put(
-        prdb_engine::overlay::RowId {
-            table: table.table_id,
-            row: stale_row_id,
-        },
+    let stale_row = prdb_engine::overlay::RowId {
+        table: table.table_id,
+        row: stale_row_id,
+    };
+    stale.stage_put(stale_row, &stale_payload)?;
+    let stale_index_key = prdb_engine::index_key::derive_index_key(
+        index.index_id,
+        stale_row_id,
+        stale_schema.schema_version,
+        &stale_schema.column_ids,
+        &stale_schema.columns,
         &stale_payload,
+        &table.column_ids,
     )?;
+    stale.stage_index_membership(stale_row, stale_index_key.key, true)?;
     let denied_invocation = id(0x74);
     let mut denied_audit = identity_audit_event(0x75, id(0x76), id(0x77));
     denied_audit.correlation_id = denied_invocation;
@@ -5865,16 +5873,43 @@ fn storage_manager_truncates_rows_and_index_memberships_atomically()
     );
     let old_snapshot = database.begin_read()?;
     let truncate_invocation = id(0x71);
+    let truncate_table_id = table.table_id;
     let mut truncate_audit = identity_audit_event(0x72, actor, id(0x73));
     truncate_audit.correlation_id = truncate_invocation;
-    let truncated = storage.truncate_table(
-        truncate_invocation,
-        actor,
-        table.table_id,
-        9_999,
-        truncate_audit,
-    )?;
-    assert_eq!(truncated.deleted_rows, 2);
+    let truncate_race_barrier = Arc::new(Barrier::new(2));
+    let (stale_write_result, truncate_result) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&truncate_race_barrier);
+        let storage = &storage;
+        let truncate = scope.spawn(move || {
+            barrier.wait();
+            storage.truncate_table(
+                truncate_invocation,
+                actor,
+                truncate_table_id,
+                9_999,
+                truncate_audit,
+            )
+        });
+        truncate_race_barrier.wait();
+        let write = stale.commit();
+        let truncate = truncate.join().expect("TRUNCATE thread panicked");
+        (write, truncate)
+    });
+    let truncated = truncate_result?;
+    let (stale_write_sequence, stale_write_status) = match stale_write_result {
+        Ok(sequence) => (Some(sequence), OutcomeStatus::Committed),
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            (None, OutcomeStatus::Aborted)
+        }
+        Err(error) => panic!("unexpected staged writer result during TRUNCATE: {error:?}"),
+    };
+    if let Some(sequence) = stale_write_sequence {
+        assert!(sequence < truncated.commit_sequence);
+    }
+    assert_eq!(
+        truncated.deleted_rows,
+        2 + usize::from(stale_write_sequence.is_some())
+    );
     assert_eq!(truncated.commit_sequence, commit_sequence(&database)?);
 
     let old_rows = old_snapshot.open_table(ROWS)?;
@@ -5940,13 +5975,13 @@ fn storage_manager_truncates_rows_and_index_memberships_atomically()
     drop(indexes);
     drop(rows);
     drop(read);
-    assert!(matches!(
-        stale.commit(),
-        Err(prdb_engine::transaction::TransactionError::Commit(
-            CommitError::Conflict
-        ))
-    ));
     assert!(row(&database, &table_row_key(table.table_id, stale_row_id))?.is_none());
+    assert_eq!(
+        lookup_outcome(&database, stale_invocation, actor, 1)?
+            .ok_or("TRUNCATE staged-writer outcome missing")?
+            .status,
+        stale_write_status
+    );
     assert_eq!(
         lookup_outcome(&database, truncate_invocation, actor, 1)?
             .ok_or("truncate outcome missing")?
