@@ -272,6 +272,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - This exercises authority revocation while the catalog result itself remains unchanged; policy DDL permission is not treated as administrative discovery authority.
 - Verification: `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` passed through the production gateway and supervisor. The full delegated-cgroup workspace suite was last run at the prior acceptance checkpoint; it was not rerun for this focused process regression.
 
+## MD-6: grant metadata cursor rechecks current authority — verified slice
+
+- Extended the authenticated gateway/supervisor lifecycle to page direct grant metadata as a schema owner, transfer schema ownership back to the database administrator, and verify the former owner's grant continuation is rejected. Policy and grant cursor checks use separate authenticated sessions because a rejected control request closes its connection.
+- This covers revocation of administrative grant visibility while the cursor holds a previously captured grant result; it complements the existing policy cursor check and follows the current-authority invalidation contract in [metadata discovery](../../specs/metadata-discovery.md).
+- Verification: the focused production gateway/supervisor process test passed (1 passed, 0 failed). `cargo fmt --all -- --check`, locked workspace build, warning-denied all-target Clippy, maintained TinyCC SDK tests, and `sandbox-query-fixture` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 library tests, 196 commit tests, 78 transaction tests, 3 metadata process tests, and all other targets).
+
 ## 2026-11-16 integrated acceptance refresh
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. All three authenticated metadata process tests passed, including the MD-6 schema-owner transfer between administrative policy pages.
