@@ -227,3 +227,8 @@
 ## 2026-11-16 full delegated workspace verification after identity issuance hardening
 
 - `cargo test --workspace --locked -- --test-threads=1` passed inside the delegated `systemd --user` service with the documented TinyCC fixtures and runtime profile. Sandbox and process integration tests were enabled; zero tests were ignored. This run includes the unauthorized token issue/rotation enumeration regressions and the 128-cycle foreign-key catalog pressure regression.
+
+## 2026-11-16 DP-8: grants committed before MANAGE_GRANTS revocation remain effective — verified slice
+
+- Extended `object_grant_batch_racing_manage_grants_revocation_is_atomic` with the grant-first ordering: after MANAGE_GRANTS is restored, its holder commits an atomic SELECT/UPDATE batch, then the table owner revokes MANAGE_GRANTS. The regression checks both grants, the shared dependency, grantee epoch, commit sequence, and durable batch outcome after revocation. This complements the existing revoke-first race and denial assertion.
+- Verification: the focused real-redb permission regression passed; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.

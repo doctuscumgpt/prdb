@@ -25245,6 +25245,7 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
     let schema_admin = id(0x76);
     let grantee = id(0x78);
     let denied_grantee = id(0x79);
+    let grant_first_grantee = id(0x7a);
     let invocation_id = id(0x84);
     let revoke_id = id(0x85);
     let mut setup_audit = audit_event(100);
@@ -25268,6 +25269,8 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
                 object_write_with_name(grantee, 8, "batch_grantee"),
                 principal_write_with_name(denied_grantee, 1, 1, "batch_denied_grantee"),
                 object_write_with_name(denied_grantee, 8, "batch_denied_grantee"),
+                principal_write_with_name(grant_first_grantee, 1, 1, "batch_grant_first_grantee"),
+                object_write_with_name(grant_first_grantee, 8, "batch_grant_first_grantee"),
             ],
             &[setup_audit],
         )
@@ -25463,6 +25466,24 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
         retention_deadline_us: 9_999,
         audit_event: regrant_audit,
     })?;
+    let grant_first_batch_id = id(0xd0);
+    let mut grant_first_batch_audit =
+        identity_audit_event(0xd1, grant_manager, grant_first_grantee);
+    grant_first_batch_audit.correlation_id = grant_first_batch_id;
+    grant_first_batch_audit.action = AuditAction::AuthorityChange;
+    let grant_first_batch_sequence =
+        storage.set_object_grants_batch(SetObjectGrantBatchRequest {
+            invocation_id: grant_first_batch_id,
+            authenticated_actor_id: grant_manager,
+            grantee_id: grant_first_grantee,
+            object_id: table_id,
+            privileges: vec![ObjectGrantPrivilege::Select, ObjectGrantPrivilege::Update],
+            target: ObjectGrantTarget::Object,
+            grant: true,
+            retention_deadline_us: 9_999,
+            audit_event: grant_first_batch_audit,
+        })?;
+    assert_eq!(grant_first_batch_sequence, regrant_sequence + 1);
     let mut second_revoke_audit = identity_audit_event(0x89, table_owner, grant_manager);
     second_revoke_audit.correlation_id = id(0x89);
     second_revoke_audit.action = AuditAction::AuthorityChange;
@@ -25477,7 +25498,57 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
         retention_deadline_us: 9_999,
         audit_event: second_revoke_audit,
     })?;
-    assert_eq!(second_revoke_sequence, regrant_sequence + 1);
+    assert_eq!(second_revoke_sequence, grant_first_batch_sequence + 1);
+    let grant_first_read = database.begin_read()?;
+    let grant_first_catalog = grant_first_read.open_table(CATALOG)?;
+    for privilege in [2, 4] {
+        let grant_key = grant_write(
+            grant_first_grantee,
+            table_id,
+            privilege,
+            1,
+            table_id,
+            grant_manager,
+        )
+        .key;
+        assert!(
+            grant_first_catalog.get(grant_key.as_slice())?.is_some(),
+            "revoking MANAGE_GRANTS must not remove grants committed earlier"
+        );
+    }
+    let grant_first_dependency_key = dependency_write(grant_first_grantee, table_id, 5).key;
+    assert!(
+        grant_first_catalog
+            .get(grant_first_dependency_key.as_slice())?
+            .is_some()
+    );
+    let grant_first_principal = decode_registered_envelope(
+        grant_first_catalog
+            .get(id_catalog_key(10, grant_first_grantee).as_slice())?
+            .ok_or("missing grant-first grantee principal")?
+            .value(),
+    )?;
+    assert_eq!(
+        u64::from_le_bytes(
+            grant_first_principal
+                .fields
+                .iter()
+                .find(|field| field.tag == 4)
+                .ok_or("missing grant-first grantee epoch")?
+                .payload
+                .as_slice()
+                .try_into()?
+        ),
+        2
+    );
+    drop(grant_first_catalog);
+    drop(grant_first_read);
+    assert_eq!(
+        lookup_outcome(&database, grant_first_batch_id, grant_manager, 1)?
+            .ok_or("missing grant-first batch outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
     let denied_batch_id = id(0x8a);
     let mut denied_batch_audit = identity_audit_event(0x8b, grant_manager, denied_grantee);
     denied_batch_audit.correlation_id = denied_batch_id;
