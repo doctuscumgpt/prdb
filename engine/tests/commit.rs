@@ -7662,6 +7662,70 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
                 );
             }
 
+            let table_create_invocation = {
+                let mut value = [0xc0; 16];
+                value[15] = index as u8;
+                value
+            };
+            let mut table_create_audit = identity_audit_event(0xd0, actor, created.schema_id);
+            table_create_audit.event_id[15] = index as u8;
+            table_create_audit.correlation_id = table_create_invocation;
+            let table = storage.create_table(prdb_engine::storage_manager::CreateTableRequest {
+                invocation_id: table_create_invocation,
+                authenticated_actor_id: actor,
+                schema_id: created.schema_id,
+                name: "pressure_table".to_owned(),
+                columns: vec![prdb_engine::storage_manager::TableColumnDefinition {
+                    name: "value".to_owned(),
+                    scalar_type: ScalarType::Integer,
+                    nullable: true,
+                    generated_uuid_identity: false,
+                    default: None,
+                }],
+                retention_deadline_us: 9_999,
+                audit_event: table_create_audit,
+            })?;
+            let retained_table_snapshot = database.begin_read()?;
+            assert_eq!(
+                lookup_relation_id_by_name(
+                    &retained_table_snapshot,
+                    created.schema_id,
+                    "pressure_table",
+                )?,
+                Some(table.table_id)
+            );
+
+            let table_drop_invocation = {
+                let mut value = [0xc1; 16];
+                value[15] = index as u8;
+                value
+            };
+            let mut table_drop_audit = identity_audit_event(0xd1, actor, table.table_id);
+            table_drop_audit.event_id[15] = index as u8;
+            table_drop_audit.correlation_id = table_drop_invocation;
+            storage.drop_table(
+                table_drop_invocation,
+                actor,
+                table.table_id,
+                9_999,
+                table_drop_audit,
+            )?;
+            assert_eq!(
+                lookup_relation_id_by_name(
+                    &retained_table_snapshot,
+                    created.schema_id,
+                    "pressure_table",
+                )?,
+                Some(table.table_id),
+                "a pinned dictionary snapshot must retain the dropped table name"
+            );
+            drop(retained_table_snapshot);
+            let after_table_drop = database.begin_read()?;
+            assert_eq!(
+                lookup_relation_id_by_name(&after_table_drop, created.schema_id, "pressure_table")?,
+                None
+            );
+
             let drop_id = id(0x80 + index as u8);
             let mut drop_audit = identity_audit_event(65 + index as u8, actor, created.schema_id);
             drop_audit.correlation_id = drop_id;

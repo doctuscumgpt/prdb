@@ -411,3 +411,9 @@
 
 - Extended `storage_manager_creates_named_unique_index_and_backfills_atomically` to retain a catalog snapshot across index DROP and same-name recreation. The retained snapshot still resolves the original index and contains its typed/object records and row-index memberships; the current snapshot resolves the replacement under a distinct ID.
 - Verification: the focused real-redb lifecycle regression passed. The pinned release profile validated 10 engine binaries and one query fixture; workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+
+## DD-2 / DD-3 / DD-5: mixed schema/table name-index pressure — verified slice
+
+- Extended `schema_create_drop_pressure_preserves_pinned_name_index_snapshots`: while a reader repeatedly scans schema names, 64 iterations now create and drop both a schema and a table. Each iteration checks fresh schema/relation-name lookups before and after publication, while a retained redb snapshot continues to resolve the dropped table name.
+- This adds mixed schema/table secondary-index writes and verifies relation-name snapshot retention alongside the existing schema-name checks. Longer-duration campaigns and continued codec fuzzing remain additional hardening work.
+- Verification: focused real-redb pressure regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).

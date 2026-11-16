@@ -1088,3 +1088,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Strengthened `schema_drop_racing_table_creation_never_leaves_an_orphan` to check both durable operation outcomes and the final catalog graph. If table creation wins, both schema records and both table records remain while DROP SCHEMA aborts as nonempty. If schema drop wins, the schema and typed records are absent, no object retains the dropped schema as parent, and table creation has a durable aborted outcome. Startup integrity validation runs after either order.
 - Verification: the focused real-redb barrier race passed. Release-profile validation accepted 10 engine binaries and one query fixture; workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
 - Remaining: the broader cross-component DDL race matrix remains open.
+
+## DS-3 / DS-5 / DS-7: mixed schema/table lifecycle under name-index readers — verified slice
+
+- Expanded `schema_create_drop_pressure_preserves_pinned_name_index_snapshots` so each of 64 schema create/drop cycles also creates and drops a table. A concurrent reader repeatedly scans schema-name lookups; per-cycle fresh snapshots validate relation-name creation/removal, and a pinned snapshot retains the dropped table name.
+- Verification: focused real-redb pressure regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).
