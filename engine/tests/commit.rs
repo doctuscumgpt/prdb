@@ -22941,7 +22941,7 @@ fn identity_ddl_drops_unreferenced_user_and_revokes_tokens_atomically()
 }
 
 #[test]
-fn token_revocation_racing_a_staged_write_linearizes() -> Result<(), Box<dyn std::error::Error>> {
+fn token_rotation_racing_a_staged_write_linearizes() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
     let database = initialize(&fixture.path())?;
     let storage = StorageManager::new(&database, Duration::from_millis(500))?;
@@ -23014,38 +23014,57 @@ fn token_revocation_racing_a_staged_write_linearizes() -> Result<(), Box<dyn std
         64,
     )?;
     assert!(reader_roles.is_empty());
-    let pinned_schema_before_revoke = reader.load_catalog_table_schema(id(16))?;
+    let pinned_schema_before_rotation = reader.load_catalog_table_schema(id(16))?;
+    let stale_writer_invocation = id(0xab);
+    let (mut stale_writer, _) = storage.begin_token_authenticated_invocation(
+        stale_writer_invocation,
+        token_id,
+        &secret,
+        retention_deadline_us,
+        2,
+        64,
+    )?;
+    let stale_schema = stale_writer.load_catalog_table_schema(id(16))?;
+    stale_writer.load_catalog_indexes(&stale_schema)?;
+    stale_writer.load_catalog_check_constraints(&stale_schema)?;
+    let stale_row_id = prdb_engine::overlay::RowId {
+        table: id(16),
+        row: id(0xa5),
+    };
+    stale_writer.stage_put(stale_row_id, &bytea_tuple(b"stale before rotation"))?;
     let row_id = prdb_engine::overlay::RowId {
         table: id(16),
         row: id(0xa6),
     };
-    writer.stage_put(row_id, &bytea_tuple(b"committed before token revoke"))?;
+    writer.stage_put(row_id, &bytea_tuple(b"write before rotation"))?;
 
-    let revoke_invocation = id(0xa7);
+    let rotation_invocation = id(0xa7);
     let barrier = Arc::new(Barrier::new(2));
-    let (write_result, revoke_result) = std::thread::scope(|scope| {
-        let revoke_barrier = barrier.clone();
-        let revoke_storage = &storage;
-        let revoke = scope.spawn(move || {
+    let (write_result, rotation_result) = std::thread::scope(|scope| {
+        let rotation_barrier = barrier.clone();
+        let rotation_storage = &storage;
+        let rotation = scope.spawn(move || {
             let mut audit = audit_event(0xa8);
             audit.actor_id = Some(admin_user);
-            audit.correlation_id = revoke_invocation;
+            audit.correlation_id = rotation_invocation;
             audit.action = AuditAction::TokenLifecycle;
             audit.target_ids = vec![token_id];
-            revoke_barrier.wait();
-            revoke_storage.revoke_token(
-                revoke_invocation,
-                admin_user,
-                token_id,
+            rotation_barrier.wait();
+            rotation_storage.rotate_token(prdb_engine::storage_manager::TokenRotationRequest {
+                invocation_id: rotation_invocation,
+                authenticated_actor_id: admin_user,
+                old_token_id: token_id,
+                label: "rotated after staged write",
+                expires_at_us: now + 60_000_000,
                 retention_deadline_us,
-                audit,
-            )
+                audit_event: audit,
+            })
         });
         barrier.wait();
         let write = writer.commit();
         (
             write,
-            revoke.join().expect("token revocation thread panicked"),
+            rotation.join().expect("token rotation thread panicked"),
         )
     });
 
@@ -23060,23 +23079,40 @@ fn token_revocation_racing_a_staged_write_linearizes() -> Result<(), Box<dyn std
         }
         Err(error) => panic!("unexpected staged-write result in token race: {error:?}"),
     };
-    assert!(
-        revoke_result.is_ok(),
-        "token revocation failed: {revoke_result:?}"
-    );
-    let revoke_sequence = revoke_result.unwrap();
-    let pinned_schema_after_revoke = reader.load_catalog_table_schema(id(16))?;
+    let mut rotated = match rotation_result {
+        Ok(rotated) => rotated,
+        Err(error) => panic!("token rotation failed: {error:?}"),
+    };
+    let replacement_token_id = rotated.token_id;
+    let replacement_secret = rotated
+        .take_secret()
+        .ok_or("rotated token secret missing")?;
+    let rotation_sequence = rotated.commit_sequence;
+    assert!(matches!(
+        stale_writer.commit(),
+        Err(prdb_engine::transaction::TransactionError::Commit(
+            CommitError::Conflict
+        ))
+    ));
     assert_eq!(
-        pinned_schema_after_revoke.table_id,
-        pinned_schema_before_revoke.table_id
+        lookup_outcome(&database, stale_writer_invocation, user_id, now)?
+            .ok_or("missing stale token writer outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    assert_eq!(commit_sequence(&database)?, rotation_sequence);
+    let pinned_schema_after_rotation = reader.load_catalog_table_schema(id(16))?;
+    assert_eq!(
+        pinned_schema_after_rotation.table_id,
+        pinned_schema_before_rotation.table_id
     );
     assert_eq!(
-        pinned_schema_after_revoke.schema_version,
-        pinned_schema_before_revoke.schema_version
+        pinned_schema_after_rotation.schema_version,
+        pinned_schema_before_rotation.schema_version
     );
     assert_eq!(
-        pinned_schema_after_revoke.column_ids,
-        pinned_schema_before_revoke.column_ids
+        pinned_schema_after_rotation.column_ids,
+        pinned_schema_before_rotation.column_ids
     );
     reader.abort()?;
     assert_eq!(
@@ -23085,9 +23121,9 @@ fn token_revocation_racing_a_staged_write_linearizes() -> Result<(), Box<dyn std
             .status,
         OutcomeStatus::Aborted
     );
-    assert_eq!(commit_sequence(&database)?, revoke_sequence);
+    assert_eq!(commit_sequence(&database)?, rotation_sequence);
     assert_eq!(
-        revoke_sequence,
+        rotation_sequence,
         if write_status == OutcomeStatus::Committed {
             3
         } else {
@@ -23097,13 +23133,13 @@ fn token_revocation_racing_a_staged_write_linearizes() -> Result<(), Box<dyn std
     let writer_outcome = lookup_outcome(&database, writer_invocation, user_id, now)?;
     assert!(
         writer_outcome.is_some(),
-        "missing staged-writer race outcome: result={write_result_debug}, revoke_sequence={revoke_sequence}, current_sequence={:?}",
+        "missing staged-writer race outcome: result={write_result_debug}, rotation_sequence={rotation_sequence}, current_sequence={:?}",
         commit_sequence(&database)?
     );
     assert_eq!(writer_outcome.unwrap().status, write_status);
     assert_eq!(
-        lookup_outcome(&database, revoke_invocation, admin_user, now)?
-            .ok_or("missing token-revocation race outcome")?
+        lookup_outcome(&database, rotation_invocation, admin_user, now)?
+            .ok_or("missing token-rotation race outcome")?
             .status,
         OutcomeStatus::Committed
     );
@@ -23116,8 +23152,11 @@ fn token_revocation_racing_a_staged_write_linearizes() -> Result<(), Box<dyn std
                 .expect("committed row record is valid")
                 .payload
         }),
-        (write_status == OutcomeStatus::Committed)
-            .then(|| bytea_tuple(b"committed before token revoke"))
+        (write_status == OutcomeStatus::Committed).then(|| bytea_tuple(b"write before rotation"))
+    );
+    assert!(
+        rows.get(table_row_key(stale_row_id.table, stale_row_id.row).as_slice())?
+            .is_none()
     );
     drop(rows);
     drop(read);
@@ -23133,6 +23172,26 @@ fn token_revocation_racing_a_staged_write_linearizes() -> Result<(), Box<dyn std
         Err(prdb_engine::transaction::TransactionError::AuthenticationFailed)
     ));
     assert_eq!(lookup_outcome(&database, id(0xa9), user_id, now)?, None);
+    let inventory = storage.list_tokens(admin_user, user_id)?;
+    assert!(
+        inventory
+            .iter()
+            .any(|token| token.token_id == token_id && token.revoked)
+    );
+    assert!(
+        inventory
+            .iter()
+            .any(|token| token.token_id == replacement_token_id && !token.revoked)
+    );
+    let (mut replacement_invocation, _) = storage.begin_token_authenticated_invocation(
+        id(0xaa),
+        replacement_token_id,
+        &replacement_secret,
+        retention_deadline_us,
+        2,
+        64,
+    )?;
+    replacement_invocation.abort()?;
     prdb_engine::startup::validate_persisted_records(&database)?;
     Ok(())
 }

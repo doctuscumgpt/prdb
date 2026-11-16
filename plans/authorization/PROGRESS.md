@@ -416,3 +416,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 complete delegated workspace verification after token rotation
 
 - Ran `cargo test --workspace --locked -- --test-threads=1` inside a delegated `systemd --user` unit with the documented TinyCC fixtures and runtime profile. The full suite exited successfully with sandbox and process integration tests enabled and zero ignored tests. The authenticated metadata/admin process test exercised `prdb-client token-rotate`, rejection of the old credential, authentication by the saved replacement, and subsequent revocation.
+
+## AU-6 / ID-4: token rotation races staged writes — verified slice
+
+- Reworked the token-revocation writer race to rotate the active credential atomically while another invocation stages a row update. The barrier schedule accepts write-before-rotation or rotation-before-write, validates commit ordering and durable outcomes, and confirms one atomic inventory state: the old token is revoked and the replacement is active.
+- Added a deterministic rotate-first schedule with a write already admitted under the old token. Its commit conflicts, records ABORTED, and publishes no row. A retained reader still resolves the schema from its pinned snapshot; the old token fails new admission and the replacement authenticates.
+- Verification: focused `token_rotation_racing_a_staged_write_linearizes` passed. `cargo fmt --all -- --check`, warning-denied all-target workspace Clippy, and `git diff --check` passed.
