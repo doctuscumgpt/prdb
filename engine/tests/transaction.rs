@@ -6889,6 +6889,57 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
         "a conditionally readable key must always fall back before inspecting the predicate value"
     );
+    let failing_policies = [
+        policies[0].clone(),
+        Policy {
+            using: Some(Expr::Equal(
+                Box::new(Expr::Divide(
+                    Box::new(Expr::Field(0)),
+                    Box::new(Expr::Literal(Some(ScalarValue::SmallInt(0)))),
+                )),
+                Box::new(Expr::Literal(Some(ScalarValue::SmallInt(0)))),
+            )),
+            ..policies[1].clone()
+        },
+    ];
+    let failing_projection = AuthorizedProjection {
+        columns: projection.columns,
+        column_ids: projection.column_ids,
+        schema_version: projection.schema_version,
+        schema_id: projection.schema_id,
+        context: projection.context,
+        grants: projection.grants,
+        policies: &failing_policies,
+        checks: projection.checks,
+        policy_driving_columns: &[column_id],
+        dependencies: projection.dependencies,
+    };
+    let mut failing_invocation =
+        InvocationTransaction::begin(&database, [0x48; 16], [9; 16], 9_999, 8, 512)?;
+    failing_invocation.load_catalog_table_schema(table_id)?;
+    assert_eq!(
+        failing_invocation.probe_catalog_unique_index(
+            table_id,
+            index_id,
+            &[Some(ScalarValue::Bytea(b"duplicate".to_vec()))],
+            &failing_projection,
+        )?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
+        "an erroring policy predicate must force the authorized reference scan"
+    );
+    assert!(matches!(
+        failing_invocation.scan_authorized(table_id, None, 8, &failing_projection),
+        Err(TransactionError::Authorization(
+            prdb_engine::authorization::AuthorizationError::EvaluationFailed
+        ))
+    ));
+    assert_eq!(
+        prdb_engine::outcome::lookup_outcome(&database, [0x48; 16], [9; 16], 1)?
+            .unwrap()
+            .status,
+        OutcomeStatus::Aborted,
+        "the failing reference predicate must durably abort the invocation"
+    );
     assert_eq!(
         invocation.probe_catalog_unique_index(
             table_id,

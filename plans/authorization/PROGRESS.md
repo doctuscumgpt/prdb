@@ -242,3 +242,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - `executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle` now sends `OPEN SCAN` with a previously valid relation handle after closing it. Dispatch rejects the stale capability; resolving the same relation again yields a fresh handle, and replaying the closed handle remains rejected.
 - Verification: focused real-redb IPC regression passed. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests: 291 engine unit tests, 179 commit tests, 75 transaction tests, and all other workspace targets.
 - Remaining: wider hostile IPC sequences, cross-principal handle attacks, and timing inference remain open.
+
+## AU-3: failing policy predicates use the authorized fallback — verified slice
+
+- Regression: `unique_constraint_uses_its_backing_index_for_invocation_writes` uses a real-redb table with an index-key policy whose predicate divides by zero. The unique-key probe returns `Unavailable` without evaluating the predicate; the authorized reference scan returns the existing generic `EvaluationFailed` error and persists the invocation as `ABORTED`.
+- Verification: the focused real-redb transaction test, locked workspace build, format check, warning-denied all-target Clippy, maintained TinyCC SDK tests, and sandbox-query fixture build passed under the locked Rust 1.95.0 development shell. The full serial delegated-cgroup workspace suite passed with sandbox and process coverage enabled: 291 engine unit tests, 179 commit tests, 75 transaction tests, and all other workspace targets.
+- Remaining: broader coercion and workload coverage, other erroring predicates, and wider hostile IPC and timing analysis remain open.
