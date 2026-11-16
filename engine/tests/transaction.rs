@@ -3297,9 +3297,9 @@ fn information_schema_virtual_scans_round_trip_through_executor_ipc()
 fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::executor_ipc::{
-        CloseCursorRequest, NextBatchRequest, NextBatchResponse, OpenScanRequest, OpenScanResponse,
-        StageDeleteRequest, StageInsertRequest, StageInsertResponse, StageUpdateRequest,
-        dispatch_executor_request,
+        CloseCursorRequest, ExecutorRequestError, NextBatchRequest, NextBatchResponse,
+        OpenScanRequest, OpenScanResponse, StageDeleteRequest, StageInsertRequest,
+        StageInsertResponse, StageUpdateRequest, dispatch_executor_request,
     };
     use prdb_engine::ipc::{IpcFrame, Operation as IpcOperation, ServiceRole};
 
@@ -3847,6 +3847,29 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
         connection.revalidate_row_handle(&first_page.rows[0].handle)?,
         row_id
     );
+    let mut replay_invocation =
+        InvocationTransaction::begin(&database, [0x9f; 16], restricted_principal_id, 9_999, 1, 64)?;
+    let mut replay_connection = replay_invocation.open_executor_metadata_connection();
+    let cross_principal_row_replay = IpcFrame {
+        operation: IpcOperation::StageDelete as u16,
+        request_id: 73,
+        payload: StageDeleteRequest {
+            handle: first_page.rows[0].handle.clone(),
+        }
+        .encode(),
+    };
+    assert!(matches!(
+        dispatch_executor_request(
+            ServiceRole::Executor,
+            &mut replay_connection,
+            &cross_principal_row_replay,
+        ),
+        Err(ExecutorRequestError::Transaction(
+            TransactionError::InvalidMetadataRequest
+        ))
+    ));
+    drop(replay_connection);
+    replay_invocation.abort()?;
     let next_cursor = first_page
         .continuation
         .expect("full page returns a fresh continuation");

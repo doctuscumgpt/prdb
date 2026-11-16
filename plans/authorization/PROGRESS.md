@@ -285,3 +285,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `token_admission_checks_expiry_secret_revocation_and_commit_guards` to race a staged authorized update against token revocation. The update either commits before revocation or durably conflicts after it; the test verifies the commit sequence, row state, durable invocation outcome, and failed post-revocation admission.
 - Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
+
+## AU-7 / MD-5: executor IPC rejects cross-principal row-handle replay — verified slice
+
+- Extended the catalog-authorized scan IPC regression to replay a genuine row handle from one principal's invocation through `STAGE DELETE` on another principal's connection. Dispatch rejects it as `InvalidMetadataRequest` before mutation.
+- Verification: focused real-redb transaction regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.

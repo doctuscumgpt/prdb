@@ -301,3 +301,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The relation-resolution IPC regression closes an issued capability, then replays it through both `OPEN SCAN` and `STAGE INSERT`. Both operations reject the closed token as `InvalidMetadataRequest`; a subsequent resolution returns a fresh usable handle.
 - Verification: the focused executor IPC regression and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. The same run passed workspace build, formatting, and warning-denied all-target Clippy checks.
+
+## MD-5 / AU-7: executor IPC rejects cross-principal row-handle replay — verified slice
+
+- The catalog-authorized scan IPC regression now submits a real row handle from one principal's invocation to `STAGE DELETE` in another principal's invocation. The request fails as `InvalidMetadataRequest`, demonstrating that row capabilities remain scoped across principals at the IPC boundary.
+- Verification: focused real-redb regression and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. Workspace build, format check, and warning-denied all-target Clippy passed.
