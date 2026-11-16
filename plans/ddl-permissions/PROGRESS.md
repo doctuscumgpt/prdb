@@ -168,3 +168,8 @@
 
 - Extended the real-redb policy lifecycle regression to drop a row policy and recreate the same table-local name. The new policy receives a distinct ID and expression ID; the current policy lookup contains the replacement and excludes the dropped policy, while the pinned pre-drop snapshot still resolves the original policy and expression. The replacement's expression dependency is checked in the current catalog.
 - Verification: focused lifecycle regression, formatting, locked workspace build, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+
+## DP-SQL-11 / DP-8: partial column revocation preserves sibling grants — verified slice
+
+- Extended `object_grant_batch_racing_manage_grants_revocation_is_atomic` to revoke SELECT from one column after a two-privilege, two-column grant batch. It verifies that the selected grant is removed, sibling UPDATE/SELECT grants and their original grantor provenance remain, the column authority dependency remains while UPDATE still exists, the grantee epoch advances once, and the operation has one committed outcome.
+- Verification: the focused real-redb permission regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 library tests, 195 commit tests, 78 transaction tests, plus all other targets). Cargo.lock is unchanged.

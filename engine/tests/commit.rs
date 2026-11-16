@@ -24512,6 +24512,95 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
             .status,
         OutcomeStatus::Committed
     );
+
+    let partial_revoke_id = id(0x8e);
+    let mut partial_revoke_audit = identity_audit_event(0x8f, table_owner, denied_grantee);
+    partial_revoke_audit.correlation_id = partial_revoke_id;
+    partial_revoke_audit.action = AuditAction::AuthorityChange;
+    let partial_revoke_sequence = storage.set_object_grant(SetObjectGrantRequest {
+        invocation_id: partial_revoke_id,
+        authenticated_actor_id: table_owner,
+        grantee_id: denied_grantee,
+        object_id: table_id,
+        privilege: ObjectGrantPrivilege::Select,
+        target: ObjectGrantTarget::Column(first_column_id),
+        grant: false,
+        retention_deadline_us: 9_999,
+        audit_event: partial_revoke_audit,
+    })?;
+    assert_eq!(partial_revoke_sequence, mixed_scope_sequence + 1);
+    let partial_revoke_read = database.begin_read()?;
+    let partial_revoke_catalog = partial_revoke_read.open_table(CATALOG)?;
+    let removed_select =
+        grant_write(denied_grantee, table_id, 2, 2, first_column_id, table_owner).key;
+    assert!(
+        partial_revoke_catalog
+            .get(removed_select.as_slice())?
+            .is_none()
+    );
+    for (column_id, privilege) in [
+        (first_column_id, 4),
+        (second_column_id, 2),
+        (second_column_id, 4),
+    ] {
+        let grant_key = grant_write(
+            denied_grantee,
+            table_id,
+            privilege,
+            2,
+            column_id,
+            table_owner,
+        )
+        .key;
+        let grant_bytes = partial_revoke_catalog
+            .get(grant_key.as_slice())?
+            .ok_or("partial column revoke removed a sibling grant")?
+            .value()
+            .to_vec();
+        let grant_record = decode_registered_envelope(&grant_bytes)?;
+        assert_eq!(
+            grant_record
+                .fields
+                .iter()
+                .find(|field| field.tag == 1)
+                .ok_or("surviving grant lost its grantor provenance")?
+                .payload,
+            table_owner
+        );
+    }
+    let retained_first_column_dependency = dependency_write(denied_grantee, first_column_id, 5).key;
+    assert!(
+        partial_revoke_catalog
+            .get(retained_first_column_dependency.as_slice())?
+            .is_some()
+    );
+    let partial_revoke_principal = decode_registered_envelope(
+        partial_revoke_catalog
+            .get(id_catalog_key(10, denied_grantee).as_slice())?
+            .ok_or("missing partially revoked grantee principal")?
+            .value(),
+    )?;
+    assert_eq!(
+        u64::from_le_bytes(
+            partial_revoke_principal
+                .fields
+                .iter()
+                .find(|field| field.tag == 4)
+                .ok_or("missing partial-revoke principal epoch")?
+                .payload
+                .as_slice()
+                .try_into()?
+        ),
+        3
+    );
+    drop(partial_revoke_catalog);
+    drop(partial_revoke_read);
+    assert_eq!(
+        lookup_outcome(&database, partial_revoke_id, table_owner, 1)?
+            .ok_or("missing partial column revoke outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
     assert!(prdb_engine::startup::validate_persisted_records(&database).is_ok());
     Ok(())
 }
