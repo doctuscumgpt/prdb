@@ -11209,21 +11209,40 @@ fn storage_manager_creates_unique_constraint_and_backfills_existing_rows()
         &stale_drop_tuple,
     )?;
     let drop_invocation_id = id(0xe2);
-    let mut drop_audit = identity_audit_event(0xe3, actor, created.constraint_id);
-    drop_audit.correlation_id = drop_invocation_id;
     let old_read = database.begin_read()?;
-    assert_eq!(
-        storage
-            .drop_unique_constraint(
+    let barrier = Arc::new(Barrier::new(3));
+    let (writer_result, drop_result) = std::thread::scope(|scope| {
+        let writer_barrier = Arc::clone(&barrier);
+        let writer = scope.spawn(move || {
+            writer_barrier.wait();
+            stale_drop_writer.commit()
+        });
+        let drop_barrier = Arc::clone(&barrier);
+        let dropper = scope.spawn(move || {
+            let mut drop_audit = identity_audit_event(0xe3, actor, created.constraint_id);
+            drop_audit.correlation_id = drop_invocation_id;
+            drop_barrier.wait();
+            storage.drop_unique_constraint(
                 drop_invocation_id,
                 actor,
                 created.constraint_id,
                 9_999,
                 drop_audit,
             )
-            .map_err(|error| format!("UNIQUE drop failed: {error:?}"))?,
-        4
-    );
+        });
+        barrier.wait();
+        (
+            writer.join().expect("racing UNIQUE writer panicked"),
+            dropper.join().expect("racing UNIQUE drop panicked"),
+        )
+    });
+    let drop_sequence = drop_result.map_err(|error| format!("UNIQUE drop failed: {error:?}"))?;
+    let writer_sequence = match writer_result {
+        Ok(sequence) => Some(sequence),
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => None,
+        Err(error) => return Err(Box::new(error)),
+    };
+    assert_eq!(drop_sequence, 4 + u64::from(writer_sequence.is_some()));
     assert_eq!(
         prdb_engine::catalog_index::scan_constraint_ids_for_table(&old_read, id(82), 1)?,
         vec![created.constraint_id]
@@ -11239,19 +11258,27 @@ fn storage_manager_creates_unique_constraint_and_backfills_existing_rows()
         assert!(old_catalog.get(key.as_slice())?.is_some());
     }
     drop(old_catalog);
-    assert!(matches!(
-        stale_drop_writer.commit(),
-        Err(prdb_engine::transaction::TransactionError::Commit(
-            CommitError::Conflict
-        ))
-    ));
-    assert!(row(&database, &table_row_key(id(82), id(0xe7)))?.is_none());
+    assert_eq!(
+        row(&database, &table_row_key(id(82), id(0xe7)))?.is_some(),
+        writer_sequence.is_some()
+    );
     assert_eq!(
         lookup_outcome(&database, id(0xe6), actor, 1)?
             .ok_or("missing stale UNIQUE-drop writer outcome")?
             .status,
-        OutcomeStatus::Aborted
+        if writer_sequence.is_some() {
+            OutcomeStatus::Committed
+        } else {
+            OutcomeStatus::Aborted
+        }
     );
+    assert_eq!(
+        lookup_outcome(&database, drop_invocation_id, actor, 1)?
+            .ok_or("missing UNIQUE-drop outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+    assert_eq!(commit_sequence(&database)?, drop_sequence);
     let read = database.begin_read()?;
     let catalog = read.open_table(CATALOG)?;
     assert!(
@@ -11394,21 +11421,59 @@ fn storage_manager_creates_primary_key_with_owned_unique_index()
     drop(constraint);
     drop(catalog);
     prdb_engine::startup::validate_persisted_records(&database)?;
+    let mut stale_drop_writer = storage.begin_invocation(id(0xda), actor, 9_999, 1, 1024)?;
+    let stale_drop_schema = stale_drop_writer.load_catalog_table_schema(id(82))?;
+    stale_drop_writer.load_catalog_indexes(&stale_drop_schema)?;
+    let stale_drop_tuple = encode_tuple(
+        &stale_drop_schema.columns,
+        stale_drop_schema.schema_version,
+        &[Some(ScalarValue::Bytea(
+            b"stale after PRIMARY KEY drop".to_vec(),
+        ))],
+    )?;
+    stale_drop_writer.stage_put(
+        prdb_engine::overlay::RowId {
+            table: id(82),
+            row: id(0xdb),
+        },
+        &stale_drop_tuple,
+    )?;
     let drop_invocation_id = id(0xe4);
-    let mut drop_audit = identity_audit_event(0xe5, actor, created.constraint_id);
-    drop_audit.correlation_id = drop_invocation_id;
-    assert_eq!(
-        storage
-            .drop_primary_key(
+    let drop_barrier = Arc::new(Barrier::new(3));
+    let storage_ref = &storage;
+    let (writer_result, drop_result) = std::thread::scope(|scope| {
+        let writer_barrier = Arc::clone(&drop_barrier);
+        let writer = scope.spawn(move || {
+            writer_barrier.wait();
+            stale_drop_writer.commit()
+        });
+        let drop_barrier_for_thread = Arc::clone(&drop_barrier);
+        let dropper = scope.spawn(move || {
+            let mut drop_audit = identity_audit_event(0xe5, actor, created.constraint_id);
+            drop_audit.correlation_id = drop_invocation_id;
+            drop_barrier_for_thread.wait();
+            storage_ref.drop_primary_key(
                 drop_invocation_id,
                 actor,
                 created.constraint_id,
                 9_999,
                 drop_audit,
             )
-            .map_err(|error| format!("PRIMARY KEY drop failed: {error:?}"))?,
-        3
-    );
+        });
+        drop_barrier.wait();
+        (
+            writer.join().expect("racing PRIMARY KEY writer panicked"),
+            dropper.join().expect("racing PRIMARY KEY drop panicked"),
+        )
+    });
+    let drop_sequence =
+        drop_result.map_err(|error| format!("PRIMARY KEY drop failed: {error:?}"))?;
+    let writer_sequence = match writer_result {
+        Ok(sequence) => Some(sequence),
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => None,
+        Err(error) => return Err(Box::new(error)),
+    };
+    assert_eq!(drop_sequence, 3 + u64::from(writer_sequence.is_some()));
     let old_catalog = old_read.open_table(CATALOG)?;
     for key in [
         id_catalog_key(8, created.constraint_id),
@@ -11423,6 +11488,27 @@ fn storage_manager_creates_primary_key_with_owned_unique_index()
         );
     }
     drop(old_catalog);
+    assert_eq!(
+        row(&database, &table_row_key(id(82), id(0xdb)))?.is_some(),
+        writer_sequence.is_some()
+    );
+    assert_eq!(
+        lookup_outcome(&database, id(0xda), actor, 1)?
+            .ok_or("missing stale PRIMARY KEY-drop writer outcome")?
+            .status,
+        if writer_sequence.is_some() {
+            OutcomeStatus::Committed
+        } else {
+            OutcomeStatus::Aborted
+        }
+    );
+    assert_eq!(
+        lookup_outcome(&database, drop_invocation_id, actor, 1)?
+            .ok_or("missing PRIMARY KEY-drop outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+    assert_eq!(commit_sequence(&database)?, drop_sequence);
     drop(old_read);
     let current_read = database.begin_read()?;
     let current_catalog = current_read.open_table(CATALOG)?;
@@ -11483,7 +11569,7 @@ fn storage_manager_creates_primary_key_with_owned_unique_index()
         .map_err(|error| {
             format!("atomic table with PRIMARY KEY and UNIQUE create failed: {error:?}")
         })?;
-    assert_eq!(created_table.commit_sequence, 4);
+    assert_eq!(created_table.commit_sequence, drop_sequence + 1);
     assert_eq!(created_table.column_ids.len(), 3);
     let atomic_reader = database.begin_read()?;
     let atomic_constraint_ids = prdb_engine::catalog_index::scan_constraint_ids_for_table(

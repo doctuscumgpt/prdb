@@ -1037,3 +1037,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Extended `storage_manager_builds_and_drops_populated_indexes_atomically` to race index removal against a staged insert using the pinned index definition. Writer-first commits the row before index removal; drop-first makes the stale writer durably ABORTED. In both orders the index definition is removed and neither forward nor reverse index membership remains, including for a row committed immediately before the drop.
 - Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and remaining targets.
 - Remaining: stale-writer races for key-constraint DDL and additional ALTER combinations remain open.
+
+## DS-7: key-constraint removal racing staged writers — verified slice
+
+- Extended the UNIQUE and PRIMARY KEY lifecycle regressions to race constraint removal with a staged row insert using the pinned constraint/index snapshot. Writer-first commits the row before removal; drop-first records a durable conflict for the stale writer. Both tests verify row presence, DDL and writer outcomes, commit ordering, old-snapshot visibility, current catalog cleanup, and startup catalog validity.
+- Verification: both focused real-redb regressions, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
+- Remaining: additional ALTER combinations remain open.
