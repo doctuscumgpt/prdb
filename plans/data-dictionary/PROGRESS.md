@@ -395,3 +395,9 @@
 - Extended `storage_manager_adds_column_and_backfills_existing_rows` to hold pre- and post-ADD COLUMN redb snapshots while the backfilled row is overwritten 64 times. The retained snapshots still decode their respective old and new layouts, including the immutable default. After releasing all invocation and read handles, explicit redb compaction succeeds; startup validates the compacted catalog and the current row retains the final version and default.
 - Verification: focused real-redb regression passed. Formatting, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process integration tests enabled and zero ignored tests.
 - Remaining: longer-duration mixed catalog-DDL/read campaigns and continued codec fuzzing remain additional hardening work.
+
+## DD-3 / DD-5: dropped relation name receives a new ID — verified slice
+
+- Extended `storage_manager_drop_table_removes_owned_catalog_and_rows` to recreate the dropped table under the same schema/name. The recreated relation has a different ID; a snapshot pinned before DROP still resolves the original ID, while a fresh snapshot resolves the replacement. The drop and recreation outcomes are committed, and the original table's row is absent after recreation.
+- Verification: the focused real-redb lifecycle regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
+- Remaining: other object families and wider mixed catalog-DDL/read pressure remain to be exercised; this slice does not claim complete DD-3 referential integrity coverage.

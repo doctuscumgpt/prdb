@@ -2661,6 +2661,11 @@ fn storage_manager_drop_table_removes_owned_catalog_and_rows()
         &stale_payload,
     )?;
     let retained_snapshot = database.begin_read()?;
+    let retained_name_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_relation_id_by_name(&retained_name_snapshot, schema.schema_id, "drop_me")?,
+        Some(created.table_id)
+    );
 
     let drop_invocation = id(0x50);
     let mut drop_audit = identity_audit_event(0x49, actor, id(0x4a));
@@ -2754,6 +2759,44 @@ fn storage_manager_drop_table_removes_owned_catalog_and_rows()
     assert_eq!(
         lookup_outcome(&database, drop_invocation, actor, 1)?
             .unwrap()
+            .status,
+        OutcomeStatus::Committed
+    );
+    drop(read);
+
+    let recreate_invocation = id(0x65);
+    let mut recreate_audit = identity_audit_event(0x66, actor, id(0x67));
+    recreate_audit.correlation_id = recreate_invocation;
+    let recreated = storage.create_table(CreateTableRequest {
+        invocation_id: recreate_invocation,
+        authenticated_actor_id: actor,
+        schema_id: schema.schema_id,
+        name: "drop_me".to_owned(),
+        columns: vec![TableColumnDefinition {
+            name: "label".to_owned(),
+            scalar_type: ScalarType::Text,
+            nullable: true,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+        retention_deadline_us: 9_999,
+        audit_event: recreate_audit,
+    })?;
+    assert_ne!(recreated.table_id, created.table_id);
+    assert_eq!(
+        lookup_relation_id_by_name(&retained_name_snapshot, schema.schema_id, "drop_me")?,
+        Some(created.table_id),
+        "the pre-drop snapshot must retain the original relation identity"
+    );
+    let current_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_relation_id_by_name(&current_snapshot, schema.schema_id, "drop_me")?,
+        Some(recreated.table_id)
+    );
+    assert!(row(&database, &table_row_key(created.table_id, id(0x53)))?.is_none());
+    assert_eq!(
+        lookup_outcome(&database, recreate_invocation, actor, 1)?
+            .ok_or("missing table-recreation outcome")?
             .status,
         OutcomeStatus::Committed
     );
