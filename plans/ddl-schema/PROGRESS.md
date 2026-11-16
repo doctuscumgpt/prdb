@@ -1025,3 +1025,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - `set_not_null_racing_a_staged_null_insert_is_atomic` starts a staged NULL row insert and `SET NOT NULL` from the same nullable snapshot. If the row publishes first, the ALTER records an aborted `NotNullViolation`; if the ALTER publishes first, the stale insert records ABORTED. The test verifies exactly one successful commit, matching row/nullability state, both durable outcomes, and startup catalog validity.
 - Verification: focused real-redb race, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
 - Remaining: stale-writer races for index/constraint DDL and additional ALTER combinations remain open.
+
+## DS-7: CHECK removal racing a staged writer — verified slice
+
+- Extended `storage_manager_creates_and_drops_check_constraint` to race removal of the CHECK, its expression, and its dependency edge against a writer staged from the old schema snapshot. Writer-first commits before removal; drop-first makes the stale writer durably ABORTED. The test checks row presence, current catalog cleanup, the pinned pre-drop snapshot, commit order, and runtime conflict accounting.
+- Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and remaining targets.
+- Remaining: stale-writer races for index/key-constraint DDL and additional ALTER combinations remain open.

@@ -11807,6 +11807,7 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
     let mut stale_drop_writer = storage.begin_invocation(id(0xe3), actor, 9_999, 1, 1024)?;
     let stale_drop_schema = stale_drop_writer.load_catalog_table_schema(id(82))?;
     stale_drop_writer.load_catalog_indexes(&stale_drop_schema)?;
+    stale_drop_writer.load_catalog_check_constraints(&stale_drop_schema)?;
     let stale_drop_tuple = encode_tuple(
         &stale_drop_schema.columns,
         stale_drop_schema.schema_version,
@@ -11821,15 +11822,41 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
     let drop_invocation_id = id(0xe1);
     let mut drop_audit = identity_audit_event(0xe2, actor, created.constraint_id);
     drop_audit.correlation_id = drop_invocation_id;
+    let drop_race_barrier = Arc::new(Barrier::new(2));
+    let (drop_result, stale_drop_result) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&drop_race_barrier);
+        let drop_storage = &storage;
+        let drop = scope.spawn(move || {
+            barrier.wait();
+            drop_storage.drop_check_constraint(
+                drop_invocation_id,
+                actor,
+                created.constraint_id,
+                9_999,
+                drop_audit,
+            )
+        });
+        drop_race_barrier.wait();
+        let staged_write = stale_drop_writer.commit();
+        (
+            drop.join().expect("CHECK drop thread panicked"),
+            staged_write,
+        )
+    });
+    let drop_sequence = drop_result?;
+    let stale_drop_status = match stale_drop_result {
+        Ok(sequence) => {
+            assert!(sequence < drop_sequence);
+            OutcomeStatus::Committed
+        }
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            OutcomeStatus::Aborted
+        }
+        Err(error) => panic!("unexpected staged-write result in CHECK drop race: {error:?}"),
+    };
     assert_eq!(
-        storage.drop_check_constraint(
-            drop_invocation_id,
-            actor,
-            created.constraint_id,
-            9_999,
-            drop_audit,
-        )?,
-        created.commit_sequence + 1
+        drop_sequence,
+        created.commit_sequence + 1 + u64::from(stale_drop_status == OutcomeStatus::Committed)
     );
     assert_eq!(
         prdb_engine::catalog_index::scan_constraint_ids_for_table(&constraint_snapshot, id(82), 1)?,
@@ -11862,18 +11889,15 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
         assert!(current_catalog.get(key.as_slice())?.is_none());
     }
     drop(current_catalog);
-    assert!(matches!(
-        stale_drop_writer.commit(),
-        Err(prdb_engine::transaction::TransactionError::Commit(
-            CommitError::Conflict
-        ))
-    ));
-    assert!(row(&database, &table_row_key(id(82), stale_drop_row.row))?.is_none());
+    assert_eq!(
+        row(&database, &table_row_key(id(82), stale_drop_row.row))?.is_some(),
+        stale_drop_status == OutcomeStatus::Committed
+    );
     assert_eq!(
         lookup_outcome(&database, id(0xe3), actor, 1)?
             .ok_or("missing stale CHECK-drop writer outcome")?
             .status,
-        OutcomeStatus::Aborted
+        stale_drop_status
     );
     let read = database.begin_read()?;
     let catalog = read.open_table(CATALOG)?;
@@ -12012,7 +12036,10 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
         .duration_since(std::time::UNIX_EPOCH)?
         .as_micros() as i64;
     let runtime_page = storage.list_runtime_invocations(actor, runtime_now_us, 1, None)?;
-    assert!(runtime_page.invocation_conflicts_total >= 1);
+    assert!(
+        runtime_page.invocation_conflicts_total
+            >= u64::from(stale_drop_status == OutcomeStatus::Aborted)
+    );
     assert!(
         runtime_page
             .invocation_redb_write_acquisition_buckets
