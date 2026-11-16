@@ -84,6 +84,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom",
  "libc",
+ "redb 2.6.4",
  "redb 4.4.0",
  "sha2",
  "zeroize",

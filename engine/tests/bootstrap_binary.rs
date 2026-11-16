@@ -717,6 +717,28 @@ fn populated_prdb_logical_records_survive_redb_v2_to_v3_upgrade() {
         .database()
         .begin_read()
         .expect("read upgraded application rows");
+    let catalog = read.open_table(CATALOG).expect("open upgraded catalog");
+    let mut principals = 0;
+    let mut grants = 0;
+    let mut policies = 0;
+    for entry in catalog.iter().expect("iterate upgraded catalog") {
+        let (key, _) = entry.expect("read upgraded catalog record");
+        let key = key.value();
+        assert!(key.len() >= 2, "catalog key contains a family prefix");
+        match u16::from_be_bytes([key[0], key[1]]) {
+            10 => principals += 1,
+            12 => grants += 1,
+            13 => policies += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(
+        principals, 3,
+        "fixture retains admin, admin role, and reader"
+    );
+    assert_eq!(grants, 2, "fixture retains schema USAGE and table SELECT");
+    assert_eq!(policies, 1, "fixture retains the reader row policy");
+    drop(catalog);
     let rows = read.open_table(ROWS).expect("open upgraded rows table");
     let (_, value) = rows
         .iter()

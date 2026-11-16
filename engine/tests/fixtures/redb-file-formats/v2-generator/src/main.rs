@@ -1,9 +1,11 @@
 use prdb_engine::audit::{AuditAction, AuditEvent, AuditResult};
+use prdb_engine::authorization::{Effect, Expr, Operation, Subject};
 use prdb_engine::bootstrap::initialize;
 use prdb_engine::row_record::RowRecord;
 use prdb_engine::schema::ROWS;
 use prdb_engine::storage_manager::{
-    CreateTableRequest, StorageManager, TableColumnDefault, TableColumnDefinition,
+    CreatePolicyRequest, CreateTableRequest, ObjectGrantPrivilege, ObjectGrantTarget, PolicyKind,
+    SetObjectGrantRequest, StorageManager, TableColumnDefault, TableColumnDefinition,
 };
 use prdb_engine::tuple::{encode_tuple, ColumnSchema, ScalarType, ScalarValue};
 use redb_v2::{
@@ -99,6 +101,9 @@ fn verify_populated_prdb_v2(path: &Path) -> Result<(), Box<dyn std::error::Error
     let database = Database::open(path)?;
     let read = database.begin_read()?;
     let mut rows = 0;
+    let mut principals = 0;
+    let mut grants = 0;
+    let mut policies = 0;
     for name in ENGINE_TABLES {
         let table = read.open_table(TableDefinition::<&[u8], &[u8]>::new(name))?;
         if name == "rows_v1" {
@@ -117,13 +122,30 @@ fn verify_populated_prdb_v2(path: &Path) -> Result<(), Box<dyn std::error::Error
                 }
                 rows += 1;
             }
+        } else if name == "catalog_v1" {
+            for entry in table.iter()? {
+                let (key, _) = entry?;
+                let key = key.value();
+                if key.len() < 2 {
+                    return Err("catalog key is shorter than its family prefix".into());
+                }
+                match u16::from_be_bytes([key[0], key[1]]) {
+                    10 => principals += 1,
+                    12 => grants += 1,
+                    13 => policies += 1,
+                    _ => {}
+                }
+            }
         }
     }
-    if rows != 1 {
-        return Err("fixture must contain exactly one application row".into());
+    if rows != 1 || principals < 2 || grants < 2 || policies < 1 {
+        return Err(format!(
+            "fixture families are incomplete: rows={rows} principals={principals} grants={grants} policies={policies}"
+        )
+        .into());
     }
     println!(
-        "physical_file_format=v2 engine_tables={} application_rows={rows}",
+        "physical_file_format=v2 engine_tables={} application_rows={rows} principals={principals} grants={grants} policies={policies}",
         ENGINE_TABLES.len()
     );
     Ok(())
@@ -183,6 +205,54 @@ fn create_populated_prdb_v2(path: &Path) -> Result<(), Box<dyn std::error::Error
         }],
         retention_deadline_us: i64::MAX,
         audit_event: make_audit([0x44; 16], [0x43; 16]),
+    })?;
+    let reader = storage.create_user_no_login(
+        [0x46; 16],
+        admin_id,
+        "fixture_reader",
+        i64::MAX,
+        make_audit([0x47; 16], [0x46; 16]),
+    )?;
+    let mut schema_usage_audit = make_audit([0x49; 16], [0x48; 16]);
+    schema_usage_audit.action = AuditAction::AuthorityChange;
+    storage.set_object_grant(SetObjectGrantRequest {
+        invocation_id: [0x48; 16],
+        authenticated_actor_id: admin_id,
+        grantee_id: reader.user_id,
+        object_id: schema.schema_id,
+        privilege: ObjectGrantPrivilege::Usage,
+        target: ObjectGrantTarget::Object,
+        grant: true,
+        retention_deadline_us: i64::MAX,
+        audit_event: schema_usage_audit,
+    })?;
+    let mut table_select_audit = make_audit([0x4b; 16], [0x4a; 16]);
+    table_select_audit.action = AuditAction::AuthorityChange;
+    storage.set_object_grant(SetObjectGrantRequest {
+        invocation_id: [0x4a; 16],
+        authenticated_actor_id: admin_id,
+        grantee_id: reader.user_id,
+        object_id: table.table_id,
+        privilege: ObjectGrantPrivilege::Select,
+        target: ObjectGrantTarget::Object,
+        grant: true,
+        retention_deadline_us: i64::MAX,
+        audit_event: table_select_audit,
+    })?;
+    storage.create_policy(CreatePolicyRequest {
+        invocation_id: [0x4c; 16],
+        authenticated_actor_id: admin_id,
+        table_id: table.table_id,
+        name: "fixture_reader_rows".to_owned(),
+        kind: PolicyKind::Row,
+        operation: Operation::Select,
+        effect: Effect::Allow,
+        recipients: vec![Subject::Principal(reader.user_id)],
+        target_column_ids: Vec::new(),
+        using_expression: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+        with_check_expression: None,
+        retention_deadline_us: i64::MAX,
+        audit_event: make_audit([0x4d; 16], [0x4c; 16]),
     })?;
     let mut row_key = Vec::with_capacity(32);
     row_key.extend_from_slice(&table.table_id);
