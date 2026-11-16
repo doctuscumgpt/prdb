@@ -7585,6 +7585,55 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         OutcomeStatus::Aborted,
         "the overflowing-negation reference predicate must durably abort the invocation"
     );
+    let addition_error_policies = [
+        policies[0].clone(),
+        Policy {
+            using: Some(Expr::And(vec![
+                Expr::Equal(
+                    Box::new(Expr::Add(
+                        Box::new(Expr::Literal(Some(ScalarValue::SmallInt(i16::MAX)))),
+                        Box::new(Expr::Literal(Some(ScalarValue::SmallInt(1)))),
+                    )),
+                    Box::new(Expr::Literal(Some(ScalarValue::SmallInt(0)))),
+                ),
+                Expr::Equal(
+                    Box::new(Expr::CurrentPrincipalId),
+                    Box::new(Expr::Literal(Some(ScalarValue::Uuid([9; 16])))),
+                ),
+            ])),
+            ..policies[1].clone()
+        },
+    ];
+    let addition_error_projection = AuthorizedProjection {
+        policies: &addition_error_policies,
+        ..failing_projection
+    };
+    let mut addition_error_invocation =
+        InvocationTransaction::begin(&database, [0x4b; 16], [9; 16], 9_999, 8, 512)?;
+    addition_error_invocation.load_catalog_table_schema(table_id)?;
+    assert_eq!(
+        addition_error_invocation.probe_catalog_unique_index(
+            table_id,
+            index_id,
+            &[Some(ScalarValue::Bytea(b"duplicate".to_vec()))],
+            &addition_error_projection,
+        )?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
+        "an overflowing-addition policy must force the authorized reference scan"
+    );
+    assert!(matches!(
+        addition_error_invocation.scan_authorized(table_id, None, 8, &addition_error_projection),
+        Err(TransactionError::Authorization(
+            prdb_engine::authorization::AuthorizationError::EvaluationFailed
+        ))
+    ));
+    assert_eq!(
+        prdb_engine::outcome::lookup_outcome(&database, [0x4b; 16], [9; 16], 1)?
+            .unwrap()
+            .status,
+        OutcomeStatus::Aborted,
+        "the overflowing-addition reference predicate must durably abort the invocation"
+    );
     assert_eq!(
         invocation.probe_catalog_unique_index(
             table_id,
