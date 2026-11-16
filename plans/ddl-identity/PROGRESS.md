@@ -343,3 +343,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` to authenticate with the user's previously issued token immediately after `ALTER USER ... RENAME TO ...` and before the later NOLOGIN operation. The same stable user identity remains usable across the rename; successful client authentication also clears the local secret buffer.
 - Verification: the focused delegated gateway/supervisor process regression passed with the documented runtime and TinyCC fixtures. Workspace formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
+
+## 2026-11-16 delegated workspace verification after VARCHAR probe type check
+
+- The complete serial `cargo test --workspace --locked -- --test-threads=1` suite passed inside the delegated `systemd --user` service. Sandbox and cross-process coverage were enabled; zero tests were ignored. This revalidated identity lifecycle, login admission, token rotation, membership, and administrator-protection regressions on the current tree.

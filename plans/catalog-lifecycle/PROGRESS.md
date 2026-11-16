@@ -365,3 +365,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Added a subprocess regression that injects a one-shot backend sync failure during `CREATE SCHEMA`, confirms the in-process storage manager stays quarantined, then reopens the database and checks that the schema/object records, DDL audit, operation outcome, and commit sequence are all in either the pre-publication state or the committed state. Startup validation must also accept the recovered catalog.
 - Verification: focused real-redb subprocess regression passed. Workspace formatting, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process integration tests were enabled and zero tests were ignored.
 - Limit: injected sync failure with a live kernel and filesystem does not simulate power loss or device-cache behavior.
+
+## 2026-11-16 delegated workspace verification after VARCHAR probe type check
+
+- The complete serial `cargo test --workspace --locked -- --test-threads=1` suite passed inside the delegated `systemd --user` service. Sandbox and cross-process coverage were enabled; zero tests were ignored. Bootstrap, recovery, migration, and maintenance process regressions ran on the current tree. Power-loss and archived prior-release evidence remain open.

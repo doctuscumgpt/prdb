@@ -607,3 +607,7 @@
 
 - Added `schema_rename_racing_table_creation_preserves_catalog_identity`, which races a schema rename with table creation addressed by the schema's stable ID. It checks the schema-name index points only to the renamed schema, relation lookup agrees with the created table when creation commits, and every surviving table object retains the same schema parent.
 - Verification: focused real-redb race passed; workspace formatting and warning-denied all-target Clippy passed; the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
+
+## 2026-11-16 delegated workspace verification after VARCHAR probe type check
+
+- The complete serial `cargo test --workspace --locked -- --test-threads=1` suite passed inside the delegated `systemd --user` service. Sandbox and cross-process coverage were enabled; zero tests were ignored. This run revalidated catalog startup integrity, derived-index parity, retained-snapshot, and catalog-pressure regressions on the current tree.

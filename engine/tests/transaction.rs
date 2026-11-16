@@ -8968,6 +8968,32 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
         ),
         "unexpected INTEGER key mismatch result: {integer_mismatch_result:?}"
     );
+    let mut varchar_mismatched_invocation =
+        InvocationTransaction::begin(&database, [0x37; 16], [9; 16], 9_999, 8, 4096)?;
+    let varchar_mismatch_schema =
+        varchar_mismatched_invocation.load_catalog_table_schema(table_id)?;
+    let varchar_mismatch_projection = AuthorizedProjection {
+        columns: &varchar_mismatch_schema.columns,
+        column_ids: &varchar_mismatch_schema.column_ids,
+        schema_version: varchar_mismatch_schema.schema_version,
+        schema_id: varchar_mismatch_schema.schema_id,
+        ..projection
+    };
+    let varchar_mismatch_result = varchar_mismatched_invocation.probe_catalog_unique_index(
+        table_id,
+        varchar_index_id,
+        &[Some(ScalarValue::Text("match".to_owned()))],
+        &varchar_mismatch_projection,
+    );
+    assert!(
+        matches!(
+            &varchar_mismatch_result,
+            Err(TransactionError::Tuple(
+                prdb_engine::tuple::TupleError::TypeMismatch
+            ))
+        ),
+        "VARCHAR unique probes must reject TEXT without coercion: {varchar_mismatch_result:?}"
+    );
     Ok(())
 }
 

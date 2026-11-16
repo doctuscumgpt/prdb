@@ -456,5 +456,14 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 AU-3 / SQL-2: composite INTEGER/VARCHAR unique probe matches the authorized scan — verified slice
 
 - Expanded the real-redb probe regression to use a composite `(INTEGER, VARCHAR)` unique index. A matching composite tuple and scalar VARCHAR/UUID/DATE keys each return the same row ID and sanitized cells as independently filtered authorized reference scans; absent values return `NoMatch`. A TEXT value supplied for the INTEGER component returns `TypeMismatch`.
-- Verification: the focused real-redb regression, workspace formatting, and warning-denied all-target Clippy passed. The full serial delegated-cgroup workspace suite is being rerun for the added scalar VARCHAR case.
+- Verification: the focused real-redb regression, workspace formatting, warning-denied all-target Clippy, and complete serial delegated-cgroup workspace suite passed for the scalar VARCHAR parity coverage.
 - Remaining: successful-key parity for other scalar families and additional composite types, SQL type/coercion coverage, and broader complex-predicate error-equivalence remain open.
+
+## 2026-11-16 delegated workspace verification after VARCHAR probe type check
+
+- The complete serial `cargo test --workspace --locked -- --test-threads=1` suite passed inside the delegated `systemd --user` service. Sandbox and cross-process coverage were enabled; zero tests were ignored. This run revalidated the authorization, policy evaluator, token admission, and optimizer/index probe regressions on the current tree.
+
+## AU-3: VARCHAR unique probes reject TEXT coercion — verified slice
+
+- Extended the real-redb authorized unique-probe parity regression to submit a TEXT value to a VARCHAR unique index and require `TupleError::TypeMismatch`, complementing the existing INTEGER mismatch. Each malformed probe uses its own invocation because type validation aborts that transaction.
+- Verification: the focused probe regression, locked workspace build, formatting check, warning-denied all-target workspace Clippy, and complete serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
