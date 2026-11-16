@@ -286,6 +286,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Extended the authenticated `MetadataClient` regression to substitute a different page size for relation and declared-column cursors. Both requests are rejected, and the original cursor remains usable with its bound page size.
 - Verification: focused real-redb-backed authenticated metadata regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests.
 
+## MD-2: hidden row data does not affect relation discovery — verified slice
+
+- Extended `authorized_relation_listing_uses_schema_usage_and_data_grants` to capture an authorized metadata page while the inaccessible relation is empty, then insert malformed row bytes under that hidden relation and list again from a fresh invocation. Both pages are identical; hidden row storage is not decoded or reflected in ordinary metadata discovery.
+- Verification: focused real-redb transaction regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).
+
 ## 2026-11-16 delegated integration refresh
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. All three authenticated metadata process tests passed, covering gateway/supervisor discovery, session-bound cursor rejection after reconnect, and authority revalidation between pages.

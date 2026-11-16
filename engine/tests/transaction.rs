@@ -1373,13 +1373,6 @@ fn authorized_relation_listing_uses_schema_usage_and_data_grants()
     let database = initialize(&fixture.path())?;
     install_relation_discovery_catalog(&database)?;
     install_second_relation_column(&database)?;
-    let mut malformed_hidden_row_key = [0x20; 32];
-    malformed_hidden_row_key[16..].fill(0xfe);
-    let write = database.begin_write()?;
-    write
-        .open_table(ROWS)?
-        .insert(&malformed_hidden_row_key[..], &b"not-a-row"[..])?;
-    write.commit()?;
 
     let schema_id = [0x91; 16];
     let table_id = [0x10; 16];
@@ -1411,6 +1404,23 @@ fn authorized_relation_listing_uses_schema_usage_and_data_grants()
     assert_eq!(page.relations[0].relation_id, table_id);
     assert_eq!(page.relations[0].name, "metrics");
     assert!(page.continuation.is_none());
+
+    let mut malformed_hidden_row_key = [0x20; 32];
+    malformed_hidden_row_key[16..].fill(0xfe);
+    let write = database.begin_write()?;
+    write
+        .open_table(ROWS)?
+        .insert(&malformed_hidden_row_key[..], &b"not-a-row"[..])?;
+    write.commit()?;
+    let mut populated_hidden_invocation =
+        InvocationTransaction::begin(&database, [181; 16], [9; 16], 9_999, 1, 64)?;
+    let populated_hidden_page = populated_hidden_invocation
+        .list_authorized_relations(schema_id, 16, None, &context, &grants, &[])?
+        .expect("schema remains discoverable with hidden row data");
+    assert_eq!(
+        populated_hidden_page.relations, page.relations,
+        "inaccessible relation rows cannot change ordinary metadata discovery"
+    );
 
     let no_usage = AuthorizationContext {
         scope: std::collections::HashSet::from([(
