@@ -151,3 +151,9 @@
 - Extended `catalog_authorized_scan_builds_its_projection_from_pinned_records` with a catalog-bound UPDATE policy for a different principal whose USING and WITH CHECK expressions read the table's BYTEA column. The writer has an unconditional applicable UPDATE policy, so its `STAGE UPDATE` is denied specifically because the referenced field is globally policy-driving; the committed row bytes remain unchanged.
 - Executor write projections now gather expression field references from all table policies, while authorization evaluation remains recipient-filtered. Those definitions and expressions are retained as pinned commit guards.
 - Verification: focused real-redb transaction regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets). `git diff --check` passed; Cargo.lock is unchanged.
+
+## DP-SQL-11: failed multi-privilege REVOKE is atomic across service processes — verified slice
+
+- Extended the authenticated gateway/supervisor administrative lifecycle to issue a five-privilege REVOKE containing four existing object grants and an absent DELETE grant. The SQL operation fails, and metadata reads confirm all four existing grants remain; the following valid four-privilege REVOKE succeeds.
+- Verification: focused production gateway/supervisor process regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+- Remaining: broaden multi-privilege batch validation to provenance/epoch and additional mixed target scopes; broader permission-change race schedules and administrative SQL forms remain open.

@@ -1825,6 +1825,47 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                     == prdb_engine::metadata_discovery::AdministrativeGrantTargetScope::Object
         }));
     }
+    assert!(!multiple_privilege_grants.records.iter().any(|grant| {
+        grant.grantee_id == member_user.identity_id
+            && grant.privilege
+                == prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Delete
+    }));
+    std::fs::write(
+        &object_privilege_sql_path,
+        "REVOKE ALTER, INDEX, MANAGE_POLICIES, MANAGE_GRANTS, DELETE ON TABLE process_ddl.records FROM USER process_member_user;",
+    )?;
+    let partial_revoke_batch = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            object_privilege_sql_path_text,
+        ])
+        .output()?;
+    assert!(
+        !partial_revoke_batch.status.success(),
+        "multi-privilege REVOKE unexpectedly accepted an absent DELETE grant"
+    );
+    let after_partial_revoke_batch =
+        admin.list_grants_page(ddl_schema.identity_id, ddl_table.table_id, 128, None)?;
+    for privilege in [
+        prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Alter,
+        prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Index,
+        prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::ManagePolicies,
+        prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::ManageGrants,
+    ] {
+        assert!(after_partial_revoke_batch.records.iter().any(|grant| {
+            grant.grantee_id == member_user.identity_id
+                && grant.privilege == privilege
+                && grant.target_scope
+                    == prdb_engine::metadata_discovery::AdministrativeGrantTargetScope::Object
+        }));
+    }
     std::fs::write(
         &object_privilege_sql_path,
         "REVOKE ALTER, INDEX, MANAGE_POLICIES, MANAGE_GRANTS ON TABLE process_ddl.records FROM USER process_member_user;",
