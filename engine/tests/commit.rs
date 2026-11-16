@@ -21463,6 +21463,180 @@ fn identity_drop_aborts_a_role_authorized_staged_update() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn identity_login_disable_survives_process_exit_after_commit()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::outcome::OutcomeStatus;
+    use prdb_engine::storage_manager::TokenIssueRequest;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_IDENTITY_EXIT_AFTER_LOGIN_DISABLE_DATABASE";
+    const CHILD_USER_ENV: &str = "PRDB_TEST_IDENTITY_EXIT_AFTER_LOGIN_DISABLE_USER";
+    const CHILD_INVOCATION_ID: [u8; 16] = [0xa3; 16];
+    const CHILD_AUDIT_ID: [u8; 16] = [0xa4; 16];
+    const MANAGE_USERS_ACTOR: [u8; 16] = [0xa5; 16];
+
+    if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
+        let user_id_wire = std::env::var(CHILD_USER_ENV)?;
+        if user_id_wire.len() != 32 {
+            return Err("child user ID must be 32 hexadecimal characters".into());
+        }
+        let user_id = user_id_wire
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16)
+                    .map_err(|error| format!("invalid child user ID: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let user_id: [u8; 16] = user_id
+            .try_into()
+            .map_err(|_| "child user ID must contain 16 bytes")?;
+        let database = Database::open(database_path)?;
+        let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+        let mut audit = identity_audit_event(CHILD_AUDIT_ID[0], MANAGE_USERS_ACTOR, user_id);
+        audit.correlation_id = CHILD_INVOCATION_ID;
+        storage.set_user_login_enabled(
+            CHILD_INVOCATION_ID,
+            MANAGE_USERS_ACTOR,
+            user_id,
+            false,
+            i64::MAX,
+            audit,
+        )?;
+        // Lose the process-local handles and any reply immediately after the
+        // identity catalog commit has reported durable success.
+        // SAFETY: `_exit` intentionally bypasses Rust destructors to model a
+        // process crash after the redb transaction has committed.
+        unsafe { libc::_exit(0) };
+    }
+
+    let fixture = Fixture::new();
+    let database_path = fixture.path();
+    let database = initialize(&database_path)?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let admin_role = builtin_owner_id();
+    let mut setup_audit = identity_audit_event(0xa6, admin_role, MANAGE_USERS_ACTOR);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(
+        id(0xa6),
+        admin_role,
+        i64::MAX,
+        &[
+            principal_write_with_name(MANAGE_USERS_ACTOR, 1, 1, "process_exit_user_manager"),
+            object_write_with_name(MANAGE_USERS_ACTOR, 8, "process_exit_user_manager"),
+            membership_write_with_grantor(MANAGE_USERS_ACTOR, admin_role, admin_role),
+            dependency_write(MANAGE_USERS_ACTOR, admin_role, 5),
+        ],
+        &[setup_audit],
+    )?;
+    let now_us = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?;
+    let expires_at_us = now_us.saturating_add(3_600_000_000);
+    let mut manager_token_audit =
+        identity_audit_event(0xa8, MANAGE_USERS_ACTOR, MANAGE_USERS_ACTOR);
+    manager_token_audit.correlation_id = id(0xa7);
+    manager_token_audit.action = AuditAction::TokenLifecycle;
+    manager_token_audit.target_ids = vec![MANAGE_USERS_ACTOR];
+    storage.issue_token(TokenIssueRequest {
+        invocation_id: id(0xa7),
+        authenticated_actor_id: MANAGE_USERS_ACTOR,
+        user_id: MANAGE_USERS_ACTOR,
+        label: "admin-session",
+        expires_at_us,
+        retention_deadline_us: expires_at_us,
+        audit_event: manager_token_audit,
+    })?;
+    let mut create_audit = identity_audit_event(0xa0, MANAGE_USERS_ACTOR, MANAGE_USERS_ACTOR);
+    create_audit.correlation_id = id(0xa0);
+    let user = storage.create_user(
+        id(0xa0),
+        MANAGE_USERS_ACTOR,
+        "crash_login_disable_user",
+        expires_at_us,
+        create_audit,
+    )?;
+    let mut token_audit = identity_audit_event(0xa1, MANAGE_USERS_ACTOR, user.user_id);
+    token_audit.correlation_id = id(0xa1);
+    token_audit.action = AuditAction::TokenLifecycle;
+    token_audit.target_ids = vec![user.user_id];
+    storage.issue_token(TokenIssueRequest {
+        invocation_id: id(0xa1),
+        authenticated_actor_id: MANAGE_USERS_ACTOR,
+        user_id: user.user_id,
+        label: "process-exit",
+        expires_at_us,
+        retention_deadline_us: expires_at_us,
+        audit_event: token_audit,
+    })?;
+    assert_eq!(
+        storage.list_tokens(MANAGE_USERS_ACTOR, user.user_id)?.len(),
+        1
+    );
+    drop(storage);
+    drop(database);
+
+    let child_user_id = user
+        .user_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let child_status = Command::new(std::env::current_exe()?)
+        .arg("--exact")
+        .arg("identity_login_disable_survives_process_exit_after_commit")
+        .arg("--nocapture")
+        .env(CHILD_DATABASE_ENV, &database_path)
+        .env(CHILD_USER_ENV, child_user_id)
+        .status()?;
+    assert!(
+        child_status.success(),
+        "identity DDL child exited with {child_status}"
+    );
+
+    let reopened = Database::open(&database_path)?;
+    let storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+    let principal = reopened
+        .begin_read()?
+        .open_table(CATALOG)?
+        .get(id_catalog_key(10, user.user_id).as_slice())?
+        .ok_or("disabled user principal was not durable")?;
+    let principal = decode_registered_envelope(principal.value())?;
+    let login_enabled = principal
+        .fields
+        .iter()
+        .find(|field| field.tag == 3)
+        .ok_or("user LOGIN field missing")?;
+    assert_eq!(login_enabled.payload, [0]);
+    let identity_epoch = principal
+        .fields
+        .iter()
+        .find(|field| field.tag == 4)
+        .ok_or("user epoch missing")?;
+    assert_eq!(
+        u64::from_le_bytes(identity_epoch.payload.as_slice().try_into()?),
+        2
+    );
+    let tokens = storage.list_tokens(MANAGE_USERS_ACTOR, user.user_id)?;
+    assert_eq!(tokens.len(), 1);
+    assert!(tokens[0].revoked);
+    assert_eq!(
+        lookup_outcome(&reopened, CHILD_INVOCATION_ID, MANAGE_USERS_ACTOR, now_us)?
+            .ok_or("login-disable outcome missing after reopen")?
+            .status,
+        OutcomeStatus::Committed
+    );
+    assert!(
+        reopened
+            .begin_read()?
+            .open_table(schema::AUDIT)?
+            .get(&CHILD_AUDIT_ID[..])?
+            .is_some(),
+        "identity DDL audit record missing after reopen"
+    );
+    prdb_engine::startup::validate_persisted_records(&reopened)?;
+    Ok(())
+}
+
+#[test]
 fn identity_ddl_drops_unreferenced_user_and_revokes_tokens_atomically()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

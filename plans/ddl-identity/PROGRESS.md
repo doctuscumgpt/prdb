@@ -239,6 +239,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Extended `identity_drop_aborts_a_role_authorized_staged_update` with both rename-first and concurrent rename/write schedules. A staged authorized update either commits before the rename or conflicts and records ABORTED; a deterministic rename-first schedule preserves the row. The same token still authenticates the stable user ID after rename, and subsequent role-authorized writes remain covered through membership revocation and identity drop.
 - Verification: the focused real-redb regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit tests, 186 commit tests, 76 transaction tests, plus all remaining targets).
 
+## ID-5: LOGIN disable and token revocation survive abrupt process exit — verified slice
+
+- Added `identity_login_disable_survives_process_exit_after_commit`. A child process uses the authorized identity DDL path to disable a user's LOGIN, then calls `_exit` immediately after the durable call returns. Reopening the same redb image verifies `LOGIN=false`, the advanced identity epoch, the user's token revoked, the committed invocation outcome and audit record, and full persisted-catalog startup validation.
+- Verification: the focused commit integration test passed inside its delegated `systemd --user` service with `cpu`, `memory`, and `pids` enabled. Workspace formatting, locked build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled.
+- Limit: this process-exit boundary confirms recovery after acknowledged redb commit; it does not simulate power loss or a device-cache flush failure.
+
 ## ID-1 / CL-2: bootstrap secret is one-time and never persisted — verified slice
 
 - Strengthened `bootstrap_handoff_stays_initializing_and_resume_rotates_secret`: it verifies the delivered secret matches the stored verifier hash, can be taken once, and its exact bytes appear in neither keys nor values of any of the 20 engine logical tables. Resume revokes the unacknowledged verifier and issues a different token before READY; a READY instance cannot be resumed.
