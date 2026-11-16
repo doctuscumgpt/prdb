@@ -156,6 +156,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests: 291 engine unit tests, 179 commit integration tests, 75 transaction tests, and all three metadata process tests. Identity coverage includes last-login-admin protection, token lifecycle, stale-write invalidation, and membership revocation races.
 - Broader identity-authority race schedules remain open.
 
+## ID-3 / ID-5: identity drop racing a role-authorized staged write — verified slice
+
+- `identity_drop_aborts_a_role_authorized_staged_update` now races the stale writer's final commit against membership revocation followed by identity drop. The regression accepts either serialized order: a writer that publishes first has a committed outcome before revocation; a writer that loses has a conflict/ABORTED outcome and its row remains unchanged. Membership revocation and identity drop both commit in order, and the dropped token cannot start a new invocation.
+- Verification: focused real-redb race passed; formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed afterward with zero ignored tests: 291 engine unit tests, 179 commit tests, 75 transaction tests, and all three metadata process tests.
+- Remaining: exercise additional interleavings across rename, role-management revocation, token admission, and pending writes.
+
 ## 2026-11-16 integrated acceptance refresh
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. Identity coverage includes last credentialed-admin protection, identity-drop write invalidation, token lifecycle, role-membership races, and the authenticated gateway/supervisor lifecycle.

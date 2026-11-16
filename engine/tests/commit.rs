@@ -18770,34 +18770,62 @@ fn identity_drop_aborts_a_role_authorized_staged_update() -> Result<(), Box<dyn 
         )?;
     }
 
-    let mut revoke_membership_audit = identity_audit_event(0xc8, role_manager, writer_user);
-    revoke_membership_audit.correlation_id = id(0xc8);
-    revoke_membership_audit.action = AuditAction::AuthorityChange;
-    storage.set_role_membership(
-        id(0xc8),
-        role_manager,
-        prdb_engine::storage_manager::RoleMembershipChange {
-            member_id: writer_user,
-            role_id: writer_role,
-            grant: false,
-        },
-        now + 3_600_000_000,
-        revoke_membership_audit,
-    )?;
-    let mut drop_audit = identity_audit_event(0xc9, admin_user, writer_user);
-    drop_audit.correlation_id = id(0xc9);
-    drop_audit.action = AuditAction::Ddl;
-    storage.drop_identity(
-        id(0xc9),
-        admin_user,
-        writer_user,
-        now + 3_600_000_000,
-        drop_audit,
-    )?;
-    assert!(matches!(
-        stale_writer.commit(),
-        Err(TransactionError::Commit(CommitError::Conflict))
-    ));
+    let race_barrier = Arc::new(Barrier::new(2));
+    let (write_result, (membership_sequence, drop_sequence)) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&race_barrier);
+        let storage = &storage;
+        let revoker = scope.spawn(move || {
+            let mut revoke_membership_audit = identity_audit_event(0xc8, role_manager, writer_user);
+            revoke_membership_audit.correlation_id = id(0xc8);
+            revoke_membership_audit.action = AuditAction::AuthorityChange;
+            barrier.wait();
+            let membership_sequence = storage
+                .set_role_membership(
+                    id(0xc8),
+                    role_manager,
+                    prdb_engine::storage_manager::RoleMembershipChange {
+                        member_id: writer_user,
+                        role_id: writer_role,
+                        grant: false,
+                    },
+                    now + 3_600_000_000,
+                    revoke_membership_audit,
+                )
+                .expect("membership revocation should commit during identity race");
+            let mut drop_audit = identity_audit_event(0xc9, admin_user, writer_user);
+            drop_audit.correlation_id = id(0xc9);
+            drop_audit.action = AuditAction::Ddl;
+            let drop_sequence = storage
+                .drop_identity(
+                    id(0xc9),
+                    admin_user,
+                    writer_user,
+                    now + 3_600_000_000,
+                    drop_audit,
+                )
+                .expect("identity drop should commit after membership revocation");
+            (membership_sequence, drop_sequence)
+        });
+        race_barrier.wait();
+        let write_result = stale_writer.commit();
+        let revocation_sequences = revoker.join().expect("identity revoker thread panicked");
+        (write_result, revocation_sequences)
+    });
+    let (write_sequence, write_status) = match write_result {
+        Ok(sequence) => (Some(sequence), OutcomeStatus::Committed),
+        Err(TransactionError::Commit(CommitError::Conflict)) => (None, OutcomeStatus::Aborted),
+        Err(error) => panic!("unexpected staged-writer result in identity race: {error:?}"),
+    };
+    assert!(membership_sequence < drop_sequence);
+    assert_eq!(commit_sequence(&database)?, drop_sequence);
+    if let Some(sequence) = write_sequence {
+        assert!(sequence < membership_sequence);
+    }
+    let expected_value = if write_status == OutcomeStatus::Committed {
+        ScalarValue::Bytea(b"after identity drop".to_vec())
+    } else {
+        original_value
+    };
     assert_eq!(
         decode_tuple(
             &columns,
@@ -18807,14 +18835,14 @@ fn identity_drop_aborts_a_role_authorized_staged_update() -> Result<(), Box<dyn 
                 .payload,
         )?
         .values,
-        [Some(original_value)],
-        "dropped identity's stale row update was published"
+        [Some(expected_value)],
+        "staged row must match the serialized identity/revocation race"
     );
     assert_eq!(
         lookup_outcome(&database, invocation_id, writer_user, now)?
             .ok_or("missing identity-drop stale writer outcome")?
             .status,
-        OutcomeStatus::Aborted
+        write_status
     );
     assert!(matches!(
         storage.begin_token_authenticated_invocation(
