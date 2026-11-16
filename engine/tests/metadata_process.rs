@@ -2760,6 +2760,18 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         String::from_utf8_lossy(&rename_user_cli.stderr)
     );
     assert!(String::from_utf8_lossy(&rename_user_cli.stdout).contains("renamed user"));
+    let mut renamed_transfer_credentials = read_client_credentials(&transfer_credential_path)?;
+    assert_eq!(renamed_transfer_credentials.token_id, transfer_token_id);
+    let renamed_user_session = SubmissionClient::connect_authenticated(
+        address,
+        renamed_transfer_credentials.token_id,
+        &mut renamed_transfer_credentials.token_secret,
+    )?;
+    assert_eq!(
+        renamed_transfer_credentials.token_secret, [0; 32],
+        "successful authentication must consume the local secret copy"
+    );
+    drop(renamed_user_session);
     let login_sql_path = root.join("login-state.sql");
     std::fs::write(
         &login_sql_path,
