@@ -43238,7 +43238,9 @@ fn sealed_start_admits_only_current_credentials_and_enforces_request_deadline()
 #[test]
 fn storage_manager_issues_and_revokes_tokens_for_manage_users()
 -> Result<(), Box<dyn std::error::Error>> {
-    use prdb_engine::storage_manager::{TokenIssueRequest, TokenLifecycleError};
+    use prdb_engine::storage_manager::{
+        TokenIssueRequest, TokenLifecycleError, TokenRotationRequest,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let fixture = Fixture::new();
@@ -43324,6 +43326,40 @@ fn storage_manager_issues_and_revokes_tokens_for_manage_users()
     assert!(!own_inventory[0].revoked);
     let managed_inventory = storage.list_tokens(user_manager, target_user)?;
     assert_eq!(managed_inventory, own_inventory);
+    let unauthorized_existing = storage.rotate_token(TokenRotationRequest {
+        invocation_id: id(0x9c),
+        authenticated_actor_id: denied_user,
+        old_token_id: token_id,
+        label: "must not rotate existing token",
+        expires_at_us,
+        retention_deadline_us: now + 7_200_000_000,
+        audit_event: lifecycle_event(0x9c, denied_user, vec![token_id]),
+    });
+    let unauthorized_unknown = storage.rotate_token(TokenRotationRequest {
+        invocation_id: id(0x9e),
+        authenticated_actor_id: denied_user,
+        old_token_id: id(0x9f),
+        label: "must not reveal unknown token",
+        expires_at_us,
+        retention_deadline_us: now + 7_200_000_000,
+        audit_event: lifecycle_event(0x9e, denied_user, vec![id(0x9f)]),
+    });
+    let unauthorized_existing_error = match unauthorized_existing {
+        Err(error) => error,
+        Ok(_) => panic!("unauthorized rotation of an existing token unexpectedly succeeded"),
+    };
+    let unauthorized_unknown_error = match unauthorized_unknown {
+        Err(error) => error,
+        Ok(_) => panic!("unauthorized rotation of an unknown token unexpectedly succeeded"),
+    };
+    assert_eq!(
+        unauthorized_existing_error,
+        TokenLifecycleError::TokenUnavailable
+    );
+    assert_eq!(
+        unauthorized_unknown_error,
+        TokenLifecycleError::TokenUnavailable
+    );
     assert_eq!(
         storage.list_tokens(denied_user, target_user).unwrap_err(),
         TokenLifecycleError::TokenUnavailable

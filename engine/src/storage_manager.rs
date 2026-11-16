@@ -9270,6 +9270,8 @@ impl<'db> StorageManager<'db> {
     /// Atomically revoke an active token and issue its replacement for the
     /// same user. The replacement secret is returned once; on any failed
     /// commit the old token remains active and no replacement is published.
+    /// Unknown, unavailable, unauthorized, and conflicted rotations share the
+    /// `TokenUnavailable` result to avoid token-ID probing.
     pub fn rotate_token(
         &self,
         request: TokenRotationRequest<'_>,
@@ -9408,7 +9410,12 @@ impl<'db> StorageManager<'db> {
             Ok(sequence) => sequence,
             Err(error) => {
                 secret.zeroize();
-                return Err(TokenLifecycleError::Commit(error));
+                return Err(match error {
+                    CommitError::DdlAuthorizationDenied | CommitError::Conflict => {
+                        TokenLifecycleError::TokenUnavailable
+                    }
+                    error => TokenLifecycleError::Commit(error),
+                });
             }
         };
         let issued = IssuedToken {
