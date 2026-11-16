@@ -8104,13 +8104,16 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
     let column_id = [0x67; 16];
     let varchar_column_id = [0x68; 16];
     let uuid_column_id = [0x69; 16];
+    let date_column_id = [0x6a; 16];
     let index_id = [0x57; 16];
     let varchar_index_id = [0x58; 16];
     let uuid_index_id = [0x59; 16];
+    let date_index_id = [0x5a; 16];
     let schema_id = [145; 16];
     let type_id = [0x41; 16];
     let varchar_type_id = [0x42; 16];
     let uuid_type_id = [0x43; 16];
+    let date_type_id = [0x44; 16];
     let index_key = catalog_id_key(9, index_id);
     let mut indexed_columns = 2u32.to_le_bytes().to_vec();
     indexed_columns.extend_from_slice(&column_id);
@@ -8178,6 +8181,14 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
         uuid_index_id,
         table_id,
         uuid_column_id,
+        1,
+        true,
+        None,
+    )?;
+    let (date_index_key, date_index_value) = index_catalog_record_with_constraint(
+        date_index_id,
+        table_id,
+        date_column_id,
         1,
         true,
         None,
@@ -8357,6 +8368,53 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             },
         ],
     )?;
+    let date_column_key = catalog_id_key(6, date_column_id);
+    let date_column_value = catalog_record_payload(
+        6,
+        &date_column_key,
+        &[
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::Id,
+                payload: table_id.to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::U32,
+                payload: 3u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::Text,
+                payload: b"date_key".to_vec(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::Id,
+                payload: date_type_id.to_vec(),
+            },
+            CatalogField {
+                tag: 5,
+                wire_type: WireType::Bytes,
+                payload: vec![0; 8],
+            },
+            CatalogField {
+                tag: 6,
+                wire_type: WireType::Bool,
+                payload: vec![1],
+            },
+            CatalogField {
+                tag: 8,
+                wire_type: WireType::U16,
+                payload: 0u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 9,
+                wire_type: WireType::U64,
+                payload: 1u64.to_le_bytes().to_vec(),
+            },
+        ],
+    )?;
     let type_key = catalog_id_key(4, type_id);
     let type_value = catalog_record_payload(
         4,
@@ -8468,6 +8526,43 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             },
         ],
     )?;
+    let date_type_key = catalog_id_key(4, date_type_id);
+    let date_type_value = catalog_record_payload(
+        4,
+        &date_type_key,
+        &[
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::U16,
+                payload: 10u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::U16,
+                payload: 0u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 5,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 6,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+        ],
+    )?;
     let (table_object_key, table_object_value) =
         object_catalog_record_with_name(table_id, 3, "integer_probe_table");
     let (column_object_key, column_object_value) =
@@ -8476,6 +8571,8 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
         object_catalog_record_with_name(varchar_column_id, 4, "varchar_probe_column");
     let (uuid_object_key, uuid_object_value) =
         object_catalog_record_with_name(uuid_column_id, 4, "uuid_probe_column");
+    let (date_object_key, date_object_value) =
+        object_catalog_record_with_name(date_column_id, 4, "date_probe_column");
     {
         let write = database.begin_write()?;
         let mut catalog = write.open_table(CATALOG)?;
@@ -8484,16 +8581,20 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             (column_key, column_value),
             (varchar_column_key, varchar_column_value),
             (uuid_column_key, uuid_column_value),
+            (date_column_key, date_column_value),
             (type_key, type_value),
             (varchar_type_key, varchar_type_value),
             (uuid_type_key, uuid_type_value),
+            (date_type_key, date_type_value),
             (index_key, index_value),
             (varchar_index_key, varchar_index_value),
             (uuid_index_key, uuid_index_value),
+            (date_index_key, date_index_value),
             (table_object_key, table_object_value),
             (column_object_key, column_object_value),
             (varchar_object_key, varchar_object_value),
             (uuid_object_key, uuid_object_value),
+            (date_object_key, date_object_value),
         ] {
             catalog.insert(key.as_slice(), value.as_slice())?;
         }
@@ -8511,6 +8612,7 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             Some(ScalarValue::Integer(42)),
             Some(ScalarValue::Varchar("match".to_owned())),
             Some(ScalarValue::Uuid([0xa1; 16])),
+            Some(ScalarValue::Date(20_000)),
         ],
     )?;
     let other_payload = encode_tuple(
@@ -8520,6 +8622,7 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             Some(ScalarValue::Integer(7)),
             Some(ScalarValue::Varchar("other".to_owned())),
             Some(ScalarValue::Uuid([0xa2; 16])),
+            Some(ScalarValue::Date(20_001)),
         ],
     )?;
     seed.stage_put(
@@ -8569,6 +8672,13 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
                     column_id: uuid_column_id,
                 },
             ),
+            (
+                Operation::Select,
+                AccessTarget::Column {
+                    table_id,
+                    column_id: date_column_id,
+                },
+            ),
         ]
         .into_iter()
         .collect(),
@@ -8606,6 +8716,14 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             target: AccessTarget::Column {
                 table_id,
                 column_id: uuid_column_id,
+            },
+        },
+        Grant {
+            subject: Subject::Principal(principal_id),
+            operation: Operation::Select,
+            target: AccessTarget::Column {
+                table_id,
+                column_id: date_column_id,
             },
         },
     ];
@@ -8651,6 +8769,17 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             using: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
             with_check: None,
         },
+        Policy {
+            subjects: vec![Subject::Principal(principal_id)],
+            operation: Operation::Select,
+            target: AccessTarget::Column {
+                table_id,
+                column_id: date_column_id,
+            },
+            effect: Effect::Allow,
+            using: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+            with_check: None,
+        },
     ];
     let projection = AuthorizedProjection {
         columns: &schema.columns,
@@ -8668,6 +8797,7 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
         SanitizedCell::Value(ScalarValue::Integer(42)),
         SanitizedCell::Value(ScalarValue::Varchar("match".to_owned())),
         SanitizedCell::Value(ScalarValue::Uuid([0xa1; 16])),
+        SanitizedCell::Value(ScalarValue::Date(20_000)),
     ];
     let mut reference_matches = Vec::new();
     let mut cursor = None;
@@ -8771,6 +8901,40 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             table_id,
             uuid_index_id,
             &[Some(ScalarValue::Uuid([0xaf; 16]))],
+            &projection,
+        )?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::NoMatch,
+    );
+
+    let date_target = SanitizedCell::Value(ScalarValue::Date(20_000));
+    let mut date_reference_matches = Vec::new();
+    let mut date_cursor = None;
+    loop {
+        let page = invocation.scan_authorized(table_id, date_cursor.as_ref(), 8, &projection)?;
+        date_reference_matches.extend(page.rows.into_iter().filter_map(|(row_id, cells)| {
+            (cells.get(3) == Some(&date_target)).then_some((row_id, cells))
+        }));
+        let Some(next) = page.continuation else {
+            break;
+        };
+        date_cursor = Some(next);
+    }
+    assert_eq!(date_reference_matches.len(), 1);
+    assert!(matches!(
+        invocation.probe_catalog_unique_index(
+            table_id,
+            date_index_id,
+            &[Some(ScalarValue::Date(20_000))],
+            &projection,
+        )?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::Match { id, cells }
+            if id == date_reference_matches[0].0 && cells == date_reference_matches[0].1
+    ));
+    assert_eq!(
+        invocation.probe_catalog_unique_index(
+            table_id,
+            date_index_id,
+            &[Some(ScalarValue::Date(20_010))],
             &projection,
         )?,
         prdb_engine::transaction::AuthorizedUniqueIndexProbe::NoMatch,
