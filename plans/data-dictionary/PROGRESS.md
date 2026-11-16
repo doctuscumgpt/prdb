@@ -534,3 +534,8 @@
 - Extended `schema_create_drop_pressure_preserves_pinned_name_index_snapshots` so each of its 128 schema/table cycles also creates and drops a named index. The test checks the index-name lookup and table-index scan before and after the drop in a retained snapshot, then checks both lookups are empty in a fresh snapshot.
 - This adds repeated index-family catalog publication/removal and verifies that pinned dictionary readers retain the old index definition while current readers observe its removal.
 - Verification: the focused real-redb pressure test passed (1 passed, 0 failed); `cargo fmt --all -- --check` and warning-denied all-target Clippy passed. The full delegated-cgroup workspace suite was not rerun for this test-only extension.
+
+## DD-3 / DS-7: table removal during column-default alteration — verified slice
+
+- Added a barrier race between a default-expression catalog update and table removal. The final-image checks require the table's typed column and any default expression to be absent when DROP TABLE commits, or to match the successful ALTER when the table survives; startup's persisted-catalog validator accepts the resulting graph and durable outcomes reflect each operation.
+- Verification: focused real-redb race passed; formatting, warning-denied all-target engine Clippy, and `git diff --check` passed.

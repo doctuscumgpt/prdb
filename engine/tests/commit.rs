@@ -7316,6 +7316,125 @@ fn column_default_change_racing_column_drop_preserves_catalog_integrity()
             }
         );
     }
+
+    let table_create_invocation = id(0xb0);
+    let mut table_create_audit = identity_audit_event(0xb1, actor, id(0xb2));
+    table_create_audit.correlation_id = table_create_invocation;
+    let raced_table = storage.create_table(CreateTableRequest {
+        invocation_id: table_create_invocation,
+        authenticated_actor_id: actor,
+        schema_id: schema.schema_id,
+        name: "default_table_drop_race".to_owned(),
+        columns: vec![TableColumnDefinition {
+            name: "value".to_owned(),
+            scalar_type: ScalarType::Integer,
+            nullable: true,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+        retention_deadline_us: 9_999,
+        audit_event: table_create_audit,
+    })?;
+    let raced_alter_invocation = id(0xb3);
+    let mut raced_alter_audit = identity_audit_event(0xb4, actor, raced_table.column_ids[0]);
+    raced_alter_audit.correlation_id = raced_alter_invocation;
+    let raced_drop_invocation = id(0xb5);
+    let mut raced_drop_audit = identity_audit_event(0xb6, actor, raced_table.table_id);
+    raced_drop_audit.correlation_id = raced_drop_invocation;
+    let raced_barrier = Arc::new(Barrier::new(2));
+    let (raced_alter_result, raced_drop_result) = std::thread::scope(|scope| {
+        let alter_barrier = Arc::clone(&raced_barrier);
+        let alter_storage = &storage;
+        let raced_table_id = raced_table.table_id;
+        let raced_column_id = raced_table.column_ids[0];
+        let alter = scope.spawn(move || {
+            alter_barrier.wait();
+            alter_storage.alter_column_default(AlterColumnDefaultRequest {
+                invocation_id: raced_alter_invocation,
+                authenticated_actor_id: actor,
+                table_id: raced_table_id,
+                column_id: raced_column_id,
+                default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(91)))),
+                retention_deadline_us: 9_999,
+                audit_event: raced_alter_audit,
+            })
+        });
+        raced_barrier.wait();
+        let drop = storage.drop_table(
+            raced_drop_invocation,
+            actor,
+            raced_table.table_id,
+            9_999,
+            raced_drop_audit,
+        );
+        (
+            alter.join().expect("table-default ALTER thread panicked"),
+            drop,
+        )
+    });
+    let raced_alter_committed = raced_alter_result.is_ok();
+    if let Err(error) = &raced_alter_result {
+        assert!(
+            matches!(
+                error,
+                prdb_engine::storage_manager::TableLifecycleError::Commit(
+                    CommitError::Conflict | CommitError::InvalidCatalog
+                )
+            ),
+            "unexpected ALTER result while dropping its table: {error:?}"
+        );
+    }
+    let raced_drop_committed = raced_drop_result.is_ok();
+    if let Err(error) = &raced_drop_result {
+        assert!(
+            matches!(
+                error,
+                prdb_engine::storage_manager::TableLifecycleError::Commit(
+                    CommitError::Conflict | CommitError::InvalidCatalog
+                )
+            ),
+            "unexpected DROP TABLE result while changing its default: {error:?}"
+        );
+    }
+    assert!(raced_alter_committed || raced_drop_committed);
+    let final_read = database.begin_read()?;
+    let final_catalog = final_read.open_table(CATALOG)?;
+    let raced_column_key = id_catalog_key(6, raced_table.column_ids[0]);
+    assert_eq!(
+        final_catalog.get(raced_column_key.as_slice())?.is_some(),
+        !raced_drop_committed,
+        "DROP TABLE removes the defaulted column exactly when it commits"
+    );
+    if raced_drop_committed {
+        assert!(final_catalog.get(raced_column_key.as_slice())?.is_none());
+    } else {
+        let column = final_catalog
+            .get(raced_column_key.as_slice())?
+            .ok_or("table-drop race lost its surviving column")?;
+        let record = decode_registered_envelope(column.value())?;
+        assert_eq!(
+            record.fields.iter().any(|field| field.tag == 7),
+            raced_alter_committed,
+            "default is present exactly when its ALTER committed"
+        );
+    }
+    drop(final_read);
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    for (invocation_id, committed) in [
+        (raced_alter_invocation, raced_alter_committed),
+        (raced_drop_invocation, raced_drop_committed),
+    ] {
+        let outcome = lookup_outcome(&database, invocation_id, actor, 1)?
+            .ok_or("missing default/table-drop race outcome")?;
+        assert_eq!(
+            outcome.status,
+            if committed {
+                OutcomeStatus::Committed
+            } else {
+                OutcomeStatus::Aborted
+            }
+        );
+    }
     Ok(())
 }
 

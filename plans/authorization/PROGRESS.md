@@ -403,3 +403,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended the confined direct-IPC fixture to submit a valid-shaped, never-issued relation handle through `STAGE UPDATE`, in addition to `OPEN SCAN` and `STAGE INSERT`. The hostile query bypasses the SDK and must have every operation rejected before any mutation is staged.
 - Verification: TinyCC-compiled the fixture and ran `sandboxed_direct_executor_ipc_rejects_forged_relation_handle` inside the delegated `systemd --user` cgroup service; it passed (1 passed, 0 failed, 0 ignored). `git diff --check` passed.
+
+## AU-6 / DS-7: default ALTER revalidates against table removal — verified slice
+
+- The column-default lifecycle race regression now also races `ALTER COLUMN SET DEFAULT` with `DROP TABLE`, checking that serialized publication either retains the altered table or removes the complete table and column graph, with durable outcomes matching both calls. Persisted-catalog validation checks the final image.
+- Verification: focused real-redb race passed; warning-denied all-target engine Clippy, formatting, and `git diff --check` passed.

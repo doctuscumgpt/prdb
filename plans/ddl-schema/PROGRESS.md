@@ -1152,3 +1152,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `column_default_change_racing_column_drop_preserves_catalog_integrity`. A barrier races setting a literal default against dropping that column. The test checks that at least one operation commits, durable outcomes match each operation result, the current column/default shape matches the commit order, dropped-column lookups and expression dependencies are removed, and persisted-catalog validation accepts the final graph.
 - Verification: the focused real-redb test passed, then passed eight consecutive repeat runs. `cargo fmt --all -- --check`, warning-denied all-target Clippy, and `git diff --check` passed. The full delegated-cgroup workspace suite was not rerun for this race regression.
+
+## DS-5 / DS-7 / AU-6 / DD-3: column-default ALTER races DROP TABLE — verified slice
+
+- Extended `column_default_change_racing_column_drop_preserves_catalog_integrity` with a second barrier race between setting a column default and dropping its entire table. The regression checks both operation outcomes, verifies DROP TABLE removes the typed column exactly when it commits, checks the surviving default only when ALTER committed, and runs persisted-catalog validation afterward.
+- Verification: the focused real-redb race passed; formatting, warning-denied all-target engine Clippy, and `git diff --check` passed.
