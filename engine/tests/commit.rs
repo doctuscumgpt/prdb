@@ -20764,20 +20764,6 @@ fn storage_manager_authorizes_identity_ddl_and_preserves_a_login_admin()
         revoke_old_event,
     )?;
 
-    let mut rename_audit = identity_audit_event(0x83, user_manager, created_user);
-    rename_audit.correlation_id = id(0x83);
-    assert_eq!(
-        storage.rename_identity(
-            id(0x83),
-            user_manager,
-            created_user,
-            "renamed_user",
-            9_999,
-            rename_audit,
-        )?,
-        6
-    );
-
     let user_token_secret = [0x47; 32];
     let active_user_token = credential_verifier_write(
         id(0x8b),
@@ -20797,6 +20783,31 @@ fn storage_manager_authorizes_identity_ddl_and_preserves_a_login_admin()
         &[active_user_token],
         &[token_audit],
     )?;
+
+    let mut rename_audit = identity_audit_event(0x83, user_manager, created_user);
+    rename_audit.correlation_id = id(0x83);
+    assert_eq!(
+        storage.rename_identity(
+            id(0x83),
+            user_manager,
+            created_user,
+            "renamed_user",
+            9_999,
+            rename_audit,
+        )?,
+        7
+    );
+    let (mut renamed_user_invocation, renamed_user_roles) = storage
+        .begin_token_authenticated_invocation(
+            id(0x8e),
+            id(0x8b),
+            &user_token_secret,
+            now + 3_600_000_000,
+            2,
+            1024,
+        )?;
+    assert!(renamed_user_roles.is_empty());
+    renamed_user_invocation.abort()?;
 
     let mut disable_user = principal_write_with_login(created_user, 1, false, 3, "renamed_user");
     disable_user.expected_value = Some(current_value(&disable_user.key)?);
@@ -20825,6 +20836,17 @@ fn storage_manager_authorizes_identity_ddl_and_preserves_a_login_admin()
         8
     );
     assert!(storage.list_tokens(user_manager, created_user)?[0].revoked);
+    assert!(matches!(
+        storage.begin_token_authenticated_invocation(
+            id(0x8f),
+            id(0x8b),
+            &user_token_secret,
+            now + 3_600_000_000,
+            2,
+            1024,
+        ),
+        Err(prdb_engine::transaction::TransactionError::AuthenticationFailed)
+    ));
 
     let mut disable_last_admin =
         principal_write_with_login(admin_user, 1, false, 2, "identity_admin");

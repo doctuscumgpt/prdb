@@ -198,3 +198,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - `token_admission_checks_expiry_secret_revocation_and_commit_guards` now starts token revocation and the admitted token's staged authorized write behind a barrier. If the write commits first, its sequence precedes revocation; if revocation wins, the writer conflicts. The durable invocation outcome matches the result, the row remains consistent, and the revoked credential cannot admit another invocation.
 - Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
+
+## ID-2 / ID-3 / ID-5: stable user rename preserves issued-token authentication — verified slice
+
+- Extended `storage_manager_authorizes_identity_ddl_and_preserves_a_login_admin` so a real token verifier is persisted before the user is renamed. The same token then authenticates the stable user ID after rename; after `NOLOGIN`, authentication with that credential fails and the token inventory reports it revoked.
+- Verification: focused real-redb commit regression passed. Nix-shell formatting check, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The last full delegated-cgroup workspace run preceded this test-only increment.
