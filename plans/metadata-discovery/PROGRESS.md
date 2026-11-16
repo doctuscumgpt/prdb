@@ -1,5 +1,11 @@
 # Metadata Discovery Progress
 
+## MD-5: table metadata cursor retains its catalog snapshot across rename — verified
+
+- Added a real-redb regression that opens the first `information_schema.tables` page, publishes a relation rename, and continues paging with the original invocation. The retained cursor returns the original name; a newly admitted invocation returns the renamed name.
+- The fixture publishes the two catalog records directly because it deliberately omits production catalog records required by the DDL commit validator. This isolates snapshot behavior; rename authorization and catalog validation remain covered by DDL tests.
+- Verification: focused transaction regression passed. Locked workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests, release profile/fixture, and full serial delegated-cgroup workspace suite passed (all tests enabled, zero ignored). `git diff --check` passed; Cargo.lock is unchanged.
+
 ## Administrative index pages include constraint-owned indexes — verified
 
 - `metadata.indexes.list` now accepts constraint-owned index object records whose optional schema ID is absent. The index catalog record binds each index to the selected table, and the table record binds that table to the authorized schema; a present schema ID must still match.

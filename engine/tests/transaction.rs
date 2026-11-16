@@ -2043,6 +2043,122 @@ fn information_schema_tables_scan_walks_visible_schema_pages()
 }
 
 #[test]
+fn information_schema_tables_cursor_retains_renamed_relation_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    install_relation_discovery_catalog(&database)?;
+    let mut retained = InvocationTransaction::begin(&database, [211; 16], [9; 16], 9_999, 1, 64)?;
+    let first = retained.scan_information_schema_tables(1, None)?;
+    assert_eq!(first.rows[0].table_name, "columns");
+    let continuation = first.continuation.expect("more visible relations follow");
+
+    let table_id = [0x10; 16];
+    let object_key = catalog_id_key(2, table_id);
+    let current_object = database
+        .begin_read()?
+        .open_table(CATALOG)?
+        .get(object_key.as_slice())?
+        .ok_or("metrics table object missing")?
+        .value()
+        .to_vec();
+    let mut object = prdb_engine::catalog::decode_registered_envelope(&current_object)?;
+    let name = object
+        .fields
+        .iter_mut()
+        .find(|field| field.tag == 3)
+        .expect("table object has a name");
+    name.payload = b"renamed_metrics".to_vec();
+    let object_version = object
+        .fields
+        .iter_mut()
+        .find(|field| field.tag == 5)
+        .expect("table object has a version");
+    let version = u64::from_le_bytes(object_version.payload.as_slice().try_into()?);
+    object_version.payload = version
+        .checked_add(1)
+        .ok_or("table object version overflow")?
+        .to_le_bytes()
+        .to_vec();
+    let renamed_object = encode_envelope(
+        &family_schema(2).expect("table object family is registered"),
+        &object.logical_key,
+        &object.fields,
+    )?;
+    let table_key = catalog_id_key(5, table_id);
+    let current_table = database
+        .begin_read()?
+        .open_table(CATALOG)?
+        .get(table_key.as_slice())?
+        .ok_or("metrics table definition missing")?
+        .value()
+        .to_vec();
+    let mut table = prdb_engine::catalog::decode_registered_envelope(&current_table)?;
+    let epoch = table
+        .fields
+        .iter_mut()
+        .find(|field| field.tag == 3)
+        .expect("table definition has a write epoch");
+    let current_epoch = u64::from_le_bytes(epoch.payload.as_slice().try_into()?);
+    epoch.payload = current_epoch
+        .checked_add(1)
+        .ok_or("table write epoch overflow")?
+        .to_le_bytes()
+        .to_vec();
+    let renamed_table = encode_envelope(
+        &family_schema(5).expect("table definition family is registered"),
+        &table.logical_key,
+        &table.fields,
+    )?;
+    // This fixture intentionally omits parts of the production catalog, so
+    // publish the two catalog records directly. The invocation snapshots are
+    // the behavior under test; DDL validation is covered elsewhere.
+    let write = database.begin_write()?;
+    {
+        let mut catalog = write.open_table(CATALOG)?;
+        catalog.insert(table_key.as_slice(), renamed_table.as_slice())?;
+        catalog.insert(object_key.as_slice(), renamed_object.as_slice())?;
+    }
+    write.commit()?;
+
+    let mut retained_names = first
+        .rows
+        .into_iter()
+        .map(|row| (row.table_schema, row.table_name))
+        .collect::<Vec<_>>();
+    let mut cursor = Some(continuation);
+    while let Some(next) = cursor {
+        let page = retained.scan_information_schema_tables(1, Some(next))?;
+        retained_names.extend(
+            page.rows
+                .into_iter()
+                .map(|row| (row.table_schema, row.table_name)),
+        );
+        cursor = page.continuation;
+    }
+    assert!(retained_names.contains(&("app".to_owned(), "metrics".to_owned())));
+    assert!(!retained_names.contains(&("app".to_owned(), "renamed_metrics".to_owned())));
+
+    let mut current = InvocationTransaction::begin(&database, [215; 16], [9; 16], 9_999, 1, 64)?;
+    let mut current_names = Vec::new();
+    let mut page = current.scan_information_schema_tables(1, None)?;
+    loop {
+        current_names.extend(
+            page.rows
+                .into_iter()
+                .map(|row| (row.table_schema, row.table_name)),
+        );
+        match page.continuation {
+            Some(next) => page = current.scan_information_schema_tables(1, Some(next))?,
+            None => break,
+        }
+    }
+    assert!(!current_names.contains(&("app".to_owned(), "metrics".to_owned())));
+    assert!(current_names.contains(&("app".to_owned(), "renamed_metrics".to_owned())));
+    Ok(())
+}
+
+#[test]
 fn information_schema_columns_projects_declared_shape_in_pages()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
