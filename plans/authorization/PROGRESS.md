@@ -275,3 +275,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The policy lifecycle regression now races removal of an active row policy and its private expression against a staged row write. It checks serialization order, stale-writer abort, durable outcomes, row presence, pinned old-catalog visibility, and cleanup in the current catalog.
 - Verification: the focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
+
+## AU-7: closed relation capability rejected on write IPC — verified slice
+
+- Extended `executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle` to replay a valid relation handle after closing it through both `OPEN SCAN` and `STAGE INSERT`. Both dispatches reject the stale capability as `InvalidMetadataRequest`; the test then resolves the relation again and verifies a fresh handle works.
+- Verification: focused executor IPC regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.

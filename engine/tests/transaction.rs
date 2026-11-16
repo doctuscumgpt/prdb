@@ -2773,9 +2773,10 @@ fn executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::executor_ipc::{
         ExecutorRequestError, OpenScanRequest, ResolveRelationRequest, ResolveRelationResponse,
-        dispatch_executor_request, dispatch_executor_resolve_relation,
+        StageInsertRequest, dispatch_executor_request, dispatch_executor_resolve_relation,
     };
     use prdb_engine::ipc::{IpcFrame, Operation, ServiceRole};
+    use prdb_engine::transaction::InsertInput;
 
     let fixture = Fixture::new();
     let database = initialize(&fixture.path())?;
@@ -2878,6 +2879,25 @@ fn executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle()
     };
     assert!(matches!(
         dispatch_executor_request(ServiceRole::Executor, &mut connection, &closed_handle_scan),
+        Err(ExecutorRequestError::Transaction(
+            prdb_engine::transaction::TransactionError::InvalidMetadataRequest
+        ))
+    ));
+    let closed_handle_insert = IpcFrame {
+        operation: Operation::StageInsert as u16,
+        request_id: 45,
+        payload: StageInsertRequest {
+            relation: handle.clone(),
+            values: vec![InsertInput::Value(Some(ScalarValue::BigInt(1)))],
+        }
+        .encode()?,
+    };
+    assert!(matches!(
+        dispatch_executor_request(
+            ServiceRole::Executor,
+            &mut connection,
+            &closed_handle_insert
+        ),
         Err(ExecutorRequestError::Transaction(
             prdb_engine::transaction::TransactionError::InvalidMetadataRequest
         ))
