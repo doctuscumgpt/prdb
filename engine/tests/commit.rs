@@ -21006,6 +21006,143 @@ fn identity_ddl_cannot_disable_the_last_credentialed_admin()
             .status,
         OutcomeStatus::Aborted
     );
+
+    let token_now_us = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_micros(),
+    )?;
+    let token_expires_at_us = token_now_us.saturating_add(3_600_000_000);
+    let mut issue_audit = identity_audit_event(0xb7, user_manager, expired_admin);
+    issue_audit.correlation_id = id(0xb7);
+    issue_audit.action = AuditAction::TokenLifecycle;
+    storage.issue_token(TokenIssueRequest {
+        invocation_id: id(0xb7),
+        authenticated_actor_id: user_manager,
+        user_id: expired_admin,
+        label: "second admin credential",
+        expires_at_us: token_expires_at_us,
+        retention_deadline_us: token_expires_at_us.saturating_add(3_600_000_000),
+        audit_event: issue_audit,
+    })?;
+
+    let first_disable_invocation = id(0xb8);
+    let mut first_disable_audit = identity_audit_event(0xb9, admin_to_disable, expired_admin);
+    first_disable_audit.correlation_id = first_disable_invocation;
+    let second_disable_invocation = id(0xbb);
+    let mut second_disable_audit = identity_audit_event(0xbc, expired_admin, admin_to_disable);
+    second_disable_audit.correlation_id = second_disable_invocation;
+    let disable_barrier = Arc::new(Barrier::new(3));
+    let storage_ref = &storage;
+    let (first_disable, second_disable) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&disable_barrier);
+        let first = scope.spawn(move || {
+            barrier.wait();
+            storage_ref.set_user_login_enabled(
+                first_disable_invocation,
+                admin_to_disable,
+                expired_admin,
+                false,
+                9_999,
+                first_disable_audit,
+            )
+        });
+        let barrier = Arc::clone(&disable_barrier);
+        let second = scope.spawn(move || {
+            barrier.wait();
+            storage_ref.set_user_login_enabled(
+                second_disable_invocation,
+                expired_admin,
+                admin_to_disable,
+                false,
+                9_999,
+                second_disable_audit,
+            )
+        });
+        disable_barrier.wait();
+        (
+            first.join().expect("first admin disable thread panicked"),
+            second.join().expect("second admin disable thread panicked"),
+        )
+    });
+    let (surviving_admin, disabled_admin, winning_invocation, losing_invocation) = match (
+        first_disable,
+        second_disable,
+    ) {
+        (
+            Ok(_),
+            Err(
+                prdb_engine::storage_manager::IdentityLifecycleError::Unauthorized
+                | prdb_engine::storage_manager::IdentityLifecycleError::Commit(
+                    CommitError::Conflict | CommitError::DdlAuthorizationDenied,
+                ),
+            ),
+        ) => (
+            admin_to_disable,
+            expired_admin,
+            first_disable_invocation,
+            second_disable_invocation,
+        ),
+        (
+            Err(
+                prdb_engine::storage_manager::IdentityLifecycleError::Unauthorized
+                | prdb_engine::storage_manager::IdentityLifecycleError::Commit(
+                    CommitError::Conflict | CommitError::DdlAuthorizationDenied,
+                ),
+            ),
+            Ok(_),
+        ) => (
+            expired_admin,
+            admin_to_disable,
+            second_disable_invocation,
+            first_disable_invocation,
+        ),
+        (first, second) => panic!(
+            "concurrent LOGIN disables must have exactly one winner: first={first:?}, second={second:?}"
+        ),
+    };
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    let login_enabled = |user_id| -> Result<bool, Box<dyn std::error::Error>> {
+        let encoded = catalog
+            .get(id_catalog_key(10, user_id).as_slice())?
+            .ok_or("admin principal missing after concurrent disable")?
+            .value()
+            .to_vec();
+        let principal = decode_registered_envelope(&encoded)?;
+        let enabled = principal
+            .fields
+            .iter()
+            .find(|field| field.tag == 3)
+            .ok_or("admin LOGIN field missing")?;
+        match enabled.payload.as_slice() {
+            [0] => Ok(false),
+            [1] => Ok(true),
+            _ => Err("invalid admin LOGIN field".into()),
+        }
+    };
+    assert!(!login_enabled(disabled_admin)?);
+    assert!(login_enabled(surviving_admin)?);
+    drop(catalog);
+    drop(read);
+    let disabled_tokens = storage.list_tokens(surviving_admin, disabled_admin)?;
+    assert!(!disabled_tokens.is_empty());
+    assert!(disabled_tokens.iter().all(|token| token.revoked));
+    let surviving_tokens = storage.list_tokens(surviving_admin, surviving_admin)?;
+    assert!(surviving_tokens.iter().any(|token| !token.revoked));
+    assert_eq!(
+        lookup_outcome(&database, winning_invocation, surviving_admin, 1)?
+            .ok_or("winning admin disable outcome missing")?
+            .status,
+        OutcomeStatus::Committed
+    );
+    assert_eq!(
+        lookup_outcome(&database, losing_invocation, disabled_admin, 1)?
+            .ok_or("losing admin disable outcome missing")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    prdb_engine::startup::validate_persisted_records(&database)?;
     Ok(())
 }
 

@@ -203,3 +203,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `storage_manager_authorizes_identity_ddl_and_preserves_a_login_admin` so a real token verifier is persisted before the user is renamed. The same token then authenticates the stable user ID after rename; after `NOLOGIN`, authentication with that credential fails and the token inventory reports it revoked.
 - Verification: focused real-redb commit regression passed. Nix-shell formatting check, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The last full delegated-cgroup workspace run preceded this test-only increment.
+
+## ID-2 / ID-4 / ID-5: concurrent LOGIN disables preserve a credentialed administrator — verified slice
+
+- Extended `identity_ddl_cannot_disable_the_last_credentialed_admin` to race two administrators disabling each other's LOGIN after both have active credentials. Exactly one disable commits; the losing administrator's attempt is denied or conflicts. The disabled user's credentials are all revoked, while the surviving administrator remains LOGIN-enabled with an active credential. Persisted catalog validation succeeds afterward.
+- Verification: focused real-redb regression passed. Formatting, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process integration tests enabled and zero ignored tests.
