@@ -23628,6 +23628,60 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
             .try_into()?,
     );
     assert_eq!(denied_grantee_epoch, 1);
+    drop(catalog);
+    drop(read);
+
+    let mixed_scope_batch_id = id(0x8c);
+    let mut mixed_scope_batch_audit = identity_audit_event(0x8d, table_owner, denied_grantee);
+    mixed_scope_batch_audit.correlation_id = mixed_scope_batch_id;
+    mixed_scope_batch_audit.action = AuditAction::AuthorityChange;
+    let mixed_scope_sequence = storage.set_object_grants_batch(SetObjectGrantBatchRequest {
+        invocation_id: mixed_scope_batch_id,
+        authenticated_actor_id: table_owner,
+        grantee_id: denied_grantee,
+        object_id: table_id,
+        privileges: vec![ObjectGrantPrivilege::Select, ObjectGrantPrivilege::Update],
+        target: ObjectGrantTarget::AllColumns,
+        grant: true,
+        retention_deadline_us: 9_999,
+        audit_event: mixed_scope_batch_audit,
+    })?;
+    assert_eq!(mixed_scope_sequence, second_revoke_sequence + 1);
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    let column_select = grant_write(denied_grantee, table_id, 2, 2, id(0x66), table_owner).key;
+    let column_update = grant_write(denied_grantee, table_id, 4, 2, id(0x66), table_owner).key;
+    let column_grant_dependency = dependency_write(denied_grantee, id(0x66), 5).key;
+    assert!(catalog.get(column_select.as_slice())?.is_some());
+    assert!(catalog.get(column_update.as_slice())?.is_some());
+    assert!(catalog.get(column_grant_dependency.as_slice())?.is_some());
+    let updated_grantee = decode_registered_envelope(
+        catalog
+            .get(id_catalog_key(10, denied_grantee).as_slice())?
+            .ok_or("missing mixed-scope grantee principal")?
+            .value(),
+    )?;
+    assert_eq!(
+        u64::from_le_bytes(
+            updated_grantee
+                .fields
+                .iter()
+                .find(|field| field.tag == 4)
+                .ok_or("missing mixed-scope grantee epoch")?
+                .payload
+                .as_slice()
+                .try_into()?
+        ),
+        2
+    );
+    drop(catalog);
+    drop(read);
+    assert_eq!(
+        lookup_outcome(&database, mixed_scope_batch_id, table_owner, 1)?
+            .ok_or("missing mixed-scope grant batch outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
     Ok(())
 }
 

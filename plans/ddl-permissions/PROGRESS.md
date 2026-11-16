@@ -158,6 +158,12 @@
 - Verification: focused production gateway/supervisor process regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
 - Remaining: broaden multi-privilege batch validation to provenance/epoch and additional mixed target scopes; broader permission-change race schedules and administrative SQL forms remain open.
 
+## DP-SQL-11 / DP-8: column-target privilege batches update provenance and epoch once — verified slice
+
+- Extended `object_grant_batch_racing_manage_grants_revocation_is_atomic` with a successful `SELECT` plus `UPDATE` batch over all existing columns after the revoked-authority cases. The regression checks both family-12 records, the grantee-to-column dependency, exactly one grantee epoch increment, one sequence advance, and a committed outcome.
+- The batch is column-scoped; table-wide and object-scoped race/SQL coverage remains separate. Additional cross-scope SQL forms and repeated permission-change schedules remain open.
+- Verification: the focused real-redb regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 library tests, 191 commit tests, 77 transaction tests, plus all remaining targets). `git diff --check` passed; Cargo.lock is unchanged.
+
 ## DP-3 / DD-3: same-name policy recreation preserves distinct catalog identity — verified slice
 
 - Extended the real-redb policy lifecycle regression to drop a row policy and recreate the same table-local name. The new policy receives a distinct ID and expression ID; the current policy lookup contains the replacement and excludes the dropped policy, while the pinned pre-drop snapshot still resolves the original policy and expression. The replacement's expression dependency is checked in the current catalog.
