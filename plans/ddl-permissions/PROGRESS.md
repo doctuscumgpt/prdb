@@ -186,3 +186,8 @@
 - Connected the mixed-scope ADMIN operation to SQL name binding. A table statement with one column-capable privilege and additional object privileges (for example, `GRANT ALTER, REFERENCES (employee_id) ON TABLE ...`) resolves the column by its catalog name and emits per-privilege targets. The data privilege uses the listed column(s), or all columns when no list is supplied; other privileges stay table-scoped.
 - The bounded SQL parser now accepts this mixed form while continuing to reject multi-data-privilege column lists and non-data column targets.
 - Verification: focused SQL parser test passed; warning-denied all-target engine Clippy, formatting, and `git diff --check` passed.
+
+## DP-SQL-11 / DP-8: mixed-scope GRANT and REVOKE cross service processes — verified slice
+
+- Extended `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` to issue `GRANT ALTER, REFERENCES (key)` and its REVOKE through the authenticated ADMIN client. Permission discovery confirms ALTER is object-scoped and REFERENCES targets the resolved `key` column after grant, then confirms both entries are gone after revoke.
+- Verification: the focused gateway/supervisor process test passed inside the delegated `systemd --user` service; formatting, warning-denied all-target engine Clippy, and `git diff --check` passed.

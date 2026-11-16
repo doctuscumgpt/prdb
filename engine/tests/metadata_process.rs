@@ -1612,6 +1612,40 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         "single-column privilege GRANT SQL failed: {}",
         String::from_utf8_lossy(&grant_existing_column.stderr)
     );
+    admin.execute_object_privilege_sql(
+        "GRANT ALTER, REFERENCES (key) ON TABLE process_ddl.records TO USER process_member_user",
+    )?;
+    let mixed_scope_grants =
+        admin.list_grants_page(ddl_schema.identity_id, ddl_table.table_id, 128, None)?;
+    assert!(mixed_scope_grants.records.iter().any(|grant| {
+        grant.grantee_id == member_user.identity_id
+            && grant.privilege
+                == prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Alter
+            && grant.target_scope
+                == prdb_engine::metadata_discovery::AdministrativeGrantTargetScope::Object
+            && grant.target_id == ddl_table.table_id
+    }));
+    assert!(mixed_scope_grants.records.iter().any(|grant| {
+        grant.grantee_id == member_user.identity_id
+            && grant.privilege
+                == prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::References
+            && grant.target_scope
+                == prdb_engine::metadata_discovery::AdministrativeGrantTargetScope::Column
+            && grant.target_id == ddl_table.column_ids[0]
+    }));
+    admin.execute_object_privilege_sql(
+        "REVOKE ALTER, REFERENCES (key) ON TABLE process_ddl.records FROM USER process_member_user",
+    )?;
+    let after_mixed_scope_revoke =
+        admin.list_grants_page(ddl_schema.identity_id, ddl_table.table_id, 128, None)?;
+    assert!(!after_mixed_scope_revoke.records.iter().any(|grant| {
+        grant.grantee_id == member_user.identity_id
+            && matches!(
+                grant.privilege,
+                prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Alter
+                    | prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::References
+            )
+    }));
     std::fs::write(
         &object_privilege_sql_path,
         "GRANT SELECT (key, label) ON TABLE process_ddl.records TO USER process_member_user;",
