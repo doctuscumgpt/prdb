@@ -213,6 +213,17 @@ fn test_fail_directory_sync_after_exchange() -> bool {
     false
 }
 
+#[cfg(debug_assertions)]
+fn test_fail_backup_directory_sync() -> bool {
+    std::env::var_os("PRDB_TEST_REDB_UPGRADE_FAIL_SYNC_AFTER_BACKUP_PUBLISH").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+}
+
+#[cfg(not(debug_assertions))]
+fn test_fail_backup_directory_sync() -> bool {
+    false
+}
+
 fn open_current_ready(
     path: &Path,
 ) -> Result<Option<StorageHealthReport>, Box<dyn std::error::Error>> {
@@ -277,6 +288,12 @@ fn ensure_independent_backup(
             return Err(invalid("temporary backup differs from active source"));
         }
         publish_without_replace(&temporary, backup)?;
+        if test_fail_backup_directory_sync() {
+            return Err(io::Error::other(
+                "injected directory sync failure after backup publication",
+            )
+            .into());
+        }
         File::open(parent)?.sync_all()?;
         validate_private_file(backup)?;
         if file_digest(backup)? != source_digest {

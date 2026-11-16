@@ -210,6 +210,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: all 33 serial `bootstrap_binary` tests passed, including both sides of the exchange process-exit cases. Formatting, locked offline workspace build, warning-denied all-target Clippy, and `git diff --check` passed.
 - Limit: these abrupt process exits run with the same live kernel and filesystem and do not simulate power loss.
 
+## CL-4 physical upgrade recovers after backup-directory sync failure — verified slice
+
+- Added a debug-only failure point after publishing the independent backup but before syncing its parent directory. `maintenance_redb_physical_upgrade_recovers_after_backup_directory_sync_failure` confirms the active redb-v2 image remains byte-identical, the complete backup is reusable, and staging has not begun; a retry syncs the existing backup, completes conversion, retains the source generation, and opens the target as READY.
+- Verification: the focused `bootstrap_binary` regression passed. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests, including all 35 bootstrap binary tests.
+- Limit: the injected syscall-boundary failure and successful retry do not simulate power loss or validate device cache behavior; power-loss evidence remains open.
+
 ## 2026-11 delegated acceptance checkpoint
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. All 33 `bootstrap_binary` tests passed, covering backup validation, v1 migration, physical redb upgrade, restore, publication retry, and process-exit recovery cases.
