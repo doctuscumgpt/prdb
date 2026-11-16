@@ -440,3 +440,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 full delegated workspace verification after identity issuance hardening
 
 - `cargo test --workspace --locked -- --test-threads=1` passed inside the delegated `systemd --user` service with the documented TinyCC fixtures and runtime profile. Sandbox and process integration tests were enabled; zero tests were ignored. This run includes the unauthorized token issue/rotation enumeration regressions and the 128-cycle foreign-key catalog pressure regression.
+
+## 2026-11-16 AU-1 / AU-3: policy boolean expressions short-circuit in order — verified slice
+
+- Added `boolean_policy_predicates_short_circuit_left_to_right`. A decisive FALSE in AND and TRUE in OR suppress a later divide-by-zero, while reversing the AND operands surfaces `EvaluationFailed`. This verifies the specified left-to-right evaluation behavior without treating skipped errors as policy failures.
+- Verification: the focused evaluator regression passed; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.

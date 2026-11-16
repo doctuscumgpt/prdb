@@ -618,6 +618,73 @@ fn typed_predicates_use_three_valued_logic_and_enforce_work_limits() {
 }
 
 #[test]
+fn boolean_policy_predicates_short_circuit_left_to_right() {
+    let ctx = context();
+    let grants = [grant()];
+    let division_by_zero = Expr::Equal(
+        Box::new(Expr::Divide(
+            Box::new(Expr::Literal(Some(ScalarValue::Integer(1)))),
+            Box::new(Expr::Literal(Some(ScalarValue::Integer(0)))),
+        )),
+        Box::new(Expr::Literal(Some(ScalarValue::Integer(0)))),
+    );
+
+    let false_then_error = Expr::And(vec![
+        Expr::Literal(Some(ScalarValue::Boolean(false))),
+        division_by_zero.clone(),
+    ]);
+    assert_eq!(
+        authorize(
+            &ctx,
+            &grants,
+            &[policy(Effect::Allow, false_then_error)],
+            Operation::Select,
+            AccessTarget::Table([3; 16]),
+            Some(&[]),
+            None,
+        ),
+        Err(AuthorizationError::Denied),
+        "a decisive FALSE must suppress evaluation of later predicates"
+    );
+
+    let true_then_error = Expr::Or(vec![
+        Expr::Literal(Some(ScalarValue::Boolean(true))),
+        division_by_zero.clone(),
+    ]);
+    assert_eq!(
+        authorize(
+            &ctx,
+            &grants,
+            &[policy(Effect::Allow, true_then_error)],
+            Operation::Select,
+            AccessTarget::Table([3; 16]),
+            Some(&[]),
+            None,
+        ),
+        Ok(()),
+        "a decisive TRUE must suppress evaluation of later predicates"
+    );
+
+    let error_then_false = Expr::And(vec![
+        division_by_zero,
+        Expr::Literal(Some(ScalarValue::Boolean(false))),
+    ]);
+    assert_eq!(
+        authorize(
+            &ctx,
+            &grants,
+            &[policy(Effect::Allow, error_then_false)],
+            Operation::Select,
+            AccessTarget::Table([3; 16]),
+            Some(&[]),
+            None,
+        ),
+        Err(AuthorizationError::EvaluationFailed),
+        "the same error must fail when it occurs before the decisive predicate"
+    );
+}
+
+#[test]
 fn row_projection_redacts_cells_without_disclosing_hidden_payload_lengths() {
     let table_id = [3; 16];
     let name_id = [10; 16];
