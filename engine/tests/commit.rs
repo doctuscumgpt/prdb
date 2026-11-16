@@ -20950,6 +20950,171 @@ fn storage_manager_authorizes_identity_ddl_and_preserves_a_login_admin()
 }
 
 #[test]
+fn identity_login_reenable_does_not_revive_revoked_credentials()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let admin_user = id(0xc0);
+    let admin_role = builtin_owner_id();
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_micros(),
+    )?;
+    let retention_deadline_us = now.saturating_add(7_200_000_000);
+    let mut setup_audit = identity_audit_event(0xc0, admin_role, admin_user);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(
+        id(0xc0),
+        admin_role,
+        retention_deadline_us,
+        &[
+            principal_write_with_name(admin_user, 1, 1, "login_cycle_admin"),
+            object_write_with_name(admin_user, 8, "login_cycle_admin"),
+            membership_write_with_grantor(admin_user, admin_role, admin_role),
+            dependency_write(admin_user, admin_role, 5),
+            credential_verifier_write(
+                id(0xc8),
+                admin_user,
+                &[0xc8; 32],
+                now - 1_000_000,
+                i64::MAX,
+                None,
+                1,
+            ),
+        ],
+        &[setup_audit],
+    )?;
+
+    let mut create_audit = identity_audit_event(0xc1, admin_user, admin_user);
+    create_audit.correlation_id = id(0xc1);
+    let user = storage
+        .create_user(
+            id(0xc1),
+            admin_user,
+            "login_cycle_target",
+            retention_deadline_us,
+            create_audit,
+        )
+        .map_err(|error| format!("create target user for LOGIN cycle: {error:?}"))?;
+    let expires_at_us = now.saturating_add(3_600_000_000);
+    let mut first_issue_audit = identity_audit_event(0xc2, admin_user, user.user_id);
+    first_issue_audit.action = AuditAction::TokenLifecycle;
+    first_issue_audit.correlation_id = id(0xc2);
+    let mut first_token = storage
+        .issue_token(TokenIssueRequest {
+            invocation_id: id(0xc2),
+            authenticated_actor_id: admin_user,
+            user_id: user.user_id,
+            label: "before NOLOGIN",
+            expires_at_us,
+            retention_deadline_us,
+            audit_event: first_issue_audit,
+        })
+        .map_err(|error| format!("issue initial token for LOGIN cycle: {error:?}"))?;
+    let first_token_id = first_token.token_id;
+    let first_secret = first_token
+        .take_secret()
+        .ok_or("initial token secret missing")?;
+
+    let mut disable_audit = identity_audit_event(0xc3, admin_user, user.user_id);
+    disable_audit.correlation_id = id(0xc3);
+    let disable_sequence = storage
+        .set_user_login_enabled(
+            id(0xc3),
+            admin_user,
+            user.user_id,
+            false,
+            retention_deadline_us,
+            disable_audit,
+        )
+        .map_err(|error| format!("disable target LOGIN: {error:?}"))?;
+    let disabled_inventory = storage.list_tokens(admin_user, user.user_id)?;
+    assert!(
+        disabled_inventory
+            .iter()
+            .any(|token| token.token_id == first_token_id && token.revoked)
+    );
+
+    let mut enable_audit = identity_audit_event(0xc4, admin_user, user.user_id);
+    enable_audit.correlation_id = id(0xc4);
+    let enable_sequence = storage
+        .set_user_login_enabled(
+            id(0xc4),
+            admin_user,
+            user.user_id,
+            true,
+            retention_deadline_us,
+            enable_audit,
+        )
+        .map_err(|error| format!("re-enable target LOGIN: {error:?}"))?;
+    assert!(disable_sequence < enable_sequence);
+    let enabled_inventory = storage.list_tokens(admin_user, user.user_id)?;
+    assert!(
+        enabled_inventory
+            .iter()
+            .any(|token| token.token_id == first_token_id && token.revoked)
+    );
+    assert!(matches!(
+        storage.begin_token_authenticated_invocation(
+            id(0xc5),
+            first_token_id,
+            &first_secret,
+            retention_deadline_us,
+            1,
+            64,
+        ),
+        Err(prdb_engine::transaction::TransactionError::AuthenticationFailed)
+    ));
+    assert_eq!(
+        lookup_outcome(&database, id(0xc5), user.user_id, now)?,
+        None
+    );
+
+    let mut replacement_audit = identity_audit_event(0xc6, admin_user, user.user_id);
+    replacement_audit.action = AuditAction::TokenLifecycle;
+    replacement_audit.correlation_id = id(0xc6);
+    let mut replacement = storage.issue_token(TokenIssueRequest {
+        invocation_id: id(0xc6),
+        authenticated_actor_id: admin_user,
+        user_id: user.user_id,
+        label: "after LOGIN",
+        expires_at_us,
+        retention_deadline_us,
+        audit_event: replacement_audit,
+    })?;
+    assert!(enable_sequence < replacement.commit_sequence);
+    let replacement_id = replacement.token_id;
+    let replacement_secret = replacement
+        .take_secret()
+        .ok_or("replacement token secret missing")?;
+    let (mut admitted, roles) = storage.begin_token_authenticated_invocation(
+        id(0xc7),
+        replacement_id,
+        &replacement_secret,
+        retention_deadline_us,
+        1,
+        64,
+    )?;
+    assert!(roles.is_empty());
+    admitted.abort()?;
+    let inventory = storage.list_tokens(admin_user, user.user_id)?;
+    assert!(
+        inventory
+            .iter()
+            .any(|token| token.token_id == first_token_id && token.revoked)
+    );
+    assert!(
+        inventory
+            .iter()
+            .any(|token| token.token_id == replacement_id && !token.revoked)
+    );
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    Ok(())
+}
+
+#[test]
 fn identity_ddl_cannot_disable_the_last_credentialed_admin()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
@@ -39712,6 +39877,7 @@ fn storage_manager_issues_and_revokes_tokens_for_manage_users()
             CommitError::DdlAuthorizationDenied
         ))
     ));
+
     assert_eq!(
         second_storage_handle
             .list_tokens(user_manager, target_user)

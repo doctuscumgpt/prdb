@@ -208,3 +208,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `identity_ddl_cannot_disable_the_last_credentialed_admin` to race two administrators disabling each other's LOGIN after both have active credentials. Exactly one disable commits; the losing administrator's attempt is denied or conflicts. The disabled user's credentials are all revoked, while the surviving administrator remains LOGIN-enabled with an active credential. Persisted catalog validation succeeds afterward.
 - Verification: focused real-redb regression passed. Formatting, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process integration tests enabled and zero ignored tests.
+
+## ID-2 / ID-5: LOGIN re-enable does not revive revoked credentials — verified slice
+
+- Added `identity_login_reenable_does_not_revive_revoked_credentials`: an authorized administrator disables LOGIN for a user with an active token, re-enables LOGIN, confirms the old credential remains revoked and cannot authenticate, then issues and authenticates a fresh credential. Persisted catalog validation passes.
+- Verification: the focused real-redb regression passed. Workspace formatting, locked build, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process integration tests enabled and zero ignored tests.
