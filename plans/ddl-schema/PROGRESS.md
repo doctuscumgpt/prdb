@@ -1,5 +1,12 @@
 # Schema DDL Progress
 
+## DS-3 / CL-3: DROP SCHEMA prevents stable-ID reuse — verified slice
+
+- `StorageManager::drop_schema` writes a family-17 retirement reservation with the schema/object deletion. The serialized schema-drop authorization validator checks the exact reservation record and guards its previous absence, while generic final-catalog validation requires reservations for schema-object deletion and blocks resurrection.
+- Red/green regression in `storage_manager_creates_schema_atomically_for_privileged_actor`: observed no reservation after drop before the change; focused rerun passed, including unauthorized old-owner behavior and rejection of a catalog commit attempting to reuse the schema ID.
+- Verification: the focused real-redb regression, workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and cross-process tests were enabled; zero tests were ignored.
+- Remaining: retirement guarantees for other non-identity object kinds.
+
 ## DS-3 / DD-3: same-name index recreation retains distinct catalog identity — verified slice
 
 - The named unique-index lifecycle regression verifies that dropping and recreating an index under the same schema/name publishes a distinct ID and only the recreated family-2/family-9 records and dependency in the current snapshot. A reader pinned before the drop continues resolving the original index ID and records.

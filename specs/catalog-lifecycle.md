@@ -38,7 +38,7 @@ The implemented logical version matrix is:
 
 The pinned redb release handles physical recovery independently of this logical matrix. A readable source format does not imply service admission or an available conversion.
 
-Family-17 identity tombstones are immutable. A tombstoned identity ID cannot coexist with a family-2 object or family-10 principal. Family-16 verifier rows may refer to a tombstoned user only when revoked; live credentials require a login-enabled family-10 user.
+Family-17 tombstones are immutable ID reservations. Schema drop and user/role deletion must publish the reservation atomically with removing their family-2 and typed records; any family-2 deletion for schema, user, or role requires its family-17 tombstone. A tombstoned ID cannot coexist with a family-2 object or family-10 principal, so later catalog commits cannot reuse it. Family-16 verifier rows may refer to a tombstoned user only when revoked; live credentials require a login-enabled family-10 user. This lifecycle guarantee covers schema, user, and role IDs; permanent retirement for other dropped object kinds remains open.
 
 ### Operator-Certified Catalog-v1 Identity History
 
@@ -46,7 +46,7 @@ Catalog v1 predates family-17 identity tombstones. A v1-to-v2 migration therefor
 
 The canonical UTF-8 file format is `PRDB-IDENTITY-HISTORY-1`, followed by `database_id=<32 lowercase hex digits>`, `commit_sequence=<canonical unsigned decimal>`, `complete=true`, `tombstone_count=<canonical unsigned decimal>`, one line per tombstone ID as 32 lowercase hex digits in strictly increasing byte order, and `sha256=<64 lowercase hex digits>`. Every line, including the last, ends in LF. SHA-256 covers all bytes before the `sha256=` line and detects accidental corruption only. The file must be an owner-owned mode-0600 regular file, opened without following symlinks, and no larger than the format's 65,536-ID bound. Migration requires an explicit `--confirm-complete-identity-history` acknowledgement in addition to the file.
 
-The database ID and committed sequence must match the independently verified migration backup and locked active source. IDs must be nonzero and unique. Conversion rejects any listed ID that is still used by a family-2 object, family-10 principal, or existing family-17 tombstone. It writes every listed ID as an immutable family-17 tombstone in the target image before target validation. The operator-certified list is the complete tombstone set for pre-v2 deletions; future identity deletions continue to be reserved transactionally by family 17.
+The database ID and committed sequence must match the independently verified migration backup and locked active source. IDs must be nonzero and unique. Conversion rejects any listed ID that is still used by a family-2 object, family-10 principal, or existing family-17 tombstone. It writes every listed ID as an immutable family-17 tombstone in the target image before target validation. The operator-certified list is the complete tombstone set for pre-v2 identity deletions; future identity deletions continue to be reserved transactionally by family 17. Pre-v2 deleted schema history is not certified by this identity-history file; schema ID retirement is guaranteed for schema drops performed by the current implementation.
 
 Catalog-v1 source validation uses its historical verifier rule: every verifier, including revoked records, must reference an existing family-10 user. The v2 tombstone exception does not apply to v1 images.
 

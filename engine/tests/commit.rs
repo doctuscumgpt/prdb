@@ -1631,6 +1631,17 @@ fn storage_manager_creates_schema_atomically_for_privileged_actor()
         lookup_schema_id_by_name(&pre_drop_schema_snapshot, "app_archive")?,
         Some(created.schema_id)
     );
+    let pre_drop_catalog = pre_drop_schema_snapshot.open_table(CATALOG)?;
+    let retired_object_bytes = pre_drop_catalog
+        .get(object_key.as_slice())?
+        .ok_or("pre-drop schema object is missing")?
+        .value()
+        .to_vec();
+    let retired_schema_bytes = pre_drop_catalog
+        .get(schema_key.as_slice())?
+        .ok_or("pre-drop schema record is missing")?
+        .value()
+        .to_vec();
     let dropped =
         storage.drop_schema(drop_invocation, actor, created.schema_id, 9_999, drop_audit)?;
     assert_eq!(dropped.schema_id, created.schema_id);
@@ -1639,6 +1650,12 @@ fn storage_manager_creates_schema_atomically_for_privileged_actor()
     let catalog = read.open_table(CATALOG)?;
     assert!(catalog.get(schema_key.as_slice())?.is_none());
     assert!(catalog.get(object_key.as_slice())?.is_none());
+    assert!(
+        catalog
+            .get(id_catalog_key(17, created.schema_id).as_slice())?
+            .is_some(),
+        "DROP SCHEMA must permanently reserve its retired object ID"
+    );
     assert_eq!(
         lookup_outcome(&database, drop_invocation, actor, 1)?
             .unwrap()
@@ -1649,6 +1666,32 @@ fn storage_manager_creates_schema_atomically_for_privileged_actor()
         lookup_schema_id_by_name(&read, "app_archive")?,
         None,
         "a fresh snapshot after DROP must not resolve the retired schema name"
+    );
+    let reuse_invocation = id(0x88);
+    let mut reuse_audit = identity_audit_event(0x89, actor, created.schema_id);
+    reuse_audit.correlation_id = reuse_invocation;
+    assert_eq!(
+        commit_catalog_and_audit(
+            &database,
+            reuse_invocation,
+            actor,
+            9_999,
+            &[
+                CatalogWrite {
+                    key: object_key.clone(),
+                    expected_value: None,
+                    payload: Some(retired_object_bytes),
+                },
+                CatalogWrite {
+                    key: schema_key.clone(),
+                    expected_value: None,
+                    payload: Some(retired_schema_bytes),
+                },
+            ],
+            &[reuse_audit],
+        ),
+        Err(CommitError::InvalidCatalog),
+        "a dropped schema ID must not be reusable by a later catalog commit"
     );
     let recreate_invocation = id(0x8a);
     let mut recreate_audit = identity_audit_event(0x8b, actor, id(0x8c));

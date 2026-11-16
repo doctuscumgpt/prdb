@@ -1,5 +1,12 @@
 # Catalog Lifecycle Progress
 
+## CL-3 / DD-3 / DS-3: schema-drop ID reservation — verified slice
+
+- DROP SCHEMA now publishes the empty family-17 reservation in the same catalog transaction that removes its schema and object rows. Commit validation requires that reservation for schema-object deletion and rejects its coexistence with any live family-2 object or principal, preventing ID reuse.
+- The regression observed the missing reservation before implementation, then passed after verifying atomic presence and rejected recreation of the retired schema ID. The existing unauthorized-owner assertion also passes through the focused schema lifecycle test.
+- Verification: the focused real-redb regression, workspace build, formatting check, warning-denied all-target Clippy, and complete serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
+- Remaining lifecycle scope: permanent reservations for retired object kinds other than schemas, users, and roles, and trustworthy history for pre-v2 schema drops.
+
 Migrated component-owned progress entries from [storage-manager progress](../storage-manager/PROGRESS.md); evidence is preserved below.
 
 ## CL-1 / CL-2 dependency: local bootstrap and credential handoff — verified core

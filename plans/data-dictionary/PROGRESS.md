@@ -1,5 +1,13 @@
 # Data Dictionary Progress
 
+## DD-3 / CL-3 / DS-3: retired schema IDs are permanently reserved — verified slice
+
+- Contract: family 17 now reserves dropped schema IDs as well as deleted user/role IDs. A schema's object and typed records and its reservation must publish atomically; final catalog validation rejects any reservation that coexists with a live object/principal and requires a reservation when a schema object is deleted.
+- Red/green evidence: the schema lifecycle regression first failed because DROP SCHEMA left no family-17 record. It now checks the reservation and attempts a later raw catalog recreation of the same schema/object ID, which must fail with `InvalidCatalog`. The focused `storage_manager_creates_schema_atomically_for_privileged_actor` test passed after updating the schema-drop DDL validator to admit and guard the third catalog write.
+- Spec updates: [catalog payloads](../../specs/catalog-payloads.md), [catalog lifecycle](../../specs/catalog-lifecycle.md), [data dictionary](../../specs/data-dictionary.md), and [schema DDL](../../specs/ddl-schema.md).
+- Verification: the focused real-redb regression, workspace build, formatting check, warning-denied all-target Clippy, and full serial workspace suite passed. The suite ran inside the delegated `systemd --user` service with sandbox and process tests enabled; zero tests were ignored.
+- Remaining: this does not persist retirement for dropped table, column, index, constraint, policy, expression, or type IDs. Historical pre-v2 schema drops are not reconstructed by the identity-history migration input.
+
 ## Policy-target catalog envelope — in progress
 
 - Contract: [catalog payloads v1](../../specs/catalog-payloads.md), family 14. The 71-byte envelope includes a 39-byte canonical logical key and no TLVs; IDs are nonzero and target kind is 1, 2, or 3.

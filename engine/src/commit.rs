@@ -3042,7 +3042,7 @@ fn validate_final_identity_tombstones(
                 .value()
                 .to_vec();
             let kind = catalog_field_u16(&write.key, &current, 2, 1)?;
-            if matches!(kind, 8 | 9) {
+            if matches!(kind, 1 | 8 | 9) {
                 let id: [u8; 16] = write
                     .key
                     .get(3..19)
@@ -10225,7 +10225,7 @@ fn schema_drop_ddl_authority_guards(
     audit_events: &[AuditEvent],
 ) -> Result<Vec<CatalogGuard>, CommitError> {
     if principal_id == [0; 16]
-        || catalog_writes.len() != 2
+        || catalog_writes.len() != 3
         || audit_events.is_empty()
         || audit_events.iter().any(|event| {
             event.actor_id != Some(principal_id)
@@ -10244,10 +10244,8 @@ fn schema_drop_ddl_authority_guards(
     let mut schema_id = None;
     let mut object_write = None;
     let mut schema_write = None;
+    let mut reservation_write = None;
     for write in catalog_writes {
-        if write.payload.is_some() || write.expected_value.is_none() {
-            return Err(CommitError::InvalidCatalog);
-        }
         let id: [u8; 16] = write
             .key
             .get(3..19)
@@ -10263,13 +10261,25 @@ fn schema_drop_ddl_authority_guards(
             .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
         {
             Some(2)
-                if write.key == id_catalog_key(2, id) && object_write.replace(write).is_none() => {}
+                if write.key == id_catalog_key(2, id)
+                    && write.payload.is_none()
+                    && write.expected_value.is_some()
+                    && object_write.replace(write).is_none() => {}
             Some(3)
-                if write.key == id_catalog_key(3, id) && schema_write.replace(write).is_none() => {}
+                if write.key == id_catalog_key(3, id)
+                    && write.payload.is_none()
+                    && write.expected_value.is_some()
+                    && schema_write.replace(write).is_none() => {}
+            Some(17)
+                if write.key == id_catalog_key(17, id)
+                    && write.expected_value.is_none()
+                    && write.payload.is_some()
+                    && reservation_write.replace(write).is_none() => {}
             _ => return Err(CommitError::InvalidCatalog),
         }
     }
     let schema_id = schema_id.ok_or(CommitError::InvalidCatalog)?;
+    let reservation_write = reservation_write.ok_or(CommitError::InvalidCatalog)?;
     if audit_events
         .iter()
         .any(|event| event.target_ids.as_slice() != [schema_id])
@@ -10278,6 +10288,7 @@ fn schema_drop_ddl_authority_guards(
     }
     let object_key = id_catalog_key(2, schema_id);
     let schema_key = id_catalog_key(3, schema_id);
+    let reservation_key = id_catalog_key(17, schema_id);
     let object_bytes = object_write
         .and_then(|write| write.expected_value.as_deref())
         .ok_or(CommitError::InvalidCatalog)?;
@@ -10286,6 +10297,14 @@ fn schema_drop_ddl_authority_guards(
         .ok_or(CommitError::InvalidCatalog)?;
     let object = decode_catalog_record(&object_key, object_bytes)?;
     let schema = decode_catalog_record(&schema_key, schema_bytes)?;
+    let bytes = reservation_write
+        .payload
+        .as_deref()
+        .ok_or(CommitError::InvalidCatalog)?;
+    let reservation = decode_catalog_record(&reservation_key, bytes)?;
+    if reservation.family_code != 17 || !reservation.fields.is_empty() {
+        return Err(CommitError::InvalidCatalog);
+    }
     if object.family_code != 2
         || schema.family_code != 3
         || catalog_field_u16(&object_key, object_bytes, 2, 1)? != 1
@@ -10342,6 +10361,7 @@ fn schema_drop_ddl_authority_guards(
     let mut guards = HashMap::<Vec<u8>, Option<Vec<u8>>>::new();
     add_catalog_guard(&mut guards, object_key.clone(), Some(object_bytes.to_vec()));
     add_catalog_guard(&mut guards, schema_key, Some(schema_bytes.to_vec()));
+    add_catalog_guard(&mut guards, reservation_key, None);
     add_catalog_guard(&mut guards, database_key, Some(database_bytes));
     add_catalog_guard(&mut guards, actor_key, Some(actor_bytes));
 

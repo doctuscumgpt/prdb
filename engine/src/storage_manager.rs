@@ -3983,6 +3983,7 @@ impl<'db> StorageManager<'db> {
             .map_err(|_| SchemaLifecycleError::Storage)?;
         let object_key = id_catalog_key(2, schema_id);
         let schema_key = id_catalog_key(3, schema_id);
+        let reservation_key = retired_object_id_catalog_key(schema_id);
         let object_bytes = catalog
             .get(object_key.as_slice())
             .map_err(|_| SchemaLifecycleError::Storage)?
@@ -3997,6 +3998,19 @@ impl<'db> StorageManager<'db> {
             .map_err(|_| SchemaLifecycleError::Commit(CommitError::InvalidCatalog))?;
         decode_registered_envelope(&schema_bytes)
             .map_err(|_| SchemaLifecycleError::Commit(CommitError::InvalidCatalog))?;
+        if catalog
+            .get(reservation_key.as_slice())
+            .map_err(|_| SchemaLifecycleError::Storage)?
+            .is_some()
+        {
+            return Err(SchemaLifecycleError::Commit(CommitError::InvalidCatalog));
+        }
+        let reservation_payload = encode_envelope(
+            &family_schema(17).ok_or(SchemaLifecycleError::Storage)?,
+            &reservation_key,
+            &[],
+        )
+        .map_err(|_| SchemaLifecycleError::Commit(CommitError::InvalidCatalog))?;
         audit_event.target_ids = vec![schema_id];
         let writes = [
             CatalogWrite {
@@ -4008,6 +4022,11 @@ impl<'db> StorageManager<'db> {
                 key: schema_key,
                 expected_value: Some(schema_bytes),
                 payload: None,
+            },
+            CatalogWrite {
+                key: reservation_key,
+                expected_value: None,
+                payload: Some(reservation_payload),
             },
         ];
         let commit_sequence = commit_authorized_schema_drop_ddl_with_fences(
@@ -8452,7 +8471,7 @@ impl<'db> StorageManager<'db> {
         }
         let principal_key = principal_catalog_key(identity_id);
         let object_key = identity_object_catalog_key(identity_id);
-        let tombstone_key = identity_tombstone_catalog_key(identity_id);
+        let tombstone_key = retired_object_id_catalog_key(identity_id);
         let read = self
             .database
             .begin_read()
@@ -9044,7 +9063,7 @@ impl<'db> StorageManager<'db> {
             }
             let principal_key = principal_catalog_key(user_id);
             let object_key = identity_object_catalog_key(user_id);
-            let tombstone_key = identity_tombstone_catalog_key(user_id);
+            let tombstone_key = retired_object_id_catalog_key(user_id);
             let read = self
                 .database
                 .begin_read()
@@ -14433,7 +14452,7 @@ fn identity_object_catalog_key(object_id: [u8; 16]) -> Vec<u8> {
     key
 }
 
-fn identity_tombstone_catalog_key(object_id: [u8; 16]) -> Vec<u8> {
+fn retired_object_id_catalog_key(object_id: [u8; 16]) -> Vec<u8> {
     let mut key = 17u16.to_be_bytes().to_vec();
     key.push(1);
     key.extend_from_slice(&object_id);
