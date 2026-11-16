@@ -4743,6 +4743,18 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             prdb_engine::client_submit::AdminObjectGrantTarget::Object,
         )?;
     }
+    let revoked_index_one = admin.create_index(
+        created_table.table_id,
+        "process_revoked_cursor_index_one",
+        &created_table.column_ids,
+        false,
+    )?;
+    let revoked_index_two = admin.create_index(
+        created_table.table_id,
+        "process_revoked_cursor_index_two",
+        &created_table.column_ids,
+        false,
+    )?;
     admin.set_schema_owner(created_schema.identity_id, transfer_owner.identity_id)?;
     let mut cursor_owner_credentials = read_client_credentials(&transfer_credential_path)?;
     let mut cursor_owner = AdminClient::connect_authenticated(
@@ -4760,6 +4772,22 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let revoked_policy_cursor = first_policy_page
         .next_cursor
         .ok_or("expected a policy cursor before schema ownership is transferred")?;
+    let mut index_cursor_owner_credentials = read_client_credentials(&transfer_credential_path)?;
+    let mut index_cursor_owner = AdminClient::connect_authenticated(
+        address,
+        index_cursor_owner_credentials.token_id,
+        &mut index_cursor_owner_credentials.token_secret,
+    )?;
+    let first_index_page = index_cursor_owner.list_indexes_page(
+        created_schema.identity_id,
+        created_table.table_id,
+        1,
+        None,
+    )?;
+    assert_eq!(first_index_page.records.len(), 1);
+    let revoked_index_cursor = first_index_page
+        .next_cursor
+        .ok_or("expected an index cursor before schema ownership is transferred")?;
     let mut grant_cursor_owner_credentials = read_client_credentials(&transfer_credential_path)?;
     let mut grant_cursor_owner = AdminClient::connect_authenticated(
         address,
@@ -4790,6 +4818,19 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         ),
         "revoked grant cursor result: {invalidated_grant_page:?}"
     );
+    let invalidated_index_page = index_cursor_owner.list_indexes_page(
+        created_schema.identity_id,
+        created_table.table_id,
+        1,
+        Some(&revoked_index_cursor),
+    );
+    assert!(
+        matches!(
+            &invalidated_index_page,
+            Err(prdb_engine::client_submit::ClientSubmitError::ServerRejected(_))
+        ),
+        "revoked index cursor result: {invalidated_index_page:?}"
+    );
     assert!(matches!(
         cursor_owner.list_policies_page(
             created_schema.identity_id,
@@ -4801,8 +4842,13 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     ));
     drop(grant_cursor_owner);
     drop(grant_cursor_owner_credentials);
+    drop(index_cursor_owner);
+    drop(index_cursor_owner_credentials);
     drop(cursor_owner);
     drop(cursor_owner_credentials);
+
+    admin.drop_index(revoked_index_one.index_id)?;
+    admin.drop_index(revoked_index_two.index_id)?;
 
     // MANAGE_POLICIES authorizes DDL but does not disclose administrative
     // policy metadata after schema ownership is returned.

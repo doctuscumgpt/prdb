@@ -371,3 +371,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Added `information_schema_tables_cursor_retains_grant_snapshot_across_revocation`. It begins a paged tables scan, revokes schema USAGE plus table and column SELECT grants and both derived-index directions, then verifies the retained cursor still returns the previously visible relation. A new invocation sees only the three public virtual relations, and replaying the old cursor in that invocation is rejected.
 - The fixture changes grants in one atomic redb write so the check isolates invocation-snapshot semantics; production grant authorization and mutation paths are exercised in the separate permission and process lifecycle regressions.
 - Verification: the focused real-redb snapshot regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests (294 unit, 194 commit, 78 transaction tests, plus all other targets).
+
+## MD-6: index metadata cursor rechecks schema-owner authority — verified slice
+
+- Extended the authenticated gateway/supervisor lifecycle with two indexes and a one-record index metadata page for a non-administrator schema owner. After schema ownership transfers back to the database administrator, continuing the former owner's cursor is rejected; the cursor uses its own authenticated session because rejected control requests close their connection.
+- This verifies current authority is rechecked for index metadata continuations as well as grant and policy pages, while the captured index catalog rows remain unchanged.
+- Verification: the focused production gateway/supervisor process test passed (1 passed, 0 failed, 0 ignored), and warning-denied all-target Clippy passed. The full delegated-cgroup workspace suite was not rerun for this process-test extension.
