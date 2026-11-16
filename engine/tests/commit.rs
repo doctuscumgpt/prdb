@@ -14876,6 +14876,10 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
             .next_cursor
             .as_deref()
             .ok_or("expected multiple public information_schema relations")?;
+        assert!(matches!(
+            metadata_client.list_relations_page(public_schema_id, 2, Some(public_cursor)),
+            Err(prdb_engine::client_submit::ClientSubmitError::ServerRejected(_))
+        ));
         let second_public_relation =
             metadata_client.list_relations_page(public_schema_id, 1, Some(public_cursor))?;
         assert_eq!(second_public_relation.records.len(), 1);
@@ -14909,6 +14913,15 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
             .next_cursor
             .as_deref()
             .ok_or("expected a second declared column page")?;
+        assert!(matches!(
+            metadata_client.list_columns_page(
+                schema.schema_id,
+                relation.relation_id,
+                2,
+                Some(cursor),
+            ),
+            Err(prdb_engine::client_submit::ClientSubmitError::ServerRejected(_))
+        ));
         let rename_invocation = id(249);
         let mut rename_audit = identity_audit_event(0xfb, admin_id, visible_table.column_ids[1]);
         rename_audit.correlation_id = rename_invocation;
