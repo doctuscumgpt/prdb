@@ -3857,9 +3857,34 @@ mod catalog_index_tests {
         write.commit().unwrap();
         ensure_index_name_index(&database).unwrap();
         let read = database.begin_read().unwrap();
+        let catalog = read.open_table(CATALOG).unwrap();
+        let object_prefix = [2u16.to_be_bytes().as_slice(), &[1]].concat();
+        let mut expected: Vec<[u8; 16]> = Vec::new();
+        for entry in catalog.iter().unwrap() {
+            let (key, value) = entry.unwrap();
+            if !key.value().starts_with(&object_prefix) {
+                continue;
+            }
+            let record = decode_registered_envelope(value.value()).unwrap();
+            let field = |tag| {
+                record
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == tag)
+                    .unwrap()
+                    .payload
+                    .as_slice()
+            };
+            if field(1) == 7u16.to_le_bytes() && field(2) == [0x31; 16] && field(3) == b"orders_idx"
+            {
+                expected.push(record.logical_key[3..].try_into().unwrap());
+            }
+        }
+        expected.sort_unstable();
+        assert_eq!(expected, vec![[0x69; 16]]);
         assert_eq!(
             lookup_index_id_by_name(&read, [0x31; 16], "orders_idx").unwrap(),
-            Some([0x69; 16])
+            expected.first().copied()
         );
     }
 

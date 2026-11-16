@@ -450,3 +450,9 @@
 - Strengthened `stale_column_lookups_are_rebuilt_from_catalog_records` to scan family-6 column definitions and independently derive the expected ID by relation/name and relation/ordinal. Both rebuilt lookup directions are compared to those exact catalog-derived results.
 - Verification: focused real-redb startup regression passed. Locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (294 unit, 190 commit, 76 transaction tests, plus all remaining targets).
 - Remaining: parity for additional secondary-index families and broader DD-3 referential-integrity/pressure coverage remain open.
+
+## DD-2: index-name lookup matches an independent catalog scan — verified slice
+
+- Strengthened `stale_index_name_lookup_is_rebuilt_from_catalog_records` to scan family-2 catalog objects, filter index objects by schema and name, and derive the expected index ID from each matching logical key. The repaired name lookup is compared against that independently derived result.
+- Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (294 unit tests, 190 commit tests, 76 transaction tests, plus all remaining targets).
+- Remaining: parity for additional secondary-index families and broader DD-3 referential-integrity/pressure coverage remain open.
