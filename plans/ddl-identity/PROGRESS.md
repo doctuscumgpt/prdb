@@ -209,6 +209,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Extended `identity_ddl_cannot_disable_the_last_credentialed_admin` to race two administrators disabling each other's LOGIN after both have active credentials. Exactly one disable commits; the losing administrator's attempt is denied or conflicts. The disabled user's credentials are all revoked, while the surviving administrator remains LOGIN-enabled with an active credential. Persisted catalog validation succeeds afterward.
 - Verification: focused real-redb regression passed. Formatting, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process integration tests enabled and zero ignored tests.
 
+## ID-7: owner-token outcome reconciliation after service restarts — verified slice
+
+- Extended `disconnected_submission_is_reconciled_after_gateway_restart` with a second token for the same query owner. After cancellation, the administrator revokes the original token; a fresh connection using that credential is rejected, while the sibling owner token reconciles the durable ABORTED result after gateway restart and again after supervisor/storage restart. An unrelated owner's status request returns `unknown` for the invocation.
+- Verification: the focused process test passed inside a delegated `systemd --user` cgroup with `cpu`, `memory`, and `pids` enabled. Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+
 ## ID-2 / ID-5: LOGIN re-enable does not revive revoked credentials — verified slice
 
 - Added `identity_login_reenable_does_not_revive_revoked_credentials`: an authorized administrator disables LOGIN for a user with an active token, re-enables LOGIN, confirms the old credential remains revoked and cannot authenticate, then issues and authenticates a fresh credential. Persisted catalog validation passes.

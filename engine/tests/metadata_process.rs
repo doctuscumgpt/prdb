@@ -5973,6 +5973,16 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         .map_err(|error| format!("issue query token failed: {error:?}"))?;
     let query_token_id = query_token.token_id;
     let mut query_secret = *query_token.token_secret();
+    let recovery_token = admin
+        .issue_token(
+            query_user.identity_id,
+            "process query recovery",
+            query_token_expiry,
+        )
+        .map_err(|error| format!("issue recovery token failed: {error:?}"))?;
+    let recovery_token_id = recovery_token.token_id;
+    let mut restart_recovery_secret = *recovery_token.token_secret();
+    let mut durable_recovery_secret = *recovery_token.token_secret();
     let invocation_list_credentials_path = root.join("invocation-list-owner.cred");
     write_client_credentials(
         &invocation_list_credentials_path,
@@ -5982,7 +5992,6 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         },
     )?;
     let mut restart_query_secret = query_secret;
-    let mut recovery_query_secret = query_secret;
     let mut client =
         SubmissionClient::connect_authenticated(address, query_token_id, &mut query_secret)?;
     let invocation_id = client
@@ -6044,6 +6053,17 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         let other_owner_output = String::from_utf8(other_owner_list.stdout)?;
         assert!(other_owner_output.contains("\"invocations\":[]"));
         assert!(!other_owner_output.contains(&encode_id_hex(&invocation_id)));
+        let mut unrelated_owner_secret = token_secret;
+        let mut unrelated_owner = SubmissionClient::connect_authenticated(
+            address,
+            token_id,
+            &mut unrelated_owner_secret,
+        )?;
+        assert_eq!(
+            unrelated_owner.status(invocation_id)?,
+            InvocationStatus::Unknown,
+            "cross-owner status must not reveal the invocation"
+        );
         let runtime_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
             .args([
                 "runtime-list",
@@ -6150,16 +6170,29 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
             .cancel_invocation(invocation_id)
             .map_err(|error| format!("active CANCEL failed: {error:?}"))?;
         assert_eq!(cancellation, CancellationResult::Accepted);
+        let revoked = admin
+            .revoke_token(query_token_id)
+            .map_err(|error| format!("revoke original query token failed: {error:?}"))?;
+        assert!(revoked.commit_sequence > 0);
         cancellation_requested_at = Instant::now();
         let _gateway_crash_status = gateway.kill()?;
     }
     drop(client);
 
     let (mut replacement_gateway, replacement_address) = start_gateway(&service_socket, uid)?;
+    assert!(
+        SubmissionClient::connect_authenticated(
+            replacement_address,
+            query_token_id,
+            &mut restart_query_secret,
+        )
+        .is_err(),
+        "a revoked token must not reconnect for status reconciliation"
+    );
     let mut status_client = SubmissionClient::connect_authenticated(
         replacement_address,
-        query_token_id,
-        &mut restart_query_secret,
+        recovery_token_id,
+        &mut restart_recovery_secret,
     )?;
     let status_deadline = Instant::now() + Duration::from_secs(10);
     let status = loop {
@@ -6261,8 +6294,8 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
     let (mut recovered_gateway, recovered_address) = start_gateway(&service_socket, uid)?;
     let mut recovered_status_client = SubmissionClient::connect_authenticated(
         recovered_address,
-        query_token_id,
-        &mut recovery_query_secret,
+        recovery_token_id,
+        &mut durable_recovery_secret,
     )?;
     assert_eq!(
         recovered_status_client.status(invocation_id)?,
