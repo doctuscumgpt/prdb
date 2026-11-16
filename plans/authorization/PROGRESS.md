@@ -290,3 +290,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended the catalog-authorized scan IPC regression to replay a genuine row handle from one principal's invocation through `STAGE DELETE` on another principal's connection. Dispatch rejects it as `InvalidMetadataRequest` before mutation.
 - Verification: focused real-redb transaction regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
+
+## AU-7: cross-principal row-handle replay rejected for UPDATE and DELETE — verified slice
+
+- Extended `catalog_authorized_scan_builds_its_projection_from_pinned_records` to submit both `STAGE DELETE` and `STAGE UPDATE` with a genuine row handle issued to another principal. Both IPC operations fail with `InvalidMetadataRequest`; the stored row bytes remain unchanged after the replay invocation aborts.
+- Verification: focused real-redb transaction regression passed. Full formatting, workspace build, and warning-denied all-target Clippy checks are recorded with this change. The complete delegated workspace suite was not rerun for this test-only increment; the immediately preceding full run passed with sandbox/process tests enabled and zero ignored tests.

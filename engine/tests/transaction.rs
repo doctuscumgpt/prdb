@@ -3850,6 +3850,16 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
     let mut replay_invocation =
         InvocationTransaction::begin(&database, [0x9f; 16], restricted_principal_id, 9_999, 1, 64)?;
     let mut replay_connection = replay_invocation.open_executor_metadata_connection();
+    let mut replay_target_row_key = Vec::with_capacity(32);
+    replay_target_row_key.extend_from_slice(&table_id);
+    replay_target_row_key.extend_from_slice(&row_id.row);
+    let replay_target_before = database
+        .begin_read()?
+        .open_table(ROWS)?
+        .get(replay_target_row_key.as_slice())?
+        .expect("seeded row is present before cross-principal IPC")
+        .value()
+        .to_vec();
     let cross_principal_row_replay = IpcFrame {
         operation: IpcOperation::StageDelete as u16,
         request_id: 73,
@@ -3868,8 +3878,42 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
             TransactionError::InvalidMetadataRequest
         ))
     ));
+    let cross_principal_row_update_replay = IpcFrame {
+        operation: IpcOperation::StageUpdate as u16,
+        request_id: 74,
+        payload: StageUpdateRequest {
+            handle: first_page.rows[0].handle.clone(),
+            patches: vec![FieldPatch {
+                ordinal: 0,
+                value: Some(ScalarValue::Bytea(
+                    b"forged cross-principal update".to_vec(),
+                )),
+            }],
+        }
+        .encode()?,
+    };
+    assert!(matches!(
+        dispatch_executor_request(
+            ServiceRole::Executor,
+            &mut replay_connection,
+            &cross_principal_row_update_replay,
+        ),
+        Err(ExecutorRequestError::Transaction(
+            TransactionError::InvalidMetadataRequest
+        ))
+    ));
     drop(replay_connection);
     replay_invocation.abort()?;
+    assert_eq!(
+        database
+            .begin_read()?
+            .open_table(ROWS)?
+            .get(replay_target_row_key.as_slice())?
+            .expect("forged IPC requests leave the seeded row present")
+            .value(),
+        replay_target_before,
+        "cross-principal DELETE and UPDATE requests must not change the stored row"
+    );
     let next_cursor = first_page
         .continuation
         .expect("full page returns a fresh continuation");
