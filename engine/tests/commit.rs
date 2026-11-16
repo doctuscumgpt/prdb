@@ -2279,14 +2279,16 @@ fn storage_manager_drop_table_removes_owned_catalog_and_rows()
     let schema_invocation = id(0x41);
     let mut schema_audit = identity_audit_event(0x42, actor, id(0x43));
     schema_audit.correlation_id = schema_invocation;
-    let schema = storage.create_schema(
-        schema_invocation,
-        actor,
-        "drop_table_schema",
-        actor,
-        9_999,
-        schema_audit,
-    )?;
+    let schema = storage
+        .create_schema(
+            schema_invocation,
+            actor,
+            "drop_table_schema",
+            actor,
+            9_999,
+            schema_audit,
+        )
+        .map_err(|error| format!("create grant-batch schema: {error:?}"))?;
     let create_invocation = id(0x44);
     let mut create_audit = identity_audit_event(0x45, actor, id(0x46));
     create_audit.correlation_id = create_invocation;
@@ -5438,21 +5440,23 @@ fn set_not_null_racing_a_staged_null_insert_is_atomic() -> Result<(), Box<dyn st
     let table_invocation = id(0x57);
     let mut table_audit = identity_audit_event(0x58, actor, id(0x59));
     table_audit.correlation_id = table_invocation;
-    let table = storage.create_table(CreateTableRequest {
-        invocation_id: table_invocation,
-        authenticated_actor_id: actor,
-        schema_id: schema.schema_id,
-        name: "nullable_table".to_owned(),
-        columns: vec![TableColumnDefinition {
-            name: "value".to_owned(),
-            scalar_type: ScalarType::Text,
-            nullable: true,
-            generated_uuid_identity: false,
-            default: None,
-        }],
-        retention_deadline_us: 9_999,
-        audit_event: table_audit,
-    })?;
+    let table = storage
+        .create_table(CreateTableRequest {
+            invocation_id: table_invocation,
+            authenticated_actor_id: actor,
+            schema_id: schema.schema_id,
+            name: "nullable_table".to_owned(),
+            columns: vec![TableColumnDefinition {
+                name: "value".to_owned(),
+                scalar_type: ScalarType::Text,
+                nullable: true,
+                generated_uuid_identity: false,
+                default: None,
+            }],
+            retention_deadline_us: 9_999,
+            audit_event: table_audit,
+        })
+        .map_err(|error| format!("create grant-batch table: {error:?}"))?;
     let baseline_sequence = commit_sequence(&database)?;
 
     let writer_invocation = id(0x5a);
@@ -23636,7 +23640,8 @@ fn storage_manager_authorizes_object_grants_and_linearizes_revocation_races()
 fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{
-        ObjectGrantPrivilege, ObjectGrantTarget, SetObjectGrantBatchRequest, SetObjectGrantRequest,
+        CreateTableRequest, ObjectGrantPrivilege, ObjectGrantTarget, SetObjectGrantBatchRequest,
+        SetObjectGrantRequest, TableColumnDefinition,
     };
 
     let fixture = Fixture::new();
@@ -23645,20 +23650,11 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
     let database_admin = builtin_owner_id();
     let table_owner = id(0x74);
     let grant_manager = id(0x75);
+    let schema_admin = id(0x76);
     let grantee = id(0x78);
     let denied_grantee = id(0x79);
     let invocation_id = id(0x84);
     let revoke_id = id(0x85);
-    let table_id = id(16);
-    let mut table_owner_object = object_write_with_owner(table_id, 3, table_owner);
-    let old_table_object = database
-        .begin_read()?
-        .open_table(CATALOG)?
-        .get(id_catalog_key(2, table_id).as_slice())?
-        .ok_or("missing target table object")?
-        .value()
-        .to_vec();
-    table_owner_object.expected_value = Some(old_table_object);
     let mut setup_audit = audit_event(100);
     setup_audit.actor_id = Some(database_admin);
     setup_audit.action = AuditAction::AuthorityChange;
@@ -23672,15 +23668,64 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
                 object_write_with_name(table_owner, 8, "batch_table_owner"),
                 principal_write_with_name(grant_manager, 1, 1, "batch_grant_manager"),
                 object_write_with_name(grant_manager, 8, "batch_grant_manager"),
+                principal_write_with_name(schema_admin, 1, 1, "batch_schema_admin"),
+                object_write_with_name(schema_admin, 8, "batch_schema_admin"),
+                membership_write(schema_admin, database_admin),
+                dependency_write(schema_admin, database_admin, 5),
                 principal_write_with_name(grantee, 1, 1, "batch_grantee"),
                 object_write_with_name(grantee, 8, "batch_grantee"),
                 principal_write_with_name(denied_grantee, 1, 1, "batch_denied_grantee"),
                 object_write_with_name(denied_grantee, 8, "batch_denied_grantee"),
-                table_owner_object,
             ],
             &[setup_audit],
         )
         .map_err(|error| format!("initialize batch grant authority: {error:?}"))?;
+    let schema_invocation = id(0x80);
+    let mut schema_audit = identity_audit_event(0x80, schema_admin, table_owner);
+    schema_audit.correlation_id = schema_invocation;
+    schema_audit.action = AuditAction::Ddl;
+    let schema = storage
+        .create_schema(
+            schema_invocation,
+            schema_admin,
+            "batch_grant_schema",
+            table_owner,
+            9_999,
+            schema_audit,
+        )
+        .map_err(|error| format!("create grant-batch schema: {error:?}"))?;
+    let table_invocation = id(0x81);
+    let mut table_audit = identity_audit_event(0x81, table_owner, id(0x82));
+    table_audit.correlation_id = table_invocation;
+    let table = storage
+        .create_table(CreateTableRequest {
+            invocation_id: table_invocation,
+            authenticated_actor_id: table_owner,
+            schema_id: schema.schema_id,
+            name: "batch_grant_table".to_owned(),
+            columns: vec![
+                TableColumnDefinition {
+                    name: "first_value".to_owned(),
+                    scalar_type: ScalarType::Integer,
+                    nullable: true,
+                    generated_uuid_identity: false,
+                    default: None,
+                },
+                TableColumnDefinition {
+                    name: "second_value".to_owned(),
+                    scalar_type: ScalarType::Integer,
+                    nullable: true,
+                    generated_uuid_identity: false,
+                    default: None,
+                },
+            ],
+            retention_deadline_us: 9_999,
+            audit_event: table_audit,
+        })
+        .map_err(|error| format!("create grant-batch table: {error:?}"))?;
+    let table_id = table.table_id;
+    let first_column_id = table.column_ids[0];
+    let second_column_id = table.column_ids[1];
     let mut manager_grant_audit = identity_audit_event(0x82, table_owner, grant_manager);
     manager_grant_audit.correlation_id = id(0x83);
     manager_grant_audit.action = AuditAction::AuthorityChange;
@@ -23906,7 +23951,7 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
         grantee_id: denied_grantee,
         object_id: table_id,
         privileges: vec![ObjectGrantPrivilege::Select, ObjectGrantPrivilege::Update],
-        target: ObjectGrantTarget::AllColumns,
+        target: ObjectGrantTarget::Columns(vec![first_column_id, second_column_id]),
         grant: true,
         retention_deadline_us: 9_999,
         audit_event: mixed_scope_batch_audit,
@@ -23914,12 +23959,37 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
     assert_eq!(mixed_scope_sequence, second_revoke_sequence + 1);
     let read = database.begin_read()?;
     let catalog = read.open_table(CATALOG)?;
-    let column_select = grant_write(denied_grantee, table_id, 2, 2, id(0x66), table_owner).key;
-    let column_update = grant_write(denied_grantee, table_id, 4, 2, id(0x66), table_owner).key;
-    let column_grant_dependency = dependency_write(denied_grantee, id(0x66), 5).key;
-    assert!(catalog.get(column_select.as_slice())?.is_some());
-    assert!(catalog.get(column_update.as_slice())?.is_some());
-    assert!(catalog.get(column_grant_dependency.as_slice())?.is_some());
+    for column_id in [first_column_id, second_column_id] {
+        for privilege in [2, 4] {
+            let column_grant = grant_write(
+                denied_grantee,
+                table_id,
+                privilege,
+                2,
+                column_id,
+                table_owner,
+            )
+            .key;
+            assert!(catalog.get(column_grant.as_slice())?.is_some());
+        }
+        let column_grant_dependency = dependency_write(denied_grantee, column_id, 5).key;
+        assert!(catalog.get(column_grant_dependency.as_slice())?.is_some());
+    }
+    for privilege in [2, 4] {
+        let table_grant = grant_write(
+            denied_grantee,
+            table_id,
+            privilege,
+            1,
+            table_id,
+            table_owner,
+        )
+        .key;
+        assert!(
+            catalog.get(table_grant.as_slice())?.is_none(),
+            "an explicit column batch must not expand into table-wide grants"
+        );
+    }
     let updated_grantee = decode_registered_envelope(
         catalog
             .get(id_catalog_key(10, denied_grantee).as_slice())?
@@ -23947,6 +24017,7 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
             .status,
         OutcomeStatus::Committed
     );
+    assert!(prdb_engine::startup::validate_persisted_records(&database).is_ok());
     Ok(())
 }
 

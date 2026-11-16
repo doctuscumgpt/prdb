@@ -160,9 +160,9 @@
 
 ## DP-SQL-11 / DP-8: column-target privilege batches update provenance and epoch once — verified slice
 
-- Extended `object_grant_batch_racing_manage_grants_revocation_is_atomic` with a successful `SELECT` plus `UPDATE` batch over all existing columns after the revoked-authority cases. The regression checks both family-12 records, the grantee-to-column dependency, exactly one grantee epoch increment, one sequence advance, and a committed outcome.
-- The batch is column-scoped; table-wide and object-scoped race/SQL coverage remains separate. Additional cross-scope SQL forms and repeated permission-change schedules remain open.
-- Verification: the focused real-redb regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 library tests, 191 commit tests, 77 transaction tests, plus all remaining targets). `git diff --check` passed; Cargo.lock is unchanged.
+- Extended `object_grant_batch_racing_manage_grants_revocation_is_atomic` with a successful `SELECT` plus `UPDATE` batch targeting an explicit two-column subset on a table created through the supported schema/table DDL paths. The regression checks both family-12 grants and each grantee-to-column dependency, verifies no table-wide grant was created, and confirms exactly one grantee epoch increment, one sequence advance, and a committed outcome.
+- `ObjectGrantTarget::Columns` now has real-redb acceptance alongside the existing `Object` and `AllColumns` variants. Cross-scope targets in one batch remain outside the request's common-target contract; broader SQL forms and repeated permission-change schedules remain open.
+- Verification: the focused real-redb regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 unit, 192 commit, 77 transaction tests, plus all remaining targets).
 
 ## DP-3 / DD-3: same-name policy recreation preserves distinct catalog identity — verified slice
 
