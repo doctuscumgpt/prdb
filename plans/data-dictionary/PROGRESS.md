@@ -528,3 +528,9 @@
 - Added final-catalog and persisted-catalog checks requiring an explicit table-object parent schema to agree with family-5's schema ID. This moves the relationship check into the common validator so read-only backup/recovery validation catches the same corruption as writable startup's derived-index rebuild.
 - Added a commit-boundary test for atomic rejection and a regression that runs both read-only and writable startup validation against the malformed parent graph.
 - Verification: focused real-redb regressions passed; all 57 startup tests and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 library tests, 196 commit tests, 78 transaction tests, plus all remaining targets). Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. Cargo.lock is unchanged.
+
+## DD-2 / DD-3 / DD-5: index-name and table-index snapshots under catalog pressure — verified slice
+
+- Extended `schema_create_drop_pressure_preserves_pinned_name_index_snapshots` so each of its 128 schema/table cycles also creates and drops a named index. The test checks the index-name lookup and table-index scan before and after the drop in a retained snapshot, then checks both lookups are empty in a fresh snapshot.
+- This adds repeated index-family catalog publication/removal and verifies that pinned dictionary readers retain the old index definition while current readers observe its removal.
+- Verification: the focused real-redb pressure test passed (1 passed, 0 failed); `cargo fmt --all -- --check` and warning-denied all-target Clippy passed. The full delegated-cgroup workspace suite was not rerun for this test-only extension.

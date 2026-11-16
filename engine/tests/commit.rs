@@ -8087,6 +8087,87 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
                 retention_deadline_us: 9_999,
                 audit_event: table_create_audit,
             })?;
+            let index_create_invocation = pressure_id(0xd0, index);
+            let mut index_create_audit = identity_audit_event(index as u8, actor, table.table_id);
+            index_create_audit.event_id = pressure_id(0xd1, index);
+            index_create_audit.correlation_id = index_create_invocation;
+            let created_index =
+                storage.create_index(prdb_engine::storage_manager::CreateIndexRequest {
+                    invocation_id: index_create_invocation,
+                    authenticated_actor_id: actor,
+                    table_id: table.table_id,
+                    name: "pressure_value_idx".to_owned(),
+                    column_ids: table.column_ids.clone(),
+                    unique: false,
+                    retention_deadline_us: 9_999,
+                    audit_event: index_create_audit,
+                })?;
+            let retained_index_snapshot = database.begin_read()?;
+            assert_eq!(
+                lookup_index_id_by_name(
+                    &retained_index_snapshot,
+                    created.schema_id,
+                    "pressure_value_idx",
+                )?,
+                Some(created_index.index_id)
+            );
+            assert_eq!(
+                prdb_engine::catalog_index::scan_index_ids_for_table(
+                    &retained_index_snapshot,
+                    table.table_id,
+                    1,
+                )?,
+                vec![created_index.index_id]
+            );
+
+            let index_drop_invocation = pressure_id(0xd2, index);
+            let mut index_drop_audit =
+                identity_audit_event(index as u8, actor, created_index.index_id);
+            index_drop_audit.event_id = pressure_id(0xd3, index);
+            index_drop_audit.correlation_id = index_drop_invocation;
+            storage.drop_index(prdb_engine::storage_manager::DropIndexRequest {
+                invocation_id: index_drop_invocation,
+                authenticated_actor_id: actor,
+                index_id: created_index.index_id,
+                retention_deadline_us: 9_999,
+                audit_event: index_drop_audit,
+            })?;
+            assert_eq!(
+                lookup_index_id_by_name(
+                    &retained_index_snapshot,
+                    created.schema_id,
+                    "pressure_value_idx",
+                )?,
+                Some(created_index.index_id),
+                "a pinned dictionary snapshot must retain the dropped index name"
+            );
+            assert_eq!(
+                prdb_engine::catalog_index::scan_index_ids_for_table(
+                    &retained_index_snapshot,
+                    table.table_id,
+                    1,
+                )?,
+                vec![created_index.index_id]
+            );
+            drop(retained_index_snapshot);
+            let after_index_drop = database.begin_read()?;
+            assert_eq!(
+                lookup_index_id_by_name(
+                    &after_index_drop,
+                    created.schema_id,
+                    "pressure_value_idx",
+                )?,
+                None
+            );
+            assert!(
+                prdb_engine::catalog_index::scan_index_ids_for_table(
+                    &after_index_drop,
+                    table.table_id,
+                    1,
+                )?
+                .is_empty()
+            );
+
             let retained_table_snapshot = database.begin_read()?;
             assert_eq!(
                 lookup_relation_id_by_name(
