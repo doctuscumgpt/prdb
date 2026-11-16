@@ -4,10 +4,10 @@ use prdb_engine::bootstrap::{
 use prdb_engine::catalog::decode_registered_envelope;
 use prdb_engine::credentials::hash_token_secret;
 use prdb_engine::ipc::{IpcFrame, read_frame, write_frame};
-use prdb_engine::schema::CATALOG;
+use prdb_engine::schema::{CATALOG, ENGINE_TABLE_NAMES};
 use prdb_engine::startup::{StartupError, validate_persisted_records};
 use prdb_engine::storage_manager::{StorageManager, StorageManagerConfig, StorageManagerInitError};
-use redb::{Database, ReadableDatabase};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -96,6 +96,28 @@ fn bootstrap_handoff_stays_initializing_and_resume_rotates_secret() {
         verifier_hash(first.database(), first_token),
         hash_token_secret(&first_secret)
     );
+    {
+        let read = first.database().begin_read().unwrap();
+        for table_name in ENGINE_TABLE_NAMES {
+            let table = read
+                .open_table(TableDefinition::<&[u8], &[u8]>::new(table_name))
+                .unwrap();
+            for entry in table.iter().unwrap() {
+                let (key, value) = entry.unwrap();
+                assert!(
+                    !key.value()
+                        .windows(first_secret.len())
+                        .any(|w| w == first_secret)
+                );
+                assert!(
+                    !value
+                        .value()
+                        .windows(first_secret.len())
+                        .any(|w| w == first_secret)
+                );
+            }
+        }
+    }
     assert!(first.take_secret().is_none());
     assert_eq!(
         validate_persisted_records(first.database()),

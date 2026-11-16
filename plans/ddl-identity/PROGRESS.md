@@ -228,3 +228,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `identity_drop_aborts_a_role_authorized_staged_update` with both rename-first and concurrent rename/write schedules. A staged authorized update either commits before the rename or conflicts and records ABORTED; a deterministic rename-first schedule preserves the row. The same token still authenticates the stable user ID after rename, and subsequent role-authorized writes remain covered through membership revocation and identity drop.
 - Verification: the focused real-redb regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit tests, 186 commit tests, 76 transaction tests, plus all remaining targets).
+
+## ID-1 / CL-2: bootstrap secret is one-time and never persisted — verified slice
+
+- Strengthened `bootstrap_handoff_stays_initializing_and_resume_rotates_secret`: it verifies the delivered secret matches the stored verifier hash, can be taken once, and its exact bytes appear in neither keys nor values of any of the 20 engine logical tables. Resume revokes the unacknowledged verifier and issues a different token before READY; a READY instance cannot be resumed.
+- The `prdb-init` binary integration also verifies successful secret delivery before READY, mode-0600 credential persistence, and that CLI output omits the secret field.
+- Verification: focused real-file bootstrap handoff regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).
