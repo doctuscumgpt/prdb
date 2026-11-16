@@ -2465,3 +2465,109 @@ fn effective_uid() -> u32 {
     // SAFETY: geteuid has no preconditions and does not read or write memory.
     unsafe { libc::geteuid() }
 }
+
+#[cfg(test)]
+mod durability_tests {
+    use super::*;
+    use redb::StorageBackend;
+    use std::io;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Debug)]
+    struct FailNextSyncBackend {
+        inner: redb::backends::FileBackend,
+        fail_next_sync: Arc<AtomicBool>,
+    }
+
+    impl StorageBackend for FailNextSyncBackend {
+        fn len(&self) -> Result<u64, io::Error> {
+            self.inner.len()
+        }
+
+        fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), io::Error> {
+            self.inner.read(offset, out)
+        }
+
+        fn set_len(&self, len: u64) -> Result<(), io::Error> {
+            self.inner.set_len(len)
+        }
+
+        fn sync_data(&self) -> Result<(), io::Error> {
+            if self.fail_next_sync.swap(false, Ordering::SeqCst) {
+                return Err(io::Error::other("injected bootstrap commit sync failure"));
+            }
+            self.inner.sync_data()
+        }
+
+        fn write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {
+            self.inner.write(offset, data)
+        }
+
+        fn close(&self) -> Result<(), io::Error> {
+            self.inner.close()
+        }
+    }
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> io::Result<Self> {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(io::Error::other)?
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "prdb-bootstrap-sync-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir(&path)?;
+            Ok(Self(path))
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn bootstrap_seed_sync_failure_is_reopenable_and_retryable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TestDirectory::new()?;
+        let database_path = directory.0.join(DATABASE_FILE);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&database_path)?;
+        let fail_next_sync = Arc::new(AtomicBool::new(false));
+        let database = Database::builder().create_with_backend(FailNextSyncBackend {
+            inner: redb::backends::FileBackend::new(file)?,
+            fail_next_sync: Arc::clone(&fail_next_sync),
+        })?;
+        let expires_at_us = now_unix_micros()
+            .and_then(|now| now.checked_add(86_400_000_000))
+            .ok_or("test credential expiry overflow")?;
+
+        fail_next_sync.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            seed_database(&database, "sync_admin", expires_at_us),
+            Err(BootstrapError::Storage)
+        ));
+        assert!(!fail_next_sync.load(Ordering::SeqCst));
+        drop(database);
+
+        let recovered = Database::open(&database_path)?;
+        if database_is_empty(&recovered)? {
+            let (_, _, secret) = seed_database(&recovered, "sync_admin", expires_at_us)?;
+            drop(secret);
+        }
+        validate_initializing_records(&recovered)?;
+        assert_eq!(load_bootstrap_identity(&recovered)?.name, "sync_admin");
+        Ok(())
+    }
+}

@@ -221,6 +221,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. All 33 `bootstrap_binary` tests passed, covering backup validation, v1 migration, physical redb upgrade, restore, publication retry, and process-exit recovery cases.
 - Power-loss/filesystem fault evidence and archived prior-release binary/data fixtures remain open as already recorded above.
 
+## CL-2 bootstrap seed commit-sync failure — verified slice
+
+- Added `bootstrap_seed_sync_failure_is_reopenable_and_retryable`, using a redb `StorageBackend` wrapper that injects one `sync_data` error during the immediate-durability initial catalog transaction. The test confirms seeding reports a storage error, closes the failed database, reopens the real file, retries seeding only when the recovered image is empty, and validates the resulting INITIALIZING catalog and administrator identity.
+- Verification: focused regression passed; Nix-shell formatting check, locked workspace build, and warning-denied all-target Clippy passed. The cgroup probe reported a writable delegated parent with `cpu memory pids` available and enabled. The full serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
+- Limit: this injects a backend sync error with a live kernel and filesystem. It verifies reopen/retry behavior for the observable commit failure, not power-loss recovery or storage-device cache behavior; the broader transaction-boundary and power-loss evidence remains open.
+
 ## CL-6: reject migration after post-upgrade writes — verified slice
 
 - Extended `migration_apply_requires_complete_history_ack_and_publishes_validated_v2`: after v1-to-v2 publication, the test commits a real schema through `StorageManager`, then retries the old migration command against the original v1 backup/history. The retry fails; the active catalog remains v2 at the newer commit sequence and the committed schema remains resolvable.
