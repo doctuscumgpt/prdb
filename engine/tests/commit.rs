@@ -9607,6 +9607,136 @@ fn storage_manager_creates_foreign_key_and_advances_both_table_epochs()
 }
 
 #[test]
+fn foreign_key_creation_racing_a_staged_child_write_is_atomic()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::CreateForeignKeyRequest;
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(500))?;
+    let admin_role = builtin_owner_id();
+    let actor = id(0x9a);
+    let mut setup_writes = foreign_key_catalog_writes(false, true)
+        .into_iter()
+        .filter(|write| {
+            write.key != id_catalog_key(8, id(86)) && write.key != id_catalog_key(2, id(86))
+        })
+        .collect::<Vec<_>>();
+    setup_writes.extend([
+        principal_write_with_name(actor, 1, 1, "fk_child_write_race_admin"),
+        object_write_with_name(actor, 8, "fk_child_write_race_admin"),
+        membership_write(actor, admin_role),
+        dependency_write(actor, admin_role, 5),
+        grant_write(actor, id(81), 6, 1, id(81), admin_role),
+        dependency_write(actor, id(81), 5),
+    ]);
+    let mut setup_audit = identity_audit_event(0x9b, admin_role, id(0x9c));
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0x9c), admin_role, 9_999, &setup_writes, &[setup_audit])?;
+
+    let writer_invocation = id(0x9d);
+    let mut writer = storage.begin_invocation(writer_invocation, actor, 9_999, 1, 1024)?;
+    let source_schema = writer.load_catalog_table_schema(id(82))?;
+    writer.load_catalog_indexes(&source_schema)?;
+    writer.load_catalog_check_constraints(&source_schema)?;
+    let child_payload = encode_tuple(
+        &source_schema.columns,
+        source_schema.schema_version,
+        &[None],
+    )?;
+    writer.stage_put(
+        prdb_engine::overlay::RowId {
+            table: id(82),
+            row: id(0x9e),
+        },
+        &child_payload,
+    )?;
+
+    let fk_invocation = id(0x9f);
+    let barrier = Arc::new(Barrier::new(3));
+    let (writer_result, fk_result) = std::thread::scope(|scope| {
+        let writer_barrier = barrier.clone();
+        let writer_task = scope.spawn(move || {
+            writer_barrier.wait();
+            writer.commit()
+        });
+        let ddl_barrier = barrier.clone();
+        let ddl_storage = &storage;
+        let ddl_task = scope.spawn(move || {
+            let mut audit = identity_audit_event(0xa0, actor, id(82));
+            audit.correlation_id = fk_invocation;
+            ddl_barrier.wait();
+            ddl_storage.create_foreign_key(CreateForeignKeyRequest {
+                invocation_id: fk_invocation,
+                authenticated_actor_id: actor,
+                source_table_id: id(82),
+                source_column_ids: vec![id(84)],
+                target_constraint_id: id(85),
+                retention_deadline_us: 9_999,
+                audit_event: audit,
+            })
+        });
+        barrier.wait();
+        (writer_task.join().unwrap(), ddl_task.join().unwrap())
+    });
+
+    let writer_status = match writer_result {
+        Ok(_) => OutcomeStatus::Committed,
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            OutcomeStatus::Aborted
+        }
+        other => panic!("unexpected child writer result: {other:?}"),
+    };
+    let created = fk_result.map_err(|error| format!("FK creation race failed: {error:?}"))?;
+    assert_eq!(
+        lookup_outcome(&database, writer_invocation, actor, 1)?
+            .ok_or("missing staged child writer outcome")?
+            .status,
+        writer_status
+    );
+    assert_eq!(
+        lookup_outcome(&database, fk_invocation, actor, 1)?
+            .ok_or("missing FK creation outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+    assert_eq!(
+        commit_sequence(&database)?,
+        if writer_status == OutcomeStatus::Committed {
+            3
+        } else {
+            2
+        },
+        "a stale child writer must not advance the commit sequence"
+    );
+    assert_eq!(created.commit_sequence, commit_sequence(&database)?);
+    assert_eq!(
+        row(&database, &table_row_key(id(82), id(0x9e)),)?.is_some(),
+        writer_status == OutcomeStatus::Committed
+    );
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    assert!(
+        catalog
+            .get(id_catalog_key(8, created.foreign_key_id).as_slice())?
+            .is_some()
+    );
+    assert!(
+        catalog
+            .get(
+                dependency_write(created.foreign_key_id, id(85), 3)
+                    .key
+                    .as_slice()
+            )?
+            .is_some()
+    );
+    drop(catalog);
+    drop(read);
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    Ok(())
+}
+
+#[test]
 fn storage_manager_atomically_creates_table_with_foreign_key_to_existing_key()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{

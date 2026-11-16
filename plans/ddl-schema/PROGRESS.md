@@ -1001,3 +1001,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - `storage_manager_creates_and_drops_check_constraint` now races CHECK creation against a staged row insert using a barrier. If the row commits first, the constraint publication follows it and retains the row; if CHECK creation wins, the stale writer conflicts and leaves no row. The regression verifies commit ordering, durable outcome, row presence, and sequence-dependent later constraint drop.
 - Verification: focused real-redb regression passed. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed afterward with sandbox and process tests enabled and zero ignored tests: 291 engine unit tests, 179 commit tests, 75 transaction tests, and all other workspace targets.
 - Remaining: additional constraint DDL races and ALTER combinations remain open.
+
+## DS-4 / DS-7: foreign-key creation racing a staged child write — verified slice
+
+- `foreign_key_creation_racing_a_staged_child_write_is_atomic` stages a child-row insert from a snapshot without the FK, then races its commit against FK creation on that table. The only accepted outcomes are writer-first with both commits in sequence, or FK-first with the stale writer durably ABORTED and no row. The test verifies the FK record and dependency edge, writer outcome, row state, commit sequence, and persisted catalog integrity.
+- Verification: the focused real-redb race passed. Locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests; the suite reported 291 engine unit tests, 180 commit tests, 75 transaction tests, and all remaining workspace targets.
+- Remaining: further constraint DDL schedules and the complete supported ALTER race matrix remain open.
