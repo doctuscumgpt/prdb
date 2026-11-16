@@ -417,3 +417,8 @@
 - Extended `schema_create_drop_pressure_preserves_pinned_name_index_snapshots`: while a reader repeatedly scans schema names, 64 iterations now create and drop both a schema and a table. Each iteration checks fresh schema/relation-name lookups before and after publication, while a retained redb snapshot continues to resolve the dropped table name.
 - This adds mixed schema/table secondary-index writes and verifies relation-name snapshot retention alongside the existing schema-name checks. Longer-duration campaigns and continued codec fuzzing remain additional hardening work.
 - Verification: focused real-redb pressure regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).
+
+## DD-3 / DD-5: schema drop and same-name recreation retain distinct identities — verified slice
+
+- Extended `storage_manager_creates_schema_atomically_for_privileged_actor` to pin the schema-name index before DROP, verify a fresh post-drop snapshot no longer resolves the retired name, recreate that name through the storage manager, and prove the new schema has a different stable ID while the pinned snapshot still resolves the original ID.
+- Verification: focused real-redb schema lifecycle regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).

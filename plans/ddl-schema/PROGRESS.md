@@ -1093,3 +1093,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Expanded `schema_create_drop_pressure_preserves_pinned_name_index_snapshots` so each of 64 schema create/drop cycles also creates and drops a table. A concurrent reader repeatedly scans schema-name lookups; per-cycle fresh snapshots validate relation-name creation/removal, and a pinned snapshot retains the dropped table name.
 - Verification: focused real-redb pressure regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).
+
+## DS-3 / DS-5: DROP SCHEMA and same-name CREATE preserve snapshot identity — verified slice
+
+- Extended `storage_manager_creates_schema_atomically_for_privileged_actor` to retain a pre-drop schema-name snapshot, verify removal in a fresh snapshot, and create a new schema under the same name. The new DDL publishes a distinct stable ID; the old snapshot continues resolving the dropped ID.
+- Verification: focused real-redb lifecycle regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).

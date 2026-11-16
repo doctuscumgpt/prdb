@@ -1626,6 +1626,11 @@ fn storage_manager_creates_schema_atomically_for_privileged_actor()
     let drop_invocation = id(0xec);
     let mut drop_audit = identity_audit_event(0xed, actor, id(0xee));
     drop_audit.correlation_id = drop_invocation;
+    let pre_drop_schema_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_schema_id_by_name(&pre_drop_schema_snapshot, "app_archive")?,
+        Some(created.schema_id)
+    );
     let dropped =
         storage.drop_schema(drop_invocation, actor, created.schema_id, 9_999, drop_audit)?;
     assert_eq!(dropped.schema_id, created.schema_id);
@@ -1639,6 +1644,36 @@ fn storage_manager_creates_schema_atomically_for_privileged_actor()
             .unwrap()
             .status,
         OutcomeStatus::Committed
+    );
+    assert_eq!(
+        lookup_schema_id_by_name(&read, "app_archive")?,
+        None,
+        "a fresh snapshot after DROP must not resolve the retired schema name"
+    );
+    let recreate_invocation = id(0x8a);
+    let mut recreate_audit = identity_audit_event(0x8b, actor, id(0x8c));
+    recreate_audit.correlation_id = recreate_invocation;
+    let recreated = storage.create_schema(
+        recreate_invocation,
+        actor,
+        "app_archive",
+        actor,
+        9_999,
+        recreate_audit,
+    )?;
+    assert_ne!(
+        recreated.schema_id, created.schema_id,
+        "recreating a dropped schema name must allocate a fresh stable ID"
+    );
+    assert_eq!(
+        lookup_schema_id_by_name(&pre_drop_schema_snapshot, "app_archive")?,
+        Some(created.schema_id),
+        "the pinned pre-drop snapshot must continue resolving the original schema"
+    );
+    let recreated_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_schema_id_by_name(&recreated_snapshot, "app_archive")?,
+        Some(recreated.schema_id)
     );
     let drop_target_invocation = id(0xd4);
     let mut drop_target_audit = identity_audit_event(0xd5, actor, rename_target.schema_id);
