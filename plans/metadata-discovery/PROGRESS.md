@@ -269,23 +269,23 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 integrated acceptance refresh
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. All three authenticated metadata process tests passed, including the MD-6 schema-owner transfer between administrative policy pages.
-- Confined SQL SELECT over all three public projections, including predicates/limits and API parity, is covered by the maintained fixture acceptance recorded in SM-6 / MD-4 above. Cursor continuation across process restart remains unimplemented.
+- Confined SQL SELECT over all three public projections, including predicates/limits and API parity, is covered by the maintained fixture acceptance recorded in SM-6 / MD-4 above. Cursor state is intentionally invocation/session-local; reconnect or process restart discards it and invalidates outstanding tokens under the normative contract.
 
 ## MD-3 / MD-6: administrative cursor session binding — verified slice
 
 - The authenticated gateway/supervisor metadata lifecycle obtains a valid administrator schema continuation, closes that authenticated connection, reconnects with the same credential, and verifies the old continuation is rejected. The neighboring MD-6 case also verifies ownership transfer invalidates an existing owner's continuation.
-- Verification: `cargo test --locked --test metadata_process authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes -- --exact --nocapture` passed in the delegated user service. The latest full serial delegated-cgroup workspace suite also passed before this focused test-only addition. Continuation across process restart remains unimplemented.
+- Verification: `cargo test --locked --test metadata_process authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes -- --exact --nocapture` passed in the delegated user service. The complete serial delegated-cgroup workspace suite passed after this addition. Continuation after reconnect or process restart is out of contract; the cursor is session-bound and its server-side state is discarded.
 
 ## 2026-11-16 delegated integration refresh
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. All three authenticated metadata process tests passed, covering gateway/supervisor discovery, session-bound cursor rejection after reconnect, and authority revalidation between pages.
-- Cursor continuation across process restart remains unimplemented.
+- Cursor continuation after reconnect or process restart is out of contract: server-side session/invocation state is discarded and the old token is invalid.
 
 ## MD-5 / AU-7: executor IPC rejects a closed relation handle — verified slice
 
 - The relation-resolution IPC regression now closes a valid connection-local handle, confirms `OPEN SCAN` with that token fails, then resolves the relation again and verifies the replacement token is distinct. The stale token remains unusable after the fresh handle is issued.
 - Verification: focused real-redb IPC regression passed. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests: 291 engine unit tests, 179 commit tests, 75 transaction tests, and all other workspace targets.
-- Remaining: cursor continuation across process restart and broader hostile IPC sequence coverage remain open.
+- Remaining: broader hostile IPC sequence coverage remains open. Cursor continuation after reconnect or process restart is out of contract because its server-side session/invocation state is discarded.
 
 ## MD-5 / AU-7: executor IPC rejects cross-connection handle replay — verified slice
 
