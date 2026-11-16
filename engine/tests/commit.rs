@@ -11073,19 +11073,62 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
     let invocation_id = id(0xfe);
     let mut create_audit = identity_audit_event(0xff, actor, id(82));
     create_audit.correlation_id = invocation_id;
-    let created = storage
-        .create_check_constraint(prdb_engine::storage_manager::CreateCheckConstraintRequest {
-            invocation_id,
-            authenticated_actor_id: actor,
-            table_id: id(82),
-            name: Some("always_true".to_owned()),
-            expression: prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Boolean(true))),
-            dependency_column_ids: vec![],
-            retention_deadline_us: 9_999,
-            audit_event: create_audit,
-        })
-        .map_err(|error| format!("CHECK constraint creation failed: {error:?}"))?;
-    assert_eq!(created.commit_sequence, 3);
+    let check_race_barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let (create_result, staged_write_result) = std::thread::scope(|scope| {
+        let barrier = std::sync::Arc::clone(&check_race_barrier);
+        let storage = &storage;
+        let create = scope.spawn(move || {
+            barrier.wait();
+            storage.create_check_constraint(
+                prdb_engine::storage_manager::CreateCheckConstraintRequest {
+                    invocation_id,
+                    authenticated_actor_id: actor,
+                    table_id: id(82),
+                    name: Some("always_true".to_owned()),
+                    expression: prdb_engine::authorization::Expr::Literal(Some(
+                        ScalarValue::Boolean(true),
+                    )),
+                    dependency_column_ids: vec![],
+                    retention_deadline_us: 9_999,
+                    audit_event: create_audit,
+                },
+            )
+        });
+        check_race_barrier.wait();
+        let staged_write_result = stale_add_writer.commit();
+        let create_result = create.join().expect("CHECK creation thread panicked");
+        (create_result, staged_write_result)
+    });
+    let created =
+        create_result.map_err(|error| format!("CHECK constraint creation failed: {error:?}"))?;
+    let staged_write_status = match staged_write_result {
+        Ok(sequence) => {
+            assert!(sequence < created.commit_sequence);
+            OutcomeStatus::Committed
+        }
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            OutcomeStatus::Aborted
+        }
+        Err(error) => panic!("unexpected staged-write result in CHECK creation race: {error:?}"),
+    };
+    assert_eq!(
+        created.commit_sequence,
+        if staged_write_status == OutcomeStatus::Committed {
+            4
+        } else {
+            3
+        }
+    );
+    assert_eq!(
+        row(&database, &table_row_key(id(82), stale_add_row.row))?.is_some(),
+        staged_write_status == OutcomeStatus::Committed
+    );
+    assert_eq!(
+        lookup_outcome(&database, id(0xdc), actor, 1)?
+            .ok_or("missing CHECK-creation race writer outcome")?
+            .status,
+        staged_write_status
+    );
     let duplicate_id = id(0xf0);
     let mut duplicate_audit = identity_audit_event(0xf1, actor, id(82));
     duplicate_audit.correlation_id = duplicate_id;
@@ -11160,19 +11203,6 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
         prdb_engine::catalog_index::scan_constraint_ids_for_table(&constraint_snapshot, id(82), 1)?,
         vec![created.constraint_id]
     );
-    assert!(matches!(
-        stale_add_writer.commit(),
-        Err(prdb_engine::transaction::TransactionError::Commit(
-            CommitError::Conflict
-        ))
-    ));
-    assert!(row(&database, &table_row_key(id(82), stale_add_row.row))?.is_none());
-    assert_eq!(
-        lookup_outcome(&database, id(0xdc), actor, 1)?
-            .ok_or("missing stale CHECK-add writer outcome")?
-            .status,
-        OutcomeStatus::Aborted
-    );
     prdb_engine::startup::validate_persisted_records(&database)?;
 
     let mut stale_drop_writer = storage.begin_invocation(id(0xe3), actor, 9_999, 1, 1024)?;
@@ -11200,7 +11230,7 @@ fn storage_manager_creates_and_drops_check_constraint() -> Result<(), Box<dyn st
             9_999,
             drop_audit,
         )?,
-        4
+        created.commit_sequence + 1
     );
     assert_eq!(
         prdb_engine::catalog_index::scan_constraint_ids_for_table(&constraint_snapshot, id(82), 1)?,

@@ -995,3 +995,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Extended `storage_manager_builds_and_drops_populated_indexes_atomically` to race publication of a catalog index against a staged row insert. A writer that commits first is included in the same index publication with matching forward and reverse locator records; if index publication wins, the stale writer conflicts and leaves no row. The test checks durable writer outcomes, table epoch advancement, and index backfill before exercising index drop.
 - Verification: the focused real-redb regression passed; formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests, including 34 bootstrap binary tests, 179 commit tests, and 75 transaction tests.
 - Remaining: constraint DDL races and additional ALTER combinations remain open.
+
+## DS-6 / DS-7: CHECK constraint creation racing a staged writer — verified slice
+
+- `storage_manager_creates_and_drops_check_constraint` now races CHECK creation against a staged row insert using a barrier. If the row commits first, the constraint publication follows it and retains the row; if CHECK creation wins, the stale writer conflicts and leaves no row. The regression verifies commit ordering, durable outcome, row presence, and sequence-dependent later constraint drop.
+- Verification: focused real-redb regression passed. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed afterward with sandbox and process tests enabled and zero ignored tests: 291 engine unit tests, 179 commit tests, 75 transaction tests, and all other workspace targets.
+- Remaining: additional constraint DDL races and ALTER combinations remain open.
