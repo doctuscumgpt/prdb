@@ -22219,6 +22219,160 @@ fn membership_ddl_requires_an_unexpired_credential_for_a_final_admin()
 }
 
 #[test]
+fn concurrent_admin_membership_revocations_preserve_a_usable_administrator()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::RoleMembershipChange;
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let first_admin = id(0xd1);
+    let second_admin = id(0xd2);
+    let admin_role = builtin_owner_id();
+    let first_invocation = id(0xd3);
+    let second_invocation = id(0xd4);
+    let records = [
+        principal_write_with_name(first_admin, 1, 1, "concurrent_admin_first"),
+        object_write_with_name(first_admin, 8, "concurrent_admin_first"),
+        principal_write_with_name(second_admin, 1, 1, "concurrent_admin_second"),
+        object_write_with_name(second_admin, 8, "concurrent_admin_second"),
+        membership_write_with_grantor(first_admin, admin_role, admin_role),
+        dependency_write(first_admin, admin_role, 5),
+        membership_write_with_grantor(second_admin, admin_role, admin_role),
+        dependency_write(second_admin, admin_role, 5),
+        credential_verifier_write(id(0xd5), first_admin, &[0xd5; 32], 1, i64::MAX, None, 1),
+        credential_verifier_write(id(0xd6), second_admin, &[0xd6; 32], 1, i64::MAX, None, 1),
+    ];
+    let mut setup_audit = identity_audit_event(0xd0, admin_role, first_admin);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0xd0), admin_role, 9_999, &records, &[setup_audit])?;
+
+    let barrier = Arc::new(Barrier::new(2));
+    let (first_result, second_result) = std::thread::scope(|scope| {
+        let first_barrier = Arc::clone(&barrier);
+        let first_storage = &storage;
+        let first = scope.spawn(move || {
+            let mut audit = identity_audit_event(0xd7, first_admin, second_admin);
+            audit.correlation_id = first_invocation;
+            audit.action = AuditAction::AuthorityChange;
+            first_barrier.wait();
+            first_storage.set_role_membership(
+                first_invocation,
+                first_admin,
+                RoleMembershipChange {
+                    member_id: second_admin,
+                    role_id: admin_role,
+                    grant: false,
+                },
+                9_999,
+                audit,
+            )
+        });
+        let mut audit = identity_audit_event(0xd8, second_admin, first_admin);
+        audit.correlation_id = second_invocation;
+        audit.action = AuditAction::AuthorityChange;
+        barrier.wait();
+        let second = storage.set_role_membership(
+            second_invocation,
+            second_admin,
+            RoleMembershipChange {
+                member_id: first_admin,
+                role_id: admin_role,
+                grant: false,
+            },
+            9_999,
+            audit,
+        );
+        (
+            first.join().expect("first admin DDL thread panicked"),
+            second,
+        )
+    });
+
+    let first_committed = first_result.is_ok();
+    let second_committed = second_result.is_ok();
+    assert_ne!(
+        first_committed, second_committed,
+        "exactly one admin membership revocation may commit"
+    );
+    for error in [first_result.as_ref().err(), second_result.as_ref().err()]
+        .into_iter()
+        .flatten()
+    {
+        assert!(
+            matches!(
+                error,
+                prdb_engine::storage_manager::MembershipLifecycleError::Commit(
+                    CommitError::Conflict | CommitError::DdlAuthorizationDenied
+                )
+            ),
+            "unexpected competing administrator revocation result: {error:?}"
+        );
+    }
+    let winner = if first_committed {
+        first_admin
+    } else {
+        second_admin
+    };
+    let removed = if first_committed {
+        second_admin
+    } else {
+        first_admin
+    };
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    assert!(
+        catalog
+            .get(membership_write(winner, admin_role).key.as_slice())?
+            .is_some()
+    );
+    assert!(
+        catalog
+            .get(dependency_write(winner, admin_role, 5).key.as_slice())?
+            .is_some()
+    );
+    assert!(
+        catalog
+            .get(membership_write(removed, admin_role).key.as_slice())?
+            .is_none()
+    );
+    assert!(
+        catalog
+            .get(dependency_write(removed, admin_role, 5).key.as_slice())?
+            .is_none()
+    );
+    drop(catalog);
+    drop(read);
+    for (invocation_id, committed) in [
+        (first_invocation, first_committed),
+        (second_invocation, second_committed),
+    ] {
+        let outcome = lookup_outcome(
+            &database,
+            invocation_id,
+            if invocation_id == first_invocation {
+                first_admin
+            } else {
+                second_admin
+            },
+            1,
+        )?
+        .ok_or("missing competing membership outcome")?;
+        assert_eq!(
+            outcome.status,
+            if committed {
+                OutcomeStatus::Committed
+            } else {
+                OutcomeStatus::Aborted
+            }
+        );
+    }
+    assert_eq!(commit_sequence(&database)?, 2);
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    Ok(())
+}
+
+#[test]
 fn storage_manager_restricts_system_privilege_ddl_to_database_admins()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

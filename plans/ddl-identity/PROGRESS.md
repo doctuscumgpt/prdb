@@ -333,3 +333,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `role_membership_revocation_aborts_a_staged_role_authorized_writer` to rename the authorized role before the user's role-based invocation is admitted. The transaction still resolves the same role ID and grant, and a subsequent membership revoke continues to linearize against the staged write with durable outcomes and matching row state.
 - Verification: the focused real-redb identity/authorization regression passed; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
+
+## 2026-11-16 ID-6: concurrent administrator removals preserve one usable credentialed admin — verified slice
+
+- Added `concurrent_admin_membership_revocations_preserve_a_usable_administrator`. Two credentialed administrators concurrently revoke each other's reserved-role membership. Exactly one operation commits; the winner remains in `database_admin` with its credential and dependency, while the losing actor's stale request aborts. The regression checks final membership records, durable outcomes, commit sequence, and persisted-catalog integrity.
+- Verification: the focused real-redb race passed eight consecutive repeats; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
