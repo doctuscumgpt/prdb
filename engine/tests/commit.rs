@@ -12121,6 +12121,97 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
     );
     drop(current_policy_catalog);
     drop(current_policy_snapshot);
+
+    let policy_recreate_invocation = id(0xe5);
+    let mut policy_recreate_audit = identity_audit_event(0xe6, actor, id(82));
+    policy_recreate_audit.correlation_id = policy_recreate_invocation;
+    let recreated_policy = storage
+        .create_policy(prdb_engine::storage_manager::CreatePolicyRequest {
+            invocation_id: policy_recreate_invocation,
+            authenticated_actor_id: actor,
+            table_id: id(82),
+            name: "racing_row_policy".to_owned(),
+            kind: prdb_engine::storage_manager::PolicyKind::Row,
+            operation: prdb_engine::authorization::Operation::Select,
+            effect: prdb_engine::authorization::Effect::Allow,
+            recipients: vec![prdb_engine::authorization::Subject::Principal(actor)],
+            target_column_ids: Vec::new(),
+            using_expression: Some(prdb_engine::authorization::Expr::Literal(Some(
+                ScalarValue::Boolean(true),
+            ))),
+            with_check_expression: None,
+            retention_deadline_us: 9_999,
+            audit_event: policy_recreate_audit,
+        })
+        .map_err(|error| format!("same-name row policy recreation failed: {error:?}"))?;
+    assert_ne!(recreated_policy.policy_id, dropped_policy_id);
+    let recreated_policy_expression_id = recreated_policy
+        .using_expression_id
+        .ok_or("recreated row policy has no USING expression")?;
+    let old_after_recreate = old_policy_snapshot.open_table(CATALOG)?;
+    assert!(
+        old_after_recreate
+            .get(id_catalog_key(13, dropped_policy_id).as_slice())?
+            .is_some()
+    );
+    assert!(
+        old_after_recreate
+            .get(id_catalog_key(7, dropped_policy_expression_id).as_slice())?
+            .is_some()
+    );
+    drop(old_after_recreate);
+    let recreated_policy_snapshot = database.begin_read()?;
+    let recreated_policy_catalog = recreated_policy_snapshot.open_table(CATALOG)?;
+    assert!(
+        recreated_policy_catalog
+            .get(id_catalog_key(13, dropped_policy_id).as_slice())?
+            .is_none()
+    );
+    assert!(
+        recreated_policy_catalog
+            .get(id_catalog_key(7, dropped_policy_expression_id).as_slice())?
+            .is_none()
+    );
+    assert!(
+        recreated_policy_catalog
+            .get(id_catalog_key(13, recreated_policy.policy_id).as_slice())?
+            .is_some()
+    );
+    assert!(
+        recreated_policy_catalog
+            .get(id_catalog_key(7, recreated_policy_expression_id).as_slice())?
+            .is_some()
+    );
+    assert!(
+        recreated_policy_catalog
+            .get(
+                dependency_write(
+                    recreated_policy.policy_id,
+                    recreated_policy_expression_id,
+                    2
+                )
+                .key
+                .as_slice()
+            )?
+            .is_some()
+    );
+    let select_policies = prdb_engine::catalog_index::lookup_policies_for_table_operation(
+        &recreated_policy_snapshot,
+        id(82),
+        1,
+    )?;
+    assert!(
+        select_policies
+            .iter()
+            .any(|record| record.logical_key[3..] == recreated_policy.policy_id)
+    );
+    assert!(
+        select_policies
+            .iter()
+            .all(|record| record.logical_key[3..] != dropped_policy_id)
+    );
+    drop(recreated_policy_catalog);
+    drop(recreated_policy_snapshot);
     drop(old_policy_snapshot);
     let recreate_invocation = id(0xe3);
     let mut recreate_audit = identity_audit_event(0xe4, actor, id(82));

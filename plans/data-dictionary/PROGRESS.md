@@ -492,3 +492,8 @@
 - Strengthened `storage_manager_creates_named_unique_index_and_backfills_atomically`: after DROP INDEX and same-name recreation, the current snapshot must contain only the new family-2 object and family-9 definition, the recreated backing-schema dependency, and the new table-index listing. The retained pre-drop snapshot continues resolving the original ID and definition.
 - Verification: the focused real-redb lifecycle regression passed. Workspace formatting, locked build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
 - Scope: this verifies distinct live identity for named index drop/recreate and old-reader retention; it does not claim tombstone-based permanent reservation of dropped index IDs.
+
+## DD-3 / DP-3: policy and expression records remain snapshot-distinct across name reuse — verified slice
+
+- The policy DDL integration regression now drops a table-local row policy and recreates the same name. It verifies fresh policy/expression IDs and the replacement's dependency in the current catalog, confirms the table-operation policy index resolves the new ID only, and confirms a retained snapshot still resolves the old policy and expression records.
+- Verification: the focused real-redb regression and complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests; format, locked build, warning-denied all-target Clippy, and `git diff --check` passed.
