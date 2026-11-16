@@ -384,3 +384,8 @@
 - Regenerated the v2 and upgraded v3 fixture images and recorded their SHA-256 digests in the fixture README. The standalone fixture lockfile now includes the engine's direct redb 2.6.4 dependency, allowing regeneration with `--locked`.
 - Verification: locked fixture verifier reported 3 principals, 2 grants, 1 policy, and 1 application row; the focused upgraded-image regression passed. Workspace build, formatting checks (including the standalone generator), warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored.
 - Remaining: longer-duration mixed catalog-DDL/read campaigns and continued codec fuzzing remain additional hardening; this generated logical fixture does not claim to be an archived prior-release engine binary/data directory.
+
+## DD-6: table-schema cache remains bound to its invocation snapshot — verified slice
+
+- Extended `storage_manager_adds_column_and_backfills_existing_rows` to pin a table definition in one invocation before ADD COLUMN, then load the new definition from a separate invocation with a different principal after DDL. The new invocation sees schema version 2 and the added stable column ID; reloading through the older invocation still returns its pinned schema version 1 and original column IDs.
+- Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.

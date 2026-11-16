@@ -6457,6 +6457,10 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
         &[Some(ScalarValue::Integer(99))],
     )?;
     stale_writer.stage_put(stale_row_id, &stale_tuple)?;
+    let mut old_cache_reader = storage.begin_invocation(id(0xc0), id(0xc1), 9_999, 1, 1024)?;
+    let old_cached_schema = old_cache_reader.load_catalog_table_schema(table.table_id)?;
+    assert_eq!(old_cached_schema.schema_version, 1);
+    assert_eq!(old_cached_schema.column_ids, table.column_ids);
     let retained_snapshot = database.begin_read()?;
 
     let add_invocation = id(0x68);
@@ -6536,6 +6540,24 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
         stale_write_sequence.is_some()
     );
     assert_eq!(commit_sequence(&database)?, added.commit_sequence);
+
+    let mut new_cache_reader = storage.begin_invocation(id(0xc2), id(0xc3), 9_999, 1, 1024)?;
+    let new_cached_schema = new_cache_reader.load_catalog_table_schema(table.table_id)?;
+    assert_eq!(new_cached_schema.schema_version, 2);
+    assert_eq!(
+        new_cached_schema.column_ids,
+        [table.column_ids[0], added.column_id]
+    );
+    assert_eq!(
+        old_cache_reader
+            .load_catalog_table_schema(table.table_id)?
+            .column_ids,
+        old_cached_schema.column_ids,
+        "the old invocation must keep its own pinned schema cache"
+    );
+    old_cache_reader.abort()?;
+    new_cache_reader.abort()?;
+
     let retained_default_snapshot = database.begin_read()?;
     for generation in 0..64u8 {
         let churn_invocation = id(0x80 + generation);
