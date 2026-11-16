@@ -347,3 +347,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 delegated workspace verification after retained ADD COLUMN compaction check
 
 - The complete serial `cargo test --workspace --locked -- --test-threads=1` suite passed inside the delegated `systemd --user` service. Sandbox and cross-process coverage were enabled; zero tests were ignored. This revalidated identity lifecycle, login admission, token rotation, membership, and administrator-protection regressions on the current tree.
+
+## ID-3 / ID-4: identity drop recovers atomically after commit sync failure — verified slice
+
+- Added a subprocess regression that injects one `sync_data` failure during `DROP USER`, then reopens the same redb file. Recovery accepts only the full pre-drop state or the full committed state; the committed branch requires removal of both identity records, a permanent tombstone, token revocation, audit event, committed outcome, and matching sequence. Startup validates the recovered image.
+- Verification: focused real-redb subprocess regression, workspace build, formatting, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored. This live-kernel sync error test does not claim power-loss or device-cache evidence.

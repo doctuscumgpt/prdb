@@ -19963,6 +19963,155 @@ fn schema_create_sync_failure_recovers_atomic_catalog_audit_and_outcome()
 }
 
 #[test]
+fn identity_drop_sync_failure_recovers_tombstone_and_token_atomically()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
+
+    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_IDENTITY_DROP_SYNC_FAILURE_DATABASE";
+    const ACTOR_ID: [u8; 16] = [0xe0; 16];
+    const TARGET_ID: [u8; 16] = [0xe1; 16];
+    const ACTOR_TOKEN_ID: [u8; 16] = [0xe2; 16];
+    const TARGET_TOKEN_ID: [u8; 16] = [0xe3; 16];
+    const SETUP_INVOCATION_ID: [u8; 16] = [0xe4; 16];
+    const DROP_INVOCATION_ID: [u8; 16] = [0xe5; 16];
+    const DROP_AUDIT_ID: [u8; 16] = [0xe6; 16];
+
+    if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
+        let database_path = std::path::PathBuf::from(database_path);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&database_path)?;
+        let fail_next_sync = Arc::new(AtomicBool::new(false));
+        let database = Database::builder().create_with_backend(FailNextSyncBackend {
+            inner: redb::backends::FileBackend::new(file)?,
+            fail_next_sync: fail_next_sync.clone(),
+        })?;
+        let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+        let mut audit = identity_audit_event(DROP_AUDIT_ID[0], ACTOR_ID, TARGET_ID);
+        audit.correlation_id = DROP_INVOCATION_ID;
+        fail_next_sync.store(true, Ordering::SeqCst);
+        assert!(
+            storage
+                .drop_identity(DROP_INVOCATION_ID, ACTOR_ID, TARGET_ID, i64::MAX, audit,)
+                .is_err()
+        );
+        assert!(!fail_next_sync.load(Ordering::SeqCst));
+        assert!(storage.requires_reopen_after_commit_error());
+        drop(storage);
+        drop(database);
+        std::process::exit(0);
+    }
+
+    let fixture = Fixture::new();
+    let database_path = fixture.path();
+    let database = initialize(&database_path)?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let admin_role = builtin_owner_id();
+    let mut setup_audit = identity_audit_event(SETUP_INVOCATION_ID[0], admin_role, ACTOR_ID);
+    setup_audit.action = AuditAction::AuthorityChange;
+    setup_audit.correlation_id = SETUP_INVOCATION_ID;
+    storage.commit_catalog_and_audit(
+        SETUP_INVOCATION_ID,
+        admin_role,
+        i64::MAX,
+        &[
+            principal_write_with_name(ACTOR_ID, 1, 1, "sync_drop_actor"),
+            object_write_with_name(ACTOR_ID, 8, "sync_drop_actor"),
+            principal_write_with_name(TARGET_ID, 1, 1, "sync_drop_target"),
+            object_write_with_parent_and_owner_and_name(
+                TARGET_ID,
+                8,
+                None,
+                ACTOR_ID,
+                "sync_drop_target",
+            ),
+            membership_write_with_grantor(ACTOR_ID, admin_role, admin_role),
+            dependency_write(ACTOR_ID, admin_role, 5),
+            credential_verifier_write(ACTOR_TOKEN_ID, ACTOR_ID, &[0xe2; 32], 1, i64::MAX, None, 1),
+            credential_verifier_write(
+                TARGET_TOKEN_ID,
+                TARGET_ID,
+                &[0xe3; 32],
+                1,
+                i64::MAX,
+                None,
+                1,
+            ),
+        ],
+        &[setup_audit],
+    )?;
+    drop(storage);
+    drop(database);
+
+    let child_status = Command::new(std::env::current_exe()?)
+        .arg("--exact")
+        .arg("identity_drop_sync_failure_recovers_tombstone_and_token_atomically")
+        .arg("--nocapture")
+        .env(CHILD_DATABASE_ENV, &database_path)
+        .status()?;
+    assert!(
+        child_status.success(),
+        "identity-drop sync-failure child exited with {child_status}"
+    );
+
+    let reopened = Database::open(&database_path)?;
+    let recovered_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+    assert!(!recovered_storage.requires_reopen_after_commit_error());
+    prdb_engine::startup::validate_persisted_records(&reopened)?;
+    let read = reopened.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    let target_object = catalog
+        .get(id_catalog_key(2, TARGET_ID).as_slice())?
+        .map(|value| value.value().to_vec());
+    let target_principal = catalog
+        .get(id_catalog_key(10, TARGET_ID).as_slice())?
+        .map(|value| value.value().to_vec());
+    let tombstone = catalog
+        .get(id_catalog_key(17, TARGET_ID).as_slice())?
+        .map(|value| value.value().to_vec());
+    let target_token = catalog
+        .get(id_catalog_key(16, TARGET_TOKEN_ID).as_slice())?
+        .map(|value| value.value().to_vec());
+    let audit = read
+        .open_table(AUDIT)?
+        .get(&DROP_AUDIT_ID[..])?
+        .map(|value| AuditEvent::decode(value.value()))
+        .transpose()?;
+    let outcome = lookup_outcome(&reopened, DROP_INVOCATION_ID, ACTOR_ID, 1)?;
+    let sequence = commit_sequence(&reopened)?;
+    match (
+        target_object,
+        target_principal,
+        tombstone,
+        target_token,
+        audit,
+        outcome,
+        sequence,
+    ) {
+        (None, None, Some(_), Some(token), Some(_), Some(outcome), 2) => {
+            assert_eq!(outcome.status, OutcomeStatus::Committed);
+            let token_record = decode_registered_envelope(&token)?;
+            assert!(
+                token_record
+                    .fields
+                    .iter()
+                    .any(|field| field.tag == 7 && field.payload == [1])
+            );
+        }
+        (Some(_), Some(_), None, Some(_), None, None, 1) => {}
+        (object, principal, tombstone, token, audit, outcome, sequence) => {
+            return Err(format!(
+                "identity-drop recovery exposed partial publication: object={}, principal={}, tombstone={}, token={}, audit={audit:?}, outcome={outcome:?}, sequence={sequence}",
+                object.is_some(), principal.is_some(), tombstone.is_some(), token.is_some()
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn storage_manager_rejects_invalid_recovered_images_before_admission()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

@@ -369,3 +369,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 delegated workspace verification after retained ADD COLUMN compaction check
 
 - The complete serial `cargo test --workspace --locked -- --test-threads=1` suite passed inside the delegated `systemd --user` service. Sandbox and cross-process coverage were enabled; zero tests were ignored. Bootstrap, recovery, migration, and maintenance process regressions ran on the current tree. Power-loss and archived prior-release evidence remain open.
+
+## CL-2 / ID-3: user deletion sync failure recovers as one catalog transition — verified slice
+
+- The identity DDL subprocess regression now injects a redb `sync_data` failure while deleting a user. Reopen validation requires either the untouched identity/credential with no audit or outcome, or the committed deletion with tombstone, revoked credential, audit, durable outcome, and advanced frontier. The storage manager stays quarantined after the ambiguous error until reopen.
+- Verification: focused regression, workspace build, formatting, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. This does not simulate power loss or device-cache failure.
