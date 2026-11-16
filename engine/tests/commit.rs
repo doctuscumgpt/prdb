@@ -11466,6 +11466,7 @@ fn storage_manager_authorizes_constraint_ddl_by_table_alter()
             expected_value: unique_dependency.payload,
             payload: None,
         },
+        identity_tombstone_write(unique_index_id),
         table_epoch(7),
     ];
     let denied_drop_audit = identity_audit_event(0xbc, outsider, unique_constraint_id);
@@ -11593,6 +11594,7 @@ fn storage_manager_authorizes_constraint_ddl_by_table_alter()
             expected_value: primary_dependency.payload,
             payload: None,
         },
+        identity_tombstone_write(primary_index_id),
         table_epoch(10),
     ];
     let primary_drop_audit = identity_audit_event(0xc2, table_owner, primary_constraint_id);
@@ -14585,6 +14587,15 @@ fn storage_manager_creates_primary_key_with_owned_unique_index()
             "new snapshot retained dropped PRIMARY KEY record {key:?}"
         );
     }
+    let retired_index = current_catalog
+        .get(id_catalog_key(17, created.index_id).as_slice())?
+        .ok_or("missing retired PRIMARY KEY index identifier")?;
+    assert!(
+        decode_registered_envelope(retired_index.value())?
+            .fields
+            .is_empty()
+    );
+    drop(retired_index);
     drop(current_catalog);
     drop(current_read);
 

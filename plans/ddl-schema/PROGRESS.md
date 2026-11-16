@@ -1,5 +1,12 @@
 # Schema DDL Progress
 
+## DS-3 / CL-3 / DD-3: key-constraint drops retire owned backing-index IDs — verified slice
+
+- `drop_key_constraint` writes a family-17 reservation for the owned index in the same authorized transaction as PRIMARY KEY/UNIQUE removal. Commit validation rejects missing, duplicate, malformed, or unrelated reservations.
+- `storage_manager_creates_primary_key_with_owned_unique_index` verifies the reservation while retaining the old-reader and stale-writer checks. Focused test passed. Verification: workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
+- Remaining: retirement for other object kinds and historical pre-v2 key-constraint drops.
+
+
 ## DS-3 / CL-3: DROP SCHEMA prevents stable-ID reuse — verified slice
 
 - `StorageManager::drop_schema` writes a family-17 retirement reservation with the schema/object deletion. The serialized schema-drop authorization validator checks the exact reservation record and guards its previous absence, while generic final-catalog validation requires reservations for schema-object deletion and blocks resurrection.
@@ -19,7 +26,7 @@
 - `StorageManager::drop_index` includes its family-17 reservation in the same authorized publication as its definition/object/dependency deletion. Index DDL guards match every ordinary index object deletion to exactly one empty reservation, and final catalog validation blocks ID reuse. DROP TABLE emits the same reservation for the table and owned index objects.
 - The named-index real-redb regression checks the reservation and rejects re-publication of the retained pre-drop records; the table-drop regression covers owned index retirement. Both focused tests pass.
 - Verification: workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and cross-process tests were enabled; zero tests were ignored.
-- Remaining: constraint DDL does not yet reserve an owned backing-index ID when dropping the key constraint.
+- Remaining: other object kinds remain open.
 
 ## DS-3 / DD-3: same-name index recreation retains distinct catalog identity — verified slice
 

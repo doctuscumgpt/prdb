@@ -13276,6 +13276,7 @@ fn constraint_ddl_authority_guards(
     let mut index_definition_states = HashMap::<[u8; 16], (bool, bool)>::new();
     let mut index_schema_updates = HashMap::<[u8; 16], ([u8; 16], u64, u64)>::new();
     let mut index_details = HashMap::<[u8; 16], ([u8; 16], Vec<[u8; 16]>, [u8; 16])>::new();
+    let mut tombstone_changes = HashSet::<[u8; 16]>::new();
     let mut expression_changes =
         HashMap::<[u8; 16], (bool, Vec<[u8; 16]>, crate::expression::ExpressionPurpose)>::new();
     let mut dependency_changes = HashMap::<([u8; 16], [u8; 16]), (u16, bool, bool)>::new();
@@ -13295,6 +13296,33 @@ fn constraint_ddl_authority_guards(
             return Err(CommitError::InvalidCatalog);
         }
         match family {
+            17 => {
+                if write.key.len() != 19
+                    || write.key[2] != 1
+                    || current.is_some()
+                    || write.expected_value.is_some()
+                    || write.payload.is_none()
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
+                let object_id: [u8; 16] = write.key[3..19]
+                    .try_into()
+                    .map_err(|_| CommitError::InvalidCatalog)?;
+                if object_id == [0; 16]
+                    || !decode_catalog_record(
+                        &write.key,
+                        write
+                            .payload
+                            .as_deref()
+                            .ok_or(CommitError::InvalidCatalog)?,
+                    )?
+                    .fields
+                    .is_empty()
+                    || !tombstone_changes.insert(object_id)
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
+            }
             2 => {
                 if write.key.len() != 19 || current.is_some() == write.payload.is_some() {
                     return Err(CommitError::InvalidCatalog);
@@ -14299,6 +14327,11 @@ fn constraint_ddl_authority_guards(
         || expected_columns != column_changes
         || expected_dependencies != dependency_changes
         || expected_index_definitions != index_definition_states
+        || tombstone_changes
+            != index_definition_states
+                .iter()
+                .filter_map(|(index_id, state)| (*state == (true, false)).then_some(*index_id))
+                .collect::<HashSet<_>>()
         || affected_tables.len() != table_changes.len()
         || table_changes
             .iter()

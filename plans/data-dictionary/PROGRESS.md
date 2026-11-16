@@ -1,5 +1,12 @@
 # Data Dictionary Progress
 
+## DD-3 / CL-3 / DS-3: key-constraint backing-index IDs are retired — verified slice
+
+- `DROP PRIMARY KEY` and `DROP UNIQUE` now reserve the owned backing-index ID in family 17 in the same authorized catalog transaction that removes its index, constraint, object, and dependency records. The constraint DDL validator requires reservations to match the deleted owned indexes exactly.
+- `storage_manager_creates_primary_key_with_owned_unique_index` checks the reservation in the post-drop snapshot while preserving the old-snapshot and stale-writer checks. Focused test passed. Verification: workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
+- Remaining: retirement for other object kinds and historical pre-v2 drop history.
+
+
 ## DD-3 / CL-3 / DS-3: retired schema IDs are permanently reserved — verified slice
 
 - Contract: family 17 now reserves dropped schema IDs as well as deleted user/role IDs. A schema's object and typed records and its reservation must publish atomically; final catalog validation rejects any reservation that coexists with a live object/principal and requires a reservation when a schema object is deleted.
@@ -20,7 +27,7 @@
 - Ordinary `DROP INDEX` now publishes a family-17 reservation with deletion of its family-2/family-9 records and physical memberships. Its authorized DDL validator requires that reservation and rejects a later same-ID catalog recreation. `DROP TABLE` also reserves its table ID and any owned index object IDs it deletes.
 - Regression coverage in `storage_manager_creates_named_unique_index_and_backfills_atomically` checks the reservation and attempts to restore the pre-drop records; `storage_manager_drop_table_removes_owned_primary_and_unique_indexes` covers index retirement nested under table deletion. Focused tests pass.
 - Verification: focused index/table regressions, workspace build, formatting, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
-- Remaining: constraint DDL does not yet reserve backing-index IDs when dropping a key constraint; IDs for other dropped child and object kinds remain open.
+- Remaining: IDs for other dropped child and object kinds remain open.
 
 ## Policy-target catalog envelope — in progress
 

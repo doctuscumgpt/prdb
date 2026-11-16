@@ -1,5 +1,12 @@
 # Catalog Lifecycle Progress
 
+## CL-3 / DD-3 / DS-3: constraint-owned backing-index ID reservation — verified slice
+
+- Key-constraint DDL now publishes a family-17 reservation when deleting its owned backing index. The validator requires an exact set match between deleted index definitions and new reservations; generic final-catalog validation prevents reuse.
+- The PRIMARY KEY lifecycle regression verifies the reservation in a new snapshot and retains its previous snapshot/stale-writer coverage. Focused test passed. Verification: workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
+- Remaining: retirement for other object kinds and historical pre-v2 index/constraint drops. The low-level constraint DDL fixture now includes the required reservation when deleting PRIMARY KEY or UNIQUE backing indexes.
+
+
 ## CL-3 / DD-3 / DS-3: schema-drop ID reservation — verified slice
 
 - DROP SCHEMA now publishes the empty family-17 reservation in the same catalog transaction that removes its schema and object rows. Commit validation requires that reservation for schema-object deletion and rejects its coexistence with any live family-2 object or principal, preventing ID reuse.
@@ -16,7 +23,7 @@
 
 ## CL-3 / DD-3 / DS-3: ordinary index-drop ID reservation — verified slice
 
-- Ordinary index DDL validates a one-to-one match between deleted index objects and newly published family-17 reservations. Table cleanup includes reservations for the table and each owned index, all guarded for absence in the same serialized transaction. Constraint DDL retirement of backing-index IDs remains open.
+- Ordinary index DDL validates a one-to-one match between deleted index objects and newly published family-17 reservations. Table cleanup includes reservations for the table and each owned index, all guarded for absence in the same serialized transaction. Key-constraint DDL now retires owned backing-index IDs; other object kinds remain open.
 - Focused index-drop and table-drop-with-owned-index regressions pass.
 - Verification: workspace build, formatting, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
 - Remaining: history for pre-v2 dropped index IDs and retirement for other object kinds.

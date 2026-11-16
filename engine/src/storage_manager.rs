@@ -12040,6 +12040,18 @@ impl<'db> StorageManager<'db> {
                 next_epoch,
             )?),
         });
+        let reservation_key = retired_object_id_catalog_key(index_id);
+        let reservation_payload = encode_envelope(
+            &family_schema(17).ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?,
+            &reservation_key,
+            &[],
+        )
+        .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+        writes.push(CatalogWrite {
+            key: reservation_key,
+            expected_value: None,
+            payload: Some(reservation_payload),
+        });
         drop(catalog);
         drop(read);
         audit_event.target_ids = vec![constraint_id, index_id];
