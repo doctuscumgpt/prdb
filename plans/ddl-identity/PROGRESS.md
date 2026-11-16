@@ -183,3 +183,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Strengthened `role_membership_revocation_aborts_a_staged_role_authorized_writer` to race the staged writer's final commit against membership revocation. Writer-first commits before revocation; revoke-first makes the stale write conflict and durably abort. The test checks final row contents, both durable outcomes, and the order-dependent commit sequence.
 - Verification: focused real-redb regression, locked workspace build, format check, and warning-denied all-target Clippy passed. The full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled: 291 engine unit tests, 180 commit tests, 75 transaction tests, and all remaining workspace targets.
+
+## ID-3 / ID-6 / DP-8: membership grant races MANAGE_ROLES revocation — verified slice
+
+- Extended the membership authorization regression to race a role membership grant with an administrator revoking the actor's `MANAGE_ROLES` privilege. Revocation always commits. If membership commits first, its sequence precedes revocation and the edge/dependency remain; if revocation wins, membership records ABORTED and no edge is published.
+- Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.

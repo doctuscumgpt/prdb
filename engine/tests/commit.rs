@@ -19366,6 +19366,114 @@ fn storage_manager_authorizes_membership_ddl_by_system_privilege_and_admin_role(
             .get(id_catalog_key(10, second_member).as_slice())?
             .is_some()
     );
+    drop(catalog);
+    drop(read);
+
+    let membership_race_invocation = id(88);
+    let privilege_revoke_invocation = id(89);
+    let before_authority_race = commit_sequence(&database)?;
+    let authority_race_barrier = Arc::new(Barrier::new(3));
+    let (membership_result, privilege_revoke_result) = std::thread::scope(|scope| {
+        let membership_barrier = Arc::clone(&authority_race_barrier);
+        let membership_storage = &storage;
+        let membership = scope.spawn(move || {
+            let mut audit = audit_event(88);
+            audit.actor_id = Some(role_manager);
+            audit.correlation_id = membership_race_invocation;
+            audit.action = AuditAction::AuthorityChange;
+            membership_barrier.wait();
+            membership_storage.set_role_membership(
+                membership_race_invocation,
+                role_manager,
+                prdb_engine::storage_manager::RoleMembershipChange {
+                    member_id: first_member,
+                    role_id: app_role,
+                    grant: true,
+                },
+                9_999,
+                audit,
+            )
+        });
+        let revoke_barrier = Arc::clone(&authority_race_barrier);
+        let revoke_storage = &storage;
+        let revoke = scope.spawn(move || {
+            let mut audit = audit_event(89);
+            audit.actor_id = Some(second_member);
+            audit.correlation_id = privilege_revoke_invocation;
+            audit.action = AuditAction::AuthorityChange;
+            revoke_barrier.wait();
+            revoke_storage.set_system_privilege(
+                privilege_revoke_invocation,
+                second_member,
+                prdb_engine::storage_manager::SystemPrivilegeChange {
+                    grantee_id: role_manager,
+                    privilege:
+                        prdb_engine::storage_manager::AdministrativeSystemPrivilege::ManageRoles,
+                    grant: false,
+                },
+                9_999,
+                audit,
+            )
+        });
+        authority_race_barrier.wait();
+        (
+            membership.join().expect("membership grant thread panicked"),
+            revoke.join().expect("MANAGE_ROLES revoke thread panicked"),
+        )
+    });
+    let membership_sequence = match membership_result {
+        Ok(sequence) => Some(sequence),
+        Err(prdb_engine::storage_manager::MembershipLifecycleError::Unauthorized) => None,
+        Err(prdb_engine::storage_manager::MembershipLifecycleError::Commit(
+            CommitError::Conflict,
+        )) => None,
+        Err(error) => return Err(Box::new(error)),
+    };
+    let privilege_revoke_sequence = privilege_revoke_result
+        .map_err(|error| format!("MANAGE_ROLES revoke failed: {error:?}"))?;
+    assert_eq!(
+        privilege_revoke_sequence,
+        before_authority_race + 1 + u64::from(membership_sequence.is_some())
+    );
+    if let Some(sequence) = membership_sequence {
+        assert!(sequence < privilege_revoke_sequence);
+    }
+    assert_eq!(commit_sequence(&database)?, privilege_revoke_sequence);
+    assert_eq!(
+        lookup_outcome(&database, membership_race_invocation, role_manager, 1)?
+            .ok_or("missing raced membership outcome")?
+            .status,
+        if membership_sequence.is_some() {
+            OutcomeStatus::Committed
+        } else {
+            OutcomeStatus::Aborted
+        }
+    );
+    assert_eq!(
+        lookup_outcome(&database, privilege_revoke_invocation, second_member, 1)?
+            .ok_or("missing MANAGE_ROLES revoke outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    let membership_key = membership_write_with_grantor(first_member, app_role, role_manager).key;
+    assert_eq!(
+        catalog.get(membership_key.as_slice())?.is_some(),
+        membership_sequence.is_some()
+    );
+    assert!(
+        catalog
+            .get(
+                grant_write(role_manager, database_id, 13, 1, database_id, admin_role)
+                    .key
+                    .as_slice()
+            )?
+            .is_none()
+    );
+    drop(catalog);
+    drop(read);
+    prdb_engine::startup::validate_persisted_records(&database)?;
     Ok(())
 }
 
