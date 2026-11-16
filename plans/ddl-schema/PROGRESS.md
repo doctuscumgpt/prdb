@@ -1209,3 +1209,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `column_default_and_not_null_alterations_linearize_atomically`, which races setting a literal default against setting the same column NOT NULL. It verifies the final column fields correspond to committed operations, checks commit-time ABORTED outcomes versus preflight rejection, and validates the persisted catalog graph.
 - Verification: the focused real-redb race passed eight consecutive repeats; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed in the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
+
+## 2026-11-16 DS-8 / MD-1: column rename through gateway and supervisor — verified slice
+
+- Extended `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` to run `ALTER TABLE ... RENAME COLUMN` through the real `prdb-client admin-sql` process. Authenticated metadata confirms the new name and unchanged stable column ID and ordinal.
+- Verification: the focused delegated process regression passed with the configured runtime profile; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.

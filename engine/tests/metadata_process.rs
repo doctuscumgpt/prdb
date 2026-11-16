@@ -5016,6 +5016,54 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         AdminObjectPrivilege::Usage,
         AdminObjectGrantTarget::Object,
     )?;
+    let columns_before_rename =
+        admin.list_columns_page(created_schema.identity_id, created_table.table_id, 16, None)?;
+    let payload_before_rename = columns_before_rename
+        .records
+        .iter()
+        .find(|column| column.name == "payload")
+        .ok_or("column rename process fixture lost its original payload column")?;
+    let payload_column_id = payload_before_rename.column_id;
+    let payload_ordinal = payload_before_rename.ordinal;
+    let rename_column_sql_path = root.join("rename-column.sql");
+    std::fs::write(
+        &rename_column_sql_path,
+        "ALTER TABLE process_admin_schema.process_admin_table RENAME COLUMN payload TO payload_renamed;",
+    )?;
+    let rename_column_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--sql-file",
+            rename_column_sql_path
+                .to_str()
+                .ok_or("SQL path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        rename_column_cli.status.success(),
+        "admin-sql RENAME COLUMN failed: {}",
+        String::from_utf8_lossy(&rename_column_cli.stderr)
+    );
+    assert!(String::from_utf8_lossy(&rename_column_cli.stdout).contains("renamed column"));
+    let columns_after_rename =
+        admin.list_columns_page(created_schema.identity_id, created_table.table_id, 16, None)?;
+    let renamed_payload = columns_after_rename
+        .records
+        .iter()
+        .find(|column| column.name == "payload_renamed")
+        .ok_or("gateway RENAME COLUMN did not publish the new column name")?;
+    assert_eq!(renamed_payload.column_id, payload_column_id);
+    assert_eq!(renamed_payload.ordinal, payload_ordinal);
+    assert!(
+        columns_after_rename
+            .records
+            .iter()
+            .all(|column| column.name != "payload")
+    );
     let renamed_table = admin.rename_table(created_table.table_id, "process_admin_table_v2")?;
     let dropped_source_table = admin.drop_table(source_table.table_id)?;
     let dropped_table = admin.drop_table(created_table.table_id)?;

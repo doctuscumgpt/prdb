@@ -408,3 +408,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 full delegated workspace verification after identity issuance hardening
 
 - `cargo test --workspace --locked -- --test-threads=1` passed inside the delegated `systemd --user` service with the documented TinyCC fixtures and runtime profile. Sandbox and process integration tests were enabled; zero tests were ignored. This run includes the unauthorized token issue/rotation enumeration regressions and the 128-cycle foreign-key catalog pressure regression.
+
+## 2026-11-16 MD-1 / DS-8: metadata confirms stable column identity after process DDL rename — verified slice
+
+- The production gateway/supervisor ADMIN lifecycle now runs column rename SQL and reads the result through authenticated metadata. The renamed definition retains its original column ID and ordinal, confirming the discovery projection follows the catalog's stable identity through DDL.
+- Verification: focused delegated `metadata_process` regression passed with sandbox/runtime configuration; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
