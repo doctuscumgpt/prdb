@@ -242,3 +242,9 @@
 
 - Extended `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` with `GRANT ALTER, REFERENCES ON TABLE` and matching REVOKE through authenticated ADMIN. Metadata confirms ALTER stays table-scoped while REFERENCES expands to exactly one column grant for each column existing at grant time; revoke removes the object and every expanded column grant.
 - Verification: the focused delegated gateway/supervisor process regression passed. Workspace formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
+
+## DP-8 / DP-SQL-11: mixed-scope entry batch linearizes with MANAGE_GRANTS revocation — verified slice
+
+- Extended `object_grant_batch_racing_manage_grants_revocation_is_atomic` with a second barrier race using independently targeted entries: object-scoped ALTER and column-scoped REFERENCES. If the batch wins, both grants, the column authority dependency, grantor provenance, one grantee-epoch increment, and the committed outcome are present; if revocation wins, both grants and the new dependency are absent, the epoch is unchanged, and the batch has an aborted outcome. The owner’s revocation commits in either order.
+- Verification: focused real-redb race passed; workspace formatting and warning-denied all-target Clippy passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
+- Scope: one coordinated schedule; repeated mixed-target revocation stress and broader ADMIN SQL forms remain open.

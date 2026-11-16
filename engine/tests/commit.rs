@@ -26738,6 +26738,163 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
             .status,
         OutcomeStatus::Committed
     );
+
+    let mut entries_race_regrant_audit = identity_audit_event(0xe0, table_owner, grant_manager);
+    entries_race_regrant_audit.correlation_id = id(0xe0);
+    entries_race_regrant_audit.action = AuditAction::AuthorityChange;
+    storage.set_object_grant(SetObjectGrantRequest {
+        invocation_id: id(0xe0),
+        authenticated_actor_id: table_owner,
+        grantee_id: grant_manager,
+        object_id: table_id,
+        privilege: ObjectGrantPrivilege::ManageGrants,
+        target: ObjectGrantTarget::Object,
+        grant: true,
+        retention_deadline_us: 9_999,
+        audit_event: entries_race_regrant_audit,
+    })?;
+
+    let entries_race_batch_id = id(0xe1);
+    let entries_race_revoke_id = id(0xe2);
+    let entries_race = vec![
+        ObjectGrantEntry {
+            privilege: ObjectGrantPrivilege::Alter,
+            target: ObjectGrantTarget::Object,
+        },
+        ObjectGrantEntry {
+            privilege: ObjectGrantPrivilege::References,
+            target: ObjectGrantTarget::Column(second_column_id),
+        },
+    ];
+    let entries_race_before = commit_sequence(&database)?;
+    let entries_race_barrier = Arc::new(Barrier::new(2));
+    let (entries_batch_result, entries_revoke_result) = std::thread::scope(|scope| {
+        let batch_barrier = Arc::clone(&entries_race_barrier);
+        let batch_storage = &storage;
+        let entries = entries_race.clone();
+        let batch = scope.spawn(move || {
+            let mut audit = identity_audit_event(0xe3, grant_manager, grant_first_grantee);
+            audit.correlation_id = entries_race_batch_id;
+            audit.action = AuditAction::AuthorityChange;
+            batch_barrier.wait();
+            batch_storage.set_object_grant_entries_batch(SetObjectGrantEntriesBatchRequest {
+                invocation_id: entries_race_batch_id,
+                authenticated_actor_id: grant_manager,
+                grantee_id: grant_first_grantee,
+                object_id: table_id,
+                entries,
+                grant: true,
+                retention_deadline_us: 9_999,
+                audit_event: audit,
+            })
+        });
+        let mut audit = identity_audit_event(0xe4, table_owner, grant_manager);
+        audit.correlation_id = entries_race_revoke_id;
+        audit.action = AuditAction::AuthorityChange;
+        entries_race_barrier.wait();
+        let revoke = storage.set_object_grant(SetObjectGrantRequest {
+            invocation_id: entries_race_revoke_id,
+            authenticated_actor_id: table_owner,
+            grantee_id: grant_manager,
+            object_id: table_id,
+            privilege: ObjectGrantPrivilege::ManageGrants,
+            target: ObjectGrantTarget::Object,
+            grant: false,
+            retention_deadline_us: 9_999,
+            audit_event: audit,
+        });
+        (
+            batch.join().expect("mixed-entry grant thread panicked"),
+            revoke,
+        )
+    });
+    let entries_batch_committed = match entries_batch_result {
+        Ok(_) => true,
+        Err(CommitError::DdlAuthorizationDenied | CommitError::Conflict) => false,
+        Err(error) => return Err(format!("unexpected mixed-entry race result: {error:?}").into()),
+    };
+    let entries_revoke_sequence = entries_revoke_result?;
+    assert_eq!(
+        entries_revoke_sequence,
+        entries_race_before + 1 + u64::from(entries_batch_committed)
+    );
+    assert_eq!(commit_sequence(&database)?, entries_revoke_sequence);
+    assert_eq!(
+        lookup_outcome(&database, entries_race_batch_id, grant_manager, 1)?
+            .ok_or("missing mixed-entry grant outcome")?
+            .status,
+        if entries_batch_committed {
+            OutcomeStatus::Committed
+        } else {
+            OutcomeStatus::Aborted
+        }
+    );
+    assert_eq!(
+        lookup_outcome(&database, entries_race_revoke_id, table_owner, 1)?
+            .ok_or("missing mixed-entry MANAGE_GRANTS revoke outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+    let entries_race_read = database.begin_read()?;
+    let entries_race_catalog = entries_race_read.open_table(CATALOG)?;
+    let alter_key = grant_write(grant_first_grantee, table_id, 8, 1, table_id, grant_manager).key;
+    let references_key = grant_write(
+        grant_first_grantee,
+        table_id,
+        6,
+        2,
+        second_column_id,
+        grant_manager,
+    )
+    .key;
+    let references_dependency = dependency_write(grant_first_grantee, second_column_id, 5).key;
+    for key in [&alter_key, &references_key, &references_dependency] {
+        assert_eq!(
+            entries_race_catalog.get(key.as_slice())?.is_some(),
+            entries_batch_committed,
+            "mixed-scope grants and their dependency must publish all-or-none"
+        );
+    }
+    if entries_batch_committed {
+        for grant_key in [&alter_key, &references_key] {
+            let grant = decode_registered_envelope(
+                entries_race_catalog
+                    .get(grant_key.as_slice())?
+                    .ok_or("committed mixed-scope grant missing")?
+                    .value(),
+            )?;
+            assert_eq!(
+                grant
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 1)
+                    .ok_or("mixed-scope grantor provenance missing")?
+                    .payload,
+                grant_manager
+            );
+        }
+    }
+    let entries_grantee = decode_registered_envelope(
+        entries_race_catalog
+            .get(id_catalog_key(10, grant_first_grantee).as_slice())?
+            .ok_or("mixed-entry race grantee disappeared")?
+            .value(),
+    )?;
+    assert_eq!(
+        u64::from_le_bytes(
+            entries_grantee
+                .fields
+                .iter()
+                .find(|field| field.tag == 4)
+                .ok_or("mixed-entry race grantee epoch missing")?
+                .payload
+                .as_slice()
+                .try_into()?
+        ),
+        if entries_batch_committed { 3 } else { 2 }
+    );
+    drop(entries_race_catalog);
+    drop(entries_race_read);
     assert!(prdb_engine::startup::validate_persisted_records(&database).is_ok());
     Ok(())
 }
