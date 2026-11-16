@@ -1195,9 +1195,29 @@ fn stale_principal_name_index_is_rebuilt_from_catalog() {
     drop(read);
     validate_persisted_records(&database).unwrap();
     let read = database.begin_read().unwrap();
+    let catalog = read.open_table(CATALOG).unwrap();
+    let principal_prefix = [10u16.to_be_bytes().as_slice(), &[1]].concat();
+    let mut expected: Vec<[u8; 16]> = Vec::new();
+    for entry in catalog.iter().unwrap() {
+        let (key, value) = entry.unwrap();
+        if !key.value().starts_with(&principal_prefix) {
+            continue;
+        }
+        let record = decode_registered_envelope(value.value()).unwrap();
+        if record
+            .fields
+            .iter()
+            .find(|field| field.tag == 2)
+            .is_some_and(|field| field.payload.as_slice() == b"database_admin")
+        {
+            expected.push(record.logical_key[3..].try_into().unwrap());
+        }
+    }
+    expected.sort_unstable();
+    assert_eq!(expected, vec![builtin_owner_id()]);
     assert_eq!(
         lookup_principal_id_by_name(&read, "database_admin").unwrap(),
-        Some(builtin_owner_id())
+        expected.first().copied()
     );
     assert_eq!(
         lookup_principal_id_by_name(&read, "stale_entry").unwrap(),
@@ -1239,10 +1259,28 @@ fn stale_schema_name_index_is_rebuilt_from_catalog() {
     write.commit().unwrap();
     validate_persisted_records(&database).unwrap();
     let read = database.begin_read().unwrap();
-    assert!(
-        lookup_schema_id_by_name(&read, "pg_catalog")
-            .unwrap()
-            .is_some()
+    let catalog = read.open_table(CATALOG).unwrap();
+    let object_prefix = [2u16.to_be_bytes().as_slice(), &[1]].concat();
+    let mut expected: Vec<[u8; 16]> = Vec::new();
+    for entry in catalog.iter().unwrap() {
+        let (key, value) = entry.unwrap();
+        if !key.value().starts_with(&object_prefix) {
+            continue;
+        }
+        let record = decode_registered_envelope(value.value()).unwrap();
+        let kind = record.fields.iter().find(|field| field.tag == 1);
+        let name = record.fields.iter().find(|field| field.tag == 3);
+        if kind.is_some_and(|field| field.payload.as_slice() == 1u16.to_le_bytes())
+            && name.is_some_and(|field| field.payload.as_slice() == b"pg_catalog")
+        {
+            expected.push(record.logical_key[3..].try_into().unwrap());
+        }
+    }
+    expected.sort_unstable();
+    assert_eq!(expected, vec![builtin_id(1)]);
+    assert_eq!(
+        lookup_schema_id_by_name(&read, "pg_catalog").unwrap(),
+        expected.first().copied()
     );
     assert_eq!(
         lookup_schema_id_by_name(&read, "stale_entry").unwrap(),

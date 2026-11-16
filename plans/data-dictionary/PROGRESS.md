@@ -480,3 +480,9 @@
 - Strengthened `table_column_scan_is_bounded_to_its_ordinal_prefix` to scan family-6 column definitions and derive the expected table-to-column ID list from each record's table reference and logical key. The per-table column scan is compared with that independent catalog result while unrelated secondary-index entries verify prefix isolation.
 - Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (294 unit tests, 190 commit tests, 76 transaction tests, plus all remaining targets).
 - Remaining: reconcile DD-2 status across all indexed families, then continue DD-3 referential integrity and broader catalog pressure coverage.
+
+## DD-2: principal and schema name indexes match independent catalog scans — verified slice
+
+- Strengthened the stale-name-index startup regressions to derive the expected `database_admin` principal ID from family-10 records and the `pg_catalog` schema ID from family-2 schema objects. After index repair, both exact-name lookup results are compared with those independent catalog scans.
+- Verification: both focused startup regressions, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests (294 unit, 190 commit, 76 transaction tests, plus all remaining targets).
+- Remaining: audit the complete DD-2 matrix for any lookup still lacking independent catalog parity, then continue DD-3 referential integrity and broader catalog pressure coverage.
