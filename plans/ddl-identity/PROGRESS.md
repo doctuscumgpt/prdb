@@ -214,6 +214,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Added a barrier race through the authorized storage-manager APIs that creates a USER and a ROLE with the same name. Exactly one identity publishes; the other receives a catalog publication failure and durable ABORTED outcome. The committed principal-name index resolves the winner's stable ID, and storage startup validates the final catalog.
 - Verification: focused real-redb race, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 189 commit, 76 transaction tests, plus all remaining targets).
 
+## ID-3: cross-kind rename preserves the shared USER/ROLE name namespace — verified slice
+
+- Added `identity_rename_preserves_the_shared_user_role_name_namespace`: after creating a USER and ROLE with distinct names through `StorageManager`, it attempts to rename the USER to the ROLE's name. The operation is rejected as `InvalidCatalog`, persists an ABORTED outcome without advancing the commit sequence, and leaves both name-index entries resolving to their original stable IDs.
+- Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (293 unit, 190 commit, 76 transaction tests, plus all remaining targets).
+
 ## ID-2 / ID-4 / ID-5: concurrent LOGIN disables preserve a credentialed administrator — verified slice
 
 - Extended `identity_ddl_cannot_disable_the_last_credentialed_admin` to race two administrators disabling each other's LOGIN after both have active credentials. Exactly one disable commits; the losing administrator's attempt is denied or conflicts. The disabled user's credentials are all revoked, while the surviving administrator remains LOGIN-enabled with an active credential. Persisted catalog validation succeeds afterward.

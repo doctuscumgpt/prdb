@@ -22291,6 +22291,86 @@ fn concurrent_user_and_role_creation_share_one_name_namespace()
 }
 
 #[test]
+fn identity_rename_preserves_the_shared_user_role_name_namespace()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let admin = id(0xd7);
+    let admin_role = builtin_owner_id();
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let mut setup_audit = identity_audit_event(0xd7, admin_role, admin);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(
+        id(0xd7),
+        admin_role,
+        9_999,
+        &[
+            principal_write_with_name(admin, 1, 1, "rename_namespace_admin"),
+            object_write_with_name(admin, 8, "rename_namespace_admin"),
+            membership_write_with_grantor(admin, admin_role, admin_role),
+            dependency_write(admin, admin_role, 5),
+        ],
+        &[setup_audit],
+    )?;
+    let mut create_user_audit = identity_audit_event(0xd8, admin, admin);
+    create_user_audit.correlation_id = id(0xd8);
+    let user_id = storage
+        .create_user(
+            id(0xd8),
+            admin,
+            "rename_namespace_user",
+            9_999,
+            create_user_audit,
+        )?
+        .user_id;
+    let mut create_role_audit = identity_audit_event(0xd9, admin, admin);
+    create_role_audit.correlation_id = id(0xd9);
+    let role_id = storage
+        .create_role(
+            id(0xd9),
+            admin,
+            "rename_namespace_role",
+            9_999,
+            create_role_audit,
+        )?
+        .role_id;
+
+    let mut rename_audit = identity_audit_event(0xda, admin, user_id);
+    rename_audit.correlation_id = id(0xda);
+    assert!(matches!(
+        storage.rename_identity(
+            id(0xda),
+            admin,
+            user_id,
+            "rename_namespace_role",
+            9_999,
+            rename_audit,
+        ),
+        Err(
+            prdb_engine::storage_manager::IdentityLifecycleError::Commit(
+                CommitError::InvalidCatalog
+            )
+        )
+    ));
+
+    let read = database.begin_read()?;
+    assert_eq!(
+        lookup_principal_id_by_name(&read, "rename_namespace_user")?,
+        Some(user_id)
+    );
+    assert_eq!(
+        lookup_principal_id_by_name(&read, "rename_namespace_role")?,
+        Some(role_id)
+    );
+    drop(read);
+    assert_eq!(commit_sequence(&database)?, 3);
+    let outcome = lookup_outcome(&database, id(0xda), admin, 1)?
+        .ok_or("missing rejected cross-kind rename outcome")?;
+    assert_eq!(outcome.status, OutcomeStatus::Aborted);
+    Ok(())
+}
+
+#[test]
 fn identity_ddl_cannot_disable_the_last_credentialed_admin()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
