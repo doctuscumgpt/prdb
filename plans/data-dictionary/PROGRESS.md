@@ -497,3 +497,9 @@
 
 - The policy DDL integration regression now drops a table-local row policy and recreates the same name. It verifies fresh policy/expression IDs and the replacement's dependency in the current catalog, confirms the table-operation policy index resolves the new ID only, and confirms a retained snapshot still resolves the old policy and expression records.
 - Verification: the focused real-redb regression and complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests; format, locked build, warning-denied all-target Clippy, and `git diff --check` passed.
+
+## DD-2: secondary catalog index parity audit — verified
+
+- Audited the maintained catalog lookup indexes against the independent scans recorded above: principal/schema/relation names, column name and ordinal, index name, table-index, table-constraint, table-column, object-owner, membership in both directions, grants by grantee/object, policies by table/operation, and dependencies in both directions. Each has a real-redb parity or rebuild regression deriving expected IDs/keys from its owning catalog family.
+- Verification: the full serial delegated-cgroup workspace suite passed on 2026-11-16 with sandbox/process tests enabled and zero ignored; the startup/index unit regressions and transaction/commit parity tests were included. Workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, and `git diff --check` passed.
+- Remaining: DD-3 referential-integrity breadth and longer mixed catalog-DDL/read pressure campaigns remain open; this audit does not claim complete integrity coverage.
