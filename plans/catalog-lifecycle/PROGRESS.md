@@ -167,6 +167,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression converts a populated catalog-v1 copy with a tombstone, validates retained row/frontier semantics and code 217, then verifies an occupied tombstone ID fails without changing the staging catalog version.
 - Verification: the focused populated migration-source regression passed; formatting, locked workspace build, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled with zero ignored tests. `git diff --check` passed.
 
+## CL-5: populated migration preserves multiple certified identity tombstones — verified slice
+
+- Expanded `v1_source_validator_checks_legacy_ready_images_without_admitting_them` to migrate three source-bound retired identity IDs in one populated v1-to-v2 transformation. The upgraded READY image is checked for each family-17 record and for an exact increase of three catalog records, alongside the existing row, database ID, commit frontier, and built-in mapping checks.
+- Verification: focused migration-source regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+- Remaining: archived prior-release binary/data fixtures, real power-loss/device-cache evidence, and broader filesystem fault campaigns remain open.
+
 ## CL-5 offline v1-to-v2 apply command — implemented slice
 
 - Added `prdb-maintain migration-apply`, requiring the exclusive active-source lock, a manifest-verified backup matching the active source bytes/ID/frontier, a private source-bound identity-history file, and `--confirm-complete-identity-history`.

@@ -1405,7 +1405,7 @@ fn v1_source_validator_checks_legacy_ready_images_without_admitting_them() {
     let history = prdb_engine::identity_history::IdentityHistory {
         database_id: report.metadata.database_id,
         commit_sequence: report.metadata.commit_sequence,
-        tombstone_ids: vec![[0xfe; 16]],
+        tombstone_ids: vec![[0xfc; 16], [0xfd; 16], [0xfe; 16]],
     };
     prdb_engine::migration::upgrade_v1_staging_database(&staging, &history)
         .expect("upgrade copied v1 staging image");
@@ -1423,15 +1423,22 @@ fn v1_source_validator_checks_legacy_ready_images_without_admitting_them() {
         report.metadata.commit_sequence
     );
     assert_eq!(upgraded_report.rows, report.rows);
+    assert_eq!(
+        upgraded_report.catalog_records,
+        report.catalog_records + history.tombstone_ids.len()
+    );
     let read = upgraded.begin_read().expect("read upgraded catalog");
     let catalog = read.open_table(CATALOG).expect("open upgraded catalog");
-    let tombstone_key = [17u16.to_be_bytes().as_slice(), &[1], &[0xfe; 16]].concat();
-    assert!(
-        catalog
-            .get(tombstone_key.as_slice())
-            .expect("read tombstone")
-            .is_some()
-    );
+    for tombstone_id in &history.tombstone_ids {
+        let tombstone_key = [17u16.to_be_bytes().as_slice(), &[1], tombstone_id].concat();
+        assert!(
+            catalog
+                .get(tombstone_key.as_slice())
+                .expect("read tombstone")
+                .is_some(),
+            "migrated tombstone {tombstone_id:02x?} is missing"
+        );
+    }
     let database_record_key = [
         1u16.to_be_bytes().as_slice(),
         &[1],
