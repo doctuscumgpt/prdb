@@ -284,3 +284,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. All 33 `bootstrap_binary` tests passed, covering backup validation, v1 migration, physical redb upgrade, restore, publication retry, and process-exit recovery cases.
 - Power-loss/filesystem fault evidence and archived prior-release binary/data fixtures remain open as already recorded above.
+
+## CL-3 / DD-7: orphaned principal blocks READY — verified slice
+
+- A recovery regression removes a user's typed object record while retaining its family-10 principal record. Both persisted-catalog validation and `StorageManager` admission reject the image with `InvalidCatalog`; startup does not reconstruct identity authority from the surviving record.
+- Verification: focused real-redb recovery regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit tests, 186 commit tests, 76 transaction tests, plus all remaining targets).

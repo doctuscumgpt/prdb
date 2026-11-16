@@ -17432,6 +17432,47 @@ fn storage_manager_rejects_invalid_recovered_images_before_admission()
 }
 
 #[test]
+fn startup_rejects_principal_without_matching_identity_object()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let principal_id = id(0xd1);
+    let principal = principal_write_with_name(principal_id, 1, 1, "orphan_principal");
+    let object = object_write_with_name(principal_id, 8, "orphan_principal");
+    let administrator = builtin_owner_id();
+    let invocation_id = id(0xd2);
+    let mut audit = identity_audit_event(0xd3, administrator, principal_id);
+    audit.action = AuditAction::AuthorityChange;
+    audit.correlation_id = invocation_id;
+    commit_catalog_and_audit(
+        &database,
+        invocation_id,
+        administrator,
+        9_999,
+        &[principal, object.clone()],
+        &[audit],
+    )?;
+
+    let write = database.begin_write()?;
+    let mut catalog = write.open_table(CATALOG)?;
+    assert!(catalog.remove(object.key.as_slice())?.is_some());
+    drop(catalog);
+    write.commit()?;
+
+    assert_eq!(
+        prdb_engine::startup::validate_persisted_records(&database),
+        Err(prdb_engine::startup::StartupError::InvalidCatalog)
+    );
+    assert!(matches!(
+        StorageManager::new(&database, Duration::from_millis(100)),
+        Err(StorageManagerInitError::Startup(
+            prdb_engine::startup::StartupError::InvalidCatalog
+        ))
+    ));
+    Ok(())
+}
+
+#[test]
 fn catalog_commit_requires_backing_index_dependency_edges() -> Result<(), Box<dyn std::error::Error>>
 {
     let fixture = Fixture::new();
