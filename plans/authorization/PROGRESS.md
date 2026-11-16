@@ -357,3 +357,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `token_authenticated_catalog_scans_redact_cells_per_principal` with a nullable second column. The reader has column SELECT authority and receives `SanitizedCell::Null` for its stored SQL NULL; the restricted user receives `SanitizedCell::Redacted` for that same field. Existing different-sized secret assertions remain, so the same real catalog-derived scan covers VALUE, NULL, and REDACTED without leaking the hidden byte lengths.
 - Verification: focused real-redb authenticated catalog/IPC regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (293 unit, 190 commit, 76 transaction tests, plus all remaining targets).
+
+## AU-5: generated identity is materialized before row INSERT policy evaluation — verified slice
+
+- Strengthened `catalog_insert_allocates_generated_identity_and_rejects_caller_override` so its table-level INSERT ALLOW policy requires the generated UUID field to differ from the all-zero UUID. The `DEFAULT` insert succeeds and exposes a nonzero UUID in the staged row, proving policy evaluation sees the materialized identity; the existing case still rejects a caller-supplied identity and records an aborted outcome.
+- Verification: focused real-redb transaction regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 unit, 190 commit, 76 transaction tests, plus all remaining targets).
+- Remaining: broader SQL DEFAULT/column-list forms and the full constraint/identity edge-case matrix remain open.

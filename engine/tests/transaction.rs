@@ -9949,7 +9949,10 @@ fn catalog_insert_allocates_generated_identity_and_rejects_caller_override()
         target: table,
         effect: Effect::Allow,
         using: None,
-        with_check: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+        with_check: Some(Expr::NotEqual(
+            Box::new(Expr::Field(0)),
+            Box::new(Expr::Literal(Some(ScalarValue::Uuid([0; 16])))),
+        )),
     }];
     let columns = [ColumnSchema {
         scalar_type: ScalarType::Uuid,
