@@ -7887,6 +7887,151 @@ fn catalog_commit_rejects_malformed_constraint_semantics() -> Result<(), Box<dyn
 }
 
 #[test]
+fn catalog_commit_rejects_schema_mismatched_check_expression()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let check_id = id(0xa7);
+    let expression_id = id(0xa8);
+    let table_id = id(82);
+    let column_id = id(84);
+    let mut writes = foreign_key_catalog_writes(false, true)
+        .into_iter()
+        .filter(|write| {
+            write.key != id_catalog_key(8, id(86)) && write.key != id_catalog_key(2, id(86))
+        })
+        .collect::<Vec<_>>();
+
+    let constraint_key = id_catalog_key(8, check_id);
+    let id_list = 0u32.to_le_bytes().to_vec();
+    let constraint_payload = encode_envelope(
+        &family_schema(8).unwrap(),
+        &constraint_key,
+        &[
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::Id,
+                payload: table_id.to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::U16,
+                payload: 4u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::Ids,
+                payload: id_list.clone(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::Id,
+                payload: expression_id.to_vec(),
+            },
+            CatalogField {
+                tag: 6,
+                wire_type: WireType::Ids,
+                payload: id_list,
+            },
+            CatalogField {
+                tag: 7,
+                wire_type: WireType::U16,
+                payload: 0u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 8,
+                wire_type: WireType::U16,
+                payload: 0u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 9,
+                wire_type: WireType::U16,
+                payload: 0u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 10,
+                wire_type: WireType::U16,
+                payload: 1u16.to_le_bytes().to_vec(),
+            },
+        ],
+    )?;
+    writes.push(CatalogWrite {
+        key: constraint_key,
+        expected_value: None,
+        payload: Some(constraint_payload),
+    });
+    writes.push(object_write(check_id, 6));
+
+    let expression_key = id_catalog_key(7, expression_id);
+    let mut declared_dependencies = 1u32.to_le_bytes().to_vec();
+    declared_dependencies.extend_from_slice(&column_id);
+    let expression_payload = encode_envelope(
+        &family_schema(7).unwrap(),
+        &expression_key,
+        &[
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::U16,
+                payload: 2u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::Id,
+                payload: builtin_id(101).to_vec(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::Bytes,
+                payload: vec![0; 8],
+            },
+            CatalogField {
+                tag: 5,
+                wire_type: WireType::Bytes,
+                payload: prdb_engine::expression::encode_expression(
+                    &prdb_engine::authorization::Expr::Field(0),
+                )?,
+            },
+            CatalogField {
+                tag: 6,
+                wire_type: WireType::Ids,
+                payload: declared_dependencies,
+            },
+        ],
+    )?;
+    writes.push(CatalogWrite {
+        key: expression_key,
+        expected_value: None,
+        payload: Some(expression_payload),
+    });
+    writes.push(object_write(expression_id, 5));
+    writes.push(dependency_write(check_id, expression_id, 2));
+    writes.push(dependency_write(expression_id, column_id, 2));
+
+    let admin = builtin_owner_id();
+    let mut audit = audit_event(0xaa);
+    audit.actor_id = Some(admin);
+    let invocation_id = id(0xaa);
+    assert_eq!(
+        commit_catalog_and_audit(&database, invocation_id, admin, 9_999, &writes, &[audit],),
+        Err(CommitError::InvalidCatalog),
+        "a CHECK whose expression infers BYTEA must not publish as BOOLEAN"
+    );
+    assert_eq!(commit_sequence(&database)?, 0);
+    assert_eq!(
+        lookup_outcome(&database, invocation_id, admin, 1)?
+            .ok_or("missing rejected CHECK outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    Ok(())
+}
+
+#[test]
 fn catalog_commit_rejects_nullable_primary_key_columns() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
     let database = initialize(&fixture.path())?;

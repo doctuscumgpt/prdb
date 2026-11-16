@@ -371,3 +371,9 @@
 - Extended `storage_manager_creates_schema_atomically_for_privileged_actor` to inspect `object_owners_v1` through both the retained pre-transfer snapshot and a fresh post-transfer snapshot. The old snapshot continues to list the schema under its original owner and excludes the successor; the current snapshot removes the former owner entry and lists the schema under the successor role.
 - Verification: the focused real-redb regression passed. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests: 291 engine unit tests, 179 commit tests, 75 transaction tests, and all other workspace targets.
 - Remaining: longer-duration mixed catalog-DDL/read campaigns and continued codec fuzzing remain hardening work.
+
+## DD-1 / DS-3: CHECK expressions bind to the final catalog schema — verified slice
+
+- Shared final-catalog constraint validation now resolves every CHECK expression's table schema and declared result type, requires a row-local BOOLEAN expression, and runs `validate_expression_binding` against stable column IDs before publication. This applies to catalog writes outside the specialized CREATE TABLE validator as well.
+- `catalog_commit_rejects_schema_mismatched_check_expression` builds an otherwise structurally valid CHECK whose EIR reads a BYTEA column while declaring BOOLEAN. The commit rejects it with `InvalidCatalog`, leaves the sequence unchanged, and records ABORTED.
+- Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored. Schema-aware CHECK validation at generic publication paths is no longer limited to invocation-time loading.

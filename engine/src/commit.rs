@@ -3404,9 +3404,31 @@ fn validate_constraint_references(
         let expression_record = decode_catalog_record(&expression_key, &expression_bytes)?;
         let expression = decode_catalog_expression_record(&expression_record)
             .map_err(|_| CommitError::InvalidCatalog)?;
-        if expression.purpose != crate::expression::ExpressionPurpose::Check {
+        if expression.expression_id != expression_id
+            || expression.purpose != ExpressionPurpose::Check
+            || !is_row_local_expression(&expression.expression)
+        {
             return Err(CommitError::InvalidCatalog);
         }
+        let schema = load_final_table_schema(catalog, writes, table_id)?;
+        let result_type_key = id_catalog_key(4, expression.result_type_id);
+        let result_type_bytes = final_catalog_value(catalog, writes, &result_type_key)?
+            .ok_or(CommitError::InvalidCatalog)?;
+        let result_type_record = decode_catalog_record(&result_type_key, &result_type_bytes)?;
+        if decode_builtin_scalar_type(&result_type_record, &expression.result_parameters)
+            .map_err(|_| CommitError::InvalidCatalog)?
+            != ScalarType::Boolean
+        {
+            return Err(CommitError::InvalidCatalog);
+        }
+        validate_expression_binding(
+            &expression,
+            &schema.columns,
+            &schema.column_ids,
+            expression.result_type_id,
+            ScalarType::Boolean,
+        )
+        .map_err(|_| CommitError::InvalidCatalog)?;
     } else if kind == 5 {
         let target_id: [u8; 16] = catalog_field_bytes(key, bytes, 8, 5)?
             .try_into()

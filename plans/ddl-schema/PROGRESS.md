@@ -1007,3 +1007,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - `foreign_key_creation_racing_a_staged_child_write_is_atomic` seeds a parent key, stages a non-NULL child row that references it from a snapshot without the FK, then races its commit against FK creation on that table. The only accepted outcomes are writer-first with both commits in sequence, or FK-first with the stale writer durably ABORTED and no row. The test verifies the FK record and dependency edge, writer outcome, row state, commit sequence, and persisted catalog integrity.
 - Verification: the focused real-redb race passed. Locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests; the suite reported 291 engine unit tests, 180 commit tests, 75 transaction tests, and all remaining workspace targets.
 - Remaining: further constraint DDL schedules and the complete supported ALTER race matrix remain open.
+
+## DS-3: reject CHECK expressions that do not match the table schema — verified slice
+
+- Final catalog publication now binds CHECK expressions against the table's final column schema, validates BOOLEAN result type and exact stable-column dependencies, and rejects non-row-local expressions for every CHECK record.
+- A real-redb catalog commit regression submits a CHECK that reads a BYTEA field while its record declares BOOLEAN. Publication fails atomically with `InvalidCatalog` and a durable ABORTED outcome.
+- Verification: focused regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored.
