@@ -4431,17 +4431,42 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
     stale_drop_writer.stage_put(stale_drop_row, &stale_drop_tuple)?;
 
     let drop_invocation = id(0x6a);
+    let drop_table_id = table.table_id;
+    let drop_column_id = table.column_ids[0];
     let mut drop_audit = identity_audit_event(0x6b, actor, id(0x6c));
     drop_audit.correlation_id = drop_invocation;
-    let dropped = storage.drop_column(
-        drop_invocation,
-        actor,
-        table.table_id,
-        table.column_ids[0],
-        9_999,
-        drop_audit,
-    )?;
+    let drop_race_barrier = Arc::new(Barrier::new(2));
+    let (write_result, dropped) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&drop_race_barrier);
+        let storage = &storage;
+        let ddl = scope.spawn(move || {
+            barrier.wait();
+            storage.drop_column(
+                drop_invocation,
+                actor,
+                drop_table_id,
+                drop_column_id,
+                9_999,
+                drop_audit,
+            )
+        });
+        drop_race_barrier.wait();
+        let write = stale_drop_writer.commit();
+        let ddl = ddl.join().expect("DROP COLUMN thread panicked");
+        (write, ddl)
+    });
+    let dropped = dropped?;
     assert_eq!(dropped.column_id, table.column_ids[0]);
+    let (write_sequence, write_status) = match write_result {
+        Ok(sequence) => (Some(sequence), OutcomeStatus::Committed),
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            (None, OutcomeStatus::Aborted)
+        }
+        Err(error) => panic!("unexpected staged-write result in DROP COLUMN race: {error:?}"),
+    };
+    if let Some(sequence) = write_sequence {
+        assert!(sequence < dropped.commit_sequence);
+    }
     let after_drop = old_reader
         .read(old_reader_row)?
         .ok_or("old reader lost its row after DROP COLUMN")?;
@@ -4474,24 +4499,34 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
         .values,
         vec![Some(ScalarValue::Text("preserved".to_owned()))]
     );
-    assert!(matches!(
-        stale_drop_writer.commit(),
-        Err(prdb_engine::transaction::TransactionError::Commit(
-            CommitError::Conflict
-        ))
-    ));
-    assert!(
-        row(
-            &database,
-            &table_row_key(table.table_id, stale_drop_row.row)
-        )?
-        .is_none()
-    );
+    let stale_row_after_drop = row(
+        &database,
+        &table_row_key(table.table_id, stale_drop_row.row),
+    )?;
+    match (write_status, stale_row_after_drop) {
+        (OutcomeStatus::Committed, Some(record)) => {
+            assert_eq!(
+                prdb_engine::tuple::decode_tuple(
+                    &new_reader_schema.columns,
+                    new_reader_schema.schema_version,
+                    &record.payload,
+                )?
+                .values,
+                [Some(ScalarValue::Text("staged before drop".to_owned()))],
+                "DROP COLUMN must rewrite a row committed immediately before it"
+            );
+        }
+        (OutcomeStatus::Aborted, None) => {}
+        (status, record) => panic!(
+            "DROP COLUMN race produced inconsistent row state: status={status:?}, present={}",
+            record.is_some()
+        ),
+    }
     assert_eq!(
         lookup_outcome(&database, stale_drop_invocation, actor, 1)?
             .ok_or("missing stale DROP COLUMN writer outcome")?
             .status,
-        OutcomeStatus::Aborted
+        write_status
     );
     let read = database.begin_read()?;
     let catalog = read.open_table(CATALOG)?;
