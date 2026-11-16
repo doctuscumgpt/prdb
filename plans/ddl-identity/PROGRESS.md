@@ -266,3 +266,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `login_reenable_racing_token_issue_only_publishes_after_enable`. A real-redb barrier races enabling a NOLOGIN user with token issuance. Issuance can commit only after LOGIN enable commits; otherwise the authorization check rejects it and no verifier appears in inventory. The test verifies durable invocation outcomes and validates the final persisted catalog.
 - Verification: focused regression and the complete serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests (294 library tests, 195 commit tests, 78 transaction tests, plus all remaining targets). Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. Cargo.lock is unchanged.
+
+## 2026-11-16 full delegated-cgroup workspace verification
+
+- The complete serial workspace test suite passed inside the delegated `systemd --user` service with sandbox and process integration tests enabled: 955 passed, 0 failed, 0 ignored. This includes the current permission, authorization/schema race, and metadata discovery regressions. The run used the locked release profile and documented TinyCC/runtime artifacts.

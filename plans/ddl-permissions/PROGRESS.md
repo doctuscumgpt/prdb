@@ -196,3 +196,7 @@
 
 - Updated the permission contract with the implemented grammar: one column-capable table privilege may carry the parenthesized column list while other compatible table privileges stay object-scoped in the same atomic operation. It also records all-column expansion without a list and the current single-data-privilege limit when a column list is present.
 - Verification: checked the examples against the SQL parser and the authenticated cross-process GRANT/REVOKE regression; `git diff --check` passed.
+
+## 2026-11-16 full delegated-cgroup workspace verification
+
+- The complete serial workspace test suite passed inside the delegated `systemd --user` service with sandbox and process integration tests enabled: 955 passed, 0 failed, 0 ignored. This includes the current permission, authorization/schema race, and metadata discovery regressions. The run used the locked release profile and documented TinyCC/runtime artifacts.

@@ -408,3 +408,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The column-default lifecycle race regression now also races `ALTER COLUMN SET DEFAULT` with `DROP TABLE`, checking that serialized publication either retains the altered table or removes the complete table and column graph, with durable outcomes matching both calls. Persisted-catalog validation checks the final image.
 - Verification: focused real-redb race passed; warning-denied all-target engine Clippy, formatting, and `git diff --check` passed.
+
+## 2026-11-16 full delegated-cgroup workspace verification
+
+- The complete serial workspace test suite passed inside the delegated `systemd --user` service with sandbox and process integration tests enabled: 955 passed, 0 failed, 0 ignored. This includes the current permission, authorization/schema race, and metadata discovery regressions. The run used the locked release profile and documented TinyCC/runtime artifacts.

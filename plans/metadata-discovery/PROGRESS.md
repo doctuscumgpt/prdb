@@ -382,3 +382,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended the authenticated gateway/supervisor metadata lifecycle to page direct dependencies for a table while the caller owns its schema, transfer the schema back to the database administrator, then continue the dependency cursor on the same authenticated session. The continuation is rejected after the caller loses visibility; each edge is still filtered so hidden endpoints do not appear.
 - Verification: focused production gateway/supervisor process test passed inside the delegated `systemd --user` service; formatting, warning-denied all-target engine Clippy, and `git diff --check` passed.
+
+## 2026-11-16 full delegated-cgroup workspace verification
+
+- The complete serial workspace test suite passed inside the delegated `systemd --user` service with sandbox and process integration tests enabled: 955 passed, 0 failed, 0 ignored. This includes the current permission, authorization/schema race, and metadata discovery regressions. The run used the locked release profile and documented TinyCC/runtime artifacts.

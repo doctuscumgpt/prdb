@@ -1157,3 +1157,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `column_default_change_racing_column_drop_preserves_catalog_integrity` with a second barrier race between setting a column default and dropping its entire table. The regression checks both operation outcomes, verifies DROP TABLE removes the typed column exactly when it commits, checks the surviving default only when ALTER committed, and runs persisted-catalog validation afterward.
 - Verification: the focused real-redb race passed; formatting, warning-denied all-target engine Clippy, and `git diff --check` passed.
+
+## 2026-11-16 full delegated-cgroup workspace verification
+
+- The complete serial workspace test suite passed inside the delegated `systemd --user` service with sandbox and process integration tests enabled: 955 passed, 0 failed, 0 ignored. This includes the current permission, authorization/schema race, and metadata discovery regressions. The run used the locked release profile and documented TinyCC/runtime artifacts.

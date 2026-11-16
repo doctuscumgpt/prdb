@@ -539,3 +539,7 @@
 
 - Added a barrier race between a default-expression catalog update and table removal. The final-image checks require the table's typed column and any default expression to be absent when DROP TABLE commits, or to match the successful ALTER when the table survives; startup's persisted-catalog validator accepts the resulting graph and durable outcomes reflect each operation.
 - Verification: focused real-redb race passed; formatting, warning-denied all-target engine Clippy, and `git diff --check` passed.
+
+## 2026-11-16 full delegated-cgroup workspace verification
+
+- The complete serial workspace test suite passed inside the delegated `systemd --user` service with sandbox and process integration tests enabled: 955 passed, 0 failed, 0 ignored. This includes the current permission, authorization/schema race, and metadata discovery regressions. The run used the locked release profile and documented TinyCC/runtime artifacts.

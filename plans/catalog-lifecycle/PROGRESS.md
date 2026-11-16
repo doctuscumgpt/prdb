@@ -323,3 +323,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Persisted-catalog validation now checks that an explicit family-2 table parent agrees with the family-5 typed schema ID. The shared validator is used by read-only backup/recovery validation as well as writable startup, so malformed namespace ownership cannot pass the offline READY check.
 - Verification: focused real-file read-only and writable startup regressions passed; the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 library tests, 196 commit tests, 78 transaction tests, plus all remaining targets). Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. Cargo.lock is unchanged.
+
+## 2026-11-16 full delegated-cgroup workspace verification
+
+- The complete serial workspace test suite passed inside the delegated `systemd --user` service with sandbox and process integration tests enabled: 955 passed, 0 failed, 0 ignored. This includes the current permission, authorization/schema race, and metadata discovery regressions. The run used the locked release profile and documented TinyCC/runtime artifacts.
