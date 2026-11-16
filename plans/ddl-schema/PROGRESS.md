@@ -1031,6 +1031,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: focused real-redb race, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
 - Remaining: stale-writer races for index/constraint DDL and additional ALTER combinations remain open.
 
+## DS-7: DROP NOT NULL racing a staged writer — verified slice
+
+- Added `drop_not_null_racing_a_staged_writer_is_atomic`, pairing the existing SET NOT NULL race. A staged writer with a valid non-NULL row races the nullability relaxation; outcomes and row publication follow commit order, the column becomes nullable, the table schema version remains stable, and the write epoch advances once. Startup validates the final catalog graph.
+- Verification: focused real-redb race passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit tests, 187 commit tests, 76 transaction tests, plus all remaining targets).
+
 ## DS-7: CHECK removal racing a staged writer — verified slice
 
 - Extended `storage_manager_creates_and_drops_check_constraint` to race removal of the CHECK, its expression, and its dependency edge against a writer staged from the old schema snapshot. Writer-first commits before removal; drop-first makes the stale writer durably ABORTED. The test checks row presence, current catalog cleanup, the pinned pre-drop snapshot, commit order, and runtime conflict accounting.
