@@ -21601,6 +21601,17 @@ fn token_revocation_racing_a_staged_write_linearizes() -> Result<(), Box<dyn std
     let row_schema = writer.load_catalog_table_schema(id(16))?;
     writer.load_catalog_indexes(&row_schema)?;
     writer.load_catalog_check_constraints(&row_schema)?;
+    let reader_invocation = id(0xff);
+    let (mut reader, reader_roles) = storage.begin_token_authenticated_invocation(
+        reader_invocation,
+        token_id,
+        &secret,
+        retention_deadline_us,
+        2,
+        64,
+    )?;
+    assert!(reader_roles.is_empty());
+    let pinned_schema_before_revoke = reader.load_catalog_table_schema(id(16))?;
     let row_id = prdb_engine::overlay::RowId {
         table: id(16),
         row: id(0xa6),
@@ -21651,6 +21662,26 @@ fn token_revocation_racing_a_staged_write_linearizes() -> Result<(), Box<dyn std
         "token revocation failed: {revoke_result:?}"
     );
     let revoke_sequence = revoke_result.unwrap();
+    let pinned_schema_after_revoke = reader.load_catalog_table_schema(id(16))?;
+    assert_eq!(
+        pinned_schema_after_revoke.table_id,
+        pinned_schema_before_revoke.table_id
+    );
+    assert_eq!(
+        pinned_schema_after_revoke.schema_version,
+        pinned_schema_before_revoke.schema_version
+    );
+    assert_eq!(
+        pinned_schema_after_revoke.column_ids,
+        pinned_schema_before_revoke.column_ids
+    );
+    reader.abort()?;
+    assert_eq!(
+        lookup_outcome(&database, reader_invocation, user_id, now)?
+            .ok_or("missing admitted-reader abort outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
     assert_eq!(commit_sequence(&database)?, revoke_sequence);
     assert_eq!(
         revoke_sequence,
