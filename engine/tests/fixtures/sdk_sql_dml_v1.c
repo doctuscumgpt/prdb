@@ -1,5 +1,6 @@
 #include "prdb_sdk_sql_dml_v1.h"
 #include "prdb_sdk_sql_dml_v2.h"
+#include "prdb_sdk_sql_dml_v3.h"
 
 #include <assert.h>
 #include <string.h>
@@ -18,6 +19,10 @@ int main(void) {
         "INSERT INTO widgets VALUES ($1, NULL), ($2);";
     static const uint8_t single_tuple_sql[] =
         "INSERT INTO widgets VALUES ($1, DEFAULT, NULL);";
+    static const uint8_t column_list_sql[] =
+        "INSERT INTO widgets (label, id) VALUES ($1, DEFAULT), (NULL, $2);";
+    static const uint8_t duplicate_column_list_sql[] =
+        "INSERT INTO widgets (id, ID) VALUES ($1, $2)";
     static const uint8_t insert_prefix[] = "INSERT INTO widgets VALUES ";
     static const uint8_t update_sql[] =
         "UPDATE widgets SET id = $1, label = NULL "
@@ -32,6 +37,7 @@ int main(void) {
         "DELETE FROM widgets";
     prdb_sdk_insert_v1 insert = {0};
     prdb_sdk_insert_v2 insert_v2 = {0};
+    prdb_sdk_insert_v3 insert_v3 = {0};
     prdb_sdk_update_v1 update = {0};
     prdb_sdk_delete_v1 delete_statement = {0};
     uint32_t error_offset = 0;
@@ -90,6 +96,23 @@ int main(void) {
                single_tuple_sql, sizeof(single_tuple_sql) - 1, &insert_v2,
                sizeof(insert_v2), &error_offset) == PRDB_SDK_SQL_OK);
     assert(insert_v2.row_count == 1 && insert_v2.values_per_row == 3);
+    assert(prdb_sdk_sql_parse_insert_v3(
+               column_list_sql, sizeof(column_list_sql) - 1, &insert_v3,
+               sizeof(insert_v3), &error_offset) == PRDB_SDK_SQL_OK);
+    assert(insert_v3.abi_version == PRDB_SDK_SQL_DML_ABI_V3_VERSION);
+    assert(insert_v3.column_count == 2 && insert_v3.base.row_count == 2 &&
+           insert_v3.base.values_per_row == 2);
+    assert(insert_v3.columns[0].length == 5 &&
+           memcmp(column_list_sql + insert_v3.columns[0].offset, "label", 5) == 0);
+    assert(insert_v3.columns[1].length == 2 &&
+           memcmp(column_list_sql + insert_v3.columns[1].offset, "id", 2) == 0);
+    assert(prdb_sdk_sql_parse_insert_v3(
+               duplicate_column_list_sql, sizeof(duplicate_column_list_sql) - 1,
+               &insert_v3, sizeof(insert_v3), &error_offset) ==
+           PRDB_SDK_SQL_SYNTAX_ERROR);
+    assert(prdb_sdk_sql_parse_insert_v2(
+               column_list_sql, sizeof(column_list_sql) - 1, &insert_v2,
+               sizeof(insert_v2), &error_offset) == PRDB_SDK_SQL_SYNTAX_ERROR);
     uint8_t too_many_rows[2048] = {0};
     uint32_t too_many_rows_len = sizeof(insert_prefix) - 1;
     memcpy(too_many_rows, insert_prefix, too_many_rows_len);

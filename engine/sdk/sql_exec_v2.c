@@ -1,5 +1,6 @@
 #include "prdb_sdk_sql_exec_v2.h"
 #include "prdb_sdk_sql_exec_v3.h"
+#include "prdb_sdk_sql_dml_v3.h"
 
 #include <string.h>
 
@@ -26,6 +27,20 @@ static int same_relation_shape(const prdb_sdk_planner_relation_v1 *planned,
             a->decimal_precision != b->decimal_precision ||
             a->decimal_scale != b->decimal_scale || a->name_len != b->name_len ||
             memcmp(a->name, b->name, a->name_len) != 0) return 0;
+    }
+    return 1;
+}
+
+static int span_matches_name(const uint8_t *sql,
+                             prdb_sdk_sql_span_v1 span,
+                             const uint8_t *name, uint32_t name_len) {
+    if (name == NULL || span.length != name_len) return 0;
+    for (uint32_t index = 0; index < span.length; ++index) {
+        uint8_t left = sql[span.offset + index];
+        uint8_t right = name[index];
+        if (left >= 'A' && left <= 'Z') left = (uint8_t)(left - 'A' + 'a');
+        if (right >= 'A' && right <= 'Z') right = (uint8_t)(right - 'A' + 'a');
+        if (left != right) return 0;
     }
     return 1;
 }
@@ -633,7 +648,7 @@ int32_t prdb_sdk_sql_execute_insert_v2(
     uint32_t executor_column_capacity,
     prdb_sdk_executor_insert_value_v1 *insert_values,
     uint32_t insert_value_capacity, uint32_t *inserted_count_out) {
-    prdb_sdk_insert_v2 statement = {0};
+    prdb_sdk_insert_v3 statement_v3 = {0};
     prdb_sdk_planner_relation_v1 planned = {0};
     prdb_sdk_executor_relation_v1 resolved = {0};
     uint64_t planner_response_len = 0;
@@ -666,15 +681,16 @@ int32_t prdb_sdk_sql_execute_insert_v2(
         insert_request_capacity > PRDB_QUERY_MAX_IPC_REQUEST_BYTES) {
         return fail_statement(host_v3, PRDB_SDK_SQL_EXEC_INVALID_ARGUMENT);
     }
-    status = prdb_sdk_sql_parse_insert_v2(sql, sql_len, &statement,
-                                          sizeof(statement), NULL);
+    status = prdb_sdk_sql_parse_insert_v3(sql, sql_len, &statement_v3,
+                                          sizeof(statement_v3), NULL);
     if (status != PRDB_SDK_SQL_OK) {
         return fail_statement(host_v3, PRDB_SDK_SQL_EXEC_BIND_ERROR);
     }
+    prdb_sdk_insert_v2 *statement = &statement_v3.base;
     status = prdb_sdk_planner_describe_relation_v1(
         host, schema, schema_len,
-        sql + statement.base.relation.offset,
-        statement.base.relation.length, planner_response,
+        sql + statement->base.relation.offset,
+        statement->base.relation.length, planner_response,
         planner_response_capacity, &planner_response_len, &planned,
         sizeof(planned), planner_columns, planner_column_capacity);
     if (status != PRDB_SDK_PLANNER_REQUEST_OK) {
@@ -682,8 +698,8 @@ int32_t prdb_sdk_sql_execute_insert_v2(
     }
     status = prdb_sdk_executor_resolve_relation_v1(
         host, schema, schema_len,
-        sql + statement.base.relation.offset,
-        statement.base.relation.length, executor_response,
+        sql + statement->base.relation.offset,
+        statement->base.relation.length, executor_response,
         executor_response_capacity, &executor_response_len, &resolved,
         sizeof(resolved), executor_columns, executor_column_capacity);
     if (status != PRDB_SDK_EXECUTOR_OK) {
@@ -693,34 +709,71 @@ int32_t prdb_sdk_sql_execute_insert_v2(
                              executor_columns)) {
         return fail_statement(host_v3, PRDB_SDK_SQL_EXEC_SHAPE_MISMATCH);
     }
-    if (statement.row_count == 0 || statement.values_per_row == 0 ||
-        statement.values_per_row != resolved.column_count ||
+    if (statement->row_count == 0 || statement->values_per_row == 0 ||
+        (statement_v3.column_count == 0 &&
+         statement->values_per_row != resolved.column_count) ||
+        (statement_v3.column_count != 0 &&
+         statement_v3.column_count != statement->values_per_row) ||
+        statement_v3.column_count > resolved.column_count ||
         resolved.column_count > PRDB_SDK_SQL_MAX_INSERT_VALUES ||
         resolved.column_count > insert_value_capacity) {
         return fail_statement(host_v3, PRDB_SDK_SQL_EXEC_BIND_ERROR);
     }
 
-    for (uint32_t row = 0; row < statement.row_count; ++row) {
+    uint32_t target_ordinals[PRDB_SDK_SQL_MAX_INSERT_VALUES];
+    for (uint32_t source = 0; source < statement->values_per_row; ++source) {
+        uint32_t target = source;
+        if (statement_v3.column_count != 0) {
+            target = resolved.column_count;
+            for (uint32_t ordinal = 0; ordinal < resolved.column_count; ++ordinal) {
+                if (span_matches_name(sql, statement_v3.columns[source],
+                                      executor_columns[ordinal].name,
+                                      executor_columns[ordinal].name_len)) {
+                    target = ordinal;
+                    break;
+                }
+            }
+            if (target == resolved.column_count) {
+                return fail_statement(host_v3, PRDB_SDK_SQL_EXEC_BIND_ERROR);
+            }
+            for (uint32_t previous = 0; previous < source; ++previous) {
+                if (target_ordinals[previous] == target) {
+                    return fail_statement(host_v3,
+                                          PRDB_SDK_SQL_EXEC_BIND_ERROR);
+                }
+            }
+        }
+        target_ordinals[source] = target;
+    }
+
+    for (uint32_t row = 0; row < statement->row_count; ++row) {
         uint8_t row_handle[16];
         int32_t cancelled = 0;
-        uint32_t first_cell = row * statement.values_per_row;
+        uint32_t first_cell = row * statement->values_per_row;
         status = prdb_sdk_executor_check_cancelled_v1(host, &cancelled);
         if (status != PRDB_SDK_EXECUTOR_OK || cancelled) {
             return fail_statement(host_v3, PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
         }
-        for (uint32_t column = 0; column < statement.values_per_row; ++column) {
+        for (uint32_t ordinal = 0; ordinal < resolved.column_count; ++ordinal) {
+            insert_values[ordinal].struct_size = sizeof(insert_values[ordinal]);
+            insert_values[ordinal].abi_version = PRDB_SDK_EXECUTOR_ABI_V1_VERSION;
+            insert_values[ordinal].state = PRDB_SDK_EXECUTOR_INSERT_DEFAULT;
+            insert_values[ordinal].value = (prdb_sdk_value_v1){0};
+        }
+        for (uint32_t column = 0; column < statement->values_per_row; ++column) {
             const prdb_sdk_sql_insert_cell_v1 *cell =
-                &statement.base.values[first_cell + column];
-            prdb_sdk_executor_insert_value_v1 *input = &insert_values[column];
+                &statement->base.values[first_cell + column];
+            uint32_t target = target_ordinals[column];
+            prdb_sdk_executor_insert_value_v1 *input = &insert_values[target];
             input->struct_size = sizeof(*input);
             input->abi_version = PRDB_SDK_EXECUTOR_ABI_V1_VERSION;
             input->state = cell->kind;
             if (cell->kind == PRDB_SDK_SQL_INSERT_PARAMETER) {
                 status = prdb_sdk_sql_bind_parameter_v1(
                     cell->parameter_index, parameters, parameter_count,
-                    executor_columns[column].type_code,
-                    executor_columns[column].decimal_precision,
-                    executor_columns[column].decimal_scale, &input->value,
+                    executor_columns[target].type_code,
+                    executor_columns[target].decimal_precision,
+                    executor_columns[target].decimal_scale, &input->value,
                     sizeof(input->value));
                 if (status != PRDB_SDK_SQL_EVAL_OK) {
                     return fail_statement(host_v3,
@@ -743,7 +796,7 @@ int32_t prdb_sdk_sql_execute_insert_v2(
         }
         status = prdb_sdk_executor_stage_insert_v1(
             host, resolved.executor_handle, insert_values,
-            (uint16_t)statement.values_per_row, insert_request,
+            (uint16_t)resolved.column_count, insert_request,
             insert_request_capacity, executor_response,
             executor_response_capacity, &executor_response_len, row_handle);
         if (status != PRDB_SDK_EXECUTOR_OK) {

@@ -1,5 +1,11 @@
 # SQL Library Progress
 
+## SQL-4 / AU-5: explicit INSERT column lists — implemented slice
+
+- Added INSERT AST v3 for optional unique explicit column names, retaining the schema-order v2 AST/parser behavior. The v2 executor now maps those names against the resolved executor relation shape, binds values by target ordinal, and passes DEFAULT for omitted fields to trusted storage materialization.
+- Maintained C fixtures verify parse spans, duplicate-name rejection, v2 parser compatibility, case-insensitive executor mapping, reordered inputs, and omitted-field DEFAULT state.
+- Verification: `nix develop --offline --no-update-lock-file -c make -f engine/sdk/Makefile test` and `make -f engine/sdk/Makefile sandbox-query-fixture` passed. Locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 unit, 190 commit, 76 transaction tests, plus all remaining targets). The confined write/read artifact does not yet issue a column-list INSERT; wider default expression forms remain open.
+
 ## SQL-4 follow-up: multi-row UPDATE through the 128-row bound — verified
 
 - Contract: UPDATE must materialize all matching targets, close the input scan, and stage the same bound patch for each target. Regressions verify distinct opaque handles and require the cursor's terminal page before any patch is staged.
