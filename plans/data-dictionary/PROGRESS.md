@@ -608,6 +608,11 @@
 - Added `schema_rename_racing_table_creation_preserves_catalog_identity`, which races a schema rename with table creation addressed by the schema's stable ID. It checks the schema-name index points only to the renamed schema, relation lookup agrees with the created table when creation commits, and every surviving table object retains the same schema parent.
 - Verification: focused real-redb race passed; workspace formatting and warning-denied all-target Clippy passed; the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
 
-## 2026-11-16 delegated workspace verification after VARCHAR probe type check
+## 2026-11-16 delegated workspace verification after retained ADD COLUMN compaction check
 
 - The complete serial `cargo test --workspace --locked -- --test-threads=1` suite passed inside the delegated `systemd --user` service. Sandbox and cross-process coverage were enabled; zero tests were ignored. This run revalidated catalog startup integrity, derived-index parity, retained-snapshot, and catalog-pressure regressions on the current tree.
+
+## DD-5: retained ADD COLUMN defaults prevent early reclamation — verified slice
+
+- Strengthened `storage_manager_adds_column_and_backfills_existing_rows`: the pre-ADD and post-ADD snapshots remain open through 64 row rewrites; the older snapshot decodes the original one-column tuple, while the post-ADD snapshot decodes the literal backfill default. Compaction must return `TransactionInProgress` while either snapshot is retained. After releasing both readers, compaction succeeds and the current three-column row and catalog validate.
+- Verification: the focused real-redb regression, workspace build, formatting, warning-denied all-target Clippy, and complete serial delegated-cgroup suite passed. Sandbox and process tests were enabled; zero tests were ignored.

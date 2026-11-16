@@ -459,7 +459,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: the focused real-redb regression, workspace formatting, warning-denied all-target Clippy, and complete serial delegated-cgroup workspace suite passed for the scalar VARCHAR parity coverage.
 - Remaining: successful-key parity for other scalar families and additional composite types, SQL type/coercion coverage, and broader complex-predicate error-equivalence remain open.
 
-## 2026-11-16 delegated workspace verification after VARCHAR probe type check
+## 2026-11-16 delegated workspace verification after retained ADD COLUMN compaction check
 
 - The complete serial `cargo test --workspace --locked -- --test-threads=1` suite passed inside the delegated `systemd --user` service. Sandbox and cross-process coverage were enabled; zero tests were ignored. This run revalidated the authorization, policy evaluator, token admission, and optimizer/index probe regressions on the current tree.
 

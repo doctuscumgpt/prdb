@@ -8247,7 +8247,6 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
         &retained_row.payload,
     )?;
     assert_eq!(retained_tuple.values, vec![Some(ScalarValue::Integer(7))]);
-    drop(retained_rows);
     let retained_default_rows = prdb_engine::snapshot::RowSnapshot::new(retained_default_snapshot);
     let retained_default_row = RowRecord::decode(
         &retained_default_rows
@@ -8275,7 +8274,6 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
             Some(ScalarValue::Text("ready".to_owned())),
         ]
     );
-    drop(retained_default_rows);
     if stale_write_sequence.is_some() {
         let row_after_add = row(&database, &table_row_key(table.table_id, stale_row_id.row))?
             .ok_or("ADD COLUMN race lost the writer-first row")?;
@@ -8462,6 +8460,12 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
     drop(read);
 
     drop(storage);
+    assert!(matches!(
+        database.compact(),
+        Err(redb::CompactionError::TransactionInProgress)
+    ));
+    drop(retained_rows);
+    drop(retained_default_rows);
     assert!(
         database.compact()?,
         "catalog row churn should produce reclaimable pages"

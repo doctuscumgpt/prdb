@@ -249,6 +249,6 @@
 - Verification: focused real-redb race passed; workspace formatting and warning-denied all-target Clippy passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
 - Scope: one coordinated schedule; repeated mixed-target revocation stress and broader ADMIN SQL forms remain open.
 
-## 2026-11-16 delegated workspace verification after VARCHAR probe type check
+## 2026-11-16 delegated workspace verification after retained ADD COLUMN compaction check
 
 - The complete serial `cargo test --workspace --locked -- --test-threads=1` suite passed inside the delegated `systemd --user` service. Sandbox and cross-process coverage were enabled; zero tests were ignored. This includes the mixed-scope grant batch race, authenticated grant SQL, policy DDL, and permission enforcement regressions on the current tree.

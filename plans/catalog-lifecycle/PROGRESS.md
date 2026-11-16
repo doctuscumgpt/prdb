@@ -366,6 +366,6 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: focused real-redb subprocess regression passed. Workspace formatting, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process integration tests were enabled and zero tests were ignored.
 - Limit: injected sync failure with a live kernel and filesystem does not simulate power loss or device-cache behavior.
 
-## 2026-11-16 delegated workspace verification after VARCHAR probe type check
+## 2026-11-16 delegated workspace verification after retained ADD COLUMN compaction check
 
 - The complete serial `cargo test --workspace --locked -- --test-threads=1` suite passed inside the delegated `systemd --user` service. Sandbox and cross-process coverage were enabled; zero tests were ignored. Bootstrap, recovery, migration, and maintenance process regressions ran on the current tree. Power-loss and archived prior-release evidence remain open.

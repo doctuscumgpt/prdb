@@ -1226,6 +1226,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: focused real-redb race passed; workspace formatting and warning-denied all-target Clippy passed; the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
 - Scope: one barrier-coordinated schedule; broader cross-component DDL race coverage remains open.
 
-## 2026-11-16 delegated workspace verification after VARCHAR probe type check
+## 2026-11-16 delegated workspace verification after retained ADD COLUMN compaction check
 
 - The complete serial `cargo test --workspace --locked -- --test-threads=1` suite passed inside the delegated `systemd --user` service. Sandbox and cross-process coverage were enabled; zero tests were ignored. The run includes the current schema, index, constraint, ALTER, recovery, and authenticated SQL DDL regressions; broader planned DDL schedules remain open.
+
+## DS-5 / DD-5: ADD COLUMN snapshot retention blocks compaction — verified slice
+
+- The real-redb ADD COLUMN regression now asserts that compaction is refused while pre- and post-DDL snapshots remain active through catalog and row-version churn. Releasing both snapshots permits compaction, after which the current backfilled row and persisted catalog still validate.
+- Verification: focused regression passed; workspace build, formatting, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox and process tests enabled and zero ignored tests.

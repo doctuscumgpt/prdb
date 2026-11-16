@@ -419,6 +419,6 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Extended `catalog_authorized_scan_builds_its_projection_from_pinned_records` to open a second scan and issue distinct handles for the same two rows. After updating one row through its first handle, the alias from the second scan is rejected; deleting the other row likewise invalidates its alias. The regression exercises the executor IPC dispatch and revalidation path.
 - Verification: the focused real-redb/IPC regression passed. Workspace formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
 
-## 2026-11-16 delegated workspace verification after VARCHAR probe type check
+## 2026-11-16 delegated workspace verification after retained ADD COLUMN compaction check
 
 - The complete serial `cargo test --workspace --locked -- --test-threads=1` suite passed inside the delegated `systemd --user` service. Sandbox and cross-process coverage were enabled; zero tests were ignored. This run revalidated metadata cursor authority, information-schema scans, executor handles, and authenticated gateway/supervisor discovery regressions on the current tree.
