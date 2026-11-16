@@ -445,3 +445,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `boolean_policy_predicates_short_circuit_left_to_right`. A decisive FALSE in AND and TRUE in OR suppress a later divide-by-zero, while reversing the AND operands surfaces `EvaluationFailed`. This verifies the specified left-to-right evaluation behavior without treating skipped errors as policy failures.
 - Verification: the focused evaluator regression passed; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
+
+## 2026-11-16 AU-3: unique-index NULL probes preserve authorization fallback — verified slice
+
+- Extended `unique_constraint_uses_its_backing_index_for_invocation_writes` with a readable-key NULL equality probe, which returns `NoMatch`, and a hidden-key NULL probe, which returns `Unavailable` before inspecting the NULL component. This pins down SQL equality behavior while preserving the non-disclosure ordering for hidden keys.
+- Clarified the authorized unique-index point-probe contract in [storage manager](../../specs/storage-manager.md).
+- Verification: the focused real-redb regression passed. Workspace formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. An initial full-suite attempt used a malformed installed-SDK fixture path and failed the optimizer metadata submission test with `NotFound`; rerunning with the documented fixture path passed that test and the full suite.
+- Remaining: typed successful-key parity beyond BYTEA, SQL type/coercion coverage, and broader complex-predicate error-equivalence coverage remain open.

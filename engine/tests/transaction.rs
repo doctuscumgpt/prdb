@@ -7340,6 +7340,11 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
                 && *id == reference_matches[0].0
                 && cells == &reference_matches[0].1
     ));
+    assert_eq!(
+        invocation.probe_catalog_unique_index(table_id, index_id, &[None], &projection)?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::NoMatch,
+        "SQL equality with NULL cannot match a unique-index key"
+    );
     let matching_range = invocation.scan_catalog_index_range(
         table_id,
         range_index_id,
@@ -7489,6 +7494,11 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         )?,
         prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
         "a hidden key must not distinguish a matching value from a missing value"
+    );
+    assert_eq!(
+        invocation.probe_catalog_unique_index(table_id, index_id, &[None], &hidden_projection)?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
+        "key readability must be checked before a NULL probe can expose its outcome"
     );
     let wrong_key_types = [
         ScalarValue::Boolean(true),
