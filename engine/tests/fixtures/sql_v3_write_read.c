@@ -1083,7 +1083,7 @@ static int32_t run_write_read_fixture(
     static uint8_t analytical_pressure_batch_response[PRDB_SDK_BATCH_MAX_BYTES];
     static uint8_t analytical_pressure_group_key_bytes[
         PRDB_SDK_SQL_EXEC_V4_MAX_GROUP_KEY_BYTES];
-    prdb_sdk_executor_insert_value_v1 insert_values[1] = {{0}};
+    prdb_sdk_executor_insert_value_v1 insert_values[2] = {{0}};
     prdb_sdk_executor_insert_value_v1 multi_insert_values[2] = {{0}};
     prdb_sdk_executor_update_patch_v1 update_patches[1] = {{0}};
     prdb_sdk_select_binding_v2 binding = {0};
@@ -2953,7 +2953,7 @@ static int32_t run_write_read_fixture(
         sizeof(generated_identity_insert_sql) - 1, NULL, 0,
         planner_response, sizeof(planner_response), executor_response,
         sizeof(executor_response), insert_request, sizeof(insert_request),
-        planner_columns, 9, executor_columns, 9, insert_values, 1,
+        planner_columns, 9, executor_columns, 9, insert_values, 2,
         &generated_inserted_count);
     if (status != PRDB_SDK_SQL_EXEC_OK || generated_inserted_count != 1) {
         static const uint8_t message[] = "fixture-error-generated-identity-insert";

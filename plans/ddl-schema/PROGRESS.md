@@ -1113,3 +1113,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `storage_manager_sets_replaces_and_drops_column_defaults` to stage an authorized INSERT using the stored catalog DEFAULT, then race its commit against replacing that default. If the insert wins, it stores the old value before DDL; if replacement wins, the stale insert has a durable ABORTED outcome and no row is published.
 - Verification: focused real-redb race, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 189 commit, 76 transaction tests, plus all remaining targets).
+
+## DS-5 / AU-5 / SQL-4: confined omitted-column default and generated identity — verified slice
+
+- Extended the real confined SQL DML acceptance table with a catalog-backed required TEXT default beside its generated UUID identity. An explicit INSERT column list supplies only the UUID's `DEFAULT`; the executor sends DEFAULT for the omitted label, storage materializes it, and the committed row is decoded and checked for both values.
+- The fixture grants INSERT on the non-generated column and adds its cell INSERT policy, verifying default materialization still passes through the normal grant and policy checks.
+- Verification: `make -f engine/sdk/Makefile sandbox-query-fixture` passed, followed by locked workspace build, formatting, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite with sandbox/process tests enabled and zero ignored tests (294 unit, 190 commit, 76 transaction tests, plus all remaining targets). Broader default-expression and constraint matrices remain open.

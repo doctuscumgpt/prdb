@@ -35524,7 +35524,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     use prdb_engine::outcome::OutcomeStatus;
     use prdb_engine::storage_manager::{
         CreatePolicyRequest, CreateTableRequest, PolicyKind, StorageManagerConfig,
-        TableColumnDefinition,
+        TableColumnDefault, TableColumnDefinition,
     };
     use prdb_engine::supervisor::{
         ChunkKind, PrepareSubmission, StagingLimits, StagingStore, SubmissionMetadata,
@@ -35535,7 +35535,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         finalize_gateway_invocation_and_send_terminal, observe_executor_relay_and_finalize_gateway,
         send_gateway_result_data_event, send_gateway_terminal_for_confirmed_outcome,
     };
-    use prdb_engine::tuple::ScalarType;
+    use prdb_engine::tuple::{ScalarType, ScalarValue};
     use sha2::{Digest, Sha256};
     use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
@@ -35729,13 +35729,24 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         authenticated_actor_id: user_id,
         schema_id: schema.schema_id,
         name: "identity_records".to_owned(),
-        columns: vec![TableColumnDefinition {
-            name: "id".to_owned(),
-            scalar_type: ScalarType::Uuid,
-            nullable: false,
-            generated_uuid_identity: true,
-            default: None,
-        }],
+        columns: vec![
+            TableColumnDefinition {
+                name: "id".to_owned(),
+                scalar_type: ScalarType::Uuid,
+                nullable: false,
+                generated_uuid_identity: true,
+                default: None,
+            },
+            TableColumnDefinition {
+                name: "label".to_owned(),
+                scalar_type: ScalarType::Text,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: Some(TableColumnDefault::Literal(Some(ScalarValue::Text(
+                    "generated-label".to_owned(),
+                )))),
+            },
+        ],
         retention_deadline_us: now + 3_600_000_000,
         audit_event: identity_table_audit,
     })?;
@@ -36186,6 +36197,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         dependency_write(user_id, records_table.table_id, 5),
         dependency_write(user_id, records_table.column_ids[0], 5),
         dependency_write(user_id, identity_table.table_id, 5),
+        dependency_write(user_id, identity_table.column_ids[1], 5),
         dependency_write(user_id, joined_table.table_id, 5),
         dependency_write(user_id, joined_table.column_ids[0], 5),
         dependency_write(user_id, joined_table.column_ids[1], 5),
@@ -36218,6 +36230,14 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         3,
         1,
         identity_table.table_id,
+        user_id,
+    ));
+    authority_writes.push(grant_write(
+        user_id,
+        identity_table.table_id,
+        3,
+        2,
+        identity_table.column_ids[1],
         user_id,
     ));
     authority_writes.extend((2..=4).map(|privilege| {
@@ -37074,6 +37094,27 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         ))),
         retention_deadline_us: now + 3_600_000_000,
         audit_event: identity_policy_audit,
+    })?;
+    let identity_cell_policy_invocation = id(0xfb);
+    let mut identity_cell_policy_audit =
+        identity_audit_event(0xfc, user_id, identity_table.column_ids[1]);
+    identity_cell_policy_audit.correlation_id = identity_cell_policy_invocation;
+    storage.create_policy(CreatePolicyRequest {
+        invocation_id: identity_cell_policy_invocation,
+        authenticated_actor_id: user_id,
+        table_id: identity_table.table_id,
+        name: "sandbox_generated_label_insert_policy".to_owned(),
+        kind: PolicyKind::Cell,
+        operation: prdb_engine::authorization::Operation::Insert,
+        effect: prdb_engine::authorization::Effect::Allow,
+        recipients: vec![prdb_engine::authorization::Subject::Principal(user_id)],
+        target_column_ids: vec![identity_table.column_ids[1]],
+        using_expression: None,
+        with_check_expression: Some(prdb_engine::authorization::Expr::Literal(Some(
+            ScalarValue::Boolean(true),
+        ))),
+        retention_deadline_us: now + 3_600_000_000,
+        audit_event: identity_cell_policy_audit,
     })?;
     for (invocation_byte, audit_byte, operation, using_expression, with_check_expression, name) in [
         (
@@ -39218,10 +39259,16 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         let rows = read.open_table(ROWS)?;
         let lower = table_row_key(identity_table.table_id, [0; 16]);
         let upper = table_row_key(identity_table.table_id, [u8::MAX; 16]);
-        let identity_columns = [ColumnSchema {
-            scalar_type: ScalarType::Uuid,
-            nullable: false,
-        }];
+        let identity_columns = [
+            ColumnSchema {
+                scalar_type: ScalarType::Uuid,
+                nullable: false,
+            },
+            ColumnSchema {
+                scalar_type: ScalarType::Text,
+                nullable: false,
+            },
+        ];
         let mut identity_rows = 0;
         for entry in rows.range(lower.as_slice()..=upper.as_slice())? {
             let (_, record) = entry?;
@@ -39229,7 +39276,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             let tuple = decode_tuple(&identity_columns, 1, &record.payload)?;
             assert!(matches!(
                 tuple.values.as_slice(),
-                [Some(ScalarValue::Uuid(value))] if *value != [0; 16]
+                [Some(ScalarValue::Uuid(value)), Some(ScalarValue::Text(label))]
+                    if *value != [0; 16] && label == "generated-label"
             ));
             identity_rows += 1;
         }
