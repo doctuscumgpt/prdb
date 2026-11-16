@@ -4822,6 +4822,19 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let revoked_index_cursor = first_index_page
         .next_cursor
         .ok_or("expected an index cursor before schema ownership is transferred")?;
+    let mut dependency_cursor_owner_credentials =
+        read_client_credentials(&transfer_credential_path)?;
+    let mut dependency_cursor_owner = AdminClient::connect_authenticated(
+        address,
+        dependency_cursor_owner_credentials.token_id,
+        &mut dependency_cursor_owner_credentials.token_secret,
+    )?;
+    let first_dependency_page =
+        dependency_cursor_owner.list_dependencies_page(created_table.table_id, 1, None)?;
+    assert_eq!(first_dependency_page.records.len(), 1);
+    let revoked_dependency_cursor = first_dependency_page
+        .next_cursor
+        .ok_or("expected a dependency cursor before schema ownership is transferred")?;
     let mut grant_cursor_owner_credentials = read_client_credentials(&transfer_credential_path)?;
     let mut grant_cursor_owner = AdminClient::connect_authenticated(
         address,
@@ -4874,10 +4887,21 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         ),
         Err(prdb_engine::client_submit::ClientSubmitError::ServerRejected(_))
     ));
+    let invalidated_dependency_page = dependency_cursor_owner.list_dependencies_page(
+        created_table.table_id,
+        1,
+        Some(&revoked_dependency_cursor),
+    );
+    assert!(matches!(
+        invalidated_dependency_page,
+        Err(prdb_engine::client_submit::ClientSubmitError::ServerRejected(_))
+    ));
     drop(grant_cursor_owner);
     drop(grant_cursor_owner_credentials);
     drop(index_cursor_owner);
     drop(index_cursor_owner_credentials);
+    drop(dependency_cursor_owner);
+    drop(dependency_cursor_owner_credentials);
     drop(cursor_owner);
     drop(cursor_owner_credentials);
 

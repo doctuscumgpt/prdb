@@ -377,3 +377,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Extended the authenticated gateway/supervisor lifecycle with two indexes and a one-record index metadata page for a non-administrator schema owner. After schema ownership transfers back to the database administrator, continuing the former owner's cursor is rejected; the cursor uses its own authenticated session because rejected control requests close their connection.
 - This verifies current authority is rechecked for index metadata continuations as well as grant and policy pages, while the captured index catalog rows remain unchanged.
 - Verification: the focused production gateway/supervisor process test passed (1 passed, 0 failed, 0 ignored), and warning-denied all-target Clippy passed. The full delegated-cgroup workspace suite was not rerun for this process-test extension.
+
+## MD-6: dependency metadata cursor rechecks schema-owner authority — verified slice
+
+- Extended the authenticated gateway/supervisor metadata lifecycle to page direct dependencies for a table while the caller owns its schema, transfer the schema back to the database administrator, then continue the dependency cursor on the same authenticated session. The continuation is rejected after the caller loses visibility; each edge is still filtered so hidden endpoints do not appear.
+- Verification: focused production gateway/supervisor process test passed inside the delegated `systemd --user` service; formatting, warning-denied all-target engine Clippy, and `git diff --check` passed.
