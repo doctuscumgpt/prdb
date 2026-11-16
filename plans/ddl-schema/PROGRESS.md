@@ -1193,3 +1193,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 full delegated workspace verification after identity issuance hardening
 
 - `cargo test --workspace --locked -- --test-threads=1` passed inside the delegated `systemd --user` service with the documented TinyCC fixtures and runtime profile. Sandbox and process integration tests were enabled; zero tests were ignored. This run includes the unauthorized token issue/rotation enumeration regressions and the 128-cycle foreign-key catalog pressure regression.
+
+## DS-9 / DD-2: composite index key survives VARCHAR widening — verified slice
+
+- Strengthened `storage_manager_widens_varchar_atomically_and_keeps_index_current` to use a composite `(VARCHAR, INTEGER)` index. The regression confirms the stored index membership is readable before widening and that deriving the same row's key from the widened schema yields identical bytes and still resolves the existing index entry. The non-VARCHAR component and retained row tuple are checked unchanged.
+- Verification: focused real-redb widening regression passed; formatting, warning-denied all-target workspace Clippy, and `git diff --check` passed. The full workspace suite was not rerun for this test-only extension.

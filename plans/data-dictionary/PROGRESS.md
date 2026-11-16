@@ -575,3 +575,8 @@
 ## 2026-11-16 full delegated workspace verification after identity issuance hardening
 
 - `cargo test --workspace --locked -- --test-threads=1` passed inside the delegated `systemd --user` service with the documented TinyCC fixtures and runtime profile. Sandbox and process integration tests were enabled; zero tests were ignored. This run includes the unauthorized token issue/rotation enumeration regressions and the 128-cycle foreign-key catalog pressure regression.
+
+## DD-2 / DS-9: composite index key parity across VARCHAR widening — verified slice
+
+- Extended the widening acceptance from a single-column index to a composite `(VARCHAR, INTEGER)` index. The test verifies the pre-DDL physical key exists and is byte-identical when derived from the widened column definition, and confirms the existing index entry remains addressable without rebuilding it.
+- Verification: focused `storage_manager_widens_varchar_atomically_and_keeps_index_current` passed; formatting, warning-denied all-target workspace Clippy, and `git diff --check` passed. The full workspace suite was not rerun for this test-only extension.

@@ -5786,24 +5786,43 @@ fn storage_manager_widens_varchar_atomically_and_keeps_index_current()
         authenticated_actor_id: actor,
         schema_id: schema.schema_id,
         name: "widened_table".to_owned(),
-        columns: vec![TableColumnDefinition {
-            name: "label".to_owned(),
-            scalar_type: ScalarType::Varchar { max_chars: 8 },
-            nullable: true,
-            generated_uuid_identity: false,
-            default: None,
-        }],
+        columns: vec![
+            TableColumnDefinition {
+                name: "label".to_owned(),
+                scalar_type: ScalarType::Varchar { max_chars: 8 },
+                nullable: true,
+                generated_uuid_identity: false,
+                default: None,
+            },
+            TableColumnDefinition {
+                name: "sequence".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            },
+        ],
         retention_deadline_us: 9_999,
         audit_event: create_audit,
     })?;
     let row_id = id(0x83);
-    let old_tuple = encode_tuple(
-        &[ColumnSchema {
+    let original_columns = [
+        ColumnSchema {
             scalar_type: ScalarType::Varchar { max_chars: 8 },
             nullable: true,
-        }],
+        },
+        ColumnSchema {
+            scalar_type: ScalarType::Integer,
+            nullable: false,
+        },
+    ];
+    let old_tuple = encode_tuple(
+        &original_columns,
         1,
-        &[Some(ScalarValue::Varchar("persist".to_owned()))],
+        &[
+            Some(ScalarValue::Varchar("persist".to_owned())),
+            Some(ScalarValue::Integer(7)),
+        ],
     )?;
     let row_record_bytes = RowRecord {
         row_version: table.commit_sequence,
@@ -5829,6 +5848,23 @@ fn storage_manager_widens_varchar_atomically_and_keeps_index_current()
         retention_deadline_us: 9_999,
         audit_event: index_audit,
     })?;
+    let original_index_key = prdb_engine::index_key::derive_index_key(
+        index.index_id,
+        row_id,
+        1,
+        &table.column_ids,
+        &original_columns,
+        &old_tuple,
+        &table.column_ids,
+    )?;
+    let indexed_snapshot = database.begin_read()?;
+    assert!(
+        indexed_snapshot
+            .open_table(prdb_engine::schema::INDEXES)?
+            .get(original_index_key.key.as_slice())?
+            .is_some()
+    );
+    drop(indexed_snapshot);
     let stale_writer_invocation = id(0x84);
     let mut stale_writer =
         storage.begin_invocation(stale_writer_invocation, actor, 9_999, 1, 1024)?;
@@ -5837,7 +5873,10 @@ fn storage_manager_widens_varchar_atomically_and_keeps_index_current()
     let stale_tuple = encode_tuple(
         &stale_schema.columns,
         stale_schema.schema_version,
-        &[Some(ScalarValue::Varchar("stale".to_owned()))],
+        &[
+            Some(ScalarValue::Varchar("stale".to_owned())),
+            Some(ScalarValue::Integer(8)),
+        ],
     )?;
     let stale_row_id = id(0x85);
     stale_writer.stage_put(
@@ -6023,15 +6062,49 @@ fn storage_manager_widens_varchar_atomically_and_keeps_index_current()
     assert_eq!(stored_row.payload, old_tuple);
     assert_eq!(
         decode_tuple(
-            &[ColumnSchema {
-                scalar_type: ScalarType::Varchar { max_chars: 64 },
-                nullable: true,
-            }],
+            &[
+                ColumnSchema {
+                    scalar_type: ScalarType::Varchar { max_chars: 64 },
+                    nullable: true,
+                },
+                ColumnSchema {
+                    scalar_type: ScalarType::Integer,
+                    nullable: false,
+                },
+            ],
             1,
             &stored_row.payload,
         )?
         .values,
-        [Some(ScalarValue::Varchar("persist".to_owned()))]
+        [
+            Some(ScalarValue::Varchar("persist".to_owned())),
+            Some(ScalarValue::Integer(7)),
+        ]
+    );
+    let widened_columns = [
+        ColumnSchema {
+            scalar_type: ScalarType::Varchar { max_chars: 64 },
+            nullable: true,
+        },
+        ColumnSchema {
+            scalar_type: ScalarType::Integer,
+            nullable: false,
+        },
+    ];
+    let widened_index_key = prdb_engine::index_key::derive_index_key(
+        index.index_id,
+        row_id,
+        1,
+        &table.column_ids,
+        &widened_columns,
+        &stored_row.payload,
+        &table.column_ids,
+    )?;
+    assert_eq!(widened_index_key.key, original_index_key.key);
+    assert!(
+        read.open_table(prdb_engine::schema::INDEXES)?
+            .get(widened_index_key.key.as_slice())?
+            .is_some()
     );
     drop(rows);
     drop(read);
@@ -6044,9 +6117,12 @@ fn storage_manager_widens_varchar_atomically_and_keeps_index_current()
     let followup_tuple = encode_tuple(
         &followup_schema.columns,
         followup_schema.schema_version,
-        &[Some(ScalarValue::Varchar(
-            "pinned before second widen".to_owned(),
-        ))],
+        &[
+            Some(ScalarValue::Varchar(
+                "pinned before second widen".to_owned(),
+            )),
+            Some(ScalarValue::Integer(9)),
+        ],
     )?;
     let followup_row_id = id(0x8d);
     stale_followup.stage_put(
