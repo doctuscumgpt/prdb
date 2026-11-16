@@ -341,3 +341,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `policy_composition_matches_the_reference_truth_table` with explicit expected results for no policy/no ALLOW, false and alternative ALLOW policies, conjunctive RESTRICT policies, NULL in either policy class, and evaluation errors in either class. Existing AU-1 coverage continues to verify grant/scope denial and same-policy old/new UPDATE pairing.
 - Verification: focused authorization integration test passed. Locked workspace build, formatting, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).
+
+## AU-5 / AU-6 / DP-7: writes preserve every principal's policy inputs — verified slice
+
+- Found and closed a cross-principal gap: the executor previously froze fields only from policies applicable to the writer. Executor write projections now collect field references from every policy on the table while keeping policy evaluation filtered to the authenticated principal. Definitions and expressions remain pinned and guarded through commit.
+- Strengthened `catalog_authorized_scan_builds_its_projection_from_pinned_records` with an UPDATE policy for a different principal that reads the field. The writer has its own unconditional UPDATE policy, so its attempted field patch is denied specifically by the global policy-input freeze; the stored row stays unchanged.
+- Verification: focused transaction regression, locked workspace build, formatting, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).

@@ -2017,7 +2017,8 @@ impl<'db> InvocationTransaction<'db> {
         let schema = self.load_catalog_table_schema(table_id)?;
         let principal_id = self.principal_id;
         let (role_ids, grants) = self.load_catalog_grants(principal_id, &schema)?;
-        let policies = self.load_catalog_policies(principal_id, &schema)?;
+        let (policies, policy_driving_columns) =
+            self.load_catalog_policies_with_policy_inputs(principal_id, &schema, true)?;
         let checks = self.load_catalog_check_constraints(&schema)?;
         self.load_catalog_indexes(&schema)?;
         let scope = self.scope_from_grants(&grants);
@@ -2026,26 +2027,6 @@ impl<'db> InvocationTransaction<'db> {
             role_ids,
             scope,
         };
-        let mut referenced_ordinals = HashSet::new();
-        for policy in &policies {
-            if let Some(expression) = &policy.using {
-                collect_expression_fields(expression, &mut referenced_ordinals);
-            }
-            if let Some(expression) = &policy.with_check {
-                collect_expression_fields(expression, &mut referenced_ordinals);
-            }
-        }
-        let mut policy_driving_columns = referenced_ordinals
-            .into_iter()
-            .map(|ordinal| {
-                schema
-                    .column_ids
-                    .get(ordinal)
-                    .copied()
-                    .ok_or(TransactionError::CorruptCatalog)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        policy_driving_columns.sort_unstable();
         Ok(CatalogTableProjection {
             schema,
             context,
@@ -7617,6 +7598,16 @@ impl<'db> InvocationTransaction<'db> {
         principal_id: [u8; 16],
         schema: &CatalogTableSchema,
     ) -> Result<Vec<Policy>, TransactionError> {
+        self.load_catalog_policies_with_policy_inputs(principal_id, schema, false)
+            .map(|(policies, _)| policies)
+    }
+
+    fn load_catalog_policies_with_policy_inputs(
+        &mut self,
+        principal_id: [u8; 16],
+        schema: &CatalogTableSchema,
+        collect_all_policy_inputs: bool,
+    ) -> Result<(Vec<Policy>, Vec<[u8; 16]>), TransactionError> {
         let result = (|| {
             if principal_id != self.principal_id || schema.table_id == [0; 16] {
                 return Err(TransactionError::InvalidContext);
@@ -7641,6 +7632,7 @@ impl<'db> InvocationTransaction<'db> {
             }
             let boolean_type_id = self.load_catalog_builtin_type_id(1)?;
             let mut loaded = Vec::new();
+            let mut referenced_ordinals = HashSet::new();
             for record in policies {
                 if catalog_id(&record, 1)? != schema.table_id {
                     continue;
@@ -7746,11 +7738,8 @@ impl<'db> InvocationTransaction<'db> {
                 {
                     return Err(TransactionError::CorruptCatalog);
                 }
-                if subjects.is_empty() {
+                if subjects.is_empty() && !collect_all_policy_inputs {
                     continue;
-                }
-                if subjects.len() > crate::authorization::MAX_POLICY_SUBJECTS {
-                    return Err(TransactionError::CorruptCatalog);
                 }
                 let using = using_id
                     .map(|expression_id| {
@@ -7772,6 +7761,18 @@ impl<'db> InvocationTransaction<'db> {
                         )
                     })
                     .transpose()?;
+                if let Some(expression) = &using {
+                    collect_expression_fields(expression, &mut referenced_ordinals);
+                }
+                if let Some(expression) = &with_check {
+                    collect_expression_fields(expression, &mut referenced_ordinals);
+                }
+                if subjects.is_empty() {
+                    continue;
+                }
+                if subjects.len() > crate::authorization::MAX_POLICY_SUBJECTS {
+                    return Err(TransactionError::CorruptCatalog);
+                }
                 let targets = if kind == 1 {
                     vec![AccessTarget::Table(schema.table_id)]
                 } else {
@@ -7797,7 +7798,18 @@ impl<'db> InvocationTransaction<'db> {
                     }
                 }
             }
-            Ok(loaded)
+            let mut policy_driving_columns = referenced_ordinals
+                .into_iter()
+                .map(|ordinal| {
+                    schema
+                        .column_ids
+                        .get(ordinal)
+                        .copied()
+                        .ok_or(TransactionError::CorruptCatalog)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            policy_driving_columns.sort_unstable();
+            Ok((loaded, policy_driving_columns))
         })();
         match result {
             Ok(policies) => Ok(policies),

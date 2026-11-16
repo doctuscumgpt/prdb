@@ -4274,6 +4274,9 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
     let policy_id = [0xf4; 16];
     let using_expression_id = [0xf5; 16];
     let check_expression_id = [0xf6; 16];
+    let external_policy_id = [0xf8; 16];
+    let external_using_expression_id = [0xf9; 16];
+    let external_check_expression_id = [0xfa; 16];
     let select_policy_id = [0xf1; 16];
     let select_expression_id = [0xf2; 16];
     let select_expression = Expr::Literal(Some(ScalarValue::Boolean(true)));
@@ -4306,6 +4309,7 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
     );
     let (policy_target_key, policy_target_payload) =
         policy_target_catalog_record(policy_id, 1, principal_id);
+    let allow_expression = Expr::Literal(Some(ScalarValue::Boolean(true)));
     let using_expression_key = catalog_id_key(7, using_expression_id);
     let check_expression_key = catalog_id_key(7, check_expression_id);
     let using_expression_payload = expression_catalog_payload_full(
@@ -4313,11 +4317,39 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
         3,
         [46; 16],
         [0; 8],
-        &[[0x66; 16]],
-        &policy_expression,
+        &[],
+        &allow_expression,
     )?;
     let check_expression_payload = expression_catalog_payload_full(
         check_expression_id,
+        4,
+        [46; 16],
+        [0; 8],
+        &[],
+        &allow_expression,
+    )?;
+    let (external_policy_key, external_policy_payload) = policy_catalog_record(
+        external_policy_id,
+        table_id,
+        1,
+        3,
+        Some(external_using_expression_id),
+        Some(external_check_expression_id),
+    );
+    let (external_policy_target_key, external_policy_target_payload) =
+        policy_target_catalog_record(external_policy_id, 1, restricted_principal_id);
+    let external_using_expression_key = catalog_id_key(7, external_using_expression_id);
+    let external_check_expression_key = catalog_id_key(7, external_check_expression_id);
+    let external_using_expression_payload = expression_catalog_payload_full(
+        external_using_expression_id,
+        3,
+        [46; 16],
+        [0; 8],
+        &[[0x66; 16]],
+        &policy_expression,
+    )?;
+    let external_check_expression_payload = expression_catalog_payload_full(
+        external_check_expression_id,
         4,
         [46; 16],
         [0; 8],
@@ -4352,11 +4384,28 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
             check_expression_key.as_slice(),
             check_expression_payload.as_slice(),
         )?;
+        catalog.insert(
+            external_policy_key.as_slice(),
+            external_policy_payload.as_slice(),
+        )?;
+        catalog.insert(
+            external_policy_target_key.as_slice(),
+            external_policy_target_payload.as_slice(),
+        )?;
+        catalog.insert(
+            external_using_expression_key.as_slice(),
+            external_using_expression_payload.as_slice(),
+        )?;
+        catalog.insert(
+            external_check_expression_key.as_slice(),
+            external_check_expression_payload.as_slice(),
+        )?;
         let mut policies = write.open_table(schema::POLICIES)?;
         for (operation, indexed_policy_id) in [
             (1u16, select_policy_id),
             (1u16, restricted_row_policy_id),
             (3u16, policy_id),
+            (3u16, external_policy_id),
         ] {
             let mut index_key = Vec::with_capacity(34);
             index_key.extend_from_slice(&table_id);
@@ -4372,11 +4421,13 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
     let guarded_policies = guarded_writer
         .load_catalog_policies(principal_id, &guarded_schema)
         .map_err(|error| format!("policy-driving expression failed to load: {error:?}"))?;
-    assert!(guarded_policies.iter().any(|policy| {
-        policy.operation == Operation::Update
-            && policy.using == Some(policy_expression.clone())
-            && policy.with_check == Some(policy_expression.clone())
-    }));
+    let update_policies = guarded_policies
+        .iter()
+        .filter(|policy| policy.operation == Operation::Update)
+        .collect::<Vec<_>>();
+    assert_eq!(update_policies.len(), 1);
+    assert_eq!(update_policies[0].using, Some(allow_expression.clone()));
+    assert_eq!(update_policies[0].with_check, Some(allow_expression));
     let mut guarded_connection = guarded_writer.open_executor_metadata_connection();
     let (guarded_relation, _) = guarded_connection
         .resolve_relation("app", "metrics")?
@@ -4419,7 +4470,7 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
         )?
         .values,
         [Some(ScalarValue::Bytea(guarded_value))],
-        "adding a policy that reads a column must block later writes to that column"
+        "a write must not mutate a field used by another principal's policy"
     );
     drop(guarded_connection);
     guarded_writer.abort()?;
