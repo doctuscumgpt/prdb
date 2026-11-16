@@ -362,6 +362,11 @@ enum PendingAdminAction {
         label: String,
         expires_at_us: i64,
     },
+    Rotate {
+        old_token_id: [u8; 16],
+        label: String,
+        expires_at_us: i64,
+    },
 }
 
 struct PendingAdminOperation {
@@ -828,6 +833,11 @@ pub enum ClientAdminCommand {
     },
     PrepareIssue {
         user_id: [u8; 16],
+        label: String,
+        expires_at_us: i64,
+    },
+    PrepareRotateToken {
+        old_token_id: [u8; 16],
         label: String,
         expires_at_us: i64,
     },
@@ -2871,6 +2881,32 @@ pub fn decode_client_admin_command(
                 .ok_or(ClientControlError::InvalidPrepare)?;
             Ok(ClientAdminCommand::PrepareIssue {
                 user_id,
+                label,
+                expires_at_us,
+            })
+        }
+        Some("prepare") if version == Some(1) && operation.as_deref() == Some("tokens.rotate") => {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let old_token_id = decode_lower_hex_id(
+                &args
+                    .remove("old_token_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            let label = args.remove("label").ok_or(ClientControlError::MissingKey)?;
+            let expires_at_us = parse_canonical_positive_i64(
+                &args
+                    .remove("expires_at_us")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )
+            .ok_or(ClientControlError::InvalidPrepare)?;
+            if !args.is_empty() || label.is_empty() || label.len() > 128 {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            Ok(ClientAdminCommand::PrepareRotateToken {
+                old_token_id,
                 label,
                 expires_at_us,
             })
@@ -6511,6 +6547,46 @@ impl ClientConnectionSession {
                     .into_bytes(),
                 )
             }
+            ClientAdminCommand::PrepareRotateToken {
+                old_token_id,
+                label,
+                expires_at_us,
+            } => {
+                if self.pending_admin_operation.is_some() {
+                    return Err(ClientSessionError::WrongMode);
+                }
+                let now_us = current_unix_micros().ok_or(ClientSessionError::UnsupportedRequest)?;
+                if expires_at_us <= now_us {
+                    return Err(ClientSessionError::InvalidControlPayload(
+                        ClientControlError::InvalidPrepare,
+                    ));
+                }
+                let mut operation_id = [0; 16];
+                getrandom::fill(&mut operation_id).map_err(|_| {
+                    ClientSessionError::Storage(TransactionError::RandomnessUnavailable)
+                })?;
+                if operation_id == [0; 16] {
+                    return Err(ClientSessionError::Storage(
+                        TransactionError::RandomnessUnavailable,
+                    ));
+                }
+                self.pending_admin_operation = Some(PendingAdminOperation {
+                    operation_id,
+                    action: PendingAdminAction::Rotate {
+                        old_token_id,
+                        label,
+                        expires_at_us,
+                    },
+                });
+                self.json_response(
+                    request.request_id,
+                    format!(
+                        "{{\"operation_id\":\"{}\",\"state\":\"prepared\"}}",
+                        encode_lower_hex_id(operation_id)
+                    )
+                    .into_bytes(),
+                )
+            }
             ClientAdminCommand::Start { operation_id } => {
                 let Some(pending) = self.pending_admin_operation.as_ref() else {
                     return Err(ClientSessionError::WrongMode);
@@ -7900,6 +7976,47 @@ impl ClientConnectionSession {
                             encode_lower_hex_id(issued.token_id),
                             secret_base64.as_str(),
                             issued.commit_sequence,
+                        ));
+                        let response_payload = payload.as_bytes().to_vec();
+                        payload.zeroize();
+                        self.json_response(request.request_id, response_payload)
+                    }
+                    PendingAdminAction::Rotate {
+                        old_token_id,
+                        label,
+                        expires_at_us,
+                    } => {
+                        let mut issued = storage
+                            .rotate_token(crate::storage_manager::TokenRotationRequest {
+                                invocation_id: operation_id,
+                                authenticated_actor_id: actor_id,
+                                old_token_id,
+                                label: &label,
+                                expires_at_us,
+                                retention_deadline_us,
+                                audit_event: crate::audit::AuditEvent {
+                                    event_id,
+                                    actor_id: Some(actor_id),
+                                    correlation_id: operation_id,
+                                    occurred_at_us: now_us,
+                                    action: crate::audit::AuditAction::TokenLifecycle,
+                                    result: crate::audit::AuditResult::Succeeded,
+                                    target_ids: vec![old_token_id],
+                                },
+                            })
+                            .map_err(ClientSessionError::TokenInventory)?;
+                        let secret = issued
+                            .take_secret()
+                            .ok_or(ClientSessionError::UnsupportedRequest)?;
+                        let mut secret = Zeroizing::new(secret);
+                        let secret_base64 = Zeroizing::new(encode_base64(secret.as_ref()));
+                        secret.zeroize();
+                        let mut payload = Zeroizing::new(format!(
+                            "{{\"operation_id\":\"{}\",\"outcome\":\"committed\",\"token_id\":\"{}\",\"token_secret\":\"{}\",\"commit_sequence\":\"{}\"}}",
+                            encode_lower_hex_id(operation_id),
+                            encode_lower_hex_id(issued.token_id),
+                            secret_base64.as_str(),
+                            issued.commit_sequence
                         ));
                         let response_payload = payload.as_bytes().to_vec();
                         payload.zeroize();

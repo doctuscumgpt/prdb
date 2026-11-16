@@ -270,3 +270,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 full delegated-cgroup workspace verification
 
 - The complete serial workspace test suite passed inside the delegated `systemd --user` service with sandbox and process integration tests enabled: 955 passed, 0 failed, 0 ignored. This includes the current permission, authorization/schema race, and metadata discovery regressions. The run used the locked release profile and documented TinyCC/runtime artifacts.
+
+## ID-4: atomic token rotation through authenticated ADMIN — verified slice
+
+- Added `StorageManager::rotate_token` to revoke an active, unexpired token and insert a same-user replacement verifier in one authorized identity DDL commit. The replacement secret is one-time, and a failed commit leaves the prior catalog state intact. Added `tokens.rotate` PREPARE/START protocol handling and `AdminClient::rotate_token`.
+- Expanded the identity specification with the operation signature, atomicity, failure, retry, and rate-limit behavior. The cross-process metadata/admin lifecycle test rotates a token, proves the old credential is rejected and zeroized, proves the new credential authenticates, and then revokes the replacement.
+- Verification: targeted `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` passed. `cargo check --workspace --locked`, `cargo fmt --all -- --check`, warning-denied all-target workspace Clippy, and `git diff --check` passed. The full delegated-cgroup suite was not rerun for this increment; the prior 955-test run predates rotation.

@@ -1098,6 +1098,17 @@ pub struct TokenIssueRequest<'a> {
     pub audit_event: AuditEvent,
 }
 
+#[derive(Clone, Debug)]
+pub struct TokenRotationRequest<'a> {
+    pub invocation_id: [u8; 16],
+    pub authenticated_actor_id: [u8; 16],
+    pub old_token_id: [u8; 16],
+    pub label: &'a str,
+    pub expires_at_us: i64,
+    pub retention_deadline_us: i64,
+    pub audit_event: AuditEvent,
+}
+
 /// Non-secret metadata for one issued token. Verifier bytes are never exposed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TokenMetadata {
@@ -9254,6 +9265,159 @@ impl<'db> StorageManager<'db> {
             CommitError::DdlAuthorizationDenied => TokenLifecycleError::TokenUnavailable,
             error => TokenLifecycleError::Commit(error),
         })
+    }
+
+    /// Atomically revoke an active token and issue its replacement for the
+    /// same user. The replacement secret is returned once; on any failed
+    /// commit the old token remains active and no replacement is published.
+    pub fn rotate_token(
+        &self,
+        request: TokenRotationRequest<'_>,
+    ) -> Result<IssuedToken, TokenLifecycleError> {
+        let TokenRotationRequest {
+            invocation_id,
+            authenticated_actor_id,
+            old_token_id,
+            label,
+            expires_at_us,
+            retention_deadline_us,
+            mut audit_event,
+        } = request;
+        let Some(issued_at_us) = now_unix_micros() else {
+            return Err(TokenLifecycleError::InvalidRequest);
+        };
+        if authenticated_actor_id == [0; 16]
+            || old_token_id == [0; 16]
+            || expires_at_us <= issued_at_us
+            || label.is_empty()
+            || label.len() > MAX_TOKEN_LABEL_BYTES
+        {
+            return Err(TokenLifecycleError::InvalidRequest);
+        }
+        if audit_event.actor_id != Some(authenticated_actor_id)
+            || audit_event.action != AuditAction::TokenLifecycle
+            || audit_event.result != AuditResult::Succeeded
+            || !audit_event.target_ids.contains(&old_token_id)
+        {
+            return Err(TokenLifecycleError::InvalidAudit);
+        }
+        self.token_requests.consume(authenticated_actor_id)?;
+        let old_key = credential_catalog_key(old_token_id);
+        let read = self
+            .database
+            .begin_read()
+            .map_err(|error| TokenLifecycleError::Storage(error.to_string()))?;
+        let table = read
+            .open_table(CATALOG)
+            .map_err(|error| TokenLifecycleError::Storage(error.to_string()))?;
+        let old_bytes = table
+            .get(old_key.as_slice())
+            .map_err(|error| TokenLifecycleError::Storage(error.to_string()))?
+            .map(|value| value.value().to_vec())
+            .ok_or(TokenLifecycleError::TokenUnavailable)?;
+        let old_envelope = decode_registered_envelope(&old_bytes)
+            .map_err(|_| TokenLifecycleError::TokenUnavailable)?;
+        if old_envelope.logical_key != old_key {
+            return Err(TokenLifecycleError::TokenUnavailable);
+        }
+        let old_verifier = decode_verifier_record(&old_envelope)
+            .map_err(|_| TokenLifecycleError::TokenUnavailable)?;
+        if old_verifier.revoked || old_verifier.expires_at_us <= issued_at_us {
+            return Err(TokenLifecycleError::TokenUnavailable);
+        }
+        let user_id = old_verifier.user_id;
+        let revoked_payload = encode_revoked_verifier_record(&old_envelope, issued_at_us)
+            .map_err(|_| TokenLifecycleError::EncodingFailed)?;
+        drop(table);
+        drop(read);
+
+        let mut generated = None;
+        for _ in 0..8 {
+            let mut material = [0u8; 16 + TOKEN_SECRET_BYTES];
+            if getrandom::fill(&mut material).is_err() {
+                material.zeroize();
+                return Err(TokenLifecycleError::RandomnessUnavailable);
+            }
+            let token_id: [u8; 16] = material[..16].try_into().expect("fixed token ID length");
+            let mut secret: [u8; TOKEN_SECRET_BYTES] = material[16..]
+                .try_into()
+                .expect("fixed token secret length");
+            material.zeroize();
+            if token_id == [0; 16] || token_id == old_token_id {
+                secret.zeroize();
+                continue;
+            }
+            match credential_token_exists(self.database, token_id) {
+                Ok(false) => {
+                    generated = Some((token_id, secret));
+                    secret.zeroize();
+                    break;
+                }
+                Ok(true) => secret.zeroize(),
+                Err(error) => {
+                    secret.zeroize();
+                    return Err(error);
+                }
+            }
+        }
+        let Some((new_token_id, mut secret)) = generated else {
+            return Err(TokenLifecycleError::TokenIdGenerationFailed);
+        };
+        let new_payload = match encode_new_verifier_record(
+            new_token_id,
+            user_id,
+            &secret,
+            issued_at_us,
+            expires_at_us,
+            label,
+        ) {
+            Ok(payload) => payload,
+            Err(_) => {
+                secret.zeroize();
+                return Err(TokenLifecycleError::EncodingFailed);
+            }
+        };
+        let mut target_ids = audit_event.target_ids;
+        if target_ids.len() >= 256 {
+            secret.zeroize();
+            return Err(TokenLifecycleError::InvalidAudit);
+        }
+        target_ids.extend([user_id, new_token_id]);
+        target_ids.sort_unstable();
+        target_ids.dedup();
+        audit_event.target_ids = target_ids;
+        let writes = [
+            CatalogWrite {
+                key: old_key,
+                expected_value: Some(old_bytes),
+                payload: Some(revoked_payload),
+            },
+            CatalogWrite {
+                key: credential_catalog_key(new_token_id),
+                expected_value: None,
+                payload: Some(new_payload),
+            },
+        ];
+        let sequence = match self.commit_authorized_identity_ddl(
+            invocation_id,
+            authenticated_actor_id,
+            retention_deadline_us,
+            &writes,
+            &[audit_event],
+        ) {
+            Ok(sequence) => sequence,
+            Err(error) => {
+                secret.zeroize();
+                return Err(TokenLifecycleError::Commit(error));
+            }
+        };
+        let issued = IssuedToken {
+            token_id: new_token_id,
+            commit_sequence: sequence,
+            secret: Some(secret),
+        };
+        secret.zeroize();
+        Ok(issued)
     }
 
     /// List token metadata for the authenticated user, or for another user

@@ -2444,6 +2444,95 @@ impl AdminClient {
         .map(|(result, _)| result)
     }
 
+    /// Atomically revoke an active token and issue a replacement for the same
+    /// user. The replacement bearer secret is returned once.
+    pub fn rotate_token(
+        &mut self,
+        old_token_id: [u8; 16],
+        label: &str,
+        expires_at_us: i64,
+    ) -> Result<AdminTokenResult, ClientSubmitError> {
+        validate_admin_id(old_token_id)?;
+        if label.is_empty() || label.len() > 128 || expires_at_us <= 0 {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let arguments = format!(
+            "{{\"old_token_id\":\"{}\",\"label\":{},\"expires_at_us\":\"{expires_at_us}\"}}",
+            lower_hex(&old_token_id),
+            json_quote(label)
+        );
+        let prepare = format!(
+            "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tokens.rotate\",\"arguments\":{arguments}}}"
+        );
+        let prepared = self.transport.exchange(10, prepare.into_bytes())?;
+        let fields = parse_flat_response(&prepared.payload)?;
+        let operation_id = response_id(&fields, "operation_id")?;
+        if fields.len() != 2 || take_string(&fields, "state").as_deref() != Some("prepared") {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        let start = format!(
+            "{{\"phase\":\"start\",\"operation_id\":\"{}\"}}",
+            lower_hex(&operation_id)
+        );
+        let mut started = match self.transport.exchange(10, start.into_bytes()) {
+            Ok(response) => response,
+            Err(ClientSubmitError::ServerRejected(message)) => {
+                return Err(ClientSubmitError::AdministrativeOperationRejected {
+                    operation_id,
+                    message,
+                });
+            }
+            Err(_) => {
+                return Err(ClientSubmitError::AdministrativeOutcomeUncertain(
+                    operation_id,
+                ));
+            }
+        };
+        let parsed = parse_flat_response(&started.payload);
+        started.payload.zeroize();
+        let mut fields =
+            parsed.map_err(|_| ClientSubmitError::AdministrativeOutcomeUncertain(operation_id))?;
+        let secret_text = match fields.remove("token_secret") {
+            Some(ResponseValue::String(value)) => Zeroizing::new(value),
+            _ => {
+                return Err(ClientSubmitError::AdministrativeOutcomeUncertain(
+                    operation_id,
+                ));
+            }
+        };
+        let token_id = response_id(&fields, "token_id").ok();
+        let response_operation_id = response_id(&fields, "operation_id").ok();
+        let outcome = fields.get("outcome").and_then(ResponseValue::as_string);
+        let sequence = fields
+            .get("commit_sequence")
+            .and_then(ResponseValue::as_string)
+            .and_then(|text| parse_canonical_positive_u64(text.to_owned()));
+        let token_secret = decode_token_secret(&secret_text);
+        if fields.len() != 4
+            || token_id.is_none()
+            || response_operation_id != Some(operation_id)
+            || outcome != Some("committed")
+            || sequence.is_none()
+            || token_secret.is_none()
+        {
+            return Err(ClientSubmitError::AdministrativeOutcomeUncertain(
+                operation_id,
+            ));
+        }
+        Ok(AdminTokenResult {
+            operation_id,
+            token_id: token_id.ok_or(ClientSubmitError::AdministrativeOutcomeUncertain(
+                operation_id,
+            ))?,
+            token_secret: token_secret.ok_or(ClientSubmitError::AdministrativeOutcomeUncertain(
+                operation_id,
+            ))?,
+            commit_sequence: sequence.ok_or(ClientSubmitError::AdministrativeOutcomeUncertain(
+                operation_id,
+            ))?,
+        })
+    }
+
     /// List non-secret metadata for one user's tokens. The server enforces
     /// self-inventory or current MANAGE_USERS/database-administrator authority.
     pub fn list_tokens_page(

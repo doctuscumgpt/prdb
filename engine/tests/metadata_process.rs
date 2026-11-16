@@ -5091,6 +5091,41 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     drop(issued_metadata);
     drop(saved_credentials);
 
+    let old_credentials = read_client_credentials(&credential_path)?;
+    let mut old_secret_after_rotation = old_credentials.token_secret;
+    let rotation_expiry = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?
+        .saturating_add(60_000_000);
+    let rotated = admin.rotate_token(issued_token_id, "rotated process token", rotation_expiry)?;
+    assert_ne!(rotated.token_id, issued_token_id);
+    assert!(
+        MetadataClient::connect_authenticated(
+            address,
+            issued_token_id,
+            &mut old_secret_after_rotation
+        )
+        .is_err()
+    );
+    assert_eq!(old_secret_after_rotation, [0; 32]);
+    remove_client_credentials(&credential_path)?;
+    write_client_credentials(
+        &credential_path,
+        &ClientCredentials {
+            token_id: rotated.token_id,
+            token_secret: *rotated.token_secret(),
+        },
+    )?;
+    let mut rotated_secret = *rotated.token_secret();
+    let mut rotated_metadata =
+        MetadataClient::connect_authenticated(address, rotated.token_id, &mut rotated_secret)?;
+    assert_eq!(rotated_secret, [0; 32]);
+    assert!(
+        rotated_metadata
+            .list_schemas()?
+            .iter()
+            .any(|schema| schema.name == "information_schema")
+    );
+    drop(rotated_metadata);
+
     let revoke_token_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
             "token-revoke",
@@ -5099,7 +5134,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             "--credentials",
             admin_cli_credentials,
             "--token-id",
-            &encode_id_hex(&issued_token_id),
+            &encode_id_hex(&rotated.token_id),
         ])
         .output()?;
     assert!(
