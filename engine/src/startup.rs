@@ -2183,6 +2183,14 @@ fn validate_catalog(
     if !validate_owned_child_graph(&object_parents, &dependencies) {
         return Err(StartupError::InvalidCatalog);
     }
+    let typed_parent_mismatch = column_tables.iter().any(|(object_id, table_id)| {
+        object_parents
+            .get(object_id)
+            .is_some_and(|parent_id| parent_id.is_some_and(|parent_id| parent_id != *table_id))
+    });
+    if typed_parent_mismatch {
+        return Err(StartupError::InvalidCatalog);
+    }
     for (constraint_id, table_id) in &constraint_tables {
         let source_columns = constraint_source_columns
             .get(constraint_id)

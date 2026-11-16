@@ -10078,6 +10078,50 @@ fn catalog_commit_checks_dependency_endpoints_in_the_final_catalog()
 }
 
 #[test]
+fn catalog_commit_rejects_column_parent_mismatch_with_typed_table()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let table_id = id(0xc1);
+    let declared_parent_id = id(0xc2);
+    let column_id = id(0xc3);
+    let invalid_writes = [
+        object_write(table_id, 3),
+        table_write(table_id, builtin_id(1)),
+        object_write(declared_parent_id, 3),
+        table_write(declared_parent_id, builtin_id(1)),
+        object_write_with_parent(column_id, 4, Some(declared_parent_id)),
+        column_write(column_id, table_id, "mismatched_parent"),
+        dependency_write(column_id, declared_parent_id, 1),
+    ];
+
+    assert_eq!(
+        commit_catalog_and_audit(
+            &database,
+            id(53),
+            id(9),
+            9_999,
+            &invalid_writes,
+            &[audit_event(53)],
+        ),
+        Err(CommitError::InvalidCatalog)
+    );
+    assert_eq!(commit_sequence(&database)?, 0);
+    assert_eq!(
+        lookup_outcome(&database, id(53), id(9), 1)?
+            .ok_or("missing rejected-parent outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    for write in invalid_writes {
+        assert!(catalog.get(write.key.as_slice())?.is_none());
+    }
+    Ok(())
+}
+
+#[test]
 fn catalog_commit_requires_owned_child_parent_edge_consistency()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

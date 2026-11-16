@@ -2462,6 +2462,29 @@ fn rejects_owned_child_edges_that_disagree_with_object_parents() {
 }
 
 #[test]
+fn rejects_column_object_parent_that_disagrees_with_typed_table() {
+    let fixture = Fixture::new();
+    let database = fixture.database(0);
+    let table_id = [0xa1; 16];
+    let declared_parent_id = [0xa2; 16];
+    let column_id = [0xa3; 16];
+    put_table(&database, table_id);
+    put_table(&database, declared_parent_id);
+    let column_object = object_record_with_parent(column_id, 4, Some(declared_parent_id));
+    put_catalog(&database, &column_object.0, &column_object.1);
+    let column = column_record_for_table(column_id, table_id, "object_163");
+    put_catalog(&database, &column.0, &column.1);
+    let edge = dependency_record(column_id, declared_parent_id, 1);
+    put_catalog(&database, &edge.0, &edge.1);
+
+    assert_eq!(
+        validate_persisted_records(&database),
+        Err(StartupError::InvalidCatalog),
+        "typed column ownership must agree with any explicit object parent"
+    );
+}
+
+#[test]
 fn rejects_owned_child_parent_cycles() {
     let fixture = Fixture::new();
     let database = fixture.database(0);
