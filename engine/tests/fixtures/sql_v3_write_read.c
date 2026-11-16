@@ -919,7 +919,7 @@ static int32_t run_write_read_fixture(
     const prdb_host_api_v5 *optimizer_host_v5) {
     static const uint8_t insert_sql[] = "INSERT INTO records VALUES (NULL)";
     static const uint8_t generated_identity_insert_sql[] =
-        "INSERT INTO identity_records VALUES (DEFAULT)";
+        "INSERT INTO identity_records (id) VALUES (DEFAULT)";
     static const uint8_t select_null_sql[] =
         "SELECT id FROM records WHERE id IS NULL";
     static const uint8_t select_schemata_sql[] =
@@ -1117,6 +1117,7 @@ static int32_t run_write_read_fixture(
     uint32_t updated_count = 0;
     uint32_t deleted_count = 0;
     uint32_t multi_inserted_count = UINT32_MAX;
+    uint32_t generated_inserted_count = UINT32_MAX;
     int32_t status;
     analytical_pressure_result_context analytical_pressure_results = {
         .host = host,
@@ -2947,15 +2948,14 @@ static int32_t run_write_read_fixture(
             return report_failure(host, message, sizeof(message) - 1);
         }
     }
-    status = prdb_sdk_sql_execute_insert_v1(
+    status = prdb_sdk_sql_execute_insert_v2(
         host, schema, sizeof(schema) - 1, generated_identity_insert_sql,
         sizeof(generated_identity_insert_sql) - 1, NULL, 0,
         planner_response, sizeof(planner_response), executor_response,
         sizeof(executor_response), insert_request, sizeof(insert_request),
         planner_columns, 9, executor_columns, 9, insert_values, 1,
-        inserted_handle);
-    if (status != PRDB_SDK_SQL_EXEC_OK ||
-        memcmp(inserted_handle, (uint8_t[16]){0}, sizeof(inserted_handle)) == 0) {
+        &generated_inserted_count);
+    if (status != PRDB_SDK_SQL_EXEC_OK || generated_inserted_count != 1) {
         static const uint8_t message[] = "fixture-error-generated-identity-insert";
         return report_failure(host, message, sizeof(message) - 1);
     }
