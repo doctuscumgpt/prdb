@@ -354,3 +354,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The 128-cycle real-redb lifecycle regression now creates and drops a foreign key for every temporary table, while a stable referenced UNIQUE constraint remains. It checks snapshot visibility of the FK and incoming dependency edge across FK removal, then validates the recovered catalog after all temporary schema/table/constraint records are removed.
 - Verification: focused `schema_create_drop_pressure_preserves_pinned_name_index_snapshots` passed (12.47 s); format check, warning-denied all-target workspace Clippy, and `git diff --check` passed. The full workspace suite was not rerun for this pressure-test extension.
+
+
+## 2026-11-16 full delegated workspace verification after identity issuance hardening
+
+- `cargo test --workspace --locked -- --test-threads=1` passed inside the delegated `systemd --user` service with the documented TinyCC fixtures and runtime profile. Sandbox and process integration tests were enabled; zero tests were ignored. This run includes the unauthorized token issue/rotation enumeration regressions and the 128-cycle foreign-key catalog pressure regression.

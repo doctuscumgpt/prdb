@@ -9073,8 +9073,10 @@ impl<'db> StorageManager<'db> {
     }
 
     /// Issue one random bearer token for a LOGIN user through the authorized
-    /// identity DDL path. The secret is returned once and only its verifier is
-    /// written to the catalog and audit event.
+    /// identity DDL path. Unauthorized callers, unavailable targets, and a
+    /// target that becomes unavailable before commit share one result. The
+    /// secret is returned once and only its verifier is written to the catalog
+    /// and audit event.
     pub fn issue_token(
         &self,
         request: TokenIssueRequest<'_>,
@@ -9106,6 +9108,49 @@ impl<'db> StorageManager<'db> {
             return Err(TokenLifecycleError::InvalidAudit);
         }
         self.token_requests.consume(authenticated_actor_id)?;
+
+        let read = self
+            .database
+            .begin_read()
+            .map_err(|error| TokenLifecycleError::Storage(error.to_string()))?;
+        let snapshot = RowSnapshot::new(read);
+        let roles = token_actor_roles(&snapshot, authenticated_actor_id)?;
+        let mut database_admin_role = [0x80; 16];
+        database_admin_role[15] = 3;
+        let metadata_bytes = snapshot
+            .get_engine_metadata_value()
+            .map_err(|error| TokenLifecycleError::Storage(error.to_string()))?
+            .ok_or_else(|| TokenLifecycleError::Storage("engine metadata is missing".into()))?;
+        let metadata = EngineMetadata::decode(&metadata_bytes)
+            .map_err(|error| TokenLifecycleError::Storage(error.to_string()))?;
+        if metadata.lifecycle != Lifecycle::Ready || !metadata.supports_current_formats() {
+            return Err(TokenLifecycleError::Storage(
+                "database is not ready for token issuance".into(),
+            ));
+        }
+        let mut authority_subjects = roles.clone();
+        authority_subjects.insert(authenticated_actor_id);
+        if !roles.contains(&database_admin_role)
+            && !token_inventory_has_manage_users(
+                &snapshot,
+                metadata.database_id,
+                &authority_subjects,
+            )?
+        {
+            return Err(TokenLifecycleError::TokenUnavailable);
+        }
+        let target = snapshot
+            .get_catalog_record(&principal_catalog_key(user_id))
+            .map_err(|error| TokenLifecycleError::Storage(error.to_string()))?
+            .ok_or(TokenLifecycleError::TokenUnavailable)?;
+        let target_login = token_catalog_field(&target, 3)?;
+        if token_catalog_u16(&target, 1)? != 1
+            || !(target_login == [0] || target_login == [1])
+            || token_catalog_u64(&target, 4)? == 0
+        {
+            return Err(TokenLifecycleError::TokenUnavailable);
+        }
+        drop(snapshot);
 
         let mut generated = None;
         for _ in 0..8 {
@@ -9177,7 +9222,12 @@ impl<'db> StorageManager<'db> {
             Ok(sequence) => sequence,
             Err(error) => {
                 secret.zeroize();
-                return Err(TokenLifecycleError::Commit(error));
+                return Err(match error {
+                    CommitError::DdlAuthorizationDenied
+                    | CommitError::Conflict
+                    | CommitError::InvalidCatalog => TokenLifecycleError::TokenUnavailable,
+                    error => TokenLifecycleError::Commit(error),
+                });
             }
         };
         let issued = IssuedToken {

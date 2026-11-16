@@ -23811,7 +23811,8 @@ fn login_reenable_racing_token_issue_only_publishes_after_enable()
             CommitError::DdlAuthorizationDenied
             | CommitError::Conflict
             | CommitError::InvalidCatalog,
-        )) => None,
+        ))
+        | Err(TokenLifecycleError::TokenUnavailable) => None,
         Err(error) => return Err(Box::new(error)),
     };
     if let Some((_, issue_sequence)) = issued {
@@ -43614,7 +43615,8 @@ fn storage_manager_issues_and_revokes_tokens_for_manage_users()
             CommitError::Conflict
             | CommitError::InvalidCatalog
             | CommitError::DdlAuthorizationDenied,
-        )) => None,
+        ))
+        | Err(TokenLifecycleError::TokenUnavailable) => None,
         Err(error) => return Err(Box::new(error)),
     };
     let login_disable_sequence = match race_disable_result {
@@ -43700,12 +43702,28 @@ fn storage_manager_issues_and_revokes_tokens_for_manage_users()
         retention_deadline_us: now + 7_200_000_000,
         audit_event: lifecycle_event(0x98, denied_user, vec![target_user]),
     });
-    assert!(matches!(
-        denied_issue,
-        Err(TokenLifecycleError::Commit(
-            CommitError::DdlAuthorizationDenied
-        ))
-    ));
+    let denied_missing_issue = storage.issue_token(TokenIssueRequest {
+        invocation_id: id(0xaa),
+        authenticated_actor_id: denied_user,
+        user_id: id(0xab),
+        label: "must not reveal missing target",
+        expires_at_us,
+        retention_deadline_us: now + 7_200_000_000,
+        audit_event: lifecycle_event(0xaa, denied_user, vec![id(0xab)]),
+    });
+    let denied_issue_error = match denied_issue {
+        Err(error) => error,
+        Ok(_) => panic!("unauthorized token issue for an existing target unexpectedly succeeded"),
+    };
+    let denied_missing_issue_error = match denied_missing_issue {
+        Err(error) => error,
+        Ok(_) => panic!("unauthorized token issue for a missing target unexpectedly succeeded"),
+    };
+    assert_eq!(denied_issue_error, TokenLifecycleError::TokenUnavailable);
+    assert_eq!(
+        denied_missing_issue_error,
+        TokenLifecycleError::TokenUnavailable
+    );
 
     assert_eq!(
         second_storage_handle

@@ -570,3 +570,8 @@
 
 - Extended the 128-cycle schema/table/index/policy/UNIQUE-constraint pressure campaign with a stable referenced key and a create/drop FOREIGN KEY on each temporary table. The retained reader continues to see the FK constraint and incoming dependency edge after drop; a fresh snapshot omits both while retaining the referenced target constraint, then omits all temporary constraints after their drops. Persisted-catalog validation checks the final graph.
 - Verification: focused `schema_create_drop_pressure_preserves_pinned_name_index_snapshots` passed (12.47 s); format check, warning-denied all-target workspace Clippy, and `git diff --check` passed. The full workspace suite was not rerun for this pressure-test extension.
+
+
+## 2026-11-16 full delegated workspace verification after identity issuance hardening
+
+- `cargo test --workspace --locked -- --test-threads=1` passed inside the delegated `systemd --user` service with the documented TinyCC fixtures and runtime profile. Sandbox and process integration tests were enabled; zero tests were ignored. This run includes the unauthorized token issue/rotation enumeration regressions and the 128-cycle foreign-key catalog pressure regression.

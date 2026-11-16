@@ -322,3 +322,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 full delegated workspace verification after identity rotation probes
 
 - `cargo test --workspace --locked -- --test-threads=1` passed inside the delegated `systemd --user` service with the documented TinyCC fixtures and runtime profile. Sandbox and process integration tests were enabled; zero tests were ignored. The run includes storage and authenticated ADMIN checks that unauthorized rotations of existing and unknown token IDs return the same generic response.
+
+## ID-2 / ID-4: token issuance does not disclose target-user existence — verified slice
+
+- A real-redb regression exposed that an unauthorized token issue for an existing target returned `Commit(DdlAuthorizationDenied)`, unlike a missing target. `issue_token` now checks the current actor's MANAGE_USERS/database-admin authority before reading target identity state, then resolves the user identity; LOGIN is enforced by the atomic commit validator. Unauthorized callers and unavailable targets share `TokenUnavailable`; authorization is still revalidated at commit and the generated secret is zeroized on every failure.
+- Extended the authenticated gateway/supervisor process regression to compare issue attempts for a known user and an unknown user, alongside the token-rotation probes. Both return the same generic ADMIN rejection.
+- Verification: `storage_manager_issues_and_revokes_tokens_for_manage_users` and the focused delegated `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` passed. Format check, warning-denied all-target workspace Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed after this identity change with sandbox/process coverage enabled and zero ignored tests.

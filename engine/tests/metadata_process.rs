@@ -149,6 +149,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let owner_token;
     let mut owner_secret;
     let restricted_schema_id;
+    let restricted_user_id;
     let restricted_table_id;
     let restricted_index_id;
     let sql_visible_schema_id;
@@ -173,6 +174,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 target_ids: Vec::new(),
             },
         )?;
+        restricted_user_id = restricted_user.user_id;
         let owner_user = storage.create_user(
             [0xac; 16],
             admin_user_id,
@@ -1260,6 +1262,8 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     );
     drop(restricted_metadata);
     let mut restricted_admin_retry_secret = restricted_admin_secret;
+    let mut restricted_admin_issue_retry_secret = restricted_admin_secret;
+    let mut restricted_admin_issue_missing_secret = restricted_admin_secret;
     let mut restricted_admin_followup_secret = restricted_admin_secret;
     let mut restricted_admin = AdminClient::connect_authenticated(
         address,
@@ -1292,6 +1296,30 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         rejection_message(unauthorized_existing_rotation),
         rejection_message(unauthorized_unknown_rotation),
         "ADMIN exposed whether a token ID exists"
+    );
+    drop(restricted_admin);
+    let mut restricted_admin = AdminClient::connect_authenticated(
+        address,
+        restricted_token,
+        &mut restricted_admin_issue_retry_secret,
+    )?;
+    let unauthorized_existing_issue = restricted_admin.issue_token(
+        restricted_user_id,
+        "unauthorized existing-user probe",
+        i64::MAX,
+    );
+    drop(restricted_admin);
+    let mut restricted_admin = AdminClient::connect_authenticated(
+        address,
+        restricted_token,
+        &mut restricted_admin_issue_missing_secret,
+    )?;
+    let unauthorized_missing_issue =
+        restricted_admin.issue_token([0xd2; 16], "unauthorized missing-user probe", i64::MAX);
+    assert_eq!(
+        rejection_message(unauthorized_existing_issue),
+        rejection_message(unauthorized_missing_issue),
+        "ADMIN exposed whether an identity exists during token issuance"
     );
     drop(restricted_admin);
     let mut restricted_admin = AdminClient::connect_authenticated(
