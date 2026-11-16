@@ -2039,6 +2039,27 @@ fn information_schema_tables_scan_walks_visible_schema_pages()
         replay_invocation.scan_information_schema_tables(1, Some(first_cursor)),
         Err(TransactionError::InvalidMetadataRequest)
     ));
+
+    let mut substitution_probe =
+        InvocationTransaction::begin(&database, [212; 16], [9; 16], 9_999, 1, 64)?;
+    let first = substitution_probe.scan_information_schema_tables(1, None)?;
+    let mut substituted_cursor_bytes = first
+        .continuation
+        .expect("another table follows")
+        .to_bytes();
+    substituted_cursor_bytes[8] ^= 1;
+    assert!(matches!(
+        substitution_probe.scan_information_schema_tables(
+            1,
+            Some(
+                prdb_engine::metadata_discovery::InformationSchemaTablesCursor::from_bytes(
+                    &substituted_cursor_bytes,
+                )
+                .expect("same-kind substituted cursor retains its wire shape"),
+            ),
+        ),
+        Err(TransactionError::InvalidMetadataRequest)
+    ));
     Ok(())
 }
 
@@ -2323,6 +2344,27 @@ fn information_schema_columns_scan_walks_visible_relation_pages()
     assert!(second.continuation.is_some());
     assert!(matches!(
         replay_invocation.scan_information_schema_columns(1, Some(first_cursor)),
+        Err(TransactionError::InvalidMetadataRequest)
+    ));
+
+    let mut substitution_probe =
+        InvocationTransaction::begin(&database, [212; 16], [9; 16], 9_999, 1, 64)?;
+    let first = substitution_probe.scan_information_schema_columns(1, None)?;
+    let mut substituted_cursor_bytes = first
+        .continuation
+        .expect("another column follows")
+        .to_bytes();
+    substituted_cursor_bytes[8] ^= 1;
+    assert!(matches!(
+        substitution_probe.scan_information_schema_columns(
+            1,
+            Some(
+                prdb_engine::metadata_discovery::InformationSchemaColumnsCursor::from_bytes(
+                    &substituted_cursor_bytes,
+                )
+                .expect("same-kind substituted cursor retains its wire shape"),
+            ),
+        ),
         Err(TransactionError::InvalidMetadataRequest)
     ));
     Ok(())
