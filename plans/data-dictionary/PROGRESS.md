@@ -401,3 +401,8 @@
 - Extended `storage_manager_drop_table_removes_owned_catalog_and_rows` to recreate the dropped table under the same schema/name. The recreated relation has a different ID; a snapshot pinned before DROP still resolves the original ID, while a fresh snapshot resolves the replacement. The drop and recreation outcomes are committed, and the original table's row is absent after recreation.
 - Verification: the focused real-redb lifecycle regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. `git diff --check` passed.
 - Remaining: other object families and wider mixed catalog-DDL/read pressure remain to be exercised; this slice does not claim complete DD-3 referential integrity coverage.
+
+## DD-3 / DD-5: dropped index snapshots retain definitions and memberships — verified slice
+
+- Extended `storage_manager_creates_named_unique_index_and_backfills_atomically` to retain a catalog snapshot across index DROP and same-name recreation. The retained snapshot still resolves the original index and contains its typed/object records and row-index memberships; the current snapshot resolves the replacement under a distinct ID.
+- Verification: the focused real-redb lifecycle regression passed. The pinned release profile validated 10 engine binaries and one query fixture; workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
