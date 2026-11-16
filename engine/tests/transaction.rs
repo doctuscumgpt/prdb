@@ -2448,6 +2448,14 @@ fn executor_scan_reads_filtered_information_schema_schemata()
         ),
         Err(TransactionError::InvalidMetadataRequest)
     ));
+    assert!(matches!(
+        connection.stage_delete(
+            virtual_row_handle
+                .as_ref()
+                .expect("virtual row handle was issued"),
+        ),
+        Err(TransactionError::InvalidMetadataRequest)
+    ));
     drop(connection);
 
     let mut mutation_invocation =
