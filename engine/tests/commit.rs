@@ -7690,6 +7690,188 @@ fn column_default_change_racing_column_drop_preserves_catalog_integrity()
 }
 
 #[test]
+fn column_default_and_not_null_alterations_linearize_atomically()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{
+        AlterColumnDefaultRequest, CreateTableRequest, TableColumnDefault, TableColumnDefinition,
+    };
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let actor = id(0xe1);
+    let admin_role = builtin_owner_id();
+    let mut setup_audit = identity_audit_event(0xe2, admin_role, actor);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(
+        id(0xe2),
+        admin_role,
+        9_999,
+        &[
+            principal_write_with_name(actor, 1, 1, "alter_race_owner"),
+            object_write_with_name(actor, 8, "alter_race_owner"),
+            membership_write(actor, admin_role),
+            dependency_write(actor, admin_role, 5),
+        ],
+        &[setup_audit],
+    )?;
+    let schema_invocation = id(0xe3);
+    let mut schema_audit = identity_audit_event(0xe4, actor, id(0xe5));
+    schema_audit.correlation_id = schema_invocation;
+    let schema = storage.create_schema(
+        schema_invocation,
+        actor,
+        "alter_race_schema",
+        actor,
+        9_999,
+        schema_audit,
+    )?;
+    let table_invocation = id(0xe6);
+    let mut table_audit = identity_audit_event(0xe7, actor, id(0xe8));
+    table_audit.correlation_id = table_invocation;
+    let table = storage.create_table(CreateTableRequest {
+        invocation_id: table_invocation,
+        authenticated_actor_id: actor,
+        schema_id: schema.schema_id,
+        name: "alter_race_table".to_owned(),
+        columns: vec![TableColumnDefinition {
+            name: "value".to_owned(),
+            scalar_type: ScalarType::Integer,
+            nullable: true,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+        retention_deadline_us: 9_999,
+        audit_event: table_audit,
+    })?;
+
+    let default_invocation = id(0xe9);
+    let mut default_audit = identity_audit_event(0xea, actor, table.column_ids[0]);
+    default_audit.correlation_id = default_invocation;
+    let not_null_invocation = id(0xeb);
+    let mut not_null_audit = identity_audit_event(0xec, actor, table.column_ids[0]);
+    not_null_audit.correlation_id = not_null_invocation;
+    let barrier = Arc::new(Barrier::new(2));
+    let (default_result, not_null_result) = std::thread::scope(|scope| {
+        let default_barrier = Arc::clone(&barrier);
+        let default_storage = &storage;
+        let table_id = table.table_id;
+        let column_id = table.column_ids[0];
+        let default = scope.spawn(move || {
+            default_barrier.wait();
+            default_storage.alter_column_default(AlterColumnDefaultRequest {
+                invocation_id: default_invocation,
+                authenticated_actor_id: actor,
+                table_id,
+                column_id,
+                default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(43)))),
+                retention_deadline_us: 9_999,
+                audit_event: default_audit,
+            })
+        });
+        barrier.wait();
+        let not_null = storage.set_column_nullable(
+            not_null_invocation,
+            actor,
+            table.table_id,
+            table.column_ids[0],
+            false,
+            9_999,
+            not_null_audit,
+        );
+        (
+            default.join().expect("default ALTER thread panicked"),
+            not_null,
+        )
+    });
+    let default_committed = default_result.is_ok();
+    if let Err(error) = &default_result {
+        assert!(
+            matches!(
+                error,
+                prdb_engine::storage_manager::TableLifecycleError::InvalidRequest
+                    | prdb_engine::storage_manager::TableLifecycleError::Commit(
+                        CommitError::Conflict | CommitError::InvalidCatalog
+                    )
+            ),
+            "unexpected SET DEFAULT race result: {error:?}"
+        );
+    }
+    let not_null_committed = not_null_result.is_ok();
+    if let Err(error) = &not_null_result {
+        assert!(
+            matches!(
+                error,
+                prdb_engine::storage_manager::TableLifecycleError::InvalidRequest
+                    | prdb_engine::storage_manager::TableLifecycleError::Commit(
+                        CommitError::Conflict | CommitError::InvalidCatalog
+                    )
+            ),
+            "unexpected SET NOT NULL race result: {error:?}"
+        );
+    }
+    assert!(default_committed || not_null_committed);
+
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    let column = catalog
+        .get(id_catalog_key(6, table.column_ids[0]).as_slice())?
+        .ok_or("ALTER race lost its column record")?;
+    let record = decode_registered_envelope(column.value())?;
+    let nullable = record
+        .fields
+        .iter()
+        .find(|field| field.tag == 6)
+        .ok_or("column record has no nullability field")?;
+    assert_eq!(
+        nullable.payload,
+        vec![u8::from(!not_null_committed)],
+        "NOT NULL is visible exactly when its ALTER commits"
+    );
+    assert_eq!(
+        record.fields.iter().any(|field| field.tag == 7),
+        default_committed,
+        "DEFAULT is visible exactly when its ALTER commits"
+    );
+    drop(catalog);
+    drop(read);
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    for (invocation_id, committed, has_commit_result) in [
+        (
+            default_invocation,
+            default_committed,
+            matches!(
+                default_result,
+                Err(prdb_engine::storage_manager::TableLifecycleError::Commit(_))
+            ),
+        ),
+        (
+            not_null_invocation,
+            not_null_committed,
+            matches!(
+                not_null_result,
+                Err(prdb_engine::storage_manager::TableLifecycleError::Commit(_))
+            ),
+        ),
+    ] {
+        let outcome = lookup_outcome(&database, invocation_id, actor, 1)?;
+        if committed || has_commit_result {
+            assert_eq!(
+                outcome.ok_or("missing ALTER race outcome")?.status,
+                if committed {
+                    OutcomeStatus::Committed
+                } else {
+                    OutcomeStatus::Aborted
+                }
+            );
+        } else {
+            assert!(outcome.is_none(), "preflight rejection has no outcome");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn storage_manager_adds_column_and_backfills_existing_rows()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{

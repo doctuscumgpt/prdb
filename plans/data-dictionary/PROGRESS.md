@@ -580,3 +580,8 @@
 
 - Extended the widening acceptance from a single-column index to a composite `(VARCHAR, INTEGER)` index. The test verifies the pre-DDL physical key exists and is byte-identical when derived from the widened column definition, and confirms the existing index entry remains addressable without rebuilding it.
 - Verification: focused `storage_manager_widens_varchar_atomically_and_keeps_index_current` passed; formatting, warning-denied all-target workspace Clippy, and `git diff --check` passed. The full workspace suite was not rerun for this test-only extension.
+
+## 2026-11-16 DD-3 / DS-5: concurrent column ALTERs preserve a valid typed catalog — verified slice
+
+- Added a real-redb race between storing a literal column default and creating the NOT NULL constraint for that column. The final nullable/default fields are checked against durable operation outcomes, and `validate_persisted_records` confirms the resulting typed catalog graph.
+- Verification: the focused regression passed eight consecutive repeats; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed in the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
