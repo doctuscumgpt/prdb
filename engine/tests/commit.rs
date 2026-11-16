@@ -4174,14 +4174,27 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
     let rename_invocation = id(0x76);
     let mut rename_audit = identity_audit_event(0x77, actor, id(0x78));
     rename_audit.correlation_id = rename_invocation;
-    let rename_sequence = storage.rename_table(
-        rename_invocation,
-        actor,
-        table.table_id,
-        "renamed_column_drop_me",
-        9_999,
-        rename_audit,
-    )?;
+    let table_rename_barrier = Arc::new(Barrier::new(2));
+    let storage_ref = &storage;
+    let renamed_table_id = table.table_id;
+    let (rename_result, stale_write_result) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&table_rename_barrier);
+        let rename = scope.spawn(move || {
+            barrier.wait();
+            storage_ref.rename_table(
+                rename_invocation,
+                actor,
+                renamed_table_id,
+                "renamed_column_drop_me",
+                9_999,
+                rename_audit,
+            )
+        });
+        table_rename_barrier.wait();
+        let write = stale_writer.commit();
+        (rename.join().expect("table rename thread panicked"), write)
+    });
+    let rename_sequence = rename_result?;
     assert!(rename_sequence > table.commit_sequence);
     assert_eq!(
         lookup_relation_id_by_name(&old_relation_snapshot, schema.schema_id, "column_drop_me")?,
@@ -4219,22 +4232,27 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
     renamed_name_reader
         .commit()
         .map_err(|error| format!("new-name reader commit after rename: {error:?}"))?;
-    let stale_result = stale_writer.commit();
-    assert!(
-        matches!(
-            stale_result,
-            Err(prdb_engine::transaction::TransactionError::Commit(
-                CommitError::Conflict
-            ))
-        ),
-        "stale writer returned {stale_result:?}"
+    let (stale_write_sequence, stale_write_status) = match stale_write_result {
+        Ok(sequence) => (Some(sequence), OutcomeStatus::Committed),
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            (None, OutcomeStatus::Aborted)
+        }
+        Err(error) => panic!("unexpected table-rename race writer result: {error:?}"),
+    };
+    if let Some(sequence) = stale_write_sequence {
+        assert!(sequence < rename_sequence);
+    }
+    assert_eq!(
+        row(&database, &table_row_key(table.table_id, stale_row_id.row))?
+            .map(|stored| stored.payload),
+        (stale_write_status == OutcomeStatus::Committed).then_some(stale_payload),
+        "row publication must match the table-rename race order"
     );
-    assert!(row(&database, &table_row_key(table.table_id, stale_row_id.row))?.is_none());
     assert_eq!(
         lookup_outcome(&database, stale_writer_invocation, actor, 1)?
             .ok_or("missing stale-writer outcome")?
             .status,
-        OutcomeStatus::Aborted
+        stale_write_status
     );
     let duplicate_table = storage.create_table(CreateTableRequest {
         invocation_id: id(0x79),

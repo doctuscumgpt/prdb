@@ -1066,3 +1066,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `storage_manager_truncates_rows_and_index_memberships_atomically` to race TRUNCATE against a staged insert carrying its catalog-derived index membership. If the insert commits first, TRUNCATE counts and removes it; if TRUNCATE wins, the writer durably conflicts. Both orders leave no row or index membership in the current snapshot, preserve the retained pre-TRUNCATE snapshot, and agree on the durable outcome and commit sequence.
 - Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
+
+## DS-5 / DS-7: table rename races a staged row writer — verified slice
+
+- Upgraded `storage_manager_renames_tables_and_drop_column_rewrites_rows` from a one-sided stale-writer check to a barrier race between table rename and an insert staged against the old name snapshot. Writer-first publishes before rename; rename-first durably aborts the stale writer. The test checks commit order, row bytes, durable outcome, current and retained name-index snapshots, and continued schema reads through the stable table ID.
+- Verification: focused real-redb race passed. Formatting, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The full serial delegated-cgroup suite has not been rerun for this test-only increment.
