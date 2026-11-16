@@ -334,5 +334,5 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 ## MD-5: virtual information_schema relations reject every row mutation — verified slice
 
-- Extended `executor_scan_reads_filtered_information_schema_schemata` to try STAGE DELETE with a live row handle issued by the public virtual relation. The operation returns `InvalidMetadataRequest`, alongside the existing UPDATE rejection; the same regression also verifies INSERT rejection on a newly resolved virtual relation.
-- Verification: focused real-redb transaction regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).
+- Extended `executor_scan_reads_filtered_information_schema_schemata` to obtain live row handles from `schemata`, `tables`, and `columns`, then verify UPDATE and DELETE rejection for each. The regression also attempts correctly shaped INSERTs into all three relations and verifies each is rejected.
+- Verification: focused real-redb transaction regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 189 commit, 76 transaction tests, plus all remaining targets).

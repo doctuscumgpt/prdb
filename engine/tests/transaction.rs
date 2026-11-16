@@ -2367,9 +2367,11 @@ fn executor_scan_reads_filtered_information_schema_schemata()
         .expect("public tables relation resolves");
     let mut cursor = connection.open_relation_scan(&tables_relation, &[])?;
     let mut tables = Vec::new();
+    let mut tables_row_handle = None;
     loop {
         let page = connection.next_relation_scan_batch(&cursor, 1, 1024)?;
-        for (_, cells) in page.rows {
+        for (handle, cells) in page.rows {
+            tables_row_handle.get_or_insert(handle);
             tables.push(cells);
         }
         match page.continuation {
@@ -2400,9 +2402,11 @@ fn executor_scan_reads_filtered_information_schema_schemata()
         .expect("public columns relation resolves");
     let mut cursor = connection.open_relation_scan(&columns_relation, &[])?;
     let mut columns = Vec::new();
+    let mut columns_row_handle = None;
     loop {
         let page = connection.next_relation_scan_batch(&cursor, 1, 1024)?;
-        for (_, cells) in page.rows {
+        for (handle, cells) in page.rows {
+            columns_row_handle.get_or_insert(handle);
             columns.push(cells);
         }
         match page.continuation {
@@ -2436,43 +2440,53 @@ fn executor_scan_reads_filtered_information_schema_schemata()
             ..
         ] if schema == "app" && table == "metrics" && column == "value2"
     ));
-    assert!(matches!(
-        connection.stage_update(
-            virtual_row_handle
-                .as_ref()
-                .expect("virtual row handle was issued"),
-            &[FieldPatch {
-                ordinal: 0,
-                value: Some(ScalarValue::Text("forbidden".to_owned())),
-            }],
-        ),
-        Err(TransactionError::InvalidMetadataRequest)
-    ));
-    assert!(matches!(
-        connection.stage_delete(
-            virtual_row_handle
-                .as_ref()
-                .expect("virtual row handle was issued"),
-        ),
-        Err(TransactionError::InvalidMetadataRequest)
-    ));
+    for handle in [
+        virtual_row_handle
+            .as_ref()
+            .expect("virtual schema row handle was issued"),
+        tables_row_handle
+            .as_ref()
+            .expect("virtual table row handle was issued"),
+        columns_row_handle
+            .as_ref()
+            .expect("virtual column row handle was issued"),
+    ] {
+        assert!(matches!(
+            connection.stage_update(
+                handle,
+                &[FieldPatch {
+                    ordinal: 0,
+                    value: Some(ScalarValue::Text("forbidden".to_owned())),
+                }],
+            ),
+            Err(TransactionError::InvalidMetadataRequest)
+        ));
+        assert!(matches!(
+            connection.stage_delete(handle),
+            Err(TransactionError::InvalidMetadataRequest)
+        ));
+    }
     drop(connection);
 
-    let mut mutation_invocation =
-        InvocationTransaction::begin(&database, [221; 16], [9; 16], 9_999, 1, 64)?;
-    let mut mutation_connection = mutation_invocation.open_executor_metadata_connection();
-    let (virtual_relation, _) = mutation_connection
-        .resolve_relation("information_schema", "schemata")?
-        .expect("public virtual relation resolves for read-only rejection");
-    assert!(matches!(
-        mutation_connection.stage_insert(
-            &virtual_relation,
-            &[InsertInput::Value(Some(ScalarValue::Text(
-                "forbidden".to_owned()
-            )))],
-        ),
-        Err(TransactionError::InvalidContext)
-    ));
+    for (index, relation_name) in ["schemata", "tables", "columns"].into_iter().enumerate() {
+        let mut mutation_invocation = InvocationTransaction::begin(
+            &database,
+            [221 + index as u8; 16],
+            [9; 16],
+            9_999,
+            1,
+            64,
+        )?;
+        let mut mutation_connection = mutation_invocation.open_executor_metadata_connection();
+        let (virtual_relation, description) = mutation_connection
+            .resolve_relation("information_schema", relation_name)?
+            .expect("public virtual relation resolves for read-only rejection");
+        let insert_values = vec![InsertInput::Value(None); description.columns.len()];
+        assert!(matches!(
+            mutation_connection.stage_insert(&virtual_relation, &insert_values),
+            Err(TransactionError::InvalidContext)
+        ));
+    }
     Ok(())
 }
 
