@@ -432,3 +432,9 @@
 
 - Extended `storage_manager_creates_schema_atomically_for_privileged_actor` to pin the schema-name index before DROP, verify a fresh post-drop snapshot no longer resolves the retired name, recreate that name through the storage manager, and prove the new schema has a different stable ID while the pinned snapshot still resolves the original ID.
 - Verification: focused real-redb schema lifecycle regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).
+
+## DD-2: policy and dependency indexes match independent catalog scans — verified slice
+
+- Added a startup/index regression that compares policy lookup by table and operation with a direct scan of family 13, and compares outgoing and incoming dependency lookups with a direct family-15 scan in the same redb snapshot. The fixture includes different operations, tables, dependents, and referenced objects so nonmatching records are excluded from each result.
+- Verification: focused index parity regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 unit tests, 190 commit tests, 76 transaction tests, 36 maintenance binary tests, plus all remaining targets).
+- Remaining: DD-2 independent index parity for other families and broader DD-3 referential-integrity/pressure coverage remain open as recorded above.

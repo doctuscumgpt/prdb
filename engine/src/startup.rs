@@ -2995,7 +2995,9 @@ mod catalog_index_tests {
         ensure_policy_index, ensure_relation_name_index, ensure_table_constraint_index,
         ensure_table_index_index, validate_name_domains,
     };
-    use crate::catalog::{CatalogField, WireType, encode_envelope, family_schema};
+    use crate::catalog::{
+        CatalogField, WireType, decode_registered_envelope, encode_envelope, family_schema,
+    };
     use crate::catalog_index::{
         lookup_column_id_by_name, lookup_column_id_by_ordinal, lookup_dependencies_for_dependent,
         lookup_dependents_for_referenced, lookup_grants_for_grantee, lookup_grants_for_object,
@@ -3907,5 +3909,147 @@ mod catalog_index_tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn policy_and_dependency_lookups_match_independent_catalog_scans() {
+        let database = database();
+        let write = database.begin_write().unwrap();
+        let mut catalog = write.open_table(CATALOG).unwrap();
+        for (policy_id, table_id, operation) in [
+            ([0x60; 16], [0x32; 16], 2u16),
+            ([0x61; 16], [0x71; 16], 1u16),
+        ] {
+            let mut key = 13u16.to_be_bytes().to_vec();
+            key.push(1);
+            key.extend_from_slice(&policy_id);
+            let fields = [
+                CatalogField {
+                    tag: 1,
+                    wire_type: WireType::Id,
+                    payload: table_id.to_vec(),
+                },
+                CatalogField {
+                    tag: 2,
+                    wire_type: WireType::U16,
+                    payload: 1u16.to_le_bytes().to_vec(),
+                },
+                CatalogField {
+                    tag: 3,
+                    wire_type: WireType::U16,
+                    payload: operation.to_le_bytes().to_vec(),
+                },
+                CatalogField {
+                    tag: 4,
+                    wire_type: WireType::U16,
+                    payload: 1u16.to_le_bytes().to_vec(),
+                },
+                CatalogField {
+                    tag: 5,
+                    wire_type: WireType::Id,
+                    payload: [0x63; 16].to_vec(),
+                },
+                CatalogField {
+                    tag: 7,
+                    wire_type: WireType::U64,
+                    payload: 1u64.to_le_bytes().to_vec(),
+                },
+            ];
+            let value = encode_envelope(&family_schema(13).unwrap(), &key, &fields).unwrap();
+            catalog.insert(key.as_slice(), value.as_slice()).unwrap();
+        }
+        for (dependent, referenced, kind) in [
+            ([0x65; 16], [0x67; 16], 3u16),
+            ([0x68; 16], [0x66; 16], 2u16),
+        ] {
+            let mut key = 15u16.to_be_bytes().to_vec();
+            key.push(1);
+            key.extend_from_slice(&dependent);
+            key.push(1);
+            key.extend_from_slice(&referenced);
+            key.push(1);
+            key.extend_from_slice(&kind.to_be_bytes());
+            let value = encode_envelope(&family_schema(15).unwrap(), &key, &[]).unwrap();
+            catalog.insert(key.as_slice(), value.as_slice()).unwrap();
+        }
+        drop(catalog);
+        write.commit().unwrap();
+        ensure_policy_index(&database).unwrap();
+        ensure_dependency_index(&database).unwrap();
+
+        let read = database.begin_read().unwrap();
+        let catalog = read.open_table(CATALOG).unwrap();
+        let policy_prefix = [13u16.to_be_bytes().as_slice(), &[1]].concat();
+        let expected_policies = catalog
+            .iter()
+            .unwrap()
+            .filter_map(|entry| {
+                let (key, value) = entry.unwrap();
+                if !key.value().starts_with(&policy_prefix) {
+                    return None;
+                }
+                let record = decode_registered_envelope(value.value()).unwrap();
+                let table_id = record
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 1)
+                    .unwrap()
+                    .payload
+                    .as_slice();
+                let operation = u16::from_le_bytes(
+                    record
+                        .fields
+                        .iter()
+                        .find(|field| field.tag == 3)
+                        .unwrap()
+                        .payload
+                        .as_slice()
+                        .try_into()
+                        .unwrap(),
+                );
+                (table_id == [0x32; 16] && operation == 1).then(|| record.logical_key.clone())
+            })
+            .collect::<Vec<_>>();
+        let actual_policies = lookup_policies_for_table_operation(&read, [0x32; 16], 1)
+            .unwrap()
+            .into_iter()
+            .map(|record| record.logical_key)
+            .collect::<Vec<_>>();
+        assert_eq!(actual_policies, expected_policies);
+        assert_eq!(actual_policies.len(), 1);
+        assert!(
+            lookup_policies_for_table_operation(&read, [0x32; 16], 3)
+                .unwrap()
+                .is_empty()
+        );
+
+        let dependency_prefix = [15u16.to_be_bytes().as_slice(), &[1]].concat();
+        let (mut expected_outgoing, mut expected_incoming) = (Vec::new(), Vec::new());
+        for entry in catalog.iter().unwrap() {
+            let (key, _) = entry.unwrap();
+            let key = key.value();
+            if key.starts_with(&dependency_prefix) {
+                if key[3..19] == [0x65; 16] {
+                    expected_outgoing.push(key.to_vec());
+                }
+                if key[20..36] == [0x66; 16] {
+                    expected_incoming.push(key.to_vec());
+                }
+            }
+        }
+        let actual_outgoing = lookup_dependencies_for_dependent(&read, [0x65; 16])
+            .unwrap()
+            .into_iter()
+            .map(|record| record.logical_key)
+            .collect::<Vec<_>>();
+        let actual_incoming = lookup_dependents_for_referenced(&read, [0x66; 16])
+            .unwrap()
+            .into_iter()
+            .map(|record| record.logical_key)
+            .collect::<Vec<_>>();
+        assert_eq!(actual_outgoing, expected_outgoing);
+        assert_eq!(actual_incoming, expected_incoming);
+        assert_eq!(actual_outgoing.len(), 2);
+        assert_eq!(actual_incoming.len(), 2);
     }
 }
