@@ -20724,28 +20724,49 @@ fn role_membership_revocation_aborts_a_staged_role_authorized_writer()
     revoke_audit.actor_id = Some(user_id);
     revoke_audit.correlation_id = membership_invocation_id;
     revoke_audit.action = AuditAction::AuthorityChange;
-    assert_eq!(
-        storage
-            .set_role_membership(
+    let barrier = Arc::new(Barrier::new(3));
+    let (writer_result, revoke_result) = std::thread::scope(|scope| {
+        let writer_barrier = barrier.clone();
+        let writer_task = scope.spawn(move || {
+            writer_barrier.wait();
+            writer.commit()
+        });
+        let revoke_barrier = barrier.clone();
+        let revoke_storage = &storage;
+        let revoke_task = scope.spawn(move || {
+            revoke_barrier.wait();
+            revoke_storage.set_role_membership(
                 membership_invocation_id,
                 user_id,
                 RoleMembershipChange {
                     member_id: user_id,
                     role_id,
-                    grant: false
+                    grant: false,
                 },
                 9_999,
                 revoke_audit,
             )
-            .map_err(|error| format!("revoke role membership: {error:?}"))?,
-        3,
+        });
+        barrier.wait();
+        (writer_task.join().unwrap(), revoke_task.join().unwrap())
+    });
+    let writer_status = match writer_result {
+        Ok(_) => OutcomeStatus::Committed,
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            OutcomeStatus::Aborted
+        }
+        other => panic!("unexpected role-authorized writer result: {other:?}"),
+    };
+    let revoke_sequence =
+        revoke_result.map_err(|error| format!("revoke role membership: {error:?}"))?;
+    assert_eq!(
+        revoke_sequence,
+        if writer_status == OutcomeStatus::Committed {
+            4
+        } else {
+            3
+        }
     );
-    assert!(matches!(
-        writer.commit(),
-        Err(prdb_engine::transaction::TransactionError::Commit(
-            CommitError::Conflict
-        ))
-    ));
 
     let row = database
         .begin_read()?
@@ -20757,14 +20778,19 @@ fn role_membership_revocation_aborts_a_staged_role_authorized_writer()
     assert_eq!(
         decode_tuple(&columns, 1, &RowRecord::decode(&row)?.payload)?.values,
         [Some(ScalarValue::Text(
-            "before membership revoke".to_owned()
+            if writer_status == OutcomeStatus::Committed {
+                "stale after membership revoke"
+            } else {
+                "before membership revoke"
+            }
+            .to_owned()
         ))]
     );
     assert_eq!(
         lookup_outcome(&database, invocation_id, user_id, 1)?
             .ok_or("missing aborted writer outcome")?
             .status,
-        OutcomeStatus::Aborted,
+        writer_status,
     );
     assert_eq!(
         lookup_outcome(&database, membership_invocation_id, user_id, 1)?
@@ -20772,7 +20798,7 @@ fn role_membership_revocation_aborts_a_staged_role_authorized_writer()
             .status,
         OutcomeStatus::Committed,
     );
-    assert_eq!(commit_sequence(&database)?, 3);
+    assert_eq!(commit_sequence(&database)?, revoke_sequence);
     Ok(())
 }
 
