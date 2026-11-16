@@ -7511,6 +7511,181 @@ fn column_default_change_racing_column_drop_preserves_catalog_integrity()
             }
         );
     }
+
+    let nullable_create_invocation = id(0xc0);
+    let mut nullable_create_audit = identity_audit_event(0xc1, actor, id(0xc2));
+    nullable_create_audit.correlation_id = nullable_create_invocation;
+    let nullable_table = storage.create_table(CreateTableRequest {
+        invocation_id: nullable_create_invocation,
+        authenticated_actor_id: actor,
+        schema_id: schema.schema_id,
+        name: "nullable_column_drop_race".to_owned(),
+        columns: vec![
+            TableColumnDefinition {
+                name: "retained".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: true,
+                generated_uuid_identity: false,
+                default: None,
+            },
+            TableColumnDefinition {
+                name: "nullable_target".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: true,
+                generated_uuid_identity: false,
+                default: None,
+            },
+        ],
+        retention_deadline_us: 9_999,
+        audit_event: nullable_create_audit,
+    })?;
+    let nullable_alter_invocation = id(0xc3);
+    let mut nullable_alter_audit = identity_audit_event(0xc4, actor, nullable_table.column_ids[1]);
+    nullable_alter_audit.correlation_id = nullable_alter_invocation;
+    let nullable_drop_invocation = id(0xc5);
+    let mut nullable_drop_audit = identity_audit_event(0xc6, actor, nullable_table.column_ids[1]);
+    nullable_drop_audit.correlation_id = nullable_drop_invocation;
+    let nullable_table_id = nullable_table.table_id;
+    let nullable_target_id = nullable_table.column_ids[1];
+    let nullable_barrier = Arc::new(Barrier::new(2));
+    let (nullable_alter_result, nullable_drop_result) = std::thread::scope(|scope| {
+        let alter_barrier = Arc::clone(&nullable_barrier);
+        let alter_storage = &storage;
+        let alter = scope.spawn(move || {
+            alter_barrier.wait();
+            alter_storage.set_column_nullable(
+                nullable_alter_invocation,
+                actor,
+                nullable_table_id,
+                nullable_target_id,
+                false,
+                9_999,
+                nullable_alter_audit,
+            )
+        });
+        nullable_barrier.wait();
+        let drop = storage.drop_column(
+            nullable_drop_invocation,
+            actor,
+            nullable_table_id,
+            nullable_target_id,
+            9_999,
+            nullable_drop_audit,
+        );
+        (
+            alter.join().expect("nullability ALTER thread panicked"),
+            drop,
+        )
+    });
+    let nullable_alter_committed = nullable_alter_result.is_ok();
+    if let Err(error) = &nullable_alter_result {
+        assert!(
+            matches!(
+                error,
+                prdb_engine::storage_manager::TableLifecycleError::InvalidRequest
+                    | prdb_engine::storage_manager::TableLifecycleError::Commit(
+                        CommitError::Conflict | CommitError::InvalidCatalog
+                    )
+            ),
+            "unexpected SET NOT NULL result while dropping its column: {error:?}"
+        );
+    }
+    let nullable_drop_committed = nullable_drop_result.is_ok();
+    if let Err(error) = &nullable_drop_result {
+        assert!(
+            matches!(
+                error,
+                prdb_engine::storage_manager::TableLifecycleError::InvalidRequest
+                    | prdb_engine::storage_manager::TableLifecycleError::Commit(
+                        CommitError::Conflict
+                            | CommitError::InvalidCatalog
+                            | CommitError::ColumnHasDependencies
+                    )
+            ),
+            "unexpected DROP COLUMN result while changing nullability: {error:?}"
+        );
+    }
+    assert!(nullable_alter_committed || nullable_drop_committed);
+
+    let nullable_read = database.begin_read()?;
+    let nullable_catalog = nullable_read.open_table(CATALOG)?;
+    let nullable_column_key = id_catalog_key(6, nullable_target_id);
+    let nullable_column = nullable_catalog.get(nullable_column_key.as_slice())?;
+    assert_eq!(
+        nullable_column.is_some(),
+        !nullable_drop_committed,
+        "the nullable target remains exactly when DROP COLUMN did not commit"
+    );
+    if nullable_drop_committed {
+        assert!(
+            prdb_engine::catalog_index::scan_column_ids_for_table(
+                &nullable_read,
+                nullable_table_id,
+                1,
+            )?
+            .iter()
+            .all(|column_id| *column_id != nullable_target_id)
+        );
+        assert!(
+            prdb_engine::catalog_index::lookup_dependencies_for_dependent(
+                &nullable_read,
+                nullable_target_id,
+            )?
+            .is_empty(),
+            "dropped nullable column must not retain constraint dependencies"
+        );
+    }
+    if let Some(column) = nullable_column {
+        let record = decode_registered_envelope(column.value())?;
+        let nullable_field = record
+            .fields
+            .iter()
+            .find(|field| field.tag == 6)
+            .ok_or("surviving column is missing nullability")?;
+        assert_eq!(
+            nullable_field.payload,
+            vec![u8::from(!nullable_alter_committed)],
+            "SET NOT NULL is visible exactly when its ALTER commits"
+        );
+    }
+    drop(nullable_read);
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    for (invocation_id, committed, has_commit_outcome) in [
+        (
+            nullable_alter_invocation,
+            nullable_alter_committed,
+            matches!(
+                nullable_alter_result,
+                Err(prdb_engine::storage_manager::TableLifecycleError::Commit(_))
+            ),
+        ),
+        (
+            nullable_drop_invocation,
+            nullable_drop_committed,
+            matches!(
+                nullable_drop_result,
+                Err(prdb_engine::storage_manager::TableLifecycleError::Commit(_))
+            ),
+        ),
+    ] {
+        let outcome = lookup_outcome(&database, invocation_id, actor, 1)?;
+        if committed || has_commit_outcome {
+            let outcome = outcome.ok_or("missing nullability/drop race outcome")?;
+            assert_eq!(
+                outcome.status,
+                if committed {
+                    OutcomeStatus::Committed
+                } else {
+                    OutcomeStatus::Aborted
+                }
+            );
+        } else {
+            assert!(
+                outcome.is_none(),
+                "preflight-rejected DDL must not publish an invocation outcome"
+            );
+        }
+    }
     Ok(())
 }
 

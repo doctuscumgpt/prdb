@@ -1198,3 +1198,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Strengthened `storage_manager_widens_varchar_atomically_and_keeps_index_current` to use a composite `(VARCHAR, INTEGER)` index. The regression confirms the stored index membership is readable before widening and that deriving the same row's key from the widened schema yields identical bytes and still resolves the existing index entry. The non-VARCHAR component and retained row tuple are checked unchanged.
 - Verification: focused real-redb widening regression passed; formatting, warning-denied all-target workspace Clippy, and `git diff --check` passed. The full workspace suite was not rerun for this test-only extension.
+
+## 2026-11-16 DS-5 / DS-7 / DD-3: nullability ALTER races DROP COLUMN — verified slice
+
+- Extended `column_default_change_racing_column_drop_preserves_catalog_integrity` with a concurrent `SET NOT NULL` and `DROP COLUMN` schedule. The regression validates the final nullability field, column presence, persisted catalog graph, and durable outcomes for commit-time results; if one operation observes the column already dropped, it confirms preflight rejection publishes no outcome. It also accepts the dependency rejection when a committed NOT NULL constraint prevents the later column drop.
+- Verification: the focused real-redb test passed eight consecutive repeats; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The full serial workspace suite passed in the delegated `systemd --user` cgroup service with sandbox and process integrations enabled (service exit status 0).
+- Toolchain note: this host's Nix 2.34.9 rejects the documented `nix develop --locked` option. The pinned development shell was entered with `nix develop --no-update-lock-file`; Cargo commands retained `--locked`. The shell reported Rust/Cargo/Clippy 1.95.0, rustfmt 1.9.0, and TinyCC 0.9.27-unstable-2025-01-06.
