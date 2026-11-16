@@ -8032,9 +8032,50 @@ fn grant_indexes_track_grantee_and_object_per_snapshot() -> Result<(), Box<dyn s
         ],
         &[event],
     )?;
+    let grant_keys_from_catalog = |snapshot: &redb::ReadTransaction| {
+        let catalog = snapshot.open_table(CATALOG)?;
+        let prefix = 12u16.to_be_bytes();
+        let mut keys = Vec::new();
+        for entry in catalog.range::<&[u8]>(prefix.as_slice()..)? {
+            let (key, _) = entry?;
+            if !key.value().starts_with(&prefix) {
+                break;
+            }
+            keys.push(key.value().to_vec());
+        }
+        Ok::<_, Box<dyn std::error::Error>>(keys)
+    };
+    let record_keys = |records: Vec<prdb_engine::catalog::CatalogRecord>| {
+        let mut keys = records
+            .into_iter()
+            .map(|record| record.logical_key)
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys
+    };
+    let keys_for_grantee = |all: &[Vec<u8>], grantee_id: [u8; 16]| {
+        all.iter()
+            .filter(|key| key.get(3..19) == Some(grantee_id.as_slice()))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let keys_for_object = |all: &[Vec<u8>], object_id: [u8; 16]| {
+        all.iter()
+            .filter(|key| key.get(20..36) == Some(object_id.as_slice()))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
     let snapshot = database.begin_read()?;
-    assert_eq!(lookup_grants_for_grantee(&snapshot, grantee_id)?.len(), 1);
-    assert_eq!(lookup_grants_for_object(&snapshot, object_id)?.len(), 1);
+    let catalog_keys = grant_keys_from_catalog(&snapshot)?;
+    assert_eq!(
+        record_keys(lookup_grants_for_grantee(&snapshot, grantee_id)?),
+        keys_for_grantee(&catalog_keys, grantee_id)
+    );
+    assert_eq!(
+        record_keys(lookup_grants_for_object(&snapshot, object_id)?),
+        keys_for_object(&catalog_keys, object_id)
+    );
     Ok(())
 }
 

@@ -418,6 +418,11 @@
 - This adds mixed schema/table secondary-index writes and verifies relation-name snapshot retention alongside the existing schema-name checks. Longer-duration campaigns and continued codec fuzzing remain additional hardening work.
 - Verification: focused real-redb pressure regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).
 
+## DD-2: grant indexes match an independent catalog scan — verified slice
+
+- Strengthened `grant_indexes_track_grantee_and_object_per_snapshot` to scan the snapshot's family-12 catalog keys, filter them independently by grantee and object IDs, and compare the exact sorted logical keys with both secondary-index lookup results.
+- Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (293 unit, 189 commit, 76 transaction tests, plus all remaining targets).
+
 ## DD-3 / DD-5: schema drop and same-name recreation retain distinct identities — verified slice
 
 - Extended `storage_manager_creates_schema_atomically_for_privileged_actor` to pin the schema-name index before DROP, verify a fresh post-drop snapshot no longer resolves the retired name, recreate that name through the storage manager, and prove the new schema has a different stable ID while the pinned snapshot still resolves the original ID.
