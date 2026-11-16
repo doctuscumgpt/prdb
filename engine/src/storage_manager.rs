@@ -10224,13 +10224,37 @@ impl<'db> StorageManager<'db> {
         catalog_writes: &[CatalogWrite],
         audit_events: &[AuditEvent],
     ) -> Result<u64, CommitError> {
+        let mut writes = catalog_writes.to_vec();
+        let retired_ids = catalog_writes
+            .iter()
+            .filter(|write| write.key.starts_with(&2u16.to_be_bytes()) && write.payload.is_none())
+            .filter_map(|write| write.key.get(3..19))
+            .filter_map(|bytes| <[u8; 16]>::try_from(bytes).ok())
+            .collect::<HashSet<_>>();
+        for retired_id in retired_ids {
+            let key = retired_object_id_catalog_key(retired_id);
+            if writes.iter().any(|write| write.key == key) {
+                continue;
+            }
+            let payload = encode_envelope(
+                &family_schema(17).ok_or(CommitError::InvalidCatalog)?,
+                &key,
+                &[],
+            )
+            .map_err(|_| CommitError::InvalidCatalog)?;
+            writes.push(CatalogWrite {
+                key,
+                expected_value: None,
+                payload: Some(payload),
+            });
+        }
         commit_authorized_foreign_key_ddl_with_fences(
             self.database,
             &self.ddl_fences,
             invocation_id,
             authenticated_principal_id,
             retention_deadline_us,
-            catalog_writes,
+            &writes,
             audit_events,
         )
     }

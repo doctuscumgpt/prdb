@@ -14688,6 +14688,7 @@ fn foreign_key_ddl_authority_guards(
     let mut changes = HashMap::<[u8; 16], ForeignKeyChange>::new();
     let mut object_changes = HashMap::<[u8; 16], (u16, bool, bool)>::new();
     let mut dependency_changes = HashMap::<([u8; 16], [u8; 16]), (u16, bool, bool)>::new();
+    let mut tombstone_changes = HashSet::<[u8; 16]>::new();
     let mut updated_tables = HashSet::<[u8; 16]>::new();
     let mut affected_tables = HashSet::<[u8; 16]>::new();
     let mut source_tables = HashSet::<[u8; 16]>::new();
@@ -14701,7 +14702,7 @@ fn foreign_key_ddl_authority_guards(
             .and_then(|bytes| <[u8; 2]>::try_from(bytes).ok())
             .map(u16::from_be_bytes)
             .ok_or(CommitError::InvalidCatalog)?;
-        if !matches!(family, 2 | 5 | 8 | 15) {
+        if !matches!(family, 2 | 5 | 8 | 15 | 17) {
             return Err(CommitError::InvalidCatalog);
         }
         let current = catalog
@@ -14709,6 +14710,34 @@ fn foreign_key_ddl_authority_guards(
             .map_err(storage_error)?
             .map(|value| value.value().to_vec());
         if current == write.payload {
+            continue;
+        }
+        if family == 17 {
+            let retired_id: [u8; 16] = write
+                .key
+                .get(3..19)
+                .ok_or(CommitError::InvalidCatalog)?
+                .try_into()
+                .map_err(|_| CommitError::InvalidCatalog)?;
+            if write.key.len() != 19
+                || write.key[2] != 1
+                || retired_id == [0; 16]
+                || current.is_some()
+                || write.expected_value.is_some()
+                || write.payload.is_none()
+                || !decode_catalog_record(
+                    &write.key,
+                    write
+                        .payload
+                        .as_deref()
+                        .ok_or(CommitError::InvalidCatalog)?,
+                )?
+                .fields
+                .is_empty()
+                || !tombstone_changes.insert(retired_id)
+            {
+                return Err(CommitError::InvalidCatalog);
+            }
             continue;
         }
         match family {
@@ -14869,6 +14898,15 @@ fn foreign_key_ddl_authority_guards(
         {
             return Err(CommitError::InvalidCatalog);
         }
+    }
+    let required_tombstones = changes
+        .iter()
+        .filter_map(|(constraint_id, change)| {
+            (change.current_exists && !change.next_exists).then_some(*constraint_id)
+        })
+        .collect::<HashSet<_>>();
+    if tombstone_changes != required_tombstones {
+        return Err(CommitError::InvalidCatalog);
     }
     if object_changes.keys().any(|id| !changes.contains_key(id))
         || dependency_changes

@@ -1,5 +1,11 @@
 # Catalog Lifecycle Progress
 
+## CL-3 / DD-3 / DS-3: DROP FOREIGN KEY reserves its constraint ID — verified slice
+
+- Foreign-key DDL validation now requires an exact family-17 reservation for each removed FK constraint. The authorized storage entry point publishes the reservation with the constraint, object, dependency, and participating-table epoch changes.
+- `storage_manager_drops_foreign_key_and_advances_both_table_epochs` passes with a fresh-snapshot tombstone assertion. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests; build, formatting, warning-denied all-target Clippy, and `git diff --check` passed.
+
+
 ## CL-3 / DD-3 / DS-3: constraint DDL retires constraint and expression identifiers — verified slice
 
 - Constraint DDL now writes immutable reservations for every deleted constraint, owned expression, and backing index record. Serialized validation checks the exact deleted-object set, including replaced/dropped default expressions and CHECK expressions.

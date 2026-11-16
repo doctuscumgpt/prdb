@@ -1,5 +1,11 @@
 # Data Dictionary Progress
 
+## DD-3 / CL-3 / DS-3: foreign-key drops reserve constraint IDs — verified slice
+
+- DROP FOREIGN KEY now atomically reserves the deleted FK constraint ID in family 17. Serialized FK DDL validation requires a reservation for every deleted FK and rejects unrelated or malformed tombstones.
+- `storage_manager_drops_foreign_key_and_advances_both_table_epochs` passes with the reservation assertion. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests; build, formatting, warning-denied all-target Clippy, and `git diff --check` passed.
+
+
 ## DD-3 / CL-3 / DS-3: constraint DDL retires constraint and expression IDs — verified slice
 
 - CHECK, NOT NULL, PRIMARY KEY, and UNIQUE drops now reserve every deleted constraint/expression/index object ID in family 17. The constraint DDL validator requires exact agreement with deleted object records; key-constraint backing-index reservations remain included.

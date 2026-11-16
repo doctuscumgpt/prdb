@@ -12470,6 +12470,15 @@ fn storage_manager_drops_foreign_key_and_advances_both_table_epochs()
             "record remains: {key:?}"
         );
     }
+    let retired_foreign_key = catalog
+        .get(id_catalog_key(17, id(86)).as_slice())?
+        .ok_or("missing retired foreign-key identifier")?;
+    assert!(
+        decode_registered_envelope(retired_foreign_key.value())?
+            .fields
+            .is_empty()
+    );
+    drop(retired_foreign_key);
     for table_id in [id(81), id(82)] {
         let key = id_catalog_key(5, table_id);
         let bytes = catalog
