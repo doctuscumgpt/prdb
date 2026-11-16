@@ -596,3 +596,9 @@
 - Extended the same 128-cycle real-redb campaign with role membership and revocation for each temporary table cycle. The test updates the authoritative family-11 edge, dependency edge, and member epoch together; both member-to-role and role-to-member lookups resolve the edge, a retained snapshot preserves it across revoke, and a fresh snapshot omits it in both directions.
 - The pressure fixture uses trusted catalog writes to isolate derived-index and snapshot behavior; authorized membership DDL remains covered by its separate storage and process regressions.
 - Verification: the focused pressure regression passed; formatting, warning-denied all-target workspace Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
+
+## DD-3 / CL-2: catalog schema publication survives ambiguous sync failure — verified slice
+
+- The Catalog lifecycle regression added in commit `41c1b6ac` reopens after an injected redb sync error during `CREATE SCHEMA`. It validates either the complete pre-publication image or the complete schema/object/audit/outcome publication and commit frontier; partial catalog/index state is rejected, and startup validation must accept the recovered image.
+- Verification: the focused subprocess regression and complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests; workspace formatting and warning-denied all-target Clippy passed.
+- Limit: this covers an injected sync error with a live kernel and filesystem, not power loss or device-cache behavior.
