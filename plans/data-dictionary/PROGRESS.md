@@ -503,3 +503,10 @@
 - Audited the maintained catalog lookup indexes against the independent scans recorded above: principal/schema/relation names, column name and ordinal, index name, table-index, table-constraint, table-column, object-owner, membership in both directions, grants by grantee/object, policies by table/operation, and dependencies in both directions. Each has a real-redb parity or rebuild regression deriving expected IDs/keys from its owning catalog family.
 - Verification: the full serial delegated-cgroup workspace suite passed on 2026-11-16 with sandbox/process tests enabled and zero ignored; the startup/index unit regressions and transaction/commit parity tests were included. Workspace build, format check, warning-denied all-target Clippy, TinyCC SDK tests/fixture, and `git diff --check` passed.
 - Remaining: DD-3 referential-integrity breadth and longer mixed catalog-DDL/read pressure campaigns remain open; this audit does not claim complete integrity coverage.
+
+## DD-2 / DD-3 / DD-5: doubled mixed catalog pressure campaign — verified slice
+
+- Expanded `schema_create_drop_pressure_preserves_pinned_name_index_snapshots` from 64 to 128 schema/table create-drop cycles while a concurrent reader performs 256 rounds of schema-name lookups. Each cycle checks live schema and relation indexes, removes the table and schema, and verifies pinned snapshots still resolve their pre-drop names.
+- Replaced the fixture's repeated-byte one-byte IDs with namespace-prefixed 64-bit counters after the larger campaign exposed an `OutcomeAlreadyExists` collision at the old ID boundary.
+- Verification: the expanded focused real-redb test passed (3.38 s). Locked workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup suite passed with sandbox/process coverage enabled and zero ignored tests (294 library tests, 191 commit tests, 77 transaction tests, plus all other targets). `git diff --check` passed; Cargo.lock is unchanged.
+- Remaining: more catalog families and integrity relationships still need pressure coverage; the larger run does not close the complete DD-3 matrix.

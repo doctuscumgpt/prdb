@@ -7822,8 +7822,14 @@ fn schema_name_index_tracks_renames_per_snapshot() -> Result<(), Box<dyn std::er
 #[test]
 fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
 -> Result<(), Box<dyn std::error::Error>> {
-    const SCHEMA_COUNT: usize = 64;
-    const READER_ROUNDS: usize = 128;
+    const SCHEMA_COUNT: usize = 128;
+    const READER_ROUNDS: usize = 256;
+
+    let pressure_id = |namespace: u8, index: usize| {
+        let mut value = [namespace; 16];
+        value[8..].copy_from_slice(&(index as u64).to_be_bytes());
+        value
+    };
 
     let fixture = Fixture::new();
     let database = initialize(&fixture.path())?;
@@ -7874,8 +7880,9 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
 
         start.wait();
         for (index, name) in names.iter().enumerate() {
-            let create_id = id(0x40 + index as u8);
-            let mut create_audit = identity_audit_event(1 + index as u8, actor, id(0));
+            let create_id = pressure_id(0x40, index);
+            let mut create_audit = identity_audit_event(index as u8, actor, id(0));
+            create_audit.event_id = pressure_id(0x41, index);
             create_audit.correlation_id = create_id;
             let created =
                 storage.create_schema(create_id, actor, name, actor, 9_999, create_audit)?;
@@ -7887,13 +7894,10 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
                 );
             }
 
-            let table_create_invocation = {
-                let mut value = [0xc0; 16];
-                value[15] = index as u8;
-                value
-            };
-            let mut table_create_audit = identity_audit_event(0xd0, actor, created.schema_id);
-            table_create_audit.event_id[15] = index as u8;
+            let table_create_invocation = pressure_id(0xc0, index);
+            let mut table_create_audit =
+                identity_audit_event(index as u8, actor, created.schema_id);
+            table_create_audit.event_id = pressure_id(0xc2, index);
             table_create_audit.correlation_id = table_create_invocation;
             let table = storage.create_table(prdb_engine::storage_manager::CreateTableRequest {
                 invocation_id: table_create_invocation,
@@ -7920,13 +7924,9 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
                 Some(table.table_id)
             );
 
-            let table_drop_invocation = {
-                let mut value = [0xc1; 16];
-                value[15] = index as u8;
-                value
-            };
-            let mut table_drop_audit = identity_audit_event(0xd1, actor, table.table_id);
-            table_drop_audit.event_id[15] = index as u8;
+            let table_drop_invocation = pressure_id(0xc1, index);
+            let mut table_drop_audit = identity_audit_event(index as u8, actor, table.table_id);
+            table_drop_audit.event_id = pressure_id(0xc3, index);
             table_drop_audit.correlation_id = table_drop_invocation;
             storage.drop_table(
                 table_drop_invocation,
@@ -7951,8 +7951,9 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
                 None
             );
 
-            let drop_id = id(0x80 + index as u8);
-            let mut drop_audit = identity_audit_event(65 + index as u8, actor, created.schema_id);
+            let drop_id = pressure_id(0x80, index);
+            let mut drop_audit = identity_audit_event(index as u8, actor, created.schema_id);
+            drop_audit.event_id = pressure_id(0x81, index);
             drop_audit.correlation_id = drop_id;
             storage.drop_schema(drop_id, actor, created.schema_id, 9_999, drop_audit)?;
             let snapshot = database.begin_read()?;
