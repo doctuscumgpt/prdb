@@ -19919,6 +19919,260 @@ fn storage_manager_checks_index_ddl_authority_for_current_actor()
 }
 
 #[test]
+fn column_default_ddl_revalidates_after_table_owner_transfer()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{
+        AlterColumnDefaultRequest, CreateTableRequest, TableColumnDefault, TableColumnDefinition,
+        TableLifecycleError,
+    };
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let administrator = id(0xd0);
+    let owner = id(0xd1);
+    let successor = id(0xd2);
+    let admin_role = builtin_owner_id();
+    let mut setup_audit = identity_audit_event(0xd3, admin_role, owner);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(
+        id(0xd3),
+        admin_role,
+        9_999,
+        &[
+            principal_write_with_name(administrator, 1, 1, "default_ddl_admin"),
+            object_write_with_name(administrator, 8, "default_ddl_admin"),
+            membership_write(administrator, admin_role),
+            dependency_write(administrator, admin_role, 5),
+            principal_write_with_name(owner, 1, 1, "default_ddl_owner"),
+            object_write_with_name(owner, 8, "default_ddl_owner"),
+            principal_write_with_name(successor, 1, 1, "default_ddl_successor"),
+            object_write_with_name(successor, 8, "default_ddl_successor"),
+        ],
+        &[setup_audit],
+    )?;
+    let mut schema_audit = identity_audit_event(0xd4, administrator, owner);
+    schema_audit.correlation_id = id(0xd4);
+    let schema = storage.create_schema(
+        id(0xd4),
+        administrator,
+        "default_ddl_schema",
+        owner,
+        9_999,
+        schema_audit,
+    )?;
+    let mut table_audit = identity_audit_event(0xd5, owner, schema.schema_id);
+    table_audit.correlation_id = id(0xd5);
+    let table = storage.create_table(CreateTableRequest {
+        invocation_id: id(0xd5),
+        authenticated_actor_id: owner,
+        schema_id: schema.schema_id,
+        name: "default_ddl_table".to_owned(),
+        columns: vec![TableColumnDefinition {
+            name: "value".to_owned(),
+            scalar_type: ScalarType::Integer,
+            nullable: true,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+        retention_deadline_us: 9_999,
+        audit_event: table_audit,
+    })?;
+
+    let alter_invocation = id(0xd6);
+    let transfer_invocation = id(0xd7);
+    let before_race = commit_sequence(&database)?;
+    let table_id = table.table_id;
+    let column_id = table.column_ids[0];
+    let barrier = Arc::new(Barrier::new(3));
+    let (alter_result, transfer_result) = std::thread::scope(|scope| {
+        let alter_barrier = Arc::clone(&barrier);
+        let alter_storage = &storage;
+        let alter = scope.spawn(move || {
+            let mut audit = identity_audit_event(0xd8, owner, table.table_id);
+            audit.correlation_id = alter_invocation;
+            audit.action = AuditAction::Ddl;
+            alter_barrier.wait();
+            alter_storage.alter_column_default(AlterColumnDefaultRequest {
+                invocation_id: alter_invocation,
+                authenticated_actor_id: owner,
+                table_id: table.table_id,
+                column_id,
+                default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(42)))),
+                retention_deadline_us: 9_999,
+                audit_event: audit,
+            })
+        });
+        let transfer_barrier = Arc::clone(&barrier);
+        let transfer_storage = &storage;
+        let transfer = scope.spawn(move || {
+            let mut audit = identity_audit_event(0xd9, administrator, table.table_id);
+            audit.correlation_id = transfer_invocation;
+            audit.action = AuditAction::Ddl;
+            transfer_barrier.wait();
+            transfer_storage.set_table_owner(
+                transfer_invocation,
+                administrator,
+                table.table_id,
+                successor,
+                9_999,
+                audit,
+            )
+        });
+        barrier.wait();
+        (
+            alter.join().expect("column default ALTER thread panicked"),
+            transfer
+                .join()
+                .expect("table owner transfer thread panicked"),
+        )
+    });
+    let alter_sequence = match alter_result {
+        Ok(sequence) => Some(sequence),
+        Err(
+            TableLifecycleError::Unauthorized | TableLifecycleError::Commit(CommitError::Conflict),
+        ) => None,
+        Err(error) => return Err(format!("unexpected default/owner race: {error:?}").into()),
+    };
+    let (transfer_sequence, first_transfer_committed, retry_invocation) = match transfer_result {
+        Ok(sequence) => (sequence, true, None),
+        Err(TableLifecycleError::Commit(CommitError::Conflict)) => {
+            let retry_invocation = id(0xda);
+            let mut retry_audit = identity_audit_event(0xdb, administrator, table.table_id);
+            retry_audit.correlation_id = retry_invocation;
+            retry_audit.action = AuditAction::Ddl;
+            (
+                storage.set_table_owner(
+                    retry_invocation,
+                    administrator,
+                    table.table_id,
+                    successor,
+                    9_999,
+                    retry_audit,
+                )?,
+                false,
+                Some(retry_invocation),
+            )
+        }
+        Err(error) => return Err(format!("unexpected owner-transfer result: {error:?}").into()),
+    };
+
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    let table_object = decode_registered_envelope(
+        catalog
+            .get(id_catalog_key(2, table.table_id).as_slice())?
+            .ok_or("table object missing after owner transfer")?
+            .value(),
+    )?;
+    assert_eq!(
+        table_object
+            .fields
+            .iter()
+            .find(|field| field.tag == 4)
+            .ok_or("table owner missing after owner transfer")?
+            .payload
+            .as_slice(),
+        successor
+    );
+    let column_record = decode_registered_envelope(
+        catalog
+            .get(id_catalog_key(6, column_id).as_slice())?
+            .ok_or("column missing after owner transfer")?
+            .value(),
+    )?;
+    let default_id = column_record
+        .fields
+        .iter()
+        .find(|field| field.tag == 7)
+        .map(|field| <[u8; 16]>::try_from(field.payload.as_slice()))
+        .transpose()?;
+    assert_eq!(default_id.is_some(), alter_sequence.is_some());
+    if let Some(default_id) = default_id {
+        let default_key = id_catalog_key(7, default_id);
+        let default_record = decode_registered_envelope(
+            catalog
+                .get(default_key.as_slice())?
+                .ok_or("default expression missing after owner transfer")?
+                .value(),
+        )?;
+        let default_record =
+            prdb_engine::expression::decode_catalog_expression_record(&default_record)?;
+        assert_eq!(
+            default_record.expression,
+            prdb_engine::authorization::Expr::Literal(Some(ScalarValue::Integer(42)))
+        );
+    }
+    drop(catalog);
+    drop(read);
+    if let Some(sequence) = alter_sequence {
+        assert!(sequence < transfer_sequence);
+        assert_eq!(
+            lookup_outcome(&database, alter_invocation, owner, 1)?
+                .ok_or("missing successful default ALTER outcome")?
+                .status,
+            OutcomeStatus::Committed
+        );
+    } else {
+        assert_eq!(
+            lookup_outcome(&database, alter_invocation, owner, 1)?
+                .ok_or("missing rejected default ALTER outcome")?
+                .status,
+            OutcomeStatus::Aborted
+        );
+    }
+    assert_eq!(
+        lookup_outcome(&database, transfer_invocation, administrator, 1)?
+            .ok_or("missing owner-transfer outcome")?
+            .status,
+        if first_transfer_committed {
+            OutcomeStatus::Committed
+        } else {
+            OutcomeStatus::Aborted
+        }
+    );
+    if let Some(retry_invocation) = retry_invocation {
+        assert_eq!(
+            lookup_outcome(&database, retry_invocation, administrator, 1)?
+                .ok_or("missing retried owner-transfer outcome")?
+                .status,
+            OutcomeStatus::Committed
+        );
+    }
+    assert_eq!(
+        commit_sequence(&database)?,
+        before_race + 1 + u64::from(alter_sequence.is_some())
+    );
+
+    let before_denied_alter = commit_sequence(&database)?;
+    let denied_invocation = id(0xdc);
+    let mut denied_audit = identity_audit_event(0xdd, owner, table.table_id);
+    denied_audit.correlation_id = denied_invocation;
+    denied_audit.action = AuditAction::Ddl;
+    assert_eq!(
+        storage.alter_column_default(AlterColumnDefaultRequest {
+            invocation_id: denied_invocation,
+            authenticated_actor_id: owner,
+            table_id,
+            column_id,
+            default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(43)))),
+            retention_deadline_us: 9_999,
+            audit_event: denied_audit,
+        }),
+        Err(TableLifecycleError::Unauthorized)
+    );
+    assert_eq!(commit_sequence(&database)?, before_denied_alter);
+    assert_eq!(
+        lookup_outcome(&database, denied_invocation, owner, 1)?
+            .ok_or("missing rejected former-owner ALTER outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    Ok(())
+}
+
+#[test]
 fn index_ddl_racing_table_owner_transfer_rechecks_authority_at_commit()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{
