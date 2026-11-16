@@ -456,3 +456,9 @@
 - Strengthened `stale_index_name_lookup_is_rebuilt_from_catalog_records` to scan family-2 catalog objects, filter index objects by schema and name, and derive the expected index ID from each matching logical key. The repaired name lookup is compared against that independently derived result.
 - Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (294 unit tests, 190 commit tests, 76 transaction tests, plus all remaining targets).
 - Remaining: parity for additional secondary-index families and broader DD-3 referential-integrity/pressure coverage remain open.
+
+## DD-2: object-owner scan matches an independent catalog scan — verified slice
+
+- Strengthened `object_owner_scan_rebuilds_and_uses_the_owner_prefix` to scan family-2 objects and derive owner-matching IDs from their owner fields and logical keys, then compare the rebuilt owner scan with that independent result. The record-limit and rebuilt-index checks remain covered.
+- Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (294 unit tests, 190 commit tests, 76 transaction tests, plus all remaining targets).
+- Remaining: additional catalog scan families, DD-3 referential integrity, and broader catalog pressure remain open.

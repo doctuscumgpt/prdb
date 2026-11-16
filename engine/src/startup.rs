@@ -3409,9 +3409,29 @@ mod catalog_index_tests {
 
         ensure_object_owner_index(&database).unwrap();
         let read = database.begin_read().unwrap();
+        let catalog = read.open_table(CATALOG).unwrap();
+        let object_prefix = [2u16.to_be_bytes().as_slice(), &[1]].concat();
+        let mut expected: Vec<[u8; 16]> = Vec::new();
+        for entry in catalog.iter().unwrap() {
+            let (key, value) = entry.unwrap();
+            if !key.value().starts_with(&object_prefix) {
+                continue;
+            }
+            let record = decode_registered_envelope(value.value()).unwrap();
+            if record
+                .fields
+                .iter()
+                .find(|field| field.tag == 4)
+                .is_some_and(|field| field.payload.as_slice() == [0x34; 16])
+            {
+                expected.push(record.logical_key[3..].try_into().unwrap());
+            }
+        }
+        expected.sort_unstable();
+        assert_eq!(expected, vec![[0x32; 16], [0x69; 16]]);
         assert_eq!(
             scan_object_ids_for_owner(&read, [0x34; 16], 2).unwrap(),
-            vec![[0x32; 16], [0x69; 16]]
+            expected
         );
         assert_eq!(
             scan_object_ids_for_owner(&read, [0x34; 16], 1),
