@@ -8104,6 +8104,7 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
     let column_id = [0x67; 16];
     let varchar_column_id = [0x68; 16];
     let index_id = [0x57; 16];
+    let varchar_index_id = [0x58; 16];
     let schema_id = [145; 16];
     let type_id = [0x41; 16];
     let varchar_type_id = [0x42; 16];
@@ -8161,6 +8162,14 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
                 payload: 1u64.to_le_bytes().to_vec(),
             },
         ],
+    )?;
+    let (varchar_index_key, varchar_index_value) = index_catalog_record_with_constraint(
+        varchar_index_id,
+        table_id,
+        varchar_column_id,
+        1,
+        true,
+        None,
     )?;
     let table_key = catalog_id_key(5, table_id);
     let table_value = catalog_record_payload(
@@ -8380,6 +8389,7 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             (type_key, type_value),
             (varchar_type_key, varchar_type_value),
             (index_key, index_value),
+            (varchar_index_key, varchar_index_value),
             (table_object_key, table_object_value),
             (column_object_key, column_object_value),
             (varchar_object_key, varchar_object_value),
@@ -8564,6 +8574,40 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
                 Some(ScalarValue::Varchar("match".to_owned())),
             ],
             &projection
+        )?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::NoMatch,
+    );
+
+    let varchar_target = SanitizedCell::Value(ScalarValue::Varchar("match".to_owned()));
+    let mut varchar_reference_matches = Vec::new();
+    let mut varchar_cursor = None;
+    loop {
+        let page = invocation.scan_authorized(table_id, varchar_cursor.as_ref(), 8, &projection)?;
+        varchar_reference_matches.extend(page.rows.into_iter().filter_map(|(row_id, cells)| {
+            (cells.get(1) == Some(&varchar_target)).then_some((row_id, cells))
+        }));
+        let Some(next) = page.continuation else {
+            break;
+        };
+        varchar_cursor = Some(next);
+    }
+    assert_eq!(varchar_reference_matches.len(), 1);
+    assert!(matches!(
+        invocation.probe_catalog_unique_index(
+            table_id,
+            varchar_index_id,
+            &[Some(ScalarValue::Varchar("match".to_owned()))],
+            &projection,
+        )?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::Match { id, cells }
+            if id == varchar_reference_matches[0].0 && cells == varchar_reference_matches[0].1
+    ));
+    assert_eq!(
+        invocation.probe_catalog_unique_index(
+            table_id,
+            varchar_index_id,
+            &[Some(ScalarValue::Varchar("absent".to_owned()))],
+            &projection,
         )?,
         prdb_engine::transaction::AuthorizedUniqueIndexProbe::NoMatch,
     );
