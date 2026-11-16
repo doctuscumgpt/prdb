@@ -142,6 +142,9 @@ pub fn upgrade_redb_v2_instance(
     if test_exit_after_exchange() {
         std::process::exit(86);
     }
+    if test_fail_directory_sync_after_exchange() {
+        return Err(io::Error::other("injected directory sync failure after exchange").into());
+    }
     super::sync_directory(&directory)?;
 
     let health = {
@@ -196,6 +199,17 @@ fn test_exit_after_exchange() -> bool {
 
 #[cfg(not(debug_assertions))]
 fn test_exit_after_exchange() -> bool {
+    false
+}
+
+#[cfg(debug_assertions)]
+fn test_fail_directory_sync_after_exchange() -> bool {
+    std::env::var_os("PRDB_TEST_REDB_UPGRADE_FAIL_SYNC_AFTER_EXCHANGE").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+}
+
+#[cfg(not(debug_assertions))]
+fn test_fail_directory_sync_after_exchange() -> bool {
     false
 }
 

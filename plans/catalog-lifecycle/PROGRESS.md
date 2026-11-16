@@ -230,6 +230,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. All 33 `bootstrap_binary` tests passed alongside 179 real-redb commit integration tests, including schema create/drop process recovery and atomic catalog publication checks.
 - Power-loss/filesystem fault evidence and archived prior-release binary/data fixtures remain open.
 
+## CL-4 / CL-5: recover from post-exchange directory-sync failure — verified slice
+
+- Added a debug-build-only injected failure immediately after atomic generation exchange and before the containing-directory sync. `maintenance_redb_physical_upgrade_recovers_after_directory_sync_failure` verifies the command reports the injected error, the former physical-v2 image remains byte-identical in the retained sidecar, the active READY image passes read-only startup validation, and a fresh maintenance invocation safely reports `already-current`.
+- Verification: the focused `bootstrap_binary` regression passed; workspace formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests, including all 34 bootstrap binary tests and all 179 commit tests.
+- Limit: injected syscall-boundary failure and process-exit tests do not simulate power loss or validate storage-device cache behavior. Actual filesystem/power-loss fault evidence remains open.
+
 
 ## DS-SQL-51: normalized explicit constraint object names — verified
 
