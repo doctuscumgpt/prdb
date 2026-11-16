@@ -3585,13 +3585,43 @@ mod catalog_index_tests {
         write.commit().unwrap();
         ensure_column_lookup_index(&database).unwrap();
         let read = database.begin_read().unwrap();
+        let catalog = read.open_table(CATALOG).unwrap();
+        let column_prefix = [6u16.to_be_bytes().as_slice(), &[1]].concat();
+        let mut expected_by_name: Vec<[u8; 16]> = Vec::new();
+        let mut expected_by_ordinal: Vec<[u8; 16]> = Vec::new();
+        for entry in catalog.iter().unwrap() {
+            let (key, value) = entry.unwrap();
+            if !key.value().starts_with(&column_prefix) {
+                continue;
+            }
+            let record = decode_registered_envelope(value.value()).unwrap();
+            let field = |tag| {
+                record
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == tag)
+                    .unwrap()
+                    .payload
+                    .as_slice()
+            };
+            if field(1) == [0x32; 16] && field(3) == b"order_id" {
+                expected_by_name.push(record.logical_key[3..].try_into().unwrap());
+            }
+            if field(1) == [0x32; 16] && u32::from_le_bytes(field(2).try_into().unwrap()) == 0 {
+                expected_by_ordinal.push(record.logical_key[3..].try_into().unwrap());
+            }
+        }
+        expected_by_name.sort_unstable();
+        expected_by_ordinal.sort_unstable();
+        assert_eq!(expected_by_name, vec![[0x67; 16]]);
+        assert_eq!(expected_by_ordinal, vec![[0x67; 16]]);
         assert_eq!(
             lookup_column_id_by_name(&read, [0x32; 16], "order_id").unwrap(),
-            Some([0x67; 16])
+            expected_by_name.first().copied()
         );
         assert_eq!(
             lookup_column_id_by_ordinal(&read, [0x32; 16], 0).unwrap(),
-            Some([0x67; 16])
+            expected_by_ordinal.first().copied()
         );
     }
 

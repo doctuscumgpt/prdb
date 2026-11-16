@@ -444,3 +444,9 @@
 - Strengthened `stale_relation_name_index_is_rebuilt_from_catalog_records` to derive the expected schema/name lookup from family-2 object records and the relation enumeration from family-5 table records, independently of the rebuilt secondary indexes. Both the exact-name lookup and schema relation scan now compare against those catalog-derived results after stale entries are repaired.
 - Verification: focused real-redb startup regression passed. Locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (294 unit, 190 commit, 76 transaction tests, plus all remaining targets).
 - Remaining: parity for additional secondary-index families and broader DD-3 referential-integrity/pressure coverage remain open.
+
+## DD-2: column-name and ordinal indexes match independent catalog scans — verified slice
+
+- Strengthened `stale_column_lookups_are_rebuilt_from_catalog_records` to scan family-6 column definitions and independently derive the expected ID by relation/name and relation/ordinal. Both rebuilt lookup directions are compared to those exact catalog-derived results.
+- Verification: focused real-redb startup regression passed. Locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (294 unit, 190 commit, 76 transaction tests, plus all remaining targets).
+- Remaining: parity for additional secondary-index families and broader DD-3 referential-integrity/pressure coverage remain open.
