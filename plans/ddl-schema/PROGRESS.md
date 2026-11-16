@@ -1,5 +1,11 @@
 # Schema DDL Progress
 
+## DS-3 / CL-3 / DD-3: DROP COLUMN reserves column and default-expression IDs — verified slice
+
+- DROP COLUMN now creates permanent family-17 reservations for the dropped column and removed owned expressions in the authorized publication. Validation rejects missing or unrelated reservations.
+- `storage_manager_renames_tables_and_drop_column_rewrites_rows` verifies the reservation along with preserved old-snapshot decoding and stale-writer ordering. Focused test passed. Verification: workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
+
+
 ## DS-3 / CL-3 / DD-3: DROP TABLE reserves removed child identifiers — verified slice
 
 - The table drop transaction now writes family-17 reservations for all deleted family-2 owned objects, including its columns, defaults/CHECK expressions, key constraints, indexes, and policies. Commit validation requires an exact reservation set.

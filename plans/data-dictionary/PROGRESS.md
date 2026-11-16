@@ -1,5 +1,12 @@
 # Data Dictionary Progress
 
+## DD-3 / CL-3 / DS-3: DROP COLUMN reserves removed column and expression IDs — verified slice
+
+- DROP COLUMN now publishes family-17 reservations for the removed column object and any removed current or immutable-default expression objects. Commit validation derives the exact reservation set from the deleted column/expression objects.
+- `storage_manager_renames_tables_and_drop_column_rewrites_rows` verifies the column reservation while retaining old-reader and stale-writer behavior. Focused test passed. Verification: workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
+- Remaining: retirement in other independent object-deletion paths and historical pre-v2 drop history.
+
+
 ## DD-3 / CL-3 / DS-3: DROP TABLE reserves every removed owned object ID — verified slice
 
 - DROP TABLE now reserves IDs for every family-2 object it removes: the table, columns, expressions, constraints, indexes, and policies. The authorization validator derives the exact expected reservation set from the deleted object records and requires a matching empty family-17 record for each ID.

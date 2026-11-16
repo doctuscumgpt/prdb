@@ -4991,6 +4991,15 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
             .get(id_catalog_key(6, table.column_ids[0]).as_slice())?
             .is_none()
     );
+    let retired_column = catalog
+        .get(id_catalog_key(17, table.column_ids[0]).as_slice())?
+        .ok_or("DROP COLUMN must reserve its retired column ID")?;
+    assert!(
+        decode_registered_envelope(retired_column.value())?
+            .fields
+            .is_empty()
+    );
+    drop(retired_column);
     let surviving = decode_registered_envelope(
         catalog
             .get(id_catalog_key(6, table.column_ids[1]).as_slice())?

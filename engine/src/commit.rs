@@ -12133,6 +12133,8 @@ fn column_drop_ddl_authority_guards(
             owned_ids.insert(expression_id);
         }
     }
+    let mut required_retired_ids = HashSet::<[u8; 16]>::new();
+    let mut retired_ids = HashSet::<[u8; 16]>::new();
     let allowed_grants = catalog_writes
         .iter()
         .filter(|write| write.key.starts_with(&12u16.to_be_bytes()) && write.payload.is_none())
@@ -12159,7 +12161,28 @@ fn column_drop_ddl_authority_guards(
             .get(3..19)
             .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok());
         let belongs = match family {
-            2 => id.is_some_and(|id| owned_ids.contains(&id)),
+            2 => {
+                let belongs = id.is_some_and(|id| owned_ids.contains(&id));
+                if belongs && write.payload.is_none() {
+                    let object_id = id.ok_or(CommitError::InvalidCatalog)?;
+                    if !matches!(
+                        catalog_field_u16(
+                            &write.key,
+                            write
+                                .expected_value
+                                .as_deref()
+                                .ok_or(CommitError::InvalidCatalog)?,
+                            2,
+                            1,
+                        )?,
+                        4 | 5
+                    ) || !required_retired_ids.insert(object_id)
+                    {
+                        return Err(CommitError::InvalidCatalog);
+                    }
+                }
+                belongs
+            }
             5 => write.key == table_key,
             6 => {
                 id == Some(column_id)
@@ -12197,14 +12220,35 @@ fn column_drop_ddl_authority_guards(
                             .zip(referenced)
                             .is_some_and(|pair| allowed_grants.contains(&pair)))
             }
+            17 => {
+                let retired_id = id.ok_or(CommitError::InvalidCatalog)?;
+                write.key.len() == 19
+                    && write.key[2] == 1
+                    && write.payload.is_some()
+                    && write.expected_value.is_none()
+                    && required_retired_ids.contains(&retired_id)
+                    && decode_catalog_record(
+                        &write.key,
+                        write
+                            .payload
+                            .as_deref()
+                            .ok_or(CommitError::InvalidCatalog)?,
+                    )?
+                    .fields
+                    .is_empty()
+                    && retired_ids.insert(retired_id)
+            }
             _ => false,
         };
         if !belongs {
             return Err(CommitError::InvalidCatalog);
         }
-        if write.expected_value.is_none() {
+        if family != 17 && write.expected_value.is_none() {
             return Err(CommitError::InvalidCatalog);
         }
+    }
+    if retired_ids != required_retired_ids {
+        return Err(CommitError::InvalidCatalog);
     }
     subject_ids.extend(roles);
     for subject in subject_ids {

@@ -1,5 +1,11 @@
 # Catalog Lifecycle Progress
 
+## CL-3 / DD-3 / DS-3: DROP COLUMN retires its deleted identifiers — verified slice
+
+- A permitted column drop reserves the column ID and each owned expression object it removes, atomically with the tuple rewrite, dependency cleanup, and schema-version advance. The DDL validator requires an exact match.
+- The focused real-redb regression passed, including its old snapshot and stale writer checks. Full suite verification is pending.
+
+
 ## CL-3 / DD-3 / DS-3: DROP TABLE retires all removed object IDs — verified slice
 
 - Table-drop catalog validation now requires the exact family-17 reservation for every deleted table-owned family-2 object. This includes columns, expressions, constraints, indexes, and policies in addition to the table ID.
