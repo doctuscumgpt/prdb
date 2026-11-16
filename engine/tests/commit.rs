@@ -7124,6 +7124,202 @@ fn storage_manager_sets_replaces_and_drops_column_defaults()
 }
 
 #[test]
+fn column_default_change_racing_column_drop_preserves_catalog_integrity()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{
+        AlterColumnDefaultRequest, CreateTableRequest, TableColumnDefault, TableColumnDefinition,
+    };
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let actor = id(0xa1);
+    let admin_role = builtin_owner_id();
+    let mut setup_audit = identity_audit_event(0xa2, admin_role, actor);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(
+        id(0xa2),
+        admin_role,
+        9_999,
+        &[
+            principal_write_with_name(actor, 1, 1, "column_drop_race_owner"),
+            object_write_with_name(actor, 8, "column_drop_race_owner"),
+            membership_write(actor, admin_role),
+            dependency_write(actor, admin_role, 5),
+        ],
+        &[setup_audit],
+    )?;
+    let schema_invocation = id(0xa3);
+    let mut schema_audit = identity_audit_event(0xa4, actor, id(0xa5));
+    schema_audit.correlation_id = schema_invocation;
+    let schema = storage.create_schema(
+        schema_invocation,
+        actor,
+        "column_drop_race_schema",
+        actor,
+        9_999,
+        schema_audit,
+    )?;
+    let table_invocation = id(0xa6);
+    let mut table_audit = identity_audit_event(0xa7, actor, id(0xa8));
+    table_audit.correlation_id = table_invocation;
+    let table = storage.create_table(CreateTableRequest {
+        invocation_id: table_invocation,
+        authenticated_actor_id: actor,
+        schema_id: schema.schema_id,
+        name: "default_column_drop_race".to_owned(),
+        columns: vec![
+            TableColumnDefinition {
+                name: "retained".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: true,
+                generated_uuid_identity: false,
+                default: None,
+            },
+            TableColumnDefinition {
+                name: "dropped".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: true,
+                generated_uuid_identity: false,
+                default: None,
+            },
+        ],
+        retention_deadline_us: 9_999,
+        audit_event: table_audit,
+    })?;
+
+    let alter_invocation = id(0xa9);
+    let mut alter_audit = identity_audit_event(0xaa, actor, table.column_ids[1]);
+    alter_audit.correlation_id = alter_invocation;
+    let drop_invocation = id(0xab);
+    let mut drop_audit = identity_audit_event(0xac, actor, table.column_ids[1]);
+    drop_audit.correlation_id = drop_invocation;
+    let table_id = table.table_id;
+    let target_column_id = table.column_ids[1];
+    let barrier = Arc::new(Barrier::new(2));
+    let (alter_result, drop_result) = std::thread::scope(|scope| {
+        let alter_barrier = Arc::clone(&barrier);
+        let alter_storage = &storage;
+        let alter = scope.spawn(move || {
+            alter_barrier.wait();
+            alter_storage.alter_column_default(AlterColumnDefaultRequest {
+                invocation_id: alter_invocation,
+                authenticated_actor_id: actor,
+                table_id,
+                column_id: target_column_id,
+                default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(37)))),
+                retention_deadline_us: 9_999,
+                audit_event: alter_audit,
+            })
+        });
+        barrier.wait();
+        let drop = storage.drop_column(
+            drop_invocation,
+            actor,
+            table_id,
+            target_column_id,
+            9_999,
+            drop_audit,
+        );
+        (
+            alter.join().expect("column-default ALTER thread panicked"),
+            drop,
+        )
+    });
+
+    let alter_committed = alter_result.is_ok();
+    if let Err(error) = &alter_result {
+        assert!(
+            matches!(
+                error,
+                prdb_engine::storage_manager::TableLifecycleError::Commit(
+                    CommitError::Conflict | CommitError::InvalidCatalog
+                )
+            ),
+            "unexpected ALTER result while dropping its column: {error:?}"
+        );
+    }
+    let drop_committed = drop_result.is_ok();
+    if let Err(error) = &drop_result {
+        assert!(
+            matches!(
+                error,
+                prdb_engine::storage_manager::TableLifecycleError::Commit(
+                    CommitError::Conflict | CommitError::InvalidCatalog
+                )
+            ),
+            "unexpected DROP COLUMN result while changing its default: {error:?}"
+        );
+    }
+    assert!(alter_committed || drop_committed);
+
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    let column_key = id_catalog_key(6, target_column_id);
+    assert_eq!(
+        catalog.get(column_key.as_slice())?.is_some(),
+        !drop_committed,
+        "the target column remains exactly when DROP COLUMN did not commit"
+    );
+    if drop_committed {
+        assert!(catalog.get(column_key.as_slice())?.is_none());
+        assert!(
+            prdb_engine::catalog_index::scan_column_ids_for_table(&read, table_id, 1)?
+                .iter()
+                .all(|column_id| *column_id != target_column_id)
+        );
+        assert!(
+            prdb_engine::catalog_index::lookup_dependencies_for_dependent(
+                &read,
+                target_column_id,
+            )?
+            .is_empty(),
+            "dropped column must not retain expression dependencies"
+        );
+        let expression_prefix = 7u16.to_be_bytes();
+        let mut remaining_expressions = 0;
+        for entry in catalog.range(expression_prefix.as_slice()..)? {
+            let (key, _) = entry?;
+            if !key.value().starts_with(&expression_prefix) {
+                break;
+            }
+            remaining_expressions += 1;
+        }
+        assert_eq!(
+            remaining_expressions, 0,
+            "dropping the only defaulted column must remove its expression record"
+        );
+    } else {
+        let column = catalog
+            .get(column_key.as_slice())?
+            .ok_or("surviving column record is missing")?;
+        let record = decode_registered_envelope(column.value())?;
+        assert_eq!(
+            record.fields.iter().any(|field| field.tag == 7),
+            alter_committed,
+            "the default expression is published exactly when its ALTER commits"
+        );
+    }
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    for (invocation_id, committed) in [
+        (alter_invocation, alter_committed),
+        (drop_invocation, drop_committed),
+    ] {
+        let outcome = lookup_outcome(&database, invocation_id, actor, 1)?
+            .ok_or("missing default/drop race outcome")?;
+        assert_eq!(
+            outcome.status,
+            if committed {
+                OutcomeStatus::Committed
+            } else {
+                OutcomeStatus::Aborted
+            }
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn storage_manager_adds_column_and_backfills_existing_rows()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{

@@ -1147,3 +1147,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `storage_manager_widens_varchar_atomically_and_keeps_index_current` with a deterministic schedule that pins the 64-character schema, stages a row, commits a widening to 128, then attempts the stale row commit. It verifies a durable ABORTED outcome, no row publication, and no sequence advance beyond the DDL commit, complementing the existing barrier race where either serialization order may win.
 - Verification: focused regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 library tests, 195 commit tests, 78 transaction tests, plus all other targets). Cargo.lock is unchanged.
+
+## DS-5 / DS-7 / DD-3: column-default ALTER races DROP COLUMN — verified slice
+
+- Added `column_default_change_racing_column_drop_preserves_catalog_integrity`. A barrier races setting a literal default against dropping that column. The test checks that at least one operation commits, durable outcomes match each operation result, the current column/default shape matches the commit order, dropped-column lookups and expression dependencies are removed, and persisted-catalog validation accepts the final graph.
+- Verification: the focused real-redb test passed, then passed eight consecutive repeat runs. `cargo fmt --all -- --check`, warning-denied all-target Clippy, and `git diff --check` passed. The full delegated-cgroup workspace suite was not rerun for this race regression.
