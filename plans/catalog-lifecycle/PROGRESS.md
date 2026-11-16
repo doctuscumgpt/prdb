@@ -1,5 +1,11 @@
 # Catalog Lifecycle Progress
 
+## CL-3 / DD-3 / DP-3: DROP POLICY reserves deleted IDs — verified slice
+
+- Policy deletion and same-name replacement publish reservations for every removed policy and expression object. Commit validation rejects a missing, malformed, duplicate, or unrelated reservation.
+- The focused authorized policy DDL regression passed and confirms reservations are visible in a fresh snapshot. Full suite verification is pending.
+
+
 ## CL-3 / DD-3 / DS-3: DROP COLUMN retires its deleted identifiers — verified slice
 
 - A permitted column drop reserves the column ID and each owned expression object it removes, atomically with the tuple rewrite, dependency cleanup, and schema-version advance. The DDL validator requires an exact match.

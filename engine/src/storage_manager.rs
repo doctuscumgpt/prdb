@@ -10959,6 +10959,27 @@ impl<'db> StorageManager<'db> {
                 payload: None,
             });
         }
+        let retired_ids = writes
+            .iter()
+            .filter(|write| write.key.starts_with(&2u16.to_be_bytes()) && write.payload.is_none())
+            .filter_map(|write| write.key.get(3..19))
+            .filter_map(|bytes| <[u8; 16]>::try_from(bytes).ok())
+            .collect::<HashSet<_>>();
+        for retired_id in retired_ids {
+            let reservation_key = retired_object_id_catalog_key(retired_id);
+            let reservation_payload = encode_envelope(
+                &family_schema(17)
+                    .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?,
+                &reservation_key,
+                &[],
+            )
+            .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+            writes.push(CatalogWrite {
+                key: reservation_key,
+                expected_value: None,
+                payload: Some(reservation_payload),
+            });
+        }
         Ok(PolicyDropWriteSet {
             table_id,
             kind,
@@ -11762,6 +11783,27 @@ impl<'db> StorageManager<'db> {
                 next_table_epoch,
             )?),
         });
+        let retired_ids = writes
+            .iter()
+            .filter(|write| write.key.starts_with(&2u16.to_be_bytes()) && write.payload.is_none())
+            .filter_map(|write| write.key.get(3..19))
+            .filter_map(|bytes| <[u8; 16]>::try_from(bytes).ok())
+            .collect::<HashSet<_>>();
+        for retired_id in retired_ids {
+            let reservation_key = retired_object_id_catalog_key(retired_id);
+            let reservation_payload = encode_envelope(
+                &family_schema(17)
+                    .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?,
+                &reservation_key,
+                &[],
+            )
+            .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+            writes.push(CatalogWrite {
+                key: reservation_key,
+                expected_value: None,
+                payload: Some(reservation_payload),
+            });
+        }
         drop(catalog);
         drop(read);
         audit_event.target_ids = std::iter::once(policy_id).chain(expression_ids).collect();

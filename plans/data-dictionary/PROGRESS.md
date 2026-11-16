@@ -1,5 +1,12 @@
 # Data Dictionary Progress
 
+## DD-3 / CL-3 / DP-3: DROP POLICY reserves removed object IDs — verified slice
+
+- Direct policy drops and atomic policy replacement now reserve the deleted policy and expression object IDs in family 17. Policy DDL validation requires an exact match to deleted objects; the policy ID and expression IDs cannot be reused.
+- `storage_manager_authorizes_policy_ddl_for_owners_and_inherited_manage_policies` verifies both reservations after DROP POLICY. Focused test passed. Verification: workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
+- Remaining: independent deletion paths for other object kinds and historical pre-v2 drop history.
+
+
 ## DD-3 / CL-3 / DS-3: DROP COLUMN reserves removed column and expression IDs — verified slice
 
 - DROP COLUMN now publishes family-17 reservations for the removed column object and any removed current or immutable-default expression objects. Commit validation derives the exact reservation set from the deleted column/expression objects.

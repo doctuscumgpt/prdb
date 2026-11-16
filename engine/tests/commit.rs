@@ -27843,6 +27843,8 @@ fn storage_manager_authorizes_policy_ddl_for_owners_and_inherited_manage_policie
                 deleted_target,
                 deleted_expression_edge,
                 deleted_recipient_edge,
+                identity_tombstone_write(added_policy_id),
+                identity_tombstone_write(added_expression_id),
                 delete_table_epoch,
             ],
             &[delete_audit],
@@ -28030,6 +28032,26 @@ fn storage_manager_authorizes_policy_ddl_for_owners_and_inherited_manage_policie
             .status,
         OutcomeStatus::Committed
     );
+    {
+        let read = database.begin_read()?;
+        let catalog = read.open_table(CATALOG)?;
+        for retired_id in [
+            created_policy.policy_id,
+            created_policy
+                .using_expression_id
+                .ok_or("policy USING expression ID missing")?,
+        ] {
+            let reservation = catalog
+                .get(id_catalog_key(17, retired_id).as_slice())?
+                .ok_or("DROP POLICY must reserve every removed object ID")?;
+            assert!(
+                decode_registered_envelope(reservation.value())?
+                    .fields
+                    .is_empty()
+            );
+            drop(reservation);
+        }
+    }
 
     let replacement_invocation = id(0x89);
     let revoke_invocation = id(0x8a);

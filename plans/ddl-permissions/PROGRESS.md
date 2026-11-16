@@ -1,5 +1,11 @@
 # Permission DDL Progress
 
+## DP-3 / CL-3 / DD-3: DROP POLICY retires policy and expression IDs — verified slice
+
+- Authorized policy drop and replace operations now retire the removed policy and owned expression IDs in family 17, atomically with their typed records, targets, dependencies, and table epoch.
+- The real-redb policy lifecycle test verifies both reservations after DROP POLICY. Focused test passed. Verification: workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
+
+
 ## DP-SQL-1: object-level grant SQL
 
 - `admin-sql` now accepts one privilege on a named schema or table and resolves the object and grantee through authenticated metadata before using the established typed `objects.grant`/`objects.revoke` operation. Storage remains authoritative for scope validity, current owner/`MANAGE_GRANTS`, audit, and publication.

@@ -12840,7 +12840,7 @@ fn policy_ddl_authority_guards(
             .and_then(|bytes| <[u8; 2]>::try_from(bytes).ok())
             .map(u16::from_be_bytes)
             .ok_or(CommitError::InvalidCatalog)?;
-        if !matches!(family, 2 | 5 | 7 | 13 | 14 | 15) {
+        if !matches!(family, 2 | 5 | 7 | 13 | 14 | 15 | 17) {
             return Err(CommitError::InvalidCatalog);
         }
         let current = catalog
@@ -12970,6 +12970,44 @@ fn policy_ddl_authority_guards(
             object_id,
             (kind, current.is_some(), write.payload.is_some()),
         );
+    }
+
+    let expected_retired_ids = object_states
+        .iter()
+        .filter_map(|(object_id, (kind, was_present, is_present))| {
+            (*was_present && !*is_present && matches!(kind, 5 | 10)).then_some(*object_id)
+        })
+        .collect::<HashSet<_>>();
+    let mut retired_ids = HashSet::new();
+    for (_, write, current) in actual_writes.iter().filter(|(family, _, _)| *family == 17) {
+        if write.key.len() != 19
+            || write.key[2] != 1
+            || current.is_some()
+            || write.expected_value.is_some()
+            || write.payload.is_none()
+        {
+            return Err(CommitError::InvalidCatalog);
+        }
+        let object_id: [u8; 16] = write.key[3..19]
+            .try_into()
+            .map_err(|_| CommitError::InvalidCatalog)?;
+        if !expected_retired_ids.contains(&object_id)
+            || !decode_catalog_record(
+                &write.key,
+                write
+                    .payload
+                    .as_deref()
+                    .ok_or(CommitError::InvalidCatalog)?,
+            )?
+            .fields
+            .is_empty()
+            || !retired_ids.insert(object_id)
+        {
+            return Err(CommitError::InvalidCatalog);
+        }
+    }
+    if retired_ids != expected_retired_ids {
+        return Err(CommitError::InvalidCatalog);
     }
 
     for policy_id in &changed_policies {
