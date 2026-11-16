@@ -17636,14 +17636,66 @@ fn storage_manager_builds_and_drops_populated_indexes_atomically()
         ),
         Err(CommitError::InvalidCatalog)
     );
-    let drop_sequence = storage.commit_catalog_and_audit(
-        id(202),
-        id(9),
-        9_999,
-        &drop_writes,
-        &[audit_event(202)],
+    let drop_writer_invocation = id(0x7e);
+    let drop_writer_row_id = id(0x7f);
+    let mut drop_writer =
+        storage.begin_invocation(drop_writer_invocation, id(9), 9_999, 1, 1024)?;
+    let drop_writer_schema = drop_writer.load_catalog_table_schema(id(16))?;
+    drop_writer.load_catalog_indexes(&drop_writer_schema)?;
+    let drop_writer_payload = bytea_tuple(b"staged before index drop");
+    drop_writer.stage_put(
+        prdb_engine::overlay::RowId {
+            table: id(16),
+            row: drop_writer_row_id,
+        },
+        &drop_writer_payload,
     )?;
-    assert_eq!(drop_sequence, index_sequence + 1);
+    let drop_writer_key = table_row_key(id(16), drop_writer_row_id);
+    let drop_writer_index = typed_bytea_index_key(id(0x88), &drop_writer_key, &drop_writer_payload);
+    let index_drop_invocation = id(202);
+    let drop_barrier = Arc::new(Barrier::new(2));
+    let (drop_result, drop_writer_result) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&drop_barrier);
+        let storage = &storage;
+        let ddl = scope.spawn(move || {
+            barrier.wait();
+            storage.commit_catalog_and_audit(
+                index_drop_invocation,
+                id(9),
+                9_999,
+                &drop_writes,
+                &[audit_event(202)],
+            )
+        });
+        drop_barrier.wait();
+        let writer = drop_writer.commit();
+        (ddl.join().expect("index drop thread panicked"), writer)
+    });
+    let drop_sequence = drop_result?;
+    let drop_writer_status = match drop_writer_result {
+        Ok(sequence) => {
+            assert!(sequence < drop_sequence);
+            OutcomeStatus::Committed
+        }
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            OutcomeStatus::Aborted
+        }
+        Err(error) => panic!("unexpected writer result in index drop race: {error:?}"),
+    };
+    assert_eq!(
+        drop_sequence,
+        index_sequence + 1 + u64::from(drop_writer_status == OutcomeStatus::Committed)
+    );
+    assert_eq!(
+        row(&database, &drop_writer_key)?.is_some(),
+        drop_writer_status == OutcomeStatus::Committed
+    );
+    assert_eq!(
+        lookup_outcome(&database, drop_writer_invocation, id(9), 1)?
+            .ok_or("missing index-drop writer outcome")?
+            .status,
+        drop_writer_status
+    );
     let table_epoch_after_drop = {
         let read = database.begin_read()?;
         let record = decode_registered_envelope(
@@ -17683,8 +17735,25 @@ fn storage_manager_builds_and_drops_populated_indexes_atomically()
             .get(reverse_key.as_slice())?
             .is_none()
     );
+    let mut drop_writer_reverse_key = drop_writer_key.to_vec();
+    drop_writer_reverse_key
+        .extend_from_slice(&drop_writer_index.key[..drop_writer_index.key.len() - 16]);
+    let after_drop_read = database.begin_read()?;
+    assert!(
+        after_drop_read
+            .open_table(schema::INDEXES)?
+            .get(drop_writer_index.key.as_slice())?
+            .is_none(),
+        "index drop must remove memberships written immediately before it"
+    );
+    assert!(
+        after_drop_read
+            .open_table(schema::ROW_INDEXES)?
+            .get(drop_writer_reverse_key.as_slice())?
+            .is_none()
+    );
     assert_eq!(
-        lookup_outcome(&database, id(202), id(9), 1)?
+        lookup_outcome(&database, index_drop_invocation, id(9), 1)?
             .unwrap()
             .status,
         OutcomeStatus::Committed
