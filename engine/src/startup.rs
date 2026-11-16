@@ -3842,9 +3842,29 @@ mod catalog_index_tests {
 
         ensure_table_constraint_index(&database).unwrap();
         let read = database.begin_read().unwrap();
+        let catalog = read.open_table(CATALOG).unwrap();
+        let constraint_prefix = [8u16.to_be_bytes().as_slice(), &[1]].concat();
+        let mut expected: Vec<[u8; 16]> = Vec::new();
+        for entry in catalog.iter().unwrap() {
+            let (key, value) = entry.unwrap();
+            if !key.value().starts_with(&constraint_prefix) {
+                continue;
+            }
+            let record = decode_registered_envelope(value.value()).unwrap();
+            if record
+                .fields
+                .iter()
+                .find(|field| field.tag == 1)
+                .is_some_and(|field| field.payload.as_slice() == [0x32; 16])
+            {
+                expected.push(record.logical_key[3..].try_into().unwrap());
+            }
+        }
+        expected.sort_unstable();
+        assert_eq!(expected, vec![[0x69; 16]]);
         assert_eq!(
             scan_constraint_ids_for_table(&read, [0x32; 16], 1).unwrap(),
-            vec![[0x69; 16]]
+            expected
         );
         assert_eq!(
             scan_constraint_ids_for_table(&read, [0x32; 16], 0),
