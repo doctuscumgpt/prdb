@@ -51,7 +51,7 @@ Token secrets are saved only to mode-0600 credential files and are never printed
     --label TEXT --ttl-seconds N --output-credentials FILE\n\
   prdb-client token-revoke --address IP:PORT --credentials ADMIN_FILE --token-id HEX\n\n\
   prdb-client token-rotate --address IP:PORT --credentials ADMIN_FILE --token-id HEX\n\
-    --label TEXT --ttl-seconds N --output-credentials FILE\n\n\
+    --label TEXT --ttl-seconds N --output-credentials NEW_FILE\n\n\
   prdb-client token-list --address IP:PORT --credentials ADMIN_FILE --user-id HEX\n\
     [--after-token-id HEX]\n\n\
   prdb-client dependency-list --address IP:PORT --credentials ADMIN_FILE --object-id HEX\n\
@@ -2421,6 +2421,16 @@ fn token_issue(
     let output_path = take_path(fields, "--output-credentials")?;
     reject_unknown(fields)?;
     let expires_at_us = expiration_time(ttl_seconds)?;
+    match fs::symlink_metadata(&output_path) {
+        Ok(_) => {
+            return Err(format!(
+                "--output-credentials {} already exists; token issuance was not attempted",
+                output_path.display()
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("cannot inspect credential output path: {error}")),
+    }
 
     let mut administrator =
         read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
@@ -2500,6 +2510,16 @@ fn token_rotate(
     let output_path = take_path(fields, "--output-credentials")?;
     reject_unknown(fields)?;
     let expires_at_us = expiration_time(ttl_seconds)?;
+    match fs::symlink_metadata(&output_path) {
+        Ok(_) => {
+            return Err(format!(
+                "--output-credentials {} already exists; token rotation was not attempted",
+                output_path.display()
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("cannot inspect credential output path: {error}")),
+    }
 
     let mut administrator =
         read_client_credentials(credentials_path).map_err(|error| error.to_string())?;

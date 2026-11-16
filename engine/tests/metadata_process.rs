@@ -5092,6 +5092,45 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     drop(saved_credentials);
 
     let old_credentials = read_client_credentials(&credential_path)?;
+    let mut preflight_old_secret = old_credentials.token_secret;
+    let occupied_rotation_output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "token-rotate",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--token-id",
+            &encode_id_hex(&issued_token_id),
+            "--label",
+            "must not rotate",
+            "--ttl-seconds",
+            "60",
+            "--output-credentials",
+            credential_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(!occupied_rotation_output.status.success());
+    assert!(
+        String::from_utf8_lossy(&occupied_rotation_output.stderr)
+            .contains("token rotation was not attempted")
+    );
+    let mut preflight_metadata = MetadataClient::connect_authenticated(
+        address,
+        old_credentials.token_id,
+        &mut preflight_old_secret,
+    )?;
+    assert_eq!(preflight_old_secret, [0; 32]);
+    assert!(
+        preflight_metadata
+            .list_schemas()?
+            .iter()
+            .any(|schema| schema.name == "information_schema")
+    );
+    drop(preflight_metadata);
+
     let mut old_secret_after_rotation = old_credentials.token_secret;
     remove_client_credentials(&credential_path)?;
     let rotate_token_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
