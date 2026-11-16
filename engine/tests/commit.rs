@@ -24516,8 +24516,9 @@ fn storage_manager_authorizes_object_grants_and_linearizes_revocation_races()
 fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{
-        CreateTableRequest, ObjectGrantPrivilege, ObjectGrantTarget, SetObjectGrantBatchRequest,
-        SetObjectGrantRequest, TableColumnDefinition,
+        CreateTableRequest, ObjectGrantEntry, ObjectGrantPrivilege, ObjectGrantTarget,
+        SetObjectGrantBatchRequest, SetObjectGrantEntriesBatchRequest, SetObjectGrantRequest,
+        TableColumnDefinition,
     };
 
     let fixture = Fixture::new();
@@ -24894,6 +24895,165 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
         OutcomeStatus::Committed
     );
 
+    let mixed_target_entries = vec![
+        ObjectGrantEntry {
+            privilege: ObjectGrantPrivilege::Alter,
+            target: ObjectGrantTarget::Object,
+        },
+        ObjectGrantEntry {
+            privilege: ObjectGrantPrivilege::References,
+            target: ObjectGrantTarget::Column(first_column_id),
+        },
+    ];
+    let mixed_target_grant_id = id(0x90);
+    let mut mixed_target_grant_audit = identity_audit_event(0x91, table_owner, denied_grantee);
+    mixed_target_grant_audit.correlation_id = mixed_target_grant_id;
+    mixed_target_grant_audit.action = AuditAction::AuthorityChange;
+    let mixed_target_grant_sequence =
+        storage.set_object_grant_entries_batch(SetObjectGrantEntriesBatchRequest {
+            invocation_id: mixed_target_grant_id,
+            authenticated_actor_id: table_owner,
+            grantee_id: denied_grantee,
+            object_id: table_id,
+            entries: mixed_target_entries.clone(),
+            grant: true,
+            retention_deadline_us: 9_999,
+            audit_event: mixed_target_grant_audit,
+        })?;
+    assert_eq!(mixed_target_grant_sequence, mixed_scope_sequence + 1);
+    let mixed_target_grant_read = database.begin_read()?;
+    let mixed_target_grant_catalog = mixed_target_grant_read.open_table(CATALOG)?;
+    for (privilege, scope, target_id) in [(8, 1, table_id), (6, 2, first_column_id)] {
+        let grant_key = grant_write(
+            denied_grantee,
+            table_id,
+            privilege,
+            scope,
+            target_id,
+            table_owner,
+        )
+        .key;
+        assert!(
+            mixed_target_grant_catalog
+                .get(grant_key.as_slice())?
+                .is_some()
+        );
+    }
+    for target_id in [table_id, first_column_id] {
+        let dependency_key = dependency_write(denied_grantee, target_id, 5).key;
+        assert!(
+            mixed_target_grant_catalog
+                .get(dependency_key.as_slice())?
+                .is_some()
+        );
+    }
+    let mixed_target_grant_principal = decode_registered_envelope(
+        mixed_target_grant_catalog
+            .get(id_catalog_key(10, denied_grantee).as_slice())?
+            .ok_or("missing mixed-target grant principal")?
+            .value(),
+    )?;
+    assert_eq!(
+        u64::from_le_bytes(
+            mixed_target_grant_principal
+                .fields
+                .iter()
+                .find(|field| field.tag == 4)
+                .ok_or("missing mixed-target grant epoch")?
+                .payload
+                .as_slice()
+                .try_into()?
+        ),
+        3
+    );
+    drop(mixed_target_grant_catalog);
+    drop(mixed_target_grant_read);
+    assert_eq!(
+        lookup_outcome(&database, mixed_target_grant_id, table_owner, 1)?
+            .ok_or("missing mixed-target grant outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+
+    let mixed_target_revoke_id = id(0x92);
+    let mut mixed_target_revoke_audit = identity_audit_event(0x93, table_owner, denied_grantee);
+    mixed_target_revoke_audit.correlation_id = mixed_target_revoke_id;
+    mixed_target_revoke_audit.action = AuditAction::AuthorityChange;
+    let mixed_target_revoke_sequence =
+        storage.set_object_grant_entries_batch(SetObjectGrantEntriesBatchRequest {
+            invocation_id: mixed_target_revoke_id,
+            authenticated_actor_id: table_owner,
+            grantee_id: denied_grantee,
+            object_id: table_id,
+            entries: mixed_target_entries,
+            grant: false,
+            retention_deadline_us: 9_999,
+            audit_event: mixed_target_revoke_audit,
+        })?;
+    assert_eq!(
+        mixed_target_revoke_sequence,
+        mixed_target_grant_sequence + 1
+    );
+    let mixed_target_revoke_read = database.begin_read()?;
+    let mixed_target_revoke_catalog = mixed_target_revoke_read.open_table(CATALOG)?;
+    for (privilege, scope, target_id) in [(8, 1, table_id), (6, 2, first_column_id)] {
+        let grant_key = grant_write(
+            denied_grantee,
+            table_id,
+            privilege,
+            scope,
+            target_id,
+            table_owner,
+        )
+        .key;
+        assert!(
+            mixed_target_revoke_catalog
+                .get(grant_key.as_slice())?
+                .is_none()
+        );
+    }
+    assert!(
+        mixed_target_revoke_catalog
+            .get(dependency_write(denied_grantee, table_id, 5).key.as_slice())?
+            .is_none()
+    );
+    assert!(
+        mixed_target_revoke_catalog
+            .get(
+                dependency_write(denied_grantee, first_column_id, 5)
+                    .key
+                    .as_slice()
+            )?
+            .is_some()
+    );
+    let mixed_target_revoke_principal = decode_registered_envelope(
+        mixed_target_revoke_catalog
+            .get(id_catalog_key(10, denied_grantee).as_slice())?
+            .ok_or("missing mixed-target revoke principal")?
+            .value(),
+    )?;
+    assert_eq!(
+        u64::from_le_bytes(
+            mixed_target_revoke_principal
+                .fields
+                .iter()
+                .find(|field| field.tag == 4)
+                .ok_or("missing mixed-target revoke epoch")?
+                .payload
+                .as_slice()
+                .try_into()?
+        ),
+        4
+    );
+    drop(mixed_target_revoke_catalog);
+    drop(mixed_target_revoke_read);
+    assert_eq!(
+        lookup_outcome(&database, mixed_target_revoke_id, table_owner, 1)?
+            .ok_or("missing mixed-target revoke outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+
     let partial_revoke_id = id(0x8e);
     let mut partial_revoke_audit = identity_audit_event(0x8f, table_owner, denied_grantee);
     partial_revoke_audit.correlation_id = partial_revoke_id;
@@ -24909,7 +25069,7 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
         retention_deadline_us: 9_999,
         audit_event: partial_revoke_audit,
     })?;
-    assert_eq!(partial_revoke_sequence, mixed_scope_sequence + 1);
+    assert_eq!(partial_revoke_sequence, mixed_target_revoke_sequence + 1);
     let partial_revoke_read = database.begin_read()?;
     let partial_revoke_catalog = partial_revoke_read.open_table(CATALOG)?;
     let removed_select =
@@ -24972,7 +25132,7 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
                 .as_slice()
                 .try_into()?
         ),
-        3
+        5
     );
     drop(partial_revoke_catalog);
     drop(partial_revoke_read);

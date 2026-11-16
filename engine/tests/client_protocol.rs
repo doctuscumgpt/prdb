@@ -690,6 +690,7 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
             target: prdb_engine::storage_manager::ObjectGrantTarget::Column([
                 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
             ]),
+            entries: None,
             grant: true,
         })
     );
@@ -702,6 +703,7 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
             object_id: [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31],
             privileges: vec![prdb_engine::storage_manager::ObjectGrantPrivilege::References],
             target: prdb_engine::storage_manager::ObjectGrantTarget::Object,
+            entries: None,
             grant: false,
         })
     );
@@ -717,6 +719,7 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
                 [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47],
                 [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63],
             ]),
+            entries: None,
             grant: true,
         })
     );
@@ -735,6 +738,22 @@ fn admin_revoke_decoder_requires_prepare_then_start_schemas() {
             grant: true,
             ..
         }) if privileges.len() == 4
+    ));
+    assert!(matches!(
+        decode_client_admin_command(br#"{"phase":"prepare","operation_version":1,"operation":"objects.grant_entries","arguments":{"grantee_id":"000102030405060708090a0b0c0d0e0f","object_id":"101112131415161718191a1b1c1d1e1f","entries":"alter@object:101112131415161718191a1b1c1d1e1f;references@column:202122232425262728292a2b2c2d2e2f"}}"#),
+        Ok(ClientAdminCommand::PrepareObjectGrant { entries: Some(entries), grant: true, .. })
+            if entries == vec![
+                prdb_engine::storage_manager::ObjectGrantEntry {
+                    privilege: prdb_engine::storage_manager::ObjectGrantPrivilege::Alter,
+                    target: prdb_engine::storage_manager::ObjectGrantTarget::Object,
+                },
+                prdb_engine::storage_manager::ObjectGrantEntry {
+                    privilege: prdb_engine::storage_manager::ObjectGrantPrivilege::References,
+                    target: prdb_engine::storage_manager::ObjectGrantTarget::Column([
+                        32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+                    ]),
+                },
+            ]
     ));
     assert!(decode_client_admin_command(
         br#"{"phase":"prepare","operation_version":1,"operation":"objects.grant","arguments":{"grantee_id":"000102030405060708090a0b0c0d0e0f","object_id":"101112131415161718191a1b1c1d1e1f","privilege":"all","target_scope":"object","target_id":"101112131415161718191a1b1c1d1e1f"}}"#

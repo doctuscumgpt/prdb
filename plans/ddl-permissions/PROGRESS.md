@@ -173,3 +173,10 @@
 
 - Extended `object_grant_batch_racing_manage_grants_revocation_is_atomic` to revoke SELECT from one column after a two-privilege, two-column grant batch. It verifies that the selected grant is removed, sibling UPDATE/SELECT grants and their original grantor provenance remain, the column authority dependency remains while UPDATE still exists, the grantee epoch advances once, and the operation has one committed outcome.
 - Verification: the focused real-redb permission regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 library tests, 195 commit tests, 78 transaction tests, plus all other targets). Cargo.lock is unchanged.
+
+## DP-SQL-11 / DP-8: mixed-scope object grant batches — verified slice
+
+- Added storage acceptance for grant/revoke batches whose entries each carry their own target scope. Existing common-target batches delegate to the new path, retaining atomic authorization, provenance, epoch, dependency, and audit handling.
+- Added authenticated ADMIN `objects.grant_entries` and `objects.revoke_entries` operations and a public client entry point for per-privilege targets. The protocol regression decodes an object-scoped ALTER plus column-scoped REFERENCES request; the real-redb race regression exercises grant and revoke publication, provenance, dependency cleanup, and one epoch update.
+- Verification: focused protocol decoder regression and focused real-redb grant/revocation regression passed; locked engine check, warning-denied all-target engine Clippy, formatting, and `git diff --check` passed.
+- Remaining: connect the new entries operation to SQL name binding/syntax; broaden administrative SQL forms and repeated permission-change race schedules.

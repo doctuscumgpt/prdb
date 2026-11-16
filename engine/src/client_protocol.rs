@@ -351,6 +351,7 @@ enum PendingAdminAction {
         object_id: [u8; 16],
         privileges: Vec<crate::storage_manager::ObjectGrantPrivilege>,
         target: crate::storage_manager::ObjectGrantTarget,
+        entries: Option<Vec<crate::storage_manager::ObjectGrantEntry>>,
         grant: bool,
     },
     Revoke {
@@ -819,6 +820,7 @@ pub enum ClientAdminCommand {
         object_id: [u8; 16],
         privileges: Vec<crate::storage_manager::ObjectGrantPrivilege>,
         target: crate::storage_manager::ObjectGrantTarget,
+        entries: Option<Vec<crate::storage_manager::ObjectGrantEntry>>,
         grant: bool,
     },
     PrepareRevoke {
@@ -2820,6 +2822,16 @@ pub fn decode_client_admin_command(
         {
             decode_object_grant_prepare(arguments, operation_id, seen.len(), false)
         }
+        Some("prepare")
+            if version == Some(1) && operation.as_deref() == Some("objects.grant_entries") =>
+        {
+            decode_object_grant_prepare(arguments, operation_id, seen.len(), true)
+        }
+        Some("prepare")
+            if version == Some(1) && operation.as_deref() == Some("objects.revoke_entries") =>
+        {
+            decode_object_grant_prepare(arguments, operation_id, seen.len(), false)
+        }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("tokens.revoke") => {
             if operation_id.is_some() || seen.len() != 4 {
                 return Err(ClientControlError::UnknownKey);
@@ -2960,6 +2972,67 @@ fn decode_object_grant_prepare(
             .remove("object_id")
             .ok_or(ClientControlError::MissingKey)?,
     )?;
+    if let Some(encoded_entries) = args.remove("entries") {
+        if !args.is_empty() || encoded_entries.is_empty() {
+            return Err(ClientControlError::InvalidPrepare);
+        }
+        let mut entries = Vec::new();
+        for encoded in encoded_entries.split(';') {
+            let (encoded_privilege, encoded_target) = encoded
+                .split_once('@')
+                .ok_or(ClientControlError::InvalidPrepare)?;
+            let privilege = decode_object_privilege(encoded_privilege)?;
+            let (scope, ids) = encoded_target
+                .split_once(':')
+                .ok_or(ClientControlError::InvalidPrepare)?;
+            let target = match scope {
+                "object" if decode_lower_hex_id(ids)? == object_id => {
+                    crate::storage_manager::ObjectGrantTarget::Object
+                }
+                "column" => {
+                    crate::storage_manager::ObjectGrantTarget::Column(decode_lower_hex_id(ids)?)
+                }
+                "columns" => {
+                    let mut values = Vec::new();
+                    for value in ids.split('+') {
+                        values.push(decode_lower_hex_id(value)?);
+                    }
+                    if !(2..=64).contains(&values.len()) {
+                        return Err(ClientControlError::InvalidPrepare);
+                    }
+                    let mut seen = HashSet::new();
+                    if values.iter().any(|value| !seen.insert(*value)) {
+                        return Err(ClientControlError::InvalidPrepare);
+                    }
+                    crate::storage_manager::ObjectGrantTarget::Columns(values)
+                }
+                "all_columns" if ids.is_empty() => {
+                    crate::storage_manager::ObjectGrantTarget::AllColumns
+                }
+                _ => return Err(ClientControlError::InvalidPrepare),
+            };
+            if entries
+                .iter()
+                .any(|entry: &crate::storage_manager::ObjectGrantEntry| {
+                    entry.privilege == privilege && entry.target == target
+                })
+            {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            entries.push(crate::storage_manager::ObjectGrantEntry { privilege, target });
+            if entries.len() > 64 {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+        }
+        return Ok(ClientAdminCommand::PrepareObjectGrant {
+            grantee_id,
+            object_id,
+            privileges: Vec::new(),
+            target: crate::storage_manager::ObjectGrantTarget::Object,
+            entries: Some(entries),
+            grant,
+        });
+    }
     let encoded_privileges = match (args.remove("privilege"), args.remove("privileges")) {
         (Some(single), None) => single,
         (None, Some(multiple)) => multiple,
@@ -2967,20 +3040,7 @@ fn decode_object_grant_prepare(
     };
     let mut privileges = Vec::new();
     for encoded in encoded_privileges.split(',') {
-        let privilege = match encoded {
-            "usage" => crate::storage_manager::ObjectGrantPrivilege::Usage,
-            "select" => crate::storage_manager::ObjectGrantPrivilege::Select,
-            "insert" => crate::storage_manager::ObjectGrantPrivilege::Insert,
-            "update" => crate::storage_manager::ObjectGrantPrivilege::Update,
-            "delete" => crate::storage_manager::ObjectGrantPrivilege::Delete,
-            "references" => crate::storage_manager::ObjectGrantPrivilege::References,
-            "create" => crate::storage_manager::ObjectGrantPrivilege::Create,
-            "alter" => crate::storage_manager::ObjectGrantPrivilege::Alter,
-            "index" => crate::storage_manager::ObjectGrantPrivilege::Index,
-            "manage_policies" => crate::storage_manager::ObjectGrantPrivilege::ManagePolicies,
-            "manage_grants" => crate::storage_manager::ObjectGrantPrivilege::ManageGrants,
-            _ => return Err(ClientControlError::InvalidPrepare),
-        };
+        let privilege = decode_object_privilege(encoded)?;
         if privileges.contains(&privilege) {
             return Err(ClientControlError::InvalidPrepare);
         }
@@ -3042,8 +3102,28 @@ fn decode_object_grant_prepare(
         object_id,
         privileges,
         target,
+        entries: None,
         grant,
     })
+}
+
+fn decode_object_privilege(
+    encoded: &str,
+) -> Result<crate::storage_manager::ObjectGrantPrivilege, ClientControlError> {
+    match encoded {
+        "usage" => Ok(crate::storage_manager::ObjectGrantPrivilege::Usage),
+        "select" => Ok(crate::storage_manager::ObjectGrantPrivilege::Select),
+        "insert" => Ok(crate::storage_manager::ObjectGrantPrivilege::Insert),
+        "update" => Ok(crate::storage_manager::ObjectGrantPrivilege::Update),
+        "delete" => Ok(crate::storage_manager::ObjectGrantPrivilege::Delete),
+        "references" => Ok(crate::storage_manager::ObjectGrantPrivilege::References),
+        "create" => Ok(crate::storage_manager::ObjectGrantPrivilege::Create),
+        "alter" => Ok(crate::storage_manager::ObjectGrantPrivilege::Alter),
+        "index" => Ok(crate::storage_manager::ObjectGrantPrivilege::Index),
+        "manage_policies" => Ok(crate::storage_manager::ObjectGrantPrivilege::ManagePolicies),
+        "manage_grants" => Ok(crate::storage_manager::ObjectGrantPrivilege::ManageGrants),
+        _ => Err(ClientControlError::InvalidPrepare),
+    }
 }
 
 fn decode_optional_policy_expression(
@@ -6354,6 +6434,7 @@ impl ClientConnectionSession {
                 object_id,
                 privileges,
                 target,
+                entries,
                 grant,
             } => self.prepare_object_grant(
                 request.request_id,
@@ -6361,6 +6442,7 @@ impl ClientConnectionSession {
                 object_id,
                 privileges,
                 target,
+                entries,
                 grant,
             ),
             ClientAdminCommand::PrepareRevoke { token_id } => {
@@ -6609,10 +6691,33 @@ impl ClientConnectionSession {
                         object_id,
                         privileges,
                         target,
+                        entries,
                         grant,
                     } => {
-                        let sequence = storage
-                            .set_object_grants_batch(
+                        let request_audit_event = crate::audit::AuditEvent {
+                            event_id,
+                            actor_id: Some(actor_id),
+                            correlation_id: operation_id,
+                            occurred_at_us: now_us,
+                            action: crate::audit::AuditAction::AuthorityChange,
+                            result: crate::audit::AuditResult::Succeeded,
+                            target_ids: Vec::new(),
+                        };
+                        let sequence = if let Some(entries) = entries {
+                            storage.set_object_grant_entries_batch(
+                                crate::storage_manager::SetObjectGrantEntriesBatchRequest {
+                                    invocation_id: operation_id,
+                                    authenticated_actor_id: actor_id,
+                                    grantee_id,
+                                    object_id,
+                                    entries,
+                                    grant,
+                                    retention_deadline_us,
+                                    audit_event: request_audit_event,
+                                },
+                            )
+                        } else {
+                            storage.set_object_grants_batch(
                                 crate::storage_manager::SetObjectGrantBatchRequest {
                                     invocation_id: operation_id,
                                     authenticated_actor_id: actor_id,
@@ -6622,18 +6727,11 @@ impl ClientConnectionSession {
                                     target,
                                     grant,
                                     retention_deadline_us,
-                                    audit_event: crate::audit::AuditEvent {
-                                        event_id,
-                                        actor_id: Some(actor_id),
-                                        correlation_id: operation_id,
-                                        occurred_at_us: now_us,
-                                        action: crate::audit::AuditAction::AuthorityChange,
-                                        result: crate::audit::AuditResult::Succeeded,
-                                        target_ids: Vec::new(),
-                                    },
+                                    audit_event: request_audit_event,
                                 },
                             )
-                            .map_err(ClientSessionError::ObjectGrantLifecycle)?;
+                        }
+                        .map_err(ClientSessionError::ObjectGrantLifecycle)?;
                         self.json_response(
                             request.request_id,
                             format!(
@@ -7885,6 +7983,7 @@ impl ClientConnectionSession {
         )
     }
 
+    #[allow(clippy::too_many_arguments)] // Preserve the decoded ADMIN request fields without an intermediate allocation.
     fn prepare_object_grant(
         &mut self,
         request_id: u64,
@@ -7892,6 +7991,7 @@ impl ClientConnectionSession {
         object_id: [u8; 16],
         privileges: Vec<crate::storage_manager::ObjectGrantPrivilege>,
         target: crate::storage_manager::ObjectGrantTarget,
+        entries: Option<Vec<crate::storage_manager::ObjectGrantEntry>>,
         grant: bool,
     ) -> Result<ClientFrame, ClientSessionError> {
         if self.pending_admin_operation.is_some() {
@@ -7912,6 +8012,7 @@ impl ClientConnectionSession {
                 object_id,
                 privileges,
                 target,
+                entries,
                 grant,
             },
         });

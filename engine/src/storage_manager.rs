@@ -803,6 +803,24 @@ pub struct SetObjectGrantBatchRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObjectGrantEntry {
+    pub privilege: ObjectGrantPrivilege,
+    pub target: ObjectGrantTarget,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SetObjectGrantEntriesBatchRequest {
+    pub invocation_id: [u8; 16],
+    pub authenticated_actor_id: [u8; 16],
+    pub grantee_id: [u8; 16],
+    pub object_id: [u8; 16],
+    pub entries: Vec<ObjectGrantEntry>,
+    pub grant: bool,
+    pub retention_deadline_us: i64,
+    pub audit_event: AuditEvent,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateCheckConstraintRequest {
     pub invocation_id: [u8; 16],
     pub authenticated_actor_id: [u8; 16],
@@ -12408,7 +12426,7 @@ impl<'db> StorageManager<'db> {
     /// direction so authorization and provenance change atomically.
     pub fn set_object_grants_batch(
         &self,
-        mut request: SetObjectGrantBatchRequest,
+        request: SetObjectGrantBatchRequest,
     ) -> Result<u64, CommitError> {
         let SetObjectGrantBatchRequest {
             invocation_id,
@@ -12419,18 +12437,54 @@ impl<'db> StorageManager<'db> {
             target,
             grant,
             retention_deadline_us,
+            audit_event,
+        } = request;
+        let entries = privileges
+            .into_iter()
+            .map(|privilege| ObjectGrantEntry {
+                privilege,
+                target: target.clone(),
+            })
+            .collect();
+        self.set_object_grant_entries_batch(SetObjectGrantEntriesBatchRequest {
+            invocation_id,
+            authenticated_actor_id,
+            grantee_id,
+            object_id,
+            entries,
+            grant,
+            retention_deadline_us,
+            audit_event,
+        })
+    }
+
+    /// Add or remove several direct grants with independently scoped targets
+    /// in one authenticated catalog publication.
+    pub fn set_object_grant_entries_batch(
+        &self,
+        mut request: SetObjectGrantEntriesBatchRequest,
+    ) -> Result<u64, CommitError> {
+        let SetObjectGrantEntriesBatchRequest {
+            invocation_id,
+            authenticated_actor_id,
+            grantee_id,
+            object_id,
+            entries,
+            grant,
+            retention_deadline_us,
             ref mut audit_event,
         } = request;
         if invocation_id == [0; 16]
             || authenticated_actor_id == [0; 16]
             || grantee_id == [0; 16]
             || object_id == [0; 16]
-            || privileges.is_empty()
-            || privileges.len() > 11
-            || privileges
-                .iter()
-                .enumerate()
-                .any(|(index, privilege)| privileges[..index].contains(privilege))
+            || entries.is_empty()
+            || entries.len() > crate::authorization::MAX_AUTHORIZATION_INPUTS
+            || entries.iter().enumerate().any(|(index, entry)| {
+                entries[..index].iter().any(|previous| {
+                    previous.privilege == entry.privilege && previous.target == entry.target
+                })
+            })
             || retention_deadline_us <= 0
             || audit_event.actor_id != Some(authenticated_actor_id)
             || audit_event.correlation_id != invocation_id
@@ -12482,81 +12536,59 @@ impl<'db> StorageManager<'db> {
             .ok_or(CommitError::InvalidCatalog)?;
         let object_kind = read_catalog_u16(&object_key, &object_bytes, 2, 1)
             .map_err(table_lifecycle_commit_error)?;
-        let (scope, target_ids) = match target {
-            ObjectGrantTarget::Object => (1u16, vec![object_id]),
-            ObjectGrantTarget::AllColumns => {
-                if object_kind != 3
-                    || privileges
-                        .iter()
-                        .any(|privilege| !matches!(privilege.code(), 2 | 3 | 4 | 6))
-                {
-                    return Err(CommitError::InvalidCatalog);
-                }
-                let prefix = 6u16.to_be_bytes();
-                let mut column_ids = Vec::new();
-                let mut scanned = 0usize;
-                for entry in catalog
-                    .range(prefix.as_slice()..)
-                    .map_err(|error| CommitError::Storage(error.to_string()))?
-                {
-                    let (key, value) =
-                        entry.map_err(|error| CommitError::Storage(error.to_string()))?;
-                    let key = key.value();
-                    if !key.starts_with(&prefix) {
-                        break;
-                    }
-                    scanned += 1;
-                    if scanned > crate::snapshot::MAX_CATALOG_FAMILY_SCAN
-                        || key.len() != 19
-                        || key[2] != 1
-                    {
+        let mut grant_specs = Vec::<(u16, u16, [u8; 16], Vec<u8>)>::new();
+        let mut all_target_ids = HashSet::new();
+        let mut unique_grants = HashSet::new();
+        for entry in &entries {
+            let code = entry.privilege.code();
+            let (scope, target_ids) = match &entry.target {
+                ObjectGrantTarget::Object => (1u16, vec![object_id]),
+                ObjectGrantTarget::AllColumns => {
+                    if object_kind != 3 || !matches!(code, 2 | 3 | 4 | 6) {
                         return Err(CommitError::InvalidCatalog);
                     }
-                    let column_id: [u8; 16] = key[3..19]
-                        .try_into()
-                        .map_err(|_| CommitError::InvalidCatalog)?;
-                    if read_catalog_id(key, value.value(), 6, 1)
-                        .map_err(table_lifecycle_commit_error)?
-                        == object_id
+                    let prefix = 6u16.to_be_bytes();
+                    let mut column_ids = Vec::new();
+                    let mut scanned = 0usize;
+                    for entry in catalog
+                        .range(prefix.as_slice()..)
+                        .map_err(|error| CommitError::Storage(error.to_string()))?
                     {
-                        column_ids.push(column_id);
-                        if column_ids.len() > crate::tuple::MAX_COLUMNS {
+                        let (key, value) =
+                            entry.map_err(|error| CommitError::Storage(error.to_string()))?;
+                        let key = key.value();
+                        if !key.starts_with(&prefix) {
+                            break;
+                        }
+                        scanned += 1;
+                        if scanned > crate::snapshot::MAX_CATALOG_FAMILY_SCAN
+                            || key.len() != 19
+                            || key[2] != 1
+                        {
                             return Err(CommitError::InvalidCatalog);
                         }
+                        let column_id: [u8; 16] = key[3..19]
+                            .try_into()
+                            .map_err(|_| CommitError::InvalidCatalog)?;
+                        if read_catalog_id(key, value.value(), 6, 1)
+                            .map_err(table_lifecycle_commit_error)?
+                            == object_id
+                        {
+                            column_ids.push(column_id);
+                            if column_ids.len() > crate::tuple::MAX_COLUMNS {
+                                return Err(CommitError::InvalidCatalog);
+                            }
+                        }
                     }
+                    if column_ids.is_empty() {
+                        return Err(CommitError::InvalidCatalog);
+                    }
+                    (2, column_ids)
                 }
-                if column_ids.is_empty() {
-                    return Err(CommitError::InvalidCatalog);
-                }
-                (2, column_ids)
-            }
-            ObjectGrantTarget::Column(column_id) => {
-                if object_kind != 3 || column_id == [0; 16] {
-                    return Err(CommitError::InvalidCatalog);
-                }
-                let column_key = id_catalog_key(6, column_id);
-                let column_bytes = catalog
-                    .get(column_key.as_slice())
-                    .map_err(|error| CommitError::Storage(error.to_string()))?
-                    .map(|value| value.value().to_vec())
-                    .ok_or(CommitError::InvalidCatalog)?;
-                if read_catalog_id(&column_key, &column_bytes, 6, 1)
-                    .map_err(table_lifecycle_commit_error)?
-                    != object_id
-                {
-                    return Err(CommitError::InvalidCatalog);
-                }
-                (2, vec![column_id])
-            }
-            ObjectGrantTarget::Columns(column_ids) => {
-                if object_kind != 3
-                    || !(2..=64).contains(&column_ids.len())
-                    || column_ids.contains(&[0; 16])
-                    || column_ids.iter().copied().collect::<HashSet<_>>().len() != column_ids.len()
-                {
-                    return Err(CommitError::InvalidCatalog);
-                }
-                for column_id in &column_ids {
+                ObjectGrantTarget::Column(column_id) => {
+                    if object_kind != 3 || *column_id == [0; 16] {
+                        return Err(CommitError::InvalidCatalog);
+                    }
                     let column_key = id_catalog_key(6, *column_id);
                     let column_bytes = catalog
                         .get(column_key.as_slice())
@@ -12569,13 +12601,34 @@ impl<'db> StorageManager<'db> {
                     {
                         return Err(CommitError::InvalidCatalog);
                     }
+                    (2, vec![*column_id])
                 }
-                (2, column_ids)
-            }
-        };
-        let mut grant_specs = Vec::with_capacity(privileges.len() * target_ids.len());
-        for privilege in &privileges {
-            let code = privilege.code();
+                ObjectGrantTarget::Columns(column_ids) => {
+                    if object_kind != 3
+                        || !(2..=64).contains(&column_ids.len())
+                        || column_ids.contains(&[0; 16])
+                        || column_ids.iter().copied().collect::<HashSet<_>>().len()
+                            != column_ids.len()
+                    {
+                        return Err(CommitError::InvalidCatalog);
+                    }
+                    for column_id in column_ids {
+                        let column_key = id_catalog_key(6, *column_id);
+                        let column_bytes = catalog
+                            .get(column_key.as_slice())
+                            .map_err(|error| CommitError::Storage(error.to_string()))?
+                            .map(|value| value.value().to_vec())
+                            .ok_or(CommitError::InvalidCatalog)?;
+                        if read_catalog_id(&column_key, &column_bytes, 6, 1)
+                            .map_err(table_lifecycle_commit_error)?
+                            != object_id
+                        {
+                            return Err(CommitError::InvalidCatalog);
+                        }
+                    }
+                    (2, column_ids.clone())
+                }
+            };
             let valid_scope = matches!(
                 (object_kind, code, scope),
                 (1, 1 | 7 | 8 | 10 | 11, 1) | (3, 2..=4 | 6, 1 | 2) | (3, 5 | 8 | 9 | 10 | 11, 1)
@@ -12583,14 +12636,21 @@ impl<'db> StorageManager<'db> {
             if !valid_scope {
                 return Err(CommitError::InvalidCatalog);
             }
-            for target_id in &target_ids {
+            for target_id in target_ids {
+                if !unique_grants.insert((code, scope, target_id)) {
+                    return Err(CommitError::InvalidWrite);
+                }
+                all_target_ids.insert(target_id);
                 grant_specs.push((
                     code,
-                    *target_id,
-                    object_grant_catalog_key(grantee_id, object_id, code, scope, *target_id),
+                    scope,
+                    target_id,
+                    object_grant_catalog_key(grantee_id, object_id, code, scope, target_id),
                 ));
             }
         }
+        let mut target_ids = all_target_ids.into_iter().collect::<Vec<_>>();
+        target_ids.sort_unstable();
         if grant_specs
             .len()
             .saturating_add(target_ids.len())
@@ -12602,10 +12662,10 @@ impl<'db> StorageManager<'db> {
 
         let grant_keys = grant_specs
             .iter()
-            .map(|(_, _, grant_key)| grant_key.clone())
+            .map(|(_, _, _, grant_key)| grant_key.clone())
             .collect::<Vec<_>>();
         let mut current_grants = Vec::with_capacity(grant_specs.len());
-        for (_, _, grant_key) in &grant_specs {
+        for (_, _, _, grant_key) in &grant_specs {
             let current = catalog
                 .get(grant_key.as_slice())
                 .map_err(|error| CommitError::Storage(error.to_string()))?
@@ -12648,7 +12708,7 @@ impl<'db> StorageManager<'db> {
             remaining_targets
         };
         let mut writes = Vec::with_capacity(grant_specs.len() * 2 + 1);
-        for ((_, _, grant_key), current_grant) in grant_specs.iter().zip(current_grants) {
+        for ((_, _, _, grant_key), current_grant) in grant_specs.iter().zip(current_grants) {
             let payload = if grant {
                 Some(
                     encode_envelope(

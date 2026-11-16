@@ -352,6 +352,13 @@ pub enum AdminObjectGrantTarget {
     AllColumns,
 }
 
+/// One privilege and its independently scoped grant target.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminObjectGrantEntry {
+    pub privilege: AdminObjectPrivilege,
+    pub target: AdminObjectGrantTarget,
+}
+
 impl AdminTokenResult {
     /// Borrow the one-time bearer secret for secure storage or immediate use.
     pub fn token_secret(&self) -> &[u8; TOKEN_SECRET_BYTES] {
@@ -2770,6 +2777,76 @@ impl AdminClient {
         };
         self.execute_admin_operation(operation, arguments, None)
             .map(|(result, _)| result)
+    }
+
+    /// Atomically change privileges that can each have a different target scope.
+    pub fn change_object_grant_entries(
+        &mut self,
+        operation: &str,
+        grantee_id: [u8; 16],
+        object_id: [u8; 16],
+        entries: Vec<AdminObjectGrantEntry>,
+    ) -> Result<AdminOperationResult, ClientSubmitError> {
+        validate_admin_id(grantee_id)?;
+        validate_admin_id(object_id)?;
+        if !matches!(operation, "objects.grant" | "objects.revoke")
+            || entries.is_empty()
+            || entries.len() > 64
+        {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let mut encoded = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.iter().enumerate() {
+            if entries[..index].iter().any(|previous| {
+                previous.privilege == entry.privilege && previous.target == entry.target
+            }) {
+                return Err(ClientSubmitError::InvalidAdministrativeRequest);
+            }
+            let target = match &entry.target {
+                AdminObjectGrantTarget::Object => format!("object:{}", lower_hex(&object_id)),
+                AdminObjectGrantTarget::Column(id) => {
+                    validate_admin_id(*id)?;
+                    format!("column:{}", lower_hex(id))
+                }
+                AdminObjectGrantTarget::Columns(ids) => {
+                    if !(2..=64).contains(&ids.len()) {
+                        return Err(ClientSubmitError::InvalidAdministrativeRequest);
+                    }
+                    let mut unique = HashSet::new();
+                    for id in ids {
+                        validate_admin_id(*id)?;
+                        if !unique.insert(*id) {
+                            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+                        }
+                    }
+                    format!(
+                        "columns:{}",
+                        ids.iter()
+                            .map(|id| lower_hex(id))
+                            .collect::<Vec<_>>()
+                            .join("+")
+                    )
+                }
+                AdminObjectGrantTarget::AllColumns => "all_columns:".to_owned(),
+            };
+            encoded.push(format!("{}@{target}", entry.privilege.as_wire_name()));
+        }
+        let operation = if operation == "objects.grant" {
+            "objects.grant_entries"
+        } else {
+            "objects.revoke_entries"
+        };
+        self.execute_admin_operation(
+            operation,
+            format!(
+                "{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",\"entries\":\"{}\"}}",
+                lower_hex(&grantee_id),
+                lower_hex(&object_id),
+                encoded.join(";")
+            ),
+            None,
+        )
+        .map(|(result, _)| result)
     }
 
     fn change_system_privilege(
