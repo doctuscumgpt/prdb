@@ -365,3 +365,9 @@
 - A concurrent reader opens 128 snapshots and resolves all 64 names while the writer publishes the 128 DDL changes, exercising mixed secondary-index reads and catalog publication. The test also checks the create/drop sequence leaves every name absent in the current catalog.
 - Verification: the focused real-redb integration test passed in the pinned Nix shell; `cargo fmt --all -- --check`, workspace Clippy with warnings denied, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with zero ignored tests, including all 179 commit integration tests, in 2m56s.
 - Remaining: longer-duration mixed catalog-DDL/read campaigns and continued codec fuzzing remain hardening work.
+
+## DD-2 / DD-5: object-owner index across schema ownership transfer — verified slice
+
+- Extended `storage_manager_creates_schema_atomically_for_privileged_actor` to inspect `object_owners_v1` through both the retained pre-transfer snapshot and a fresh post-transfer snapshot. The old snapshot continues to list the schema under its original owner and excludes the successor; the current snapshot removes the former owner entry and lists the schema under the successor role.
+- Verification: the focused real-redb regression passed. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests: 291 engine unit tests, 179 commit tests, 75 transaction tests, and all other workspace targets.
+- Remaining: longer-duration mixed catalog-DDL/read campaigns and continued codec fuzzing remain hardening work.

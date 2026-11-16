@@ -1259,6 +1259,11 @@ fn storage_manager_creates_schema_atomically_for_privileged_actor()
     let object_key = id_catalog_key(2, created.schema_id);
     let read = database.begin_read()?;
     let catalog = read.open_table(CATALOG)?;
+    assert!(
+        prdb_engine::catalog_index::scan_object_ids_for_owner(&read, actor, 4096)?
+            .contains(&created.schema_id),
+        "new schema is missing from its owner's object index"
+    );
     assert!(catalog.get(schema_key.as_slice())?.is_some());
     let object = catalog
         .get(object_key.as_slice())?
@@ -1297,6 +1302,16 @@ fn storage_manager_creates_schema_atomically_for_privileged_actor()
         "schema ownership transfer failed: {transfer_result:?}"
     );
     assert_eq!(transfer_result?, 3);
+    assert!(
+        prdb_engine::catalog_index::scan_object_ids_for_owner(&read, actor, 4096)?
+            .contains(&created.schema_id),
+        "the retained owner snapshot lost its schema index entry"
+    );
+    assert!(
+        !prdb_engine::catalog_index::scan_object_ids_for_owner(&read, successor_role, 4096)?
+            .contains(&created.schema_id),
+        "the retained owner snapshot observed a future owner index entry"
+    );
     let retained_object = decode_registered_envelope(
         catalog
             .get(object_key.as_slice())?
@@ -1329,6 +1344,16 @@ fn storage_manager_creates_schema_atomically_for_privileged_actor()
     );
     {
         let read = database.begin_read()?;
+        assert!(
+            !prdb_engine::catalog_index::scan_object_ids_for_owner(&read, actor, 4096)?
+                .contains(&created.schema_id),
+            "the former owner retained the transferred schema in the current index"
+        );
+        assert!(
+            prdb_engine::catalog_index::scan_object_ids_for_owner(&read, successor_role, 4096)?
+                .contains(&created.schema_id),
+            "the successor owner is missing the transferred schema from the index"
+        );
         let object = decode_registered_envelope(
             read.open_table(CATALOG)?
                 .get(object_key.as_slice())?
