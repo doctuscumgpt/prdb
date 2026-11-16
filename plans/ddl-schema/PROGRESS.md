@@ -1070,4 +1070,4 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## DS-5 / DS-7: table rename races a staged row writer — verified slice
 
 - Upgraded `storage_manager_renames_tables_and_drop_column_rewrites_rows` from a one-sided stale-writer check to a barrier race between table rename and an insert staged against the old name snapshot. Writer-first publishes before rename; rename-first durably aborts the stale writer. The test checks commit order, row bytes, durable outcome, current and retained name-index snapshots, and continued schema reads through the stable table ID.
-- Verification: focused real-redb race passed. Formatting, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The full serial delegated-cgroup suite has not been rerun for this test-only increment.
+- Verification: focused real-redb race passed. Formatting, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite subsequently passed with sandbox and process integration tests enabled and zero ignored tests.

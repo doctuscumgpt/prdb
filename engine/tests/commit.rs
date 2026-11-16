@@ -24624,6 +24624,55 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
     ))?;
     let range_index_id = response_id(&range_index_response, "index_id")?;
 
+    let owner_objects = {
+        let read = database.begin_read()?;
+        prdb_engine::catalog_index::scan_object_ids_for_owner(&read, admin_id, 4096)?
+    };
+    assert!(
+        owner_objects.contains(&table_id),
+        "catalog fixture must make the database administrator the table owner"
+    );
+    let (mut owner_read, owner_roles) = storage.begin_token_authenticated_invocation(
+        id(0x8d),
+        admin_token_id,
+        &admin_secret,
+        retention_deadline_us,
+        4,
+        4096,
+    )?;
+    assert!(owner_roles.contains(&admin_role));
+    let owner_row_result = owner_read.read_catalog_authorized_row(table_id, id(0x7e));
+    assert!(
+        matches!(&owner_row_result, Ok(None)),
+        "owner without data grants must not read a stored row: {owner_row_result:?}"
+    );
+    owner_read.commit()?;
+    assert_eq!(
+        lookup_outcome(&database, id(0x8d), admin_id, 1)?
+            .ok_or("owner row-read denial has no durable outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+
+    let (mut owner_scan, owner_roles) = storage.begin_token_authenticated_invocation(
+        id(0x8e),
+        admin_token_id,
+        &admin_secret,
+        retention_deadline_us,
+        4,
+        4096,
+    )?;
+    assert!(owner_roles.contains(&admin_role));
+    let owner_scan_page = owner_scan.scan_catalog_authorized_rows(table_id, None, 8)?;
+    assert!(owner_scan_page.rows.is_empty());
+    owner_scan.commit()?;
+    assert_eq!(
+        lookup_outcome(&database, id(0x8e), admin_id, 1)?
+            .ok_or("owner table-scan denial has no durable outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+
     let (mut first_invocation, first_roles) = storage.begin_token_authenticated_invocation(
         id(0x81),
         first_token_id,

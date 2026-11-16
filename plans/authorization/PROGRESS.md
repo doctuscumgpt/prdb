@@ -295,3 +295,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `catalog_authorized_scan_builds_its_projection_from_pinned_records` to submit both `STAGE DELETE` and `STAGE UPDATE` with a genuine row handle issued to another principal. Both IPC operations fail with `InvalidMetadataRequest`; the stored row bytes remain unchanged after the replay invocation aborts.
 - Verification: focused real-redb transaction regression passed. Full formatting, workspace build, and warning-denied all-target Clippy checks are recorded with this change. The complete delegated workspace suite was not rerun for this test-only increment; the immediately preceding full run passed with sandbox/process tests enabled and zero ignored tests.
+
+## AU-1 / AU-2: table ownership and database administration do not grant row access — verified slice
+
+- Extended `token_authenticated_catalog_scans_redact_cells_per_principal` to confirm the authenticated database administrator owns the created table, has no data grant in the fixture, and still receives no row from either direct catalog-authorized lookup or scan. Both read-only invocations complete normally with committed outcomes and expose no row payload.
+- Verification: focused real-redb regression passed. Formatting, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process integration tests enabled and zero ignored tests.
