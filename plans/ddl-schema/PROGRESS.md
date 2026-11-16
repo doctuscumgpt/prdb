@@ -80,7 +80,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression evidence: the real-redb lifecycle test verifies name/object update, stable table identity, unchanged schema version, incremented write epoch, duplicate-name rejection with a durable aborted outcome, and subsequent row/index operations through a column drop. The strict decoder test accepts the exact table ID and normalized name shape.
 - TDD note: the rename assertion first failed with `InvalidRequest` against the compiling storage stub; the storage path and authorized commit guard now pass it.
 - Verification: `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and `git diff --check` all passed in the configured Nix shell; the focused storage and decoder tests passed as well.
-- Remaining: column/table rename gateway dispatch coverage, role-owner authorization regression, DDL stale-writer race, and other supported alterations remain open.
+- Remaining: column rename gateway dispatch coverage, role-owner authorization regression, and other supported alterations remain open.
 
 ## DS-5 / SM-5: column nullability changes — implemented
 
@@ -115,6 +115,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Regression evidence: the real-redb table lifecycle test stages a valid tuple under the pinned schema, renames the table, then verifies commit returns `CommitError::Conflict`, the row is absent, and the invocation has a durable ABORTED outcome.
 - Implementation: no code change was needed. The existing schema/object exact-byte guards and shared DDL fence reject the stale commit.
 - Verification: focused lifecycle regression passed. `cargo build --workspace --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and `git diff --check` all passed in the configured Nix shell.
+- Remaining: stale-writer coverage for column rename, nullability/default changes, add/drop column, and index/constraint DDL; role-owner authorization regression; separate supervisor/gateway process integration.
+
+## DS-5 / DS-7: table rename and staged writer serialize atomically — verified
+
+- Reconciled the earlier race status against `storage_manager_renames_tables_and_drop_column_rewrites_rows`: a barrier starts the rename and staged writer together, then checks either writer-first publication before the rename or rename-first conflict/ABORTED with no row. The test also confirms the retained name reader keeps its pinned schema and the current name index resolves only the renamed table.
+- Verification: included in the complete serial delegated-cgroup workspace suite on 2026-11-16; all 191 commit integration tests passed, including sandbox and process coverage. Locked workspace build, formatting, warning-denied Clippy, TinyCC SDK tests/fixture, and `git diff --check` passed.
 - Remaining: stale-writer coverage for column rename, nullability/default changes, add/drop column, and index/constraint DDL; role-owner authorization regression; separate supervisor/gateway process integration.
 
 ## DS-5 / SM-5: table ADD COLUMN — implemented
