@@ -1214,3 +1214,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` to run `ALTER TABLE ... RENAME COLUMN` through the real `prdb-client admin-sql` process. Authenticated metadata confirms the new name and unchanged stable column ID and ordinal.
 - Verification: the focused delegated process regression passed with the configured runtime profile; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
+
+## 2026-11-16 DS-8: column default SQL through gateway and supervisor — verified slice
+
+- Extended `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` to issue `ALTER COLUMN SET DEFAULT` and `ALTER COLUMN DROP DEFAULT` through the real `prdb-client admin-sql` process after the column rename. The test checks successful process exits and the expected operation messages for both DDL statements.
+- Verification: the focused delegated metadata process test passed with the configured runtime profile; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.

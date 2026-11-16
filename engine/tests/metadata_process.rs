@@ -5064,6 +5064,42 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             .iter()
             .all(|column| column.name != "payload")
     );
+    for (suffix, sql, expected_output) in [
+        (
+            "set-default",
+            "ALTER TABLE process_admin_schema.process_admin_table ALTER COLUMN payload_renamed SET DEFAULT 'process-default';",
+            "set default on column payload_renamed",
+        ),
+        (
+            "drop-default",
+            "ALTER TABLE process_admin_schema.process_admin_table ALTER COLUMN payload_renamed DROP DEFAULT;",
+            "dropped default on column payload_renamed",
+        ),
+    ] {
+        let sql_path = root.join(format!("{suffix}-column-default.sql"));
+        std::fs::write(&sql_path, sql)?;
+        let result = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "admin-sql",
+                "--address",
+                &address_text,
+                "--credentials",
+                admin_cli_credentials,
+                "--sql-file",
+                sql_path.to_str().ok_or("SQL path is not UTF-8")?,
+            ])
+            .output()?;
+        assert!(
+            result.status.success(),
+            "admin-sql {suffix} failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&result.stdout).contains(expected_output),
+            "admin-sql {suffix} returned unexpected output: {}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+    }
     let renamed_table = admin.rename_table(created_table.table_id, "process_admin_table_v2")?;
     let dropped_source_table = admin.drop_table(source_table.table_id)?;
     let dropped_table = admin.drop_table(created_table.table_id)?;
