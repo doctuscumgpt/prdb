@@ -22749,6 +22749,156 @@ fn identity_rename_preserves_the_shared_user_role_name_namespace()
 }
 
 #[test]
+fn login_disable_racing_token_admission_linearizes_before_or_after_start()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::TokenIssueRequest;
+    use prdb_engine::transaction::TransactionError;
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(500))?;
+    let admin_role = builtin_owner_id();
+    let admin_user = id(0xA1);
+    let user_id = id(0xA2);
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_micros(),
+    )?;
+    let retention_deadline_us = now.saturating_add(3_600_000_000);
+    let mut setup_audit = identity_audit_event(0xA4, admin_role, admin_user);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(
+        id(0xA4),
+        admin_role,
+        retention_deadline_us,
+        &[
+            principal_write_with_name(admin_user, 1, 1, "login_admission_admin"),
+            object_write_with_name(admin_user, 8, "login_admission_admin"),
+            membership_write(admin_user, admin_role),
+            dependency_write(admin_user, admin_role, 5),
+            credential_verifier_write(
+                id(0xA5),
+                admin_user,
+                &[0xA5; 32],
+                now - 1,
+                retention_deadline_us,
+                None,
+                1,
+            ),
+            principal_write_with_name(user_id, 1, 1, "login_admission_target"),
+            object_write_with_name(user_id, 8, "login_admission_target"),
+        ],
+        &[setup_audit],
+    )?;
+    let mut token_audit = identity_audit_event(0xA6, admin_user, user_id);
+    token_audit.action = AuditAction::TokenLifecycle;
+    token_audit.correlation_id = id(0xA6);
+    let mut issued = storage.issue_token(TokenIssueRequest {
+        invocation_id: id(0xA6),
+        authenticated_actor_id: admin_user,
+        user_id,
+        label: "login admission race",
+        expires_at_us: retention_deadline_us,
+        retention_deadline_us,
+        audit_event: token_audit,
+    })?;
+    let token_id = issued.token_id;
+    let token_secret = issued.take_secret().ok_or("issued token secret missing")?;
+
+    let retained_invocation_id = id(0xA7);
+    let admission_id = id(0xAB);
+    let disable_id = id(0xA8);
+    let (mut retained_invocation, retained_roles) = storage.begin_token_authenticated_invocation(
+        retained_invocation_id,
+        token_id,
+        &token_secret,
+        retention_deadline_us,
+        1,
+        64,
+    )?;
+    assert!(retained_roles.is_empty());
+    let pinned_schema = retained_invocation.load_catalog_table_schema(id(16))?;
+    let barrier = Arc::new(Barrier::new(2));
+    let (admission_result, disable_result) = std::thread::scope(|scope| {
+        let admission_barrier = Arc::clone(&barrier);
+        let admission_storage = &storage;
+        let admission_secret = token_secret;
+        let admission = scope.spawn(move || {
+            admission_barrier.wait();
+            admission_storage.begin_token_authenticated_invocation(
+                admission_id,
+                token_id,
+                &admission_secret,
+                retention_deadline_us,
+                1,
+                64,
+            )
+        });
+        barrier.wait();
+        let mut disable_audit = identity_audit_event(0xA9, admin_user, user_id);
+        disable_audit.correlation_id = disable_id;
+        let disable = storage.set_user_login_enabled(
+            disable_id,
+            admin_user,
+            user_id,
+            false,
+            retention_deadline_us,
+            disable_audit,
+        );
+        (
+            admission.join().expect("token-admission thread panicked"),
+            disable,
+        )
+    });
+
+    let disable_sequence = disable_result?;
+    assert!(disable_sequence > 1);
+    match admission_result {
+        Ok((mut invocation, roles)) => {
+            assert!(roles.is_empty());
+            invocation.abort()?;
+            assert_eq!(
+                lookup_outcome(&database, admission_id, user_id, 1)?
+                    .ok_or("admitted invocation outcome missing")?
+                    .status,
+                OutcomeStatus::Aborted
+            );
+        }
+        Err(TransactionError::AuthenticationFailed) => {
+            // The LOGIN-disable commit linearized first, so no invocation is admitted.
+        }
+        Err(error) => {
+            return Err(format!("unexpected LOGIN/admission race result: {error:?}").into());
+        }
+    }
+    assert!(
+        storage
+            .list_tokens(admin_user, user_id)?
+            .iter()
+            .any(|token| token.token_id == token_id && token.revoked)
+    );
+    assert_eq!(
+        retained_invocation.load_catalog_table_schema(id(16))?,
+        pinned_schema,
+        "an invocation admitted before LOGIN disable retains its bounded catalog snapshot"
+    );
+    retained_invocation.abort()?;
+    assert!(matches!(
+        storage.begin_token_authenticated_invocation(
+            id(0xAC),
+            token_id,
+            &token_secret,
+            retention_deadline_us,
+            1,
+            64,
+        ),
+        Err(TransactionError::AuthenticationFailed)
+    ));
+    Ok(())
+}
+
+#[test]
 fn identity_ddl_cannot_disable_the_last_credentialed_admin()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
