@@ -2912,6 +2912,54 @@ fn storage_manager_drop_table_removes_owned_catalog_and_rows()
             .get(id_catalog_key(5, created.table_id).as_slice())?
             .is_some()
     );
+    let table_object_key = id_catalog_key(2, created.table_id);
+    let table_record_key = id_catalog_key(5, created.table_id);
+    let retired_table_object_bytes = retained_catalog
+        .get(table_object_key.as_slice())?
+        .ok_or("retained reader lost its pre-drop table object")?
+        .value()
+        .to_vec();
+    let retired_table_record_bytes = retained_catalog
+        .get(table_record_key.as_slice())?
+        .ok_or("retained reader lost its pre-drop table record")?
+        .value()
+        .to_vec();
+    drop(retained_catalog);
+    let current_read = database.begin_read()?;
+    let current_catalog = current_read.open_table(CATALOG)?;
+    assert!(
+        current_catalog
+            .get(id_catalog_key(17, created.table_id).as_slice())?
+            .is_some(),
+        "DROP TABLE must permanently reserve its retired object ID"
+    );
+    let reuse_invocation = id(0x64);
+    let mut reuse_audit = identity_audit_event(0x65, actor, created.table_id);
+    reuse_audit.correlation_id = reuse_invocation;
+    assert_eq!(
+        commit_catalog_and_audit(
+            &database,
+            reuse_invocation,
+            actor,
+            9_999,
+            &[
+                CatalogWrite {
+                    key: table_object_key,
+                    expected_value: None,
+                    payload: Some(retired_table_object_bytes),
+                },
+                CatalogWrite {
+                    key: table_record_key,
+                    expected_value: None,
+                    payload: Some(retired_table_record_bytes),
+                },
+            ],
+            &[reuse_audit],
+        ),
+        Err(CommitError::InvalidCatalog),
+        "a dropped table ID must not be reusable by a later catalog commit"
+    );
+    drop(current_catalog);
     let retained_rows = prdb_engine::snapshot::RowSnapshot::new(retained_snapshot);
     let retained_row = RowRecord::decode(
         &retained_rows

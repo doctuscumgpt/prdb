@@ -7,6 +7,13 @@
 - Verification: the focused real-redb regression, workspace build, formatting check, warning-denied all-target Clippy, and complete serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
 - Remaining lifecycle scope: permanent reservations for retired object kinds other than schemas, users, and roles, and trustworthy history for pre-v2 schema drops.
 
+## CL-3 / DD-3 / DS-3: table-drop ID reservation — verified slice
+
+- DROP TABLE now includes the stable table ID's family-17 reservation in its authorized catalog batch. The table-drop guard validates the empty family-17 payload and serializes against a concurrent reservation; the generic catalog validator rejects table deletion without a reservation and blocks reuse.
+- Red/green evidence: the updated real-redb lifecycle regression failed before implementation because the dropped table had no family-17 record, then passed with the same-ID recreation attempt rejected.
+- Verification: workspace build, formatting check, warning-denied all-target Clippy, and complete serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
+- Remaining lifecycle scope: retirement for owned child definitions and other object kinds, plus historical pre-v2 table-drop identity history.
+
 Migrated component-owned progress entries from [storage-manager progress](../storage-manager/PROGRESS.md); evidence is preserved below.
 
 ## CL-1 / CL-2 dependency: local bootstrap and credential handoff — verified core

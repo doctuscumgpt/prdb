@@ -4968,7 +4968,7 @@ impl<'db> StorageManager<'db> {
                 deletes.insert(key, value.value().to_vec());
             }
         }
-        let writes = principal_updates
+        let mut writes = principal_updates
             .into_iter()
             .chain(table_epoch_updates)
             .chain(
@@ -4981,6 +4981,18 @@ impl<'db> StorageManager<'db> {
                     }),
             )
             .collect::<Vec<_>>();
+        let reservation_key = retired_object_id_catalog_key(table_id);
+        let reservation_payload = encode_envelope(
+            &family_schema(17).ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?,
+            &reservation_key,
+            &[],
+        )
+        .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+        writes.push(CatalogWrite {
+            key: reservation_key,
+            expected_value: None,
+            payload: Some(reservation_payload),
+        });
         audit_event.target_ids = vec![table_id];
         let commit_sequence = commit_authorized_table_drop_ddl_with_fences(
             self.database,

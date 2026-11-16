@@ -11862,6 +11862,15 @@ fn catalog_rejects_deleting_expression_used_by_existing_check()
             expected_value: boolean_type_object.payload,
             payload: None,
         },
+        CatalogWrite {
+            key: catalog_id_key(17, table_id),
+            expected_value: None,
+            payload: Some(catalog_record_payload(
+                17,
+                &catalog_id_key(17, table_id),
+                &[],
+            )?),
+        },
     ];
     assert_eq!(
         commit_catalog_and_audit(

@@ -3042,7 +3042,7 @@ fn validate_final_identity_tombstones(
                 .value()
                 .to_vec();
             let kind = catalog_field_u16(&write.key, &current, 2, 1)?;
-            if matches!(kind, 1 | 8 | 9) {
+            if matches!(kind, 1 | 3 | 8 | 9) {
                 let id: [u8; 16] = write
                     .key
                     .get(3..19)
@@ -11303,10 +11303,12 @@ fn table_drop_ddl_authority_guards(
     if principal_id == [0; 16]
         || table_id == [0; 16]
         || catalog_writes.iter().any(|write| {
-            write.expected_value.is_none()
+            (write.expected_value.is_none()
+                && !(write.key == id_catalog_key(17, table_id) && write.payload.is_some()))
                 || (write.payload.is_some()
                     && !write.key.starts_with(&10u16.to_be_bytes())
-                    && !write.key.starts_with(&5u16.to_be_bytes()))
+                    && !write.key.starts_with(&5u16.to_be_bytes())
+                    && write.key != id_catalog_key(17, table_id))
         })
         || audit_events.is_empty()
         || audit_events.iter().any(|event| {
@@ -11633,7 +11635,11 @@ fn table_drop_ddl_authority_guards(
             .get(..2)
             .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
             .ok_or(CommitError::InvalidCatalog)?;
-        if write.expected_value.is_none() || (write.payload.is_some() && !matches!(family, 10 | 5))
+        if (write.expected_value.is_none()
+            && !(family == 17
+                && write.key == id_catalog_key(17, table_id)
+                && write.payload.is_some()))
+            || (write.payload.is_some() && !matches!(family, 5 | 10 | 17))
         {
             return Err(CommitError::InvalidCatalog);
         }
@@ -11703,6 +11709,18 @@ fn table_drop_ddl_authority_guards(
                         && dependent
                             .zip(referenced)
                             .is_some_and(|pair| grant_pairs.contains(&pair)))
+            }
+            17 => {
+                if write.key != id_catalog_key(17, table_id) {
+                    false
+                } else {
+                    let bytes = write
+                        .payload
+                        .as_deref()
+                        .ok_or(CommitError::InvalidCatalog)?;
+                    let reservation = decode_catalog_record(&write.key, bytes)?;
+                    reservation.family_code == 17 && reservation.fields.is_empty()
+                }
             }
             _ => false,
         };
@@ -11804,7 +11822,10 @@ fn table_drop_ddl_authority_guards(
             .key
             .get(..2)
             .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]));
-        if !matches!(family, Some(2 | 5 | 6 | 7 | 8 | 9 | 10 | 12 | 13 | 14 | 15)) {
+        if !matches!(
+            family,
+            Some(2 | 5 | 6 | 7 | 8 | 9 | 10 | 12 | 13 | 14 | 15 | 17)
+        ) {
             return Err(CommitError::InvalidCatalog);
         }
         add_catalog_guard(&mut guards, write.key.clone(), write.expected_value.clone());

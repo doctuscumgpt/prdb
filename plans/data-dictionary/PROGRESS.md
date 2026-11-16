@@ -8,6 +8,13 @@
 - Verification: the focused real-redb regression, workspace build, formatting check, warning-denied all-target Clippy, and full serial workspace suite passed. The suite ran inside the delegated `systemd --user` service with sandbox and process tests enabled; zero tests were ignored.
 - Remaining: this does not persist retirement for dropped table, column, index, constraint, policy, expression, or type IDs. Historical pre-v2 schema drops are not reconstructed by the identity-history migration input.
 
+## DD-3 / CL-3 / DS-3: retired table IDs are permanently reserved — verified slice
+
+- DROP TABLE now atomically publishes a family-17 reservation with deletion of the table's object and typed records. The table-drop authorization validator validates that exact reservation and guards its absence; final catalog validation requires a reservation for table-object deletion and rejects a later recreation attempt.
+- Red evidence: without the reservation, `storage_manager_drop_table_removes_owned_catalog_and_rows` failed at the new post-drop assertion. The green regression checks that the reservation is visible in the current snapshot, then attempts to restore the table's pre-drop object and typed records and requires `InvalidCatalog`.
+- Verification: focused real-redb table lifecycle regression, workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
+- Remaining: IDs for owned child definitions and other object kinds are not independently tombstoned; historical pre-v2 table drops are not reconstructed.
+
 ## Policy-target catalog envelope — in progress
 
 - Contract: [catalog payloads v1](../../specs/catalog-payloads.md), family 14. The 71-byte envelope includes a 39-byte canonical logical key and no TLVs; IDs are nonzero and target kind is 1, 2, or 3.

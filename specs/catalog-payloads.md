@@ -75,11 +75,11 @@ Notation `tag:name TYPE`; `?` means optional, all other fields are required. IDs
 | policy_targets | No TLVs; key is the entire definition |
 | dependencies | No TLVs; key is the entire definition |
 | credential_verifiers | 1:user_id ID; 2:algorithm U16; 3:algorithm_version U16; 4:verifier BYTES; 5:issued_at I64; 6:expires_at I64; 7:revoked BOOL; 8:revoked_at I64?; 9:label TEXT; 10:authority_epoch U64 |
-| identity_tombstones | No TLVs; key permanently reserves a retired schema, user, or role object ID |
+| identity_tombstones | No TLVs; key permanently reserves a retired schema, table, user, or role object ID |
 
 Credential verifier profile 1 is SHA-256 (algorithm=1, algorithm_version=1) over an exactly 32-byte uniformly random bearer secret. The stored verifier is exactly 32 bytes. This profile is only for machine-generated high-entropy tokens and must not be used for human-chosen passwords. `issued_at` must be less than `expires_at`; admission accepts only `issued_at <= trusted_now < expires_at` and `revoked=false`. A revoked record requires `revoked_at >= issued_at`; a non-revoked record omits `revoked_at`. Labels are UTF-8 and at most 128 bytes. `authority_epoch` is nonzero and must advance when an existing record changes. A token ID is a nonzero ID distinct from its secret. A verifier must reference a family-10 user unless it is revoked and references a family-17 tombstoned user; an unrevoked verifier requires a live user with LOGIN enabled. Startup and catalog commits validate the profile and ownership. Unknown algorithms or versions fail closed.
 
-Family-17 tombstones are immutable ID reservations. A tombstoned ID cannot coexist with a family-2 object or family-10 principal and cannot be reused. Schema drops and user/role deletions publish a tombstone in the same catalog transaction as their records are removed. Revoked family-16 verifiers may retain a reference to a tombstoned user; unrevoked verifiers may not. Startup and serialized catalog commits enforce these relationships.
+Family-17 tombstones are immutable ID reservations. A tombstoned ID cannot coexist with a family-2 object or family-10 principal and cannot be reused. Schema/table drops and user/role deletions publish a tombstone in the same catalog transaction as their records are removed. Revoked family-16 verifiers may retain a reference to a tombstoned user; unrevoked verifiers may not. Startup and serialized catalog commits enforce these relationships.
 
 ## Enum Values and Structured Fields
 
