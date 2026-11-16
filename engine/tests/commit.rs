@@ -6036,6 +6036,61 @@ fn storage_manager_widens_varchar_atomically_and_keeps_index_current()
     drop(rows);
     drop(read);
 
+    let stale_followup_invocation = id(0x8c);
+    let mut stale_followup =
+        storage.begin_invocation(stale_followup_invocation, actor, 9_999, 1, 1024)?;
+    let followup_schema = stale_followup.load_catalog_table_schema(table.table_id)?;
+    stale_followup.load_catalog_indexes(&followup_schema)?;
+    let followup_tuple = encode_tuple(
+        &followup_schema.columns,
+        followup_schema.schema_version,
+        &[Some(ScalarValue::Varchar(
+            "pinned before second widen".to_owned(),
+        ))],
+    )?;
+    let followup_row_id = id(0x8d);
+    stale_followup.stage_put(
+        prdb_engine::overlay::RowId {
+            table: table.table_id,
+            row: followup_row_id,
+        },
+        &followup_tuple,
+    )?;
+    let before_second_widen = commit_sequence(&database)?;
+    let second_widen_invocation = id(0x8e);
+    let mut second_widen_audit = identity_audit_event(0x8f, actor, table.table_id);
+    second_widen_audit.correlation_id = second_widen_invocation;
+    let second_widen_sequence = storage.widen_varchar_column(
+        second_widen_invocation,
+        actor,
+        table.table_id,
+        table.column_ids[0],
+        128,
+        9_999,
+        second_widen_audit,
+    )?;
+    assert_eq!(second_widen_sequence, before_second_widen + 1);
+    assert!(matches!(
+        stale_followup.commit(),
+        Err(prdb_engine::transaction::TransactionError::Commit(
+            CommitError::Conflict
+        ))
+    ));
+    assert_eq!(commit_sequence(&database)?, second_widen_sequence);
+    assert!(row(&database, &table_row_key(table.table_id, followup_row_id))?.is_none());
+    assert_eq!(
+        lookup_outcome(&database, stale_followup_invocation, actor, 1)?
+            .ok_or("missing stale writer outcome after VARCHAR widening")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    assert_eq!(
+        lookup_outcome(&database, second_widen_invocation, actor, 1)?
+            .ok_or("missing second VARCHAR widening outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+
     let before_rejected = commit_sequence(&database)?;
     let reject_invocation = id(0x80);
     let mut reject_audit = identity_audit_event(0x81, actor, id(0x82));
@@ -6077,7 +6132,7 @@ fn storage_manager_widens_varchar_atomically_and_keeps_index_current()
             denied_actor,
             table.table_id,
             table.column_ids[0],
-            128,
+            256,
             9_999,
             denied_audit,
         ),
