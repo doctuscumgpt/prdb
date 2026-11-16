@@ -39275,6 +39275,131 @@ fn storage_manager_issues_and_revokes_tokens_for_manage_users()
     assert!(revoked_inventory[0].revoked);
     assert!(revoked_inventory[0].revoked_at_us.is_some());
 
+    let login_race_issue_invocation = id(0xa4);
+    let login_race_disable_invocation = id(0xa6);
+    let before_login_race = commit_sequence(&database)?;
+    let mut race_issue_audit = lifecycle_event(0xa3, admin_user, vec![target_user]);
+    race_issue_audit.correlation_id = login_race_issue_invocation;
+    let mut race_disable_audit = identity_audit_event(0xa5, admin_user, target_user);
+    race_disable_audit.correlation_id = login_race_disable_invocation;
+    let login_race_barrier = Arc::new(Barrier::new(3));
+    let (race_issue_result, race_disable_result) = std::thread::scope(|scope| {
+        let issue_barrier = Arc::clone(&login_race_barrier);
+        let issue_storage = &storage;
+        let issue = scope.spawn(move || {
+            issue_barrier.wait();
+            issue_storage.issue_token(TokenIssueRequest {
+                invocation_id: login_race_issue_invocation,
+                authenticated_actor_id: admin_user,
+                user_id: target_user,
+                label: "login race token",
+                expires_at_us,
+                retention_deadline_us: now + 7_200_000_000,
+                audit_event: race_issue_audit,
+            })
+        });
+        let disable_barrier = Arc::clone(&login_race_barrier);
+        let disable_storage = &storage;
+        let disable = scope.spawn(move || {
+            disable_barrier.wait();
+            disable_storage.set_user_login_enabled(
+                login_race_disable_invocation,
+                admin_user,
+                target_user,
+                false,
+                now + 7_200_000_000,
+                race_disable_audit,
+            )
+        });
+        login_race_barrier.wait();
+        (
+            issue.join().expect("login-race token issue panicked"),
+            disable.join().expect("login-disable thread panicked"),
+        )
+    });
+    let issued_racing_token_id = match race_issue_result {
+        Ok(issued) => Some((issued.token_id, issued.commit_sequence)),
+        Err(TokenLifecycleError::Commit(
+            CommitError::Conflict
+            | CommitError::InvalidCatalog
+            | CommitError::DdlAuthorizationDenied,
+        )) => None,
+        Err(error) => return Err(Box::new(error)),
+    };
+    let login_disable_sequence = match race_disable_result {
+        Ok(sequence) => Some(sequence),
+        Err(prdb_engine::storage_manager::IdentityLifecycleError::Commit(
+            CommitError::Conflict | CommitError::InvalidCatalog,
+        )) => None,
+        Err(error) => return Err(Box::new(error)),
+    };
+    assert!(
+        issued_racing_token_id.is_some() || login_disable_sequence.is_some(),
+        "neither token issuance nor LOGIN disable committed"
+    );
+    if let (Some((_, issue_sequence)), Some(disable_sequence)) =
+        (issued_racing_token_id, login_disable_sequence)
+    {
+        assert!(issue_sequence < disable_sequence);
+    }
+    let login_race_issue_status = if issued_racing_token_id.is_some() {
+        OutcomeStatus::Committed
+    } else {
+        OutcomeStatus::Aborted
+    };
+    let login_race_disable_status = if login_disable_sequence.is_some() {
+        OutcomeStatus::Committed
+    } else {
+        OutcomeStatus::Aborted
+    };
+    assert_eq!(
+        lookup_outcome(&database, login_race_issue_invocation, admin_user, now)?
+            .ok_or("missing racing token-issue outcome")?
+            .status,
+        login_race_issue_status
+    );
+    assert_eq!(
+        lookup_outcome(&database, login_race_disable_invocation, admin_user, now)?
+            .ok_or("missing racing LOGIN-disable outcome")?
+            .status,
+        login_race_disable_status
+    );
+    assert_eq!(
+        commit_sequence(&database)?,
+        before_login_race
+            + u64::from(issued_racing_token_id.is_some())
+            + u64::from(login_disable_sequence.is_some())
+    );
+    let login_race_tokens = storage.list_tokens(admin_user, target_user)?;
+    let login_enabled = {
+        let read = database.begin_read()?;
+        let catalog = read.open_table(CATALOG)?;
+        let principal = catalog
+            .get(id_catalog_key(10, target_user).as_slice())?
+            .ok_or("token-race target principal missing")?;
+        decode_registered_envelope(principal.value())?
+            .fields
+            .iter()
+            .find(|field| field.tag == 3)
+            .ok_or("target LOGIN state missing")?
+            .payload
+            == [1]
+    };
+    assert_eq!(login_enabled, login_disable_sequence.is_none());
+    if !login_enabled {
+        assert!(
+            login_race_tokens.iter().all(|token| token.revoked),
+            "LOGIN disable left an active token after concurrent issuance"
+        );
+    }
+    if let Some((racing_token_id, _)) = issued_racing_token_id {
+        let racing_token = login_race_tokens
+            .iter()
+            .find(|token| token.token_id == racing_token_id)
+            .ok_or("issued login-race token is absent from inventory")?;
+        assert_eq!(racing_token.revoked, !login_enabled);
+    }
+
     let denied_issue = storage.issue_token(TokenIssueRequest {
         invocation_id: id(0x98),
         authenticated_actor_id: denied_user,

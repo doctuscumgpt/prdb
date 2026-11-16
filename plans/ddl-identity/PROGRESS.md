@@ -188,3 +188,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended the membership authorization regression to race a role membership grant with an administrator revoking the actor's `MANAGE_ROLES` privilege. Revocation always commits. If membership commits first, its sequence precedes revocation and the edge/dependency remain; if revocation wins, membership records ABORTED and no edge is published.
 - Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
+
+## ID-4 / ID-5: token issue races LOGIN disable — verified slice
+
+- Extended the token lifecycle regression to race credential issuance with `NOLOGIN` for the same user. It checks both durable outcomes and commit order, and verifies that any committed LOGIN disable leaves no active token, including a token issued during the race. A failed disable leaves the user LOGIN-enabled; a failed issue leaves no issued token.
+- Verification: focused real-redb regression, locked workspace build, format check, and warning-denied all-target Clippy passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
