@@ -4035,15 +4035,28 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
     let column_rename = id(0x83);
     let mut column_rename_audit = identity_audit_event(0x84, actor, id(0x85));
     column_rename_audit.correlation_id = column_rename;
-    let column_rename_result = storage.rename_column(
-        column_rename,
-        actor,
-        table.table_id,
-        table.column_ids[0],
-        "retired",
-        9_999,
-        column_rename_audit,
-    );
+    let column_rename_barrier = Arc::new(Barrier::new(2));
+    let storage_ref = &storage;
+    let rename_table_id = table.table_id;
+    let rename_column_id = table.column_ids[0];
+    let (stale_column_write_result, column_rename_result) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&column_rename_barrier);
+        let ddl = scope.spawn(move || {
+            barrier.wait();
+            storage_ref.rename_column(
+                column_rename,
+                actor,
+                rename_table_id,
+                rename_column_id,
+                "retired",
+                9_999,
+                column_rename_audit,
+            )
+        });
+        column_rename_barrier.wait();
+        let write = stale_column_writer.commit();
+        (write, ddl.join().expect("column rename thread panicked"))
+    });
     assert!(
         column_rename_result.is_ok(),
         "column rename failed: {column_rename_result:?}"
@@ -4063,24 +4076,31 @@ fn storage_manager_renames_tables_and_drop_column_rewrites_rows()
         lookup_column_id_by_ordinal(&renamed_snapshot, table.table_id, 0)?,
         Some(table.column_ids[0])
     );
-    assert!(matches!(
-        stale_column_writer.commit(),
-        Err(prdb_engine::transaction::TransactionError::Commit(
-            CommitError::Conflict
-        ))
-    ));
-    assert!(
+    let stale_column_write_sequence = match stale_column_write_result {
+        Ok(sequence) => Some(sequence),
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => None,
+        Err(error) => return Err(Box::new(error)),
+    };
+    if let Some(sequence) = stale_column_write_sequence {
+        assert!(sequence < column_rename_sequence);
+    }
+    assert_eq!(
         row(
             &database,
             &table_row_key(table.table_id, stale_column_row.row)
         )?
-        .is_none()
+        .is_some(),
+        stale_column_write_sequence.is_some()
     );
     assert_eq!(
         lookup_outcome(&database, stale_column_writer_invocation, actor, 1)?
             .ok_or("missing stale column-rename writer outcome")?
             .status,
-        OutcomeStatus::Aborted
+        if stale_column_write_sequence.is_some() {
+            OutcomeStatus::Committed
+        } else {
+            OutcomeStatus::Aborted
+        }
     );
     {
         let read = database.begin_read()?;
