@@ -7676,6 +7676,85 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         OutcomeStatus::Aborted,
         "the overflowing-addition reference predicate must durably abort the invocation"
     );
+    for (offset, (label, arithmetic)) in [
+        (
+            "multiplication",
+            Expr::Multiply(
+                Box::new(Expr::Literal(Some(ScalarValue::SmallInt(i16::MAX)))),
+                Box::new(Expr::Literal(Some(ScalarValue::SmallInt(2)))),
+            ),
+        ),
+        (
+            "subtraction",
+            Expr::Subtract(
+                Box::new(Expr::Literal(Some(ScalarValue::SmallInt(i16::MIN)))),
+                Box::new(Expr::Literal(Some(ScalarValue::SmallInt(1)))),
+            ),
+        ),
+        (
+            "division",
+            Expr::Divide(
+                Box::new(Expr::Literal(Some(ScalarValue::SmallInt(i16::MIN)))),
+                Box::new(Expr::Literal(Some(ScalarValue::SmallInt(-1)))),
+            ),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let invocation_id = [0x4c + offset as u8; 16];
+        let arithmetic_error_policies = [
+            policies[0].clone(),
+            Policy {
+                using: Some(Expr::And(vec![
+                    Expr::Equal(
+                        Box::new(arithmetic),
+                        Box::new(Expr::Literal(Some(ScalarValue::SmallInt(0)))),
+                    ),
+                    Expr::Equal(
+                        Box::new(Expr::CurrentPrincipalId),
+                        Box::new(Expr::Literal(Some(ScalarValue::Uuid([9; 16])))),
+                    ),
+                ])),
+                ..policies[1].clone()
+            },
+        ];
+        let arithmetic_error_projection = AuthorizedProjection {
+            policies: &arithmetic_error_policies,
+            ..failing_projection
+        };
+        let mut arithmetic_error_invocation =
+            InvocationTransaction::begin(&database, invocation_id, [9; 16], 9_999, 8, 512)?;
+        arithmetic_error_invocation.load_catalog_table_schema(table_id)?;
+        assert_eq!(
+            arithmetic_error_invocation.probe_catalog_unique_index(
+                table_id,
+                index_id,
+                &[Some(ScalarValue::Bytea(b"duplicate".to_vec()))],
+                &arithmetic_error_projection,
+            )?,
+            prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
+            "an overflowing-{label} policy must force the authorized reference scan"
+        );
+        assert!(matches!(
+            arithmetic_error_invocation.scan_authorized(
+                table_id,
+                None,
+                8,
+                &arithmetic_error_projection,
+            ),
+            Err(TransactionError::Authorization(
+                prdb_engine::authorization::AuthorizationError::EvaluationFailed
+            ))
+        ));
+        assert_eq!(
+            prdb_engine::outcome::lookup_outcome(&database, invocation_id, [9; 16], 1,)?
+                .unwrap()
+                .status,
+            OutcomeStatus::Aborted,
+            "the overflowing-{label} reference predicate must durably abort the invocation"
+        );
+    }
     assert_eq!(
         invocation.probe_catalog_unique_index(
             table_id,
