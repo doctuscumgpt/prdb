@@ -9634,6 +9634,28 @@ fn foreign_key_creation_racing_a_staged_child_write_is_atomic()
     setup_audit.action = AuditAction::AuthorityChange;
     storage.commit_catalog_and_audit(id(0x9c), admin_role, 9_999, &setup_writes, &[setup_audit])?;
 
+    let parent_seed_invocation = id(0xa1);
+    let mut parent_seed =
+        storage.begin_invocation(parent_seed_invocation, actor, 9_999, 1, 1024)?;
+    let target_schema = parent_seed.load_catalog_table_schema(id(81))?;
+    parent_seed.load_catalog_indexes(&target_schema)?;
+    parent_seed.load_catalog_check_constraints(&target_schema)?;
+    let referenced_value = ScalarValue::Bytea(b"existing parent".to_vec());
+    let parent_payload = encode_tuple(
+        &target_schema.columns,
+        target_schema.schema_version,
+        &[Some(referenced_value.clone())],
+    )?;
+    let parent_row_id = id(0xa2);
+    parent_seed.stage_put(
+        prdb_engine::overlay::RowId {
+            table: id(81),
+            row: parent_row_id,
+        },
+        &parent_payload,
+    )?;
+    parent_seed.commit()?;
+
     let writer_invocation = id(0x9d);
     let mut writer = storage.begin_invocation(writer_invocation, actor, 9_999, 1, 1024)?;
     let source_schema = writer.load_catalog_table_schema(id(82))?;
@@ -9642,7 +9664,7 @@ fn foreign_key_creation_racing_a_staged_child_write_is_atomic()
     let child_payload = encode_tuple(
         &source_schema.columns,
         source_schema.schema_version,
-        &[None],
+        &[Some(referenced_value)],
     )?;
     writer.stage_put(
         prdb_engine::overlay::RowId {
@@ -9703,9 +9725,9 @@ fn foreign_key_creation_racing_a_staged_child_write_is_atomic()
     assert_eq!(
         commit_sequence(&database)?,
         if writer_status == OutcomeStatus::Committed {
-            3
+            4
         } else {
-            2
+            3
         },
         "a stale child writer must not advance the commit sequence"
     );
