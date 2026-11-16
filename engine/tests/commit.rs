@@ -23049,6 +23049,7 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
     let table_owner = id(0x74);
     let grant_manager = id(0x75);
     let grantee = id(0x78);
+    let denied_grantee = id(0x79);
     let invocation_id = id(0x84);
     let revoke_id = id(0x85);
     let table_id = id(16);
@@ -23076,6 +23077,8 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
                 object_write_with_name(grant_manager, 8, "batch_grant_manager"),
                 principal_write_with_name(grantee, 1, 1, "batch_grantee"),
                 object_write_with_name(grantee, 8, "batch_grantee"),
+                principal_write_with_name(denied_grantee, 1, 1, "batch_denied_grantee"),
+                object_write_with_name(denied_grantee, 8, "batch_denied_grantee"),
                 table_owner_object,
             ],
             &[setup_audit],
@@ -23211,6 +23214,88 @@ fn object_grant_batch_racing_manage_grants_revocation_is_atomic()
             .status,
         OutcomeStatus::Committed
     );
+
+    let mut regrant_audit = identity_audit_event(0x88, table_owner, grant_manager);
+    regrant_audit.correlation_id = id(0x88);
+    regrant_audit.action = AuditAction::AuthorityChange;
+    let regrant_sequence = storage.set_object_grant(SetObjectGrantRequest {
+        invocation_id: id(0x88),
+        authenticated_actor_id: table_owner,
+        grantee_id: grant_manager,
+        object_id: table_id,
+        privilege: ObjectGrantPrivilege::ManageGrants,
+        target: ObjectGrantTarget::Object,
+        grant: true,
+        retention_deadline_us: 9_999,
+        audit_event: regrant_audit,
+    })?;
+    let mut second_revoke_audit = identity_audit_event(0x89, table_owner, grant_manager);
+    second_revoke_audit.correlation_id = id(0x89);
+    second_revoke_audit.action = AuditAction::AuthorityChange;
+    let second_revoke_sequence = storage.set_object_grant(SetObjectGrantRequest {
+        invocation_id: id(0x89),
+        authenticated_actor_id: table_owner,
+        grantee_id: grant_manager,
+        object_id: table_id,
+        privilege: ObjectGrantPrivilege::ManageGrants,
+        target: ObjectGrantTarget::Object,
+        grant: false,
+        retention_deadline_us: 9_999,
+        audit_event: second_revoke_audit,
+    })?;
+    assert_eq!(second_revoke_sequence, regrant_sequence + 1);
+    let denied_batch_id = id(0x8a);
+    let mut denied_batch_audit = identity_audit_event(0x8b, grant_manager, denied_grantee);
+    denied_batch_audit.correlation_id = denied_batch_id;
+    denied_batch_audit.action = AuditAction::AuthorityChange;
+    assert_eq!(
+        storage.set_object_grants_batch(SetObjectGrantBatchRequest {
+            invocation_id: denied_batch_id,
+            authenticated_actor_id: grant_manager,
+            grantee_id: denied_grantee,
+            object_id: table_id,
+            privileges: vec![ObjectGrantPrivilege::Insert, ObjectGrantPrivilege::Update],
+            target: ObjectGrantTarget::Object,
+            grant: true,
+            retention_deadline_us: 9_999,
+            audit_event: denied_batch_audit,
+        }),
+        Err(CommitError::DdlAuthorizationDenied)
+    );
+    assert_eq!(commit_sequence(&database)?, second_revoke_sequence);
+    assert_eq!(
+        lookup_outcome(&database, denied_batch_id, grant_manager, 1)?
+            .ok_or("missing revocation-first batch outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    let denied_insert_key =
+        grant_write(denied_grantee, table_id, 3, 1, table_id, grant_manager).key;
+    let denied_update_key =
+        grant_write(denied_grantee, table_id, 4, 1, table_id, grant_manager).key;
+    let denied_dependency_key = dependency_write(denied_grantee, table_id, 5).key;
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    assert!(catalog.get(denied_insert_key.as_slice())?.is_none());
+    assert!(catalog.get(denied_update_key.as_slice())?.is_none());
+    assert!(catalog.get(denied_dependency_key.as_slice())?.is_none());
+    let denied_grantee_record = decode_registered_envelope(
+        catalog
+            .get(id_catalog_key(10, denied_grantee).as_slice())?
+            .ok_or("missing revocation-first grantee principal")?
+            .value(),
+    )?;
+    let denied_grantee_epoch = u64::from_le_bytes(
+        denied_grantee_record
+            .fields
+            .iter()
+            .find(|field| field.tag == 4)
+            .ok_or("missing revocation-first grantee epoch")?
+            .payload
+            .as_slice()
+            .try_into()?,
+    );
+    assert_eq!(denied_grantee_epoch, 1);
     Ok(())
 }
 
