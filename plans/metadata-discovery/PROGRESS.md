@@ -291,3 +291,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - `executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle` now resolves a relation on one metadata connection and replays that handle through OPEN SCAN on a separate connection in the same invocation. The dispatch layer rejects the otherwise well-formed stale capability with `InvalidMetadataRequest`.
 - Verification: the focused real-redb executor IPC regression, locked workspace build, format check, and warning-denied all-target Clippy passed. The full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled: 291 engine unit tests, 179 commit tests, 75 transaction tests, and all other workspace targets.
+
+## MD-5 / AU-7: executor IPC rejects cross-principal handle replay — verified slice
+
+- Extended the dispatch regression to replay a valid resolved-relation handle in OPEN SCAN from a second principal's invocation. The wire-shaped token is rejected with `InvalidMetadataRequest`; no relation scan is opened.
+- Verification: the focused real-redb IPC regression, locked workspace build, format check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored.

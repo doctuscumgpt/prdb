@@ -259,3 +259,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - `role_membership_revocation_aborts_a_staged_role_authorized_writer` now races final write commit against role-membership revocation. Either the write commits first and precedes the revocation, or the revocation wins and the stale write records ABORTED without changing the row; the durable outcomes and commit sequence are checked for both orders.
 - Verification: focused real-redb regression, locked workspace build, format check, and warning-denied all-target Clippy passed. The full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled: 291 engine unit tests, 180 commit tests, 75 transaction tests, and all remaining workspace targets.
+
+## AU-7 / MD-5: executor IPC rejects cross-principal handle replay — verified slice
+
+- `executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle` now replays a valid relation handle over OPEN SCAN from both another metadata connection and a different principal's invocation. Both requests fail with `InvalidMetadataRequest` before a scan is opened.
+- Verification: focused real-redb IPC regression, locked workspace build, format check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. The suite ran sandbox/process tests with zero ignored: 291 engine unit tests, 180 commit tests, 75 transaction tests, and all remaining targets.

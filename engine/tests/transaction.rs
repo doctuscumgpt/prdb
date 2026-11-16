@@ -2972,7 +2972,7 @@ fn executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle()
         operation: Operation::OpenScan as u16,
         request_id: 46,
         payload: OpenScanRequest {
-            relation: reopened_handle,
+            relation: reopened_handle.clone(),
             column_ids: vec![[0x66; 16]],
         }
         .encode()?,
@@ -2982,6 +2982,29 @@ fn executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle()
             ServiceRole::Executor,
             &mut replay_connection,
             &cross_connection_replay,
+        ),
+        Err(ExecutorRequestError::Transaction(
+            prdb_engine::transaction::TransactionError::InvalidMetadataRequest
+        ))
+    ));
+    let mut other_principal_invocation =
+        InvocationTransaction::begin(&database, [0x9f; 16], [10; 16], 9_999, 1, 64)?;
+    let mut other_principal_connection =
+        other_principal_invocation.open_executor_metadata_connection();
+    let cross_principal_replay = IpcFrame {
+        operation: Operation::OpenScan as u16,
+        request_id: 47,
+        payload: OpenScanRequest {
+            relation: reopened_handle,
+            column_ids: vec![[0x66; 16]],
+        }
+        .encode()?,
+    };
+    assert!(matches!(
+        dispatch_executor_request(
+            ServiceRole::Executor,
+            &mut other_principal_connection,
+            &cross_principal_replay,
         ),
         Err(ExecutorRequestError::Transaction(
             prdb_engine::transaction::TransactionError::InvalidMetadataRequest
