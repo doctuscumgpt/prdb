@@ -352,3 +352,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended the real-redb default lifecycle test to materialize an INSERT's `DEFAULT` from its pinned catalog schema and race commit against changing the stored literal. The serialized outcomes prove the row can contain the old value only when it commits before replacement; a stale insert aborts durably if DDL publishes first.
 - Verification: focused real-redb race, locked workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 189 commit, 76 transaction tests, plus all remaining targets). `git diff --check` passed.
+
+## AU-2: SQL NULL remains distinct from REDACTED in executor IPC — verified slice
+
+- Extended `token_authenticated_catalog_scans_redact_cells_per_principal` with a nullable second column. The reader has column SELECT authority and receives `SanitizedCell::Null` for its stored SQL NULL; the restricted user receives `SanitizedCell::Redacted` for that same field. Existing different-sized secret assertions remain, so the same real catalog-derived scan covers VALUE, NULL, and REDACTED without leaking the hidden byte lengths.
+- Verification: focused real-redb authenticated catalog/IPC regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (293 unit, 190 commit, 76 transaction tests, plus all remaining targets).

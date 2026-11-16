@@ -25993,22 +25993,25 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     let table_response = admin_execute(&format!(
-        "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tables.create\",\"arguments\":{{\"schema_id\":\"{schema_id_wire}\",\"name\":\"records\",\"columns\":[{{\"name\":\"secret\",\"type\":\"bytea\",\"nullable\":false,\"generated_uuid_identity\":false}}]}}}}"
+        "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"tables.create\",\"arguments\":{{\"schema_id\":\"{schema_id_wire}\",\"name\":\"records\",\"columns\":[{{\"name\":\"secret\",\"type\":\"bytea\",\"nullable\":false,\"generated_uuid_identity\":false}},{{\"name\":\"optional_note\",\"type\":\"text\",\"nullable\":true,\"generated_uuid_identity\":false}}]}}}}"
     ))?;
     let table_id = response_id(&table_response, "table_id")?;
-    let column_id_wire = table_response
+    let column_ids_wire = table_response
         .split("\"column_ids\":[\"")
         .nth(1)
         .ok_or("missing table column ID")?
-        .get(..32)
-        .ok_or("invalid table column ID")?;
-    let column_id = {
+        .split_once("\",\"")
+        .ok_or("missing second table column ID")?;
+    let decode_id = |wire: &str| -> Result<[u8; 16], Box<dyn std::error::Error>> {
+        let wire = wire.get(..32).ok_or("invalid table column ID")?;
         let mut parsed = [0; 16];
         for (index, byte) in parsed.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&column_id_wire[index * 2..index * 2 + 2], 16)?;
+            *byte = u8::from_str_radix(&wire[index * 2..index * 2 + 2], 16)?;
         }
-        parsed
+        Ok(parsed)
     };
+    let column_id = decode_id(column_ids_wire.0)?;
+    let nullable_column_id = decode_id(column_ids_wire.1)?;
     let id_wire = |value: [u8; 16]| {
         value
             .iter()
@@ -26029,6 +26032,12 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
             ))?;
         }
     }
+    admin_execute(&format!(
+        "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"objects.grant\",\"arguments\":{{\"grantee_id\":\"{}\",\"object_id\":\"{}\",\"privilege\":\"select\",\"target_scope\":\"column\",\"target_id\":\"{}\"}}}}",
+        id_wire(first_user_id),
+        id_wire(table_id),
+        id_wire(nullable_column_id)
+    ))?;
     let expression = prdb_engine::expression::encode_expression(&Expr::Literal(Some(
         ScalarValue::Boolean(true),
     )))?
@@ -26044,6 +26053,12 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
             format!("\"{}\"", id_wire(column_id)),
             "reader_cell",
         ),
+        (
+            first_user_id,
+            "cell",
+            format!("\"{}\"", id_wire(nullable_column_id)),
+            "reader_null_cell",
+        ),
     ] {
         admin_execute(&format!(
             "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"policies.create\",\"arguments\":{{\"table_id\":\"{}\",\"name\":\"{name}\",\"kind\":\"{kind}\",\"policy_operation\":\"select\",\"effect\":\"allow\",\"recipients\":[\"user:{}\"],\"target_column_ids\":[{target_columns}],\"using_expression_eir1\":\"{expression}\",\"with_check_expression_eir1\":null}}}}",
@@ -26052,21 +26067,25 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
         ))?;
     }
 
-    let short_row_payload = encode_tuple(
-        &[ColumnSchema {
+    let row_schema = [
+        ColumnSchema {
             scalar_type: ScalarType::Bytea,
             nullable: false,
-        }],
+        },
+        ColumnSchema {
+            scalar_type: ScalarType::Text,
+            nullable: true,
+        },
+    ];
+    let short_row_payload = encode_tuple(
+        &row_schema,
         1,
-        &[Some(ScalarValue::Bytea(vec![0x53]))],
+        &[Some(ScalarValue::Bytea(vec![0x53])), None],
     )?;
     let long_row_payload = encode_tuple(
-        &[ColumnSchema {
-            scalar_type: ScalarType::Bytea,
-            nullable: false,
-        }],
+        &row_schema,
         1,
-        &[Some(ScalarValue::Bytea(vec![0x54; 2048]))],
+        &[Some(ScalarValue::Bytea(vec![0x54; 2048])), None],
     )?;
     commit_rows(
         &database,
@@ -26254,7 +26273,15 @@ fn token_authenticated_catalog_scans_redact_cells_per_principal()
         .collect::<Vec<_>>();
     visible_lengths.sort_unstable();
     assert_eq!(visible_lengths, [1, 2048]);
-    assert_eq!(restricted_cells, vec![vec![SanitizedCell::Redacted]; 2]);
+    assert_eq!(
+        first_cells.iter().map(|row| &row[1]).collect::<Vec<_>>(),
+        vec![&SanitizedCell::Null, &SanitizedCell::Null],
+        "a readable SQL NULL remains distinct from redaction"
+    );
+    assert_eq!(
+        restricted_cells,
+        vec![vec![SanitizedCell::Redacted, SanitizedCell::Redacted]; 2]
+    );
     let reader_match = executor_ipc_probe_unique(
         &mut first_invocation,
         "cell_views",
