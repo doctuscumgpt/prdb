@@ -4303,6 +4303,41 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
     let second_open_response =
         dispatch_executor_request(ServiceRole::Executor, &mut connection, &second_open_request)?;
     let close_cursor = OpenScanResponse::decode(&second_open_response.payload)?.cursor;
+    let alias_page_response = dispatch_executor_request(
+        ServiceRole::Executor,
+        &mut connection,
+        &IpcFrame {
+            operation: IpcOperation::NextBatch as u16,
+            request_id: 70,
+            payload: NextBatchRequest {
+                cursor: close_cursor.clone(),
+                max_scanned: 2,
+                max_bytes: 256,
+            }
+            .encode()?,
+        },
+    )?;
+    let alias_page = NextBatchResponse::decode(&alias_page_response.payload)?;
+    assert_eq!(alias_page.rows.len(), 2);
+    let update_alias = alias_page
+        .rows
+        .iter()
+        .find(|row| connection.revalidate_row_handle(&row.handle).ok() == Some(row_id))
+        .expect("second scan issues an alias handle for the updated row")
+        .handle
+        .clone();
+    let delete_alias = alias_page
+        .rows
+        .iter()
+        .find(|row| connection.revalidate_row_handle(&row.handle).ok() == Some(second_row_id))
+        .expect("second scan issues an alias handle for the deleted row")
+        .handle
+        .clone();
+    assert_ne!(update_alias, first_page.rows[0].handle);
+    assert_ne!(delete_alias, second_page.rows[0].handle);
+    let alias_cursor = alias_page
+        .continuation
+        .expect("full alias page requires an EOF confirmation");
     let close_response = dispatch_executor_request(
         ServiceRole::Executor,
         &mut connection,
@@ -4310,14 +4345,14 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
             operation: IpcOperation::CloseCursor as u16,
             request_id: 66,
             payload: CloseCursorRequest {
-                cursor: close_cursor.clone(),
+                cursor: alias_cursor.clone(),
             }
             .encode(),
         },
     )?;
     assert_eq!(close_response.payload, [0, 1, 0]);
     assert!(matches!(
-        connection.next_relation_scan_page(&close_cursor, 1),
+        connection.next_relation_scan_page(&alias_cursor, 1),
         Err(TransactionError::InvalidMetadataRequest)
     ));
     let insert_response = dispatch_executor_request(
@@ -4358,6 +4393,13 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
         connection.revalidate_row_handle(&updated_row_handle),
         Err(TransactionError::InvalidMetadataRequest)
     ));
+    assert!(
+        matches!(
+            connection.revalidate_row_handle(&update_alias),
+            Err(TransactionError::InvalidMetadataRequest)
+        ),
+        "UPDATE invalidates every handle previously issued for the row"
+    );
     let deleted_row_handle = second_page.rows[0].handle.clone();
     let delete_response = dispatch_executor_request(
         ServiceRole::Executor,
@@ -4376,6 +4418,13 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
         connection.revalidate_row_handle(&deleted_row_handle),
         Err(TransactionError::InvalidMetadataRequest)
     ));
+    assert!(
+        matches!(
+            connection.revalidate_row_handle(&delete_alias),
+            Err(TransactionError::InvalidMetadataRequest)
+        ),
+        "DELETE invalidates every handle previously issued for the row"
+    );
     let relation_close_cursor = connection.open_relation_scan(&relation_handle, &[[0x66; 16]])?;
     connection.close_relation_handle(&relation_handle)?;
     assert!(matches!(

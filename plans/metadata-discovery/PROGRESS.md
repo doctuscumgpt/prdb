@@ -413,3 +413,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The production gateway/supervisor ADMIN lifecycle now runs column rename SQL and reads the result through authenticated metadata. The renamed definition retains its original column ID and ordinal, confirming the discovery projection follows the catalog's stable identity through DDL.
 - Verification: focused delegated `metadata_process` regression passed with sandbox/runtime configuration; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
+
+## 2026-11-16 MD-5 / AU-7: UPDATE and DELETE invalidate duplicate row handles — verified slice
+
+- Extended `catalog_authorized_scan_builds_its_projection_from_pinned_records` to open a second scan and issue distinct handles for the same two rows. After updating one row through its first handle, the alias from the second scan is rejected; deleting the other row likewise invalidates its alias. The regression exercises the executor IPC dispatch and revalidation path.
+- Verification: the focused real-redb/IPC regression passed. Workspace formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
