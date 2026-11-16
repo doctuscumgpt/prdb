@@ -223,3 +223,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `identity_login_reenable_does_not_revive_revoked_credentials`: an authorized administrator disables LOGIN for a user with an active token, re-enables LOGIN, confirms the old credential remains revoked and cannot authenticate, then issues and authenticates a fresh credential. Persisted catalog validation passes.
 - Verification: the focused real-redb regression passed. Workspace formatting, locked build, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process integration tests enabled and zero ignored tests.
+
+## ID-2 / ID-5: user rename revalidates already admitted writes — verified slice
+
+- Extended `identity_drop_aborts_a_role_authorized_staged_update` with both rename-first and concurrent rename/write schedules. A staged authorized update either commits before the rename or conflicts and records ABORTED; a deterministic rename-first schedule preserves the row. The same token still authenticates the stable user ID after rename, and subsequent role-authorized writes remain covered through membership revocation and identity drop.
+- Verification: the focused real-redb regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit tests, 186 commit tests, 76 transaction tests, plus all remaining targets).

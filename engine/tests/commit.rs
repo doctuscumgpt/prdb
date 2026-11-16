@@ -20457,9 +20457,9 @@ fn identity_drop_aborts_a_role_authorized_staged_update() -> Result<(), Box<dyn 
         }],
     )?;
 
-    let invocation_id = id(0xc7);
+    let rename_writer_invocation = id(0xc7);
     let (mut stale_writer, roles) = storage.begin_token_authenticated_invocation(
-        invocation_id,
+        rename_writer_invocation,
         token_id,
         &token_secret,
         now + 3_600_000_000,
@@ -20486,6 +20486,167 @@ fn identity_drop_aborts_a_role_authorized_staged_update() -> Result<(), Box<dyn 
             &page.rows[0].0,
             &[FieldPatch {
                 ordinal: 0,
+                value: Some(ScalarValue::Bytea(b"after identity rename".to_vec())),
+            }],
+        )?;
+    }
+
+    let race_barrier = Arc::new(Barrier::new(2));
+    let (rename_write_result, rename_sequence) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&race_barrier);
+        let storage = &storage;
+        let renamer = scope.spawn(move || {
+            let mut rename_audit = identity_audit_event(0xc8, admin_user, writer_user);
+            rename_audit.correlation_id = id(0xc8);
+            rename_audit.action = AuditAction::Ddl;
+            barrier.wait();
+            storage
+                .rename_identity(
+                    id(0xc8),
+                    admin_user,
+                    writer_user,
+                    "renamed_drop_writer",
+                    now + 3_600_000_000,
+                    rename_audit,
+                )
+                .expect("identity rename should commit during stale-write race")
+        });
+        race_barrier.wait();
+        let write_result = stale_writer.commit();
+        let rename_sequence = renamer.join().expect("identity rename thread panicked");
+        (write_result, rename_sequence)
+    });
+    let (rename_write_sequence, rename_write_status) = match rename_write_result {
+        Ok(sequence) => (Some(sequence), OutcomeStatus::Committed),
+        Err(TransactionError::Commit(CommitError::Conflict)) => (None, OutcomeStatus::Aborted),
+        Err(error) => panic!("unexpected staged-writer result in identity rename race: {error:?}"),
+    };
+    assert_eq!(commit_sequence(&database)?, rename_sequence);
+    if let Some(sequence) = rename_write_sequence {
+        assert!(sequence < rename_sequence);
+    }
+    let value_after_rename = if rename_write_status == OutcomeStatus::Committed {
+        ScalarValue::Bytea(b"after identity rename".to_vec())
+    } else {
+        original_value.clone()
+    };
+    assert_eq!(
+        decode_tuple(
+            &columns,
+            1,
+            &row(&database, &row_key)?
+                .ok_or("row disappeared after identity drop")?
+                .payload,
+        )?
+        .values,
+        [Some(value_after_rename.clone())],
+        "staged row must match the serialized identity rename race"
+    );
+    assert_eq!(
+        lookup_outcome(&database, rename_writer_invocation, writer_user, now)?
+            .ok_or("missing identity-rename stale writer outcome")?
+            .status,
+        rename_write_status
+    );
+    let (mut renamed_session, renamed_roles) = storage.begin_token_authenticated_invocation(
+        id(0xc9),
+        token_id,
+        &token_secret,
+        now + 3_600_000_000,
+        4,
+        4096,
+    )?;
+    assert!(renamed_roles.contains(&writer_role));
+    renamed_session.abort()?;
+
+    let rename_first_invocation = id(0xd0);
+    let (mut rename_first_writer, _) = storage.begin_token_authenticated_invocation(
+        rename_first_invocation,
+        token_id,
+        &token_secret,
+        now + 3_600_000_000,
+        4,
+        4096,
+    )?;
+    {
+        let mut executor = rename_first_writer.open_executor_metadata_connection();
+        let (relation, _) = executor
+            .resolve_relation("drop_writer_schema", "drop_writer_table")?
+            .ok_or("relation disappeared before second identity rename")?;
+        let cursor = executor.open_relation_scan(&relation, &[column_id])?;
+        let page = executor.next_relation_scan_batch(&cursor, 4, 4096)?;
+        assert_eq!(page.rows.len(), 1);
+        executor.stage_update(
+            &page.rows[0].0,
+            &[FieldPatch {
+                ordinal: 0,
+                value: Some(ScalarValue::Bytea(b"after second identity rename".to_vec())),
+            }],
+        )?;
+    }
+    let mut second_rename_audit = identity_audit_event(0xd1, admin_user, writer_user);
+    second_rename_audit.correlation_id = id(0xd1);
+    second_rename_audit.action = AuditAction::Ddl;
+    let second_rename_sequence = storage.rename_identity(
+        id(0xd1),
+        admin_user,
+        writer_user,
+        "renamed_drop_writer_again",
+        now + 3_600_000_000,
+        second_rename_audit,
+    )?;
+    assert!(matches!(
+        rename_first_writer.commit(),
+        Err(TransactionError::Commit(CommitError::Conflict))
+    ));
+    assert_eq!(commit_sequence(&database)?, second_rename_sequence);
+    assert_eq!(
+        lookup_outcome(&database, rename_first_invocation, writer_user, now)?
+            .ok_or("missing rename-first stale writer outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    assert_eq!(
+        decode_tuple(
+            &columns,
+            1,
+            &row(&database, &row_key)?
+                .ok_or("row disappeared after second identity rename")?
+                .payload,
+        )?
+        .values,
+        [Some(value_after_rename.clone())],
+        "rename-first schedule must not publish the stale update"
+    );
+
+    let drop_writer_invocation = id(0xca);
+    let (mut drop_writer, drop_roles) = storage.begin_token_authenticated_invocation(
+        drop_writer_invocation,
+        token_id,
+        &token_secret,
+        now + 3_600_000_000,
+        4,
+        4096,
+    )?;
+    assert!(drop_roles.contains(&writer_role));
+    {
+        let mut executor = drop_writer.open_executor_metadata_connection();
+        let (relation, _) = executor
+            .resolve_relation("drop_writer_schema", "drop_writer_table")?
+            .ok_or("renamed role-authorized relation was not visible")?;
+        let cursor = executor.open_relation_scan(&relation, &[column_id])?;
+        let page = executor.next_relation_scan_batch(&cursor, 4, 4096)?;
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(
+            page.rows[0].1,
+            vec![prdb_engine::authorization::SanitizedCell::Value(
+                value_after_rename.clone()
+            )]
+        );
+        executor.stage_update(
+            &page.rows[0].0,
+            &[FieldPatch {
+                ordinal: 0,
                 value: Some(ScalarValue::Bytea(b"after identity drop".to_vec())),
             }],
         )?;
@@ -20496,13 +20657,13 @@ fn identity_drop_aborts_a_role_authorized_staged_update() -> Result<(), Box<dyn 
         let barrier = Arc::clone(&race_barrier);
         let storage = &storage;
         let revoker = scope.spawn(move || {
-            let mut revoke_membership_audit = identity_audit_event(0xc8, role_manager, writer_user);
-            revoke_membership_audit.correlation_id = id(0xc8);
+            let mut revoke_membership_audit = identity_audit_event(0xcb, role_manager, writer_user);
+            revoke_membership_audit.correlation_id = id(0xcb);
             revoke_membership_audit.action = AuditAction::AuthorityChange;
             barrier.wait();
             let membership_sequence = storage
                 .set_role_membership(
-                    id(0xc8),
+                    id(0xcb),
                     role_manager,
                     prdb_engine::storage_manager::RoleMembershipChange {
                         member_id: writer_user,
@@ -20513,12 +20674,12 @@ fn identity_drop_aborts_a_role_authorized_staged_update() -> Result<(), Box<dyn 
                     revoke_membership_audit,
                 )
                 .expect("membership revocation should commit during identity race");
-            let mut drop_audit = identity_audit_event(0xc9, admin_user, writer_user);
-            drop_audit.correlation_id = id(0xc9);
+            let mut drop_audit = identity_audit_event(0xcc, admin_user, writer_user);
+            drop_audit.correlation_id = id(0xcc);
             drop_audit.action = AuditAction::Ddl;
             let drop_sequence = storage
                 .drop_identity(
-                    id(0xc9),
+                    id(0xcc),
                     admin_user,
                     writer_user,
                     now + 3_600_000_000,
@@ -20528,7 +20689,7 @@ fn identity_drop_aborts_a_role_authorized_staged_update() -> Result<(), Box<dyn 
             (membership_sequence, drop_sequence)
         });
         race_barrier.wait();
-        let write_result = stale_writer.commit();
+        let write_result = drop_writer.commit();
         let revocation_sequences = revoker.join().expect("identity revoker thread panicked");
         (write_result, revocation_sequences)
     });
@@ -20545,7 +20706,7 @@ fn identity_drop_aborts_a_role_authorized_staged_update() -> Result<(), Box<dyn 
     let expected_value = if write_status == OutcomeStatus::Committed {
         ScalarValue::Bytea(b"after identity drop".to_vec())
     } else {
-        original_value
+        value_after_rename
     };
     assert_eq!(
         decode_tuple(
@@ -20560,14 +20721,14 @@ fn identity_drop_aborts_a_role_authorized_staged_update() -> Result<(), Box<dyn 
         "staged row must match the serialized identity/revocation race"
     );
     assert_eq!(
-        lookup_outcome(&database, invocation_id, writer_user, now)?
+        lookup_outcome(&database, drop_writer_invocation, writer_user, now)?
             .ok_or("missing identity-drop stale writer outcome")?
             .status,
         write_status
     );
     assert!(matches!(
         storage.begin_token_authenticated_invocation(
-            id(0xca),
+            id(0xcd),
             token_id,
             &token_secret,
             now + 3_600_000_000,
@@ -20576,7 +20737,7 @@ fn identity_drop_aborts_a_role_authorized_staged_update() -> Result<(), Box<dyn 
         ),
         Err(TransactionError::AuthenticationFailed)
     ));
-    assert_eq!(lookup_outcome(&database, id(0xca), writer_user, now)?, None);
+    assert_eq!(lookup_outcome(&database, id(0xcd), writer_user, now)?, None);
     Ok(())
 }
 

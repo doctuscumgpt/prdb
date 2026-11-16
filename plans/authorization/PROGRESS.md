@@ -321,3 +321,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Corrected the synthetic failing policy in `unique_constraint_uses_its_backing_index_for_invocation_writes`: its numerator is now a SMALLINT literal, so `1 / 0` reaches checked division and returns `EvaluationFailed` instead of failing earlier on a BYTEA/integer type mismatch. The optimized unique probe still returns `Unavailable` without evaluating the predicate.
 - Verification: the focused real-redb transaction regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests.
+
+## AU-6 / ID-5: identity rename invalidates stale authorization snapshots — verified slice
+
+- The role-authorized writer regression now races an authenticated staged update with user rename and also forces a rename-first commit order. Stale writes conflict with durable ABORTED outcomes and leave stored row bytes unchanged; a writer that commits first is ordered before rename. The same credential continues to admit the renamed stable identity.
+- Verification: focused real-redb regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit tests, 186 commit tests, 76 transaction tests, plus all remaining targets).
