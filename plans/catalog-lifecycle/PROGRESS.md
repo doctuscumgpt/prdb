@@ -349,3 +349,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 full delegated workspace verification after identity rotation probes
 
 - `cargo test --workspace --locked -- --test-threads=1` passed inside the delegated `systemd --user` service with the documented TinyCC fixtures and runtime profile. Sandbox and process integration tests were enabled; zero tests were ignored. The run includes storage and authenticated ADMIN checks that unauthorized rotations of existing and unknown token IDs return the same generic response.
+
+## CL-3 / DD-3: foreign-key dependency cleanup under repeated DDL pressure — verified slice
+
+- The 128-cycle real-redb lifecycle regression now creates and drops a foreign key for every temporary table, while a stable referenced UNIQUE constraint remains. It checks snapshot visibility of the FK and incoming dependency edge across FK removal, then validates the recovered catalog after all temporary schema/table/constraint records are removed.
+- Verification: focused `schema_create_drop_pressure_preserves_pinned_name_index_snapshots` passed (12.47 s); format check, warning-denied all-target workspace Clippy, and `git diff --check` passed. The full workspace suite was not rerun for this pressure-test extension.

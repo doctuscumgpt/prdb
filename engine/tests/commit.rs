@@ -8334,6 +8334,64 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
     setup_audit.action = AuditAction::AuthorityChange;
     storage.commit_catalog_and_audit(id(0xf1), admin_role, 9_999, &setup, &[setup_audit])?;
 
+    let target_schema_invocation = pressure_id(0xa0, 0);
+    let mut target_schema_audit = identity_audit_event(0xa1, actor, id(0));
+    target_schema_audit.correlation_id = target_schema_invocation;
+    let target_schema = storage.create_schema(
+        target_schema_invocation,
+        actor,
+        "dictionary_pressure_fk_target",
+        actor,
+        9_999,
+        target_schema_audit,
+    )?;
+    let target_table_invocation = pressure_id(0xa2, 0);
+    let mut target_table_audit = identity_audit_event(0xa3, actor, target_schema.schema_id);
+    target_table_audit.correlation_id = target_table_invocation;
+    let target_table = storage.create_table(prdb_engine::storage_manager::CreateTableRequest {
+        invocation_id: target_table_invocation,
+        authenticated_actor_id: actor,
+        schema_id: target_schema.schema_id,
+        name: "pressure_parent".to_owned(),
+        columns: vec![prdb_engine::storage_manager::TableColumnDefinition {
+            name: "value".to_owned(),
+            scalar_type: ScalarType::Integer,
+            nullable: false,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+        retention_deadline_us: 9_999,
+        audit_event: target_table_audit,
+    })?;
+    let target_constraint_invocation = pressure_id(0xa4, 0);
+    let mut target_constraint_audit = identity_audit_event(0xa5, actor, target_table.table_id);
+    target_constraint_audit.correlation_id = target_constraint_invocation;
+    let target_constraint = storage.create_unique_constraint(
+        prdb_engine::storage_manager::CreateUniqueConstraintRequest {
+            invocation_id: target_constraint_invocation,
+            authenticated_actor_id: actor,
+            table_id: target_table.table_id,
+            column_ids: target_table.column_ids.clone(),
+            retention_deadline_us: 9_999,
+            audit_event: target_constraint_audit,
+        },
+    )?;
+    let references_grant_invocation = pressure_id(0xa6, 0);
+    let mut references_grant_audit = identity_audit_event(0xa7, actor, target_table.table_id);
+    references_grant_audit.correlation_id = references_grant_invocation;
+    references_grant_audit.action = AuditAction::AuthorityChange;
+    storage.set_object_grant(prdb_engine::storage_manager::SetObjectGrantRequest {
+        invocation_id: references_grant_invocation,
+        authenticated_actor_id: actor,
+        grantee_id: actor,
+        object_id: target_table.table_id,
+        privilege: prdb_engine::storage_manager::ObjectGrantPrivilege::References,
+        target: prdb_engine::storage_manager::ObjectGrantTarget::Object,
+        grant: true,
+        retention_deadline_us: 9_999,
+        audit_event: references_grant_audit,
+    })?;
+
     let names = (0..SCHEMA_COUNT)
         .map(|index| format!("dictionary_pressure_{index:03}"))
         .collect::<Vec<_>>();
@@ -8564,14 +8622,47 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
                     audit_event: constraint_create_audit,
                 },
             )?;
+            let foreign_key_create_invocation = pressure_id(0xf4, index);
+            let mut foreign_key_create_audit =
+                identity_audit_event(index as u8, actor, table.table_id);
+            foreign_key_create_audit.event_id = pressure_id(0xf5, index);
+            foreign_key_create_audit.correlation_id = foreign_key_create_invocation;
+            let foreign_key = storage.create_foreign_key(
+                prdb_engine::storage_manager::CreateForeignKeyRequest {
+                    invocation_id: foreign_key_create_invocation,
+                    authenticated_actor_id: actor,
+                    source_table_id: table.table_id,
+                    source_column_ids: table.column_ids.clone(),
+                    target_constraint_id: target_constraint.constraint_id,
+                    retention_deadline_us: 9_999,
+                    audit_event: foreign_key_create_audit,
+                },
+            )?;
             let retained_constraint_snapshot = database.begin_read()?;
+            let mut expected_constraints =
+                vec![created_constraint.constraint_id, foreign_key.foreign_key_id];
+            expected_constraints.sort_unstable();
+            let foreign_key_dependency_key = dependency_write(
+                foreign_key.foreign_key_id,
+                target_constraint.constraint_id,
+                3,
+            )
+            .key;
             assert_eq!(
                 prdb_engine::catalog_index::scan_constraint_ids_for_table(
                     &retained_constraint_snapshot,
                     table.table_id,
                     8,
                 )?,
-                vec![created_constraint.constraint_id]
+                expected_constraints
+            );
+            assert!(
+                prdb_engine::catalog_index::lookup_dependents_for_referenced(
+                    &retained_constraint_snapshot,
+                    target_constraint.constraint_id,
+                )?
+                .iter()
+                .any(|record| record.logical_key == foreign_key_dependency_key)
             );
             assert_eq!(
                 prdb_engine::catalog_index::scan_index_ids_for_table(
@@ -8582,6 +8673,53 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
                 vec![created_constraint.index_id]
             );
             let constraint_drop_invocation = pressure_id(0xf2, index);
+            let foreign_key_drop_invocation = pressure_id(0xf6, index);
+            let mut foreign_key_drop_audit =
+                identity_audit_event(index as u8, actor, foreign_key.foreign_key_id);
+            foreign_key_drop_audit.event_id = pressure_id(0xf7, index);
+            foreign_key_drop_audit.correlation_id = foreign_key_drop_invocation;
+            storage.drop_foreign_key(
+                foreign_key_drop_invocation,
+                actor,
+                foreign_key.foreign_key_id,
+                9_999,
+                foreign_key_drop_audit,
+            )?;
+            assert_eq!(
+                prdb_engine::catalog_index::scan_constraint_ids_for_table(
+                    &retained_constraint_snapshot,
+                    table.table_id,
+                    8,
+                )?,
+                expected_constraints,
+                "a pinned snapshot must retain the dropped foreign key"
+            );
+            assert!(
+                prdb_engine::catalog_index::lookup_dependents_for_referenced(
+                    &retained_constraint_snapshot,
+                    target_constraint.constraint_id,
+                )?
+                .iter()
+                .any(|record| record.logical_key == foreign_key_dependency_key)
+            );
+            let after_foreign_key_drop = database.begin_read()?;
+            assert_eq!(
+                prdb_engine::catalog_index::scan_constraint_ids_for_table(
+                    &after_foreign_key_drop,
+                    table.table_id,
+                    8,
+                )?,
+                vec![created_constraint.constraint_id]
+            );
+            assert!(
+                !prdb_engine::catalog_index::lookup_dependents_for_referenced(
+                    &after_foreign_key_drop,
+                    target_constraint.constraint_id,
+                )?
+                .iter()
+                .any(|record| record.logical_key == foreign_key_dependency_key)
+            );
+            drop(after_foreign_key_drop);
             let mut constraint_drop_audit =
                 identity_audit_event(index as u8, actor, created_constraint.constraint_id);
             constraint_drop_audit.event_id = pressure_id(0xf3, index);
@@ -8599,7 +8737,7 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
                     table.table_id,
                     8,
                 )?,
-                vec![created_constraint.constraint_id],
+                expected_constraints,
                 "a pinned snapshot must retain the dropped constraint and backing index"
             );
             assert_eq!(
