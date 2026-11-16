@@ -21968,6 +21968,110 @@ fn identity_login_reenable_does_not_revive_revoked_credentials()
 }
 
 #[test]
+fn concurrent_user_and_role_creation_share_one_name_namespace()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let manager = id(0xd1);
+    let administrator = builtin_owner_id();
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let records = [
+        principal_write_with_name(manager, 1, 1, "shared_name_manager"),
+        object_write_with_name(manager, 8, "shared_name_manager"),
+        membership_write_with_grantor(manager, administrator, administrator),
+        dependency_write(manager, administrator, 5),
+    ];
+    let mut setup_audit = identity_audit_event(0xd0, administrator, manager);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0xd0), administrator, 9_999, &records, &[setup_audit])?;
+
+    let user_invocation = id(0xd2);
+    let role_invocation = id(0xd3);
+    let create_barrier = Arc::new(Barrier::new(3));
+    let (user_result, role_result) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&create_barrier);
+        let storage_ref = &storage;
+        let user = scope.spawn(move || {
+            let mut audit = identity_audit_event(0xd4, manager, manager);
+            audit.correlation_id = user_invocation;
+            barrier.wait();
+            storage_ref.create_user(user_invocation, manager, "shared_name", 9_999, audit)
+        });
+        let barrier = Arc::clone(&create_barrier);
+        let storage_ref = &storage;
+        let role = scope.spawn(move || {
+            let mut audit = identity_audit_event(0xd5, manager, manager);
+            audit.correlation_id = role_invocation;
+            barrier.wait();
+            storage_ref.create_role(role_invocation, manager, "shared_name", 9_999, audit)
+        });
+        create_barrier.wait();
+        (
+            user.join().expect("user creation thread panicked"),
+            role.join().expect("role creation thread panicked"),
+        )
+    });
+
+    assert!(
+        user_result.is_ok() || role_result.is_ok(),
+        "at least one authorized identity create must succeed: user={user_result:?}, role={role_result:?}"
+    );
+    assert_ne!(user_result.is_ok(), role_result.is_ok());
+    if user_result.is_err() {
+        assert!(matches!(
+            &user_result,
+            Err(
+                prdb_engine::storage_manager::IdentityLifecycleError::Commit(
+                    CommitError::InvalidCatalog | CommitError::Conflict
+                )
+            )
+        ));
+    }
+    if role_result.is_err() {
+        assert!(matches!(
+            &role_result,
+            Err(
+                prdb_engine::storage_manager::IdentityLifecycleError::Commit(
+                    CommitError::InvalidCatalog | CommitError::Conflict
+                )
+            )
+        ));
+    }
+    let user_outcome = lookup_outcome(&database, user_invocation, manager, 1)?
+        .ok_or("missing USER creation outcome")?;
+    let role_outcome = lookup_outcome(&database, role_invocation, manager, 1)?
+        .ok_or("missing ROLE creation outcome")?;
+    assert_eq!(
+        user_outcome.status,
+        if user_result.is_ok() {
+            OutcomeStatus::Committed
+        } else {
+            OutcomeStatus::Aborted
+        }
+    );
+    assert_eq!(
+        role_outcome.status,
+        if role_result.is_ok() {
+            OutcomeStatus::Committed
+        } else {
+            OutcomeStatus::Aborted
+        }
+    );
+
+    let snapshot = database.begin_read()?;
+    let shared_name_id = lookup_principal_id_by_name(&snapshot, "shared_name")?
+        .ok_or("winning shared namespace name is missing")?;
+    let expected_identity_id = match (&user_result, &role_result) {
+        (Ok(created), Err(_)) => created.user_id,
+        (Err(_), Ok(created)) => created.role_id,
+        _ => unreachable!("exactly one shared-name identity creation must commit"),
+    };
+    assert_eq!(shared_name_id, expected_identity_id);
+    StorageManager::new(&database, Duration::from_millis(100))?;
+    Ok(())
+}
+
+#[test]
 fn identity_ddl_cannot_disable_the_last_credentialed_admin()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
