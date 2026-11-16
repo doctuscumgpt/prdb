@@ -1702,6 +1702,264 @@ fn migration_apply_requires_complete_history_ack_and_publishes_validated_v2() {
     drop(session.acknowledge().expect("publish source READY"));
 
     let source_path = fixture.instance_dir().join("storage.redb");
+    let source_database = Database::open(&source_path).expect("open migration source");
+    let source_storage = prdb_engine::storage_manager::StorageManager::new(
+        &source_database,
+        std::time::Duration::from_millis(100),
+    )
+    .expect("create migration source storage manager");
+    let migration_audit = |event_id: u8,
+                           invocation_id: [u8; 16],
+                           action: AuditAction,
+                           target_ids: Vec<[u8; 16]>| AuditEvent {
+        event_id: [event_id; 16],
+        actor_id: Some(admin_id),
+        correlation_id: invocation_id,
+        occurred_at_us: 1,
+        action,
+        result: AuditResult::Succeeded,
+        target_ids,
+    };
+    let schema = source_storage
+        .create_schema(
+            [0xa1; 16],
+            admin_id,
+            "migration_access",
+            admin_id,
+            i64::MAX,
+            migration_audit(0xa1, [0xa1; 16], AuditAction::Ddl, Vec::new()),
+        )
+        .expect("create migration test schema");
+    let table = source_storage
+        .create_table(prdb_engine::storage_manager::CreateTableRequest {
+            invocation_id: [0xa2; 16],
+            authenticated_actor_id: admin_id,
+            schema_id: schema.schema_id,
+            name: "visible_records".to_owned(),
+            columns: vec![prdb_engine::storage_manager::TableColumnDefinition {
+                name: "value".to_owned(),
+                scalar_type: prdb_engine::tuple::ScalarType::Text,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            }],
+            retention_deadline_us: i64::MAX,
+            audit_event: migration_audit(0xa2, [0xa2; 16], AuditAction::Ddl, Vec::new()),
+        })
+        .expect("create migration test table");
+    let reader = source_storage
+        .create_user(
+            [0xa3; 16],
+            admin_id,
+            "migration_reader",
+            i64::MAX,
+            migration_audit(0xa3, [0xa3; 16], AuditAction::Ddl, Vec::new()),
+        )
+        .expect("create migration test user");
+    let mut reader_token = source_storage
+        .issue_token(prdb_engine::storage_manager::TokenIssueRequest {
+            invocation_id: [0xa4; 16],
+            authenticated_actor_id: admin_id,
+            user_id: reader.user_id,
+            label: "migration reader",
+            expires_at_us: i64::MAX,
+            retention_deadline_us: i64::MAX,
+            audit_event: migration_audit(
+                0xa4,
+                [0xa4; 16],
+                AuditAction::TokenLifecycle,
+                vec![reader.user_id],
+            ),
+        })
+        .expect("issue migration test token");
+    let reader_token_id = reader_token.token_id;
+    let reader_secret = zeroize::Zeroizing::new(
+        reader_token
+            .take_secret()
+            .expect("one-time migration reader secret"),
+    );
+    for (event_id, invocation_id, object_id, privilege) in [
+        (
+            0xa5,
+            [0xa5; 16],
+            schema.schema_id,
+            prdb_engine::storage_manager::ObjectGrantPrivilege::Usage,
+        ),
+        (
+            0xa6,
+            [0xa6; 16],
+            table.table_id,
+            prdb_engine::storage_manager::ObjectGrantPrivilege::Select,
+        ),
+    ] {
+        source_storage
+            .set_object_grant(prdb_engine::storage_manager::SetObjectGrantRequest {
+                invocation_id,
+                authenticated_actor_id: admin_id,
+                grantee_id: reader.user_id,
+                object_id,
+                privilege,
+                target: prdb_engine::storage_manager::ObjectGrantTarget::Object,
+                grant: true,
+                retention_deadline_us: i64::MAX,
+                audit_event: migration_audit(
+                    event_id,
+                    invocation_id,
+                    AuditAction::AuthorityChange,
+                    vec![reader.user_id, object_id],
+                ),
+            })
+            .expect("grant migration reader access");
+    }
+    source_storage
+        .set_object_grant(prdb_engine::storage_manager::SetObjectGrantRequest {
+            invocation_id: [0xac; 16],
+            authenticated_actor_id: admin_id,
+            grantee_id: reader.user_id,
+            object_id: table.table_id,
+            privilege: prdb_engine::storage_manager::ObjectGrantPrivilege::Select,
+            target: prdb_engine::storage_manager::ObjectGrantTarget::AllColumns,
+            grant: true,
+            retention_deadline_us: i64::MAX,
+            audit_event: migration_audit(
+                0xac,
+                [0xac; 16],
+                AuditAction::AuthorityChange,
+                vec![reader.user_id, table.table_id],
+            ),
+        })
+        .expect("grant migration reader column access");
+    source_storage
+        .create_policy(prdb_engine::storage_manager::CreatePolicyRequest {
+            invocation_id: [0xa7; 16],
+            authenticated_actor_id: admin_id,
+            table_id: table.table_id,
+            name: "migration_visible_values".to_owned(),
+            kind: prdb_engine::storage_manager::PolicyKind::Row,
+            operation: prdb_engine::authorization::Operation::Select,
+            effect: prdb_engine::authorization::Effect::Allow,
+            recipients: vec![prdb_engine::authorization::Subject::Principal(
+                reader.user_id,
+            )],
+            target_column_ids: Vec::new(),
+            using_expression: Some(prdb_engine::authorization::Expr::Equal(
+                Box::new(prdb_engine::authorization::Expr::Field(0)),
+                Box::new(prdb_engine::authorization::Expr::Literal(Some(
+                    prdb_engine::tuple::ScalarValue::Text("visible".to_owned()),
+                ))),
+            )),
+            with_check_expression: None,
+            retention_deadline_us: i64::MAX,
+            audit_event: migration_audit(0xa7, [0xa7; 16], AuditAction::Ddl, Vec::new()),
+        })
+        .expect("create migration row policy");
+    source_storage
+        .create_policy(prdb_engine::storage_manager::CreatePolicyRequest {
+            invocation_id: [0xa8; 16],
+            authenticated_actor_id: admin_id,
+            table_id: table.table_id,
+            name: "migration_restrict_values".to_owned(),
+            kind: prdb_engine::storage_manager::PolicyKind::Cell,
+            operation: prdb_engine::authorization::Operation::Select,
+            effect: prdb_engine::authorization::Effect::Restrict,
+            recipients: vec![prdb_engine::authorization::Subject::Principal(
+                reader.user_id,
+            )],
+            target_column_ids: vec![table.column_ids[0]],
+            using_expression: Some(prdb_engine::authorization::Expr::Literal(Some(
+                prdb_engine::tuple::ScalarValue::Boolean(false),
+            ))),
+            with_check_expression: None,
+            retention_deadline_us: i64::MAX,
+            audit_event: migration_audit(0xa8, [0xa8; 16], AuditAction::Ddl, Vec::new()),
+        })
+        .expect("create migration cell restriction");
+    let mut seed = source_storage
+        .begin_invocation([0xab; 16], admin_id, i64::MAX, 4, 4096)
+        .expect("begin migration fixture row seed");
+    for (row_id, value) in [([0xb1; 16], "visible"), ([0xb2; 16], "hidden")] {
+        let payload = prdb_engine::tuple::encode_tuple(
+            &[prdb_engine::tuple::ColumnSchema {
+                scalar_type: prdb_engine::tuple::ScalarType::Text,
+                nullable: false,
+            }],
+            1,
+            &[Some(prdb_engine::tuple::ScalarValue::Text(
+                value.to_owned(),
+            ))],
+        )
+        .expect("encode migration fixture row");
+        seed.stage_put(
+            prdb_engine::overlay::RowId {
+                table: table.table_id,
+                row: row_id,
+            },
+            &payload,
+        )
+        .expect("stage migration fixture row");
+    }
+    seed.commit().expect("commit migration fixture rows");
+    let visible_relations = source_storage
+        .discover_token_authorized_relations(reader_token_id, &reader_secret, schema.schema_id)
+        .expect("discover migration reader relations")
+        .expect("migration reader can use the schema");
+    assert!(
+        visible_relations
+            .iter()
+            .any(|relation| relation.relation_id == table.table_id),
+        "table grant should make the migration fixture relation discoverable"
+    );
+    let (mut source_reader, source_roles) = source_storage
+        .begin_token_authenticated_invocation(
+            [0xaa; 16],
+            reader_token_id,
+            &reader_secret,
+            i64::MAX,
+            4,
+            4096,
+        )
+        .expect("admit migration reader before conversion");
+    assert!(source_roles.is_empty());
+    let raw_visible = source_reader
+        .read(prdb_engine::overlay::RowId {
+            table: table.table_id,
+            row: [0xb1; 16],
+        })
+        .expect("read source visible row")
+        .expect("source visible row is stored");
+    assert_eq!(
+        prdb_engine::tuple::decode_tuple(
+            &[prdb_engine::tuple::ColumnSchema {
+                scalar_type: prdb_engine::tuple::ScalarType::Text,
+                nullable: false,
+            }],
+            1,
+            &raw_visible,
+        )
+        .expect("decode source visible row")
+        .values,
+        [Some(prdb_engine::tuple::ScalarValue::Text(
+            "visible".to_owned()
+        ))]
+    );
+    assert_eq!(
+        source_reader
+            .read_catalog_authorized_row(table.table_id, [0xb1; 16])
+            .expect("read source row permitted by policy"),
+        Some(vec![prdb_engine::authorization::SanitizedCell::Redacted])
+    );
+    assert_eq!(
+        source_reader
+            .read_catalog_authorized_row(table.table_id, [0xb2; 16])
+            .expect("read hidden source row"),
+        None
+    );
+    source_reader
+        .commit()
+        .expect("commit source authorization check");
+    drop(source_storage);
+    drop(source_database);
+
     let metadata = downgrade_ready_fixture_to_v1(&source_path);
     let backup_path = fixture.0.join("verified-v1-backup");
     prdb_engine::offline_backup::create_verified_migration_backup(
@@ -1789,6 +2047,32 @@ fn migration_apply_requires_complete_history_ack_and_publishes_validated_v2() {
         .authenticate_query_session(token_id, &secret)
         .expect("pre-migration bootstrap token remains valid after migration");
     assert_eq!(authenticated.principal_id(), admin_id);
+    let (mut reader_invocation, reader_roles) = migrated_storage
+        .begin_token_authenticated_invocation(
+            [0xa9; 16],
+            reader_token_id,
+            &reader_secret,
+            i64::MAX,
+            4,
+            4096,
+        )
+        .expect("migrated reader token retains access");
+    assert!(reader_roles.is_empty());
+    assert_eq!(
+        reader_invocation
+            .read_catalog_authorized_row(table.table_id, [0xb1; 16])
+            .expect("read row permitted by migrated policy"),
+        Some(vec![prdb_engine::authorization::SanitizedCell::Redacted])
+    );
+    assert_eq!(
+        reader_invocation
+            .read_catalog_authorized_row(table.table_id, [0xb2; 16])
+            .expect("read hidden row through migrated policy"),
+        None
+    );
+    reader_invocation
+        .commit()
+        .expect("commit read-only migration authorization check");
     drop(migrated_storage);
     let read = active
         .database()

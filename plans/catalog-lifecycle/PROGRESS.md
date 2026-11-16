@@ -243,6 +243,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Extended `migration_apply_requires_complete_history_ack_and_publishes_validated_v2` to preserve the initial token in zeroizing test memory and authenticate a new query session after v1-to-v2 publication. The authenticated session resolves to the same administrator ID, exercising the migrated verifier through the production storage authentication path.
 - Verification: the focused migration CLI regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
 
+## CL-6: migration preserves grants and row/cell policy behavior — verified slice
+
+- Expanded `migration_apply_requires_complete_history_ack_and_publishes_validated_v2` with a second login user, token, schema USAGE, table SELECT, column SELECT, an ALLOW row predicate, a RESTRICT cell policy, and two stored rows. Before conversion and after conversion, the authenticated user's authorized read hides the nonmatching row and returns REDACTED for the matching row's cell. This exercises token, grant, row-policy, and cell-policy behavior against the same catalog IDs on both sides of conversion.
+- Verification: the focused migration CLI regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+
 ## 2026-11-16 integrated acceptance refresh
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. All 33 bootstrap binary tests passed, including backup verification, migration, physical redb upgrade, restore, and publication retry/process-exit recovery.
