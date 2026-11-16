@@ -191,3 +191,8 @@
 
 - Extended `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` to issue `GRANT ALTER, REFERENCES (key)` and its REVOKE through the authenticated ADMIN client. Permission discovery confirms ALTER is object-scoped and REFERENCES targets the resolved `key` column after grant, then confirms both entries are gone after revoke.
 - Verification: the focused gateway/supervisor process test passed inside the delegated `systemd --user` service; formatting, warning-denied all-target engine Clippy, and `git diff --check` passed.
+
+## DP-SQL-11: specify mixed-scope grant-list semantics — verified slice
+
+- Updated the permission contract with the implemented grammar: one column-capable table privilege may carry the parenthesized column list while other compatible table privileges stay object-scoped in the same atomic operation. It also records all-column expansion without a list and the current single-data-privilege limit when a column list is present.
+- Verification: checked the examples against the SQL parser and the authenticated cross-process GRANT/REVOKE regression; `git diff --check` passed.
