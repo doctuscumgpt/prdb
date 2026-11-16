@@ -1740,17 +1740,18 @@ fn schema_drop_racing_table_creation_never_leaves_an_orphan()
         create_schema_audit,
     )?;
 
+    let create_table_invocation = id(0xa4);
+    let drop_schema_invocation = id(0xa7);
     let barrier = Arc::new(Barrier::new(3));
     let (table_result, drop_result) = std::thread::scope(|scope| {
         let create_barrier = barrier.clone();
         let create_storage = &storage;
         let create = scope.spawn(move || {
             create_barrier.wait();
-            let invocation_id = id(0xa4);
             let mut audit = identity_audit_event(0xa5, actor, id(0xa6));
-            audit.correlation_id = invocation_id;
+            audit.correlation_id = create_table_invocation;
             create_storage.create_table(CreateTableRequest {
-                invocation_id,
+                invocation_id: create_table_invocation,
                 authenticated_actor_id: actor,
                 schema_id: schema.schema_id,
                 name: "racing_child".to_owned(),
@@ -1769,25 +1770,89 @@ fn schema_drop_racing_table_creation_never_leaves_an_orphan()
         let drop_storage = &storage;
         let drop_schema = scope.spawn(move || {
             drop_barrier.wait();
-            let invocation_id = id(0xa7);
             let mut audit = identity_audit_event(0xa8, actor, id(0xa9));
-            audit.correlation_id = invocation_id;
-            drop_storage.drop_schema(invocation_id, actor, schema.schema_id, 9_999, audit)
+            audit.correlation_id = drop_schema_invocation;
+            drop_storage.drop_schema(
+                drop_schema_invocation,
+                actor,
+                schema.schema_id,
+                9_999,
+                audit,
+            )
         });
         barrier.wait();
         (create.join().unwrap(), drop_schema.join().unwrap())
     });
-    match (table_result, drop_result) {
-        (Ok(_), Err(SchemaLifecycleError::Commit(CommitError::SchemaNotEmpty))) => {}
+    let table_created = match (table_result, drop_result) {
+        (Ok(table), Err(SchemaLifecycleError::Commit(CommitError::SchemaNotEmpty))) => Some(table),
         (
             Err(
                 TableLifecycleError::Unauthorized
                 | TableLifecycleError::Commit(CommitError::Conflict),
             ),
             Ok(_),
-        ) => {}
+        ) => None,
         (table, dropped) => {
             panic!("invalid schema-drop/table-create race: {table:?} / {dropped:?}")
+        }
+    };
+    let create_outcome = lookup_outcome(&database, create_table_invocation, actor, 1)?
+        .ok_or("missing racing table-create outcome")?;
+    let drop_outcome = lookup_outcome(&database, drop_schema_invocation, actor, 1)?
+        .ok_or("missing racing schema-drop outcome")?;
+    let catalog_read = database.begin_read()?;
+    let catalog = catalog_read.open_table(CATALOG)?;
+    match table_created {
+        Some(table) => {
+            assert_eq!(create_outcome.status, OutcomeStatus::Committed);
+            assert_eq!(drop_outcome.status, OutcomeStatus::Aborted);
+            assert!(
+                catalog
+                    .get(id_catalog_key(2, schema.schema_id).as_slice())?
+                    .is_some()
+            );
+            assert!(
+                catalog
+                    .get(id_catalog_key(3, schema.schema_id).as_slice())?
+                    .is_some()
+            );
+            assert!(
+                catalog
+                    .get(id_catalog_key(2, table.table_id).as_slice())?
+                    .is_some()
+            );
+            assert!(
+                catalog
+                    .get(id_catalog_key(5, table.table_id).as_slice())?
+                    .is_some()
+            );
+        }
+        None => {
+            assert_eq!(create_outcome.status, OutcomeStatus::Aborted);
+            assert_eq!(drop_outcome.status, OutcomeStatus::Committed);
+            assert!(
+                catalog
+                    .get(id_catalog_key(2, schema.schema_id).as_slice())?
+                    .is_none()
+            );
+            assert!(
+                catalog
+                    .get(id_catalog_key(3, schema.schema_id).as_slice())?
+                    .is_none()
+            );
+            for entry in catalog.iter()? {
+                let (key, value) = entry?;
+                if key.value().get(..2) == Some(2u16.to_be_bytes().as_slice()) {
+                    let object = decode_registered_envelope(value.value())?;
+                    assert!(
+                        object
+                            .fields
+                            .iter()
+                            .find(|field| field.tag == 2)
+                            .is_none_or(|field| field.payload.as_slice() != schema.schema_id)
+                    );
+                }
+            }
         }
     }
     StorageManager::new(&database, Duration::from_millis(100))?;
