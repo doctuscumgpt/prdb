@@ -331,3 +331,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The role-authorized writer regression now races an authenticated staged update with user rename and also forces a rename-first commit order. Stale writes conflict with durable ABORTED outcomes and leave stored row bytes unchanged; a writer that commits first is ordered before rename. The same credential continues to admit the renamed stable identity.
 - Verification: focused real-redb regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit tests, 186 commit tests, 76 transaction tests, plus all remaining targets).
+
+## AU-5 / DP-7: executor updates cannot mutate catalog policy inputs — verified slice
+
+- Added a pinned-catalog regression with an UPDATE policy that reads the BYTEA field in both USING and WITH CHECK. The normal executor scan issues a row handle, while patching the referenced field is denied and the persisted row remains byte-for-byte unchanged. The self-equality predicates would allow the changed value absent the policy-driving-column restriction.
+- Verification: focused transaction test and complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets); build, formatting, Clippy, TinyCC, release-profile, and cgroup probe checks also passed.

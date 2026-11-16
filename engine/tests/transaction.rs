@@ -4269,6 +4269,161 @@ fn catalog_authorized_scan_builds_its_projection_from_pinned_records()
             .status,
         OutcomeStatus::Aborted
     );
+    let guarded_value = vec![9, 9];
+    let policy_expression = Expr::Equal(Box::new(Expr::Field(0)), Box::new(Expr::Field(0)));
+    let policy_id = [0xf4; 16];
+    let using_expression_id = [0xf5; 16];
+    let check_expression_id = [0xf6; 16];
+    let select_policy_id = [0xf1; 16];
+    let select_expression_id = [0xf2; 16];
+    let select_expression = Expr::Literal(Some(ScalarValue::Boolean(true)));
+    let (select_policy_key, select_policy_payload) = policy_catalog_record(
+        select_policy_id,
+        table_id,
+        1,
+        1,
+        Some(select_expression_id),
+        None,
+    );
+    let (select_policy_target_key, select_policy_target_payload) =
+        policy_target_catalog_record(select_policy_id, 1, principal_id);
+    let select_expression_key = catalog_id_key(7, select_expression_id);
+    let select_expression_payload = expression_catalog_payload_full(
+        select_expression_id,
+        3,
+        [46; 16],
+        [0; 8],
+        &[],
+        &select_expression,
+    )?;
+    let (policy_key, policy_payload) = policy_catalog_record(
+        policy_id,
+        table_id,
+        1,
+        3,
+        Some(using_expression_id),
+        Some(check_expression_id),
+    );
+    let (policy_target_key, policy_target_payload) =
+        policy_target_catalog_record(policy_id, 1, principal_id);
+    let using_expression_key = catalog_id_key(7, using_expression_id);
+    let check_expression_key = catalog_id_key(7, check_expression_id);
+    let using_expression_payload = expression_catalog_payload_full(
+        using_expression_id,
+        3,
+        [46; 16],
+        [0; 8],
+        &[[0x66; 16]],
+        &policy_expression,
+    )?;
+    let check_expression_payload = expression_catalog_payload_full(
+        check_expression_id,
+        4,
+        [46; 16],
+        [0; 8],
+        &[[0x66; 16]],
+        &policy_expression,
+    )?;
+    let write = database.begin_write()?;
+    {
+        let mut catalog = write.open_table(CATALOG)?;
+        catalog.insert(
+            select_policy_key.as_slice(),
+            select_policy_payload.as_slice(),
+        )?;
+        catalog.insert(
+            select_policy_target_key.as_slice(),
+            select_policy_target_payload.as_slice(),
+        )?;
+        catalog.insert(
+            select_expression_key.as_slice(),
+            select_expression_payload.as_slice(),
+        )?;
+        catalog.insert(policy_key.as_slice(), policy_payload.as_slice())?;
+        catalog.insert(
+            policy_target_key.as_slice(),
+            policy_target_payload.as_slice(),
+        )?;
+        catalog.insert(
+            using_expression_key.as_slice(),
+            using_expression_payload.as_slice(),
+        )?;
+        catalog.insert(
+            check_expression_key.as_slice(),
+            check_expression_payload.as_slice(),
+        )?;
+        let mut policies = write.open_table(schema::POLICIES)?;
+        for (operation, indexed_policy_id) in [
+            (1u16, select_policy_id),
+            (1u16, restricted_row_policy_id),
+            (3u16, policy_id),
+        ] {
+            let mut index_key = Vec::with_capacity(34);
+            index_key.extend_from_slice(&table_id);
+            index_key.extend_from_slice(&operation.to_be_bytes());
+            index_key.extend_from_slice(&indexed_policy_id);
+            policies.insert(index_key.as_slice(), &[][..])?;
+        }
+    }
+    write.commit()?;
+    let mut guarded_writer =
+        InvocationTransaction::begin(&database, [0xf7; 16], principal_id, 9_999, 2, 1024)?;
+    let guarded_schema = guarded_writer.load_catalog_table_schema(table_id)?;
+    let guarded_policies = guarded_writer
+        .load_catalog_policies(principal_id, &guarded_schema)
+        .map_err(|error| format!("policy-driving expression failed to load: {error:?}"))?;
+    assert!(guarded_policies.iter().any(|policy| {
+        policy.operation == Operation::Update
+            && policy.using == Some(policy_expression.clone())
+            && policy.with_check == Some(policy_expression.clone())
+    }));
+    let mut guarded_connection = guarded_writer.open_executor_metadata_connection();
+    let (guarded_relation, _) = guarded_connection
+        .resolve_relation("app", "metrics")?
+        .expect("the SELECT grant keeps the relation available");
+    let guarded_scan = guarded_connection.open_relation_scan(&guarded_relation, &[[0x66; 16]])?;
+    let guarded_page = guarded_connection.next_relation_scan_page(&guarded_scan, 8)?;
+    let guarded_handle = &guarded_page
+        .rows
+        .first()
+        .ok_or("policy-driving test row was not visible")?
+        .0;
+    assert!(matches!(
+        guarded_connection.stage_update(
+            guarded_handle,
+            &[FieldPatch {
+                ordinal: 0,
+                value: Some(ScalarValue::Bytea(vec![0xaa])),
+            }],
+        ),
+        Err(TransactionError::Authorization(
+            prdb_engine::authorization::AuthorizationError::Denied
+        ))
+    ));
+    let guarded_row = RowRecord::decode(
+        database
+            .begin_read()?
+            .open_table(ROWS)?
+            .get(&key(row_id)[..])?
+            .ok_or("policy-driven row was unexpectedly removed")?
+            .value(),
+    )?;
+    assert_eq!(
+        decode_tuple(
+            &[ColumnSchema {
+                scalar_type: ScalarType::Bytea,
+                nullable: false,
+            }],
+            1,
+            &guarded_row.payload
+        )?
+        .values,
+        [Some(ScalarValue::Bytea(guarded_value))],
+        "adding a policy that reads a column must block later writes to that column"
+    );
+    drop(guarded_connection);
+    guarded_writer.abort()?;
+
     Ok(())
 }
 
