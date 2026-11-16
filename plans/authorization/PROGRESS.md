@@ -452,3 +452,10 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Clarified the authorized unique-index point-probe contract in [storage manager](../../specs/storage-manager.md).
 - Verification: the focused real-redb regression passed. Workspace formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. An initial full-suite attempt used a malformed installed-SDK fixture path and failed the optimizer metadata submission test with `NotFound`; rerunning with the documented fixture path passed that test and the full suite.
 - Remaining: typed successful-key parity beyond BYTEA, SQL type/coercion coverage, and broader complex-predicate error-equivalence coverage remain open.
+
+## 2026-11-16 AU-3 / SQL-2: INTEGER unique-key probe matches the authorized scan — verified slice
+
+- Added `authorized_integer_unique_probe_matches_reference_without_implicit_coercion` with a real-redb INTEGER table and unique index. For a matching key, the probe returns the same row ID and sanitized cells as an independently filtered authorized reference scan; an absent integer returns `NoMatch`.
+- The same test submits TEXT for the INTEGER key and verifies a typed `TypeMismatch` error, consistent with the documented no-implicit-coercion rule.
+- Verification: the focused real-redb test passed. Workspace formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
+- Remaining: successful probe parity for other scalar types and composite keys, SQL type/coercion coverage beyond this no-coercion case, and broader complex-predicate error-equivalence coverage remain open.

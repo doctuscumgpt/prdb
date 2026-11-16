@@ -8045,6 +8045,313 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
 }
 
 #[test]
+fn authorized_integer_unique_probe_matches_reference_without_implicit_coercion()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::authorization::AccessTarget;
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let table_id = [0x31; 16];
+    let column_id = [0x67; 16];
+    let index_id = [0x57; 16];
+    let schema_id = [145; 16];
+    let type_id = [0x41; 16];
+    let (index_key, index_value) =
+        index_catalog_record_with_constraint(index_id, table_id, column_id, 1, true, None)?;
+    let table_key = catalog_id_key(5, table_id);
+    let table_value = catalog_record_payload(
+        5,
+        &table_key,
+        &[
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::Id,
+                payload: schema_id.to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::U64,
+                payload: 1u64.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::U64,
+                payload: 1u64.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::Id,
+                payload: table_id.to_vec(),
+            },
+            CatalogField {
+                tag: 5,
+                wire_type: WireType::U16,
+                payload: 1u16.to_le_bytes().to_vec(),
+            },
+        ],
+    )?;
+    let column_key = catalog_id_key(6, column_id);
+    let column_value = catalog_record_payload(
+        6,
+        &column_key,
+        &[
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::Id,
+                payload: table_id.to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::U32,
+                payload: 0u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::Text,
+                payload: b"integer_key".to_vec(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::Id,
+                payload: type_id.to_vec(),
+            },
+            CatalogField {
+                tag: 5,
+                wire_type: WireType::Bytes,
+                payload: vec![0; 8],
+            },
+            CatalogField {
+                tag: 6,
+                wire_type: WireType::Bool,
+                payload: vec![1],
+            },
+            CatalogField {
+                tag: 8,
+                wire_type: WireType::U16,
+                payload: 0u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 9,
+                wire_type: WireType::U64,
+                payload: 1u64.to_le_bytes().to_vec(),
+            },
+        ],
+    )?;
+    let type_key = catalog_id_key(4, type_id);
+    let type_value = catalog_record_payload(
+        4,
+        &type_key,
+        &[
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::U16,
+                payload: 3u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::U16,
+                payload: 0u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 5,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 6,
+                wire_type: WireType::U32,
+                payload: 1u32.to_le_bytes().to_vec(),
+            },
+        ],
+    )?;
+    let (table_object_key, table_object_value) =
+        object_catalog_record_with_name(table_id, 3, "integer_probe_table");
+    let (column_object_key, column_object_value) =
+        object_catalog_record_with_name(column_id, 4, "integer_probe_column");
+    {
+        let write = database.begin_write()?;
+        let mut catalog = write.open_table(CATALOG)?;
+        for (key, value) in [
+            (table_key, table_value),
+            (column_key, column_value),
+            (type_key, type_value),
+            (index_key, index_value),
+            (table_object_key, table_object_value),
+            (column_object_key, column_object_value),
+        ] {
+            catalog.insert(key.as_slice(), value.as_slice())?;
+        }
+        drop(catalog);
+        write.commit()?;
+    }
+
+    let mut seed = InvocationTransaction::begin(&database, [0x32; 16], [9; 16], 9_999, 4, 4096)?;
+    let schema = seed.load_catalog_table_schema(table_id)?;
+    seed.load_catalog_indexes(&schema)?;
+    let target_payload = encode_tuple(
+        &schema.columns,
+        schema.schema_version,
+        &[Some(ScalarValue::Integer(42))],
+    )?;
+    let other_payload = encode_tuple(
+        &schema.columns,
+        schema.schema_version,
+        &[Some(ScalarValue::Integer(7))],
+    )?;
+    seed.stage_put(
+        prdb_engine::overlay::RowId {
+            table: table_id,
+            row: [0x33; 16],
+        },
+        &target_payload,
+    )?;
+    seed.stage_put(
+        prdb_engine::overlay::RowId {
+            table: table_id,
+            row: [0x34; 16],
+        },
+        &other_payload,
+    )?;
+    seed.commit()?;
+
+    let mut invocation =
+        InvocationTransaction::begin(&database, [0x35; 16], [9; 16], 9_999, 8, 4096)?;
+    let schema = invocation.load_catalog_table_schema(table_id)?;
+    let principal_id = [9; 16];
+    let context = AuthorizationContext {
+        principal_id,
+        role_ids: std::collections::HashSet::new(),
+        scope: [
+            (Operation::Usage, AccessTarget::Schema(schema.schema_id)),
+            (Operation::Select, AccessTarget::Table(table_id)),
+            (
+                Operation::Select,
+                AccessTarget::Column {
+                    table_id,
+                    column_id,
+                },
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let grants = [
+        Grant {
+            subject: Subject::Principal(principal_id),
+            operation: Operation::Usage,
+            target: AccessTarget::Schema(schema.schema_id),
+        },
+        Grant {
+            subject: Subject::Principal(principal_id),
+            operation: Operation::Select,
+            target: AccessTarget::Table(table_id),
+        },
+        Grant {
+            subject: Subject::Principal(principal_id),
+            operation: Operation::Select,
+            target: AccessTarget::Column {
+                table_id,
+                column_id,
+            },
+        },
+    ];
+    let policies = [
+        Policy {
+            subjects: vec![Subject::Principal(principal_id)],
+            operation: Operation::Select,
+            target: AccessTarget::Table(table_id),
+            effect: Effect::Allow,
+            using: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+            with_check: None,
+        },
+        Policy {
+            subjects: vec![Subject::Principal(principal_id)],
+            operation: Operation::Select,
+            target: AccessTarget::Column {
+                table_id,
+                column_id,
+            },
+            effect: Effect::Allow,
+            using: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+            with_check: None,
+        },
+    ];
+    let projection = AuthorizedProjection {
+        columns: &schema.columns,
+        column_ids: &schema.column_ids,
+        schema_version: schema.schema_version,
+        schema_id: schema.schema_id,
+        context: &context,
+        grants: &grants,
+        policies: &policies,
+        checks: &[],
+        policy_driving_columns: &[],
+        dependencies: &[],
+    };
+    let target_cell = SanitizedCell::Value(ScalarValue::Integer(42));
+    let mut reference_matches = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = invocation.scan_authorized(table_id, cursor.as_ref(), 8, &projection)?;
+        reference_matches.extend(page.rows.into_iter().filter_map(|(row_id, cells)| {
+            (cells.first() == Some(&target_cell)).then_some((row_id, cells))
+        }));
+        let Some(next) = page.continuation else {
+            break;
+        };
+        cursor = Some(next);
+    }
+    assert_eq!(reference_matches.len(), 1);
+    assert!(matches!(
+        invocation.probe_catalog_unique_index(table_id, index_id, &[Some(ScalarValue::Integer(42))], &projection)?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::Match { id, cells }
+            if id == reference_matches[0].0 && cells == reference_matches[0].1
+    ));
+    assert_eq!(
+        invocation.probe_catalog_unique_index(
+            table_id,
+            index_id,
+            &[Some(ScalarValue::Integer(99))],
+            &projection
+        )?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::NoMatch,
+    );
+
+    let mut mismatched_invocation =
+        InvocationTransaction::begin(&database, [0x36; 16], [9; 16], 9_999, 8, 4096)?;
+    let mismatch_schema = mismatched_invocation.load_catalog_table_schema(table_id)?;
+    let mismatch_projection = AuthorizedProjection {
+        columns: &mismatch_schema.columns,
+        column_ids: &mismatch_schema.column_ids,
+        schema_version: mismatch_schema.schema_version,
+        schema_id: mismatch_schema.schema_id,
+        ..projection
+    };
+    assert!(matches!(
+        mismatched_invocation.probe_catalog_unique_index(
+            table_id,
+            index_id,
+            &[Some(ScalarValue::Text("42".to_owned()))],
+            &mismatch_projection
+        ),
+        Err(TransactionError::Tuple(
+            prdb_engine::tuple::TupleError::TypeMismatch
+        ))
+    ));
+    Ok(())
+}
+
+#[test]
 fn catalog_foreign_keys_check_child_and_parent_mutations() -> Result<(), Box<dyn std::error::Error>>
 {
     let fixture = Fixture::new();
