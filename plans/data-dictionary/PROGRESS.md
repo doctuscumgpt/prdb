@@ -585,3 +585,8 @@
 
 - Added a real-redb race between storing a literal column default and creating the NOT NULL constraint for that column. The final nullable/default fields are checked against durable operation outcomes, and `validate_persisted_records` confirms the resulting typed catalog graph.
 - Verification: the focused regression passed eight consecutive repeats; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed in the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
+
+## 2026-11-16 DD-2 / DD-5: object-grant index under repeated catalog pressure — verified slice
+
+- Extended `schema_create_drop_pressure_preserves_pinned_name_index_snapshots` with a table-scoped SELECT grant and revoke in each of its 128 lifecycle cycles. The grant lookup resolves the published record, a retained snapshot still returns it after revoke, and a fresh snapshot returns no grants for that table.
+- Verification: the focused 128-cycle real-redb regression passed; format check, warning-denied all-target workspace Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.

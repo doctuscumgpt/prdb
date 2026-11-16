@@ -8893,6 +8893,67 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
                 retention_deadline_us: 9_999,
                 audit_event: table_create_audit,
             })?;
+            let grant_create_invocation = pressure_id(0xb0, index);
+            let mut grant_create_audit = identity_audit_event(index as u8, actor, table.table_id);
+            grant_create_audit.event_id = pressure_id(0xb1, index);
+            grant_create_audit.correlation_id = grant_create_invocation;
+            grant_create_audit.action = AuditAction::AuthorityChange;
+            storage.set_object_grant(prdb_engine::storage_manager::SetObjectGrantRequest {
+                invocation_id: grant_create_invocation,
+                authenticated_actor_id: actor,
+                grantee_id: actor,
+                object_id: table.table_id,
+                privilege: prdb_engine::storage_manager::ObjectGrantPrivilege::Select,
+                target: prdb_engine::storage_manager::ObjectGrantTarget::Object,
+                grant: true,
+                retention_deadline_us: 9_999,
+                audit_event: grant_create_audit,
+            })?;
+            let retained_grant_snapshot = database.begin_read()?;
+            assert_eq!(
+                prdb_engine::catalog_index::lookup_grants_for_object(
+                    &retained_grant_snapshot,
+                    table.table_id,
+                )?
+                .len(),
+                1,
+                "the object-grant index should resolve a fresh table grant"
+            );
+            let grant_drop_invocation = pressure_id(0xb2, index);
+            let mut grant_drop_audit = identity_audit_event(index as u8, actor, table.table_id);
+            grant_drop_audit.event_id = pressure_id(0xb3, index);
+            grant_drop_audit.correlation_id = grant_drop_invocation;
+            grant_drop_audit.action = AuditAction::AuthorityChange;
+            storage.set_object_grant(prdb_engine::storage_manager::SetObjectGrantRequest {
+                invocation_id: grant_drop_invocation,
+                authenticated_actor_id: actor,
+                grantee_id: actor,
+                object_id: table.table_id,
+                privilege: prdb_engine::storage_manager::ObjectGrantPrivilege::Select,
+                target: prdb_engine::storage_manager::ObjectGrantTarget::Object,
+                grant: false,
+                retention_deadline_us: 9_999,
+                audit_event: grant_drop_audit,
+            })?;
+            assert_eq!(
+                prdb_engine::catalog_index::lookup_grants_for_object(
+                    &retained_grant_snapshot,
+                    table.table_id,
+                )?
+                .len(),
+                1,
+                "a retained snapshot must keep the revoked table grant"
+            );
+            drop(retained_grant_snapshot);
+            let after_grant_revoke = database.begin_read()?;
+            assert!(
+                prdb_engine::catalog_index::lookup_grants_for_object(
+                    &after_grant_revoke,
+                    table.table_id,
+                )?
+                .is_empty(),
+                "a fresh snapshot must omit the revoked table grant"
+            );
             let index_create_invocation = pressure_id(0xd0, index);
             let mut index_create_audit = identity_audit_event(index as u8, actor, table.table_id);
             index_create_audit.event_id = pressure_id(0xd1, index);
