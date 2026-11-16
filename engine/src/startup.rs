@@ -2191,6 +2191,10 @@ fn validate_catalog(
         object_parents
             .get(object_id)
             .is_some_and(|parent_id| parent_id.is_some_and(|parent_id| parent_id != *table_id))
+    }) || table_schema_ids.iter().any(|(table_id, schema_id)| {
+        object_parents
+            .get(table_id)
+            .is_some_and(|parent_id| parent_id.is_some_and(|parent_id| parent_id != *schema_id))
     }) || index_definitions.iter().any(|(index_id, table_id)| {
         object_parents.get(index_id).is_some_and(|parent_id| {
             parent_id.is_some_and(|parent_id| table_schema_ids.get(table_id) != Some(&parent_id))

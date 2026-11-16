@@ -522,3 +522,9 @@
 - Startup and final-catalog commit validation now reject a family-9 index whose family-2 object names an explicit parent schema different from the schema on the typed table record. Parentless indexes remain valid for records without an explicit schema parent. The data-dictionary specification records this relationship.
 - Added commit-boundary and persisted-startup regressions for the mismatched-parent graph.
 - Verification: focused regressions passed; all 56 startup tests and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 library tests, 195 commit tests, 78 transaction tests, plus all remaining targets). Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. Cargo.lock is unchanged.
+
+## DD-3 / CL-3: table object parent matches the typed table schema — verified slice
+
+- Added final-catalog and persisted-catalog checks requiring an explicit table-object parent schema to agree with family-5's schema ID. This moves the relationship check into the common validator so read-only backup/recovery validation catches the same corruption as writable startup's derived-index rebuild.
+- Added a commit-boundary test for atomic rejection and a regression that runs both read-only and writable startup validation against the malformed parent graph.
+- Verification: focused real-redb regressions passed; all 57 startup tests and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 library tests, 196 commit tests, 78 transaction tests, plus all remaining targets). Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. Cargo.lock is unchanged.

@@ -1479,6 +1479,13 @@ fn validate_final_dependency_edges(
     }) {
         return Err(CommitError::InvalidCatalog);
     }
+    if table_schemas.iter().any(|(table_id, schema_id)| {
+        object_parents
+            .get(table_id)
+            .is_some_and(|parent_id| parent_id.is_some_and(|parent_id| parent_id != *schema_id))
+    }) {
+        return Err(CommitError::InvalidCatalog);
+    }
     let actual_expression_reference_edges = dependencies
         .iter()
         .filter(|(_, _, kind)| *kind == 2)

@@ -10133,6 +10133,55 @@ fn catalog_commit_checks_dependency_endpoints_in_the_final_catalog()
 }
 
 #[test]
+fn catalog_commit_rejects_table_parent_schema_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let actual_schema_id = builtin_id(1);
+    let wrong_schema_id = builtin_id(2);
+    let table_id = id(0xc4);
+    let column_id = id(0xc5);
+    let invocation_id = id(0xc6);
+    assert_eq!(
+        commit_catalog_and_audit(
+            &database,
+            invocation_id,
+            id(9),
+            9_999,
+            &[
+                object_write_with_parent(table_id, 3, Some(wrong_schema_id)),
+                table_write(table_id, actual_schema_id),
+                dependency_write(table_id, wrong_schema_id, 1),
+                object_write(column_id, 4),
+                column_write(column_id, table_id, "object_197"),
+            ],
+            &[audit_event(0xc6)],
+        ),
+        Err(CommitError::InvalidCatalog),
+        "table object's parent schema must match its typed table schema"
+    );
+    assert_eq!(commit_sequence(&database)?, 0);
+    assert_eq!(
+        lookup_outcome(&database, invocation_id, id(9), 1)?
+            .ok_or("missing malformed table-parent outcome")?
+            .status,
+        OutcomeStatus::Aborted
+    );
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    assert!(
+        catalog
+            .get(id_catalog_key(5, table_id).as_slice())?
+            .is_none()
+    );
+    assert!(
+        catalog
+            .get(id_catalog_key(6, column_id).as_slice())?
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
 fn catalog_commit_rejects_column_parent_mismatch_with_typed_table()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

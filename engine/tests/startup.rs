@@ -16,9 +16,11 @@ use prdb_engine::schema::{
     self, AUDIT, CATALOG, ENGINE_META, INDEXES, OUTCOMES, PRINCIPAL_NAMES, ROW_INDEXES, ROWS,
     SCHEMA_NAMES,
 };
-use prdb_engine::startup::{StartupError, validate_persisted_records};
+use prdb_engine::startup::{
+    StartupError, validate_persisted_records, validate_persisted_records_read_only,
+};
 use prdb_engine::tuple::{ColumnSchema, ScalarType, ScalarValue, encode_tuple};
-use redb::{Database, ReadableDatabase, ReadableTable};
+use redb::{Database, ReadOnlyDatabase, ReadableDatabase, ReadableTable};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -2514,6 +2516,41 @@ fn rejects_index_object_parent_that_disagrees_with_typed_table_schema() {
         validate_persisted_records(&database),
         Err(StartupError::InvalidCatalog),
         "an index parent's schema must match its typed table's schema"
+    );
+}
+
+#[test]
+fn read_only_startup_rejects_table_object_parent_that_disagrees_with_typed_schema() {
+    let fixture = Fixture::new();
+    let database = fixture.database(0);
+    let table_id = [0xc4; 16];
+    let column_id = [0xc5; 16];
+    let actual_schema_id = builtin_id(1);
+    let wrong_schema_id = builtin_id(2);
+    for (key, value) in [
+        object_record_with_parent(table_id, 3, Some(wrong_schema_id)),
+        table_record_for_schema(table_id, actual_schema_id),
+        object_record(column_id, 4),
+        column_record_for_table(column_id, table_id, "object_197"),
+        dependency_record(table_id, wrong_schema_id, 1),
+    ] {
+        put_catalog(&database, &key, &value);
+    }
+    drop(database);
+
+    let read_only = ReadOnlyDatabase::open(fixture.path()).unwrap();
+    assert_eq!(
+        validate_persisted_records_read_only(&read_only),
+        Err(StartupError::InvalidCatalog),
+        "read-only recovery validation must check the typed table namespace too"
+    );
+    drop(read_only);
+
+    let writable = Database::open(fixture.path()).unwrap();
+    assert_eq!(
+        validate_persisted_records(&writable),
+        Err(StartupError::InvalidCatalog),
+        "writable startup validation must reject the same inconsistent graph"
     );
 }
 
