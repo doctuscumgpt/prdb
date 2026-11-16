@@ -6453,17 +6453,75 @@ fn storage_manager_sets_replaces_and_drops_column_defaults()
         audit_event: replace_audit,
     })?;
     let drop_invocation = id(0x55);
+    let stale_drop_writer_invocation = id(0x5d);
+    let stale_drop_row_id = prdb_engine::overlay::RowId {
+        table: default_table_id,
+        row: id(0x5e),
+    };
+    let mut stale_drop_writer =
+        storage.begin_invocation(stale_drop_writer_invocation, actor, 9_999, 1, 1024)?;
+    let stale_drop_schema = stale_drop_writer.load_catalog_table_schema(default_table_id)?;
+    stale_drop_writer.load_catalog_indexes(&stale_drop_schema)?;
+    let stale_drop_tuple = encode_tuple(
+        &stale_drop_schema.columns,
+        stale_drop_schema.schema_version,
+        &[Some(ScalarValue::Integer(8))],
+    )?;
+    stale_drop_writer.stage_put(stale_drop_row_id, &stale_drop_tuple)?;
     let mut drop_audit = identity_audit_event(0x56, actor, id(0x57));
     drop_audit.correlation_id = drop_invocation;
-    storage.alter_column_default(prdb_engine::storage_manager::AlterColumnDefaultRequest {
-        invocation_id: drop_invocation,
-        authenticated_actor_id: actor,
-        table_id: default_table_id,
-        column_id: default_column_id,
-        default: None,
-        retention_deadline_us: 9_999,
-        audit_event: drop_audit,
-    })?;
+    let drop_barrier = Arc::new(Barrier::new(2));
+    let (stale_drop_result, drop_result) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&drop_barrier);
+        let storage = &storage;
+        let ddl = scope.spawn(move || {
+            barrier.wait();
+            storage.alter_column_default(prdb_engine::storage_manager::AlterColumnDefaultRequest {
+                invocation_id: drop_invocation,
+                authenticated_actor_id: actor,
+                table_id: default_table_id,
+                column_id: default_column_id,
+                default: None,
+                retention_deadline_us: 9_999,
+                audit_event: drop_audit,
+            })
+        });
+        drop_barrier.wait();
+        let writer = stale_drop_writer.commit();
+        let ddl = ddl.join().expect("default DROP thread panicked");
+        (writer, ddl)
+    });
+    let drop_sequence = drop_result?;
+    let (stale_drop_sequence, stale_drop_status) = match stale_drop_result {
+        Ok(sequence) => (Some(sequence), OutcomeStatus::Committed),
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            (None, OutcomeStatus::Aborted)
+        }
+        Err(error) => panic!("unexpected staged-write result in default DROP race: {error:?}"),
+    };
+    if let Some(sequence) = stale_drop_sequence {
+        assert!(sequence < drop_sequence);
+    }
+    assert_eq!(
+        row(
+            &database,
+            &table_row_key(default_table_id, stale_drop_row_id.row)
+        )?
+        .map(|stored| stored.payload),
+        (stale_drop_status == OutcomeStatus::Committed).then_some(stale_drop_tuple)
+    );
+    assert_eq!(
+        lookup_outcome(&database, stale_drop_writer_invocation, actor, 1)?
+            .ok_or("missing stale writer outcome after default drop")?
+            .status,
+        stale_drop_status
+    );
+    assert_eq!(
+        lookup_outcome(&database, drop_invocation, actor, 1)?
+            .ok_or("missing default DROP outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
     let empty_drop_invocation = id(0x58);
     let mut empty_drop_audit = identity_audit_event(0x59, actor, id(0x5a));
     empty_drop_audit.correlation_id = empty_drop_invocation;

@@ -982,7 +982,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Updated `storage_manager_sets_replaces_and_drops_column_defaults` to race the default change against a staged row insert. Either the row commits before the ALTER and has a committed outcome, or the ALTER publishes first and the stale writer conflicts with an ABORTED outcome; the row's persisted bytes and commit sequence are checked against the winning order.
 - Verification: the focused real-redb DDL race passed; formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed afterward with sandbox/process tests enabled and zero ignored tests, including 34 bootstrap binary tests, 179 commit tests, and 75 transaction tests.
-- Remaining: stale-writer races for DROP COLUMN, index/constraint DDL, and additional ALTER combinations remain open.
+- Remaining: stale-writer races for index/constraint DDL and additional ALTER combinations remain open.
+
+## DS-5 / DS-7: DROP DEFAULT racing a staged writer — verified slice
+
+- Extended `storage_manager_sets_replaces_and_drops_column_defaults` to race removal of an existing INTEGER default against a writer staged from the default-bearing snapshot. Writer-first commits before the drop; DROP-first durably aborts the stale writer. The regression checks row state, commit order, both durable outcomes, and the default-drop outcome.
+- Verification: the focused real-redb DDL race passed. Workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup suite passed with sandbox and process tests enabled and zero ignored tests.
 
 ## DS-5 / DS-7: DROP COLUMN racing a staged writer — verified slice
 
