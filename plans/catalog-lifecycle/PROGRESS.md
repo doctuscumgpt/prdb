@@ -300,3 +300,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Updated the plan's acceptance section to reflect the implemented CL-1 through CL-6 behavior documented above, including the supported atomic filename exchange and explicit source retention. Removed stale language that said the publication design still needed pre-implementation reconciliation.
 - Preserved the actual open evidence: power-loss/device-cache durability, archived prior-release binaries/data directories, and broader filesystem fault campaigns. No claim of power-loss acceptance is made.
 - Verification: checked the changed progress link and the statements against the CL-4/CL-5/CL-6 evidence entries; `git diff --check` passed.
+
+## CL-6 restore recovers after post-exchange directory-sync failure — verified slice
+
+- Added a debug-build-only injected failure after restore atomically exchanges the verified backup into `storage.redb` and before syncing the instance directory. The restore subprocess regression verifies the command reports the injected failure, the active file is the byte-identical verified backup, and the displaced active image remains under the private staging name. Startup validates the restored READY generation, and a retry safely reports `already-active` while retaining the displaced image.
+- Verification: focused restore subprocess regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The full serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (293 unit, 190 commit, 76 transaction, 36 maintenance binary tests, plus all remaining targets).
+- Limit: this injected syscall-boundary failure verifies recovery with a live kernel and filesystem; it does not simulate power loss or device-cache behavior. Existing filesystem and power-loss evidence remains open.

@@ -740,6 +740,12 @@ pub fn restore_from_backup(
     File::open(&staging_path)?.sync_all()?;
     File::open(&active_path)?.sync_all()?;
     exchange_files(&active_path, &staging_path)?;
+    if test_restore_fail_directory_sync_after_exchange() {
+        return Err(std::io::Error::other(
+            "injected restore directory sync failure after exchange",
+        )
+        .into());
+    }
     sync_directory(&directory)?;
 
     validate_private_file(&active_path)?;
@@ -755,6 +761,17 @@ pub fn restore_from_backup(
         return Err(BootstrapError::InvalidCatalog);
     }
     Ok((restored_report, true))
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", debug_assertions))]
+fn test_restore_fail_directory_sync_after_exchange() -> bool {
+    std::env::var_os("PRDB_TEST_RESTORE_FAIL_SYNC_AFTER_EXCHANGE").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", not(debug_assertions)))]
+fn test_restore_fail_directory_sync_after_exchange() -> bool {
+    false
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

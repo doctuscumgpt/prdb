@@ -2381,46 +2381,60 @@ fn restore_requires_data_loss_ack_and_recovers_an_unreadable_newer_active_image(
         corrupted_bytes
     );
 
-    let restored = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+    let failed_after_exchange = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
         .args(["restore", "--instance-dir"])
         .arg(fixture.instance_dir())
         .arg("--backup-dir")
         .arg(&backup_path)
         .arg("--confirm-data-loss")
+        .env("PRDB_TEST_RESTORE_FAIL_SYNC_AFTER_EXCHANGE", "1")
         .output()
-        .expect("restore verified v2 backup");
+        .expect("inject restore directory-sync failure after exchange");
+    assert!(!failed_after_exchange.status.success());
     assert!(
-        restored.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&restored.stdout),
-        String::from_utf8_lossy(&restored.stderr)
+        String::from_utf8_lossy(&failed_after_exchange.stderr)
+            .contains("injected restore directory sync failure after exchange"),
+        "stderr: {}",
+        String::from_utf8_lossy(&failed_after_exchange.stderr)
     );
-    assert!(String::from_utf8_lossy(&restored.stdout).contains("restore=published"));
     assert_eq!(
-        std::fs::read(&active_path).expect("read restored active bytes"),
+        std::fs::read(&active_path).expect("read restored active bytes after sync failure"),
         expected_bytes
     );
-    assert!(!interrupted_copy.exists());
     assert_eq!(
         std::fs::read(fixture.instance_dir().join(".prdb-migration.next"))
-            .expect("read retained corrupt image"),
+            .expect("read retained displaced image after sync failure"),
         corrupted_bytes
     );
-    let repeated_restore = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+    drop(
+        ReadOnlyStorageInstance::open(fixture.instance_dir())
+            .expect("open validated restored generation after sync failure"),
+    );
+
+    let retry = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
         .args(["restore", "--instance-dir"])
         .arg(fixture.instance_dir())
         .arg("--backup-dir")
         .arg(&backup_path)
         .arg("--confirm-data-loss")
         .output()
-        .expect("retry restore after the backup is active");
-    assert!(repeated_restore.status.success());
-    assert!(String::from_utf8_lossy(&repeated_restore.stdout).contains("restore=already-active"));
+        .expect("retry restore after directory-sync failure");
+    assert!(
+        retry.status.success(),
+        "restore retry failed: {}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    assert!(String::from_utf8_lossy(&retry.stdout).contains("restore=already-active"));
+    assert_eq!(
+        std::fs::read(&active_path).expect("verify active restore after retry"),
+        expected_bytes
+    );
     assert_eq!(
         std::fs::read(fixture.instance_dir().join(".prdb-migration.next"))
-            .expect("verify retained corrupt image after retry"),
+            .expect("verify retained displaced image after retry"),
         corrupted_bytes
     );
+    assert!(!interrupted_copy.exists());
     let restored_instance =
         StorageInstance::open(fixture.instance_dir()).expect("open restored READY instance");
     let report = prdb_engine::startup::validate_persisted_records(restored_instance.database())
