@@ -76,12 +76,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: the focused separate-process regression passed inside the delegated user service; full workspace, formatting, build, Clippy, and TinyCC acceptance results are recorded with the owning schema DDL increment.
 - Scope: checks identity-based authorization and denial side effects for schema creation across production processes. Other DDL privilege boundaries and concurrent revocation races remain open.
 
-## ID-5 / NP-6: revoked system privilege takes effect on an open ADMIN connection — verified
+## ID-5 / NP-6: revoked system privileges take effect on open ADMIN connections — verified
 
 - Contract: [identity DDL](../../specs/ddl-identity.md) and [client protocol](../../specs/client-protocol.md) require control operations to revalidate the authenticated token and current authority; a revocation must not leave the existing connection with stale `CREATE_SCHEMA` authority.
-- Regression: the gateway/supervisor process test keeps the regular user's authenticated `AdminClient` open while the administrator revokes `CREATE_SCHEMA`. The same connection's next schema-create request is rejected, and the administrator then creates that schema name to prove the denied request left no catalog state before dropping the user.
+- Regression: the gateway/supervisor process test keeps authenticated ADMIN connections open while the administrator grants then revokes `MANAGE_USERS` and revokes `CREATE_SCHEMA`. One still-open connection observes MANAGE_USERS creation authority and loses it immediately on revocation; another still-open connection is denied schema creation after CREATE_SCHEMA revocation. The administrator creates the denied names afterward to prove no catalog state was left behind.
 - Verification: the focused `supervisor_and_gateway_binaries_commit_a_confined_submission` test passed in the delegated `systemd --user` service with the configured runtime and SDK release paths. `cargo fmt --all -- --check`, workspace build, warning-denied Clippy, `git diff --check`, and the full serial workspace suite passed; all sandbox integration tests were enabled and zero tests were ignored.
-- Scope: confirms a privilege revocation affects the next ADMIN request on an already authenticated control connection. Other system/object privilege revocation cases and concurrent revocation races remain open.
+- Scope: confirms MANAGE_USERS and CREATE_SCHEMA revalidation on already authenticated control connections. Other object privilege revocation cases and concurrent revocation races remain open.
 
 ## SM-5 / AU-6: identity drop conflicts with a staged role-authorized write — verified
 

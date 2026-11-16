@@ -19362,6 +19362,93 @@ fn policy_ddl_racing_table_owner_transfer_rechecks_authority_at_commit()
 }
 
 #[test]
+fn system_privilege_dependency_survives_until_the_last_grant_is_revoked()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{
+        AdministrativeSystemPrivilege as Privilege, SystemPrivilegeChange,
+    };
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let administrator = id(0xc1);
+    let grantee = id(0xc2);
+    let admin_role = builtin_owner_id();
+    let setup = [
+        principal_write_with_name(administrator, 1, 1, "privilege_admin"),
+        object_write_with_name(administrator, 8, "privilege_admin"),
+        membership_write_with_grantor(administrator, admin_role, admin_role),
+        dependency_write(administrator, admin_role, 5),
+        principal_write_with_name(grantee, 1, 1, "privilege_grantee"),
+        object_write_with_name(grantee, 8, "privilege_grantee"),
+    ];
+    let mut setup_audit = identity_audit_event(0xc3, admin_role, administrator);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0xc3), admin_role, 9_999, &setup, &[setup_audit])?;
+
+    let read = database.begin_read()?;
+    let metadata = read
+        .open_table(ENGINE_META)?
+        .get(&b"format"[..])?
+        .ok_or("missing engine metadata")?
+        .value()
+        .to_vec();
+    let database_id = EngineMetadata::decode(&metadata)?.database_id;
+    drop(read);
+
+    let change = |invocation_id: [u8; 16], privilege: Privilege, grant: bool| {
+        let mut audit = identity_audit_event(invocation_id[0], administrator, grantee);
+        audit.correlation_id = invocation_id;
+        audit.action = AuditAction::AuthorityChange;
+        storage.set_system_privilege(
+            invocation_id,
+            administrator,
+            SystemPrivilegeChange {
+                grantee_id: grantee,
+                privilege,
+                grant,
+            },
+            9_999,
+            audit,
+        )
+    };
+    let dependency_key = dependency_write(grantee, database_id, 5).key;
+    let create_schema_key =
+        grant_write(grantee, database_id, 14, 1, database_id, administrator).key;
+    let manage_users_key = grant_write(grantee, database_id, 12, 1, database_id, administrator).key;
+
+    change(id(0xc4), Privilege::CreateSchema, true)?;
+    change(id(0xc5), Privilege::ManageUsers, true)?;
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    assert!(catalog.get(create_schema_key.as_slice())?.is_some());
+    assert!(catalog.get(manage_users_key.as_slice())?.is_some());
+    assert!(catalog.get(dependency_key.as_slice())?.is_some());
+    drop(catalog);
+    drop(read);
+
+    change(id(0xc6), Privilege::CreateSchema, false)?;
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    assert!(catalog.get(create_schema_key.as_slice())?.is_none());
+    assert!(catalog.get(manage_users_key.as_slice())?.is_some());
+    assert!(catalog.get(dependency_key.as_slice())?.is_some());
+    drop(catalog);
+    drop(read);
+    prdb_engine::startup::validate_persisted_records(&database)?;
+
+    change(id(0xc7), Privilege::ManageUsers, false)?;
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    assert!(catalog.get(manage_users_key.as_slice())?.is_none());
+    assert!(catalog.get(dependency_key.as_slice())?.is_none());
+    drop(catalog);
+    drop(read);
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    Ok(())
+}
+
+#[test]
 fn storage_manager_authorizes_membership_ddl_by_system_privilege_and_admin_role()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

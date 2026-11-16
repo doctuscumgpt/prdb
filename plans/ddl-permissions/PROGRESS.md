@@ -129,3 +129,9 @@
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests: 291 engine unit tests, 179 commit integration tests, and 75 transaction tests. It includes atomic multi-privilege grants racing `MANAGE_GRANTS` revocation plus the authenticated metadata grant/policy lifecycle.
 - Broader permission-change race schedules and administrative SQL forms outside the implemented subset remain open.
+
+## DP-1 / ID-5: shared system-privilege dependency lifetime — verified slice
+
+- Fixed system-privilege DDL so the shared authority dependency is inserted with the first database privilege granted to a principal and removed only when the last privilege is revoked. Adding or removing another privilege leaves the shared edge intact; grantee epochs still serialize concurrent changes.
+- Regression coverage verifies CREATE_SCHEMA plus MANAGE_USERS coexist, revoking either one preserves the other privilege and shared dependency, and revoking the last privilege removes the dependency. The separate gateway/supervisor process regression verifies MANAGE_USERS grant and revocation on an already open ADMIN connection.
+- Verification: focused real-redb and gateway/supervisor process regressions passed. Workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup suite passed with sandbox and process tests enabled and zero ignored tests.

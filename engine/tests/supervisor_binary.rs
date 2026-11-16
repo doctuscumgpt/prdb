@@ -675,6 +675,38 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
             &mut limited_secret_after_grant,
         )
         .expect("re-authenticate regular user after CREATE_SCHEMA grant");
+        control
+            .grant_system_privilege(limited_user.identity_id, AdminSystemPrivilege::ManageUsers)
+            .expect("grant MANAGE_USERS while the ADMIN connection remains open");
+        let mut limited_manage_users_secret = *limited_token.token_secret();
+        let mut limited_manage_users = AdminClient::connect_authenticated(
+            control_address,
+            limited_token.token_id,
+            &mut limited_manage_users_secret,
+        )
+        .expect("authenticate a second open ADMIN connection with MANAGE_USERS");
+        let created_by_open_connection = limited_manage_users
+            .create_user("process_open_manage_users")
+            .expect("open ADMIN connection observes the new MANAGE_USERS grant");
+        control
+            .drop_user(created_by_open_connection.identity_id)
+            .expect("clean up user created through the open ADMIN connection");
+        control
+            .revoke_system_privilege(limited_user.identity_id, AdminSystemPrivilege::ManageUsers)
+            .expect("revoke MANAGE_USERS while the ADMIN connection remains open");
+        assert!(matches!(
+            limited_manage_users.create_user("process_open_manage_users"),
+            Err(
+                prdb_engine::client_submit::ClientSubmitError::AdministrativeOperationRejected { .. }
+            )
+        ));
+        drop(limited_manage_users);
+        let created_after_revocation = control
+            .create_user("process_open_manage_users")
+            .expect("revoked create-user request left no identity state behind");
+        control
+            .drop_user(created_after_revocation.identity_id)
+            .expect("remove proof user created after MANAGE_USERS revocation");
         let user_schema = limited
             .create_schema("process_user_owned", limited_user.identity_id)
             .expect("CREATE_SCHEMA grant permits schema creation across processes");
@@ -767,11 +799,11 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
             .expect("revoke CREATE_SCHEMA before dropping its grantee");
         let revoked_schema = limited.create_schema("process_revoked", limited_user.identity_id);
         assert!(matches!(
-            revoked_schema,
+            &revoked_schema,
             Err(
                 prdb_engine::client_submit::ClientSubmitError::AdministrativeOperationRejected { .. }
             )
-        ));
+        ), "revoked schema-create request returned {revoked_schema:?}");
         drop(limited);
         let authorized_revoked_name = control
             .create_schema("process_revoked", admin_user_id)

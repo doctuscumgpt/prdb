@@ -8877,6 +8877,20 @@ impl<'db> StorageManager<'db> {
             .get(dependency_key.as_slice())
             .map_err(|_| SystemPrivilegeLifecycleError::Storage)?
             .map(|value| value.value().to_vec());
+        let mut other_privilege_exists = false;
+        for other_privilege in [12u16, 13, 14] {
+            if other_privilege == privilege.catalog_code() {
+                continue;
+            }
+            let other_key = system_privilege_catalog_key(grantee_id, database_id, other_privilege);
+            if catalog
+                .get(other_key.as_slice())
+                .map_err(|_| SystemPrivilegeLifecycleError::Storage)?
+                .is_some()
+            {
+                other_privilege_exists = true;
+            }
+        }
         let grantee_current = catalog
             .get(grantee_key.as_slice())
             .map_err(|_| SystemPrivilegeLifecycleError::Storage)?
@@ -8884,10 +8898,10 @@ impl<'db> StorageManager<'db> {
             .ok_or(SystemPrivilegeLifecycleError::InvalidRequest)?;
         drop(catalog);
         drop(read);
-        if current.is_some() != dependency_current.is_some() {
+        if (current.is_some() || other_privilege_exists) != dependency_current.is_some() {
             return Err(SystemPrivilegeLifecycleError::Storage);
         }
-        let (payload, dependency_payload) = if grant {
+        let (payload, dependency_update) = if grant {
             if current.is_some() {
                 return Err(SystemPrivilegeLifecycleError::InvalidRequest);
             }
@@ -8910,20 +8924,25 @@ impl<'db> StorageManager<'db> {
                 )
                 .map_err(|_| SystemPrivilegeLifecycleError::InvalidRequest)?,
             );
-            let dependency_payload = Some(
-                encode_envelope(
-                    &family_schema(15).ok_or(SystemPrivilegeLifecycleError::Storage)?,
-                    &dependency_key,
-                    &[],
-                )
-                .map_err(|_| SystemPrivilegeLifecycleError::InvalidRequest)?,
-            );
-            (payload, dependency_payload)
+            let dependency_update = if dependency_current.is_none() {
+                Some(Some(
+                    encode_envelope(
+                        &family_schema(15).ok_or(SystemPrivilegeLifecycleError::Storage)?,
+                        &dependency_key,
+                        &[],
+                    )
+                    .map_err(|_| SystemPrivilegeLifecycleError::InvalidRequest)?,
+                ))
+            } else {
+                None
+            };
+            (payload, dependency_update)
         } else {
             if current.is_none() {
                 return Err(SystemPrivilegeLifecycleError::InvalidRequest);
             }
-            (None, None)
+            let dependency_update = (!other_privilege_exists).then_some(None);
+            (None, dependency_update)
         };
         let mut grantee_record = decode_registered_envelope(&grantee_current)
             .map_err(|_| SystemPrivilegeLifecycleError::Storage)?;
@@ -8953,23 +8972,23 @@ impl<'db> StorageManager<'db> {
         audit_event.target_ids = vec![database_id, grantee_id];
         audit_event.target_ids.sort_unstable();
         audit_event.target_ids.dedup();
-        let writes = [
-            CatalogWrite {
-                key,
-                expected_value: current,
-                payload,
-            },
-            CatalogWrite {
+        let mut writes = vec![CatalogWrite {
+            key,
+            expected_value: current,
+            payload,
+        }];
+        if let Some(dependency_payload) = dependency_update {
+            writes.push(CatalogWrite {
                 key: dependency_key,
                 expected_value: dependency_current,
                 payload: dependency_payload,
-            },
-            CatalogWrite {
-                key: grantee_key,
-                expected_value: Some(grantee_current),
-                payload: Some(grantee_payload),
-            },
-        ];
+            });
+        }
+        writes.push(CatalogWrite {
+            key: grantee_key,
+            expected_value: Some(grantee_current),
+            payload: Some(grantee_payload),
+        });
         self.commit_authorized_system_privilege_ddl(
             invocation_id,
             authenticated_actor_id,
