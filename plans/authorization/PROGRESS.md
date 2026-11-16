@@ -236,3 +236,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Expanded `unique_constraint_uses_its_backing_index_for_invocation_writes` to try every other supported scalar type against a hidden BYTEA unique key. Boolean, integer widths, decimal, text/varchar, UUID, date, and timestamp inputs all return the same `Unavailable` result as matching and nonmatching BYTEA inputs.
 - Verification: the focused real-redb transaction regression passed; workspace format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 engine unit tests, 179 commit tests, 75 transaction tests, and three metadata process tests.
 - Remaining: complex-predicate and coercion equivalence beyond the supported unique-key scalar types, plus hostile IPC and timing-inference coverage.
+
+## AU-7: closed relation capability rejected through executor IPC — verified slice
+
+- `executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle` now sends `OPEN SCAN` with a previously valid relation handle after closing it. Dispatch rejects the stale capability; resolving the same relation again yields a fresh handle, and replaying the closed handle remains rejected.
+- Verification: focused real-redb IPC regression passed. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests: 291 engine unit tests, 179 commit tests, 75 transaction tests, and all other workspace targets.
+- Remaining: wider hostile IPC sequences, cross-principal handle attacks, and timing inference remain open.

@@ -280,3 +280,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. All three authenticated metadata process tests passed, covering gateway/supervisor discovery, session-bound cursor rejection after reconnect, and authority revalidation between pages.
 - Cursor continuation across process restart remains unimplemented.
+
+## MD-5 / AU-7: executor IPC rejects a closed relation handle — verified slice
+
+- The relation-resolution IPC regression now closes a valid connection-local handle, confirms `OPEN SCAN` with that token fails, then resolves the relation again and verifies the replacement token is distinct. The stale token remains unusable after the fresh handle is issued.
+- Verification: focused real-redb IPC regression passed. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests: 291 engine unit tests, 179 commit tests, 75 transaction tests, and all other workspace targets.
+- Remaining: cursor continuation across process restart and broader hostile IPC sequence coverage remain open.

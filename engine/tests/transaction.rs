@@ -2866,6 +2866,51 @@ fn executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle()
         ))
     ));
 
+    connection.close_relation_handle(&handle)?;
+    let closed_handle_scan = IpcFrame {
+        operation: Operation::OpenScan as u16,
+        request_id: 43,
+        payload: OpenScanRequest {
+            relation: handle.clone(),
+            column_ids: vec![[0x66; 16]],
+        }
+        .encode()?,
+    };
+    assert!(matches!(
+        dispatch_executor_request(ServiceRole::Executor, &mut connection, &closed_handle_scan),
+        Err(ExecutorRequestError::Transaction(
+            prdb_engine::transaction::TransactionError::InvalidMetadataRequest
+        ))
+    ));
+    let reopened = dispatch_executor_resolve_relation(
+        ServiceRole::Executor,
+        &mut connection,
+        &IpcFrame {
+            operation: Operation::ResolveRelation as u16,
+            request_id: 44,
+            payload: encode_request("app", "metrics"),
+        },
+    )?;
+    let ResolveRelationResponse::Resolved {
+        handle: reopened_handle,
+        ..
+    } = ResolveRelationResponse::decode(&reopened.payload)?
+    else {
+        panic!("visible relation must resolve after handle close")
+    };
+    assert_ne!(
+        reopened_handle, handle,
+        "reopening issues a fresh capability"
+    );
+    let mut stale_after_reopen = closed_handle_scan;
+    stale_after_reopen.request_id = 45;
+    assert!(matches!(
+        dispatch_executor_request(ServiceRole::Executor, &mut connection, &stale_after_reopen),
+        Err(ExecutorRequestError::Transaction(
+            prdb_engine::transaction::TransactionError::InvalidMetadataRequest
+        ))
+    ));
+
     let hidden_request = IpcFrame {
         payload: encode_request("private", "metrics"),
         ..request.clone()
