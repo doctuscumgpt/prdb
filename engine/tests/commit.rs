@@ -24047,25 +24047,55 @@ fn token_admission_checks_expiry_secret_revocation_and_commit_guards()
     let login_disable_invocation = id(0x87);
     let mut login_disable_audit = identity_audit_event(0x86, admin_user_id, user_id);
     login_disable_audit.correlation_id = login_disable_invocation;
+    let login_disable_barrier = Arc::new(Barrier::new(2));
+    let (login_disable_result, staged_write_result) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&login_disable_barrier);
+        let storage = &storage;
+        let disable = scope.spawn(move || {
+            barrier.wait();
+            storage.set_user_login_enabled(
+                login_disable_invocation,
+                admin_user_id,
+                user_id,
+                false,
+                now + 3_600_000_000,
+                login_disable_audit,
+            )
+        });
+        login_disable_barrier.wait();
+        let staged_write_result = login_disable_writer.commit();
+        let login_disable_result = disable.join().expect("LOGIN disable thread panicked");
+        (login_disable_result, staged_write_result)
+    });
+    let login_disable_sequence = login_disable_result?;
+    let (staged_write_sequence, staged_write_status) = match staged_write_result {
+        Ok(sequence) => (Some(sequence), OutcomeStatus::Committed),
+        Err(TransactionError::Commit(CommitError::Conflict)) => (None, OutcomeStatus::Aborted),
+        Err(error) => panic!("unexpected staged-write result in LOGIN disable race: {error:?}"),
+    };
+    if let Some(sequence) = staged_write_sequence {
+        assert!(sequence < login_disable_sequence);
+    }
     assert_eq!(
-        storage.set_user_login_enabled(
-            login_disable_invocation,
-            admin_user_id,
-            user_id,
-            false,
-            now + 3_600_000_000,
-            login_disable_audit,
-        )?,
-        rename_sequence + 1,
+        login_disable_sequence,
+        rename_sequence
+            + if staged_write_status == OutcomeStatus::Committed {
+                2
+            } else {
+                1
+            }
     );
-    let login_disable_result = login_disable_writer.commit();
-    assert!(
-        matches!(
-            &login_disable_result,
-            Err(TransactionError::Commit(CommitError::Conflict))
-        ),
-        "disabled LOGIN user committed a stale update: {login_disable_result:?}"
-    );
+    assert_eq!(commit_sequence(&database)?, login_disable_sequence);
+    let expected_after_login_disable = if staged_write_status == OutcomeStatus::Committed {
+        ScalarValue::Bytea(b"must not publish after LOGIN disable".to_vec())
+    } else {
+        expected_after_rename
+    };
+    let index_after_login_disable = if staged_write_status == OutcomeStatus::Committed {
+        login_disabled_index.key.as_slice()
+    } else {
+        active_index_key.as_slice()
+    };
     assert_eq!(
         decode_tuple(
             &columns,
@@ -24081,20 +24111,23 @@ fn token_admission_checks_expiry_secret_revocation_and_commit_guards()
             .payload,
         )?
         .values,
-        [Some(expected_after_rename)],
-        "disabled user's staged update was published"
+        [Some(expected_after_login_disable)],
+        "row state must reflect the serialized LOGIN disable race"
     );
     let read = database.begin_read()?;
     let indexes = read.open_table(schema::INDEXES)?;
-    assert!(indexes.get(active_index_key.as_slice())?.is_some());
-    assert!(indexes.get(login_disabled_index.key.as_slice())?.is_none());
+    assert!(indexes.get(index_after_login_disable)?.is_some());
+    assert_eq!(
+        indexes.get(login_disabled_index.key.as_slice())?.is_some(),
+        staged_write_status == OutcomeStatus::Committed
+    );
     drop(indexes);
     drop(read);
     assert_eq!(
         lookup_outcome(&database, id(0x88), user_id, now)?
             .ok_or("missing LOGIN-disable stale writer outcome")?
             .status,
-        OutcomeStatus::Aborted
+        staged_write_status
     );
     assert!(matches!(
         storage.begin_token_authenticated_invocation(
