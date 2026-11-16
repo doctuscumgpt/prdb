@@ -556,3 +556,7 @@
 ## 2026-11-16 complete delegated workspace verification after rotation race and CLI preflight
 
 - Re-ran `cargo test --workspace --locked -- --test-threads=1` inside the delegated `systemd --user` unit with the documented TinyCC fixtures and runtime profile. The full workspace exited successfully with sandbox/process integration tests enabled and zero ignored tests. The suite includes the token-rotation/staged-write race and the authenticated process test for rejecting occupied credential-output paths before mutation.
+
+## 2026-11-16 final delegated workspace verification for current tree
+
+- Ran `cargo test --workspace --locked -- --test-threads=1` in the delegated `systemd --user` unit with the documented artifacts and runtime allowlist. The command exited successfully; sandbox and cross-process integration tests were enabled, including `token_rotation_racing_a_staged_write_linearizes` and the token-rotation CLI occupied-output preflight. Zero tests were ignored.
