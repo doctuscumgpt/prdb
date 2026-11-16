@@ -11377,7 +11377,7 @@ fn table_drop_ddl_authority_guards(
             .expected_value
             .as_deref()
             .ok_or(CommitError::InvalidCatalog)?;
-        if matches!(catalog_field_u16(&write.key, bytes, 2, 1)?, 3 | 7) {
+        if matches!(catalog_field_u16(&write.key, bytes, 2, 1)?, 3..=7 | 10) {
             let id: [u8; 16] = write
                 .key
                 .get(3..19)

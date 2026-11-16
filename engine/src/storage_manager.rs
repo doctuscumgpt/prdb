@@ -4972,7 +4972,7 @@ impl<'db> StorageManager<'db> {
             .iter()
             .filter_map(|(key, bytes)| {
                 (key.starts_with(&2u16.to_be_bytes())
-                    && matches!(read_catalog_u16(key, bytes, 2, 1).ok(), Some(3 | 7)))
+                    && matches!(read_catalog_u16(key, bytes, 2, 1).ok(), Some(3..=7 | 10)))
                 .then(|| <[u8; 16]>::try_from(&key[3..19]).ok())
                 .flatten()
             })

@@ -1,5 +1,12 @@
 # Catalog Lifecycle Progress
 
+## CL-3 / DD-3 / DS-3: DROP TABLE retires all removed object IDs — verified slice
+
+- Table-drop catalog validation now requires the exact family-17 reservation for every deleted table-owned family-2 object. This includes columns, expressions, constraints, indexes, and policies in addition to the table ID.
+- The real-redb table lifecycle test verifies reservations for each kind while retaining stale-writer, old-snapshot, and atomic cleanup coverage. Focused test passed.
+- Verification: workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
+
+
 ## CL-3 / DD-3 / DS-3: constraint-owned backing-index ID reservation — verified slice
 
 - Key-constraint DDL now publishes a family-17 reservation when deleting its owned backing index. The validator requires an exact set match between deleted index definitions and new reservations; generic final-catalog validation prevents reuse.

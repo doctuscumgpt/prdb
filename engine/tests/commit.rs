@@ -2933,6 +2933,24 @@ fn storage_manager_drop_table_removes_owned_catalog_and_rows()
             .is_some(),
         "DROP TABLE must permanently reserve its retired object ID"
     );
+    for retired_id in [
+        created.column_ids[0],
+        expression_id,
+        policy_id,
+        expression_id_for_policy,
+        check_constraint_id,
+        check_expression_id,
+    ] {
+        let reservation = current_catalog
+            .get(id_catalog_key(17, retired_id).as_slice())?
+            .ok_or("DROP TABLE must reserve every retired owned object ID")?;
+        assert!(
+            decode_registered_envelope(reservation.value())?
+                .fields
+                .is_empty()
+        );
+        drop(reservation);
+    }
     let reuse_invocation = id(0x64);
     let mut reuse_audit = identity_audit_event(0x65, actor, created.table_id);
     reuse_audit.correlation_id = reuse_invocation;

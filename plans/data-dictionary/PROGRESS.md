@@ -1,5 +1,12 @@
 # Data Dictionary Progress
 
+## DD-3 / CL-3 / DS-3: DROP TABLE reserves every removed owned object ID — verified slice
+
+- DROP TABLE now reserves IDs for every family-2 object it removes: the table, columns, expressions, constraints, indexes, and policies. The authorization validator derives the exact expected reservation set from the deleted object records and requires a matching empty family-17 record for each ID.
+- `storage_manager_drop_table_removes_owned_catalog_and_rows` verifies reservations for a table with a default expression, CHECK expression, policy expression, policy, constraint, and column. Focused real-redb test passed.
+- Verification: workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
+
+
 ## DD-3 / CL-3 / DS-3: key-constraint backing-index IDs are retired — verified slice
 
 - `DROP PRIMARY KEY` and `DROP UNIQUE` now reserve the owned backing-index ID in family 17 in the same authorized catalog transaction that removes its index, constraint, object, and dependency records. The constraint DDL validator requires reservations to match the deleted owned indexes exactly.

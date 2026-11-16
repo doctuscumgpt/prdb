@@ -1,5 +1,12 @@
 # Schema DDL Progress
 
+## DS-3 / CL-3 / DD-3: DROP TABLE reserves removed child identifiers — verified slice
+
+- The table drop transaction now writes family-17 reservations for all deleted family-2 owned objects, including its columns, defaults/CHECK expressions, key constraints, indexes, and policies. Commit validation requires an exact reservation set.
+- `storage_manager_drop_table_removes_owned_catalog_and_rows` confirms every owned ID is reserved after removal while its existing row cleanup, snapshot retention, and stale-writer checks pass.
+- Verification: workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
+
+
 ## DS-3 / CL-3 / DD-3: key-constraint drops retire owned backing-index IDs — verified slice
 
 - `drop_key_constraint` writes a family-17 reservation for the owned index in the same authorized transaction as PRIMARY KEY/UNIQUE removal. Commit validation rejects missing, duplicate, malformed, or unrelated reservations.
