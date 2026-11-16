@@ -83,6 +83,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: the focused `supervisor_and_gateway_binaries_commit_a_confined_submission` test passed in the delegated `systemd --user` service with the configured runtime and SDK release paths. `cargo fmt --all -- --check`, workspace build, warning-denied Clippy, `git diff --check`, and the full serial workspace suite passed; all sandbox integration tests were enabled and zero tests were ignored.
 - Scope: confirms MANAGE_USERS and CREATE_SCHEMA revalidation on already authenticated control connections. Other object privilege revocation cases and concurrent revocation races remain open.
 
+## ID-5 / DP-1: concurrent database system-privilege grants — verified slice
+
+- The shared-dependency regression now races CREATE_SCHEMA and MANAGE_USERS grants for one principal. A stale conflict is retried with a fresh operation; final catalog validation confirms both grants retain exactly one shared authority edge.
+- Verification: focused real-redb regression passed. Workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup suite passed with sandbox and process tests enabled and zero ignored tests (293 unit tests, 185 commit tests, 76 transaction tests, plus all remaining targets).
+
 ## SM-5 / AU-6: identity drop conflicts with a staged role-authorized write — verified
 
 - Contract: [identity DDL](../../specs/ddl-identity.md), [authorization](../../specs/authorization.md), and [concurrency/MVCC](../../specs/concurrency-mvcc.md). A token-authenticated invocation must not publish a staged row mutation after its identity is dropped.

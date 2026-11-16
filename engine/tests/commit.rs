@@ -19417,8 +19417,43 @@ fn system_privilege_dependency_survives_until_the_last_grant_is_revoked()
         grant_write(grantee, database_id, 14, 1, database_id, administrator).key;
     let manage_users_key = grant_write(grantee, database_id, 12, 1, database_id, administrator).key;
 
-    change(id(0xc4), Privilege::CreateSchema, true)?;
-    change(id(0xc5), Privilege::ManageUsers, true)?;
+    let grant_barrier = Arc::new(Barrier::new(2));
+    let (create_schema_result, manage_users_result) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&grant_barrier);
+        let create_schema = scope.spawn(move || {
+            barrier.wait();
+            change(id(0xc4), Privilege::CreateSchema, true)
+        });
+        let barrier = Arc::clone(&grant_barrier);
+        let manage_users = scope.spawn(move || {
+            barrier.wait();
+            change(id(0xc5), Privilege::ManageUsers, true)
+        });
+        (
+            create_schema
+                .join()
+                .expect("CREATE_SCHEMA grant thread panicked"),
+            manage_users
+                .join()
+                .expect("MANAGE_USERS grant thread panicked"),
+        )
+    });
+    for (result, privilege, retry_invocation) in [
+        (create_schema_result, Privilege::CreateSchema, id(0xc8)),
+        (manage_users_result, Privilege::ManageUsers, id(0xc9)),
+    ] {
+        match result {
+            Ok(_) => {}
+            Err(prdb_engine::storage_manager::SystemPrivilegeLifecycleError::Commit(
+                CommitError::Conflict,
+            )) => {
+                change(retry_invocation, privilege, true)?;
+            }
+            Err(error) => {
+                return Err(format!("concurrent privilege grant failed: {error:?}").into());
+            }
+        }
+    }
     let read = database.begin_read()?;
     let catalog = read.open_table(CATALOG)?;
     assert!(catalog.get(create_schema_key.as_slice())?.is_some());
