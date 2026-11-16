@@ -1350,10 +1350,31 @@ pub fn resume(
         return Err(BootstrapError::InvalidRequest);
     }
     let admin_user_id = identity.admin_user_id;
+    let (token_id, secret) =
+        rotate_initializing_credential(&database, &identity, now_us, expires_at_us)?;
+    validate_initializing_records(&database).map_err(BootstrapError::Startup)?;
+    Ok(BootstrapSession {
+        directory: directory.to_path_buf(),
+        database,
+        _lock: lock,
+        admin_user_id,
+        token_id,
+        secret,
+        secret_taken: false,
+    })
+}
+
+fn rotate_initializing_credential(
+    database: &Database,
+    identity: &BootstrapIdentity,
+    now_us: i64,
+    expires_at_us: i64,
+) -> Result<([u8; 16], OneTimeSecret), BootstrapError> {
+    let admin_user_id = identity.admin_user_id;
     let old_token_id = identity.token_id;
     let mut secret = OneTimeSecret(Some([0; TOKEN_SECRET_BYTES]));
     let (token_id, verifier_payload) = issue_replacement_token(
-        &database,
+        database,
         admin_user_id,
         secret.0.as_mut().ok_or(BootstrapError::Storage)?,
         now_us,
@@ -1364,7 +1385,7 @@ pub fn resume(
     let mut audit_event = new_bootstrap_audit(now_us, vec![admin_user_id, old_token_id, token_id])?;
     audit_event.target_ids.sort_unstable();
     audit_event.target_ids.dedup();
-    let metadata = read_metadata(&database)?;
+    let metadata = read_metadata(database)?;
     let next_sequence = metadata
         .commit_sequence
         .checked_add(1)
@@ -1447,16 +1468,7 @@ pub fn resume(
             .map_err(|_| BootstrapError::Storage)?;
     }
     write.commit().map_err(|_| BootstrapError::Storage)?;
-    validate_initializing_records(&database).map_err(BootstrapError::Startup)?;
-    Ok(BootstrapSession {
-        directory: directory.to_path_buf(),
-        database,
-        _lock: lock,
-        admin_user_id,
-        token_id,
-        secret,
-        secret_taken: false,
-    })
+    Ok((token_id, secret))
 }
 
 struct InstanceLock {
@@ -2568,6 +2580,76 @@ mod durability_tests {
         }
         validate_initializing_records(&recovered)?;
         assert_eq!(load_bootstrap_identity(&recovered)?.name, "sync_admin");
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_token_rotation_sync_failure_reopens_and_retries_safely()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TestDirectory::new()?;
+        let database_path = directory.0.join(DATABASE_FILE);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&database_path)?;
+        let fail_next_sync = Arc::new(AtomicBool::new(false));
+        let database = Database::builder().create_with_backend(FailNextSyncBackend {
+            inner: redb::backends::FileBackend::new(file)?,
+            fail_next_sync: Arc::clone(&fail_next_sync),
+        })?;
+        let expires_at_us = now_unix_micros()
+            .ok_or("test clock before Unix epoch")?
+            .checked_add(86_400_000_000)
+            .ok_or("test credential expiry overflow")?;
+        let (_, _, initial_secret) = seed_database(&database, "sync_admin", expires_at_us)?;
+        drop(initial_secret);
+        let initial_identity = load_bootstrap_identity(&database)?;
+        let initial_token_id = initial_identity.token_id;
+        let rotation_at_us = now_unix_micros().ok_or("test clock before Unix epoch")?;
+
+        fail_next_sync.store(true, Ordering::SeqCst);
+        let failed_rotation = rotate_initializing_credential(
+            &database,
+            &initial_identity,
+            rotation_at_us,
+            expires_at_us,
+        );
+        let rotation_error = match failed_rotation {
+            Ok((_, secret)) => {
+                drop(secret);
+                panic!("token rotation unexpectedly succeeded")
+            }
+            Err(error) => error,
+        };
+        assert!(
+            !fail_next_sync.load(Ordering::SeqCst),
+            "token rotation stopped before sync: {rotation_error:?}"
+        );
+        assert!(matches!(rotation_error, BootstrapError::Storage));
+        drop(database);
+
+        let recovered = Database::open(&database_path)?;
+        validate_initializing_records(&recovered)?;
+        let recovered_identity = load_bootstrap_identity(&recovered)?;
+        assert_eq!(recovered_identity.name, "sync_admin");
+
+        let retry_at_us = now_unix_micros().ok_or("test clock before Unix epoch")?;
+        let (retry_token_id, retry_secret) = rotate_initializing_credential(
+            &recovered,
+            &recovered_identity,
+            retry_at_us,
+            expires_at_us,
+        )?;
+        assert_ne!(retry_token_id, initial_token_id);
+        assert_ne!(retry_token_id, recovered_identity.token_id);
+        validate_initializing_records(&recovered)?;
+        assert_eq!(
+            load_bootstrap_identity(&recovered)?.token_id,
+            retry_token_id
+        );
+        drop(retry_secret);
         Ok(())
     }
 }

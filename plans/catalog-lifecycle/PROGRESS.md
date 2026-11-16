@@ -227,6 +227,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: focused regression passed; Nix-shell formatting check, locked workspace build, and warning-denied all-target Clippy passed. The cgroup probe reported a writable delegated parent with `cpu memory pids` available and enabled. The full serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
 - Limit: this injects a backend sync error with a live kernel and filesystem. It verifies reopen/retry behavior for the observable commit failure, not power-loss recovery or storage-device cache behavior; the broader transaction-boundary and power-loss evidence remains open.
 
+## CL-2 resume token-rotation commit-sync failure — verified slice
+
+- Extracted the resume token replacement into `rotate_initializing_credential`, the same atomic immediate-durability transaction used by `resume`. `bootstrap_token_rotation_sync_failure_reopens_and_retries_safely` injects a redb `sync_data` failure during that transaction, drops the database handle, reopens and validates the INITIALIZING image, then retries rotation from whichever credential is active. The retry publishes one valid replacement and the catalog passes startup validation.
+- Verification: the focused regression and all 16 `bootstrap` integration tests passed. Nix-shell formatting check, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The delegated cgroup probe confirmed writable `cpu memory pids`; the complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
+- Limit: backend sync-error injection verifies retry behavior with a live kernel and filesystem. It does not simulate power loss or device-cache behavior; those durability limits remain open.
+
 ## CL-6: reject migration after post-upgrade writes — verified slice
 
 - Extended `migration_apply_requires_complete_history_ack_and_publishes_validated_v2`: after v1-to-v2 publication, the test commits a real schema through `StorageManager`, then retries the old migration command against the original v1 backup/history. The retry fails; the active catalog remains v2 at the newer commit sequence and the committed schema remains resolvable.
