@@ -16825,23 +16825,36 @@ fn storage_manager_builds_and_drops_populated_indexes_atomically()
         },
         &stale_payload,
     )?;
-    assert_eq!(
-        storage.commit_catalog_and_audit(
-            id(77),
-            id(9),
-            9_999,
-            &[
-                CatalogWrite {
-                    key: new_index_key.clone(),
-                    expected_value: None,
-                    payload: Some(new_index_payload),
-                },
-                object_write(id(0x88), 7),
-            ],
-            &[audit_event(77)],
-        )?,
-        2
-    );
+    let index_race_barrier = Arc::new(Barrier::new(2));
+    let (stale_result, index_sequence) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&index_race_barrier);
+        let storage = &storage;
+        let index_key = new_index_key.clone();
+        let ddl = scope.spawn(move || {
+            barrier.wait();
+            storage.commit_catalog_and_audit(
+                id(77),
+                id(9),
+                9_999,
+                &[
+                    CatalogWrite {
+                        key: index_key,
+                        expected_value: None,
+                        payload: Some(new_index_payload),
+                    },
+                    object_write(id(0x88), 7),
+                ],
+                &[audit_event(77)],
+            )
+        });
+        index_race_barrier.wait();
+        let stale_result = stale_writer.commit();
+        let index_result = ddl.join().expect("index publication thread panicked");
+        (
+            stale_result,
+            index_result.expect("index publication should commit"),
+        )
+    });
     let table_epoch_after_build = {
         let read = database.begin_read()?;
         let record = decode_registered_envelope(
@@ -16862,25 +16875,30 @@ fn storage_manager_builds_and_drops_populated_indexes_atomically()
         )
     };
     assert_eq!(table_epoch_after_build, table_epoch_before_build + 1);
-    let stale_result = stale_writer.commit();
-    assert!(
-        matches!(
-            stale_result,
-            Err(prdb_engine::transaction::TransactionError::Commit(
-                CommitError::Conflict
-            ))
-        ),
-        "writer pinned before index publication returned {stale_result:?}"
+    let stale_status = match stale_result {
+        Ok(sequence) => {
+            assert!(sequence < index_sequence);
+            OutcomeStatus::Committed
+        }
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            OutcomeStatus::Aborted
+        }
+        Err(error) => panic!("unexpected staged-write result in index race: {error:?}"),
+    };
+    assert_eq!(commit_sequence(&database)?, index_sequence);
+    assert_eq!(
+        row(&database, &stale_row_key)?.is_some(),
+        stale_status == OutcomeStatus::Committed
     );
-    assert!(row(&database, &stale_row_key)?.is_none());
     assert_eq!(
         lookup_outcome(&database, stale_writer_invocation, id(9), 1)?
             .ok_or("missing stale index-build writer outcome")?
             .status,
-        OutcomeStatus::Aborted
+        stale_status
     );
 
     let expected = typed_bytea_index_key(id(0x88), &row_key, &payload);
+    let stale_expected = typed_bytea_index_key(id(0x88), &stale_row_key, &stale_payload);
     let read = database.begin_read()?;
     let mut reverse_key = row_key.to_vec();
     reverse_key.extend_from_slice(&expected.key[..expected.key.len() - 16]);
@@ -16896,6 +16914,26 @@ fn storage_manager_builds_and_drops_populated_indexes_atomically()
                 .get(reverse_key.as_slice())?
                 .is_some()
         );
+        let mut stale_reverse_key = stale_row_key.to_vec();
+        stale_reverse_key.extend_from_slice(&stale_expected.key[..stale_expected.key.len() - 16]);
+        let stale_locator = indexes.get(stale_expected.key.as_slice())?;
+        assert_eq!(
+            stale_locator.is_some(),
+            stale_status == OutcomeStatus::Committed,
+            "index backfill must include a row committed before publication"
+        );
+        assert_eq!(
+            read.open_table(schema::ROW_INDEXES)?
+                .get(stale_reverse_key.as_slice())?
+                .is_some(),
+            stale_status == OutcomeStatus::Committed
+        );
+        if let Some(locator) = stale_locator {
+            assert_eq!(
+                IndexLocator::decode_for_key(&stale_expected.key, locator.value())?.row_version,
+                2
+            );
+        }
         let catalog = read.open_table(CATALOG)?;
         let definition_bytes = catalog
             .get(new_index_key.as_slice())?
@@ -16942,16 +16980,14 @@ fn storage_manager_builds_and_drops_populated_indexes_atomically()
         ),
         Err(CommitError::InvalidCatalog)
     );
-    assert_eq!(
-        storage.commit_catalog_and_audit(
-            id(202),
-            id(9),
-            9_999,
-            &drop_writes,
-            &[audit_event(202)],
-        )?,
-        3
-    );
+    let drop_sequence = storage.commit_catalog_and_audit(
+        id(202),
+        id(9),
+        9_999,
+        &drop_writes,
+        &[audit_event(202)],
+    )?;
+    assert_eq!(drop_sequence, index_sequence + 1);
     let table_epoch_after_drop = {
         let read = database.begin_read()?;
         let record = decode_registered_envelope(

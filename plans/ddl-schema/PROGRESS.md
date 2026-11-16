@@ -989,3 +989,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Extended `storage_manager_renames_tables_and_drop_column_rewrites_rows` to race the staged writer against the exclusive DROP COLUMN publication. If the row commits first, DROP COLUMN rewrites it to the surviving one-column schema before publication; if DDL wins, the stale write conflicts and no row is left behind. Both orders are checked against the durable outcome, while the pinned reader retains its original two-column view.
 - Verification: the focused real-redb regression passed; formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests, including 34 bootstrap binary tests, 179 commit tests, and 75 transaction tests.
 - Remaining: stale-writer races for index/constraint DDL and additional ALTER combinations remain open.
+
+## DS-6 / DS-7: index publication racing a staged writer — verified slice
+
+- Extended `storage_manager_builds_and_drops_populated_indexes_atomically` to race publication of a catalog index against a staged row insert. A writer that commits first is included in the same index publication with matching forward and reverse locator records; if index publication wins, the stale writer conflicts and leaves no row. The test checks durable writer outcomes, table epoch advancement, and index backfill before exercising index drop.
+- Verification: the focused real-redb regression passed; formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests, including 34 bootstrap binary tests, 179 commit tests, and 75 transaction tests.
+- Remaining: constraint DDL races and additional ALTER combinations remain open.
