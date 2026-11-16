@@ -1013,3 +1013,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Final catalog publication now binds CHECK expressions against the table's final column schema, validates BOOLEAN result type and exact stable-column dependencies, and rejects non-row-local expressions for every CHECK record.
 - A real-redb catalog commit regression submits a CHECK that reads a BYTEA field while its record declares BOOLEAN. Publication fails atomically with `InvalidCatalog` and a durable ABORTED outcome.
 - Verification: focused regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored.
+
+## DS-4 / DS-7: foreign-key drop racing a staged child write — verified slice
+
+- `foreign_key_drop_racing_a_staged_child_write_is_atomic` stages a valid child insert against a pinned catalog that still contains its FK, then races the writer commit with FK removal. Writer-first preserves the valid child row before the drop; drop-first makes the stale writer durably ABORTED without advancing the commit sequence. Both orders leave the FK, name index, and dependency removed, with startup catalog validation succeeding.
+- Verification: focused real-redb race passed; locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests; its 182 commit integration tests include this race.
+- Remaining: stale-writer races for index/constraint DDL and additional ALTER combinations remain open.

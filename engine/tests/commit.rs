@@ -9904,6 +9904,131 @@ fn foreign_key_creation_racing_a_staged_child_write_is_atomic()
 }
 
 #[test]
+fn foreign_key_drop_racing_a_staged_child_write_is_atomic() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(500))?;
+    let admin_role = builtin_owner_id();
+    let actor = id(0x9a);
+    let mut setup_writes = foreign_key_catalog_writes(true, true);
+    setup_writes.extend([
+        principal_write_with_name(actor, 1, 1, "fk_drop_child_write_race_admin"),
+        object_write_with_name(actor, 8, "fk_drop_child_write_race_admin"),
+        membership_write(actor, admin_role),
+        dependency_write(actor, admin_role, 5),
+    ]);
+    let mut setup_audit = identity_audit_event(0x9b, admin_role, id(0x9c));
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0x9c), admin_role, 9_999, &setup_writes, &[setup_audit])?;
+
+    let referenced_value = ScalarValue::Bytea(b"existing parent".to_vec());
+    let mut parent_seed = storage.begin_invocation(id(0xa1), actor, 9_999, 1, 1024)?;
+    let target_schema = parent_seed.load_catalog_table_schema(id(81))?;
+    parent_seed.load_catalog_indexes(&target_schema)?;
+    parent_seed.load_catalog_check_constraints(&target_schema)?;
+    let parent_payload = encode_tuple(
+        &target_schema.columns,
+        target_schema.schema_version,
+        &[Some(referenced_value.clone())],
+    )?;
+    parent_seed.stage_put(
+        prdb_engine::overlay::RowId {
+            table: id(81),
+            row: id(0xa2),
+        },
+        &parent_payload,
+    )?;
+    parent_seed.commit()?;
+
+    let writer_invocation = id(0x9d);
+    let mut writer = storage.begin_invocation(writer_invocation, actor, 9_999, 1, 1024)?;
+    let source_schema = writer.load_catalog_table_schema(id(82))?;
+    writer.load_catalog_indexes(&source_schema)?;
+    writer.load_catalog_check_constraints(&source_schema)?;
+    let child_payload = encode_tuple(
+        &source_schema.columns,
+        source_schema.schema_version,
+        &[Some(referenced_value)],
+    )?;
+    writer.stage_put(
+        prdb_engine::overlay::RowId {
+            table: id(82),
+            row: id(0x9e),
+        },
+        &child_payload,
+    )?;
+
+    let drop_invocation = id(0x9f);
+    let barrier = Arc::new(Barrier::new(3));
+    let (writer_result, drop_result) = std::thread::scope(|scope| {
+        let writer_barrier = barrier.clone();
+        let writer_task = scope.spawn(move || {
+            writer_barrier.wait();
+            writer.commit()
+        });
+        let ddl_barrier = barrier.clone();
+        let ddl_storage = &storage;
+        let ddl_task = scope.spawn(move || {
+            let mut audit = identity_audit_event(0xa0, actor, id(86));
+            audit.correlation_id = drop_invocation;
+            ddl_barrier.wait();
+            ddl_storage.drop_foreign_key(drop_invocation, actor, id(86), 9_999, audit)
+        });
+        barrier.wait();
+        (writer_task.join().unwrap(), ddl_task.join().unwrap())
+    });
+
+    let writer_status = match writer_result {
+        Ok(_) => OutcomeStatus::Committed,
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            OutcomeStatus::Aborted
+        }
+        other => panic!("unexpected child writer result: {other:?}"),
+    };
+    let drop_sequence = drop_result.map_err(|error| format!("FK drop race failed: {error:?}"))?;
+    assert_eq!(
+        lookup_outcome(&database, writer_invocation, actor, 1)?
+            .ok_or("missing staged child writer outcome")?
+            .status,
+        writer_status
+    );
+    assert_eq!(
+        lookup_outcome(&database, drop_invocation, actor, 1)?
+            .ok_or("missing FK drop outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+    assert_eq!(
+        commit_sequence(&database)?,
+        if writer_status == OutcomeStatus::Committed {
+            4
+        } else {
+            3
+        },
+        "a stale child writer must not advance the commit sequence"
+    );
+    assert_eq!(drop_sequence, commit_sequence(&database)?);
+    assert_eq!(
+        row(&database, &table_row_key(id(82), id(0x9e)),)?.is_some(),
+        writer_status == OutcomeStatus::Committed
+    );
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    assert!(catalog.get(id_catalog_key(8, id(86)).as_slice())?.is_none());
+    assert!(catalog.get(id_catalog_key(2, id(86)).as_slice())?.is_none());
+    assert!(
+        catalog
+            .get(dependency_write(id(86), id(85), 3).key.as_slice())?
+            .is_none()
+    );
+    drop(catalog);
+    drop(read);
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    Ok(())
+}
+
+#[test]
 fn storage_manager_atomically_creates_table_with_foreign_key_to_existing_key()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{
