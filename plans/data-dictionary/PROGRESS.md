@@ -486,3 +486,9 @@
 - Strengthened the stale-name-index startup regressions to derive the expected `database_admin` principal ID from family-10 records and the `pg_catalog` schema ID from family-2 schema objects. After index repair, both exact-name lookup results are compared with those independent catalog scans.
 - Verification: both focused startup regressions, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests (294 unit, 190 commit, 76 transaction tests, plus all remaining targets).
 - Remaining: audit the complete DD-2 matrix for any lookup still lacking independent catalog parity, then continue DD-3 referential integrity and broader catalog pressure coverage.
+
+## DD-3 / DS-3: same-name index recreation preserves distinct catalog identity — verified slice
+
+- Strengthened `storage_manager_creates_named_unique_index_and_backfills_atomically`: after DROP INDEX and same-name recreation, the current snapshot must contain only the new family-2 object and family-9 definition, the recreated backing-schema dependency, and the new table-index listing. The retained pre-drop snapshot continues resolving the original ID and definition.
+- Verification: the focused real-redb lifecycle regression passed. Workspace formatting, locked build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+- Scope: this verifies distinct live identity for named index drop/recreate and old-reader retention; it does not claim tombstone-based permanent reservation of dropped index IDs.

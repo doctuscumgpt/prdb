@@ -11833,6 +11833,7 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
     );
     drop(catalog);
     drop(read);
+
     let stale_policy_writer_invocation = id(0xdb);
     let stale_policy_row = id(0xdc);
     let mut stale_policy_writer =
@@ -12145,6 +12146,41 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
         lookup_index_id_by_name(&index_name_snapshot, id(80), "source_value_unique")?,
         Some(created.index_id)
     );
+    let recreated_catalog = recreated_snapshot.open_table(CATALOG)?;
+    assert!(
+        recreated_catalog
+            .get(id_catalog_key(2, created.index_id).as_slice())?
+            .is_none()
+    );
+    assert!(
+        recreated_catalog
+            .get(id_catalog_key(9, created.index_id).as_slice())?
+            .is_none()
+    );
+    assert!(
+        recreated_catalog
+            .get(id_catalog_key(2, recreated_index.index_id).as_slice())?
+            .is_some()
+    );
+    assert!(
+        recreated_catalog
+            .get(id_catalog_key(9, recreated_index.index_id).as_slice())?
+            .is_some()
+    );
+    assert!(
+        recreated_catalog
+            .get(
+                dependency_write(recreated_index.index_id, id(80), 1)
+                    .key
+                    .as_slice()
+            )?
+            .is_some()
+    );
+    assert_eq!(
+        prdb_engine::catalog_index::scan_index_ids_for_table(&recreated_snapshot, id(82), 8)?,
+        vec![recreated_index.index_id]
+    );
+    drop(recreated_catalog);
     drop(index_name_snapshot);
     prdb_engine::startup::validate_persisted_records(&database)?;
     Ok(())

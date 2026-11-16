@@ -1,5 +1,10 @@
 # Schema DDL Progress
 
+## DS-3 / DD-3: same-name index recreation retains distinct catalog identity — verified slice
+
+- The named unique-index lifecycle regression verifies that dropping and recreating an index under the same schema/name publishes a distinct ID and only the recreated family-2/family-9 records and dependency in the current snapshot. A reader pinned before the drop continues resolving the original index ID and records.
+- Verification: focused real-redb regression, format check, locked workspace build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+
 Migrated component-owned progress entries from [storage-manager progress](../storage-manager/PROGRESS.md); evidence is preserved below.
 
 ## DS-SQL-27: self-referencing FOREIGN KEY in CREATE TABLE — verified
