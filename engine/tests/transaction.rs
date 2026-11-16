@@ -7075,7 +7075,7 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
             using: Some(Expr::And(vec![
                 Expr::Equal(
                     Box::new(Expr::Divide(
-                        Box::new(Expr::Field(0)),
+                        Box::new(Expr::Literal(Some(ScalarValue::SmallInt(1)))),
                         Box::new(Expr::Literal(Some(ScalarValue::SmallInt(0)))),
                     )),
                     Box::new(Expr::Literal(Some(ScalarValue::SmallInt(0)))),

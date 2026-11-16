@@ -316,3 +316,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `authorized_insert_implicit_null_requires_column_insert_grant`. A nullable field with no catalog default accepts `DEFAULT` as SQL NULL when its column grant and applicable cell policy are present. The same insert is denied and durably aborted when only that field's INSERT grant is removed, even though table/other-column grants and the cell policy remain.
 - Verification: focused real-redb transaction regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+
+## AU-3: verify arithmetic-error fallback with a well-typed divide-by-zero — evidence refinement
+
+- Corrected the synthetic failing policy in `unique_constraint_uses_its_backing_index_for_invocation_writes`: its numerator is now a SMALLINT literal, so `1 / 0` reaches checked division and returns `EvaluationFailed` instead of failing earlier on a BYTEA/integer type mismatch. The optimized unique probe still returns `Unavailable` without evaluating the predicate.
+- Verification: the focused real-redb transaction regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests.
