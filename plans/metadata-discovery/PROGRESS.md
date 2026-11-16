@@ -296,3 +296,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended the dispatch regression to replay a valid resolved-relation handle in OPEN SCAN from a second principal's invocation. The wire-shaped token is rejected with `InvalidMetadataRequest`; no relation scan is opened.
 - Verification: the focused real-redb IPC regression, locked workspace build, format check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored.
+
+## MD-5 / AU-7: closed relation handle rejected by scan and insert IPC — verified slice
+
+- The relation-resolution IPC regression closes an issued capability, then replays it through both `OPEN SCAN` and `STAGE INSERT`. Both operations reject the closed token as `InvalidMetadataRequest`; a subsequent resolution returns a fresh usable handle.
+- Verification: the focused executor IPC regression and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. The same run passed workspace build, formatting, and warning-denied all-target Clippy checks.
