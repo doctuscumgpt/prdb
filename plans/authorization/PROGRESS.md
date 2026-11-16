@@ -264,3 +264,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - `executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle` now replays a valid relation handle over OPEN SCAN from both another metadata connection and a different principal's invocation. Both requests fail with `InvalidMetadataRequest` before a scan is opened.
 - Verification: focused real-redb IPC regression, locked workspace build, format check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. The suite ran sandbox/process tests with zero ignored: 291 engine unit tests, 180 commit tests, 75 transaction tests, and all remaining targets.
+
+## AU-3: compound policy failures force the reference path — verified slice
+
+- Extended `unique_constraint_uses_its_backing_index_for_invocation_writes` so the SELECT policy combines a failing field expression with a principal predicate. The optimized unique-index probe remains `Unavailable` without evaluating the hidden-key policy, while the authorized reference scan returns the generic `EvaluationFailed` error and durably aborts the invocation.
+- Verification: the focused real-redb transaction regression, workspace format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup suite passed on the immediately preceding schema DDL commit; this test-only extension was verified with the focused regression and static checks.
+- Remaining: broader coercion/workload equivalence, additional failing predicates, hostile IPC sequences, and timing inference remain open.

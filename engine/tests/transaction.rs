@@ -6936,13 +6936,19 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
     let failing_policies = [
         policies[0].clone(),
         Policy {
-            using: Some(Expr::Equal(
-                Box::new(Expr::Divide(
-                    Box::new(Expr::Field(0)),
+            using: Some(Expr::And(vec![
+                Expr::Equal(
+                    Box::new(Expr::Divide(
+                        Box::new(Expr::Field(0)),
+                        Box::new(Expr::Literal(Some(ScalarValue::SmallInt(0)))),
+                    )),
                     Box::new(Expr::Literal(Some(ScalarValue::SmallInt(0)))),
-                )),
-                Box::new(Expr::Literal(Some(ScalarValue::SmallInt(0)))),
-            )),
+                ),
+                Expr::Equal(
+                    Box::new(Expr::CurrentPrincipalId),
+                    Box::new(Expr::Literal(Some(ScalarValue::Uuid([9; 16])))),
+                ),
+            ])),
             ..policies[1].clone()
         },
     ];
