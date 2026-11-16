@@ -2180,6 +2180,100 @@ fn information_schema_tables_cursor_retains_renamed_relation_snapshot()
 }
 
 #[test]
+fn information_schema_tables_cursor_retains_grant_snapshot_across_revocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    install_relation_discovery_catalog(&database)?;
+
+    let mut retained = InvocationTransaction::begin(&database, [0xe1; 16], [9; 16], 9_999, 1, 64)?;
+    let first = retained.scan_information_schema_tables(1, None)?;
+    assert_eq!(first.rows.len(), 1);
+    assert_eq!(first.rows[0].table_name, "columns");
+    let continuation = first
+        .continuation
+        .expect("public relation rows precede visible application tables");
+
+    let grantor_id = builtin_owner_id();
+    let revoked_grants = [
+        (
+            [0x91; 16],
+            grant_catalog_record([9; 16], [0x91; 16], 1, 1, [0x91; 16], grantor_id, 1).0,
+        ),
+        (
+            [0x10; 16],
+            grant_catalog_record([9; 16], [0x10; 16], 3, 1, [0x10; 16], grantor_id, 1).0,
+        ),
+        (
+            [0x10; 16],
+            grant_catalog_record([9; 16], [0x10; 16], 2, 2, [0x66; 16], grantor_id, 1).0,
+        ),
+    ];
+    let write = database.begin_write()?;
+    {
+        let mut catalog = write.open_table(CATALOG)?;
+        let mut grants = write.open_table(prdb_engine::schema::GRANTS)?;
+        for (object_id, grant_key) in &revoked_grants {
+            catalog.remove(grant_key.as_slice())?;
+            for direction in [1u8, 2u8] {
+                let indexed_id = if direction == 1 { [9; 16] } else { *object_id };
+                let mut index_key = Vec::with_capacity(1 + 16 + grant_key.len());
+                index_key.push(direction);
+                index_key.extend_from_slice(&indexed_id);
+                index_key.extend_from_slice(grant_key);
+                grants.remove(index_key.as_slice())?;
+            }
+        }
+    }
+    write.commit()?;
+
+    let mut retained_names = first
+        .rows
+        .into_iter()
+        .map(|row| (row.table_schema, row.table_name))
+        .collect::<Vec<_>>();
+    let mut cursor = Some(continuation.clone());
+    while let Some(next) = cursor {
+        let page = retained.scan_information_schema_tables(1, Some(next))?;
+        retained_names.extend(
+            page.rows
+                .into_iter()
+                .map(|row| (row.table_schema, row.table_name)),
+        );
+        cursor = page.continuation;
+    }
+    assert!(retained_names.contains(&("app".to_owned(), "metrics".to_owned())));
+
+    let mut current = InvocationTransaction::begin(&database, [0xe2; 16], [9; 16], 9_999, 1, 64)?;
+    let mut current_names = Vec::new();
+    let mut page = current.scan_information_schema_tables(1, None)?;
+    loop {
+        current_names.extend(
+            page.rows
+                .into_iter()
+                .map(|row| (row.table_schema, row.table_name)),
+        );
+        match page.continuation {
+            Some(next) => page = current.scan_information_schema_tables(1, Some(next))?,
+            None => break,
+        }
+    }
+    assert!(!current_names.contains(&("app".to_owned(), "metrics".to_owned())));
+    assert!(
+        current_names
+            .iter()
+            .all(|(schema, _)| schema == "information_schema")
+    );
+
+    let mut other = InvocationTransaction::begin(&database, [0xe3; 16], [9; 16], 9_999, 1, 64)?;
+    assert!(matches!(
+        other.scan_information_schema_tables(1, Some(continuation)),
+        Err(TransactionError::InvalidMetadataRequest)
+    ));
+    Ok(())
+}
+
+#[test]
 fn information_schema_columns_projects_declared_shape_in_pages()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
