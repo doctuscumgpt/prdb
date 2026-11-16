@@ -238,6 +238,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Extended `migration_apply_requires_complete_history_ack_and_publishes_validated_v2`: after v1-to-v2 publication, the test commits a real schema through `StorageManager`, then retries the old migration command against the original v1 backup/history. The retry fails; the active catalog remains v2 at the newer commit sequence and the committed schema remains resolvable.
 - Verification: the focused `bootstrap_binary` migration test and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. This guards the post-upgrade no-rollback boundary; broader migration semantics preservation and power-loss durability remain open.
 
+## CL-6: migrated bootstrap credential retains verifier semantics — verified slice
+
+- Extended `migration_apply_requires_complete_history_ack_and_publishes_validated_v2` to preserve the initial token in zeroizing test memory and authenticate a new query session after v1-to-v2 publication. The authenticated session resolves to the same administrator ID, exercising the migrated verifier through the production storage authentication path.
+- Verification: the focused migration CLI regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+
 ## 2026-11-16 integrated acceptance refresh
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. All 33 bootstrap binary tests passed, including backup verification, migration, physical redb upgrade, restore, and publication retry/process-exit recovery.

@@ -1697,9 +1697,8 @@ fn migration_apply_requires_complete_history_ack_and_publishes_validated_v2() {
     )
     .expect("initialize migration source");
     let admin_id = session.admin_user_id();
-    let mut secret = session.take_secret().expect("bootstrap secret");
-    use zeroize::Zeroize;
-    secret.zeroize();
+    let token_id = session.token_id();
+    let secret = zeroize::Zeroizing::new(session.take_secret().expect("bootstrap secret"));
     drop(session.acknowledge().expect("publish source READY"));
 
     let source_path = fixture.instance_dir().join("storage.redb");
@@ -1781,6 +1780,16 @@ fn migration_apply_requires_complete_history_ack_and_publishes_validated_v2() {
         active_report.metadata.commit_sequence,
         metadata.commit_sequence
     );
+    let migrated_storage = prdb_engine::storage_manager::StorageManager::new(
+        active.database(),
+        std::time::Duration::from_millis(100),
+    )
+    .expect("create storage manager for migrated catalog");
+    let authenticated = migrated_storage
+        .authenticate_query_session(token_id, &secret)
+        .expect("pre-migration bootstrap token remains valid after migration");
+    assert_eq!(authenticated.principal_id(), admin_id);
+    drop(migrated_storage);
     let read = active
         .database()
         .begin_read()
