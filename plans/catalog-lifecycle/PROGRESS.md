@@ -242,6 +242,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Verification: the focused `bootstrap_binary` regression passed; workspace formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests, including all 34 bootstrap binary tests and all 179 commit tests.
 - Limit: injected syscall-boundary failure and process-exit tests do not simulate power loss or validate storage-device cache behavior. Actual filesystem/power-loss fault evidence remains open.
 
+## CL-4: rebuild a converted stage after pre-sync failure — verified slice
+
+- Added a debug-only failure point after redb physical-v2 conversion completes but before the staging file is synced or validated. `maintenance_redb_physical_upgrade_rebuilds_stage_after_conversion_failure` verifies that the active v2 image and independent backup remain byte-identical, then retries through stage cleanup and publishes a READY upgraded image while retaining the v2 source.
+- Verification: focused `bootstrap_binary` regression, locked workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests; it includes 36 bootstrap binary tests.
+- Limit: the injected error verifies recovery ordering with a live kernel and filesystem; power-loss and device-cache durability evidence remain open.
+
 
 ## DS-SQL-51: normalized explicit constraint object names — verified
 

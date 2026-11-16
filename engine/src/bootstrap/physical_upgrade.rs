@@ -108,6 +108,9 @@ pub fn upgrade_redb_v2_instance(
             ));
         }
     }
+    if test_fail_after_stage_upgrade() {
+        return Err(io::Error::other("injected failure after physical stage conversion").into());
+    }
     File::open(&staging_path)?.sync_all()?;
     if logical_digest_v2(&staging_path)? != source_logical_digest {
         return Err(invalid(
@@ -217,6 +220,17 @@ fn test_fail_directory_sync_after_exchange() -> bool {
 fn test_fail_backup_directory_sync() -> bool {
     std::env::var_os("PRDB_TEST_REDB_UPGRADE_FAIL_SYNC_AFTER_BACKUP_PUBLISH").as_deref()
         == Some(std::ffi::OsStr::new("1"))
+}
+
+#[cfg(debug_assertions)]
+fn test_fail_after_stage_upgrade() -> bool {
+    std::env::var_os("PRDB_TEST_REDB_UPGRADE_FAIL_AFTER_STAGE_CONVERSION").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+}
+
+#[cfg(not(debug_assertions))]
+fn test_fail_after_stage_upgrade() -> bool {
+    false
 }
 
 #[cfg(not(debug_assertions))]
