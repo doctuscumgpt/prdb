@@ -1501,6 +1501,7 @@ fn validate_catalog(
     let mut builtin_type_ids = HashMap::<u16, [u8; 16]>::new();
     let mut type_records = HashMap::<[u8; 16], CatalogRecord>::new();
     let mut table_schema_versions = HashMap::<[u8; 16], u64>::new();
+    let mut table_schema_ids = HashMap::<[u8; 16], [u8; 16]>::new();
     let mut columns_by_table = HashMap::<[u8; 16], Vec<PersistedColumnSchema>>::new();
     let mut column_tables = HashMap::<[u8; 16], [u8; 16]>::new();
     let mut column_nullable = HashMap::<[u8; 16], bool>::new();
@@ -1643,14 +1644,17 @@ fn validate_catalog(
                 .ok_or(StartupError::InvalidCatalog)?
                 .try_into()
                 .map_err(|_| StartupError::InvalidCatalog)?;
+            let schema_id = field_id(&record, 1)?;
             let schema_version = field_u64(&record, 2)?;
             if key.len() != 19
+                || schema_id == [0; 16]
                 || schema_version == 0
                 || field_u64(&record, 3)? == 0
                 || field_u16(&record, 5)? != 1
                 || table_schema_versions
                     .insert(table_id, schema_version)
                     .is_some()
+                || table_schema_ids.insert(table_id, schema_id).is_some()
             {
                 return Err(StartupError::InvalidCatalog);
             }
@@ -2187,6 +2191,10 @@ fn validate_catalog(
         object_parents
             .get(object_id)
             .is_some_and(|parent_id| parent_id.is_some_and(|parent_id| parent_id != *table_id))
+    }) || index_definitions.iter().any(|(index_id, table_id)| {
+        object_parents.get(index_id).is_some_and(|parent_id| {
+            parent_id.is_some_and(|parent_id| table_schema_ids.get(table_id) != Some(&parent_id))
+        })
     });
     if typed_parent_mismatch {
         return Err(StartupError::InvalidCatalog);

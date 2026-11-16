@@ -18878,6 +18878,44 @@ fn catalog_commit_rejects_indexes_with_missing_or_mistabled_columns()
     );
     assert_eq!(commit_sequence(&database)?, 0);
 
+    let actual_schema_id = id(0xa0);
+    let wrong_schema_id = id(0xa1);
+    let table_id = id(0xa2);
+    let column_id = id(0xa3);
+    let index_id = id(0xa4);
+    let (index_key, index_payload) =
+        index_definition_with_columns(index_id, table_id, &[column_id]);
+    assert_eq!(
+        commit_catalog_and_audit(
+            &database,
+            id(0xa5),
+            id(9),
+            9_999,
+            &[
+                object_write(actual_schema_id, 1),
+                schema_write(actual_schema_id),
+                object_write(wrong_schema_id, 1),
+                schema_write(wrong_schema_id),
+                object_write_with_parent(table_id, 3, Some(actual_schema_id)),
+                table_write(table_id, actual_schema_id),
+                dependency_write(table_id, actual_schema_id, 1),
+                object_write(column_id, 4),
+                column_write(column_id, table_id, "object_163"),
+                object_write_with_parent(index_id, 7, Some(wrong_schema_id)),
+                CatalogWrite {
+                    key: index_key,
+                    expected_value: None,
+                    payload: Some(index_payload),
+                },
+                dependency_write(index_id, wrong_schema_id, 1),
+            ],
+            &[audit_event(0xa5)],
+        ),
+        Err(CommitError::InvalidCatalog),
+        "an index parent's schema must match its typed table's schema"
+    );
+    assert_eq!(commit_sequence(&database)?, 0);
+
     let (valid_key, valid_payload) = index_definition_with_columns(id(96), id(16), &[id(0x66)]);
     assert_eq!(
         commit_catalog_and_audit(

@@ -1360,6 +1360,7 @@ struct DependencyCatalogGraph {
     typed_object_kinds: HashMap<[u8; 16], u16>,
     column_tables: HashMap<[u8; 16], [u8; 16]>,
     index_tables: HashMap<[u8; 16], [u8; 16]>,
+    table_schemas: HashMap<[u8; 16], [u8; 16]>,
     index_columns: HashMap<[u8; 16], Vec<[u8; 16]>>,
     policy_tables: HashMap<[u8; 16], [u8; 16]>,
     policy_kinds: HashMap<[u8; 16], u16>,
@@ -1431,6 +1432,7 @@ fn validate_final_dependency_edges(
         typed_object_kinds,
         column_tables,
         index_tables,
+        table_schemas,
         index_columns,
         policy_tables: _,
         policy_kinds: _,
@@ -1465,6 +1467,9 @@ fn validate_final_dependency_edges(
         };
         object_kinds.get(table_id) != Some(&3)
             || typed_object_kinds.get(table_id) != Some(&3)
+            || object_parents.get(index_id).is_some_and(|parent_id| {
+                parent_id.is_some_and(|parent_id| table_schemas.get(table_id) != Some(&parent_id))
+            })
             || columns.is_empty()
             || columns.iter().any(|column_id| {
                 object_kinds.get(column_id) != Some(&4)
@@ -2375,6 +2380,13 @@ fn collect_dependency_catalog_record(
                 .try_into()
                 .map_err(|_| CommitError::InvalidCatalog)?;
             if graph.typed_object_kinds.insert(table_id, 3).is_some() {
+                return Err(CommitError::InvalidCatalog);
+            }
+            let schema_id: [u8; 16] = catalog_field_bytes(key, bytes, 5, 1)?
+                .as_slice()
+                .try_into()
+                .map_err(|_| CommitError::InvalidCatalog)?;
+            if graph.table_schemas.insert(table_id, schema_id).is_some() {
                 return Err(CommitError::InvalidCatalog);
             }
         }

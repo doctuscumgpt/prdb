@@ -1099,6 +1099,10 @@ fn policy_target_record(
 }
 
 fn table_record(id: [u8; 16]) -> (Vec<u8>, Vec<u8>) {
+    table_record_for_schema(id, [0x61; 16])
+}
+
+fn table_record_for_schema(id: [u8; 16], schema_id: [u8; 16]) -> (Vec<u8>, Vec<u8>) {
     let mut key = 5u16.to_be_bytes().to_vec();
     key.push(1);
     key.extend_from_slice(&id);
@@ -1106,7 +1110,7 @@ fn table_record(id: [u8; 16]) -> (Vec<u8>, Vec<u8>) {
         CatalogField {
             tag: 1,
             wire_type: WireType::Id,
-            payload: [0x61; 16].to_vec(),
+            payload: schema_id.to_vec(),
         },
         CatalogField {
             tag: 2,
@@ -2481,6 +2485,35 @@ fn rejects_column_object_parent_that_disagrees_with_typed_table() {
         validate_persisted_records(&database),
         Err(StartupError::InvalidCatalog),
         "typed column ownership must agree with any explicit object parent"
+    );
+}
+
+#[test]
+fn rejects_index_object_parent_that_disagrees_with_typed_table_schema() {
+    let fixture = Fixture::new();
+    let database = fixture.database(0);
+    let actual_schema_id = builtin_id(1);
+    let wrong_schema_id = builtin_id(2);
+    let table_id = [0xc1; 16];
+    let column_id = [0xc2; 16];
+    let index_id = [0xc3; 16];
+    for (key, value) in [
+        object_record_with_parent(table_id, 3, Some(actual_schema_id)),
+        table_record_for_schema(table_id, actual_schema_id),
+        object_record(column_id, 4),
+        column_record_for_table(column_id, table_id, "object_194"),
+        object_record_with_parent(index_id, 7, Some(wrong_schema_id)),
+        index_record_for_columns(index_id, table_id, &[column_id]),
+        dependency_record(table_id, actual_schema_id, 1),
+        dependency_record(index_id, wrong_schema_id, 1),
+    ] {
+        put_catalog(&database, &key, &value);
+    }
+
+    assert_eq!(
+        validate_persisted_records(&database),
+        Err(StartupError::InvalidCatalog),
+        "an index parent's schema must match its typed table's schema"
     );
 }
 
