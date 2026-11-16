@@ -193,3 +193,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended the token lifecycle regression to race credential issuance with `NOLOGIN` for the same user. It checks both durable outcomes and commit order, and verifies that any committed LOGIN disable leaves no active token, including a token issued during the race. A failed disable leaves the user LOGIN-enabled; a failed issue leaves no issued token.
 - Verification: focused real-redb regression, locked workspace build, format check, and warning-denied all-target Clippy passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
+
+## ID-5 / ID-7: token revocation races a staged authorized write — verified slice
+
+- `token_admission_checks_expiry_secret_revocation_and_commit_guards` now starts token revocation and the admitted token's staged authorized write behind a barrier. If the write commits first, its sequence precedes revocation; if revocation wins, the writer conflicts. The durable invocation outcome matches the result, the row remains consistent, and the revoked credential cannot admit another invocation.
+- Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.

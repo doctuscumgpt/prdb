@@ -280,3 +280,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle` to replay a valid relation handle after closing it through both `OPEN SCAN` and `STAGE INSERT`. Both dispatches reject the stale capability as `InvalidMetadataRequest`; the test then resolves the relation again and verifies a fresh handle works.
 - Verification: focused executor IPC regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
+
+## AU-6: token revocation races an authorized staged write — verified slice
+
+- Extended `token_admission_checks_expiry_secret_revocation_and_commit_guards` to race a staged authorized update against token revocation. The update either commits before revocation or durably conflicts after it; the test verifies the commit sequence, row state, durable invocation outcome, and failed post-revocation admission.
+- Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.

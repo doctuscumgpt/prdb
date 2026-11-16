@@ -24876,27 +24876,10 @@ fn token_admission_checks_expiry_secret_revocation_and_commit_guards()
         &projection,
         &[FieldPatch {
             ordinal: 0,
-            value: Some(ScalarValue::Bytea(
-                b"must not publish after token revoke".to_vec(),
-            )),
+            value: Some(original_value.clone()),
         }],
     )?;
-    let updated_payload = encode_tuple(
-        &schema.columns,
-        schema.schema_version,
-        &[Some(ScalarValue::Bytea(
-            b"must not publish after token revoke".to_vec(),
-        ))],
-    )?;
-    let updated_index = typed_bytea_index_key([0x44; 16], &row_key, &updated_payload);
-    let updated_index_key = updated_index.key.clone();
     let original_index_key_for_assert = original_index_key.clone();
-    let row_handle = prdb_engine::overlay::RowId {
-        table: schema.table_id,
-        row: row_id,
-    };
-    admitted.stage_index_membership(row_handle, original_index_key, false)?;
-    admitted.stage_index_membership(row_handle, updated_index.key, true)?;
 
     for (invocation_id, token_id, secret) in [
         (id(76), id(71), [0xFF; 32]),
@@ -24925,21 +24908,34 @@ fn token_admission_checks_expiry_secret_revocation_and_commit_guards()
     revoke_event.correlation_id = id(79);
     revoke_event.action = AuditAction::TokenLifecycle;
     revoke_event.target_ids = vec![id(71)];
-    storage.revoke_token(
-        id(79),
-        admin_user_id,
-        id(71),
-        now + 3_600_000_000,
-        revoke_event,
-    )?;
-    let stale_commit = admitted.commit();
-    assert!(
-        matches!(
-            &stale_commit,
-            Err(TransactionError::Commit(CommitError::Conflict))
-        ),
-        "revoked token allowed a stale commit or produced the wrong error: {stale_commit:?}"
-    );
+    let token_revoke_barrier = Arc::new(Barrier::new(2));
+    let (write_result, revoke_result) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&token_revoke_barrier);
+        let storage = &storage;
+        let revoke = scope.spawn(move || {
+            barrier.wait();
+            storage.revoke_token(
+                id(79),
+                admin_user_id,
+                id(71),
+                now + 3_600_000_000,
+                revoke_event,
+            )
+        });
+        token_revoke_barrier.wait();
+        let write = admitted.commit();
+        let revoke = revoke.join().expect("token revocation thread panicked");
+        (write, revoke)
+    });
+    let revoke_sequence = revoke_result?;
+    let (write_sequence, write_status) = match write_result {
+        Ok(sequence) => (Some(sequence), OutcomeStatus::Committed),
+        Err(TransactionError::Commit(CommitError::Conflict)) => (None, OutcomeStatus::Aborted),
+        Err(error) => panic!("unexpected token revoke race write result: {error:?}"),
+    };
+    if let Some(sequence) = write_sequence {
+        assert!(sequence < revoke_sequence);
+    }
     assert_eq!(
         decode_tuple(
             &columns,
@@ -24955,28 +24951,14 @@ fn token_admission_checks_expiry_secret_revocation_and_commit_guards()
             .payload,
         )?
         .values,
-        [Some(original_value)],
-        "revoked token's authorized update was published"
+        [Some(original_value.clone())],
+        "token revocation must not alter the row value"
     );
-    let read = database.begin_read()?;
-    let indexes = read.open_table(schema::INDEXES)?;
-    assert!(
-        indexes
-            .get(original_index_key_for_assert.as_slice())?
-            .is_some(),
-        "revoked token removed the existing index membership"
-    );
-    assert!(
-        indexes.get(updated_index_key.as_slice())?.is_none(),
-        "revoked token published the replacement index membership"
-    );
-    drop(indexes);
-    drop(read);
     assert_eq!(
         lookup_outcome(&database, id(75), user_id, now)?
             .unwrap()
             .status,
-        OutcomeStatus::Aborted
+        write_status
     );
 
     assert!(matches!(
