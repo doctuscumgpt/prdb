@@ -3453,6 +3453,16 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         .ok_or("owner constraint page omitted the foreign key")?;
     assert_eq!(redacted_foreign_key.referenced_table_id, None);
     assert!(redacted_foreign_key.referenced_column_ids.is_empty());
+    let redacted_dependencies =
+        redacted_owner.list_dependencies_page(redacted_foreign_key.constraint_id, 128, None)?;
+    assert!(
+        redacted_dependencies.records.is_empty(),
+        "dependency metadata must omit edges whose target is hidden"
+    );
+    assert!(
+        redacted_dependencies.next_cursor.is_none(),
+        "an omitted hidden edge must not affect continuation or counts"
+    );
     drop(redacted_owner);
     admin.set_schema_owner(redacted_source_schema.identity_id, admin_user_id)?;
     let constraint_uuid = format!(

@@ -336,3 +336,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `executor_scan_reads_filtered_information_schema_schemata` to obtain live row handles from `schemata`, `tables`, and `columns`, then verify UPDATE and DELETE rejection for each. The regression also attempts correctly shaped INSERTs into all three relations and verifies each is rejected.
 - Verification: focused real-redb transaction regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 189 commit, 76 transaction tests, plus all remaining targets).
+
+## MD-6: dependency pages omit edges to hidden endpoints — verified slice
+
+- Extended the authenticated gateway/supervisor metadata lifecycle with a source-schema owner whose foreign key points to a target outside that owner's visible scope. Constraint metadata still redacts the target table and columns; the direct dependency page now also returns no records and no continuation, so the hidden endpoint does not affect visible dependency counts.
+- Verification: focused production gateway/supervisor process regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (293 unit, 190 commit, 76 transaction tests, plus all remaining targets).
