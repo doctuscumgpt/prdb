@@ -4968,6 +4968,15 @@ impl<'db> StorageManager<'db> {
                 deletes.insert(key, value.value().to_vec());
             }
         }
+        let retired_ids = deletes
+            .iter()
+            .filter_map(|(key, bytes)| {
+                (key.starts_with(&2u16.to_be_bytes())
+                    && matches!(read_catalog_u16(key, bytes, 2, 1).ok(), Some(3 | 7)))
+                .then(|| <[u8; 16]>::try_from(&key[3..19]).ok())
+                .flatten()
+            })
+            .collect::<HashSet<_>>();
         let mut writes = principal_updates
             .into_iter()
             .chain(table_epoch_updates)
@@ -4981,18 +4990,21 @@ impl<'db> StorageManager<'db> {
                     }),
             )
             .collect::<Vec<_>>();
-        let reservation_key = retired_object_id_catalog_key(table_id);
-        let reservation_payload = encode_envelope(
-            &family_schema(17).ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?,
-            &reservation_key,
-            &[],
-        )
-        .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
-        writes.push(CatalogWrite {
-            key: reservation_key,
-            expected_value: None,
-            payload: Some(reservation_payload),
-        });
+        for retired_id in retired_ids {
+            let reservation_key = retired_object_id_catalog_key(retired_id);
+            let reservation_payload = encode_envelope(
+                &family_schema(17)
+                    .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?,
+                &reservation_key,
+                &[],
+            )
+            .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+            writes.push(CatalogWrite {
+                key: reservation_key,
+                expected_value: None,
+                payload: Some(reservation_payload),
+            });
+        }
         audit_event.target_ids = vec![table_id];
         let commit_sequence = commit_authorized_table_drop_ddl_with_fences(
             self.database,
@@ -9992,6 +10004,13 @@ impl<'db> StorageManager<'db> {
         drop(catalog);
         drop(read);
 
+        let reservation_key = retired_object_id_catalog_key(index_id);
+        let reservation_payload = encode_envelope(
+            &family_schema(17).ok_or(IndexLifecycleError::Commit(CommitError::InvalidCatalog))?,
+            &reservation_key,
+            &[],
+        )
+        .map_err(|_| IndexLifecycleError::Commit(CommitError::InvalidCatalog))?;
         let writes = [
             CatalogWrite {
                 key: index_key,
@@ -10007,6 +10026,11 @@ impl<'db> StorageManager<'db> {
                 key: edge_key,
                 expected_value: Some(edge_bytes),
                 payload: None,
+            },
+            CatalogWrite {
+                key: reservation_key,
+                expected_value: None,
+                payload: Some(reservation_payload),
             },
         ];
         let commit_sequence = self

@@ -14,6 +14,13 @@
 - Verification: workspace build, formatting check, warning-denied all-target Clippy, and complete serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
 - Remaining lifecycle scope: retirement for owned child definitions and other object kinds, plus historical pre-v2 table-drop identity history.
 
+## CL-3 / DD-3 / DS-3: ordinary index-drop ID reservation — verified slice
+
+- Ordinary index DDL validates a one-to-one match between deleted index objects and newly published family-17 reservations. Table cleanup includes reservations for the table and each owned index, all guarded for absence in the same serialized transaction. Constraint DDL retirement of backing-index IDs remains open.
+- Focused index-drop and table-drop-with-owned-index regressions pass.
+- Verification: workspace build, formatting, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+- Remaining: history for pre-v2 dropped index IDs and retirement for other object kinds.
+
 Migrated component-owned progress entries from [storage-manager progress](../storage-manager/PROGRESS.md); evidence is preserved below.
 
 ## CL-1 / CL-2 dependency: local bootstrap and credential handoff — verified core

@@ -13596,6 +13596,12 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
             .get(id_catalog_key(2, created.index_id).as_slice())?
             .is_none()
     );
+    assert!(
+        catalog
+            .get(id_catalog_key(17, created.index_id).as_slice())?
+            .is_some(),
+        "DROP INDEX must permanently reserve its retired object ID"
+    );
     assert_eq!(
         lookup_index_id_by_name(&index_name_snapshot, id(80), "source_value_unique")?,
         Some(created.index_id)
@@ -13611,7 +13617,43 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
             .get(id_catalog_key(2, created.index_id).as_slice())?
             .is_some()
     );
+    let retired_index_definition = retained_index_catalog
+        .get(id_catalog_key(9, created.index_id).as_slice())?
+        .ok_or("retained index definition is missing")?
+        .value()
+        .to_vec();
+    let retired_index_object = retained_index_catalog
+        .get(id_catalog_key(2, created.index_id).as_slice())?
+        .ok_or("retained index object is missing")?
+        .value()
+        .to_vec();
     drop(retained_index_catalog);
+    let reuse_invocation = id(0xfa);
+    let mut reuse_audit = identity_audit_event(0xfb, actor, created.index_id);
+    reuse_audit.correlation_id = reuse_invocation;
+    assert_eq!(
+        commit_catalog_and_audit(
+            &database,
+            reuse_invocation,
+            actor,
+            9_999,
+            &[
+                CatalogWrite {
+                    key: id_catalog_key(9, created.index_id),
+                    expected_value: None,
+                    payload: Some(retired_index_definition),
+                },
+                CatalogWrite {
+                    key: id_catalog_key(2, created.index_id),
+                    expected_value: None,
+                    payload: Some(retired_index_object),
+                },
+            ],
+            &[reuse_audit],
+        ),
+        Err(CommitError::InvalidCatalog),
+        "a dropped index ID must not be reusable by a later catalog commit"
+    );
     assert_eq!(
         index_name_snapshot
             .open_table(schema::INDEXES)?
@@ -21151,6 +21193,15 @@ fn storage_manager_builds_and_drops_populated_indexes_atomically()
             payload: None,
         },
         object_delete,
+        CatalogWrite {
+            key: id_catalog_key(17, id(0x88)),
+            expected_value: None,
+            payload: Some(encode_envelope(
+                &family_schema(17).unwrap(),
+                &id_catalog_key(17, id(0x88)),
+                &[],
+            )?),
+        },
     ];
     assert_eq!(
         commit_catalog_and_audit(
@@ -21243,6 +21294,14 @@ fn storage_manager_builds_and_drops_populated_indexes_atomically()
         )
     };
     assert_eq!(table_epoch_after_drop, table_epoch_after_build + 1);
+    assert!(
+        database
+            .begin_read()?
+            .open_table(CATALOG)?
+            .get(id_catalog_key(17, id(0x88)).as_slice())?
+            .is_some(),
+        "DROP INDEX must permanently reserve its retired object ID"
+    );
     assert!(
         read.open_table(schema::INDEXES)?
             .get(expected.key.as_slice())?

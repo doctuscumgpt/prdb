@@ -8164,6 +8164,8 @@ fn index_ddl_authority_guards(
     let mut changed_object_ids = HashSet::<[u8; 16]>::new();
     let mut object_record_states = HashMap::<[u8; 16], (bool, bool)>::new();
     let mut changed_owned_child_dependents = Vec::<[u8; 16]>::new();
+    let mut retired_object_ids = HashSet::<[u8; 16]>::new();
+    let mut required_retired_object_ids = HashSet::<[u8; 16]>::new();
     for write in catalog_writes {
         let family = write
             .key
@@ -8189,6 +8191,12 @@ fn index_ddl_authority_guards(
                 changed_object_ids.insert(object_id);
                 object_record_states
                     .insert(object_id, (current.is_some(), write.payload.is_some()));
+                if let Some(bytes) = current.as_deref()
+                    && write.payload.is_none()
+                    && matches!(catalog_field_u16(&write.key, bytes, 2, 1)?, 3 | 7)
+                {
+                    required_retired_object_ids.insert(object_id);
+                }
                 if current.as_deref() != write.payload.as_deref()
                     && current.as_deref().is_some_and(|bytes| {
                         catalog_field_u16(&write.key, bytes, 2, 1).ok() == Some(7)
@@ -8270,6 +8278,27 @@ fn index_ddl_authority_guards(
                     changed_owned_child_dependents.push(dependent_id);
                 }
             }
+            17 => {
+                let object_id: [u8; 16] = write
+                    .key
+                    .get(3..19)
+                    .ok_or(CommitError::InvalidCatalog)?
+                    .try_into()
+                    .map_err(|_| CommitError::InvalidCatalog)?;
+                let bytes = write
+                    .payload
+                    .as_deref()
+                    .ok_or(CommitError::InvalidCatalog)?;
+                let reservation = decode_catalog_record(&write.key, bytes)?;
+                if current.is_some()
+                    || write.key != id_catalog_key(17, object_id)
+                    || reservation.family_code != 17
+                    || !reservation.fields.is_empty()
+                    || !retired_object_ids.insert(object_id)
+                {
+                    return Err(CommitError::InvalidCatalog);
+                }
+            }
             _ => return Err(CommitError::InvalidCatalog),
         }
     }
@@ -8289,6 +8318,7 @@ fn index_ddl_authority_guards(
         || changed_owned_child_dependents
             .iter()
             .any(|dependent_id| !changed_index_ids.contains(dependent_id))
+        || required_retired_object_ids != retired_object_ids
     {
         return Err(CommitError::InvalidCatalog);
     }
@@ -11304,11 +11334,11 @@ fn table_drop_ddl_authority_guards(
         || table_id == [0; 16]
         || catalog_writes.iter().any(|write| {
             (write.expected_value.is_none()
-                && !(write.key == id_catalog_key(17, table_id) && write.payload.is_some()))
+                && !(write.key.starts_with(&17u16.to_be_bytes()) && write.payload.is_some()))
                 || (write.payload.is_some()
                     && !write.key.starts_with(&10u16.to_be_bytes())
                     && !write.key.starts_with(&5u16.to_be_bytes())
-                    && write.key != id_catalog_key(17, table_id))
+                    && !write.key.starts_with(&17u16.to_be_bytes()))
         })
         || audit_events.is_empty()
         || audit_events.iter().any(|event| {
@@ -11338,6 +11368,29 @@ fn table_drop_ddl_authority_guards(
     {
         return Err(CommitError::InvalidCatalog);
     }
+    let mut required_retired_object_ids = HashSet::<[u8; 16]>::new();
+    for write in catalog_writes
+        .iter()
+        .filter(|write| write.key.starts_with(&2u16.to_be_bytes()) && write.payload.is_none())
+    {
+        let bytes = write
+            .expected_value
+            .as_deref()
+            .ok_or(CommitError::InvalidCatalog)?;
+        if matches!(catalog_field_u16(&write.key, bytes, 2, 1)?, 3 | 7) {
+            let id: [u8; 16] = write
+                .key
+                .get(3..19)
+                .ok_or(CommitError::InvalidCatalog)?
+                .try_into()
+                .map_err(|_| CommitError::InvalidCatalog)?;
+            required_retired_object_ids.insert(id);
+        }
+    }
+    if !required_retired_object_ids.contains(&table_id) {
+        return Err(CommitError::InvalidCatalog);
+    }
+    let mut retired_object_ids = HashSet::<[u8; 16]>::new();
     let owner_id: [u8; 16] = catalog_field_bytes(&object_key, object_bytes, 2, 4)?
         .try_into()
         .map_err(|_| CommitError::InvalidCatalog)?;
@@ -11635,10 +11688,7 @@ fn table_drop_ddl_authority_guards(
             .get(..2)
             .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
             .ok_or(CommitError::InvalidCatalog)?;
-        if (write.expected_value.is_none()
-            && !(family == 17
-                && write.key == id_catalog_key(17, table_id)
-                && write.payload.is_some()))
+        if (write.expected_value.is_none() && !(family == 17 && write.payload.is_some()))
             || (write.payload.is_some() && !matches!(family, 5 | 10 | 17))
         {
             return Err(CommitError::InvalidCatalog);
@@ -11711,7 +11761,8 @@ fn table_drop_ddl_authority_guards(
                             .is_some_and(|pair| grant_pairs.contains(&pair)))
             }
             17 => {
-                if write.key != id_catalog_key(17, table_id) {
+                let retired_id = id.ok_or(CommitError::InvalidCatalog)?;
+                if !required_retired_object_ids.contains(&retired_id) {
                     false
                 } else {
                     let bytes = write
@@ -11719,7 +11770,11 @@ fn table_drop_ddl_authority_guards(
                         .as_deref()
                         .ok_or(CommitError::InvalidCatalog)?;
                     let reservation = decode_catalog_record(&write.key, bytes)?;
-                    reservation.family_code == 17 && reservation.fields.is_empty()
+                    let valid = reservation.family_code == 17 && reservation.fields.is_empty();
+                    if valid {
+                        retired_object_ids.insert(retired_id);
+                    }
+                    valid
                 }
             }
             _ => false,
@@ -11727,6 +11782,9 @@ fn table_drop_ddl_authority_guards(
         if !belongs {
             return Err(CommitError::InvalidCatalog);
         }
+    }
+    if retired_object_ids != required_retired_object_ids {
+        return Err(CommitError::InvalidCatalog);
     }
     let deleted_ids = catalog_writes
         .iter()

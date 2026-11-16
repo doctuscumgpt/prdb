@@ -15,6 +15,13 @@
 - Verification: focused real-redb table lifecycle regression, workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
 - Remaining: IDs for owned child definitions and other object kinds are not independently tombstoned; historical pre-v2 table drops are not reconstructed.
 
+## DD-3 / CL-3 / DS-3: retired index IDs are permanently reserved — verified slice
+
+- Ordinary `DROP INDEX` now publishes a family-17 reservation with deletion of its family-2/family-9 records and physical memberships. Its authorized DDL validator requires that reservation and rejects a later same-ID catalog recreation. `DROP TABLE` also reserves its table ID and any owned index object IDs it deletes.
+- Regression coverage in `storage_manager_creates_named_unique_index_and_backfills_atomically` checks the reservation and attempts to restore the pre-drop records; `storage_manager_drop_table_removes_owned_primary_and_unique_indexes` covers index retirement nested under table deletion. Focused tests pass.
+- Verification: focused index/table regressions, workspace build, formatting, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored.
+- Remaining: constraint DDL does not yet reserve backing-index IDs when dropping a key constraint; IDs for other dropped child and object kinds remain open.
+
 ## Policy-target catalog envelope — in progress
 
 - Contract: [catalog payloads v1](../../specs/catalog-payloads.md), family 14. The 71-byte envelope includes a 39-byte canonical logical key and no TLVs; IDs are nonzero and target kind is 1, 2, or 3.

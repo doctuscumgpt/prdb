@@ -14,6 +14,13 @@
 - Verification: workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and cross-process tests were enabled; zero tests were ignored. The suite also confirmed low-level catalog fixtures publish a table reservation when removing a table object.
 - Remaining: stable-ID retirement for dropped child definitions and other object kinds.
 
+## DS-3 / DD-3 / CL-3: DROP INDEX prevents stable-ID reuse — verified slice
+
+- `StorageManager::drop_index` includes its family-17 reservation in the same authorized publication as its definition/object/dependency deletion. Index DDL guards match every ordinary index object deletion to exactly one empty reservation, and final catalog validation blocks ID reuse. DROP TABLE emits the same reservation for the table and owned index objects.
+- The named-index real-redb regression checks the reservation and rejects re-publication of the retained pre-drop records; the table-drop regression covers owned index retirement. Both focused tests pass.
+- Verification: workspace build, formatting check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. Sandbox and cross-process tests were enabled; zero tests were ignored.
+- Remaining: constraint DDL does not yet reserve an owned backing-index ID when dropping the key constraint.
+
 ## DS-3 / DD-3: same-name index recreation retains distinct catalog identity — verified slice
 
 - The named unique-index lifecycle regression verifies that dropping and recreating an index under the same schema/name publishes a distinct ID and only the recreated family-2/family-9 records and dependency in the current snapshot. A reader pinned before the drop continues resolving the original index ID and records.
