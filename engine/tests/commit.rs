@@ -17621,6 +17621,39 @@ fn storage_manager_rejects_invalid_recovered_images_before_admission()
 }
 
 #[test]
+fn startup_rejects_missing_bootstrap_descriptor_before_admission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let metadata = database
+        .begin_read()?
+        .open_table(ENGINE_META)?
+        .get(&b"format"[..])?
+        .ok_or("missing engine metadata")?
+        .value()
+        .to_vec();
+    let database_id = EngineMetadata::decode(&metadata)?.database_id;
+    let descriptor_key = id_catalog_key(1, database_id);
+    let write = database.begin_write()?;
+    let mut catalog = write.open_table(CATALOG)?;
+    assert!(catalog.remove(descriptor_key.as_slice())?.is_some());
+    drop(catalog);
+    write.commit()?;
+
+    assert_eq!(
+        prdb_engine::startup::validate_persisted_records(&database),
+        Err(prdb_engine::startup::StartupError::InvalidCatalog)
+    );
+    assert!(matches!(
+        StorageManager::new(&database, Duration::from_millis(100)),
+        Err(StorageManagerInitError::Startup(
+            prdb_engine::startup::StartupError::InvalidCatalog
+        ))
+    ));
+    Ok(())
+}
+
+#[test]
 fn startup_rejects_principal_without_matching_identity_object()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

@@ -289,3 +289,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - A recovery regression removes a user's typed object record while retaining its family-10 principal record. Both persisted-catalog validation and `StorageManager` admission reject the image with `InvalidCatalog`; startup does not reconstruct identity authority from the surviving record.
 - Verification: focused real-redb recovery regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit tests, 186 commit tests, 76 transaction tests, plus all remaining targets).
+
+## CL-3: missing bootstrap descriptor blocks READY — verified slice
+
+- Added `startup_rejects_missing_bootstrap_descriptor_before_admission`. The regression removes the required family-1 database descriptor directly from a valid image; both persisted-record validation and `StorageManager::new` reject it as `InvalidCatalog`.
+- Verification: focused real-redb startup regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests.
