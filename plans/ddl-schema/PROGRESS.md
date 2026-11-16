@@ -1166,3 +1166,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The 128-cycle DDL pressure regression now creates and drops a UNIQUE constraint for every temporary table. It verifies the table-constraint and backing-index lookups in the pinned snapshot before and after drop, verifies fresh snapshots are empty, then drops the table and schema and validates the final persisted catalog.
 - Verification: focused real-redb pressure test passed (8.08 s); warning-denied all-target engine Clippy, formatting, and `git diff --check` passed.
+
+## 2026-11-16 complete delegated workspace verification after token rotation
+
+- Ran `cargo test --workspace --locked -- --test-threads=1` inside a delegated `systemd --user` unit with the documented TinyCC fixtures and runtime profile. The full suite exited successfully with sandbox and process integration tests enabled and zero ignored tests. The authenticated metadata/admin process test exercised `prdb-client token-rotate`, rejection of the old credential, authentication by the saved replacement, and subsequent revocation.

@@ -205,3 +205,7 @@
 
 - Repeated the authorized row-policy create/drop path across the 128-schema pressure campaign. The policy operation index retains each removed definition in the reader's pinned snapshot and omits it for a fresh snapshot; final persisted-catalog validation checks target and expression dependency cleanup.
 - Verification: focused real-redb pressure test passed (8.08 s); warning-denied all-target engine Clippy, formatting, and `git diff --check` passed.
+
+## 2026-11-16 complete delegated workspace verification after token rotation
+
+- Ran `cargo test --workspace --locked -- --test-threads=1` inside a delegated `systemd --user` unit with the documented TinyCC fixtures and runtime profile. The full suite exited successfully with sandbox and process integration tests enabled and zero ignored tests. The authenticated metadata/admin process test exercised `prdb-client token-rotate`, rejection of the old credential, authentication by the saved replacement, and subsequent revocation.

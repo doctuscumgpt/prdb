@@ -282,3 +282,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Added `prdb-client token-rotate`, which accepts an existing token ID, label, and TTL, then stores the one-time replacement in a mode-0600 credential file. Its success output omits secret material; save failure reports that rotation already committed and identifies the replacement token to revoke.
 - Updated the gateway/supervisor process regression to rotate through the CLI, confirm the old credential is rejected and zeroized, authenticate with the saved replacement, and revoke that replacement through the existing CLI path.
 - Verification: the focused authenticated metadata/admin process test passed. `cargo fmt --all -- --check`, warning-denied all-target workspace Clippy, and `git diff --check` passed. The full delegated-cgroup suite was not rerun for this CLI increment.
+
+## 2026-11-16 complete delegated workspace verification after token rotation
+
+- Ran `cargo test --workspace --locked -- --test-threads=1` inside a delegated `systemd --user` unit with the documented TinyCC fixtures and runtime profile. The full suite exited successfully with sandbox and process integration tests enabled and zero ignored tests. The authenticated metadata/admin process test exercised `prdb-client token-rotate`, rejection of the old credential, authentication by the saved replacement, and subsequent revocation.

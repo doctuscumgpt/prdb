@@ -412,3 +412,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 full delegated-cgroup workspace verification
 
 - The complete serial workspace test suite passed inside the delegated `systemd --user` service with sandbox and process integration tests enabled: 955 passed, 0 failed, 0 ignored. This includes the current permission, authorization/schema race, and metadata discovery regressions. The run used the locked release profile and documented TinyCC/runtime artifacts.
+
+## 2026-11-16 complete delegated workspace verification after token rotation
+
+- Ran `cargo test --workspace --locked -- --test-threads=1` inside a delegated `systemd --user` unit with the documented TinyCC fixtures and runtime profile. The full suite exited successfully with sandbox and process integration tests enabled and zero ignored tests. The authenticated metadata/admin process test exercised `prdb-client token-rotate`, rejection of the old credential, authentication by the saved replacement, and subsequent revocation.
