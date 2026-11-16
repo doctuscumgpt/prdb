@@ -311,3 +311,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The executor IPC regression now replays a valid row handle from one invocation through both `STAGE DELETE` and `STAGE UPDATE` in a second invocation for the same principal. Both requests fail with `InvalidMetadataRequest`, and the seeded row bytes are unchanged.
 - Verification: focused real-redb IPC regression, formatting, locked workspace build, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
+
+## MD-5 / DP-1: policy DDL authority does not disclose policy metadata — verified slice
+
+- The authenticated gateway/supervisor lifecycle now checks policy discovery after schema ownership is returned to the database administrator while the former owner retains table-scoped `MANAGE_POLICIES`. Its administrative policy page is empty and has no continuation, so DDL authority alone cannot enumerate protected policy metadata. The adjacent MD-6 regression still verifies that a schema owner's already-issued policy cursor is rejected after ownership transfer.
+- Verification: the focused cross-process metadata lifecycle passed through the production gateway and supervisor. Workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.

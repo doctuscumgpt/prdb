@@ -4710,6 +4710,25 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     ));
     drop(cursor_owner);
     drop(cursor_owner_credentials);
+
+    // MANAGE_POLICIES authorizes DDL but does not disclose administrative
+    // policy metadata after schema ownership is returned.
+    let mut manager_cursor_credentials = read_client_credentials(&transfer_credential_path)?;
+    let mut manager_cursor = AdminClient::connect_authenticated(
+        address,
+        manager_cursor_credentials.token_id,
+        &mut manager_cursor_credentials.token_secret,
+    )?;
+    let manager_policy_page = manager_cursor.list_policies_page(
+        created_schema.identity_id,
+        created_table.table_id,
+        1,
+        None,
+    )?;
+    assert!(manager_policy_page.records.is_empty());
+    assert!(manager_policy_page.next_cursor.is_none());
+    drop(manager_cursor);
+    drop(manager_cursor_credentials);
     admin.drop_policy(cursor_policy_one.policy_id)?;
     admin.drop_policy(cursor_policy_two.policy_id)?;
     assert!(
