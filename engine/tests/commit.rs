@@ -25981,6 +25981,19 @@ fn role_membership_revocation_aborts_a_staged_role_authorized_writer()
         &[setup_audit],
     )?;
 
+    let rename_invocation_id = id(0x9b);
+    let mut rename_audit = identity_audit_event(0x9c, user_id, role_id);
+    rename_audit.correlation_id = rename_invocation_id;
+    let rename_sequence = storage.rename_identity(
+        rename_invocation_id,
+        user_id,
+        role_id,
+        "membership_editor_renamed",
+        9_999,
+        rename_audit,
+    )?;
+    assert_eq!(rename_sequence, 2);
+
     commit_rows(
         &database,
         id(0x98),
@@ -26182,9 +26195,9 @@ fn role_membership_revocation_aborts_a_staged_role_authorized_writer()
     assert_eq!(
         revoke_sequence,
         if writer_status == OutcomeStatus::Committed {
-            4
+            5
         } else {
-            3
+            4
         }
     );
 
