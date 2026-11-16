@@ -543,3 +543,8 @@
 ## 2026-11-16 full delegated-cgroup workspace verification
 
 - The complete serial workspace test suite passed inside the delegated `systemd --user` service with sandbox and process integration tests enabled: 955 passed, 0 failed, 0 ignored. This includes the current permission, authorization/schema race, and metadata discovery regressions. The run used the locked release profile and documented TinyCC/runtime artifacts.
+
+## DD-2 / DD-3 / DD-5: policy and key-constraint indexes under catalog pressure — verified slice
+
+- Extended the 128-cycle schema/table/index pressure test to create and drop a row policy and a UNIQUE constraint with its owned backing index on each table. Pinned snapshots continue to resolve the removed policy and constraint/index lookup entries; fresh snapshots omit them. Final persisted-catalog validation checks that no removed expressions, targets, dependencies, or typed/object records remain orphaned.
+- Verification: focused real-redb pressure test passed (8.08 s); warning-denied all-target engine Clippy, formatting, and `git diff --check` passed.

@@ -200,3 +200,8 @@
 ## 2026-11-16 full delegated-cgroup workspace verification
 
 - The complete serial workspace test suite passed inside the delegated `systemd --user` service with sandbox and process integration tests enabled: 955 passed, 0 failed, 0 ignored. This includes the current permission, authorization/schema race, and metadata discovery regressions. The run used the locked release profile and documented TinyCC/runtime artifacts.
+
+## DP-3 / DD-5: row-policy lifecycle and dependency cleanup under catalog pressure — verified slice
+
+- Repeated the authorized row-policy create/drop path across the 128-schema pressure campaign. The policy operation index retains each removed definition in the reader's pinned snapshot and omits it for a fresh snapshot; final persisted-catalog validation checks target and expression dependency cleanup.
+- Verification: focused real-redb pressure test passed (8.08 s); warning-denied all-target engine Clippy, formatting, and `git diff --check` passed.

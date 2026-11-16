@@ -8483,6 +8483,152 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
                 .is_empty()
             );
 
+            let policy_create_invocation = pressure_id(0xe0, index);
+            let mut policy_create_audit = identity_audit_event(index as u8, actor, table.table_id);
+            policy_create_audit.event_id = pressure_id(0xe1, index);
+            policy_create_audit.correlation_id = policy_create_invocation;
+            let created_policy =
+                storage.create_policy(prdb_engine::storage_manager::CreatePolicyRequest {
+                    invocation_id: policy_create_invocation,
+                    authenticated_actor_id: actor,
+                    table_id: table.table_id,
+                    name: "pressure_select_policy".to_owned(),
+                    kind: prdb_engine::storage_manager::PolicyKind::Row,
+                    operation: prdb_engine::authorization::Operation::Select,
+                    effect: prdb_engine::authorization::Effect::Allow,
+                    recipients: vec![prdb_engine::authorization::Subject::Principal(actor)],
+                    target_column_ids: Vec::new(),
+                    using_expression: Some(prdb_engine::authorization::Expr::Literal(Some(
+                        ScalarValue::Boolean(true),
+                    ))),
+                    with_check_expression: None,
+                    retention_deadline_us: 9_999,
+                    audit_event: policy_create_audit,
+                })?;
+            let retained_policy_snapshot = database.begin_read()?;
+            let retained_policies =
+                prdb_engine::catalog_index::lookup_policies_for_table_operation(
+                    &retained_policy_snapshot,
+                    table.table_id,
+                    1,
+                )?;
+            assert!(retained_policies.iter().any(|record| {
+                record.logical_key == id_catalog_key(13, created_policy.policy_id)
+            }));
+            let policy_drop_invocation = pressure_id(0xe2, index);
+            let mut policy_drop_audit =
+                identity_audit_event(index as u8, actor, created_policy.policy_id);
+            policy_drop_audit.event_id = pressure_id(0xe3, index);
+            policy_drop_audit.correlation_id = policy_drop_invocation;
+            storage.drop_policy(prdb_engine::storage_manager::DropPolicyRequest {
+                invocation_id: policy_drop_invocation,
+                authenticated_actor_id: actor,
+                policy_id: created_policy.policy_id,
+                retention_deadline_us: 9_999,
+                audit_event: policy_drop_audit,
+            })?;
+            assert!(
+                prdb_engine::catalog_index::lookup_policies_for_table_operation(
+                    &retained_policy_snapshot,
+                    table.table_id,
+                    1,
+                )?
+                .iter()
+                .any(|record| record.logical_key == id_catalog_key(13, created_policy.policy_id)),
+                "a pinned snapshot must retain the dropped policy index entry"
+            );
+            drop(retained_policy_snapshot);
+            let after_policy_drop = database.begin_read()?;
+            assert!(
+                prdb_engine::catalog_index::lookup_policies_for_table_operation(
+                    &after_policy_drop,
+                    table.table_id,
+                    1,
+                )?
+                .is_empty(),
+                "a fresh snapshot must omit the dropped policy index entry"
+            );
+
+            let constraint_create_invocation = pressure_id(0xf0, index);
+            let mut constraint_create_audit =
+                identity_audit_event(index as u8, actor, table.table_id);
+            constraint_create_audit.event_id = pressure_id(0xf1, index);
+            constraint_create_audit.correlation_id = constraint_create_invocation;
+            let created_constraint = storage.create_unique_constraint(
+                prdb_engine::storage_manager::CreateUniqueConstraintRequest {
+                    invocation_id: constraint_create_invocation,
+                    authenticated_actor_id: actor,
+                    table_id: table.table_id,
+                    column_ids: table.column_ids.clone(),
+                    retention_deadline_us: 9_999,
+                    audit_event: constraint_create_audit,
+                },
+            )?;
+            let retained_constraint_snapshot = database.begin_read()?;
+            assert_eq!(
+                prdb_engine::catalog_index::scan_constraint_ids_for_table(
+                    &retained_constraint_snapshot,
+                    table.table_id,
+                    8,
+                )?,
+                vec![created_constraint.constraint_id]
+            );
+            assert_eq!(
+                prdb_engine::catalog_index::scan_index_ids_for_table(
+                    &retained_constraint_snapshot,
+                    table.table_id,
+                    8,
+                )?,
+                vec![created_constraint.index_id]
+            );
+            let constraint_drop_invocation = pressure_id(0xf2, index);
+            let mut constraint_drop_audit =
+                identity_audit_event(index as u8, actor, created_constraint.constraint_id);
+            constraint_drop_audit.event_id = pressure_id(0xf3, index);
+            constraint_drop_audit.correlation_id = constraint_drop_invocation;
+            storage.drop_unique_constraint(
+                constraint_drop_invocation,
+                actor,
+                created_constraint.constraint_id,
+                9_999,
+                constraint_drop_audit,
+            )?;
+            assert_eq!(
+                prdb_engine::catalog_index::scan_constraint_ids_for_table(
+                    &retained_constraint_snapshot,
+                    table.table_id,
+                    8,
+                )?,
+                vec![created_constraint.constraint_id],
+                "a pinned snapshot must retain the dropped constraint and backing index"
+            );
+            assert_eq!(
+                prdb_engine::catalog_index::scan_index_ids_for_table(
+                    &retained_constraint_snapshot,
+                    table.table_id,
+                    8,
+                )?,
+                vec![created_constraint.index_id]
+            );
+            drop(retained_constraint_snapshot);
+            let after_constraint_drop = database.begin_read()?;
+            assert!(
+                prdb_engine::catalog_index::scan_constraint_ids_for_table(
+                    &after_constraint_drop,
+                    table.table_id,
+                    8,
+                )?
+                .is_empty()
+            );
+            assert!(
+                prdb_engine::catalog_index::scan_index_ids_for_table(
+                    &after_constraint_drop,
+                    table.table_id,
+                    8,
+                )?
+                .is_empty()
+            );
+
             let retained_table_snapshot = database.begin_read()?;
             assert_eq!(
                 lookup_relation_id_by_name(
@@ -8538,6 +8684,7 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
         let current_snapshot = database.begin_read()?;
         assert_eq!(lookup_schema_id_by_name(&current_snapshot, name)?, None);
     }
+    prdb_engine::startup::validate_persisted_records(&database)?;
     Ok(())
 }
 

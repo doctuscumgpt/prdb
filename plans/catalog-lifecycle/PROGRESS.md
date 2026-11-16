@@ -327,3 +327,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 full delegated-cgroup workspace verification
 
 - The complete serial workspace test suite passed inside the delegated `systemd --user` service with sandbox and process integration tests enabled: 955 passed, 0 failed, 0 ignored. This includes the current permission, authorization/schema race, and metadata discovery regressions. The run used the locked release profile and documented TinyCC/runtime artifacts.
+
+## CL-3 / DD-3: startup validation after repeated policy, constraint, and table reclamation — verified slice
+
+- The 128-cycle real-redb catalog pressure regression now ends by validating the recovered catalog after repeatedly creating/dropping schemas, tables, indexes, row policies, and UNIQUE constraints with backing indexes. This checks that lifecycle cleanup leaves no orphan typed objects, expressions, targets, or dependency edges.
+- Verification: focused real-redb pressure test passed (8.08 s); warning-denied all-target engine Clippy, formatting, and `git diff --check` passed.
