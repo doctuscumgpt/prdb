@@ -115,6 +115,11 @@
 - A storage-level race starts an `ALTER, INDEX` grant batch against revocation of the actor's `MANAGE_GRANTS` grant. If the batch commits first, both privileges, their shared dependency, one grantee epoch increment, and a committed outcome are present. If revocation commits first, the batch aborts and none of those batch records are present. The revocation always commits.
 - Verification: the focused real-redb race, workspace format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed afterward with sandbox/process tests enabled and zero ignored tests; it reported 291 engine unit tests, 178 commit tests, and 75 transaction tests.
 
+## DP-8 / AU-6: policy removal races a staged writer — verified slice
+
+- Extended the policy lifecycle regression to race removal of a row policy and its private expression against a writer staged from the policy-bearing snapshot. Writer-first publishes before the removal; drop-first durably aborts the stale write. The regression checks row state, both outcomes, commit ordering, retained old-snapshot visibility, and current catalog removal.
+- Verification: the focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
+
 ## 2026-11-16 delegated integration refresh
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests: 291 engine unit tests, 179 commit integration tests, and 75 transaction tests. It includes atomic multi-privilege grants racing `MANAGE_GRANTS` revocation plus the authenticated metadata grant/policy lifecycle.

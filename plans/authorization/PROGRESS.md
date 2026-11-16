@@ -270,3 +270,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Extended `unique_constraint_uses_its_backing_index_for_invocation_writes` so the SELECT policy combines a failing field expression with a principal predicate. The optimized unique-index probe remains `Unavailable` without evaluating the hidden-key policy, while the authorized reference scan returns the generic `EvaluationFailed` error and durably aborts the invocation.
 - Verification: the focused real-redb transaction regression, workspace format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup suite passed on the immediately preceding schema DDL commit; this test-only extension was verified with the focused regression and static checks.
 - Remaining: broader coercion/workload equivalence, additional failing predicates, hostile IPC sequences, and timing inference remain open.
+
+## AU-6 / DP-8: policy removal races a staged writer — verified slice
+
+- The policy lifecycle regression now races removal of an active row policy and its private expression against a staged row write. It checks serialization order, stale-writer abort, durable outcomes, row presence, pinned old-catalog visibility, and cleanup in the current catalog.
+- Verification: the focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.

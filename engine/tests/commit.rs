@@ -11060,6 +11060,138 @@ fn storage_manager_creates_named_unique_index_and_backfills_atomically()
         commit_sequence(&database)?,
         created_racing_policy.commit_sequence
     );
+    let stale_policy_drop_invocation = id(0xf7);
+    let stale_policy_drop_row = id(0xf9);
+    let mut stale_policy_drop_writer =
+        storage.begin_invocation(stale_policy_drop_invocation, actor, 9_999, 1, 1024)?;
+    let stale_policy_drop_schema = stale_policy_drop_writer.load_catalog_table_schema(id(82))?;
+    stale_policy_drop_writer.load_catalog_indexes(&stale_policy_drop_schema)?;
+    let stale_policy_drop_tuple = encode_tuple(
+        &stale_policy_drop_schema.columns,
+        stale_policy_drop_schema.schema_version,
+        &[Some(ScalarValue::Bytea(
+            b"staged before policy drop".to_vec(),
+        ))],
+    )?;
+    stale_policy_drop_writer.stage_put(
+        prdb_engine::overlay::RowId {
+            table: id(82),
+            row: stale_policy_drop_row,
+        },
+        &stale_policy_drop_tuple,
+    )?;
+    let policy_drop_invocation = id(0xf8);
+    let dropped_policy_id = created_racing_policy.policy_id;
+    let old_policy_snapshot = database.begin_read()?;
+    let policy_drop_barrier = Arc::new(Barrier::new(3));
+    let storage_ref = &storage;
+    let (writer_result, policy_drop_result) = std::thread::scope(|scope| {
+        let writer_barrier = Arc::clone(&policy_drop_barrier);
+        let writer = scope.spawn(move || {
+            writer_barrier.wait();
+            stale_policy_drop_writer.commit()
+        });
+        let drop_barrier = Arc::clone(&policy_drop_barrier);
+        let dropper = scope.spawn(move || {
+            let mut audit = identity_audit_event(0xfa, actor, dropped_policy_id);
+            audit.correlation_id = policy_drop_invocation;
+            drop_barrier.wait();
+            storage_ref.drop_policy(prdb_engine::storage_manager::DropPolicyRequest {
+                invocation_id: policy_drop_invocation,
+                authenticated_actor_id: actor,
+                policy_id: dropped_policy_id,
+                retention_deadline_us: 9_999,
+                audit_event: audit,
+            })
+        });
+        policy_drop_barrier.wait();
+        (
+            writer.join().expect("staged policy-drop writer panicked"),
+            dropper.join().expect("policy drop thread panicked"),
+        )
+    });
+    let policy_drop_sequence =
+        policy_drop_result.map_err(|error| format!("row policy drop failed: {error:?}"))?;
+    let policy_drop_writer_sequence = match writer_result {
+        Ok(sequence) => Some(sequence),
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => None,
+        Err(error) => return Err(Box::new(error)),
+    };
+    assert_eq!(
+        policy_drop_sequence,
+        created_racing_policy.commit_sequence
+            + 1
+            + u64::from(policy_drop_writer_sequence.is_some())
+    );
+    assert_eq!(
+        row(&database, &table_row_key(id(82), stale_policy_drop_row))?.is_some(),
+        policy_drop_writer_sequence.is_some()
+    );
+    assert_eq!(
+        lookup_outcome(&database, stale_policy_drop_invocation, actor, 1)?
+            .ok_or("missing policy-drop writer outcome")?
+            .status,
+        if policy_drop_writer_sequence.is_some() {
+            OutcomeStatus::Committed
+        } else {
+            OutcomeStatus::Aborted
+        }
+    );
+    assert_eq!(
+        lookup_outcome(&database, policy_drop_invocation, actor, 1)?
+            .ok_or("missing policy-drop DDL outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+    assert_eq!(commit_sequence(&database)?, policy_drop_sequence);
+    let old_policy_catalog = old_policy_snapshot.open_table(CATALOG)?;
+    let dropped_policy_expression_id = created_racing_policy
+        .using_expression_id
+        .ok_or("created row policy has no USING expression")?;
+    assert!(
+        old_policy_catalog
+            .get(id_catalog_key(13, dropped_policy_id).as_slice())?
+            .is_some()
+    );
+    assert!(
+        old_policy_catalog
+            .get(id_catalog_key(7, dropped_policy_expression_id).as_slice())?
+            .is_some()
+    );
+    assert!(
+        old_policy_catalog
+            .get(
+                dependency_write(dropped_policy_id, dropped_policy_expression_id, 2)
+                    .key
+                    .as_slice()
+            )?
+            .is_some()
+    );
+    drop(old_policy_catalog);
+    let current_policy_snapshot = database.begin_read()?;
+    let current_policy_catalog = current_policy_snapshot.open_table(CATALOG)?;
+    assert!(
+        current_policy_catalog
+            .get(id_catalog_key(13, dropped_policy_id).as_slice())?
+            .is_none()
+    );
+    assert!(
+        current_policy_catalog
+            .get(id_catalog_key(7, dropped_policy_expression_id).as_slice())?
+            .is_none()
+    );
+    assert!(
+        current_policy_catalog
+            .get(
+                dependency_write(dropped_policy_id, dropped_policy_expression_id, 2)
+                    .key
+                    .as_slice()
+            )?
+            .is_none()
+    );
+    drop(current_policy_catalog);
+    drop(current_policy_snapshot);
+    drop(old_policy_snapshot);
     let recreate_invocation = id(0xe3);
     let mut recreate_audit = identity_audit_event(0xe4, actor, id(82));
     recreate_audit.correlation_id = recreate_invocation;
