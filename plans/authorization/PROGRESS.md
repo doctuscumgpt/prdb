@@ -305,3 +305,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `catalog_authorized_scan_builds_its_projection_from_pinned_records` to replay a valid row handle through a second invocation using the same principal. Both `STAGE DELETE` and `STAGE UPDATE` reject it as `InvalidMetadataRequest`; persisted row bytes remain unchanged. This complements the existing cross-principal replay checks.
 - Verification: focused real-redb IPC regression, formatting, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process integration tests enabled and zero ignored tests.
+
+## AU-5: catalog DEFAULT cannot bypass a column INSERT grant — verified slice
+
+- Extended `authorized_insert_materializes_defaults_before_policy_and_check_validation` with a catalog-bound `DEFAULT` insert that retains table INSERT authority and an applicable INSERT cell policy but omits the column INSERT grant. Storage rejects the insert as denied, records a durable ABORTED outcome, and leaves the row absent. The authorized default path remains covered by the same real-redb fixture.
+- Verification: the focused transaction regression passed. Workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+- Remaining: broader SQL DEFAULT/column-list forms and the full constraint/identity edge-case matrix remain open.

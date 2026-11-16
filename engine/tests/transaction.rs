@@ -9381,6 +9381,37 @@ fn authorized_insert_materializes_defaults_before_policy_and_check_validation()
     )?;
     invocation.commit()?;
 
+    let missing_column_grant = AuthorizedProjection {
+        columns: catalog_projection.columns,
+        column_ids: catalog_projection.column_ids,
+        schema_version: catalog_projection.schema_version,
+        schema_id: catalog_projection.schema_id,
+        context: catalog_projection.context,
+        grants: &grants[..2],
+        policies: catalog_projection.policies,
+        checks: catalog_projection.checks,
+        policy_driving_columns: catalog_projection.policy_driving_columns,
+        dependencies: catalog_projection.dependencies,
+    };
+    let denied_row_id = id(122);
+    let mut denied_insert =
+        InvocationTransaction::begin(&database, [123; 16], [9; 16], 9_999, 1, 512)?;
+    assert!(matches!(
+        denied_insert.stage_insert_authorized_from_catalog_defaults(
+            denied_row_id,
+            &missing_column_grant,
+            &[InsertInput::Default],
+            &catalog_schema,
+        ),
+        Err(TransactionError::Authorization(
+            prdb_engine::authorization::AuthorizationError::Denied
+        ))
+    ));
+    assert!(matches!(
+        denied_insert.commit(),
+        Err(TransactionError::Aborted)
+    ));
+
     let read = database.begin_read()?;
     let record = RowRecord::decode(
         read.open_table(ROWS)?
@@ -9393,6 +9424,21 @@ fn authorized_insert_materializes_defaults_before_policy_and_check_validation()
         [Some(ScalarValue::Uuid([9; 16]))]
     );
     assert!(read.open_table(ROWS)?.get(&key(id(116))[..])?.is_none());
+    assert!(
+        read.open_table(ROWS)?
+            .get(&key(denied_row_id)[..])?
+            .is_none()
+    );
+    assert_eq!(
+        InvocationOutcome::decode(
+            read.open_table(prdb_engine::schema::OUTCOMES)?
+                .get(&[123; 16][..])?
+                .unwrap()
+                .value()
+        )?
+        .status,
+        OutcomeStatus::Aborted
+    );
     assert_eq!(
         InvocationOutcome::decode(
             read.open_table(prdb_engine::schema::OUTCOMES)?
