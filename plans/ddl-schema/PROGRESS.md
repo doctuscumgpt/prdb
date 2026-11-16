@@ -861,6 +861,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Real-redb coverage verifies authorization denial and durable ABORTED outcome, retained old snapshots, row/index/reverse-index removal, index-definition retention, stale-writer conflict, and persisted-record validation. A separate regression verifies empty-table incoming-FK RESTRICT behavior.
 - Verification: both focused storage regressions and the delegated gateway/supervisor process lifecycle pass. Locked workspace build, formatting check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite pass with sandbox and process tests enabled. The full suite reported 281 library tests and 177 commit tests passed; no tests were ignored. `git diff --check` passes and Cargo.lock is unchanged.
 
+## DS-SQL-48 / DD-5: TRUNCATE state survives database reopen — verified slice
+
+- Extended `storage_manager_truncates_rows_and_index_memberships_atomically` to close the StorageManager and redb handle after a successful truncate, reopen the same database file, and rerun startup validation. The reopened image retains the committed outcome and table index definition while containing no truncated row, forward index entry, or reverse row-index membership.
+- Verification: focused real-redb truncate regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (293 unit, 190 commit, 76 transaction tests, plus all remaining targets). This confirms post-commit reopen consistency; it is not a process-crash or power-loss test.
+
 ## DS-SQL-49: named ALTER CHECK constraints — verified
 
 - Added `ALTER TABLE ... ADD CONSTRAINT name CHECK (...)` and `DROP CONSTRAINT name` alongside the existing unnamed and generated-ID forms. Names are normalized and retained on the CHECK catalog object; stable IDs remain the mutation key.

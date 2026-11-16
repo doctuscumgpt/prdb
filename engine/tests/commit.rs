@@ -6139,6 +6139,7 @@ fn storage_manager_truncates_rows_and_index_memberships_atomically()
         retention_deadline_us: 9_999,
         audit_event: create_table_audit,
     })?;
+    let schema_id = schema.schema_id;
     let schema = [ColumnSchema {
         scalar_type: ScalarType::Integer,
         nullable: true,
@@ -6335,6 +6336,50 @@ fn storage_manager_truncates_rows_and_index_memberships_atomically()
         OutcomeStatus::Committed
     );
     prdb_engine::startup::validate_persisted_records(&database)?;
+
+    drop(storage);
+    drop(database);
+    let reopened = Database::open(fixture.path())?;
+    prdb_engine::startup::validate_persisted_records(&reopened)?;
+    assert_eq!(commit_sequence(&reopened)?, truncated.commit_sequence);
+    let reopened_snapshot = reopened.begin_read()?;
+    assert_eq!(
+        lookup_index_id_by_name(&reopened_snapshot, schema_id, "truncate_value_idx")?,
+        Some(index.index_id),
+        "TRUNCATE preserves its index definition across database reopen"
+    );
+    let reopened_rows = reopened_snapshot.open_table(ROWS)?;
+    assert!(
+        reopened_rows
+            .get(&table_row_key(table.table_id, row_ids[0])[..])?
+            .is_none()
+    );
+    let reopened_indexes = reopened_snapshot.open_table(schema::INDEXES)?;
+    assert!(
+        reopened_indexes
+            .range(index.index_id.as_slice()..)?
+            .next()
+            .transpose()?
+            .is_none()
+    );
+    let reopened_reverse = reopened_snapshot.open_table(schema::ROW_INDEXES)?;
+    assert!(
+        reopened_reverse
+            .range(table.table_id.as_slice()..)?
+            .next()
+            .transpose()?
+            .is_none()
+    );
+    drop(reopened_reverse);
+    drop(reopened_indexes);
+    drop(reopened_rows);
+    drop(reopened_snapshot);
+    assert_eq!(
+        lookup_outcome(&reopened, truncate_invocation, actor, 1)?
+            .ok_or("reopened TRUNCATE outcome missing")?
+            .status,
+        OutcomeStatus::Committed
+    );
     Ok(())
 }
 
