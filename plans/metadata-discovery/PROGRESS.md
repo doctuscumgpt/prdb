@@ -341,3 +341,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended the authenticated gateway/supervisor metadata lifecycle with a source-schema owner whose foreign key points to a target outside that owner's visible scope. Constraint metadata still redacts the target table and columns; the direct dependency page now also returns no records and no continuation, so the hidden endpoint does not affect visible dependency counts.
 - Verification: focused production gateway/supervisor process regression, locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (293 unit, 190 commit, 76 transaction tests, plus all remaining targets).
+
+## MD-6 / ID-4: administrative token inventory excludes secret and verifier bytes — verified slice
+
+- Strengthened the authenticated gateway/supervisor metadata lifecycle's `token-list` CLI check. In addition to requiring nonsecret token ID, label, and lifecycle metadata and rejecting a `token_secret` field, it computes the issued credential's raw secret and verifier digest and proves neither byte sequence appears in the inventory output.
+- This exercises the administrative control response over the production gateway/supervisor process boundary; the lifecycle APIs still permit one-time delivery only from token issuance.
+- Verification: the focused authenticated metadata process regression passed inside a delegated user service. Locked workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (294 unit, 190 commit, 76 transaction tests, plus all remaining targets).

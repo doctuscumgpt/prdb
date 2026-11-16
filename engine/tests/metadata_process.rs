@@ -4865,6 +4865,18 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     assert!(!token_inventory.contains("token_secret"));
 
     let saved_credentials = read_client_credentials(&credential_path)?;
+    let encode_secret_material = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let raw_secret_hex = encode_secret_material(&saved_credentials.token_secret);
+    let verifier_hex = encode_secret_material(&prdb_engine::credentials::hash_token_secret(
+        &saved_credentials.token_secret,
+    ));
+    assert!(!token_inventory.contains(&raw_secret_hex));
+    assert!(!token_inventory.contains(&verifier_hex));
     let mut issued_secret = saved_credentials.token_secret;
     let mut issued_metadata = MetadataClient::connect_authenticated(
         address,
