@@ -1219,3 +1219,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Extended `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` to issue `ALTER COLUMN SET DEFAULT` and `ALTER COLUMN DROP DEFAULT` through the real `prdb-client admin-sql` process after the column rename. The test checks successful process exits and the expected operation messages for both DDL statements.
 - Verification: the focused delegated metadata process test passed with the configured runtime profile; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
+
+## 2026-11-16 DS-3 / DS-7 / DD-2: schema rename races table creation — verified slice
+
+- Added `schema_rename_racing_table_creation_preserves_catalog_identity`. A barrier races schema rename against table creation by stable schema ID. The test accepts a committed table create or a stale-catalog abort, requires the rename to commit, and checks durable outcomes, the old/new schema-name lookup, relation lookup, typed object parent, and persisted catalog integrity.
+- Verification: focused real-redb race passed; workspace formatting and warning-denied all-target Clippy passed; the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
+- Scope: one barrier-coordinated schedule; broader cross-component DDL race coverage remains open.

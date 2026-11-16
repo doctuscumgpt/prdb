@@ -1895,6 +1895,145 @@ fn schema_drop_racing_table_creation_never_leaves_an_orphan()
 }
 
 #[test]
+fn schema_rename_racing_table_creation_preserves_catalog_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{
+        CreateTableRequest, TableColumnDefinition, TableLifecycleError,
+    };
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let admin_role = builtin_owner_id();
+    let actor = id(0xb1);
+    let setup = vec![
+        principal_write_with_name(actor, 1, 1, "schema_rename_race_admin"),
+        object_write_with_name(actor, 8, "schema_rename_race_admin"),
+        membership_write(actor, admin_role),
+        dependency_write(actor, admin_role, 5),
+    ];
+    let mut setup_audit = identity_audit_event(0xb2, admin_role, id(0xb2));
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0xb2), admin_role, 9_999, &setup, &[setup_audit])?;
+    let mut create_schema_audit = identity_audit_event(0xb3, actor, id(0xb3));
+    create_schema_audit.correlation_id = id(0xb3);
+    let schema = storage.create_schema(
+        id(0xb3),
+        actor,
+        "schema_rename_race_before",
+        actor,
+        9_999,
+        create_schema_audit,
+    )?;
+
+    let create_invocation = id(0xb4);
+    let rename_invocation = id(0xb7);
+    let barrier = Arc::new(Barrier::new(3));
+    let (create_result, rename_result) = std::thread::scope(|scope| {
+        let create_barrier = Arc::clone(&barrier);
+        let create_storage = &storage;
+        let create = scope.spawn(move || {
+            create_barrier.wait();
+            let mut audit = identity_audit_event(0xb5, actor, id(0xb6));
+            audit.correlation_id = create_invocation;
+            create_storage.create_table(CreateTableRequest {
+                invocation_id: create_invocation,
+                authenticated_actor_id: actor,
+                schema_id: schema.schema_id,
+                name: "created_during_rename".to_owned(),
+                columns: vec![TableColumnDefinition {
+                    name: "value".to_owned(),
+                    scalar_type: ScalarType::Text,
+                    nullable: true,
+                    generated_uuid_identity: false,
+                    default: None,
+                }],
+                retention_deadline_us: 9_999,
+                audit_event: audit,
+            })
+        });
+        let rename_barrier = Arc::clone(&barrier);
+        let rename_storage = &storage;
+        let rename = scope.spawn(move || {
+            rename_barrier.wait();
+            let mut audit = identity_audit_event(0xb8, actor, id(0xb9));
+            audit.correlation_id = rename_invocation;
+            rename_storage.rename_schema(
+                rename_invocation,
+                actor,
+                schema.schema_id,
+                "schema_rename_race_after",
+                9_999,
+                audit,
+            )
+        });
+        barrier.wait();
+        (
+            create.join().expect("schema table-create thread panicked"),
+            rename.join().expect("schema rename thread panicked"),
+        )
+    });
+
+    assert!(
+        rename_result.is_ok(),
+        "schema rename failed: {rename_result:?}"
+    );
+    let table = match create_result {
+        Ok(table) => Some(table),
+        Err(TableLifecycleError::Commit(CommitError::Conflict)) => None,
+        Err(error) => return Err(Box::new(error)),
+    };
+    let rename_outcome = lookup_outcome(&database, rename_invocation, actor, 1)?
+        .ok_or("missing racing schema-rename outcome")?;
+    assert_eq!(rename_outcome.status, OutcomeStatus::Committed);
+    let create_outcome = lookup_outcome(&database, create_invocation, actor, 1)?
+        .ok_or("missing racing table-create outcome")?;
+    assert_eq!(
+        create_outcome.status,
+        if table.is_some() {
+            OutcomeStatus::Committed
+        } else {
+            OutcomeStatus::Aborted
+        }
+    );
+
+    let read = database.begin_read()?;
+    assert_eq!(
+        lookup_schema_id_by_name(&read, "schema_rename_race_before")?,
+        None
+    );
+    assert_eq!(
+        lookup_schema_id_by_name(&read, "schema_rename_race_after")?,
+        Some(schema.schema_id)
+    );
+    if let Some(table) = table {
+        assert_eq!(
+            lookup_relation_id_by_name(&read, schema.schema_id, "created_during_rename")?,
+            Some(table.table_id)
+        );
+        let object = decode_registered_envelope(
+            read.open_table(CATALOG)?
+                .get(id_catalog_key(2, table.table_id).as_slice())?
+                .ok_or("created table object missing")?
+                .value(),
+        )?;
+        assert!(
+            object
+                .fields
+                .iter()
+                .any(|field| { field.tag == 2 && field.payload.as_slice() == schema.schema_id })
+        );
+    } else {
+        assert_eq!(
+            lookup_relation_id_by_name(&read, schema.schema_id, "created_during_rename")?,
+            None
+        );
+    }
+    assert!(prdb_engine::startup::validate_persisted_records(&database).is_ok());
+    Ok(())
+}
+
+#[test]
 fn storage_manager_creates_typed_table_with_atomic_check_constraint()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{

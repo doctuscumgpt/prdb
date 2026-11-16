@@ -602,3 +602,8 @@
 - The Catalog lifecycle regression added in commit `41c1b6ac` reopens after an injected redb sync error during `CREATE SCHEMA`. It validates either the complete pre-publication image or the complete schema/object/audit/outcome publication and commit frontier; partial catalog/index state is rejected, and startup validation must accept the recovered image.
 - Verification: the focused subprocess regression and complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests; workspace formatting and warning-denied all-target Clippy passed.
 - Limit: this covers an injected sync error with a live kernel and filesystem, not power loss or device-cache behavior.
+
+## DD-2 / DD-3: schema-name and relation indexes remain coherent during concurrent DDL — verified slice
+
+- Added `schema_rename_racing_table_creation_preserves_catalog_identity`, which races a schema rename with table creation addressed by the schema's stable ID. It checks the schema-name index points only to the renamed schema, relation lookup agrees with the created table when creation commits, and every surviving table object retains the same schema parent.
+- Verification: focused real-redb race passed; workspace formatting and warning-denied all-target Clippy passed; the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
