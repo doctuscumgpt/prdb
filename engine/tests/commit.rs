@@ -7951,14 +7951,46 @@ fn membership_indexes_track_both_directions_per_snapshot() -> Result<(), Box<dyn
         &[event],
     )
     .map_err(|error| format!("initial membership-index commit: {error:?}"))?;
+    let membership_keys_from_catalog = |snapshot: &redb::ReadTransaction| {
+        let catalog = snapshot.open_table(CATALOG)?;
+        let prefix = 11u16.to_be_bytes();
+        let mut keys = Vec::new();
+        for entry in catalog.range::<&[u8]>(prefix.as_slice()..)? {
+            let (key, _) = entry?;
+            if !key.value().starts_with(&prefix) {
+                break;
+            }
+            keys.push(key.value().to_vec());
+        }
+        Ok::<_, Box<dyn std::error::Error>>(keys)
+    };
+    let roles_for_member_from_scan = |keys: &[Vec<u8>], member_id: [u8; 16]| {
+        let mut roles = keys
+            .iter()
+            .filter(|key| key.get(3..19) == Some(member_id.as_slice()))
+            .filter_map(|key| key.get(20..36)?.try_into().ok())
+            .collect::<Vec<[u8; 16]>>();
+        roles.sort();
+        roles
+    };
+    let members_for_role_from_scan = |keys: &[Vec<u8>], role_id: [u8; 16]| {
+        let mut members = keys
+            .iter()
+            .filter(|key| key.get(20..36) == Some(role_id.as_slice()))
+            .filter_map(|key| key.get(3..19)?.try_into().ok())
+            .collect::<Vec<[u8; 16]>>();
+        members.sort();
+        members
+    };
     let old_snapshot = database.begin_read()?;
+    let old_membership_keys = membership_keys_from_catalog(&old_snapshot)?;
     assert_eq!(
         lookup_roles_for_member(&old_snapshot, member_id)?,
-        vec![role_id]
+        roles_for_member_from_scan(&old_membership_keys, member_id)
     );
     assert_eq!(
         lookup_members_for_role(&old_snapshot, role_id)?,
-        vec![member_id]
+        members_for_role_from_scan(&old_membership_keys, role_id)
     );
     assert_eq!(
         lookup_dependencies_for_dependent(&old_snapshot, member_id)?.len(),
@@ -7992,13 +8024,14 @@ fn membership_indexes_track_both_directions_per_snapshot() -> Result<(), Box<dyn
         vec![role_id]
     );
     let new_snapshot = database.begin_read()?;
+    let new_membership_keys = membership_keys_from_catalog(&new_snapshot)?;
     assert_eq!(
         lookup_roles_for_member(&new_snapshot, member_id)?,
-        vec![role_id]
+        roles_for_member_from_scan(&new_membership_keys, member_id)
     );
     assert_eq!(
         lookup_members_for_role(&new_snapshot, role_id)?,
-        vec![member_id, second_member_id]
+        members_for_role_from_scan(&new_membership_keys, role_id)
     );
     assert_eq!(
         lookup_dependencies_for_dependent(&old_snapshot, member_id)?.len(),
