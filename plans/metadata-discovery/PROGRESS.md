@@ -276,6 +276,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - The authenticated gateway/supervisor metadata lifecycle obtains a valid administrator schema continuation, closes that authenticated connection, reconnects with the same credential, and verifies the old continuation is rejected. The neighboring MD-6 case also verifies ownership transfer invalidates an existing owner's continuation.
 - Verification: `cargo test --locked --test metadata_process authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes -- --exact --nocapture` passed in the delegated user service. The complete serial delegated-cgroup workspace suite passed after this addition. Continuation after reconnect or process restart is out of contract; the cursor is session-bound and its server-side state is discarded.
 
+## MD-3: schema continuation rejects page-size substitution — verified slice
+
+- Extended `storage_manager_runtime_and_metadata_reads_enforce_authorization` to reuse a valid schema cursor with a different page limit. The substituted request is rejected, and the same cursor remains valid for the original page size, preserving the continuation's query binding.
+- Verification: focused real-redb-backed authenticated metadata regression passed. Workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit tests, 186 commit tests, 76 transaction tests, plus all remaining targets).
+
 ## 2026-11-16 delegated integration refresh
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. All three authenticated metadata process tests passed, covering gateway/supervisor discovery, session-bound cursor rejection after reconnect, and authority revalidation between pages.

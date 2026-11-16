@@ -14665,6 +14665,10 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
             .as_deref()
             .ok_or("expected multiple visible schemas")?;
         assert!(matches!(
+            metadata_client.list_schemas_page(2, Some(schema_page_cursor)),
+            Err(prdb_engine::client_submit::ClientSubmitError::ServerRejected(_))
+        ));
+        assert!(matches!(
             metadata_client.list_relations_page(
                 prdb_engine::metadata_discovery::INFORMATION_SCHEMA_SCHEMA_ID,
                 1,
