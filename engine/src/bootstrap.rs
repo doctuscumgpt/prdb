@@ -586,7 +586,13 @@ pub fn migrate_catalog_v1(
     drop(source_database);
     File::open(&staging_path)?.sync_all()?;
     File::open(&active_path)?.sync_all()?;
+    if test_migration_exit_before_exchange() {
+        unsafe { libc::_exit(85) };
+    }
     exchange_files(&active_path, &staging_path)?;
+    if test_migration_exit_after_exchange() {
+        unsafe { libc::_exit(86) };
+    }
     sync_directory(&directory)?;
 
     validate_private_file(&active_path)?;
@@ -612,6 +618,28 @@ pub fn migrate_catalog_v1(
         return Err(BootstrapError::InvalidCatalog);
     }
     Ok(published_report)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", debug_assertions))]
+fn test_migration_exit_before_exchange() -> bool {
+    std::env::var_os("PRDB_TEST_MIGRATION_EXIT_BEFORE_EXCHANGE").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", not(debug_assertions)))]
+fn test_migration_exit_before_exchange() -> bool {
+    false
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", debug_assertions))]
+fn test_migration_exit_after_exchange() -> bool {
+    std::env::var_os("PRDB_TEST_MIGRATION_EXIT_AFTER_EXCHANGE").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", not(debug_assertions)))]
+fn test_migration_exit_after_exchange() -> bool {
+    false
 }
 
 /// Explicitly restore a current catalog-v2 backup, acknowledging that commits
