@@ -232,3 +232,8 @@
 
 - Extended `object_grant_batch_racing_manage_grants_revocation_is_atomic` with the grant-first ordering: after MANAGE_GRANTS is restored, its holder commits an atomic SELECT/UPDATE batch, then the table owner revokes MANAGE_GRANTS. The regression checks both grants, the shared dependency, grantee epoch, commit sequence, and durable batch outcome after revocation. This complements the existing revoke-first race and denial assertion.
 - Verification: the focused real-redb permission regression passed; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
+
+## 2026-11-16 DP-SQL-11: mixed-scope column UPDATE grant through service processes — verified slice
+
+- Extended `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` to issue `GRANT ALTER, UPDATE (label)` and the matching REVOKE through authenticated ADMIN SQL. The grant page confirms ALTER targets the table object and UPDATE targets the stable `label` column ID; after revocation neither entry remains.
+- Verification: the focused delegated metadata process regression passed; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
