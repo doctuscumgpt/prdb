@@ -182,6 +182,22 @@ fn scalar_schema_ranges_and_patch_indices_are_checked() {
         encode_tuple(
             &[col(ScalarType::Date, false)],
             1,
+            &[Some(ScalarValue::Date(-719_163))],
+        ),
+        Err(TupleError::InvalidScalarRange)
+    );
+    assert_eq!(
+        encode_tuple(
+            &[col(ScalarType::Date, false)],
+            1,
+            &[Some(ScalarValue::Date(2_932_897))],
+        ),
+        Err(TupleError::InvalidScalarRange)
+    );
+    assert_eq!(
+        encode_tuple(
+            &[col(ScalarType::Date, false)],
+            1,
             &[Some(ScalarValue::Date(2_932_897))]
         ),
         Err(TupleError::InvalidScalarRange)
@@ -218,6 +234,78 @@ fn scalar_schema_ranges_and_patch_indices_are_checked() {
             }]
         ),
         Err(TupleError::PatchOutOfRange)
+    );
+}
+
+#[test]
+fn maximum_decimal_date_and_timestamptz_boundaries_round_trip() {
+    let columns = [
+        col(
+            ScalarType::Decimal {
+                precision: 38,
+                scale: 0,
+            },
+            false,
+        ),
+        col(
+            ScalarType::Decimal {
+                precision: 38,
+                scale: 0,
+            },
+            false,
+        ),
+        col(ScalarType::Date, false),
+        col(ScalarType::Date, false),
+        col(ScalarType::TimestampTz, false),
+        col(ScalarType::TimestampTz, false),
+    ];
+    let values = vec![
+        Some(ScalarValue::Decimal(
+            99_999_999_999_999_999_999_999_999_999_999_999_999,
+        )),
+        Some(ScalarValue::Decimal(
+            -99_999_999_999_999_999_999_999_999_999_999_999_999,
+        )),
+        Some(ScalarValue::Date(-719_162)),
+        Some(ScalarValue::Date(2_932_896)),
+        Some(ScalarValue::TimestampTz(-62_135_596_800_000_000)),
+        Some(ScalarValue::TimestampTz(253_402_300_799_999_999)),
+    ];
+
+    let encoded = encode_tuple(&columns, 1, &values).unwrap();
+    assert_eq!(decode_tuple(&columns, 1, &encoded).unwrap().values, values);
+
+    assert_eq!(
+        encode_tuple(
+            &[col(
+                ScalarType::Decimal {
+                    precision: 38,
+                    scale: 0,
+                },
+                false,
+            )],
+            1,
+            &[Some(ScalarValue::Decimal(
+                100_000_000_000_000_000_000_000_000_000_000_000_000
+            ))],
+        ),
+        Err(TupleError::DecimalPrecisionExceeded)
+    );
+    assert_eq!(
+        encode_tuple(
+            &[col(ScalarType::TimestampTz, false)],
+            1,
+            &[Some(ScalarValue::TimestampTz(-62_135_596_800_000_001))],
+        ),
+        Err(TupleError::InvalidScalarRange)
+    );
+    assert_eq!(
+        encode_tuple(
+            &[col(ScalarType::TimestampTz, false)],
+            1,
+            &[Some(ScalarValue::TimestampTz(253_402_300_800_000_000))],
+        ),
+        Err(TupleError::InvalidScalarRange)
     );
 }
 
