@@ -9453,6 +9453,180 @@ fn authorized_insert_materializes_defaults_before_policy_and_check_validation()
 }
 
 #[test]
+fn authorized_insert_implicit_null_requires_column_insert_grant()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let table_id = [0x31; 16];
+    let schema_id = [0x32; 16];
+    let principal_id = [0x33; 16];
+    let value_column_id = [0x34; 16];
+    let nullable_column_id = [0x35; 16];
+    let table = AccessTarget::Table(table_id);
+    let schema = AccessTarget::Schema(schema_id);
+    let value_column = AccessTarget::Column {
+        table_id,
+        column_id: value_column_id,
+    };
+    let nullable_column = AccessTarget::Column {
+        table_id,
+        column_id: nullable_column_id,
+    };
+    let context = AuthorizationContext {
+        principal_id,
+        role_ids: Default::default(),
+        scope: [
+            (Operation::Usage, schema),
+            (Operation::Insert, table),
+            (Operation::Insert, value_column),
+            (Operation::Insert, nullable_column),
+        ]
+        .into(),
+    };
+    let grants = [
+        Grant {
+            subject: Subject::Principal(principal_id),
+            operation: Operation::Usage,
+            target: schema,
+        },
+        Grant {
+            subject: Subject::Principal(principal_id),
+            operation: Operation::Insert,
+            target: table,
+        },
+        Grant {
+            subject: Subject::Principal(principal_id),
+            operation: Operation::Insert,
+            target: value_column,
+        },
+        Grant {
+            subject: Subject::Principal(principal_id),
+            operation: Operation::Insert,
+            target: nullable_column,
+        },
+    ];
+    let policies = [
+        Policy {
+            subjects: vec![Subject::Principal(principal_id)],
+            operation: Operation::Insert,
+            target: table,
+            effect: Effect::Allow,
+            using: None,
+            with_check: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+        },
+        Policy {
+            subjects: vec![Subject::Principal(principal_id)],
+            operation: Operation::Insert,
+            target: value_column,
+            effect: Effect::Allow,
+            using: None,
+            with_check: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+        },
+        Policy {
+            subjects: vec![Subject::Principal(principal_id)],
+            operation: Operation::Insert,
+            target: nullable_column,
+            effect: Effect::Allow,
+            using: None,
+            with_check: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+        },
+    ];
+    let columns = [
+        ColumnSchema {
+            scalar_type: ScalarType::Integer,
+            nullable: false,
+        },
+        ColumnSchema {
+            scalar_type: ScalarType::Text,
+            nullable: true,
+        },
+    ];
+    let column_ids = [value_column_id, nullable_column_id];
+    let projection = AuthorizedProjection {
+        columns: &columns,
+        column_ids: &column_ids,
+        schema_version: 1,
+        schema_id,
+        context: &context,
+        grants: &grants,
+        policies: &policies,
+        checks: &[],
+        policy_driving_columns: &[],
+        dependencies: &[],
+    };
+    let insert_inputs = [
+        InsertInput::Value(Some(ScalarValue::Integer(7))),
+        InsertInput::Default,
+    ];
+    let defaults = [None, None];
+    let inserted = prdb_engine::overlay::RowId {
+        table: table_id,
+        row: [0x36; 16],
+    };
+    let mut allowed =
+        InvocationTransaction::begin(&database, [0x37; 16], principal_id, 9_999, 2, 128)?;
+    allowed.stage_insert_authorized_with_defaults(
+        inserted,
+        &projection,
+        &insert_inputs,
+        &defaults,
+        &[],
+    )?;
+    allowed.commit()?;
+
+    let denied = prdb_engine::overlay::RowId {
+        table: table_id,
+        row: [0x38; 16],
+    };
+    let projection_without_nullable_column_grant = AuthorizedProjection {
+        grants: &grants[..3],
+        ..projection
+    };
+    let mut denied_insert =
+        InvocationTransaction::begin(&database, [0x39; 16], principal_id, 9_999, 2, 128)?;
+    assert!(matches!(
+        denied_insert.stage_insert_authorized_with_defaults(
+            denied,
+            &projection_without_nullable_column_grant,
+            &insert_inputs,
+            &defaults,
+            &[],
+        ),
+        Err(TransactionError::Authorization(
+            prdb_engine::authorization::AuthorizationError::Denied
+        ))
+    ));
+    assert!(matches!(
+        denied_insert.commit(),
+        Err(TransactionError::Aborted)
+    ));
+
+    let read = database.begin_read()?;
+    let rows = read.open_table(ROWS)?;
+    let stored = RowRecord::decode(
+        rows.get(&key(inserted)[..])?
+            .ok_or("authorized implicit-NULL insert is missing")?
+            .value(),
+    )?;
+    assert_eq!(
+        decode_tuple(&columns, 1, &stored.payload)?.values,
+        [Some(ScalarValue::Integer(7)), None]
+    );
+    assert!(rows.get(&key(denied)[..])?.is_none());
+    assert_eq!(
+        InvocationOutcome::decode(
+            read.open_table(prdb_engine::schema::OUTCOMES)?
+                .get(&[0x39; 16][..])?
+                .ok_or("implicit-NULL denial outcome is missing")?
+                .value()
+        )?
+        .status,
+        OutcomeStatus::Aborted
+    );
+    Ok(())
+}
+
+#[test]
 fn catalog_insert_allocates_generated_identity_and_rejects_caller_override()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

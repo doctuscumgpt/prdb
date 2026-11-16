@@ -311,3 +311,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Extended `authorized_insert_materializes_defaults_before_policy_and_check_validation` with a catalog-bound `DEFAULT` insert that retains table INSERT authority and an applicable INSERT cell policy but omits the column INSERT grant. Storage rejects the insert as denied, records a durable ABORTED outcome, and leaves the row absent. The authorized default path remains covered by the same real-redb fixture.
 - Verification: the focused transaction regression passed. Workspace build, format check, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
 - Remaining: broader SQL DEFAULT/column-list forms and the full constraint/identity edge-case matrix remain open.
+
+## AU-5: implicit NULL insert requires column INSERT authority — verified slice
+
+- Added `authorized_insert_implicit_null_requires_column_insert_grant`. A nullable field with no catalog default accepts `DEFAULT` as SQL NULL when its column grant and applicable cell policy are present. The same insert is denied and durably aborted when only that field's INSERT grant is removed, even though table/other-column grants and the cell policy remain.
+- Verification: focused real-redb transaction regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
