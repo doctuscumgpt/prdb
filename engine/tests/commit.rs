@@ -19676,6 +19676,150 @@ fn admin_cancellation_sync_failure_quarantines_until_reopen()
 }
 
 #[test]
+fn schema_create_sync_failure_recovers_atomic_catalog_audit_and_outcome()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
+
+    const CHILD_DATABASE_ENV: &str = "PRDB_TEST_SCHEMA_CREATE_SYNC_FAILURE_DATABASE";
+    const ACTOR_ID: [u8; 16] = [0xfa; 16];
+    const SCHEMA_INVOCATION_ID: [u8; 16] = [0xfb; 16];
+    const SETUP_INVOCATION_ID: [u8; 16] = [0xfc; 16];
+    const SETUP_AUDIT_CODE: u8 = 0xfd;
+    const SCHEMA_AUDIT_CODE: u8 = 0xfe;
+    const SCHEMA_AUDIT_ID: [u8; 16] = [SCHEMA_AUDIT_CODE; 16];
+    const SCHEMA_NAME: &str = "sync_failure_schema";
+
+    if let Some(database_path) = std::env::var_os(CHILD_DATABASE_ENV) {
+        let database_path = std::path::PathBuf::from(database_path);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&database_path)?;
+        let fail_next_sync = Arc::new(AtomicBool::new(false));
+        let database = Database::builder().create_with_backend(FailNextSyncBackend {
+            inner: redb::backends::FileBackend::new(file)?,
+            fail_next_sync: fail_next_sync.clone(),
+        })?;
+        let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+        let mut audit = identity_audit_event(SCHEMA_AUDIT_CODE, ACTOR_ID, ACTOR_ID);
+        audit.correlation_id = SCHEMA_INVOCATION_ID;
+        fail_next_sync.store(true, Ordering::SeqCst);
+        assert!(
+            storage
+                .create_schema(
+                    SCHEMA_INVOCATION_ID,
+                    ACTOR_ID,
+                    SCHEMA_NAME,
+                    ACTOR_ID,
+                    9_999,
+                    audit,
+                )
+                .is_err()
+        );
+        assert!(!fail_next_sync.load(Ordering::SeqCst));
+        assert!(storage.requires_reopen_after_commit_error());
+        assert!(
+            storage
+                .create_schema(
+                    [0x11; 16],
+                    ACTOR_ID,
+                    "must_not_publish_while_quarantined",
+                    ACTOR_ID,
+                    9_999,
+                    identity_audit_event(0x12, ACTOR_ID, ACTOR_ID),
+                )
+                .is_err()
+        );
+        assert!(storage.requires_reopen_after_commit_error());
+        drop(storage);
+        drop(database);
+        std::process::exit(0);
+    }
+
+    let fixture = Fixture::new();
+    let database_path = fixture.path();
+    let database = initialize(&database_path)?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let admin_role = builtin_owner_id();
+    let actor_name = "sync_schema_actor";
+    let setup = [
+        principal_write_with_name(ACTOR_ID, 1, 1, actor_name),
+        object_write_with_name(ACTOR_ID, 8, "sync_schema_actor"),
+        grant_write(ACTOR_ID, id(0x33), 14, 1, id(0x33), admin_role),
+        dependency_write(ACTOR_ID, id(0x33), 5),
+    ];
+    let mut setup_audit = identity_audit_event(SETUP_AUDIT_CODE, admin_role, ACTOR_ID);
+    setup_audit.correlation_id = SETUP_INVOCATION_ID;
+    storage.commit_catalog_and_audit(
+        SETUP_INVOCATION_ID,
+        admin_role,
+        9_999,
+        &setup,
+        &[setup_audit],
+    )?;
+    drop(storage);
+    drop(database);
+
+    let child_status = Command::new(std::env::current_exe()?)
+        .arg("--exact")
+        .arg("schema_create_sync_failure_recovers_atomic_catalog_audit_and_outcome")
+        .arg("--nocapture")
+        .env(CHILD_DATABASE_ENV, &database_path)
+        .status()?;
+    assert!(
+        child_status.success(),
+        "schema DDL sync-failure child exited with {child_status}"
+    );
+
+    let reopened = Database::open(&database_path)?;
+    let recovered_storage = StorageManager::new(&reopened, Duration::from_millis(100))?;
+    assert!(!recovered_storage.requires_reopen_after_commit_error());
+    assert!(prdb_engine::startup::validate_persisted_records(&reopened).is_ok());
+    let read = reopened.begin_read()?;
+    let schema_id = lookup_schema_id_by_name(&read, SCHEMA_NAME)?;
+    let schema_record = read
+        .open_table(CATALOG)?
+        .get(&id_catalog_key(3, schema_id.unwrap_or([0; 16]))[..])?
+        .is_some();
+    let object_record = read
+        .open_table(CATALOG)?
+        .get(&id_catalog_key(2, schema_id.unwrap_or([0; 16]))[..])?
+        .is_some();
+    let outcome = lookup_outcome(&reopened, SCHEMA_INVOCATION_ID, ACTOR_ID, 1)?;
+    let audit = read
+        .open_table(AUDIT)?
+        .get(&SCHEMA_AUDIT_ID[..])?
+        .map(|record| AuditEvent::decode(record.value()))
+        .transpose()?;
+    let metadata = read
+        .open_table(ENGINE_META)?
+        .get(&&b"format"[..])?
+        .ok_or("missing metadata after schema-create recovery")?;
+    let sequence = EngineMetadata::decode(metadata.value())?.commit_sequence;
+    match (
+        schema_id,
+        schema_record,
+        object_record,
+        outcome,
+        audit,
+        sequence,
+    ) {
+        (Some(_), true, true, Some(outcome), Some(_), 2) => {
+            assert_eq!(outcome.status, OutcomeStatus::Committed);
+            assert_eq!(outcome.commit_sequence, 2);
+        }
+        (None, false, false, None, None, 1) => {}
+        (schema_id, schema_record, object_record, outcome, audit, sequence) => {
+            return Err(format!(
+                "schema-create sync recovery exposed a partial publication: schema_id={schema_id:?}, schema_record={schema_record}, object_record={object_record}, outcome={outcome:?}, audit={audit:?}, sequence={sequence}"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn storage_manager_rejects_invalid_recovered_images_before_admission()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

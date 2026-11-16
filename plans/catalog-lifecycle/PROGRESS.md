@@ -359,3 +359,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 full delegated workspace verification after identity issuance hardening
 
 - `cargo test --workspace --locked -- --test-threads=1` passed inside the delegated `systemd --user` service with the documented TinyCC fixtures and runtime profile. Sandbox and process integration tests were enabled; zero tests were ignored. This run includes the unauthorized token issue/rotation enumeration regressions and the 128-cycle foreign-key catalog pressure regression.
+
+## CL-2 / CL-3 catalog schema publication sync-failure recovery — verified slice
+
+- Added a subprocess regression that injects a one-shot backend sync failure during `CREATE SCHEMA`, confirms the in-process storage manager stays quarantined, then reopens the database and checks that the schema/object records, DDL audit, operation outcome, and commit sequence are all in either the pre-publication state or the committed state. Startup validation must also accept the recovered catalog.
+- Verification: focused real-redb subprocess regression passed. Workspace formatting, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process integration tests were enabled and zero tests were ignored.
+- Limit: injected sync failure with a live kernel and filesystem does not simulate power loss or device-cache behavior.
