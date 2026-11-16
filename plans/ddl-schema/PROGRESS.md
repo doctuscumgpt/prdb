@@ -951,6 +951,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## DS-SQL-65: integer modulo in CHECK expressions — implemented
 
 - SQL CHECK binding accepts `%` for same-type SMALLINT, INTEGER, and BIGINT operands at the same multiplicative precedence as `*`. NULL propagates; division by zero and signed minimum modulo `-1` fail closed as evaluation errors.
+- Authorization integration now also verifies a well-typed SMALLINT modulo-by-zero policy predicate takes the generic failing reference-scan path while an optimized unique-index probe returns `Unavailable`; the invocation is durably aborted.
 - EIR1 now writes version 3 and decodes versions 1 and 2; modulo opcode 29 is version 3 only. Catalog expression metadata remains version 1. Focused SQL binding, evaluator, and codec regressions passed. The complete serial delegated-cgroup workspace suite passed (290 library tests, 177 commit tests, sandbox/process tests enabled, zero ignored); workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. Cargo.lock is unchanged.
 
 ## DS-SQL-66: integer division in CHECK expressions — implemented

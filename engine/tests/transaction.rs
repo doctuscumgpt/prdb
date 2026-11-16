@@ -7126,6 +7126,55 @@ fn unique_constraint_uses_its_backing_index_for_invocation_writes()
         OutcomeStatus::Aborted,
         "the failing reference predicate must durably abort the invocation"
     );
+    let modulo_error_policies = [
+        policies[0].clone(),
+        Policy {
+            using: Some(Expr::And(vec![
+                Expr::Equal(
+                    Box::new(Expr::Modulo(
+                        Box::new(Expr::Literal(Some(ScalarValue::SmallInt(1)))),
+                        Box::new(Expr::Literal(Some(ScalarValue::SmallInt(0)))),
+                    )),
+                    Box::new(Expr::Literal(Some(ScalarValue::SmallInt(0)))),
+                ),
+                Expr::Equal(
+                    Box::new(Expr::CurrentPrincipalId),
+                    Box::new(Expr::Literal(Some(ScalarValue::Uuid([9; 16])))),
+                ),
+            ])),
+            ..policies[1].clone()
+        },
+    ];
+    let modulo_error_projection = AuthorizedProjection {
+        policies: &modulo_error_policies,
+        ..failing_projection
+    };
+    let mut modulo_error_invocation =
+        InvocationTransaction::begin(&database, [0x49; 16], [9; 16], 9_999, 8, 512)?;
+    modulo_error_invocation.load_catalog_table_schema(table_id)?;
+    assert_eq!(
+        modulo_error_invocation.probe_catalog_unique_index(
+            table_id,
+            index_id,
+            &[Some(ScalarValue::Bytea(b"duplicate".to_vec()))],
+            &modulo_error_projection,
+        )?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::Unavailable,
+        "a modulo-erroring policy must force the authorized reference scan"
+    );
+    assert!(matches!(
+        modulo_error_invocation.scan_authorized(table_id, None, 8, &modulo_error_projection),
+        Err(TransactionError::Authorization(
+            prdb_engine::authorization::AuthorizationError::EvaluationFailed
+        ))
+    ));
+    assert_eq!(
+        prdb_engine::outcome::lookup_outcome(&database, [0x49; 16], [9; 16], 1)?
+            .unwrap()
+            .status,
+        OutcomeStatus::Aborted,
+        "the modulo-erroring reference predicate must durably abort the invocation"
+    );
     assert_eq!(
         invocation.probe_catalog_unique_index(
             table_id,
