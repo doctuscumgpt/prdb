@@ -298,3 +298,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - `token-rotate` now checks the requested credential output path before authenticating or sending PREPARE/START. The process regression supplies an already-occupied path, confirms the command reports that rotation was not attempted, and authenticates with the original token afterward. It then repeats rotation with an absent path and confirms the replacement is saved and works.
 - Token issuance receives the same occupied-path preflight so it does not create an orphan credential when the target file already exists.
 - Verification: focused `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` passed. `cargo fmt --all -- --check`, warning-denied all-target workspace Clippy, and `git diff --check` passed.
+
+## 2026-11-16 complete delegated workspace verification after rotation race and CLI preflight
+
+- Re-ran `cargo test --workspace --locked -- --test-threads=1` inside the delegated `systemd --user` unit with the documented TinyCC fixtures and runtime profile. The full workspace exited successfully with sandbox/process integration tests enabled and zero ignored tests. The suite includes the token-rotation/staged-write race and the authenticated process test for rejecting occupied credential-output paths before mutation.

@@ -422,3 +422,7 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Reworked the token-revocation writer race to rotate the active credential atomically while another invocation stages a row update. The barrier schedule accepts write-before-rotation or rotation-before-write, validates commit ordering and durable outcomes, and confirms one atomic inventory state: the old token is revoked and the replacement is active.
 - Added a deterministic rotate-first schedule with a write already admitted under the old token. Its commit conflicts, records ABORTED, and publishes no row. A retained reader still resolves the schema from its pinned snapshot; the old token fails new admission and the replacement authenticates.
 - Verification: focused `token_rotation_racing_a_staged_write_linearizes` passed. `cargo fmt --all -- --check`, warning-denied all-target workspace Clippy, and `git diff --check` passed.
+
+## 2026-11-16 complete delegated workspace verification after rotation race and CLI preflight
+
+- Re-ran `cargo test --workspace --locked -- --test-threads=1` inside the delegated `systemd --user` unit with the documented TinyCC fixtures and runtime profile. The full workspace exited successfully with sandbox/process integration tests enabled and zero ignored tests. The suite includes the token-rotation/staged-write race and the authenticated process test for rejecting occupied credential-output paths before mutation.
