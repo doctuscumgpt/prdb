@@ -5951,34 +5951,60 @@ fn storage_manager_sets_replaces_and_drops_column_defaults()
     )?;
     stale_writer.stage_put(stale_row_id, &stale_tuple)?;
     let set_invocation = id(0x4f);
+    let default_table_id = table.table_id;
+    let default_column_id = table.column_ids[0];
     let mut set_audit = identity_audit_event(0x50, actor, id(0x51));
     set_audit.correlation_id = set_invocation;
-    let set_result =
-        storage.alter_column_default(prdb_engine::storage_manager::AlterColumnDefaultRequest {
-            invocation_id: set_invocation,
-            authenticated_actor_id: actor,
-            table_id: table.table_id,
-            column_id: table.column_ids[0],
-            default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(42)))),
-            retention_deadline_us: 9_999,
-            audit_event: set_audit,
+    let race_barrier = Arc::new(Barrier::new(2));
+    let (write_result, set_result) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&race_barrier);
+        let storage = &storage;
+        let ddl = scope.spawn(move || {
+            barrier.wait();
+            storage.alter_column_default(prdb_engine::storage_manager::AlterColumnDefaultRequest {
+                invocation_id: set_invocation,
+                authenticated_actor_id: actor,
+                table_id: default_table_id,
+                column_id: default_column_id,
+                default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(42)))),
+                retention_deadline_us: 9_999,
+                audit_event: set_audit,
+            })
         });
+        race_barrier.wait();
+        let write = stale_writer.commit();
+        let ddl = ddl.join().expect("default ALTER thread panicked");
+        (write, ddl)
+    });
     assert!(
         set_result.is_ok(),
         "setting a typed default failed: {set_result:?}"
     );
-    assert!(matches!(
-        stale_writer.commit(),
-        Err(prdb_engine::transaction::TransactionError::Commit(
-            CommitError::Conflict
-        ))
-    ));
-    assert!(row(&database, &table_row_key(table.table_id, stale_row_id.row))?.is_none());
+    let set_sequence = set_result?;
+    let (write_sequence, write_status) = match write_result {
+        Ok(sequence) => (Some(sequence), OutcomeStatus::Committed),
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            (None, OutcomeStatus::Aborted)
+        }
+        Err(error) => panic!("unexpected staged-write result in default ALTER race: {error:?}"),
+    };
+    if let Some(sequence) = write_sequence {
+        assert!(sequence < set_sequence);
+    }
+    let expected_row = (write_status == OutcomeStatus::Committed).then(|| stale_tuple.clone());
+    assert_eq!(
+        row(
+            &database,
+            &table_row_key(default_table_id, stale_row_id.row)
+        )?
+        .map(|stored| stored.payload),
+        expected_row
+    );
     assert_eq!(
         lookup_outcome(&database, stale_writer_invocation, actor, 1)?
             .ok_or("missing stale writer outcome after default change")?
             .status,
-        OutcomeStatus::Aborted
+        write_status
     );
     let replace_invocation = id(0x52);
     let mut replace_audit = identity_audit_event(0x53, actor, id(0x54));
@@ -5986,8 +6012,8 @@ fn storage_manager_sets_replaces_and_drops_column_defaults()
     storage.alter_column_default(prdb_engine::storage_manager::AlterColumnDefaultRequest {
         invocation_id: replace_invocation,
         authenticated_actor_id: actor,
-        table_id: table.table_id,
-        column_id: table.column_ids[0],
+        table_id: default_table_id,
+        column_id: default_column_id,
         default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(43)))),
         retention_deadline_us: 9_999,
         audit_event: replace_audit,
@@ -5998,8 +6024,8 @@ fn storage_manager_sets_replaces_and_drops_column_defaults()
     storage.alter_column_default(prdb_engine::storage_manager::AlterColumnDefaultRequest {
         invocation_id: drop_invocation,
         authenticated_actor_id: actor,
-        table_id: table.table_id,
-        column_id: table.column_ids[0],
+        table_id: default_table_id,
+        column_id: default_column_id,
         default: None,
         retention_deadline_us: 9_999,
         audit_event: drop_audit,
@@ -6011,8 +6037,8 @@ fn storage_manager_sets_replaces_and_drops_column_defaults()
         storage.alter_column_default(prdb_engine::storage_manager::AlterColumnDefaultRequest {
             invocation_id: empty_drop_invocation,
             authenticated_actor_id: actor,
-            table_id: table.table_id,
-            column_id: table.column_ids[0],
+            table_id: default_table_id,
+            column_id: default_column_id,
             default: None,
             retention_deadline_us: 9_999,
             audit_event: empty_drop_audit,

@@ -977,3 +977,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests, including all 179 real-redb commit integration tests and the authenticated metadata process tests. The run includes the DD-5 concurrent schema create/drop and name-index reader regression.
 - Broader cross-component DDL race schedules and the complete ALTER matrix remain open.
+
+## DS-5 / DS-7: column-default ALTER racing a staged writer — verified slice
+
+- Updated `storage_manager_sets_replaces_and_drops_column_defaults` to race the default change against a staged row insert. Either the row commits before the ALTER and has a committed outcome, or the ALTER publishes first and the stale writer conflicts with an ABORTED outcome; the row's persisted bytes and commit sequence are checked against the winning order.
+- Verification: the focused real-redb DDL race passed; formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed afterward with sandbox/process tests enabled and zero ignored tests, including 34 bootstrap binary tests, 179 commit tests, and 75 transaction tests.
+- Remaining: stale-writer races for DROP COLUMN, index/constraint DDL, and additional ALTER combinations remain open.
