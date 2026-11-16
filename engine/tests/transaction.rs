@@ -2966,6 +2966,27 @@ fn executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle()
         dispatch_executor_resolve_relation(ServiceRole::Executor, &mut connection, &malformed),
         Err(ExecutorRequestError::InvalidPayload)
     ));
+    drop(connection);
+    let mut replay_connection = invocation.open_executor_metadata_connection();
+    let cross_connection_replay = IpcFrame {
+        operation: Operation::OpenScan as u16,
+        request_id: 46,
+        payload: OpenScanRequest {
+            relation: reopened_handle,
+            column_ids: vec![[0x66; 16]],
+        }
+        .encode()?,
+    };
+    assert!(matches!(
+        dispatch_executor_request(
+            ServiceRole::Executor,
+            &mut replay_connection,
+            &cross_connection_replay,
+        ),
+        Err(ExecutorRequestError::Transaction(
+            prdb_engine::transaction::TransactionError::InvalidMetadataRequest
+        ))
+    ));
     Ok(())
 }
 

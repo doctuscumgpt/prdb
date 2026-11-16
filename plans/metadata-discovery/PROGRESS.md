@@ -286,3 +286,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - The relation-resolution IPC regression now closes a valid connection-local handle, confirms `OPEN SCAN` with that token fails, then resolves the relation again and verifies the replacement token is distinct. The stale token remains unusable after the fresh handle is issued.
 - Verification: focused real-redb IPC regression passed. Workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests: 291 engine unit tests, 179 commit tests, 75 transaction tests, and all other workspace targets.
 - Remaining: cursor continuation across process restart and broader hostile IPC sequence coverage remain open.
+
+## MD-5 / AU-7: executor IPC rejects cross-connection handle replay — verified slice
+
+- `executor_resolve_relation_ipc_dispatch_returns_only_authorized_handle` now resolves a relation on one metadata connection and replays that handle through OPEN SCAN on a separate connection in the same invocation. The dispatch layer rejects the otherwise well-formed stale capability with `InvalidMetadataRequest`.
+- Verification: the focused real-redb executor IPC regression, locked workspace build, format check, and warning-denied all-target Clippy passed. The full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled: 291 engine unit tests, 179 commit tests, 75 transaction tests, and all other workspace targets.
