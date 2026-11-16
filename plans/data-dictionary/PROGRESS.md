@@ -462,3 +462,9 @@
 - Strengthened `object_owner_scan_rebuilds_and_uses_the_owner_prefix` to scan family-2 objects and derive owner-matching IDs from their owner fields and logical keys, then compare the rebuilt owner scan with that independent result. The record-limit and rebuilt-index checks remain covered.
 - Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (294 unit tests, 190 commit tests, 76 transaction tests, plus all remaining targets).
 - Remaining: additional catalog scan families, DD-3 referential integrity, and broader catalog pressure remain open.
+
+## DD-2: per-table index scan matches an independent catalog scan — verified slice
+
+- Strengthened `table_index_scan_rebuilds_and_uses_the_table_prefix` to scan family-9 index definitions and derive the expected table-to-index ID list from each definition's table reference and logical key. The rebuilt per-table index scan is compared with this independent result; table-prefix isolation and record limits remain covered.
+- Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests (294 unit tests, 190 commit tests, 76 transaction tests, plus all remaining targets).
+- Remaining: other catalog scan families, DD-3 referential integrity, and broader catalog pressure remain open.
