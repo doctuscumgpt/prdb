@@ -180,3 +180,9 @@
 - Added authenticated ADMIN `objects.grant_entries` and `objects.revoke_entries` operations and a public client entry point for per-privilege targets. The protocol regression decodes an object-scoped ALTER plus column-scoped REFERENCES request; the real-redb race regression exercises grant and revoke publication, provenance, dependency cleanup, and one epoch update.
 - Verification: focused protocol decoder regression and focused real-redb grant/revocation regression passed; locked engine check, warning-denied all-target engine Clippy, formatting, and `git diff --check` passed.
 - Remaining: connect the new entries operation to SQL name binding/syntax; broaden administrative SQL forms and repeated permission-change race schedules.
+
+## DP-SQL-11 / DP-8: mixed-scope grant SQL binding — verified slice
+
+- Connected the mixed-scope ADMIN operation to SQL name binding. A table statement with one column-capable privilege and additional object privileges (for example, `GRANT ALTER, REFERENCES (employee_id) ON TABLE ...`) resolves the column by its catalog name and emits per-privilege targets. The data privilege uses the listed column(s), or all columns when no list is supplied; other privileges stay table-scoped.
+- The bounded SQL parser now accepts this mixed form while continuing to reject multi-data-privilege column lists and non-data column targets.
+- Verification: focused SQL parser test passed; warning-denied all-target engine Clippy, formatting, and `git diff --check` passed.

@@ -3978,7 +3978,7 @@ impl AdminClient {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let expands_table_data_grant = statement.table_name.is_some()
-            && privileges.iter().all(|privilege| {
+            && privileges.iter().any(|privilege| {
                 matches!(
                     privilege,
                     AdminObjectPrivilege::Select
@@ -4025,6 +4025,53 @@ impl AdminClient {
         } else {
             AdminObjectGrantTarget::Object
         };
+        let has_data_privilege = privileges.iter().any(|privilege| {
+            matches!(
+                privilege,
+                AdminObjectPrivilege::Select
+                    | AdminObjectPrivilege::Insert
+                    | AdminObjectPrivilege::Update
+                    | AdminObjectPrivilege::References
+            )
+        });
+        let has_object_privilege = privileges.iter().any(|privilege| {
+            !matches!(
+                privilege,
+                AdminObjectPrivilege::Select
+                    | AdminObjectPrivilege::Insert
+                    | AdminObjectPrivilege::Update
+                    | AdminObjectPrivilege::References
+            )
+        });
+        if has_data_privilege && has_object_privilege {
+            let entries = privileges
+                .into_iter()
+                .map(|privilege| AdminObjectGrantEntry {
+                    target: if matches!(
+                        privilege,
+                        AdminObjectPrivilege::Select
+                            | AdminObjectPrivilege::Insert
+                            | AdminObjectPrivilege::Update
+                            | AdminObjectPrivilege::References
+                    ) {
+                        target.clone()
+                    } else {
+                        AdminObjectGrantTarget::Object
+                    },
+                    privilege,
+                })
+                .collect();
+            return self.change_object_grant_entries(
+                if statement.grant {
+                    "objects.grant"
+                } else {
+                    "objects.revoke"
+                },
+                grantee_id,
+                object_id,
+                entries,
+            );
+        }
         self.change_object_privileges(
             if statement.grant {
                 "objects.grant"

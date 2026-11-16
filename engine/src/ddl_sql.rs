@@ -1182,14 +1182,21 @@ pub fn parse_object_privilege(sql: &str) -> Result<ObjectPrivilegeSql, DdlSqlErr
         }
         parser.take(Token::RightParen)?;
     }
-    if !column_names.is_empty()
-        && (privileges.len() != 1
-            || !matches!(
-                privileges[0].as_str(),
-                "select" | "insert" | "update" | "references"
-            ))
-    {
-        return Err(DdlSqlError::InvalidStatement);
+    if !column_names.is_empty() {
+        let column_privilege_count = privileges
+            .iter()
+            .filter(|privilege| {
+                matches!(
+                    privilege.as_str(),
+                    "select" | "insert" | "update" | "references"
+                )
+            })
+            .count();
+        // A column list can scope one data privilege while other table
+        // privileges in the same statement remain object-scoped.
+        if column_privilege_count != 1 {
+            return Err(DdlSqlError::InvalidStatement);
+        }
     }
     parser.word("on")?;
     let is_table = if parser.peek_word("schema") {
@@ -5159,6 +5166,12 @@ mod tests {
             .privileges,
             ["alter", "index", "manage_policies", "manage_grants"]
         );
+        let mixed_scope = parse_object_privilege(
+            "GRANT ALTER, REFERENCES (employee_id) ON TABLE app.employees TO ROLE app_owner",
+        )
+        .unwrap();
+        assert_eq!(mixed_scope.privileges, ["alter", "references"]);
+        assert_eq!(mixed_scope.column_names, ["employee_id"]);
         assert_eq!(
             parse_object_privilege("GRANT USAGE, CREATE ON SCHEMA app TO ROLE app_owner")
                 .unwrap()
