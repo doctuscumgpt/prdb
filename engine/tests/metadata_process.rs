@@ -1259,10 +1259,45 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             .is_empty()
     );
     drop(restricted_metadata);
+    let mut restricted_admin_retry_secret = restricted_admin_secret;
+    let mut restricted_admin_followup_secret = restricted_admin_secret;
     let mut restricted_admin = AdminClient::connect_authenticated(
         address,
         restricted_token,
         &mut restricted_admin_secret,
+    )?;
+    let unauthorized_existing_rotation = restricted_admin.rotate_token(
+        restricted_token,
+        "unauthorized existing-token probe",
+        i64::MAX,
+    );
+    drop(restricted_admin);
+    let mut restricted_admin = AdminClient::connect_authenticated(
+        address,
+        restricted_token,
+        &mut restricted_admin_retry_secret,
+    )?;
+    let unauthorized_unknown_rotation =
+        restricted_admin.rotate_token([0xd1; 16], "unauthorized unknown-token probe", i64::MAX);
+    let rejection_message = |result: Result<_, _>| match result {
+        Err(prdb_engine::client_submit::ClientSubmitError::AdministrativeOperationRejected {
+            message,
+            ..
+        }) => message,
+        Err(prdb_engine::client_submit::ClientSubmitError::ServerRejected(message)) => message,
+        Err(other) => panic!("unauthorized token rotation had an unexpected error: {other}"),
+        Ok(_) => panic!("unauthorized token rotation unexpectedly succeeded"),
+    };
+    assert_eq!(
+        rejection_message(unauthorized_existing_rotation),
+        rejection_message(unauthorized_unknown_rotation),
+        "ADMIN exposed whether a token ID exists"
+    );
+    drop(restricted_admin);
+    let mut restricted_admin = AdminClient::connect_authenticated(
+        address,
+        restricted_token,
+        &mut restricted_admin_followup_secret,
     )?;
     assert!(
         restricted_admin

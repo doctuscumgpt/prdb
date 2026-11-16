@@ -312,3 +312,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 ## 2026-11-16 final delegated workspace verification for current tree
 
 - Ran `cargo test --workspace --locked -- --test-threads=1` in the delegated `systemd --user` unit with the documented artifacts and runtime allowlist. The command exited successfully; sandbox and cross-process integration tests were enabled, including `token_rotation_racing_a_staged_write_linearizes` and the token-rotation CLI occupied-output preflight. Zero tests were ignored.
+
+## ID-2 / ID-4: generic rotation denial through authenticated ADMIN — verified slice
+
+- Extended `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` to attempt rotation of a known active token and an unknown token as a principal without `MANAGE_USERS`. Each attempt uses a fresh authenticated ADMIN session; both return the same generic `unavailable` message and neither alters the existing token.
+- Verification: focused delegated `metadata_process` test passed with the restricted metadata fixture and documented runtime paths. Workspace formatting, warning-denied all-target Clippy, and `git diff --check` passed.
