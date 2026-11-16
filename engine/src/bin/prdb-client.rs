@@ -50,6 +50,8 @@ Token secrets are saved only to mode-0600 credential files and are never printed
   prdb-client token-issue --address IP:PORT --credentials ADMIN_FILE --user-id HEX\n\
     --label TEXT --ttl-seconds N --output-credentials FILE\n\
   prdb-client token-revoke --address IP:PORT --credentials ADMIN_FILE --token-id HEX\n\n\
+  prdb-client token-rotate --address IP:PORT --credentials ADMIN_FILE --token-id HEX\n\
+    --label TEXT --ttl-seconds N --output-credentials FILE\n\n\
   prdb-client token-list --address IP:PORT --credentials ADMIN_FILE --user-id HEX\n\
     [--after-token-id HEX]\n\n\
   prdb-client dependency-list --address IP:PORT --credentials ADMIN_FILE --object-id HEX\n\
@@ -105,7 +107,7 @@ Token secrets are saved only to mode-0600 credential files and are never printed
 Column types: boolean, smallint, integer, bigint, decimal(P,S), text, varchar(N), bytea, uuid, date, timestamptz.\n\
 Column nullability is nullable or not-null; not-null columns require the UUID identity modifier.\n\n\
 Token secrets are saved only to mode-0600 credential files and are never printed.\n\
-For rotation, save a replacement credential, verify it, then revoke the old token.";
+Token rotation revokes the old token and creates its replacement in one commit.";
 
 fn main() -> std::process::ExitCode {
     match run() {
@@ -173,6 +175,7 @@ fn run() -> Result<(), String> {
         "discover" => discover(address, credentials_path, &mut fields),
         "token-issue" => token_issue(address, credentials_path, &mut fields),
         "token-revoke" => token_revoke(address, credentials_path, &mut fields),
+        "token-rotate" => token_rotate(address, credentials_path, &mut fields),
         "token-list" => token_list(address, credentials_path, &mut fields),
         "dependency-list" => dependency_list(address, credentials_path, &mut fields),
         "constraint-list" => constraint_list(address, credentials_path, &mut fields),
@@ -2477,6 +2480,59 @@ fn token_revoke(
         lower_hex(&token_id),
         lower_hex(&result.operation_id),
         result.commit_sequence
+    );
+    Ok(())
+}
+
+fn token_rotate(
+    address: SocketAddr,
+    credentials_path: PathBuf,
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<(), String> {
+    let token_id = parse_id(&take_text(fields, "--token-id")?)?;
+    let label = take_text(fields, "--label")?;
+    let ttl_seconds: u64 = parse_number(
+        fields
+            .remove("--ttl-seconds")
+            .ok_or_else(|| "missing required option --ttl-seconds".to_owned())?,
+        "--ttl-seconds",
+    )?;
+    let output_path = take_path(fields, "--output-credentials")?;
+    reject_unknown(fields)?;
+    let expires_at_us = expiration_time(ttl_seconds)?;
+
+    let mut administrator =
+        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
+    let mut client = AdminClient::connect_authenticated(
+        address,
+        administrator.token_id,
+        &mut administrator.token_secret,
+    )
+    .map_err(|error| error.to_string())?;
+    let rotated = client
+        .rotate_token(token_id, &label, expires_at_us)
+        .map_err(|error| error.to_string())?;
+    let new_token_id = rotated.token_id;
+    let operation_id = rotated.operation_id;
+    let new_credentials = ClientCredentials {
+        token_id: new_token_id,
+        token_secret: *rotated.token_secret(),
+    };
+    write_client_credentials(&output_path, &new_credentials).map_err(|error| {
+        format!(
+            "token rotation committed (operation {}, replacement token {}) but saving {} failed: {error}; revoke replacement token {} and issue a new credential",
+            lower_hex(&operation_id),
+            lower_hex(&new_token_id),
+            output_path.display(),
+            lower_hex(&new_token_id)
+        )
+    })?;
+    println!(
+        "saved replacement token {} to {} (operation {}, expires at {expires_at_us} us; old token {} revoked)",
+        lower_hex(&new_token_id),
+        output_path.display(),
+        lower_hex(&operation_id),
+        lower_hex(&token_id)
     );
     Ok(())
 }

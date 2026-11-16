@@ -5093,10 +5093,37 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
 
     let old_credentials = read_client_credentials(&credential_path)?;
     let mut old_secret_after_rotation = old_credentials.token_secret;
-    let rotation_expiry = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?
-        .saturating_add(60_000_000);
-    let rotated = admin.rotate_token(issued_token_id, "rotated process token", rotation_expiry)?;
-    assert_ne!(rotated.token_id, issued_token_id);
+    remove_client_credentials(&credential_path)?;
+    let rotate_token_cli = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "token-rotate",
+            "--address",
+            &address_text,
+            "--credentials",
+            admin_cli_credentials,
+            "--token-id",
+            &encode_id_hex(&issued_token_id),
+            "--label",
+            "rotated process token",
+            "--ttl-seconds",
+            "60",
+            "--output-credentials",
+            credential_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+        ])
+        .output()?;
+    assert!(
+        rotate_token_cli.status.success(),
+        "token-rotate CLI failed: {}",
+        String::from_utf8_lossy(&rotate_token_cli.stderr)
+    );
+    let rotate_output = String::from_utf8_lossy(&rotate_token_cli.stdout);
+    assert!(rotate_output.contains("saved replacement token"));
+    assert!(!rotate_output.contains("token_secret"));
+    let rotated_credentials = read_client_credentials(&credential_path)?;
+    let rotated_token_id = rotated_credentials.token_id;
+    assert_ne!(rotated_token_id, issued_token_id);
     assert!(
         MetadataClient::connect_authenticated(
             address,
@@ -5106,17 +5133,9 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         .is_err()
     );
     assert_eq!(old_secret_after_rotation, [0; 32]);
-    remove_client_credentials(&credential_path)?;
-    write_client_credentials(
-        &credential_path,
-        &ClientCredentials {
-            token_id: rotated.token_id,
-            token_secret: *rotated.token_secret(),
-        },
-    )?;
-    let mut rotated_secret = *rotated.token_secret();
+    let mut rotated_secret = rotated_credentials.token_secret;
     let mut rotated_metadata =
-        MetadataClient::connect_authenticated(address, rotated.token_id, &mut rotated_secret)?;
+        MetadataClient::connect_authenticated(address, rotated_token_id, &mut rotated_secret)?;
     assert_eq!(rotated_secret, [0; 32]);
     assert!(
         rotated_metadata
@@ -5134,7 +5153,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             "--credentials",
             admin_cli_credentials,
             "--token-id",
-            &encode_id_hex(&rotated.token_id),
+            &encode_id_hex(&rotated_token_id),
         ])
         .output()?;
     assert!(

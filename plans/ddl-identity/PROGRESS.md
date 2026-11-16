@@ -276,3 +276,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Added `StorageManager::rotate_token` to revoke an active, unexpired token and insert a same-user replacement verifier in one authorized identity DDL commit. The replacement secret is one-time, and a failed commit leaves the prior catalog state intact. Added `tokens.rotate` PREPARE/START protocol handling and `AdminClient::rotate_token`.
 - Expanded the identity specification with the operation signature, atomicity, failure, retry, and rate-limit behavior. The cross-process metadata/admin lifecycle test rotates a token, proves the old credential is rejected and zeroized, proves the new credential authenticates, and then revokes the replacement.
 - Verification: targeted `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` passed. `cargo check --workspace --locked`, `cargo fmt --all -- --check`, warning-denied all-target workspace Clippy, and `git diff --check` passed. The full delegated-cgroup suite was not rerun for this increment; the prior 955-test run predates rotation.
+
+## ID-4: protected token-rotation CLI — verified slice
+
+- Added `prdb-client token-rotate`, which accepts an existing token ID, label, and TTL, then stores the one-time replacement in a mode-0600 credential file. Its success output omits secret material; save failure reports that rotation already committed and identifies the replacement token to revoke.
+- Updated the gateway/supervisor process regression to rotate through the CLI, confirm the old credential is rejected and zeroized, authenticate with the saved replacement, and revoke that replacement through the existing CLI path.
+- Verification: the focused authenticated metadata/admin process test passed. `cargo fmt --all -- --check`, warning-denied all-target workspace Clippy, and `git diff --check` passed. The full delegated-cgroup suite was not rerun for this CLI increment.
