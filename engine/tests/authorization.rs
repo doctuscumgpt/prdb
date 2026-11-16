@@ -376,6 +376,94 @@ fn null_and_expression_errors_never_authorize() {
 }
 
 #[test]
+fn policy_composition_matches_the_reference_truth_table() {
+    let ctx = context();
+    let grants = [grant()];
+    let invalid = Expr::Field(8);
+    let cases = [
+        (
+            "no policies means no allow",
+            vec![],
+            Err(AuthorizationError::Denied),
+        ),
+        (
+            "false allow does not authorize",
+            vec![policy(Effect::Allow, boolean(false))],
+            Err(AuthorizationError::Denied),
+        ),
+        (
+            "one true allow authorizes",
+            vec![policy(Effect::Allow, boolean(true))],
+            Ok(()),
+        ),
+        (
+            "allow policies are alternatives",
+            vec![
+                policy(Effect::Allow, boolean(false)),
+                policy(Effect::Allow, boolean(true)),
+            ],
+            Ok(()),
+        ),
+        (
+            "every restrict must pass",
+            vec![
+                policy(Effect::Allow, boolean(true)),
+                policy(Effect::Restrict, boolean(true)),
+                policy(Effect::Restrict, boolean(false)),
+            ],
+            Err(AuthorizationError::Denied),
+        ),
+        (
+            "restrict cannot replace a missing allow",
+            vec![policy(Effect::Restrict, boolean(true))],
+            Err(AuthorizationError::Denied),
+        ),
+        (
+            "null allow is not true",
+            vec![policy(Effect::Allow, Expr::Literal(None))],
+            Err(AuthorizationError::Denied),
+        ),
+        (
+            "null restrict is not true",
+            vec![
+                policy(Effect::Allow, boolean(true)),
+                policy(Effect::Restrict, Expr::Literal(None)),
+            ],
+            Err(AuthorizationError::Denied),
+        ),
+        (
+            "allow evaluation errors fail closed",
+            vec![policy(Effect::Allow, invalid.clone())],
+            Err(AuthorizationError::EvaluationFailed),
+        ),
+        (
+            "restrict evaluation errors fail closed",
+            vec![
+                policy(Effect::Allow, boolean(true)),
+                policy(Effect::Restrict, invalid),
+            ],
+            Err(AuthorizationError::EvaluationFailed),
+        ),
+    ];
+
+    for (name, policies, expected) in cases {
+        assert_eq!(
+            authorize(
+                &ctx,
+                &grants,
+                &policies,
+                Operation::Select,
+                AccessTarget::Table([3; 16]),
+                Some(&[]),
+                None,
+            ),
+            expected,
+            "reference policy-composition case: {name}"
+        );
+    }
+}
+
+#[test]
 fn update_allow_must_pass_both_old_and_new_on_the_same_policy() {
     let mut ctx = context();
     ctx.scope

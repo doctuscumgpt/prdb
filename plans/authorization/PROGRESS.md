@@ -336,3 +336,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added a pinned-catalog regression with an UPDATE policy that reads the BYTEA field in both USING and WITH CHECK. The normal executor scan issues a row handle, while patching the referenced field is denied and the persisted row remains byte-for-byte unchanged. The self-equality predicates would allow the changed value absent the policy-driving-column restriction.
 - Verification: focused transaction test and complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets); build, formatting, Clippy, TinyCC, release-profile, and cgroup probe checks also passed.
+
+## AU-1: policy composition reference truth table — verified slice
+
+- Added `policy_composition_matches_the_reference_truth_table` with explicit expected results for no policy/no ALLOW, false and alternative ALLOW policies, conjunctive RESTRICT policies, NULL in either policy class, and evaluation errors in either class. Existing AU-1 coverage continues to verify grant/scope denial and same-policy old/new UPDATE pairing.
+- Verification: focused authorization integration test passed. Locked workspace build, formatting, warning-denied all-target Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).
