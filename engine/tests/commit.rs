@@ -6947,6 +6947,120 @@ fn storage_manager_sets_replaces_and_drops_column_defaults()
         }),
         Err(prdb_engine::storage_manager::TableLifecycleError::InvalidRequest)
     );
+
+    let rename_id = id(0x71);
+    let alter_id = id(0x72);
+    let cross_alter_barrier = Arc::new(Barrier::new(2));
+    let (rename_result, alter_result) = std::thread::scope(|scope| {
+        let rename_barrier = Arc::clone(&cross_alter_barrier);
+        let rename_storage = &storage;
+        let rename = scope.spawn(move || {
+            let mut audit = identity_audit_event(0x73, actor, default_table_id);
+            audit.correlation_id = rename_id;
+            rename_barrier.wait();
+            rename_storage.rename_table(
+                rename_id,
+                actor,
+                default_table_id,
+                "concurrent_alter_table",
+                9_999,
+                audit,
+            )
+        });
+        cross_alter_barrier.wait();
+        let mut audit = identity_audit_event(0x74, actor, default_column_id);
+        audit.correlation_id = alter_id;
+        let alter =
+            storage.alter_column_default(prdb_engine::storage_manager::AlterColumnDefaultRequest {
+                invocation_id: alter_id,
+                authenticated_actor_id: actor,
+                table_id: default_table_id,
+                column_id: default_column_id,
+                default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(99)))),
+                retention_deadline_us: 9_999,
+                audit_event: audit,
+            });
+        (rename.join().expect("table rename thread panicked"), alter)
+    });
+    let rename_conflicted = matches!(
+        rename_result,
+        Err(prdb_engine::storage_manager::TableLifecycleError::Commit(
+            CommitError::Conflict
+        ))
+    );
+    if !rename_conflicted {
+        rename_result.map_err(|error| format!("cross-ALTER table rename failed: {error:?}"))?;
+    }
+    let alter_conflicted = matches!(
+        alter_result,
+        Err(prdb_engine::storage_manager::TableLifecycleError::Commit(
+            CommitError::Conflict
+        ))
+    );
+    if !alter_conflicted {
+        alter_result.map_err(|error| format!("cross-ALTER default change failed: {error:?}"))?;
+    }
+    if rename_conflicted {
+        let mut audit = identity_audit_event(0x75, actor, default_table_id);
+        audit.correlation_id = id(0x75);
+        storage.rename_table(
+            id(0x75),
+            actor,
+            default_table_id,
+            "concurrent_alter_table",
+            9_999,
+            audit,
+        )?;
+    }
+    if alter_conflicted {
+        let mut audit = identity_audit_event(0x76, actor, default_column_id);
+        audit.correlation_id = id(0x76);
+        storage.alter_column_default(prdb_engine::storage_manager::AlterColumnDefaultRequest {
+            invocation_id: id(0x76),
+            authenticated_actor_id: actor,
+            table_id: default_table_id,
+            column_id: default_column_id,
+            default: Some(TableColumnDefault::Literal(Some(ScalarValue::Integer(99)))),
+            retention_deadline_us: 9_999,
+            audit_event: audit,
+        })?;
+    }
+    assert_eq!(
+        lookup_outcome(&database, rename_id, actor, 1)?
+            .ok_or("missing cross-ALTER rename outcome")?
+            .status,
+        if rename_conflicted {
+            OutcomeStatus::Aborted
+        } else {
+            OutcomeStatus::Committed
+        }
+    );
+    assert_eq!(
+        lookup_outcome(&database, alter_id, actor, 1)?
+            .ok_or("missing cross-ALTER default outcome")?
+            .status,
+        if alter_conflicted {
+            OutcomeStatus::Aborted
+        } else {
+            OutcomeStatus::Committed
+        }
+    );
+    let renamed_table_snapshot = database.begin_read()?;
+    assert_eq!(
+        lookup_relation_id_by_name(
+            &renamed_table_snapshot,
+            schema.schema_id,
+            "concurrent_alter_table",
+        )?,
+        Some(default_table_id)
+    );
+    let mut verify_alters = storage.begin_invocation(id(0x77), actor, 9_999, 1, 64)?;
+    let verified_schema = verify_alters.load_catalog_table_schema(default_table_id)?;
+    assert!(
+        verified_schema.default_expression_ids[0].is_some(),
+        "concurrent default ALTER must survive table rename"
+    );
+    verify_alters.abort()?;
     Ok(())
 }
 

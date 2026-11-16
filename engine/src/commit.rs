@@ -7597,6 +7597,52 @@ fn commit_catalog_and_audit_with_fences_inner(
             return Err(CommitError::DdlFenceUnavailable);
         }
     };
+    // DDL authority validators inspect current catalog relationships to
+    // authorize the proposed final shape. First reject a stale read set so a
+    // concurrent DDL publication is reported as a conflict rather than as a
+    // malformed-catalog error from validating stale payload bytes.
+    if matches!(
+        authorization_mode,
+        CatalogAuthorizationMode::TableRenameDdl | CatalogAuthorizationMode::ConstraintDdl
+    ) {
+        let catalog_conflict = (|| {
+            let read = database.begin_read().map_err(storage_error)?;
+            let catalog = read.open_table(CATALOG).map_err(storage_error)?;
+            for write in catalog_writes {
+                let current = catalog
+                    .get(write.key.as_slice())
+                    .map_err(storage_error)?
+                    .map(|value| value.value().to_vec());
+                if current != write.expected_value {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })();
+        match catalog_conflict {
+            Ok(true) => {
+                record_aborted_outcome(
+                    database,
+                    invocation_id,
+                    principal_id,
+                    retention_deadline_us,
+                )?;
+                return Err(CommitError::Conflict);
+            }
+            Ok(false) => {}
+            Err(error) => {
+                if !matches!(error, CommitError::Storage(_)) {
+                    record_aborted_outcome(
+                        database,
+                        invocation_id,
+                        principal_id,
+                        retention_deadline_us,
+                    )?;
+                }
+                return Err(error);
+            }
+        }
+    }
     let catalog_guards = match authorization_mode {
         CatalogAuthorizationMode::Trusted => Vec::new(),
         CatalogAuthorizationMode::IndexDdl => {
