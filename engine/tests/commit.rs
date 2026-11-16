@@ -23861,25 +23861,48 @@ fn token_admission_checks_expiry_secret_revocation_and_commit_guards()
     let rename_invocation = id(0x8b);
     let mut rename_audit = identity_audit_event(0x8c, admin_user_id, user_id);
     rename_audit.correlation_id = rename_invocation;
-    assert_eq!(
-        storage.rename_identity(
-            rename_invocation,
-            admin_user_id,
-            user_id,
-            "renamed_credential_user",
-            now + 3_600_000_000,
-            rename_audit,
-        )?,
-        4,
-    );
-    let rename_result = rename_writer.commit();
-    assert!(
-        matches!(
-            &rename_result,
-            Err(TransactionError::Commit(CommitError::Conflict))
-        ),
-        "renamed identity committed a stale update: {rename_result:?}"
-    );
+    let rename_race_barrier = Arc::new(Barrier::new(2));
+    let (rename_result, write_result) = std::thread::scope(|scope| {
+        let barrier = Arc::clone(&rename_race_barrier);
+        let storage = &storage;
+        let rename = scope.spawn(move || {
+            barrier.wait();
+            storage.rename_identity(
+                rename_invocation,
+                admin_user_id,
+                user_id,
+                "renamed_credential_user",
+                now + 3_600_000_000,
+                rename_audit,
+            )
+        });
+        rename_race_barrier.wait();
+        let write_result = rename_writer.commit();
+        let rename_result = rename.join().expect("identity rename thread panicked");
+        (rename_result, write_result)
+    });
+    let rename_sequence = rename_result.unwrap_or_else(|error| {
+        panic!("identity rename failed during staged-write race: {error:?}; write={write_result:?}")
+    });
+    let (write_sequence, write_status) = match write_result {
+        Ok(sequence) => (Some(sequence), OutcomeStatus::Committed),
+        Err(TransactionError::Commit(CommitError::Conflict)) => (None, OutcomeStatus::Aborted),
+        Err(error) => panic!("unexpected staged-write result in identity rename race: {error:?}"),
+    };
+    if let Some(sequence) = write_sequence {
+        assert!(sequence < rename_sequence);
+    }
+    assert_eq!(commit_sequence(&database)?, rename_sequence);
+    let expected_after_rename = if write_status == OutcomeStatus::Committed {
+        ScalarValue::Bytea(b"must not publish after identity rename".to_vec())
+    } else {
+        ScalarValue::Bytea(b"before token revoke".to_vec())
+    };
+    let active_index_key = if write_status == OutcomeStatus::Committed {
+        renamed_index_key.clone()
+    } else {
+        original_index_key_for_assert.clone()
+    };
     assert_eq!(
         decode_tuple(
             &columns,
@@ -23895,24 +23918,28 @@ fn token_admission_checks_expiry_secret_revocation_and_commit_guards()
             .payload,
         )?
         .values,
-        [Some(ScalarValue::Bytea(b"before token revoke".to_vec()))],
-        "identity rename's stale update was published"
+        [Some(expected_after_rename.clone())],
+        "row state must reflect the serialized identity rename race"
     );
     let read = database.begin_read()?;
     let indexes = read.open_table(schema::INDEXES)?;
-    assert!(
+    assert_eq!(
         indexes
             .get(original_index_key_for_assert.as_slice())?
-            .is_some()
+            .is_some(),
+        write_status == OutcomeStatus::Aborted
     );
-    assert!(indexes.get(renamed_index_key.as_slice())?.is_none());
+    assert_eq!(
+        indexes.get(renamed_index_key.as_slice())?.is_some(),
+        write_status == OutcomeStatus::Committed
+    );
     drop(indexes);
     drop(read);
     assert_eq!(
         lookup_outcome(&database, id(0x8a), user_id, now)?
             .ok_or("missing identity-rename stale writer outcome")?
             .status,
-        OutcomeStatus::Aborted
+        write_status
     );
 
     let (mut login_disable_writer, login_roles) = storage.begin_token_authenticated_invocation(
@@ -23950,7 +23977,7 @@ fn token_admission_checks_expiry_secret_revocation_and_commit_guards()
             table: schema.table_id,
             row: row_id,
         },
-        original_index_key_for_assert.clone(),
+        active_index_key.clone(),
         false,
     )?;
     login_disable_writer.stage_index_membership(
@@ -23974,7 +24001,7 @@ fn token_admission_checks_expiry_secret_revocation_and_commit_guards()
             now + 3_600_000_000,
             login_disable_audit,
         )?,
-        5,
+        rename_sequence + 1,
     );
     let login_disable_result = login_disable_writer.commit();
     assert!(
@@ -23999,16 +24026,12 @@ fn token_admission_checks_expiry_secret_revocation_and_commit_guards()
             .payload,
         )?
         .values,
-        [Some(ScalarValue::Bytea(b"before token revoke".to_vec()))],
+        [Some(expected_after_rename)],
         "disabled user's staged update was published"
     );
     let read = database.begin_read()?;
     let indexes = read.open_table(schema::INDEXES)?;
-    assert!(
-        indexes
-            .get(original_index_key_for_assert.as_slice())?
-            .is_some()
-    );
+    assert!(indexes.get(active_index_key.as_slice())?.is_some());
     assert!(indexes.get(login_disabled_index.key.as_slice())?.is_none());
     drop(indexes);
     drop(read);
