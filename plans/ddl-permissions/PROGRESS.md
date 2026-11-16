@@ -237,3 +237,8 @@
 
 - Extended `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` to issue `GRANT ALTER, UPDATE (label)` and the matching REVOKE through authenticated ADMIN SQL. The grant page confirms ALTER targets the table object and UPDATE targets the stable `label` column ID; after revocation neither entry remains.
 - Verification: the focused delegated metadata process regression passed; formatting, warning-denied workspace all-target Clippy, and `git diff --check` passed. The complete serial workspace suite passed inside the delegated `systemd --user` service with sandbox and process tests enabled and zero ignored tests.
+
+## 2026-11-16 DP-SQL-11: mixed-scope unqualified data grants expand across columns — verified slice
+
+- Extended `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` with `GRANT ALTER, REFERENCES ON TABLE` and matching REVOKE through authenticated ADMIN. Metadata confirms ALTER stays table-scoped while REFERENCES expands to exactly one column grant for each column existing at grant time; revoke removes the object and every expanded column grant.
+- Verification: the focused delegated gateway/supervisor process regression passed. Workspace formatting, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
