@@ -3329,13 +3329,53 @@ mod catalog_index_tests {
         write.commit().unwrap();
         ensure_relation_name_index(&database).unwrap();
         let read = database.begin_read().unwrap();
+        let catalog = read.open_table(CATALOG).unwrap();
+        let object_prefix = [2u16.to_be_bytes().as_slice(), &[1]].concat();
+        let mut expected_name_ids: Vec<[u8; 16]> = Vec::new();
+        let mut expected_schema_relations: Vec<[u8; 16]> = Vec::new();
+        let relation_prefix = [5u16.to_be_bytes().as_slice(), &[1]].concat();
+        for entry in catalog.iter().unwrap() {
+            let (key, value) = entry.unwrap();
+            let key = key.value();
+            if key.starts_with(&object_prefix) {
+                let record = decode_registered_envelope(value.value()).unwrap();
+                let field = |tag| {
+                    record
+                        .fields
+                        .iter()
+                        .find(|field| field.tag == tag)
+                        .unwrap()
+                        .payload
+                        .as_slice()
+                };
+                if field(1) == 3u16.to_le_bytes() && field(2) == [0x31; 16] && field(3) == b"orders"
+                {
+                    expected_name_ids.push(record.logical_key[3..].try_into().unwrap());
+                }
+            }
+            if key.starts_with(&relation_prefix) {
+                let record = decode_registered_envelope(value.value()).unwrap();
+                if record
+                    .fields
+                    .iter()
+                    .find(|field| field.tag == 1)
+                    .is_some_and(|field| field.payload.as_slice() == [0x31; 16])
+                {
+                    expected_schema_relations.push(record.logical_key[3..].try_into().unwrap());
+                }
+            }
+        }
+        expected_name_ids.sort_unstable();
+        expected_schema_relations.sort_unstable();
+        assert_eq!(expected_name_ids, vec![[0x32; 16]]);
+        assert_eq!(expected_schema_relations, vec![[0x32; 16]]);
         assert_eq!(
             lookup_relation_id_by_name(&read, [0x31; 16], "orders").unwrap(),
-            Some([0x32; 16])
+            expected_name_ids.first().copied()
         );
         assert_eq!(
             scan_relation_ids_for_schema(&read, [0x31; 16], 1).unwrap(),
-            vec![[0x32; 16]]
+            expected_schema_relations
         );
         assert!(
             read.open_table(RELATION_NAMES)
