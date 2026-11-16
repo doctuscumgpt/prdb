@@ -389,3 +389,9 @@
 
 - Extended `storage_manager_adds_column_and_backfills_existing_rows` to pin a table definition in one invocation before ADD COLUMN, then load the new definition from a separate invocation with a different principal after DDL. The new invocation sees schema version 2 and the added stable column ID; reloading through the older invocation still returns its pinned schema version 1 and original column IDs.
 - Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
+
+## DD-5: ADD COLUMN snapshots survive row-version churn and reclamation — verified slice
+
+- Extended `storage_manager_adds_column_and_backfills_existing_rows` to hold pre- and post-ADD COLUMN redb snapshots while the backfilled row is overwritten 64 times. The retained snapshots still decode their respective old and new layouts, including the immutable default. After releasing all invocation and read handles, explicit redb compaction succeeds; startup validates the compacted catalog and the current row retains the final version and default.
+- Verification: focused real-redb regression passed. Formatting, locked workspace build, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process integration tests enabled and zero ignored tests.
+- Remaining: longer-duration mixed catalog-DDL/read campaigns and continued codec fuzzing remain additional hardening work.

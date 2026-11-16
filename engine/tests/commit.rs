@@ -6382,7 +6382,7 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
     };
 
     let fixture = Fixture::new();
-    let database = initialize(&fixture.path())?;
+    let mut database = initialize(&fixture.path())?;
     let storage = StorageManager::new(&database, Duration::from_millis(100))?;
     let actor = id(0x5d);
     let admin_role = builtin_owner_id();
@@ -6575,6 +6575,8 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
     );
     old_cache_reader.abort()?;
     new_cache_reader.abort()?;
+    drop(old_cache_reader);
+    drop(new_cache_reader);
 
     let retained_default_snapshot = database.begin_read()?;
     for generation in 0..64u8 {
@@ -6609,6 +6611,7 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
         &retained_row.payload,
     )?;
     assert_eq!(retained_tuple.values, vec![Some(ScalarValue::Integer(7))]);
+    drop(retained_rows);
     let retained_default_rows = prdb_engine::snapshot::RowSnapshot::new(retained_default_snapshot);
     let retained_default_row = RowRecord::decode(
         &retained_default_rows
@@ -6636,6 +6639,7 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
             Some(ScalarValue::Text("ready".to_owned())),
         ]
     );
+    drop(retained_default_rows);
     if stale_write_sequence.is_some() {
         let row_after_add = row(&database, &table_row_key(table.table_id, stale_row_id.row))?
             .ok_or("ADD COLUMN race lost the writer-first row")?;
@@ -6713,6 +6717,9 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
         IndexLocator::decode_for_key(&indexed_key.key, locator.value())?.row_version,
         stored.row_version
     );
+    drop(index_record);
+    drop(locator);
+    drop(read);
 
     let nullable_add_invocation = id(0x6e);
     let mut nullable_add_audit = identity_audit_event(0x6f, actor, id(0x70));
@@ -6813,6 +6820,31 @@ fn storage_manager_adds_column_and_backfills_existing_rows()
     assert_eq!(
         IndexLocator::decode_for_key(&nullable_indexed_key.key, locator.value())?.row_version,
         stored.row_version
+    );
+    drop(index_record);
+    drop(locator);
+    drop(read);
+
+    drop(storage);
+    assert!(
+        database.compact()?,
+        "catalog row churn should produce reclaimable pages"
+    );
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    let compacted = row(&database, &table_row_key(table.table_id, row_id.row))?
+        .ok_or("compaction lost the current backfilled row")?;
+    let compacted_tuple = decode_tuple(
+        &nullable_schema_columns,
+        nullable_added.schema_version,
+        &compacted.payload,
+    )?;
+    assert_eq!(
+        compacted_tuple.values,
+        vec![
+            Some(ScalarValue::Integer(7)),
+            Some(ScalarValue::Text("generation-63".to_owned())),
+            None,
+        ]
     );
     Ok(())
 }
