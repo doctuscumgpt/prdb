@@ -8756,10 +8756,16 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
     let database = initialize(&fixture.path())?;
     let storage = StorageManager::new(&database, Duration::from_millis(100))?;
     let actor = id(0x41);
+    let membership_member = id(0x42);
+    let pressure_role_id = pressure_id(0x45, 0);
     let admin_role = builtin_owner_id();
     let setup = [
         principal_write_with_name(actor, 1, 1, "dictionary_pressure_actor"),
         object_write_with_name(actor, 8, "dictionary_pressure_actor"),
+        principal_write_with_name(membership_member, 1, 1, "dictionary_pressure_member"),
+        object_write_with_name(membership_member, 8, "dictionary_pressure_member"),
+        principal_write_with_name(pressure_role_id, 2, 1, "dictionary_pressure_role"),
+        object_write_with_name(pressure_role_id, 9, "dictionary_pressure_role"),
         grant_write(actor, id(0x33), 14, 1, id(0x33), admin_role),
         dependency_write(actor, id(0x33), 5),
     ];
@@ -8824,6 +8830,24 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
         retention_deadline_us: 9_999,
         audit_event: references_grant_audit,
     })?;
+    let membership_epoch_update = |next_epoch: u64| -> Result<_, Box<dyn std::error::Error>> {
+        let mut write = principal_write_with_name(
+            membership_member,
+            1,
+            next_epoch,
+            "dictionary_pressure_member",
+        );
+        let read = database.begin_read()?;
+        write.expected_value = Some(
+            read.open_table(CATALOG)?
+                .get(id_catalog_key(10, membership_member).as_slice())?
+                .ok_or("membership pressure principal disappeared")?
+                .value()
+                .to_vec(),
+        );
+        Ok(write)
+    };
+    let mut membership_member_epoch = 1u64;
 
     let names = (0..SCHEMA_COUNT)
         .map(|index| format!("dictionary_pressure_{index:03}"))
@@ -8893,6 +8917,112 @@ fn schema_create_drop_pressure_preserves_pinned_name_index_snapshots()
                 retention_deadline_us: 9_999,
                 audit_event: table_create_audit,
             })?;
+            let membership_grant_invocation = pressure_id(0xb4, index);
+            let mut membership_grant_audit =
+                identity_audit_event(index as u8, actor, pressure_role_id);
+            membership_grant_audit.event_id = pressure_id(0xb5, index);
+            membership_grant_audit.correlation_id = membership_grant_invocation;
+            membership_grant_audit.action = AuditAction::AuthorityChange;
+            storage
+                .commit_catalog_and_audit(
+                    membership_grant_invocation,
+                    actor,
+                    9_999,
+                    &[
+                        membership_write_with_grantor(membership_member, pressure_role_id, actor),
+                        dependency_write(membership_member, pressure_role_id, 5),
+                        membership_epoch_update(membership_member_epoch + 1)?,
+                    ],
+                    &[membership_grant_audit],
+                )
+                .map_err(|error| format!("pressure membership grant commit failed: {error:?}"))?;
+            membership_member_epoch += 1;
+            let retained_membership_snapshot = database.begin_read()?;
+            assert!(
+                prdb_engine::catalog_index::lookup_roles_for_member(
+                    &retained_membership_snapshot,
+                    membership_member,
+                )?
+                .contains(&pressure_role_id)
+            );
+            assert!(
+                prdb_engine::catalog_index::lookup_members_for_role(
+                    &retained_membership_snapshot,
+                    pressure_role_id,
+                )?
+                .contains(&membership_member)
+            );
+            let mut membership_remove =
+                membership_write_with_grantor(membership_member, pressure_role_id, actor);
+            let mut dependency_remove = dependency_write(membership_member, pressure_role_id, 5);
+            {
+                let current = database.begin_read()?;
+                let catalog = current.open_table(CATALOG)?;
+                membership_remove.expected_value = Some(
+                    catalog
+                        .get(membership_remove.key.as_slice())?
+                        .ok_or("membership disappeared before pressure revoke")?
+                        .value()
+                        .to_vec(),
+                );
+                membership_remove.payload = None;
+                dependency_remove.expected_value = Some(
+                    catalog
+                        .get(dependency_remove.key.as_slice())?
+                        .ok_or("membership dependency disappeared before pressure revoke")?
+                        .value()
+                        .to_vec(),
+                );
+                dependency_remove.payload = None;
+            }
+            let membership_revoke_invocation = pressure_id(0xb6, index);
+            let mut membership_revoke_audit =
+                identity_audit_event(index as u8, actor, pressure_role_id);
+            membership_revoke_audit.event_id = pressure_id(0xb7, index);
+            membership_revoke_audit.correlation_id = membership_revoke_invocation;
+            membership_revoke_audit.action = AuditAction::AuthorityChange;
+            storage.commit_catalog_and_audit(
+                membership_revoke_invocation,
+                actor,
+                9_999,
+                &[
+                    membership_remove,
+                    dependency_remove,
+                    membership_epoch_update(membership_member_epoch + 1)?,
+                ],
+                &[membership_revoke_audit],
+            )?;
+            membership_member_epoch += 1;
+            assert!(
+                prdb_engine::catalog_index::lookup_roles_for_member(
+                    &retained_membership_snapshot,
+                    membership_member,
+                )?
+                .contains(&pressure_role_id)
+            );
+            assert!(
+                prdb_engine::catalog_index::lookup_members_for_role(
+                    &retained_membership_snapshot,
+                    pressure_role_id,
+                )?
+                .contains(&membership_member)
+            );
+            drop(retained_membership_snapshot);
+            let after_membership_revoke = database.begin_read()?;
+            assert!(
+                !prdb_engine::catalog_index::lookup_roles_for_member(
+                    &after_membership_revoke,
+                    membership_member,
+                )?
+                .contains(&pressure_role_id)
+            );
+            assert!(
+                !prdb_engine::catalog_index::lookup_members_for_role(
+                    &after_membership_revoke,
+                    pressure_role_id,
+                )?
+                .contains(&membership_member)
+            );
             let grant_create_invocation = pressure_id(0xb0, index);
             let mut grant_create_audit = identity_audit_event(index as u8, actor, table.table_id);
             grant_create_audit.event_id = pressure_id(0xb1, index);

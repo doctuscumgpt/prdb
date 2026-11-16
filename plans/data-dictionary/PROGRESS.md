@@ -590,3 +590,9 @@
 
 - Extended `schema_create_drop_pressure_preserves_pinned_name_index_snapshots` with a table-scoped SELECT grant and revoke in each of its 128 lifecycle cycles. The grant lookup resolves the published record, a retained snapshot still returns it after revoke, and a fresh snapshot returns no grants for that table.
 - Verification: the focused 128-cycle real-redb regression passed; format check, warning-denied all-target workspace Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
+
+## 2026-11-16 DD-2 / DD-5 / ID-3: membership indexes under repeated catalog pressure — verified slice
+
+- Extended the same 128-cycle real-redb campaign with role membership and revocation for each temporary table cycle. The test updates the authoritative family-11 edge, dependency edge, and member epoch together; both member-to-role and role-to-member lookups resolve the edge, a retained snapshot preserves it across revoke, and a fresh snapshot omits it in both directions.
+- The pressure fixture uses trusted catalog writes to isolate derived-index and snapshot behavior; authorized membership DDL remains covered by its separate storage and process regressions.
+- Verification: the focused pressure regression passed; formatting, warning-denied all-target workspace Clippy, `git diff --check`, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests.
