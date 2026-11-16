@@ -22816,6 +22816,165 @@ fn storage_manager_authorizes_identity_ddl_and_preserves_a_login_admin()
 }
 
 #[test]
+fn login_reenable_racing_token_issue_only_publishes_after_enable()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{
+        IdentityLifecycleError, TokenIssueRequest, TokenLifecycleError,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let admin_user = id(0xd0);
+    let admin_role = builtin_owner_id();
+    let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?;
+    let retention_deadline_us = now.saturating_add(7_200_000_000);
+    let mut setup_audit = identity_audit_event(0xd0, admin_role, admin_user);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(
+        id(0xd0),
+        admin_role,
+        retention_deadline_us,
+        &[
+            principal_write_with_name(admin_user, 1, 1, "reenable_race_admin"),
+            object_write_with_name(admin_user, 8, "reenable_race_admin"),
+            membership_write_with_grantor(admin_user, admin_role, admin_role),
+            dependency_write(admin_user, admin_role, 5),
+            credential_verifier_write(
+                id(0xd1),
+                admin_user,
+                &[0xd1; 32],
+                now - 1_000_000,
+                i64::MAX,
+                None,
+                1,
+            ),
+        ],
+        &[setup_audit],
+    )?;
+
+    let mut create_audit = identity_audit_event(0xd2, admin_user, admin_user);
+    create_audit.correlation_id = id(0xd2);
+    let target = storage.create_user_no_login(
+        id(0xd2),
+        admin_user,
+        "reenable_race_target",
+        retention_deadline_us,
+        create_audit,
+    )?;
+    let enable_invocation = id(0xd3);
+    let issue_invocation = id(0xd4);
+    let mut enable_audit = identity_audit_event(0xd3, admin_user, target.user_id);
+    enable_audit.correlation_id = enable_invocation;
+    let mut issue_audit = identity_audit_event(0xd4, admin_user, target.user_id);
+    issue_audit.action = AuditAction::TokenLifecycle;
+    issue_audit.correlation_id = issue_invocation;
+    let expires_at_us = now.saturating_add(3_600_000_000);
+    let barrier = Arc::new(Barrier::new(3));
+    let (enable_result, issue_result) = std::thread::scope(|scope| {
+        let enable_barrier = Arc::clone(&barrier);
+        let enable_storage = &storage;
+        let enable = scope.spawn(move || {
+            enable_barrier.wait();
+            enable_storage.set_user_login_enabled(
+                enable_invocation,
+                admin_user,
+                target.user_id,
+                true,
+                retention_deadline_us,
+                enable_audit,
+            )
+        });
+        let issue_barrier = Arc::clone(&barrier);
+        let issue_storage = &storage;
+        let issue = scope.spawn(move || {
+            issue_barrier.wait();
+            issue_storage.issue_token(TokenIssueRequest {
+                invocation_id: issue_invocation,
+                authenticated_actor_id: admin_user,
+                user_id: target.user_id,
+                label: "after LOGIN enable",
+                expires_at_us,
+                retention_deadline_us,
+                audit_event: issue_audit,
+            })
+        });
+        barrier.wait();
+        (
+            enable.join().expect("LOGIN-enable thread panicked"),
+            issue.join().expect("token-issue thread panicked"),
+        )
+    });
+    let (enable_sequence, enable_committed) = match enable_result {
+        Ok(sequence) => (sequence, true),
+        Err(IdentityLifecycleError::Commit(CommitError::Conflict)) => {
+            let mut retry_audit = identity_audit_event(0xd5, admin_user, target.user_id);
+            retry_audit.correlation_id = id(0xd5);
+            let sequence = storage.set_user_login_enabled(
+                id(0xd5),
+                admin_user,
+                target.user_id,
+                true,
+                retention_deadline_us,
+                retry_audit,
+            )?;
+            (sequence, false)
+        }
+        Err(error) => return Err(Box::new(error)),
+    };
+    let issued = match issue_result {
+        Ok(token) => Some((token.token_id, token.commit_sequence)),
+        Err(TokenLifecycleError::Commit(
+            CommitError::DdlAuthorizationDenied
+            | CommitError::Conflict
+            | CommitError::InvalidCatalog,
+        )) => None,
+        Err(error) => return Err(Box::new(error)),
+    };
+    if let Some((_, issue_sequence)) = issued {
+        assert!(
+            enable_sequence < issue_sequence,
+            "token became durable before LOGIN was enabled"
+        );
+    }
+    assert_eq!(
+        lookup_outcome(&database, enable_invocation, admin_user, now)?
+            .ok_or("missing LOGIN enable outcome")?
+            .status,
+        if enable_committed {
+            OutcomeStatus::Committed
+        } else {
+            OutcomeStatus::Aborted
+        },
+    );
+    if let Some((token_id, _)) = issued {
+        assert_eq!(
+            lookup_outcome(&database, issue_invocation, admin_user, now)?
+                .ok_or("missing token issue outcome")?
+                .status,
+            OutcomeStatus::Committed,
+        );
+        assert!(
+            storage
+                .list_tokens(admin_user, target.user_id)?
+                .iter()
+                .any(|token| token.token_id == token_id && !token.revoked)
+        );
+    } else {
+        assert_eq!(
+            lookup_outcome(&database, issue_invocation, admin_user, now)?
+                .ok_or("missing rejected token issue outcome")?
+                .status,
+            OutcomeStatus::Aborted,
+        );
+        assert!(storage.list_tokens(admin_user, target.user_id)?.is_empty());
+    }
+    assert!(prdb_engine::startup::validate_persisted_records(&database).is_ok());
+    Ok(())
+}
+
+#[test]
 fn identity_login_reenable_does_not_revive_revoked_credentials()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

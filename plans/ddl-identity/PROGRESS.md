@@ -261,3 +261,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added `login_disable_racing_token_admission_linearizes_before_or_after_start`. A real-redb barrier races authenticated invocation admission with LOGIN disable and accepts only admission-before-disable or authentication rejection after disable. A separately admitted reader continues to resolve the same pinned schema, the issued token is revoked, and every post-disable admission fails authentication.
 - Verification: focused real-redb regression passed. Locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests (294 library tests, 192 commit tests, 77 transaction tests, plus all remaining targets). `git diff --check` passed; Cargo.lock is unchanged.
+
+## ID-2 / ID-5: LOGIN re-enable races token issuance — verified slice
+
+- Added `login_reenable_racing_token_issue_only_publishes_after_enable`. A real-redb barrier races enabling a NOLOGIN user with token issuance. Issuance can commit only after LOGIN enable commits; otherwise the authorization check rejects it and no verifier appears in inventory. The test verifies durable invocation outcomes and validates the final persisted catalog.
+- Verification: focused regression and the complete serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests (294 library tests, 195 commit tests, 78 transaction tests, plus all remaining targets). Locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. Cargo.lock is unchanged.
