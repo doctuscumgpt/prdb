@@ -1049,3 +1049,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Upgraded the column rename regression to race a writer staged against the old column name. Writer-first commits before the rename; rename-first makes the stale write durably ABORTED. Both paths check old/new name snapshots, row presence, durable outcome, and commit sequence.
 - Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
 - Remaining: additional ALTER combinations remain open.
+
+## DS-7 / DS-9: VARCHAR widening racing a staged writer — verified slice
+
+- Upgraded the metadata-only widening regression to race the ALTER against a staged write using the old VARCHAR width. Writer-first is ordered before widening; widen-first durably aborts the stale write. The test checks durable outcomes, row presence, retained old column parameters, stable tuple/index schema versions and keys, and the final table epoch.
+- Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
+- Remaining: additional ALTER combinations remain open.

@@ -5501,17 +5501,66 @@ fn storage_manager_widens_varchar_atomically_and_keeps_index_current()
     let widen_invocation = id(0x7d);
     let mut widen_audit = identity_audit_event(0x7e, actor, id(0x7f));
     widen_audit.correlation_id = widen_invocation;
-    storage
-        .widen_varchar_column(
-            widen_invocation,
-            actor,
-            table.table_id,
-            table.column_ids[0],
-            64,
-            9_999,
-            widen_audit,
+    let widen_table_id = table.table_id;
+    let widen_column_id = table.column_ids[0];
+    let widen_barrier = Arc::new(Barrier::new(3));
+    let storage_ref = &storage;
+    let (stale_write_result, widen_result) = std::thread::scope(|scope| {
+        let writer_barrier = Arc::clone(&widen_barrier);
+        let writer = scope.spawn(move || {
+            writer_barrier.wait();
+            stale_writer.commit()
+        });
+        let ddl_barrier = Arc::clone(&widen_barrier);
+        let ddl = scope.spawn(move || {
+            ddl_barrier.wait();
+            storage_ref.widen_varchar_column(
+                widen_invocation,
+                actor,
+                widen_table_id,
+                widen_column_id,
+                64,
+                9_999,
+                widen_audit,
+            )
+        });
+        widen_barrier.wait();
+        (
+            writer.join().expect("VARCHAR widening writer panicked"),
+            ddl.join().expect("VARCHAR widening DDL panicked"),
         )
-        .map_err(|error| format!("VARCHAR widening rejected: {error:?}"))?;
+    });
+    let widen_sequence =
+        widen_result.map_err(|error| format!("VARCHAR widening rejected: {error:?}"))?;
+    let stale_write_sequence = match stale_write_result {
+        Ok(sequence) => Some(sequence),
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => None,
+        Err(error) => return Err(Box::new(error)),
+    };
+    if let Some(sequence) = stale_write_sequence {
+        assert!(sequence < widen_sequence);
+    }
+    assert_eq!(
+        row(&database, &table_row_key(table.table_id, stale_row_id))?.is_some(),
+        stale_write_sequence.is_some()
+    );
+    assert_eq!(
+        lookup_outcome(&database, stale_writer_invocation, actor, 1)?
+            .ok_or("missing staged VARCHAR-widen writer outcome")?
+            .status,
+        if stale_write_sequence.is_some() {
+            OutcomeStatus::Committed
+        } else {
+            OutcomeStatus::Aborted
+        }
+    );
+    assert_eq!(
+        lookup_outcome(&database, widen_invocation, actor, 1)?
+            .ok_or("missing VARCHAR-widen DDL outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
+    assert_eq!(commit_sequence(&database)?, widen_sequence);
 
     let old_catalog = old_snapshot.open_table(CATALOG)?;
     let old_column = decode_registered_envelope(
@@ -5636,14 +5685,6 @@ fn storage_manager_widens_varchar_atomically_and_keeps_index_current()
     );
     drop(rows);
     drop(read);
-
-    assert!(matches!(
-        stale_writer.commit(),
-        Err(prdb_engine::transaction::TransactionError::Commit(
-            CommitError::Conflict
-        ))
-    ));
-    assert!(row(&database, &table_row_key(table.table_id, stale_row_id))?.is_none());
 
     let before_rejected = commit_sequence(&database)?;
     let reject_invocation = id(0x80);
