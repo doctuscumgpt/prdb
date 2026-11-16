@@ -5225,6 +5225,158 @@ fn storage_manager_sets_and_drops_not_null_with_existing_row_validation()
 }
 
 #[test]
+fn set_not_null_racing_a_staged_null_insert_is_atomic() -> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{CreateTableRequest, TableColumnDefinition};
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(500))?;
+    let actor = id(0x51);
+    let admin_role = builtin_owner_id();
+    let setup = [
+        principal_write_with_name(actor, 1, 1, "set_not_null_race_owner"),
+        object_write_with_name(actor, 8, "set_not_null_race_owner"),
+        membership_write(actor, admin_role),
+        dependency_write(actor, admin_role, 5),
+    ];
+    let mut setup_audit = identity_audit_event(0x52, admin_role, id(0x53));
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0x53), admin_role, 9_999, &setup, &[setup_audit])?;
+
+    let schema_invocation = id(0x54);
+    let mut schema_audit = identity_audit_event(0x55, actor, id(0x56));
+    schema_audit.correlation_id = schema_invocation;
+    let schema = storage.create_schema(
+        schema_invocation,
+        actor,
+        "set_not_null_race_schema",
+        actor,
+        9_999,
+        schema_audit,
+    )?;
+    let table_invocation = id(0x57);
+    let mut table_audit = identity_audit_event(0x58, actor, id(0x59));
+    table_audit.correlation_id = table_invocation;
+    let table = storage.create_table(CreateTableRequest {
+        invocation_id: table_invocation,
+        authenticated_actor_id: actor,
+        schema_id: schema.schema_id,
+        name: "nullable_table".to_owned(),
+        columns: vec![TableColumnDefinition {
+            name: "value".to_owned(),
+            scalar_type: ScalarType::Text,
+            nullable: true,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+        retention_deadline_us: 9_999,
+        audit_event: table_audit,
+    })?;
+    let baseline_sequence = commit_sequence(&database)?;
+
+    let writer_invocation = id(0x5a);
+    let mut writer = storage.begin_invocation(writer_invocation, actor, 9_999, 1, 1024)?;
+    let writer_schema = writer.load_catalog_table_schema(table.table_id)?;
+    writer.load_catalog_indexes(&writer_schema)?;
+    writer.load_catalog_check_constraints(&writer_schema)?;
+    let null_payload = encode_tuple(
+        &writer_schema.columns,
+        writer_schema.schema_version,
+        &[None],
+    )?;
+    let row_id = id(0x5b);
+    writer.stage_put(
+        prdb_engine::overlay::RowId {
+            table: table.table_id,
+            row: row_id,
+        },
+        &null_payload,
+    )?;
+
+    let ddl_invocation = id(0x5c);
+    let table_id = table.table_id;
+    let column_id = table.column_ids[0];
+    let barrier = Arc::new(Barrier::new(3));
+    let (writer_result, ddl_result) = std::thread::scope(|scope| {
+        let writer_barrier = barrier.clone();
+        let writer_task = scope.spawn(move || {
+            writer_barrier.wait();
+            writer.commit()
+        });
+        let ddl_barrier = barrier.clone();
+        let ddl_storage = &storage;
+        let ddl_task = scope.spawn(move || {
+            let mut audit = identity_audit_event(0x5d, actor, column_id);
+            audit.correlation_id = ddl_invocation;
+            ddl_barrier.wait();
+            ddl_storage.set_column_nullable(
+                ddl_invocation,
+                actor,
+                table_id,
+                column_id,
+                false,
+                9_999,
+                audit,
+            )
+        });
+        barrier.wait();
+        (writer_task.join().unwrap(), ddl_task.join().unwrap())
+    });
+
+    let writer_status = match writer_result {
+        Ok(_) => OutcomeStatus::Committed,
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            OutcomeStatus::Aborted
+        }
+        other => panic!("unexpected NULL writer result: {other:?}"),
+    };
+    let ddl_status = match ddl_result {
+        Ok(_) => OutcomeStatus::Committed,
+        Err(prdb_engine::storage_manager::TableLifecycleError::Commit(
+            CommitError::NotNullViolation,
+        )) => OutcomeStatus::Aborted,
+        other => panic!("unexpected SET NOT NULL result: {other:?}"),
+    };
+    assert_ne!(writer_status, ddl_status);
+    assert_eq!(
+        lookup_outcome(&database, writer_invocation, actor, 1)?
+            .ok_or("missing staged NULL writer outcome")?
+            .status,
+        writer_status
+    );
+    assert_eq!(
+        lookup_outcome(&database, ddl_invocation, actor, 1)?
+            .ok_or("missing SET NOT NULL outcome")?
+            .status,
+        ddl_status
+    );
+    assert_eq!(commit_sequence(&database)?, baseline_sequence + 1);
+    assert_eq!(
+        row(&database, &table_row_key(table.table_id, row_id))?.is_some(),
+        writer_status == OutcomeStatus::Committed
+    );
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    let column = catalog
+        .get(id_catalog_key(6, table.column_ids[0]).as_slice())?
+        .ok_or("column missing after SET NOT NULL race")?;
+    let record = decode_registered_envelope(column.value())?;
+    let nullable = record
+        .fields
+        .iter()
+        .find(|field| field.tag == 6)
+        .ok_or("column nullability missing after race")?;
+    assert_eq!(
+        nullable.payload,
+        [u8::from(ddl_status == OutcomeStatus::Aborted)]
+    );
+    drop(catalog);
+    drop(read);
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    Ok(())
+}
+
+#[test]
 fn storage_manager_widens_varchar_atomically_and_keeps_index_current()
 -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::storage_manager::{

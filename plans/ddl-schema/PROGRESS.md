@@ -1019,3 +1019,9 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - `foreign_key_drop_racing_a_staged_child_write_is_atomic` stages a valid child insert against a pinned catalog that still contains its FK, then races the writer commit with FK removal. Writer-first preserves the valid child row before the drop; drop-first makes the stale writer durably ABORTED without advancing the commit sequence. Both orders leave the FK, name index, and dependency removed, with startup catalog validation succeeding.
 - Verification: focused real-redb race passed; locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests; its 182 commit integration tests include this race.
 - Remaining: stale-writer races for index/constraint DDL and additional ALTER combinations remain open.
+
+## DS-7: SET NOT NULL racing a staged NULL insert — verified slice
+
+- `set_not_null_racing_a_staged_null_insert_is_atomic` starts a staged NULL row insert and `SET NOT NULL` from the same nullable snapshot. If the row publishes first, the ALTER records an aborted `NotNullViolation`; if the ALTER publishes first, the stale insert records ABORTED. The test verifies exactly one successful commit, matching row/nullability state, both durable outcomes, and startup catalog validity.
+- Verification: focused real-redb race, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
+- Remaining: stale-writer races for index/constraint DDL and additional ALTER combinations remain open.
