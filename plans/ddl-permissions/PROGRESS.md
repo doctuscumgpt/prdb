@@ -125,6 +125,11 @@
 - The membership DDL race now covers revocation of `MANAGE_ROLES` while the same actor submits a role membership grant. The privilege owner revocation commits in both orders; the membership edge and its durable outcome match the commit order.
 - Verification: focused real-redb regression, locked workspace build, format check, warning-denied all-target Clippy, and `git diff --check` passed. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests: 291 unit tests, 183 commit tests, 75 transaction tests, and all remaining targets.
 
+## DP-3: duplicate policy names reject before publication — verified slice
+
+- Extended `storage_manager_authorizes_policy_ddl_for_owners_and_inherited_manage_policies` to create a policy, then attempt a second policy with the same table-local name. The duplicate returns `InvalidRequest`, and the catalog commit sequence remains unchanged.
+- Verification: focused real-redb policy DDL regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).
+
 ## 2026-11-16 delegated integration refresh
 
 - The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests: 291 engine unit tests, 179 commit integration tests, and 75 transaction tests. It includes atomic multi-privilege grants racing `MANAGE_GRANTS` revocation plus the authenticated metadata grant/policy lifecycle.

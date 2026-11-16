@@ -23405,6 +23405,28 @@ fn storage_manager_authorizes_policy_ddl_for_owners_and_inherited_manage_policie
             .status,
         OutcomeStatus::Committed
     );
+    let duplicate_policy_invocation = id(0x8c);
+    let mut duplicate_policy_audit = policy_audit(0x8c, table_owner);
+    duplicate_policy_audit.correlation_id = duplicate_policy_invocation;
+    assert!(matches!(
+        storage.create_policy(prdb_engine::storage_manager::CreatePolicyRequest {
+            invocation_id: duplicate_policy_invocation,
+            authenticated_actor_id: table_owner,
+            table_id,
+            name: "typed_policy".to_owned(),
+            kind: prdb_engine::storage_manager::PolicyKind::Row,
+            operation: prdb_engine::authorization::Operation::Select,
+            effect: prdb_engine::authorization::Effect::Allow,
+            recipients: vec![prdb_engine::authorization::Subject::Role(manager_role)],
+            target_column_ids: Vec::new(),
+            using_expression: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+            with_check_expression: None,
+            retention_deadline_us: 9_999,
+            audit_event: duplicate_policy_audit,
+        }),
+        Err(prdb_engine::storage_manager::TableLifecycleError::InvalidRequest)
+    ));
+    assert_eq!(commit_sequence(&database)?, 6);
     let mut drop_policy_audit = policy_audit(0x88, table_owner);
     drop_policy_audit.correlation_id = id(0x88);
     let drop_sequence = storage.drop_policy(prdb_engine::storage_manager::DropPolicyRequest {
