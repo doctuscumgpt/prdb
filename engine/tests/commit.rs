@@ -11137,6 +11137,7 @@ fn storage_manager_authorizes_constraint_ddl_by_table_alter()
         removed_constraint,
         removed_object,
         column_nullable,
+        identity_tombstone_write(constraint_id),
         table_epoch(3),
     ];
     owner_audit.event_id = id(0xaf);
@@ -11412,6 +11413,8 @@ fn storage_manager_authorizes_constraint_ddl_by_table_alter()
             expected_value: dependency_write(check_constraint_id, check_expression_id, 2).payload,
             payload: None,
         },
+        identity_tombstone_write(check_constraint_id),
+        identity_tombstone_write(check_expression_id),
         table_epoch(5),
     ];
     let check_drop_audit = identity_audit_event(0xb4, table_owner, check_constraint_id);
@@ -11493,6 +11496,7 @@ fn storage_manager_authorizes_constraint_ddl_by_table_alter()
             expected_value: unique_dependency.payload,
             payload: None,
         },
+        identity_tombstone_write(unique_constraint_id),
         identity_tombstone_write(unique_index_id),
         table_epoch(7),
     ];
@@ -11621,6 +11625,7 @@ fn storage_manager_authorizes_constraint_ddl_by_table_alter()
             expected_value: primary_dependency.payload,
             payload: None,
         },
+        identity_tombstone_write(primary_constraint_id),
         identity_tombstone_write(primary_index_id),
         table_epoch(10),
     ];
@@ -14623,6 +14628,15 @@ fn storage_manager_creates_primary_key_with_owned_unique_index()
             .is_empty()
     );
     drop(retired_index);
+    let retired_constraint = current_catalog
+        .get(id_catalog_key(17, created.constraint_id).as_slice())?
+        .ok_or("missing retired PRIMARY KEY constraint identifier")?;
+    assert!(
+        decode_registered_envelope(retired_constraint.value())?
+            .fields
+            .is_empty()
+    );
+    drop(retired_constraint);
     drop(current_catalog);
     drop(current_read);
 

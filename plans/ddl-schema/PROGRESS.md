@@ -1,5 +1,11 @@
 # Schema DDL Progress
 
+## DS-3 / CL-3 / DD-3: constraint drops reserve constraint-owned identifiers — verified slice
+
+- CHECK/NOT NULL drops reserve constraint and expression IDs; PRIMARY KEY/UNIQUE drops reserve constraint and backing-index IDs. Reservations are published atomically with typed records, dependencies, and table epoch.
+- Constraint authorization and DROP COLUMN focused regressions passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process integration tests enabled and zero ignored tests; workspace build, formatting, and warning-denied all-target Clippy passed.
+
+
 ## DS-3 / CL-3 / DD-3: DROP COLUMN reserves column and default-expression IDs — verified slice
 
 - DROP COLUMN now creates permanent family-17 reservations for the dropped column and removed owned expressions in the authorized publication. Validation rejects missing or unrelated reservations.

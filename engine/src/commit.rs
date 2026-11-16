@@ -14410,9 +14410,11 @@ fn constraint_ddl_authority_guards(
         || expected_dependencies != dependency_changes
         || expected_index_definitions != index_definition_states
         || tombstone_changes
-            != index_definition_states
+            != object_changes
                 .iter()
-                .filter_map(|(index_id, state)| (*state == (true, false)).then_some(*index_id))
+                .filter_map(|(object_id, (kind, was_present, is_present))| {
+                    (*was_present && !*is_present && matches!(kind, 5..=7)).then_some(*object_id)
+                })
                 .collect::<HashSet<_>>()
         || affected_tables.len() != table_changes.len()
         || table_changes

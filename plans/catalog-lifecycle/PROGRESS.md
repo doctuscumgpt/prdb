@@ -1,5 +1,11 @@
 # Catalog Lifecycle Progress
 
+## CL-3 / DD-3 / DS-3: constraint DDL retires constraint and expression identifiers — verified slice
+
+- Constraint DDL now writes immutable reservations for every deleted constraint, owned expression, and backing index record. Serialized validation checks the exact deleted-object set, including replaced/dropped default expressions and CHECK expressions.
+- Focused constraint authorization and DROP COLUMN regressions passed. The full serial delegated-cgroup workspace suite passed with sandbox and process integration tests enabled and zero ignored tests; workspace build, formatting, and warning-denied all-target Clippy passed.
+
+
 ## CL-3 / DD-3 / DP-3: DROP POLICY reserves deleted IDs — verified slice
 
 - Policy deletion and same-name replacement publish reservations for every removed policy and expression object. Commit validation rejects a missing, malformed, duplicate, or unrelated reservation.

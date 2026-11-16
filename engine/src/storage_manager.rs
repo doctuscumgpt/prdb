@@ -11940,6 +11940,27 @@ impl<'db> StorageManager<'db> {
                 next_table_epoch,
             )?),
         });
+        let retired_ids = writes
+            .iter()
+            .filter(|write| write.key.starts_with(&2u16.to_be_bytes()) && write.payload.is_none())
+            .filter_map(|write| write.key.get(3..19))
+            .filter_map(|bytes| <[u8; 16]>::try_from(bytes).ok())
+            .collect::<HashSet<_>>();
+        for retired_id in retired_ids {
+            let reservation_key = retired_object_id_catalog_key(retired_id);
+            let reservation_payload = encode_envelope(
+                &family_schema(17)
+                    .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?,
+                &reservation_key,
+                &[],
+            )
+            .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+            writes.push(CatalogWrite {
+                key: reservation_key,
+                expected_value: None,
+                payload: Some(reservation_payload),
+            });
+        }
         drop(catalog);
         drop(read);
         audit_event.target_ids = vec![constraint_id, expression_id];
@@ -12103,18 +12124,27 @@ impl<'db> StorageManager<'db> {
                 next_epoch,
             )?),
         });
-        let reservation_key = retired_object_id_catalog_key(index_id);
-        let reservation_payload = encode_envelope(
-            &family_schema(17).ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?,
-            &reservation_key,
-            &[],
-        )
-        .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
-        writes.push(CatalogWrite {
-            key: reservation_key,
-            expected_value: None,
-            payload: Some(reservation_payload),
-        });
+        let retired_ids = writes
+            .iter()
+            .filter(|write| write.key.starts_with(&2u16.to_be_bytes()) && write.payload.is_none())
+            .filter_map(|write| write.key.get(3..19))
+            .filter_map(|bytes| <[u8; 16]>::try_from(bytes).ok())
+            .collect::<HashSet<_>>();
+        for retired_id in retired_ids {
+            let reservation_key = retired_object_id_catalog_key(retired_id);
+            let reservation_payload = encode_envelope(
+                &family_schema(17)
+                    .ok_or(TableLifecycleError::Commit(CommitError::InvalidCatalog))?,
+                &reservation_key,
+                &[],
+            )
+            .map_err(|_| TableLifecycleError::Commit(CommitError::InvalidCatalog))?;
+            writes.push(CatalogWrite {
+                key: reservation_key,
+                expected_value: None,
+                payload: Some(reservation_payload),
+            });
+        }
         drop(catalog);
         drop(read);
         audit_event.target_ids = vec![constraint_id, index_id];
@@ -12666,13 +12696,60 @@ impl<'db> StorageManager<'db> {
         catalog_writes: &[CatalogWrite],
         audit_events: &[AuditEvent],
     ) -> Result<u64, CommitError> {
+        let mut writes = catalog_writes.to_vec();
+        let mut retired_ids = HashSet::new();
+        for write in catalog_writes {
+            if write.key.starts_with(&17u16.to_be_bytes())
+                && let Some(id) = write.key.get(3..19).and_then(|bytes| bytes.try_into().ok())
+            {
+                retired_ids.insert(id);
+            }
+            if !write.key.starts_with(&2u16.to_be_bytes()) || write.payload.is_some() {
+                continue;
+            }
+            let Some(id) = write.key.get(3..19).and_then(|bytes| bytes.try_into().ok()) else {
+                continue;
+            };
+            let Some(bytes) = write.expected_value.as_deref() else {
+                continue;
+            };
+            let record = read_catalog_record(&write.key, bytes, 2)
+                .map_err(|_| CommitError::InvalidCatalog)?;
+            let kind = record
+                .fields
+                .iter()
+                .find(|field| field.tag == 1 && field.wire_type == WireType::U16)
+                .and_then(|field| <[u8; 2]>::try_from(field.payload.as_slice()).ok())
+                .map(u16::from_le_bytes);
+            if kind.is_some_and(|kind| (5..=7).contains(&kind)) {
+                retired_ids.insert(id);
+            }
+        }
+        for id in retired_ids {
+            let key = retired_object_id_catalog_key(id);
+            if writes.iter().any(|write| write.key == key) {
+                continue;
+            }
+            writes.push(CatalogWrite {
+                payload: Some(
+                    encode_envelope(
+                        &family_schema(17).ok_or(CommitError::InvalidCatalog)?,
+                        &key,
+                        &[],
+                    )
+                    .map_err(|_| CommitError::InvalidCatalog)?,
+                ),
+                key,
+                expected_value: None,
+            });
+        }
         commit_authorized_constraint_ddl_with_fences(
             self.database,
             &self.ddl_fences,
             invocation_id,
             authenticated_principal_id,
             retention_deadline_us,
-            catalog_writes,
+            &writes,
             audit_events,
         )
     }
