@@ -302,6 +302,7 @@ pub struct InvocationTransaction<'db> {
     index_bytes: usize,
     invocation_id: [u8; 16],
     principal_id: [u8; 16],
+    controller_principal_id: [u8; 16],
     requested_scope: Option<HashSet<(Operation, AccessTarget)>>,
     retention_deadline_us: i64,
     coordination: InvocationCoordination,
@@ -656,11 +657,31 @@ impl InvocationCoordination {
 }
 
 impl<'db> InvocationTransaction<'db> {
+    /// Principal identities that authored the transaction's final staged rows.
+    /// Interactive commit uses this set to revalidate only actors whose
+    /// writes will be published.
+    pub(crate) fn staged_write_actor_ids(&self) -> Result<HashSet<[u8; 16]>, TransactionError> {
+        Ok(self.overlay.staged_actor_ids()?)
+    }
+
     pub(crate) fn restrict_to_requested_scope(
         &mut self,
         requested_scope: HashSet<(Operation, AccessTarget)>,
     ) {
         self.requested_scope = Some(requested_scope);
+    }
+
+    pub(crate) fn set_package_requested_scope(
+        &mut self,
+        requested_scope: Option<HashSet<(Operation, AccessTarget)>>,
+    ) {
+        self.requested_scope = requested_scope;
+    }
+
+    /// Switch the effective actor for one interactive package while keeping
+    /// the transaction controller separately pinned for commit ownership.
+    pub(crate) fn set_package_principal(&mut self, principal_id: Option<[u8; 16]>) {
+        self.principal_id = principal_id.unwrap_or(self.controller_principal_id);
     }
 
     fn scope_from_grants(&self, grants: &[Grant]) -> HashSet<(Operation, AccessTarget)> {
@@ -781,6 +802,7 @@ impl<'db> InvocationTransaction<'db> {
             index_bytes: 0,
             invocation_id,
             principal_id,
+            controller_principal_id: principal_id,
             requested_scope: None,
             retention_deadline_us,
             max_scan_work: coordination.max_scan_work,
@@ -1596,7 +1618,9 @@ impl<'db> InvocationTransaction<'db> {
                     table: table_id,
                     row: row_id,
                 };
-                let Some(StagedRow::Value(payload)) = self.overlay.get(&id)? else {
+                let Some(StagedRow::Value(payload)) =
+                    self.overlay.get_for_actor(&id, self.principal_id)?
+                else {
                     continue;
                 };
                 let derived = derive_index_key(
@@ -1895,7 +1919,7 @@ impl<'db> InvocationTransaction<'db> {
                     table: table_id,
                     row: row_bytes,
                 };
-                match self.overlay.get(&row_id)? {
+                match self.overlay.get_for_actor(&row_id, self.principal_id)? {
                     Some(StagedRow::Delete) => {
                         candidate_ids.remove(&row_id);
                     }
@@ -2152,10 +2176,13 @@ impl<'db> InvocationTransaction<'db> {
             Err(_) => return self.finish_population_probe(None),
         };
         for row_id in overlay_row_ids {
-            let staged = match self.overlay.get(&RowId {
-                table: table_id,
-                row: row_id,
-            }) {
+            let staged = match self.overlay.get_for_actor(
+                &RowId {
+                    table: table_id,
+                    row: row_id,
+                },
+                self.principal_id,
+            ) {
                 Ok(Some(staged)) => staged,
                 Ok(None) => return self.finish_population_probe(None),
                 Err(OverlayError::Aborted) => return Err(TransactionError::Aborted),
@@ -2240,7 +2267,7 @@ impl<'db> InvocationTransaction<'db> {
                 table: table_id,
                 row: row_id,
             };
-            match self.overlay.get(&id) {
+            match self.overlay.get_for_actor(&id, self.principal_id) {
                 Ok(Some(StagedRow::Delete)) => continue,
                 Ok(Some(StagedRow::Value(_))) | Ok(None) => {}
                 Err(OverlayError::Aborted) => return Err(TransactionError::Aborted),
@@ -8202,7 +8229,7 @@ impl<'db> InvocationTransaction<'db> {
             .map(|bytes| RowRecord::decode(&bytes))
             .transpose()
             .map_err(TransactionError::CorruptRow)?;
-        match self.overlay.read(&id, |_| {
+        match self.overlay.read_for_actor(&id, self.principal_id, |_| {
             snapshot_row
                 .as_ref()
                 .map(|record| record.payload.as_slice())
@@ -8388,7 +8415,7 @@ impl<'db> InvocationTransaction<'db> {
             return Err(TransactionError::ScanStillActive);
         }
         self.capture_base_version(id)?;
-        if let Err(error) = self.overlay.put(id, payload) {
+        if let Err(error) = self.overlay.put_as(id, payload, self.principal_id) {
             self.coordination.update_write_set_usage(0, 0);
             return Err(error.into());
         }
@@ -8523,7 +8550,7 @@ impl<'db> InvocationTransaction<'db> {
         if self.active_scan.is_some() {
             return Err(TransactionError::ScanStillActive);
         }
-        match self.overlay.get(&id)? {
+        match self.overlay.get_for_actor(&id, self.principal_id)? {
             Some(StagedRow::Value(_)) => {}
             Some(StagedRow::Delete) if !present => {}
             _ => return Err(TransactionError::IndexRowNotStaged),
@@ -8776,7 +8803,7 @@ impl<'db> InvocationTransaction<'db> {
             return Err(TransactionError::ScanStillActive);
         }
         let base_version = self.capture_base_version(id)?;
-        let current = self.overlay.get(&id)?;
+        let current = self.overlay.get_for_actor(&id, self.principal_id)?;
         if matches!(current, Some(StagedRow::Delete)) {
             return Err(TransactionError::NotFound);
         }
@@ -8791,7 +8818,7 @@ impl<'db> InvocationTransaction<'db> {
             }
             return Err(TransactionError::NotFound);
         }
-        if let Err(error) = self.overlay.delete(id) {
+        if let Err(error) = self.overlay.delete_as(id, self.principal_id) {
             self.coordination.update_write_set_usage(0, 0);
             return Err(error.into());
         }

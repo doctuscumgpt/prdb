@@ -15,8 +15,9 @@ use crate::outcome::{InvocationOutcome, OutcomeStatus};
 use crate::row_record::RowRecord;
 use crate::schema::{
     AUDIT, CATALOG, COLUMN_LOOKUPS, DEPENDENCIES, ENGINE_META, GRANTS, INDEX_NAMES, INDEXES,
-    MEMBERSHIPS, OBJECT_OWNERS, OUTCOMES, POLICIES, PRINCIPAL_NAMES, RELATION_NAMES, ROW_INDEXES,
-    ROWS, SCHEMA_NAMES, STATS, TABLE_CONSTRAINTS, TABLE_INDEXES,
+    INTERACTIVE_TXN_RECOVERY_MAGIC, INTERACTIVE_TXN_RECOVERY_PREFIX, MEMBERSHIPS, OBJECT_OWNERS,
+    OUTCOMES, POLICIES, PRINCIPAL_NAMES, RELATION_NAMES, ROW_INDEXES, ROWS, SCHEMA_NAMES, STATS,
+    TABLE_CONSTRAINTS, TABLE_INDEXES,
 };
 use crate::tuple::{ColumnSchema, decode_tuple};
 use redb::{
@@ -1467,15 +1468,34 @@ fn read_metadata(read: &ReadTransaction) -> Result<EngineMetadata, StartupError>
     let mut metadata_bytes = None;
     for entry in table.iter().map_err(storage_error)? {
         let (key, value) = entry.map_err(storage_error)?;
-        if key.value() != METADATA_KEY {
+        if key.value() == METADATA_KEY {
+            if metadata_bytes.replace(value.value().to_vec()).is_some() {
+                return Err(StartupError::InvalidMetadata);
+            }
+        } else if key.value().starts_with(INTERACTIVE_TXN_RECOVERY_PREFIX) {
+            validate_interactive_txn_recovery_record(key.value(), value.value())?;
+        } else {
             return Err(StartupError::UnexpectedMetadataKey);
-        }
-        if metadata_bytes.replace(value.value().to_vec()).is_some() {
-            return Err(StartupError::InvalidMetadata);
         }
     }
     let bytes = metadata_bytes.ok_or(StartupError::InvalidMetadata)?;
     EngineMetadata::decode(&bytes).map_err(|_| StartupError::InvalidMetadata)
+}
+
+fn validate_interactive_txn_recovery_record(key: &[u8], value: &[u8]) -> Result<(), StartupError> {
+    const RECORD_BYTES: usize = 4 + 16 + 8;
+    if key.len() != INTERACTIVE_TXN_RECOVERY_PREFIX.len() + 16
+        || value.len() != RECORD_BYTES
+        || value[..4] != INTERACTIVE_TXN_RECOVERY_MAGIC[..]
+        || key[INTERACTIVE_TXN_RECOVERY_PREFIX.len()..]
+            .iter()
+            .all(|byte| *byte == 0)
+        || value[4..20].iter().all(|byte| *byte == 0)
+        || i64::from_le_bytes(value[20..28].try_into().expect("fixed recovery record")) <= 0
+    {
+        return Err(StartupError::InvalidMetadata);
+    }
+    Ok(())
 }
 
 fn validate_catalog(

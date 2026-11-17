@@ -18,6 +18,7 @@ pub enum SqlInputError {
     InvalidFormat,
     InvalidSql,
     InvalidSchema,
+    UnsupportedInteractiveStatement,
     TooLarge,
     Io,
 }
@@ -28,6 +29,9 @@ impl std::fmt::Display for SqlInputError {
             Self::InvalidFormat => "invalid SQL parameter file",
             Self::InvalidSql => "SQL input must be nonempty UTF-8 without NUL bytes",
             Self::InvalidSchema => "schema must be a normalized identifier",
+            Self::UnsupportedInteractiveStatement => {
+                "interactive statement is not a query supported by run-sql"
+            }
             Self::TooLarge => "SQL input or parameters exceed their size limit",
             Self::Io => "could not read SQL input",
         };
@@ -102,6 +106,68 @@ pub fn generate_query_source(schema: &str, sql: &[u8]) -> Result<Vec<u8>, SqlInp
     append_c_bytes(&mut source, sql);
     source.push_str(
         "};\n\nconst prdb_query_descriptor_v3_record prdb_query_descriptor_v3 = { sizeof(prdb_query_descriptor_v3_record), PRDB_QUERY_ABI_V3_VERSION, sizeof(prdb_host_api_v3), sizeof(prdb_invocation_v3) };\n\nint32_t prdb_query_main_v3(const prdb_host_api_v3 *host, const prdb_invocation_v3 *invocation) {\n    if (invocation == NULL || invocation->struct_size < sizeof(*invocation) || invocation->abi_version != PRDB_QUERY_ABI_V3_VERSION) return 1;\n    return prdb_sdk_sql_run_v1(host, sql_schema, sizeof(sql_schema), sql_text, sizeof(sql_text), invocation->parameters, invocation->parameters_len) == PRDB_SDK_SQL_DISPATCH_OK ? 0 : 1;\n}\n",
+    );
+    Ok(source.into_bytes())
+}
+
+/// Generate a fixed C wrapper for a lexed sequence of ordinary query or DML
+/// statements. Transaction control, DDL, and RUNAS blocks are handled by the
+/// higher-level dispatcher and cannot enter this package helper.
+pub fn generate_query_batch_source(schema: &str, sql: &[u8]) -> Result<Vec<u8>, SqlInputError> {
+    validate_schema_name(schema)?;
+    if sql.is_empty() || sql.len() > MAX_SQL_BYTES || sql.contains(&0) {
+        return Err(SqlInputError::InvalidSql);
+    }
+    let sql_text = std::str::from_utf8(sql).map_err(|_| SqlInputError::InvalidSql)?;
+    let parsed = crate::interactive_sql::parse_interactive_sql(sql_text)
+        .map_err(|_| SqlInputError::InvalidSql)?;
+    if parsed.is_empty() || parsed.len() > crate::interactive_sql::MAX_RUNAS_STATEMENTS {
+        return Err(SqlInputError::TooLarge);
+    }
+    let queries: Vec<(&str, bool)> = parsed
+        .iter()
+        .map(|statement| match statement {
+            crate::interactive_sql::InteractiveStatement::Query(query) => Ok((
+                *query,
+                crate::interactive_sql::contains_parameter_placeholder(query),
+            )),
+            _ => Err(SqlInputError::UnsupportedInteractiveStatement),
+        })
+        .collect::<Result<_, _>>()?;
+
+    let mut source = String::from(
+        "#include <stddef.h>\n#include \"prdb_query_abi_v3.h\"\n#include \"prdb_sdk_sql_dispatch_v1.h\"\n#include \"prdb_sdk_sql_batch_v1.h\"\n\n",
+    );
+    source.push_str("static const uint8_t sql_schema[] = {");
+    append_c_bytes(&mut source, schema.as_bytes());
+    source.push_str("};\n");
+    for (index, (query, _)) in queries.iter().enumerate() {
+        use std::fmt::Write as _;
+        let _ = write!(source, "static const uint8_t sql_text_{index}[] = {{");
+        append_c_bytes(&mut source, query.as_bytes());
+        source.push_str("};\n");
+    }
+    source.push_str("\nstatic int32_t run_sql_batch_statement(const prdb_host_api_v3 *host, const uint8_t *schema, uint32_t schema_len, const prdb_sdk_sql_batch_statement_v1 *statement) {\n    int32_t status = prdb_sdk_sql_run_statement_v1(host, schema, schema_len, statement->sql, statement->sql_len, statement->parameters, statement->parameters_len);\n    return status == PRDB_SDK_SQL_DISPATCH_OK ? 0 : status;\n}\n\n");
+    source.push_str("const prdb_query_descriptor_v3_record prdb_query_descriptor_v3 = { sizeof(prdb_query_descriptor_v3_record), PRDB_QUERY_ABI_V3_VERSION, sizeof(prdb_host_api_v3), sizeof(prdb_invocation_v3) };\n\nint32_t prdb_query_main_v3(const prdb_host_api_v3 *host, const prdb_invocation_v3 *invocation) {\n    if (invocation == NULL || invocation->struct_size < sizeof(*invocation) || invocation->abi_version != PRDB_QUERY_ABI_V3_VERSION) return 1;\n    prdb_sdk_sql_batch_statement_v1 statements[] = {\n");
+    for (index, (_, has_parameters)) in queries.iter().enumerate() {
+        use std::fmt::Write as _;
+        if *has_parameters {
+            let _ = writeln!(
+                source,
+                "        {{sql_text_{index}, sizeof(sql_text_{index}), invocation->parameters, invocation->parameters_len}},"
+            );
+        } else {
+            let _ = writeln!(
+                source,
+                "        {{sql_text_{index}, sizeof(sql_text_{index}), NULL, 0}},"
+            );
+        }
+    }
+    use std::fmt::Write as _;
+    let _ = writeln!(
+        source,
+        "    }};\n    return prdb_sdk_sql_run_batch_v1(host, sql_schema, sizeof(sql_schema), {}, statements, run_sql_batch_statement) == PRDB_SDK_SQL_BATCH_OK ? 0 : 1;\n}}",
+        queries.len()
     );
     Ok(source.into_bytes())
 }
@@ -390,8 +456,8 @@ fn lower_hex_nibble(byte: u8) -> Result<u8, SqlInputError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_SQL_BYTES, SqlInputError, encode_parameter_file, generate_query_source, read_sql_from,
-        validate_schema_name,
+        MAX_SQL_BYTES, SqlInputError, encode_parameter_file, generate_query_batch_source,
+        generate_query_source, read_sql_from, validate_schema_name,
     };
     use crate::client_submit::ResponseValue;
     use std::collections::HashMap;
@@ -595,5 +661,50 @@ mod tests {
             generate_query_source("public", b"SELECT\0 1"),
             Err(SqlInputError::InvalidSql)
         );
+    }
+
+    #[test]
+    fn generated_batch_wrapper_uses_lexer_boundaries_and_statement_ordinals() {
+        let sql = b"SELECT name FROM employees; SELECT value FROM ledger;";
+        let source = generate_query_batch_source("public", sql).unwrap();
+        let source = std::str::from_utf8(&source).unwrap();
+        assert!(source.contains("static const uint8_t sql_text_0[] = {"));
+        assert!(source.contains("static const uint8_t sql_text_1[] = {"));
+        assert!(source.contains("prdb_sdk_sql_run_batch_v1"));
+        assert!(source.contains("prdb_sdk_sql_run_statement_v1"));
+        assert!(source.contains("{sql_text_0, sizeof(sql_text_0), NULL, 0}"));
+        assert!(source.contains("{sql_text_1, sizeof(sql_text_1), NULL, 0}"));
+        assert!(!source.contains("SELECT name FROM employees"));
+        assert!(!source.contains("SELECT value FROM ledger"));
+        assert_eq!(
+            generate_query_batch_source("public", b"SELECT name FROM t; BEGIN;"),
+            Err(SqlInputError::UnsupportedInteractiveStatement)
+        );
+        assert_eq!(
+            generate_query_batch_source("public", b"RUNAS reader\nSELECT name FROM t\nENDRUNAS"),
+            Err(SqlInputError::UnsupportedInteractiveStatement)
+        );
+        let mixed_dml = generate_query_batch_source(
+            "public",
+            b"INSERT INTO t VALUES ($1); UPDATE t SET x = $2 WHERE id = $1;",
+        )
+        .unwrap();
+        let mixed_dml = std::str::from_utf8(&mixed_dml).unwrap();
+        assert!(mixed_dml.contains("prdb_sdk_sql_run_statement_v1"));
+    }
+
+    #[test]
+    fn generated_batch_wrapper_passes_parameters_only_to_statements_that_reference_them() {
+        let source = generate_query_batch_source(
+            "public",
+            b"INSERT INTO t VALUES ($1); SELECT '$1' FROM t; SELECT id FROM t -- $2\n",
+        )
+        .unwrap();
+        let source = std::str::from_utf8(&source).unwrap();
+        assert!(source.contains(
+            "{sql_text_0, sizeof(sql_text_0), invocation->parameters, invocation->parameters_len}"
+        ));
+        assert!(source.contains("{sql_text_1, sizeof(sql_text_1), NULL, 0}"));
+        assert!(source.contains("{sql_text_2, sizeof(sql_text_2), NULL, 0}"));
     }
 }

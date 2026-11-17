@@ -1,6 +1,7 @@
 use prdb_engine::authorization::Operation;
 use prdb_engine::client_credentials::{
-    read_client_credentials, remove_client_credentials, write_client_credentials,
+    ClientCredentialProfiles, read_client_credentials, remove_client_credentials,
+    write_client_credentials,
 };
 use prdb_engine::client_package::{PackageOptions, package_query};
 use prdb_engine::client_protocol::ClientCredentials;
@@ -15,16 +16,17 @@ use prdb_engine::client_submit::{
     AdminPolicyOperation, AdminPolicyRecipient, AdminSystemPrivilege, CancellationResult,
     ClientResultEvent, InvocationStatus, SubmissionClient, TerminalOutcome,
 };
+use prdb_engine::interactive_sql::{InteractiveStatement, parse_interactive_sql};
 use prdb_engine::submission_scope::RequestedScopeBuilder;
 use prdb_engine::supervisor::{MAX_PARAMETER_BYTES, WorkloadClass};
 use prdb_engine::tuple::{ScalarType, ScalarValue};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::net::SocketAddr;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
 
 const USAGE: &str = "Usage:\n\
@@ -34,6 +36,12 @@ const USAGE: &str = "Usage:\n\
     --cpu-baseline NAME --runtime-profile NAME --compiler-identity TEXT [--parameters FILE] \\
     [--tcc FILE] [--shared-linker FILE] [--patchelf FILE] \\
     [--deadline-ms N] [--workload operational|analytical]\n\
+  prdb-client interactive-sql --address LOOPBACK:PORT --credentials FILE --default-user USER \\
+    [--credential-profile USER=FILE ...] [--sql-file FILE|-] --schema NAME --scope FILE \\
+    --sdk-library FILE --include-dir DIR --sdk-release N --cpu-baseline NAME \\
+    --runtime-profile NAME --compiler-identity TEXT [--parameters FILE] [--tcc FILE] \\
+    [--shared-linker FILE] [--patchelf FILE] [--deadline-ms N] \\
+    [--workload operational|analytical] (omit --sql-file for a terminal REPL)\n\\
   prdb-client admin-sql --address IP:PORT --credentials ADMIN_FILE --sql-file FILE|-\n\
   prdb-client status --address IP:PORT --credentials FILE --invocation-id HEX\n\n\
   prdb-client cancel --address IP:PORT --credentials FILE --invocation-id HEX\n\n\
@@ -132,6 +140,7 @@ fn run() -> Result<(), String> {
         .into_string()
         .map_err(|_| "command must be UTF-8".to_owned())?;
     let mut fields = HashMap::<String, std::ffi::OsString>::new();
+    let mut credential_profile_options = Vec::new();
     while let Some(option) = arguments.next() {
         if option == "--help" || option == "-h" {
             println!("{USAGE}");
@@ -146,6 +155,10 @@ fn run() -> Result<(), String> {
         let value = arguments
             .next()
             .ok_or_else(|| format!("missing value for {option}"))?;
+        if command == "interactive-sql" && option == "--credential-profile" {
+            credential_profile_options.push(value);
+            continue;
+        }
         if fields.insert(option.clone(), value).is_some() {
             return Err(format!("duplicate option {option}"));
         }
@@ -156,6 +169,34 @@ fn run() -> Result<(), String> {
         reject_unknown(&fields)?;
         credential_remove(credentials_path)?;
         return Ok(());
+    }
+
+    if command == "interactive-sql" {
+        let address = take_text(&mut fields, "--address")?
+            .parse::<SocketAddr>()
+            .map_err(|_| "--address must be a numeric IP:PORT socket address".to_owned())?;
+        let credentials_path = take_path(&mut fields, "--credentials")?;
+        let default_user = take_text(&mut fields, "--default-user")?;
+        let mut additional_profiles = Vec::with_capacity(credential_profile_options.len());
+        for profile in credential_profile_options {
+            let profile = profile
+                .into_string()
+                .map_err(|_| "credential profile option must be UTF-8".to_owned())?;
+            let (username, path) = profile
+                .split_once('=')
+                .ok_or_else(|| "--credential-profile must be USER=FILE".to_owned())?;
+            if username.is_empty() || path.is_empty() {
+                return Err("--credential-profile must be USER=FILE".to_owned());
+            }
+            additional_profiles.push((username.to_owned(), PathBuf::from(path)));
+        }
+        return interactive_sql(
+            address,
+            credentials_path,
+            default_user,
+            &additional_profiles,
+            &mut fields,
+        );
     }
 
     let address = take_text(&mut fields, "--address")?
@@ -233,6 +274,95 @@ fn admin_sql(
     let sql_bytes = Zeroizing::new(read_sql_input(&sql_path).map_err(|error| error.to_string())?);
     let sql =
         std::str::from_utf8(&sql_bytes).map_err(|_| "SQL input must be valid UTF-8".to_owned())?;
+    if !is_supported_admin_sql(sql) {
+        return Err("invalid administrative SQL: unsupported statement".to_owned());
+    }
+    let credentials =
+        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
+    admin_sql_with_credentials(address, credentials, &sql_bytes)
+}
+
+fn admin_sql_with_credentials(
+    address: SocketAddr,
+    administrator: ClientCredentials,
+    sql_bytes: &[u8],
+) -> Result<(), String> {
+    let token_id = administrator.token_id;
+    let mut reconciliation_secret = Zeroizing::new(administrator.token_secret);
+    match admin_sql_with_credentials_once(address, administrator, sql_bytes) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let Some(operation_id) = parse_uncertain_admin_operation_id(&error) else {
+                return Err(error);
+            };
+            let mut client = AdminClient::connect_authenticated(
+                address,
+                token_id,
+                &mut reconciliation_secret[..],
+            )
+            .map_err(|status_error| {
+                format!(
+                    "{error}; administrative status lookup failed for operation {} ({status_error})",
+                    lower_hex(&operation_id)
+                )
+            })?;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match client.status(operation_id).map_err(|status_error| {
+                    format!(
+                        "{error}; administrative status lookup failed for operation {} ({status_error})",
+                        lower_hex(&operation_id)
+                    )
+                })? {
+                    InvocationStatus::Committed => {
+                        eprintln!(
+                            "administrative operation {} committed after reconnect",
+                            lower_hex(&operation_id)
+                        );
+                        return Ok(());
+                    }
+                    InvocationStatus::Aborted => {
+                        return Err(format!(
+                            "administrative operation {} aborted after an uncertain reply",
+                            lower_hex(&operation_id)
+                        ));
+                    }
+                    InvocationStatus::Unknown | InvocationStatus::Expired => {
+                        return Err(format!(
+                            "administrative operation {} has no retained outcome after an uncertain reply",
+                            lower_hex(&operation_id)
+                        ));
+                    }
+                    InvocationStatus::Prepared
+                    | InvocationStatus::Active
+                    | InvocationStatus::Committing => {
+                        if Instant::now() >= deadline {
+                            return Err(format!(
+                                "administrative operation {} remains unresolved; query admin status before continuing ({error})",
+                                lower_hex(&operation_id)
+                            ));
+                        }
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn parse_uncertain_admin_operation_id(error: &str) -> Option<[u8; 16]> {
+    let encoded =
+        error.strip_prefix("administrative operation outcome is uncertain; operation_id=")?;
+    parse_lowercase_hex_bytes(encoded).ok()?.try_into().ok()
+}
+
+fn admin_sql_with_credentials_once(
+    address: SocketAddr,
+    mut administrator: ClientCredentials,
+    sql_bytes: &[u8],
+) -> Result<(), String> {
+    let sql =
+        std::str::from_utf8(sql_bytes).map_err(|_| "SQL input must be valid UTF-8".to_owned())?;
     let table_statement = prdb_engine::ddl_sql::parse_create_table(sql).ok();
     let create_index_statement = prdb_engine::ddl_sql::parse_create_index(sql).ok();
     let rebuild_index_statement = prdb_engine::ddl_sql::parse_rebuild_index(sql).ok();
@@ -267,45 +397,10 @@ fn admin_sql(
     let add_column_statement = prdb_engine::ddl_sql::parse_add_column(sql).ok();
     let rename_column_statement = prdb_engine::ddl_sql::parse_rename_column(sql).ok();
     let drop_column_statement = prdb_engine::ddl_sql::parse_drop_column(sql).ok();
-    if table_statement.is_none()
-        && create_index_statement.is_none()
-        && rebuild_index_statement.is_none()
-        && alter_index_rebuild_statement.is_none()
-        && rename_index_statement.is_none()
-        && create_identity_statement.is_none()
-        && rename_identity_statement.is_none()
-        && drop_identity_statement.is_none()
-        && set_user_login_statement.is_none()
-        && role_membership_statement.is_none()
-        && system_privilege_statement.is_none()
-        && object_privilege_statement.is_none()
-        && create_policy_statement.is_none()
-        && drop_policy_statement.is_none()
-        && drop_index_statement.is_none()
-        && schema_statement.is_none()
-        && rename_schema_statement.is_none()
-        && schema_owner_statement.is_none()
-        && drop_schema_statement.is_none()
-        && rename_table_statement.is_none()
-        && table_owner_statement.is_none()
-        && drop_table_statement.is_none()
-        && truncate_table_statement.is_none()
-        && add_key_constraint_statement.is_none()
-        && add_foreign_key_statement.is_none()
-        && drop_constraint_statement.is_none()
-        && add_check_constraint_statement.is_none()
-        && alter_column_nullability_statement.is_none()
-        && widen_varchar_statement.is_none()
-        && alter_column_default_statement.is_none()
-        && add_column_statement.is_none()
-        && rename_column_statement.is_none()
-        && drop_column_statement.is_none()
-    {
+    if !is_supported_admin_sql(sql) {
         return Err("invalid administrative SQL: unsupported statement".to_owned());
     }
 
-    let mut administrator =
-        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
     let mut client = AdminClient::connect_authenticated(
         address,
         administrator.token_id,
@@ -858,6 +953,42 @@ fn admin_sql(
         return Err("invalid administrative SQL: unsupported statement".to_owned());
     }
     Ok(())
+}
+
+fn is_supported_admin_sql(sql: &str) -> bool {
+    prdb_engine::ddl_sql::parse_create_table(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_create_index(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_rebuild_index(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_alter_index_rebuild(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_rename_index(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_create_identity(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_rename_identity(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_drop_identity(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_set_user_login(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_role_membership(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_system_privilege(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_object_privilege(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_create_policy(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_drop_policy(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_drop_index(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_create_schema(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_rename_schema(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_schema_owner_transfer(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_drop_schema(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_rename_table(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_table_owner_transfer(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_drop_table(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_truncate_table(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_add_key_constraint(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_add_foreign_key(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_drop_constraint(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_add_check_constraint(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_alter_column_nullability(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_widen_varchar(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_alter_column_default(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_add_column(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_rename_column(sql).is_ok()
+        || prdb_engine::ddl_sql::parse_drop_column(sql).is_ok()
 }
 
 fn schema_table_admin(
@@ -2117,9 +2248,29 @@ fn submit_package_and_stream(
     deadline_ms: u64,
     workload: WorkloadClass,
 ) -> Result<(), String> {
+    let credentials =
+        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
+    submit_package_and_stream_with_credentials(
+        address,
+        credentials,
+        package,
+        receipt,
+        parameters,
+        deadline_ms,
+        workload,
+    )
+}
+
+fn submit_package_and_stream_with_credentials(
+    address: SocketAddr,
+    mut credentials: ClientCredentials,
+    package: &Path,
+    receipt: &Path,
+    parameters: &mut [u8],
+    deadline_ms: u64,
+    workload: WorkloadClass,
+) -> Result<(), String> {
     let result = (|| {
-        let mut credentials =
-            read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
         let mut client = SubmissionClient::connect_authenticated(
             address,
             credentials.token_id,
@@ -2154,6 +2305,11 @@ fn submit_package_and_stream(
                             Err("invocation did not commit".to_owned())
                         }
                     };
+                }
+                Some(ClientResultEvent::PackageTerminal { .. }) => {
+                    return Err(
+                        "unexpected interactive package terminal in v1 submission".to_owned()
+                    );
                 }
                 None => return Err("result stream ended without a terminal outcome".to_owned()),
             }
@@ -2242,6 +2398,932 @@ fn run_sql(
         deadline_ms,
         workload,
     )
+}
+
+fn interactive_sql(
+    address: SocketAddr,
+    default_credentials_path: PathBuf,
+    default_user: String,
+    additional_profiles: &[(String, PathBuf)],
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<(), String> {
+    if !address.ip().is_loopback() {
+        return Err("interactive SQL v2 is available only on loopback addresses".to_owned());
+    }
+    let sql_path = fields.remove("--sql-file").map(PathBuf::from);
+    let schema = take_text(fields, "--schema")?;
+    validate_schema_name(&schema).map_err(|error| error.to_string())?;
+    let requested_scope = take_path(fields, "--scope")?;
+    let sdk_library = take_path(fields, "--sdk-library")?;
+    let include_dir = take_path(fields, "--include-dir")?;
+    let sdk_release = take_text(fields, "--sdk-release")?
+        .parse::<u32>()
+        .map_err(|_| "invalid numeric value for --sdk-release".to_owned())?;
+    let cpu_baseline = take_text(fields, "--cpu-baseline")?;
+    let runtime_profile = take_text(fields, "--runtime-profile")?;
+    let compiler_identity = take_text(fields, "--compiler-identity")?;
+    let tcc = fields
+        .remove("--tcc")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("tcc"));
+    let shared_linker = fields
+        .remove("--shared-linker")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("cc"));
+    let patchelf = fields
+        .remove("--patchelf")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("patchelf"));
+    let parameters_path = fields.remove("--parameters").map(PathBuf::from);
+    let deadline_ms = fields
+        .remove("--deadline-ms")
+        .map(|value| parse_number(value, "--deadline-ms"))
+        .transpose()?
+        .unwrap_or(30_000u64);
+    if deadline_ms == 0 {
+        return Err("--deadline-ms must be positive".to_owned());
+    }
+    let workload = match fields.remove("--workload") {
+        None => WorkloadClass::Operational,
+        Some(value) if value == "operational" => WorkloadClass::Operational,
+        Some(value) if value == "analytical" => WorkloadClass::Analytical,
+        Some(_) => return Err("--workload must be operational or analytical".to_owned()),
+    };
+    reject_unknown(fields)?;
+
+    let profiles = ClientCredentialProfiles::load(
+        &default_user,
+        &default_credentials_path,
+        additional_profiles,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut parameters = read_sql_parameters(parameters_path.as_deref())?;
+    let workspace = SqlWorkspace::create()?;
+    let mut explicit_transaction = None;
+    let mut abort_only = false;
+    let result = {
+        let mut dispatch = |statement: &InteractiveStatement<'_>,
+                            ordinal: usize|
+         -> Result<(), String> {
+            match statement {
+                InteractiveStatement::Begin => {
+                    if explicit_transaction.is_some() {
+                        return Err("BEGIN cannot be nested".to_owned());
+                    }
+                    let mut controller = profile_credentials(&profiles, &default_user)?;
+                    let mut client = SubmissionClient::connect_interactive_authenticated(
+                        address,
+                        controller.token_id,
+                        &mut controller.token_secret,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let begin_request_id = random_nonzero_id()?;
+                    let begin = match client.interactive_transaction_begin(begin_request_id) {
+                        Ok(response) => response,
+                        Err(
+                            prdb_engine::client_submit::ClientSubmitError::InteractiveTransactionBeginOutcomeUncertain,
+                        ) => {
+                            drop(client);
+                            let mut retry_controller =
+                                profile_credentials(&profiles, &default_user)?;
+                            let mut retry_client =
+                                SubmissionClient::connect_interactive_authenticated(
+                                    address,
+                                    retry_controller.token_id,
+                                    &mut retry_controller.token_secret,
+                                )
+                                .map_err(|error| error.to_string())?;
+                            retry_client
+                                .interactive_transaction_begin(begin_request_id)
+                                .map_err(|error| {
+                                    format!(
+                                        "BEGIN outcome is uncertain for request {}; retry with the same request ID to recover ({error})",
+                                        lower_hex(&begin_request_id)
+                                    )
+                                })?
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    };
+                    match begin {
+                        prdb_engine::client_protocol::ClientV2Response::TransactionBegun {
+                            transaction_id,
+                            state: prdb_engine::client_protocol::ClientV2TransactionState::Active,
+                            ..
+                        } => {
+                            explicit_transaction = Some(transaction_id);
+                            abort_only = false;
+                            eprintln!("began transaction {}", lower_hex(&transaction_id));
+                        }
+                        prdb_engine::client_protocol::ClientV2Response::TransactionBegun {
+                            transaction_id,
+                            state,
+                            ..
+                        } => {
+                            return Err(format!(
+                                "BEGIN request {} resolved to transaction {} in state {state:?}",
+                                lower_hex(&begin_request_id),
+                                lower_hex(&transaction_id)
+                            ));
+                        }
+                        _ => return Err("invalid transaction begin response".to_owned()),
+                    }
+                }
+                InteractiveStatement::Commit => {
+                    let transaction_id = explicit_transaction
+                        .ok_or_else(|| "COMMIT requires an active transaction".to_owned())?;
+                    if abort_only {
+                        return Err("transaction is abort-only; issue ROLLBACK".to_owned());
+                    }
+                    let mut controller = profile_credentials(&profiles, &default_user)?;
+                    let mut client = SubmissionClient::connect_interactive_authenticated(
+                        address,
+                        controller.token_id,
+                        &mut controller.token_secret,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    match client.interactive_transaction_commit(transaction_id) {
+                        Ok(prdb_engine::client_protocol::ClientV2Response::Transaction {
+                            transaction_id: response_id,
+                            state: prdb_engine::client_protocol::ClientV2TransactionState::Committed,
+                        }) if response_id == transaction_id => {
+                            explicit_transaction = None;
+                            eprintln!("committed transaction {}", lower_hex(&transaction_id));
+                        }
+                        Ok(_) => return Err("transaction did not commit".to_owned()),
+                        Err(error) => {
+                            let mut controller = profile_credentials(&profiles, &default_user)?;
+                            let mut status_client =
+                                SubmissionClient::connect_interactive_authenticated(
+                                    address,
+                                    controller.token_id,
+                                    &mut controller.token_secret,
+                                )
+                                .map_err(|connect_error| connect_error.to_string())?;
+                            match status_client.interactive_transaction_status(transaction_id) {
+                            Ok(prdb_engine::client_protocol::ClientV2Response::Transaction {
+                                transaction_id: response_id,
+                                state:
+                                    prdb_engine::client_protocol::ClientV2TransactionState::Committed,
+                            }) if response_id == transaction_id => {
+                                explicit_transaction = None;
+                                eprintln!("committed transaction {}", lower_hex(&transaction_id));
+                            }
+                            _ => {
+                                return Err(format!(
+                                    "COMMIT outcome is uncertain for transaction {}; query status before continuing ({error})",
+                                    lower_hex(&transaction_id)
+                                ));
+                            }
+                        }
+                        }
+                    }
+                }
+                InteractiveStatement::Rollback => {
+                    let transaction_id = explicit_transaction
+                        .ok_or_else(|| "ROLLBACK requires an active transaction".to_owned())?;
+                    let mut controller = profile_credentials(&profiles, &default_user)?;
+                    let mut client = SubmissionClient::connect_interactive_authenticated(
+                        address,
+                        controller.token_id,
+                        &mut controller.token_secret,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    match client.interactive_transaction_rollback(transaction_id) {
+                        Ok(prdb_engine::client_protocol::ClientV2Response::Transaction {
+                            transaction_id: response_id,
+                            state: prdb_engine::client_protocol::ClientV2TransactionState::Aborted,
+                        }) if response_id == transaction_id => {
+                            explicit_transaction = None;
+                            eprintln!("rolled back transaction {}", lower_hex(&transaction_id));
+                        }
+                        Ok(_) => return Err("transaction did not roll back".to_owned()),
+                        Err(error) => {
+                            let mut controller = profile_credentials(&profiles, &default_user)?;
+                            let mut status_client =
+                                SubmissionClient::connect_interactive_authenticated(
+                                    address,
+                                    controller.token_id,
+                                    &mut controller.token_secret,
+                                )
+                                .map_err(|connect_error| connect_error.to_string())?;
+                            match status_client.interactive_transaction_status(transaction_id) {
+                            Ok(prdb_engine::client_protocol::ClientV2Response::Transaction {
+                                transaction_id: response_id,
+                                state:
+                                    prdb_engine::client_protocol::ClientV2TransactionState::Aborted
+                                    | prdb_engine::client_protocol::ClientV2TransactionState::Expired,
+                            }) if response_id == transaction_id => {
+                                explicit_transaction = None;
+                                eprintln!("rolled back transaction {}", lower_hex(&transaction_id));
+                            }
+                            _ => {
+                                return Err(format!(
+                                    "ROLLBACK outcome is uncertain for transaction {}; query status before continuing ({error})",
+                                    lower_hex(&transaction_id)
+                                ));
+                            }
+                        }
+                        }
+                    }
+                }
+                InteractiveStatement::Ddl(ddl) => {
+                    if explicit_transaction.is_some() {
+                        return Err("DDL is not allowed inside an explicit transaction".to_owned());
+                    }
+                    let credentials = profile_credentials(&profiles, &default_user)?;
+                    admin_sql_with_credentials(address, credentials, ddl.as_bytes())?;
+                }
+                InteractiveStatement::Query(query) => {
+                    execute_interactive_package(
+                        address,
+                        &profiles,
+                        &default_user,
+                        explicit_transaction,
+                        &mut abort_only,
+                        query.as_bytes(),
+                        false,
+                        &schema,
+                        &workspace.path,
+                        ordinal,
+                        &tcc,
+                        &shared_linker,
+                        &patchelf,
+                        &sdk_library,
+                        &include_dir,
+                        &requested_scope,
+                        sdk_release,
+                        &cpu_baseline,
+                        &runtime_profile,
+                        &compiler_identity,
+                        &mut parameters,
+                        deadline_ms,
+                        workload,
+                    )?;
+                }
+                InteractiveStatement::RunAs { username, sql, .. } => {
+                    execute_interactive_package(
+                        address,
+                        &profiles,
+                        username,
+                        explicit_transaction,
+                        &mut abort_only,
+                        sql.as_bytes(),
+                        true,
+                        &schema,
+                        &workspace.path,
+                        ordinal,
+                        &tcc,
+                        &shared_linker,
+                        &patchelf,
+                        &sdk_library,
+                        &include_dir,
+                        &requested_scope,
+                        sdk_release,
+                        &cpu_baseline,
+                        &runtime_profile,
+                        &compiler_identity,
+                        &mut parameters,
+                        deadline_ms,
+                        workload,
+                    )?;
+                }
+            }
+            Ok(())
+        };
+
+        (|| {
+            let interactive_terminal = sql_path.is_none() && io::stdin().is_terminal();
+            if interactive_terminal {
+                let stdin = io::stdin();
+                let mut input = stdin.lock();
+                run_interactive_repl(
+                    &mut input,
+                    &mut io::stdout(),
+                    true,
+                    &profiles,
+                    &mut dispatch,
+                )
+            } else {
+                let sql_bytes = if let Some(sql_path) = sql_path.as_deref() {
+                    Zeroizing::new(read_sql_input(sql_path).map_err(|error| error.to_string())?)
+                } else {
+                    Zeroizing::new(
+                        read_sql_input(Path::new("-")).map_err(|error| error.to_string())?,
+                    )
+                };
+                let sql = std::str::from_utf8(&sql_bytes)
+                    .map_err(|_| "SQL input must be valid UTF-8".to_owned())?;
+                let statements = parse_interactive_sql(sql).map_err(|error| error.to_string())?;
+                validate_interactive_script_placement(&statements)?;
+                require_runas_profiles(&statements, &profiles)?;
+                for (ordinal, statement) in statements.iter().enumerate() {
+                    dispatch(statement, ordinal)?;
+                }
+                Ok(())
+            }
+        })()
+    };
+
+    if result.is_err()
+        && let Some(transaction_id) = explicit_transaction
+        && let Ok(mut controller) = profile_credentials(&profiles, &default_user)
+        && let Ok(mut client) = SubmissionClient::connect_interactive_authenticated(
+            address,
+            controller.token_id,
+            &mut controller.token_secret,
+        )
+    {
+        let _ = client.interactive_transaction_rollback(transaction_id);
+    }
+    if result.is_ok()
+        && let Some(transaction_id) = explicit_transaction
+        && let Ok(mut controller) = profile_credentials(&profiles, &default_user)
+        && let Ok(mut client) = SubmissionClient::connect_interactive_authenticated(
+            address,
+            controller.token_id,
+            &mut controller.token_secret,
+        )
+    {
+        let _ = client.interactive_transaction_rollback(transaction_id);
+        return Err(format!(
+            "input ended with active transaction {}; it was rolled back",
+            lower_hex(&transaction_id)
+        ));
+    }
+    parameters.fill(0);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_interactive_package(
+    address: SocketAddr,
+    profiles: &ClientCredentialProfiles,
+    actor_username: &str,
+    transaction_id: Option<[u8; 16]>,
+    abort_only: &mut bool,
+    sql: &[u8],
+    _is_batch: bool,
+    schema: &str,
+    workspace: &Path,
+    ordinal: usize,
+    tcc: &Path,
+    shared_linker: &Path,
+    patchelf: &Path,
+    sdk_library: &Path,
+    include_dir: &Path,
+    requested_scope: &Path,
+    sdk_release: u32,
+    cpu_baseline: &str,
+    runtime_profile: &str,
+    compiler_identity: &str,
+    parameters: &mut [u8],
+    deadline_ms: u64,
+    workload: WorkloadClass,
+) -> Result<(), String> {
+    if *abort_only {
+        return Err("transaction is abort-only; issue ROLLBACK".to_owned());
+    }
+    let generated_source = prdb_engine::client_sql::generate_query_batch_source(schema, sql)
+        .map_err(|error| error.to_string())?;
+    let source_path = workspace.join(format!("interactive-{ordinal}.c"));
+    let package_dir = workspace.join(format!("interactive-package-{ordinal}"));
+    write_private_file(&source_path, &generated_source)?;
+    package_query(&PackageOptions {
+        tcc: tcc.to_path_buf(),
+        shared_linker: shared_linker.to_path_buf(),
+        patchelf: patchelf.to_path_buf(),
+        source: source_path,
+        sdk_library: sdk_library.to_path_buf(),
+        include_dir: include_dir.to_path_buf(),
+        requested_scope: requested_scope.to_path_buf(),
+        output_dir: package_dir.clone(),
+        native_abi_version: 3,
+        sdk_release,
+        cpu_baseline: cpu_baseline.to_owned(),
+        runtime_profile: runtime_profile.to_owned(),
+        compiler_identity: compiler_identity.to_owned(),
+    })
+    .map_err(|error| error.to_string())?;
+    let receipt = workspace.join(format!("interactive-{ordinal}.receipt"));
+    let mut package_parameters = Zeroizing::new(parameters.to_vec());
+    if let Some(transaction_id) = transaction_id {
+        let (controller_id, mut controller_secret) = profiles
+            .authentication_material(profiles.default_username())
+            .ok_or_else(|| "default credential profile disappeared".to_owned())?;
+        let mut client = SubmissionClient::connect_interactive_authenticated(
+            address,
+            controller_id,
+            &mut controller_secret[..],
+        )
+        .map_err(|error| error.to_string())?;
+        match client
+            .interactive_transaction_attach(transaction_id)
+            .map_err(|error| error.to_string())?
+        {
+            prdb_engine::client_protocol::ClientV2Response::Transaction {
+                transaction_id: response_id,
+                state: prdb_engine::client_protocol::ClientV2TransactionState::Active,
+            } if response_id == transaction_id => {}
+            _ => return Err("transaction is not active".to_owned()),
+        }
+        let package_id = random_nonzero_id()?;
+        let invocation_id = client
+            .upload_interactive_package_and_seal(
+                &package_dir,
+                &package_parameters,
+                deadline_ms,
+                workload,
+                transaction_id,
+                package_id,
+            )
+            .map_err(|error| error.to_string())?;
+        let actor = if actor_username != profiles.default_username() {
+            let (token_id, token_secret) = profiles
+                .authentication_material(actor_username)
+                .ok_or_else(|| format!("no credential profile is loaded for {actor_username}"))?;
+            Some(prdb_engine::client_protocol::ClientStartActorCredentials {
+                expected_name: actor_username.to_owned(),
+                token_id,
+                token_secret,
+            })
+        } else {
+            None
+        };
+        eprintln!(
+            "results from transaction {} are provisional until COMMIT",
+            lower_hex(&transaction_id)
+        );
+        let stream_result = match client.start_interactive_package(
+            invocation_id,
+            transaction_id,
+            package_id,
+            actor,
+            &receipt,
+        ) {
+            Ok(mut started) => stream_interactive_events(&mut started),
+            Err(
+                prdb_engine::client_submit::ClientSubmitError::InteractivePackageOutcomeUncertain {
+                    ..
+                },
+            ) => Err("START reply was lost".to_owned()),
+            Err(error) => return Err(error.to_string()),
+        };
+        let terminal = match stream_result {
+            Ok(terminal) => terminal,
+            Err(error) => {
+                reconcile_interactive_package(address, profiles, transaction_id, package_id)
+                    .map_err(|reconcile_error| format!("{error}; {reconcile_error}"))?
+            }
+        };
+        match terminal {
+            InteractivePackageTerminal::Completed { result_lost: false } => Ok(()),
+            InteractivePackageTerminal::Completed { result_lost: true } => Err(format!(
+                "package {package_id:02x?} completed but its result was lost"
+            )),
+            InteractivePackageTerminal::Failed => {
+                *abort_only = true;
+                Err(format!(
+                    "package {package_id:02x?} failed; transaction is abort-only"
+                ))
+            }
+            InteractivePackageTerminal::Unknown => {
+                Err(format!("package {package_id:02x?} outcome is unknown"))
+            }
+        }
+    } else {
+        let credentials = profile_credentials(profiles, actor_username)?;
+        stream_autocommit_interactive_package(
+            address,
+            credentials,
+            &package_dir,
+            &receipt,
+            &mut package_parameters,
+            deadline_ms,
+            workload,
+        )
+    }
+}
+
+fn profile_credentials(
+    profiles: &ClientCredentialProfiles,
+    username: &str,
+) -> Result<ClientCredentials, String> {
+    let (token_id, token_secret) = profiles
+        .authentication_material(username)
+        .ok_or_else(|| format!("no credential profile is loaded for {username}"))?;
+    Ok(ClientCredentials {
+        token_id,
+        token_secret: *token_secret,
+    })
+}
+
+fn stream_autocommit_interactive_package(
+    address: SocketAddr,
+    mut credentials: ClientCredentials,
+    package: &Path,
+    receipt: &Path,
+    parameters: &mut [u8],
+    deadline_ms: u64,
+    workload: WorkloadClass,
+) -> Result<(), String> {
+    let result = (|| {
+        let token_id = credentials.token_id;
+        let mut reconciliation_secret = Zeroizing::new(credentials.token_secret);
+        let mut client = SubmissionClient::connect_authenticated(
+            address,
+            token_id,
+            &mut credentials.token_secret,
+        )
+        .map_err(|error| error.to_string())?;
+        let invocation_id = client
+            .upload_and_seal(package, parameters, deadline_ms, workload)
+            .map_err(|error| error.to_string())?;
+        match client.start(invocation_id, receipt) {
+            Ok(mut started) => {
+                eprintln!("results are provisional until this package commits");
+                match stream_interactive_events(&mut started)? {
+                    InteractivePackageTerminal::Completed { result_lost: false } => Ok(()),
+                    InteractivePackageTerminal::Completed { result_lost: true } => Err(format!(
+                        "invocation {} completed but its result was lost",
+                        lower_hex(&invocation_id)
+                    )),
+                    InteractivePackageTerminal::Failed => Err(format!(
+                        "invocation {} did not commit",
+                        lower_hex(&invocation_id)
+                    )),
+                    InteractivePackageTerminal::Unknown => Err(format!(
+                        "invocation {} outcome is unknown",
+                        lower_hex(&invocation_id)
+                    )),
+                }
+            }
+            Err(prdb_engine::client_submit::ClientSubmitError::OutcomeUncertain(_)) => {
+                drop(client);
+                let mut status_client = SubmissionClient::connect_authenticated(
+                    address,
+                    token_id,
+                    &mut reconciliation_secret[..],
+                )
+                .map_err(|error| {
+                    format!(
+                        "START outcome is uncertain for invocation {}; status lookup failed ({error})",
+                        lower_hex(&invocation_id)
+                    )
+                })?;
+                let deadline = Instant::now() + Duration::from_millis(deadline_ms);
+                loop {
+                    match status_client
+                        .status(invocation_id)
+                        .map_err(|error| error.to_string())?
+                    {
+                        InvocationStatus::Committed => {
+                            return Err(format!(
+                                "invocation {} committed, but its result was lost after an uncertain START reply",
+                                lower_hex(&invocation_id)
+                            ));
+                        }
+                        InvocationStatus::Aborted => {
+                            return Err(format!(
+                                "invocation {} aborted after an uncertain START reply",
+                                lower_hex(&invocation_id)
+                            ));
+                        }
+                        InvocationStatus::Unknown | InvocationStatus::Expired => {
+                            return Err(format!(
+                                "invocation {} has no retained outcome after an uncertain START reply",
+                                lower_hex(&invocation_id)
+                            ));
+                        }
+                        InvocationStatus::Prepared
+                        | InvocationStatus::Active
+                        | InvocationStatus::Committing => {
+                            if Instant::now() >= deadline {
+                                return Err(format!(
+                                    "invocation {} remains active after an uncertain START reply; query status before continuing",
+                                    lower_hex(&invocation_id)
+                                ));
+                            }
+                            std::thread::sleep(Duration::from_millis(25));
+                        }
+                    }
+                }
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    })();
+    parameters.fill(0);
+    result
+}
+
+fn random_nonzero_id() -> Result<[u8; 16], String> {
+    for _ in 0..8 {
+        let mut id = [0; 16];
+        getrandom::fill(&mut id).map_err(|error| error.to_string())?;
+        if id != [0; 16] {
+            return Ok(id);
+        }
+    }
+    Err("could not generate a nonzero identifier".to_owned())
+}
+
+fn reconcile_interactive_package(
+    address: SocketAddr,
+    profiles: &ClientCredentialProfiles,
+    transaction_id: [u8; 16],
+    package_id: [u8; 16],
+) -> Result<InteractivePackageTerminal, String> {
+    let (token_id, mut token_secret) = profiles
+        .authentication_material(profiles.default_username())
+        .ok_or_else(|| "default credential profile disappeared".to_owned())?;
+    let mut client = SubmissionClient::connect_interactive_authenticated(
+        address,
+        token_id,
+        &mut token_secret[..],
+    )
+    .map_err(|error| error.to_string())?;
+    match client
+        .interactive_package_status(transaction_id, package_id)
+        .map_err(|error| error.to_string())?
+    {
+        prdb_engine::client_protocol::ClientV2Response::Package {
+            transaction_id: response_transaction,
+            package_id: response_package,
+            state,
+            ..
+        } if response_transaction == transaction_id && response_package == package_id => {
+            Ok(match state {
+                prdb_engine::client_protocol::ClientV2PackageState::Completed => {
+                    InteractivePackageTerminal::Completed { result_lost: true }
+                }
+                prdb_engine::client_protocol::ClientV2PackageState::Failed => {
+                    InteractivePackageTerminal::Failed
+                }
+                _ => InteractivePackageTerminal::Unknown,
+            })
+        }
+        _ => Err("invalid package status response".to_owned()),
+    }
+}
+
+enum InteractivePackageTerminal {
+    Completed { result_lost: bool },
+    Failed,
+    Unknown,
+}
+
+fn stream_interactive_events(
+    started: &mut prdb_engine::client_submit::StartedInvocation<'_>,
+) -> Result<InteractivePackageTerminal, String> {
+    let mut decoder = SqlBatchResultDecoder::default();
+    while let Some(event) = started.next_event().map_err(|error| error.to_string())? {
+        match event {
+            ClientResultEvent::Data(data) => {
+                for record in decoder.push(&data)? {
+                    match record {
+                        SqlBatchRecord::Data { ordinal, payload } => {
+                            let _statement_ordinal = ordinal;
+                            io::stdout()
+                                .write_all(&payload)
+                                .and_then(|()| io::stdout().flush())
+                                .map_err(|error| error.to_string())?
+                        }
+                        SqlBatchRecord::Failed { ordinal, code } => {
+                            eprintln!("SQL statement {} failed with code {code}", ordinal + 1);
+                        }
+                        SqlBatchRecord::Start { ordinal } => {
+                            eprintln!("running statement {}", ordinal + 1);
+                        }
+                        SqlBatchRecord::Complete { ordinal } => {
+                            eprintln!("statement {} complete", ordinal + 1);
+                        }
+                    }
+                }
+            }
+            ClientResultEvent::PackageTerminal {
+                state, result_lost, ..
+            } => {
+                decoder.finish()?;
+                return Ok(match state {
+                    prdb_engine::client_protocol::ClientV2PackageState::Completed => {
+                        InteractivePackageTerminal::Completed { result_lost }
+                    }
+                    prdb_engine::client_protocol::ClientV2PackageState::Failed => {
+                        InteractivePackageTerminal::Failed
+                    }
+                    _ => InteractivePackageTerminal::Unknown,
+                });
+            }
+            ClientResultEvent::Terminal(terminal) => {
+                decoder.finish()?;
+                return match terminal.outcome {
+                    TerminalOutcome::Committed => {
+                        Ok(InteractivePackageTerminal::Completed { result_lost: false })
+                    }
+                    TerminalOutcome::Aborted => Ok(InteractivePackageTerminal::Failed),
+                    TerminalOutcome::Unknown => Ok(InteractivePackageTerminal::Unknown),
+                };
+            }
+        }
+    }
+    Err("result stream ended without a terminal outcome".to_owned())
+}
+
+#[derive(Default)]
+struct SqlBatchResultDecoder {
+    bytes: Vec<u8>,
+}
+
+enum SqlBatchRecord {
+    Start { ordinal: u16 },
+    Data { ordinal: u16, payload: Vec<u8> },
+    Complete { ordinal: u16 },
+    Failed { ordinal: u16, code: u32 },
+}
+
+impl SqlBatchResultDecoder {
+    fn push(&mut self, chunk: &[u8]) -> Result<Vec<SqlBatchRecord>, String> {
+        if self.bytes.len().saturating_add(chunk.len()) > 2 * 1024 * 1024 + 24 {
+            return Err("SQL batch result record exceeds the client limit".to_owned());
+        }
+        self.bytes.extend_from_slice(chunk);
+        let mut records = Vec::new();
+        loop {
+            if self.bytes.len() < 12 {
+                break;
+            }
+            if &self.bytes[..4] != b"SQLB" || self.bytes[4] != 1 {
+                return Err("invalid SQL batch result header".to_owned());
+            }
+            let event = self.bytes[5];
+            let ordinal = u16::from_be_bytes([self.bytes[6], self.bytes[7]]);
+            let payload_len =
+                u32::from_be_bytes([self.bytes[8], self.bytes[9], self.bytes[10], self.bytes[11]])
+                    as usize;
+            if payload_len > 1024 * 1024 {
+                return Err("SQL batch result payload exceeds the client limit".to_owned());
+            }
+            let record_len = 12 + payload_len;
+            if self.bytes.len() < record_len {
+                break;
+            }
+            let payload = self.bytes[12..record_len].to_vec();
+            records.push(match event {
+                1 if payload.is_empty() => SqlBatchRecord::Start { ordinal },
+                2 => SqlBatchRecord::Data { ordinal, payload },
+                3 if payload.is_empty() => SqlBatchRecord::Complete { ordinal },
+                4 if payload.len() == 4 => SqlBatchRecord::Failed {
+                    ordinal,
+                    code: u32::from_be_bytes(payload.try_into().expect("length checked")),
+                },
+                _ => return Err("invalid SQL batch result event".to_owned()),
+            });
+            self.bytes.drain(..record_len);
+        }
+        Ok(records)
+    }
+
+    fn finish(&self) -> Result<(), String> {
+        if self.bytes.is_empty() {
+            Ok(())
+        } else {
+            Err("truncated SQL batch result record".to_owned())
+        }
+    }
+}
+
+fn validate_interactive_script_placement(
+    statements: &[InteractiveStatement<'_>],
+) -> Result<(), String> {
+    let mut active = false;
+    for statement in statements {
+        match statement {
+            InteractiveStatement::Begin if active => {
+                return Err("BEGIN cannot be nested".to_owned());
+            }
+            InteractiveStatement::Begin => active = true,
+            InteractiveStatement::Commit | InteractiveStatement::Rollback if !active => {
+                return Err("COMMIT/ROLLBACK requires an active transaction".to_owned());
+            }
+            InteractiveStatement::Commit | InteractiveStatement::Rollback => active = false,
+            InteractiveStatement::Ddl(_) if active => {
+                return Err("DDL is not allowed inside an explicit transaction".to_owned());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn require_runas_profiles(
+    statements: &[InteractiveStatement<'_>],
+    profiles: &ClientCredentialProfiles,
+) -> Result<(), String> {
+    for statement in statements {
+        if let InteractiveStatement::RunAs { username, .. } = statement
+            && !profiles.contains_username(username)
+        {
+            return Err(format!(
+                "no credential profile is loaded for RUNAS user {username}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn run_interactive_repl<R, W, F>(
+    input: &mut R,
+    output: &mut W,
+    show_prompt: bool,
+    profiles: &ClientCredentialProfiles,
+    dispatch: &mut F,
+) -> Result<(), String>
+where
+    R: BufRead,
+    W: Write,
+    F: for<'sql> FnMut(&InteractiveStatement<'sql>, usize) -> Result<(), String>,
+{
+    let mut pending = Zeroizing::new(String::new());
+    let mut ordinal = 0usize;
+    loop {
+        if show_prompt {
+            write!(
+                output,
+                "{}",
+                if pending.is_empty() { "sql> " } else { "...> " }
+            )
+            .map_err(|error| error.to_string())?;
+            output.flush().map_err(|error| error.to_string())?;
+        }
+        let mut line = String::new();
+        let bytes = input
+            .read_line(&mut line)
+            .map_err(|error| error.to_string())?;
+        let at_eof = bytes == 0;
+        if !at_eof {
+            pending.push_str(&line);
+            if pending.len() > prdb_engine::interactive_sql::MAX_INTERACTIVE_SQL_BYTES {
+                writeln!(
+                    output,
+                    "interactive SQL input exceeds the configured byte limit"
+                )
+                .map_err(|error| error.to_string())?;
+                pending.clear();
+                continue;
+            }
+        } else if pending.trim().is_empty() {
+            break;
+        }
+
+        if !at_eof && !interactive_input_complete(&pending) {
+            continue;
+        }
+        match parse_interactive_sql(&pending) {
+            Ok(statements) => {
+                if let Err(error) = require_runas_profiles(&statements, profiles) {
+                    writeln!(output, "{error}").map_err(|write_error| write_error.to_string())?;
+                } else {
+                    for statement in &statements {
+                        if let Err(error) = dispatch(statement, ordinal) {
+                            writeln!(output, "{error}")
+                                .map_err(|write_error| write_error.to_string())?;
+                        }
+                        ordinal = ordinal.saturating_add(1);
+                    }
+                }
+            }
+            Err(
+                error @ (prdb_engine::interactive_sql::InteractiveSqlError::MissingEndRunAs
+                | prdb_engine::interactive_sql::InteractiveSqlError::UnterminatedString
+                | prdb_engine::interactive_sql::InteractiveSqlError::UnterminatedComment),
+            ) if !at_eof => {
+                let _ = error;
+                continue;
+            }
+            Err(error) => {
+                writeln!(output, "{error}").map_err(|write_error| write_error.to_string())?;
+            }
+        }
+        pending.clear();
+        if at_eof {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn interactive_input_complete(pending: &str) -> bool {
+    if !pending.trim_end().ends_with(';') {
+        return false;
+    }
+    match parse_interactive_sql(pending) {
+        Ok(_) => true,
+        Err(
+            prdb_engine::interactive_sql::InteractiveSqlError::MissingEndRunAs
+            | prdb_engine::interactive_sql::InteractiveSqlError::UnterminatedString
+            | prdb_engine::interactive_sql::InteractiveSqlError::UnterminatedComment,
+        ) => false,
+        Err(_) => true,
+    }
 }
 
 struct SqlWorkspace {
@@ -3483,6 +4565,124 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn interactive_script_rejects_invalid_transaction_placement_before_dispatch() {
+        let valid = parse_interactive_sql("BEGIN; SELECT 1; COMMIT;").unwrap();
+        assert!(validate_interactive_script_placement(&valid).is_ok());
+
+        for sql in [
+            "COMMIT;",
+            "BEGIN; BEGIN; ROLLBACK;",
+            "BEGIN; CREATE TABLE t (id INTEGER); ROLLBACK;",
+        ] {
+            let parsed = parse_interactive_sql(sql).unwrap();
+            assert!(
+                validate_interactive_script_placement(&parsed).is_err(),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn interactive_repl_waits_for_statement_or_runas_terminator() {
+        assert!(!interactive_input_complete("SELECT 1"));
+        assert!(interactive_input_complete("SELECT\n  1;\n"));
+        assert!(!interactive_input_complete("RUNAS analyst\nSELECT 1;\n"));
+        assert!(interactive_input_complete(
+            "RUNAS analyst\nSELECT 1;\nENDRUNAS;\n"
+        ));
+        assert!(!interactive_input_complete("SELECT 'semi;colon'"));
+    }
+
+    #[test]
+    fn interactive_repl_dispatches_transaction_and_multiline_runas_in_order() {
+        let root = std::env::temp_dir().join(format!(
+            "prdb-client-repl-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let credentials_path = root.join("client.cred");
+        write_client_credentials(
+            &credentials_path,
+            &ClientCredentials {
+                token_id: [3; 16],
+                token_secret: [4; 32],
+            },
+        )
+        .unwrap();
+        let profiles = ClientCredentialProfiles::load(
+            "controller",
+            &credentials_path,
+            &[("analyst".to_owned(), credentials_path.clone())],
+        )
+        .unwrap();
+        let sql = "BEGIN;\nSELECT 1;\nRUNAS analyst\nSELECT 2;\nENDRUNAS;\nROLLBACK;\n";
+        let mut input = io::Cursor::new(sql.as_bytes());
+        let mut output = Vec::new();
+        let mut dispatched = Vec::new();
+        let mut dispatch = |statement: &InteractiveStatement<'_>, ordinal| {
+            let label = match statement {
+                InteractiveStatement::Begin => "BEGIN".to_owned(),
+                InteractiveStatement::Query(sql) => format!("QUERY:{sql}"),
+                InteractiveStatement::RunAs {
+                    username,
+                    statement_count,
+                    ..
+                } => format!("RUNAS:{username}:{statement_count}"),
+                InteractiveStatement::Rollback => "ROLLBACK".to_owned(),
+                _ => "OTHER".to_owned(),
+            };
+            dispatched.push((ordinal, label));
+            Ok(())
+        };
+        run_interactive_repl(&mut input, &mut output, false, &profiles, &mut dispatch).unwrap();
+        assert_eq!(
+            dispatched,
+            [
+                (0, "BEGIN".to_owned()),
+                (1, "QUERY:SELECT 1".to_owned()),
+                (2, "RUNAS:analyst:1".to_owned()),
+                (3, "ROLLBACK".to_owned()),
+            ]
+        );
+        assert!(output.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sql_batch_result_decoder_handles_fragmented_statement_records() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"SQLB");
+        bytes.extend_from_slice(&[1, 1, 0, 3]);
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(b"SQLB");
+        bytes.extend_from_slice(&[1, 2, 0, 3]);
+        bytes.extend_from_slice(&3u32.to_be_bytes());
+        bytes.extend_from_slice(b"row");
+        bytes.extend_from_slice(b"SQLB");
+        bytes.extend_from_slice(&[1, 3, 0, 3]);
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+
+        let mut decoder = SqlBatchResultDecoder::default();
+        assert!(decoder.push(&bytes[..7]).unwrap().is_empty());
+        let records = decoder.push(&bytes[7..]).unwrap();
+        assert_eq!(records.len(), 3);
+        assert!(matches!(records[0], SqlBatchRecord::Start { ordinal: 3 }));
+        assert!(matches!(
+            &records[1],
+            SqlBatchRecord::Data { ordinal: 3, payload } if payload == b"row"
+        ));
+        assert!(matches!(
+            records[2],
+            SqlBatchRecord::Complete { ordinal: 3 }
+        ));
+        assert!(decoder.finish().is_ok());
+    }
 
     #[test]
     fn token_inventory_json_escapes_untrusted_labels() {

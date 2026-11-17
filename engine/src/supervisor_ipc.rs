@@ -108,6 +108,25 @@ pub enum GatewayClientServiceEvent<'db> {
     },
 }
 
+struct InteractivePackageStart {
+    invocation_id: [u8; 16],
+    owner: crate::supervisor::StagingOwner,
+    identity: crate::supervisor::InteractivePackageIdentity,
+    token_id: [u8; 16],
+    token_secret: zeroize::Zeroizing<[u8; crate::credentials::TOKEN_SECRET_BYTES]>,
+    actor: Option<crate::client_protocol::ClientStartActorCredentials>,
+}
+
+fn split_gateway_protocol_prefix(payload: &[u8]) -> Result<(u16, &[u8]), GatewayRequestError> {
+    let (&major, payload) = payload
+        .split_first()
+        .ok_or(GatewayRequestError::InvalidPayload)?;
+    if !matches!(major, 1 | 2) {
+        return Err(GatewayRequestError::InvalidPayload);
+    }
+    Ok((u16::from(major), payload))
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct GatewayAdmissionConfig {
     /// Outcome retention interval from each START or ADMIN request, in
@@ -189,6 +208,7 @@ pub enum GatewayServiceListenerError {
     StorageReopenRequired,
     Staging(crate::supervisor::StagingError),
     OutcomeMaintenance(crate::outcome::OutcomeMaintenanceError),
+    InteractiveTransaction(crate::storage_manager::InteractiveTransactionError),
     Io(io::Error),
     WorkerPanicked,
 }
@@ -646,6 +666,7 @@ where
         let mut accept_error = None;
         let mut staging_error = None;
         let mut outcome_maintenance_error = None;
+        let mut interactive_transaction_reap_error = None;
         let mut storage_reopen_required = false;
         while !shutdown.load(Ordering::Acquire) {
             if manager.requires_reopen_after_commit_error() {
@@ -664,6 +685,12 @@ where
                         .prune_expired_outcomes(now_us, runtime.listener.outcome_maintenance_batch)
                 {
                     outcome_maintenance_error = Some(error);
+                    break;
+                }
+                if let Some(now_us) = crate::credentials::now_unix_micros()
+                    && let Err(error) = manager.reap_interactive_transactions(now_us, 256)
+                {
+                    interactive_transaction_reap_error = Some(error);
                     break;
                 }
             }
@@ -786,6 +813,8 @@ where
             Err(GatewayServiceListenerError::Staging(error))
         } else if let Some(error) = outcome_maintenance_error {
             Err(GatewayServiceListenerError::OutcomeMaintenance(error))
+        } else if let Some(error) = interactive_transaction_reap_error {
+            Err(GatewayServiceListenerError::InteractiveTransaction(error))
         } else if let Some(error) = accept_error {
             Err(GatewayServiceListenerError::Io(error))
         } else {
@@ -989,15 +1018,45 @@ fn dispatch_gateway_client_request_inner<'db>(
         payload,
     };
     let response = match operation {
-        Operation::OpenClientSession => session
-            .handle_handshake_request(manager, frame(1, request.payload.clone()))
-            .map_err(GatewayRequestError::Client)?,
-        Operation::PingClientSession => session
-            .handle_handshake_request(manager, frame(11, request.payload.clone()))
-            .map_err(GatewayRequestError::Client)?,
-        Operation::AuthenticateSession => session
-            .handle_handshake_request(manager, frame(2, request.payload.clone()))
-            .map_err(GatewayRequestError::Client)?,
+        Operation::OpenClientSession => {
+            let (protocol_major, payload) = split_gateway_protocol_prefix(&request.payload)?;
+            session
+                .set_protocol_major(protocol_major)
+                .map_err(GatewayRequestError::Client)?;
+            session
+                .handle_handshake_request(manager, frame(1, payload.to_vec()))
+                .map_err(GatewayRequestError::Client)?
+        }
+        Operation::PingClientSession => {
+            let (_protocol_major, payload) = split_gateway_protocol_prefix(&request.payload)?;
+            session
+                .handle_handshake_request(manager, frame(11, payload.to_vec()))
+                .map_err(GatewayRequestError::Client)?
+        }
+        Operation::InteractiveTransaction => {
+            let (&kind, payload) = request
+                .payload
+                .split_first()
+                .ok_or(GatewayRequestError::InvalidPayload)?;
+            if !(13..=18).contains(&kind) {
+                return Err(GatewayRequestError::InvalidPayload);
+            }
+            session
+                .handle_v2_transaction_request(
+                    manager,
+                    frame(u16::from(kind), payload.to_vec()),
+                    admission
+                        .retention_deadline_us()
+                        .map_err(|_| GatewayRequestError::ClockUnavailable)?,
+                )
+                .map_err(GatewayRequestError::Client)?
+        }
+        Operation::AuthenticateSession => {
+            let (_protocol_major, payload) = split_gateway_protocol_prefix(&request.payload)?;
+            session
+                .handle_handshake_request(manager, frame(2, payload.to_vec()))
+                .map_err(GatewayRequestError::Client)?
+        }
         Operation::PrepareSubmission => session
             .handle_prepare_request(manager, staging, frame(3, request.payload.clone()))
             .map_err(GatewayRequestError::Client)?,
@@ -1017,12 +1076,28 @@ fn dispatch_gateway_client_request_inner<'db>(
             .handle_seal_request(manager, staging, frame(6, request.payload.clone()))
             .map_err(GatewayRequestError::Client)?,
         Operation::StartSubmission => {
-            let invocation_id = crate::client_protocol::decode_client_seal(&request.payload)
-                .map_err(|error| {
-                    GatewayRequestError::Client(
-                        crate::client_protocol::ClientSessionError::InvalidControlPayload(error),
-                    )
-                })?;
+            let start_payload = crate::client_protocol::decode_client_start_for_protocol(
+                &request.payload,
+                session.protocol_major(),
+            )
+            .map_err(|error| {
+                GatewayRequestError::Client(
+                    crate::client_protocol::ClientSessionError::InvalidControlPayload(error),
+                )
+            })?;
+            let invocation_id = start_payload.invocation_id;
+            let owner = session
+                .staging_owner()
+                .map_err(GatewayRequestError::Client)?;
+            let interactive_identity = staging
+                .interactive_package_identity(owner, invocation_id)
+                .map_err(GatewayRequestError::Staging)?;
+            if interactive_identity.is_some() {
+                return Err(GatewayRequestError::InvalidPayload);
+            }
+            if start_payload.actor.is_some() {
+                return Err(GatewayRequestError::InvalidPayload);
+            }
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             if let Some(executor) = executor {
                 let (response, invocation, worker) = session
@@ -1167,6 +1242,81 @@ fn serve_gateway_client_session_inner<'db, S: Read + Write>(
                 return Err(SupervisorConnectionError::Frame(error));
             }
         };
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if let Some(executor) = executor
+            && is_interactive_start_request(&request)
+        {
+            let interactive = (|| {
+                let invocation_id = crate::client_protocol::decode_client_start_for_protocol(
+                    &request.payload,
+                    session.protocol_major(),
+                )
+                .map(|start| start.invocation_id)
+                .map_err(|_| GatewayRequestError::InvalidPayload)?;
+                let owner = session
+                    .staging_owner()
+                    .map_err(GatewayRequestError::Client)?;
+                let Some(identity) = staging
+                    .interactive_package_identity(owner, invocation_id)
+                    .map_err(GatewayRequestError::Staging)?
+                else {
+                    return Ok(None);
+                };
+                let client_frame = crate::client_protocol::ClientFrame {
+                    kind: 7,
+                    request_id: request.request_id,
+                    response_sequence: 0,
+                    payload: request.payload.clone(),
+                };
+                let credentials = session
+                    .validate_interactive_start_request(manager, &client_frame, identity.binding)
+                    .map_err(GatewayRequestError::Client)?;
+                Ok(Some((invocation_id, owner, identity, credentials)))
+            })();
+            match interactive {
+                Ok(Some((invocation_id, owner, identity, credentials))) => {
+                    let response = IpcFrame {
+                        operation: request.operation,
+                        request_id: request.request_id,
+                        payload: b"{\"state\":\"accepted\"}".to_vec(),
+                    };
+                    crate::ipc::write_frame(stream, &response)
+                        .map_err(SupervisorConnectionError::Frame)?;
+                    let execution = execute_interactive_package_service(
+                        manager,
+                        staging,
+                        executor,
+                        stream,
+                        request.request_id,
+                        InteractivePackageStart {
+                            invocation_id,
+                            owner,
+                            identity,
+                            token_id: credentials.controller_token_id,
+                            token_secret: credentials.controller_token_secret,
+                            actor: credentials.actor,
+                        },
+                    );
+                    if let Err(error) = execution {
+                        close_gateway_client_session(manager, staging, session)?;
+                        return Err(error);
+                    }
+                    continue;
+                }
+                Ok(None) => (),
+                Err(error) => {
+                    let error_response = IpcFrame {
+                        operation: Operation::GatewayClientError as u16,
+                        request_id: request.request_id,
+                        payload: sanitized_gateway_error_payload(&error),
+                    };
+                    let write_result = crate::ipc::write_frame(stream, &error_response);
+                    close_gateway_client_session(manager, staging, session)?;
+                    write_result.map_err(SupervisorConnectionError::Frame)?;
+                    return Err(SupervisorConnectionError::Gateway(error));
+                }
+            }
+        }
         let dispatched = match dispatch_gateway_client_request_inner(
             ServiceRole::Gateway,
             manager,
@@ -1262,6 +1412,127 @@ fn sanitized_gateway_error_payload(error: &GatewayRequestError) -> Vec<u8> {
         | GatewayRequestError::Staging(_) => crate::gateway::GatewayClientErrorCode::Unavailable,
     };
     code.payload().to_vec()
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn is_interactive_start_request(request: &IpcFrame) -> bool {
+    Operation::from_code(request.operation) == Ok(Operation::StartSubmission)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn execute_interactive_package_service<W: Read + Write>(
+    manager: &StorageManager<'_>,
+    staging: &crate::supervisor::StagingStore,
+    executor_config: &GatewayExecutorConfig,
+    stream: &mut W,
+    request_id: u64,
+    start: InteractivePackageStart,
+) -> Result<(), SupervisorConnectionError> {
+    let InteractivePackageStart {
+        invocation_id,
+        owner,
+        identity,
+        token_id,
+        token_secret,
+        actor,
+    } = start;
+    let (requested_scope, requested_scope_valid) =
+        match crate::submission_scope::decode_requested_scope_v1(&identity.requested_scope) {
+            Ok(scope) => (scope, true),
+            Err(_) => (std::collections::HashSet::new(), false),
+        };
+    let execution = manager.execute_interactive_package_with_supervisor(
+        crate::storage_manager::InteractivePackageRequest {
+            token_id,
+            token_secret: &token_secret,
+            transaction_id: identity.binding.transaction_id,
+            package_id: identity.binding.package_id,
+            package_digest: identity.package_digest,
+            requested_scope,
+            actor: actor.as_ref().map(|actor| {
+                crate::storage_manager::InteractivePackageActorProof {
+                    expected_name: &actor.expected_name,
+                    token_id: actor.token_id,
+                    token_secret: &actor.token_secret,
+                }
+            }),
+        },
+        |invocation| {
+            if !requested_scope_valid {
+                return Err("invalid requested scope");
+            }
+            let (_, mut worker) = crate::executor_launcher::start_and_launch_executor_selected(
+                staging,
+                owner,
+                invocation_id,
+                &executor_config.cgroup_parent,
+                |metadata| executor_config.resource_limits_for(metadata.workload_class),
+                &executor_config.launch,
+                |_| Ok::<(), &'static str>(()),
+            )
+            .map_err(|_| "executor launch failed")?;
+            let status = worker
+                .observe_exit_with_results(invocation, |payload| {
+                    write_gateway_result_data_event(stream, request_id, payload)
+                })
+                .map_err(|_| "executor observation failed")?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err("executor exited unsuccessfully")
+            }
+        },
+    );
+    let state = if execution.is_ok() {
+        "completed"
+    } else {
+        "failed"
+    };
+    let transaction_id = identity
+        .binding
+        .transaction_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let package_id = identity
+        .binding
+        .package_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let payload = format!(
+        "{{\"transaction_id\":\"{transaction_id}\",\"package_id\":\"{package_id}\",\"state\":\"{state}\",\"result_lost\":false}}"
+    );
+    let terminal_result = crate::ipc::write_frame(
+        stream,
+        &IpcFrame {
+            operation: Operation::GatewayTerminal as u16,
+            request_id,
+            payload: payload.into_bytes(),
+        },
+    );
+    if execution.is_ok() && terminal_result.is_err() {
+        let _ = manager.mark_interactive_package_result_lost(
+            token_id,
+            &token_secret,
+            identity.binding.transaction_id,
+            identity.binding.package_id,
+        );
+    }
+    let state = staging
+        .status(owner, invocation_id)
+        .map_err(SupervisorConnectionError::Staging)?;
+    let cleanup = match state {
+        crate::supervisor::SubmissionState::Started => staging
+            .finish_started(owner, invocation_id)
+            .map_err(SupervisorConnectionError::Staging),
+        _ => {
+            let _ = staging.close_connection(owner);
+            Ok(())
+        }
+    };
+    cleanup?;
+    terminal_result.map_err(SupervisorConnectionError::Frame)
 }
 
 fn close_gateway_client_session(

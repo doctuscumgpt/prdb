@@ -24,6 +24,7 @@ pub mod gateway;
 pub mod identity_history;
 pub mod index_key;
 pub mod index_locator;
+pub mod interactive_sql;
 pub mod ipc;
 pub mod linux_sandbox;
 pub mod metadata;

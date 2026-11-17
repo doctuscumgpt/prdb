@@ -1060,6 +1060,13 @@
       "c_type": "UINT16_C"
     },
     {
+      "rust_name": "IPC_OP_INTERACTIVE_TRANSACTION",
+      "rust_type": "u16",
+      "value": 5132,
+      "c_name": "PRDB_IPC_OP_INTERACTIVE_TRANSACTION",
+      "c_type": "UINT16_C"
+    },
+    {
       "rust_name": "IPC_OP_GATEWAY_RESULT_DATA",
       "rust_type": "u16",
       "value": 5136,

@@ -2,7 +2,7 @@
 
 ## Scope
 
-This is the initial external client protocol, terminated by the [gateway](client-gateway.md). It is not HTTP, HTTP/3, or executor IPC. It supports authenticated submissions, streamed arbitrary query output, status/cancellation, and a separate administrative connection mode. It is unencrypted; loopback is the default. Keep protected bootstrap on its local setup channel.
+This is the initial external client protocol v1, terminated by the [gateway](client-gateway.md). It is not HTTP, HTTP/3, or executor IPC. It supports authenticated submissions, streamed arbitrary query output, status/cancellation, and a separate administrative connection mode. It is unencrypted; loopback is the default. Keep protected bootstrap on its local setup channel. The separate interactive SQL protocol v2 contract, which adds connection-independent transactions and per-package effective actors, is specified in [interactive SQL](interactive-sql.md); v1 remains one invocation per transaction and never silently accepts v2 semantics.
 
 The client submission SDK implements this protocol outside query.so. The C SQL/runtime inside query.so uses only provisioned local host services. Neither TCP sockets nor client credentials enter the executor.
 

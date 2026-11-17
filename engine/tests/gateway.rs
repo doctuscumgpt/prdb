@@ -66,7 +66,7 @@ fn tcp_client_hello_and_ping_bridge_over_the_gateway_service_channel() {
         let ping = read_frame(&mut service_supervisor).unwrap().unwrap();
         assert_eq!(ping.operation, Operation::PingClientSession as u16);
         assert_eq!(ping.request_id, 2);
-        assert_eq!(ping.payload, b"{}");
+        assert_eq!(ping.payload, [vec![1], b"{}".to_vec()].concat());
         write_frame(
             &mut service_supervisor,
             &IpcFrame {

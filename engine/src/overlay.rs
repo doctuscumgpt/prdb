@@ -1,5 +1,5 @@
 //! Bounded invocation-local staged row values. This module does not authorize writes.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RowId {
@@ -22,8 +22,13 @@ pub enum ResolvedRow<'overlay, 'snapshot> {
     SnapshotValue(&'snapshot [u8]),
 }
 pub type OverlayEntries = Vec<(RowId, Option<Vec<u8>>)>;
+struct StagedValue {
+    value: Option<Vec<u8>>,
+    actor_id: [u8; 16],
+}
+
 pub struct Overlay {
-    rows: HashMap<RowId, Option<Vec<u8>>>,
+    rows: HashMap<RowId, StagedValue>,
     max_rows: usize,
     max_bytes: usize,
     bytes: usize,
@@ -42,16 +47,43 @@ impl Overlay {
 
     /// Stage a copied value after checking the overlay's row and value-byte limits.
     pub fn put(&mut self, id: RowId, value: &[u8]) -> Result<(), OverlayError> {
+        self.put_as(id, value, [0; 16])
+    }
+
+    /// Stage a value attributed to the effective package actor.
+    pub fn put_as(
+        &mut self,
+        id: RowId,
+        value: &[u8],
+        actor_id: [u8; 16],
+    ) -> Result<(), OverlayError> {
         let new_bytes = self.check_change(&id, value.len())?;
-        self.rows.insert(id, Some(value.to_vec()));
+        self.rows.insert(
+            id,
+            StagedValue {
+                value: Some(value.to_vec()),
+                actor_id,
+            },
+        );
         self.bytes = new_bytes;
         Ok(())
     }
 
     /// Stage a deletion; deletions consume a row slot but no value bytes.
     pub fn delete(&mut self, id: RowId) -> Result<(), OverlayError> {
+        self.delete_as(id, [0; 16])
+    }
+
+    /// Stage a deletion attributed to the effective package actor.
+    pub fn delete_as(&mut self, id: RowId, actor_id: [u8; 16]) -> Result<(), OverlayError> {
         let new_bytes = self.check_change(&id, 0)?;
-        self.rows.insert(id, None);
+        self.rows.insert(
+            id,
+            StagedValue {
+                value: None,
+                actor_id,
+            },
+        );
         self.bytes = new_bytes;
         Ok(())
     }
@@ -64,7 +96,7 @@ impl Overlay {
         let Some(old) = self.rows.remove(id) else {
             return Ok(false);
         };
-        if let Some(value) = old {
+        if let Some(value) = old.value {
             self.bytes -= value.len();
         }
         Ok(true)
@@ -75,17 +107,51 @@ impl Overlay {
         if self.aborted {
             return Err(OverlayError::Aborted);
         }
-        Ok(self.rows.into_iter().collect())
+        Ok(self
+            .rows
+            .into_iter()
+            .map(|(id, staged)| (id, staged.value))
+            .collect())
     }
 
     pub fn get(&self, id: &RowId) -> Result<Option<StagedRow<'_>>, OverlayError> {
         if self.aborted {
             return Err(OverlayError::Aborted);
         }
-        Ok(self.rows.get(id).map(|v| match v {
+        Ok(self.rows.get(id).map(|staged| match &staged.value {
             Some(bytes) => StagedRow::Value(bytes),
             None => StagedRow::Delete,
         }))
+    }
+
+    /// Resolve a staged value only when the current actor authored it. A
+    /// different actor's private write is absent from this actor's view, so
+    /// reads fall back to the transaction snapshot.
+    pub fn get_for_actor(
+        &self,
+        id: &RowId,
+        actor_id: [u8; 16],
+    ) -> Result<Option<StagedRow<'_>>, OverlayError> {
+        if self.aborted {
+            return Err(OverlayError::Aborted);
+        }
+        let Some(staged) = self.rows.get(id) else {
+            return Ok(None);
+        };
+        if staged.actor_id != actor_id {
+            return Ok(None);
+        }
+        Ok(Some(match &staged.value {
+            Some(bytes) => StagedRow::Value(bytes),
+            None => StagedRow::Delete,
+        }))
+    }
+
+    pub fn staged_actor_ids(&self) -> Result<HashSet<[u8; 16]>, OverlayError> {
+        if self.aborted {
+            return Err(OverlayError::Aborted);
+        }
+        Ok(self.rows.values().map(|staged| staged.actor_id).collect())
     }
 
     /// Return an ordered, bounded set of staged row IDs for one table. Values
@@ -168,6 +234,22 @@ impl Overlay {
         }
     }
 
+    pub fn read_for_actor<'overlay, 'snapshot, F>(
+        &'overlay self,
+        id: &RowId,
+        actor_id: [u8; 16],
+        snapshot: F,
+    ) -> Result<Option<ResolvedRow<'overlay, 'snapshot>>, OverlayError>
+    where
+        F: FnOnce(&RowId) -> Option<&'snapshot [u8]>,
+    {
+        match self.get_for_actor(id, actor_id)? {
+            Some(StagedRow::Value(value)) => Ok(Some(ResolvedRow::OverlayValue(value))),
+            Some(StagedRow::Delete) => Ok(None),
+            None => Ok(snapshot(id).map(ResolvedRow::SnapshotValue)),
+        }
+    }
+
     /// Discard all staged rows and prevent subsequent use.
     pub fn abort(&mut self) {
         self.rows.clear();
@@ -180,7 +262,9 @@ impl Overlay {
             return Err(OverlayError::Aborted);
         }
         let existing = self.rows.get(id);
-        let old_len = existing.and_then(Option::as_ref).map_or(0, Vec::len);
+        let old_len = existing
+            .and_then(|staged| staged.value.as_ref())
+            .map_or(0, Vec::len);
         let total = self
             .bytes
             .checked_sub(old_len)
@@ -192,5 +276,64 @@ impl Overlay {
             return Err(OverlayError::LimitExceeded);
         }
         Ok(total.expect("checked above"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Overlay, ResolvedRow, RowId, StagedRow};
+
+    fn row() -> RowId {
+        RowId {
+            table: [1; 16],
+            row: [2; 16],
+        }
+    }
+
+    #[test]
+    fn actor_reads_own_staged_value_and_other_actor_snapshot() {
+        let mut overlay = Overlay::new(4, 64);
+        overlay.put_as(row(), b"uncommitted", [3; 16]).unwrap();
+
+        assert_eq!(
+            overlay.get_for_actor(&row(), [3; 16]).unwrap(),
+            Some(StagedRow::Value(b"uncommitted"))
+        );
+        assert!(matches!(
+            overlay
+                .read_for_actor(&row(), [4; 16], |_| Some(b"snapshot"))
+                .unwrap(),
+            Some(ResolvedRow::SnapshotValue(b"snapshot"))
+        ));
+    }
+
+    #[test]
+    fn actor_does_not_observe_another_actors_staged_delete() {
+        let mut overlay = Overlay::new(4, 64);
+        overlay.delete_as(row(), [3; 16]).unwrap();
+
+        assert_eq!(
+            overlay.get_for_actor(&row(), [3; 16]).unwrap(),
+            Some(StagedRow::Delete)
+        );
+        assert!(matches!(
+            overlay
+                .read_for_actor(&row(), [4; 16], |_| Some(b"snapshot"))
+                .unwrap(),
+            Some(ResolvedRow::SnapshotValue(b"snapshot"))
+        ));
+    }
+
+    #[test]
+    fn staged_writer_ids_are_kept_until_commit_entries_are_created() {
+        let mut overlay = Overlay::new(4, 64);
+        overlay.put_as(row(), b"value", [3; 16]).unwrap();
+        assert_eq!(
+            overlay.staged_actor_ids().unwrap(),
+            [[3; 16]].into_iter().collect()
+        );
+
+        let entries = overlay.into_entries().unwrap();
+        assert_eq!(entries, vec![(row(), Some(b"value".to_vec()))]);
     }
 }

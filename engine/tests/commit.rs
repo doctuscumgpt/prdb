@@ -32517,11 +32517,20 @@ fn gateway_service_listener_authenticates_control_admin_over_socket()
             &IpcFrame {
                 operation: Operation::OpenClientSession as u16,
                 request_id: 1,
-                payload: br#"{"mode":"control","client_name":"listener"}"#.to_vec(),
+                payload: [
+                    vec![1],
+                    br#"{"mode":"control","client_name":"listener"}"#.to_vec(),
+                ]
+                .concat(),
             },
         )?;
         let response = read_frame(&mut gateway)?.ok_or("missing HELLO response")?;
-        assert_eq!(response.operation, Operation::OpenClientSession as u16);
+        assert_eq!(
+            response.operation,
+            Operation::OpenClientSession as u16,
+            "gateway HELLO failed: {}",
+            String::from_utf8_lossy(&response.payload)
+        );
         assert_eq!(response.request_id, 1);
         assert!(std::str::from_utf8(&response.payload)?.contains("\"mode\":\"control\""));
         let token_id_hex = admin_token_id
@@ -32533,11 +32542,15 @@ fn gateway_service_listener_authenticates_control_admin_over_socket()
             &IpcFrame {
                 operation: Operation::AuthenticateSession as u16,
                 request_id: 2,
-                payload: format!(
-                    "{{\"token_id\":\"{token_id_hex}\",\"token_secret\":\"{}\"}}",
-                    "A".repeat(43) + "="
-                )
-                .into_bytes(),
+                payload: [
+                    vec![1],
+                    format!(
+                        "{{\"token_id\":\"{token_id_hex}\",\"token_secret\":\"{}\"}}",
+                        "A".repeat(43) + "="
+                    )
+                    .into_bytes(),
+                ]
+                .concat(),
             },
         )?;
         let response = read_frame(&mut gateway)?.ok_or("missing AUTH response")?;

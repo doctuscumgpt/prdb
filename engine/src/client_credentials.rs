@@ -2,14 +2,16 @@
 
 use crate::client_protocol::ClientCredentials;
 use crate::credentials::TOKEN_SECRET_BYTES;
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 const FILE_HEADER: &[u8] = b"PDB-CREDENTIALS-1\n";
 const FILE_BYTES: usize = 18 + 32 + 1 + TOKEN_SECRET_BYTES * 2 + 1;
+pub const MAX_CLIENT_CREDENTIAL_PROFILES: usize = 16;
 
 #[derive(Debug)]
 pub enum ClientCredentialFileError {
@@ -17,6 +19,9 @@ pub enum ClientCredentialFileError {
     InvalidFormat,
     UnsafePermissions,
     AlreadyExists,
+    InvalidUsername,
+    DuplicateUsername,
+    TooManyProfiles,
     Io(io::Error),
 }
 
@@ -27,6 +32,94 @@ impl std::fmt::Display for ClientCredentialFileError {
 }
 
 impl std::error::Error for ClientCredentialFileError {}
+
+/// A username-to-file mapping loaded by the interactive SQL client. Secrets
+/// are held in zeroizing buffers and are copied into a fresh zeroizing buffer
+/// for each authenticated connection.
+pub struct ClientCredentialProfiles {
+    default_username: String,
+    profiles: HashMap<String, LoadedCredential>,
+}
+
+struct LoadedCredential {
+    token_id: [u8; 16],
+    token_secret: Zeroizing<[u8; TOKEN_SECRET_BYTES]>,
+}
+
+impl ClientCredentialProfiles {
+    /// Load a default profile and up to fifteen additional named profiles.
+    /// Every file is validated by the existing no-follow, owner, mode, and
+    /// canonical-format checks in [`read_client_credentials`].
+    pub fn load(
+        default_username: &str,
+        default_path: impl AsRef<Path>,
+        additional: &[(String, std::path::PathBuf)],
+    ) -> Result<Self, ClientCredentialFileError> {
+        if !is_normalized_database_username(default_username) {
+            return Err(ClientCredentialFileError::InvalidUsername);
+        }
+        if additional.len() + 1 > MAX_CLIENT_CREDENTIAL_PROFILES {
+            return Err(ClientCredentialFileError::TooManyProfiles);
+        }
+
+        let mut profiles = HashMap::with_capacity(additional.len() + 1);
+        profiles.insert(default_username.to_owned(), load_credential(default_path)?);
+        for (username, path) in additional {
+            if !is_normalized_database_username(username) {
+                return Err(ClientCredentialFileError::InvalidUsername);
+            }
+            if profiles.contains_key(username) {
+                return Err(ClientCredentialFileError::DuplicateUsername);
+            }
+            profiles.insert(username.clone(), load_credential(path)?);
+        }
+
+        Ok(Self {
+            default_username: default_username.to_owned(),
+            profiles,
+        })
+    }
+
+    pub fn default_username(&self) -> &str {
+        &self.default_username
+    }
+
+    pub fn contains_username(&self, username: &str) -> bool {
+        self.profiles.contains_key(username)
+    }
+
+    /// Return a fresh zeroizing copy for one AUTH exchange. Callers should
+    /// pass the secret to the connection method that zeroizes its argument.
+    pub fn authentication_material(
+        &self,
+        username: &str,
+    ) -> Option<([u8; 16], Zeroizing<[u8; TOKEN_SECRET_BYTES]>)> {
+        let profile = self.profiles.get(username)?;
+        Some((profile.token_id, Zeroizing::new(*profile.token_secret)))
+    }
+}
+
+fn load_credential(path: impl AsRef<Path>) -> Result<LoadedCredential, ClientCredentialFileError> {
+    let credentials = read_client_credentials(path)?;
+    let ClientCredentials {
+        token_id,
+        token_secret,
+    } = credentials;
+    Ok(LoadedCredential {
+        token_id,
+        token_secret: Zeroizing::new(token_secret),
+    })
+}
+
+fn is_normalized_database_username(username: &str) -> bool {
+    let bytes = username.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 128
+        && (bytes[0].is_ascii_lowercase() || bytes[0] == b'_')
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+}
 
 impl From<io::Error> for ClientCredentialFileError {
     fn from(error: io::Error) -> Self {
@@ -300,6 +393,69 @@ mod tests {
         ));
         fs::remove_file(link).unwrap();
         fs::remove_file(target).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn credential_profiles_bind_names_without_exposing_or_copying_raw_secrets() {
+        let directory = temp_dir();
+        let primary = directory.join("primary.cred");
+        let secondary = directory.join("secondary.cred");
+        write_client_credentials(&primary, &credentials()).unwrap();
+        write_client_credentials(
+            &secondary,
+            &ClientCredentials {
+                token_id: [3; 16],
+                token_secret: [4; TOKEN_SECRET_BYTES],
+            },
+        )
+        .unwrap();
+
+        let profiles = ClientCredentialProfiles::load(
+            "admin_user",
+            &primary,
+            &[("app_user".to_owned(), secondary.clone())],
+        )
+        .unwrap();
+        assert_eq!(profiles.default_username(), "admin_user");
+        assert!(profiles.contains_username("app_user"));
+        assert!(!profiles.contains_username("missing_user"));
+        let (token_id, secret) = profiles.authentication_material("app_user").unwrap();
+        assert_eq!(token_id, [3; 16]);
+        assert_eq!(secret.as_ref(), &[4; TOKEN_SECRET_BYTES]);
+        assert!(profiles.authentication_material("missing_user").is_none());
+
+        drop(profiles);
+        fs::remove_file(primary).unwrap();
+        fs::remove_file(secondary).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn credential_profiles_reject_invalid_duplicate_and_excess_names() {
+        let directory = temp_dir();
+        let primary = directory.join("primary.cred");
+        write_client_credentials(&primary, &credentials()).unwrap();
+        assert!(matches!(
+            ClientCredentialProfiles::load("Admin", &primary, &[]),
+            Err(ClientCredentialFileError::InvalidUsername)
+        ));
+        assert!(matches!(
+            ClientCredentialProfiles::load(
+                "admin_user",
+                &primary,
+                &[("admin_user".to_owned(), primary.clone())]
+            ),
+            Err(ClientCredentialFileError::DuplicateUsername)
+        ));
+        let additional = (0..MAX_CLIENT_CREDENTIAL_PROFILES)
+            .map(|index| (format!("user_{index}"), primary.clone()))
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            ClientCredentialProfiles::load("admin_user", &primary, &additional),
+            Err(ClientCredentialFileError::TooManyProfiles)
+        ));
+        fs::remove_file(primary).unwrap();
         fs::remove_dir(directory).unwrap();
     }
 }

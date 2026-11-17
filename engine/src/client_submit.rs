@@ -28,6 +28,7 @@ pub enum ClientSubmitError {
     Io(io::Error),
     Frame(crate::client_protocol::ClientFrameError),
     InvalidCredentials,
+    InteractiveV2LoopbackOnly,
     InvalidPackage,
     InvalidAdministrativeRequest,
     InvalidInvocationId,
@@ -36,6 +37,12 @@ pub enum ClientSubmitError {
     ServerRejected(String),
     OutcomeUncertain([u8; 16]),
     AdministrativeOutcomeUncertain([u8; 16]),
+    InteractiveTransactionOutcomeUncertain([u8; 16]),
+    InteractiveTransactionBeginOutcomeUncertain,
+    InteractivePackageOutcomeUncertain {
+        transaction_id: [u8; 16],
+        package_id: [u8; 16],
+    },
     AdministrativeOperationRejected {
         operation_id: [u8; 16],
         message: String,
@@ -44,7 +51,14 @@ pub enum ClientSubmitError {
 
 impl std::fmt::Display for ClientSubmitError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "client submission failed: {self:?}")
+        match self {
+            Self::AdministrativeOutcomeUncertain(operation_id) => write!(
+                formatter,
+                "administrative operation outcome is uncertain; operation_id={}",
+                lower_hex(operation_id)
+            ),
+            _ => write!(formatter, "client submission failed: {self:?}"),
+        }
     }
 }
 
@@ -54,6 +68,26 @@ impl From<io::Error> for ClientSubmitError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
     }
+}
+
+fn uncertain_transaction_error(
+    error: ClientSubmitError,
+    transaction_id: [u8; 16],
+) -> ClientSubmitError {
+    match error {
+        ClientSubmitError::ServerRejected(_) => error,
+        _ => ClientSubmitError::InteractiveTransactionOutcomeUncertain(transaction_id),
+    }
+}
+
+fn is_normalized_interactive_username(username: &str) -> bool {
+    let bytes = username.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 128
+        && (bytes[0].is_ascii_lowercase() || bytes[0] == b'_')
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
 }
 
 impl From<crate::client_protocol::ClientFrameError> for ClientSubmitError {
@@ -72,6 +106,7 @@ pub struct SubmissionClient {
     max_payload_bytes: usize,
     max_control_bytes: usize,
     max_chunk_bytes: usize,
+    protocol_major: u16,
 }
 
 /// Authenticated control-mode client for permission-filtered metadata reads.
@@ -510,6 +545,12 @@ pub struct InvocationTerminal {
 pub enum ClientResultEvent {
     Data(Vec<u8>),
     Terminal(InvocationTerminal),
+    PackageTerminal {
+        transaction_id: [u8; 16],
+        package_id: [u8; 16],
+        state: crate::client_protocol::ClientV2PackageState,
+        result_lost: bool,
+    },
 }
 
 pub struct StartedInvocation<'a> {
@@ -517,6 +558,7 @@ pub struct StartedInvocation<'a> {
     request_id: u64,
     next_sequence: u64,
     invocation_id: [u8; 16],
+    interactive_package: Option<([u8; 16], [u8; 16])>,
     terminal: bool,
 }
 
@@ -550,6 +592,24 @@ impl SubmissionClient {
             token_secret,
             timeout,
             crate::client_protocol::ClientMode::Query,
+            1,
+        )
+    }
+
+    /// Connect and authenticate using the interactive SQL v2 protocol.
+    /// V2 never falls back to v1 when the peer negotiates a different version.
+    pub fn connect_interactive_authenticated(
+        address: SocketAddr,
+        token_id: [u8; 16],
+        token_secret: &mut [u8],
+    ) -> Result<Self, ClientSubmitError> {
+        Self::connect_authenticated_mode(
+            address,
+            token_id,
+            token_secret,
+            DEFAULT_TIMEOUT,
+            crate::client_protocol::ClientMode::Query,
+            2,
         )
     }
 
@@ -559,24 +619,36 @@ impl SubmissionClient {
         token_secret: &mut [u8],
         timeout: Duration,
         mode: crate::client_protocol::ClientMode,
+        protocol_major: u16,
     ) -> Result<Self, ClientSubmitError> {
         let secret = Zeroizing::new(token_secret.to_vec());
         token_secret.zeroize();
         if secret.len() != TOKEN_SECRET_BYTES || timeout.is_zero() {
             return Err(ClientSubmitError::InvalidCredentials);
         }
+        if protocol_major == 2 && !address.ip().is_loopback() {
+            return Err(ClientSubmitError::InteractiveV2LoopbackOnly);
+        }
+        if protocol_major == 2 && !address.ip().is_loopback() {
+            return Err(ClientSubmitError::InteractiveV2LoopbackOnly);
+        }
         let stream = TcpStream::connect_timeout(&address, timeout)?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
         let mut client = Self {
             stream,
-            decoder: ClientFrameDecoder::default(),
+            decoder: if protocol_major == 2 {
+                ClientFrameDecoder::negotiating()
+            } else {
+                ClientFrameDecoder::default()
+            },
             pending_frames: VecDeque::new(),
             started_invocations: HashSet::new(),
             next_request_id: 1,
             max_payload_bytes: CLIENT_MAX_PAYLOAD_BYTES,
             max_control_bytes: CLIENT_MAX_CONTROL_BYTES,
             max_chunk_bytes: CLIENT_MAX_CHUNK_BYTES,
+            protocol_major,
         };
 
         let mode_name = match mode {
@@ -605,7 +677,7 @@ impl SubmissionClient {
             .and_then(ResponseValue::as_number)
             .and_then(|bytes| usize::try_from(bytes).ok());
         if hello_fields.len() != 5
-            || hello_fields.get("major") != Some(&ResponseValue::Number(1))
+            || hello_fields.get("major") != Some(&ResponseValue::Number(protocol_major as u64))
             || hello_fields.get("minor") != Some(&ResponseValue::Number(0))
             || take_string(&hello_fields, "mode").as_deref() != Some(mode_name)
             || take_string(&hello_fields, "transport").as_deref() != Some("plaintext_tcp")
@@ -643,6 +715,103 @@ impl SubmissionClient {
         Ok(client)
     }
 
+    /// Begin an explicit interactive transaction. If the reply is lost, the
+    /// server may retain an unknown transaction until its idle lease expires.
+    pub fn interactive_transaction_begin(
+        &mut self,
+        begin_request_id: [u8; 16],
+    ) -> Result<crate::client_protocol::ClientV2Response, ClientSubmitError> {
+        self.require_v2()?;
+        self.interactive_transaction_request(crate::client_protocol::ClientV2Request::TxBegin {
+            begin_request_id,
+        })
+        .map_err(|error| match error {
+            ClientSubmitError::ServerRejected(_) => error,
+            _ => ClientSubmitError::InteractiveTransactionBeginOutcomeUncertain,
+        })
+    }
+
+    pub fn interactive_transaction_attach(
+        &mut self,
+        transaction_id: [u8; 16],
+    ) -> Result<crate::client_protocol::ClientV2Response, ClientSubmitError> {
+        self.interactive_transaction_request(crate::client_protocol::ClientV2Request::TxAttach {
+            transaction_id,
+        })
+        .map_err(|error| uncertain_transaction_error(error, transaction_id))
+    }
+
+    pub fn interactive_transaction_commit(
+        &mut self,
+        transaction_id: [u8; 16],
+    ) -> Result<crate::client_protocol::ClientV2Response, ClientSubmitError> {
+        self.interactive_transaction_request(crate::client_protocol::ClientV2Request::TxCommit {
+            transaction_id,
+        })
+        .map_err(|error| uncertain_transaction_error(error, transaction_id))
+    }
+
+    pub fn interactive_transaction_rollback(
+        &mut self,
+        transaction_id: [u8; 16],
+    ) -> Result<crate::client_protocol::ClientV2Response, ClientSubmitError> {
+        self.interactive_transaction_request(crate::client_protocol::ClientV2Request::TxRollback {
+            transaction_id,
+        })
+        .map_err(|error| uncertain_transaction_error(error, transaction_id))
+    }
+
+    pub fn interactive_transaction_status(
+        &mut self,
+        transaction_id: [u8; 16],
+    ) -> Result<crate::client_protocol::ClientV2Response, ClientSubmitError> {
+        self.interactive_transaction_request(crate::client_protocol::ClientV2Request::TxStatus {
+            transaction_id,
+        })
+        .map_err(|error| uncertain_transaction_error(error, transaction_id))
+    }
+
+    pub fn interactive_package_status(
+        &mut self,
+        transaction_id: [u8; 16],
+        package_id: [u8; 16],
+    ) -> Result<crate::client_protocol::ClientV2Response, ClientSubmitError> {
+        self.interactive_transaction_request(
+            crate::client_protocol::ClientV2Request::PackageStatus {
+                transaction_id,
+                package_id,
+            },
+        )
+        .map_err(|error| match error {
+            ClientSubmitError::ServerRejected(_) => error,
+            _ => ClientSubmitError::InteractivePackageOutcomeUncertain {
+                transaction_id,
+                package_id,
+            },
+        })
+    }
+
+    fn interactive_transaction_request(
+        &mut self,
+        request: crate::client_protocol::ClientV2Request,
+    ) -> Result<crate::client_protocol::ClientV2Response, ClientSubmitError> {
+        self.require_v2()?;
+        let (kind, payload) = request
+            .encode()
+            .map_err(|_| ClientSubmitError::InvalidResponse)?;
+        let response = self.exchange(kind, payload)?;
+        crate::client_protocol::ClientV2Response::decode(kind, &response.payload)
+            .map_err(|_| ClientSubmitError::InvalidResponse)
+    }
+
+    fn require_v2(&self) -> Result<(), ClientSubmitError> {
+        if self.protocol_major == 2 {
+            Ok(())
+        } else {
+            Err(ClientSubmitError::InvalidResponse)
+        }
+    }
+
     /// Upload a private package directory and parameter bytes, then seal it.
     /// The returned ID is reserved but has not started execution.
     pub fn upload_and_seal(
@@ -652,7 +821,44 @@ impl SubmissionClient {
         deadline_ms: u64,
         workload_class: WorkloadClass,
     ) -> Result<[u8; 16], ClientSubmitError> {
+        self.upload_and_seal_bound(package_dir, parameters, deadline_ms, workload_class, None)
+    }
+
+    /// Upload and seal a package bound to a retained v2 transaction. The
+    /// caller supplies a fresh package ID and must never reuse it after an
+    /// uncertain START result.
+    pub fn upload_interactive_package_and_seal(
+        &mut self,
+        package_dir: &std::path::Path,
+        parameters: &[u8],
+        deadline_ms: u64,
+        workload_class: WorkloadClass,
+        transaction_id: [u8; 16],
+        package_id: [u8; 16],
+    ) -> Result<[u8; 16], ClientSubmitError> {
+        self.upload_and_seal_bound(
+            package_dir,
+            parameters,
+            deadline_ms,
+            workload_class,
+            Some((transaction_id, package_id)),
+        )
+    }
+
+    fn upload_and_seal_bound(
+        &mut self,
+        package_dir: &std::path::Path,
+        parameters: &[u8],
+        deadline_ms: u64,
+        workload_class: WorkloadClass,
+        transaction_binding: Option<([u8; 16], [u8; 16])>,
+    ) -> Result<[u8; 16], ClientSubmitError> {
         if deadline_ms == 0 || parameters.len() as u64 > MAX_PARAMETER_BYTES {
+            return Err(ClientSubmitError::InvalidPackage);
+        }
+        if transaction_binding.is_some_and(|(transaction_id, package_id)| {
+            self.protocol_major != 2 || transaction_id == [0; 16] || package_id == [0; 16]
+        }) {
             return Err(ClientSubmitError::InvalidPackage);
         }
         let package = read_package(package_dir)?;
@@ -663,7 +869,7 @@ impl SubmissionClient {
             WorkloadClass::Operational => "operational",
             WorkloadClass::Analytical => "analytical",
         };
-        let prepare = format!(
+        let mut prepare = format!(
             "{{\"manifest_version\":1,\"manifest\":\"{}\",\"artifact_bytes\":\"{}\",\"artifact_sha256\":\"{}\",\"sql_library_bytes\":\"{}\",\"sql_library_sha256\":\"{}\",\"parameter_bytes\":\"{}\",\"parameter_sha256\":\"{}\",\"scope_version\":1,\"requested_scope\":\"{}\",\"deadline_ms\":\"{deadline_ms}\",\"workload_class\":\"{workload}\"}}",
             encode_base64(&package.manifest),
             package.artifact.len(),
@@ -674,6 +880,14 @@ impl SubmissionClient {
             lower_hex(&parameter_hash),
             encode_base64(&package.scope),
         );
+        if let Some((transaction_id, package_id)) = transaction_binding {
+            prepare.pop();
+            prepare.push_str(&format!(
+                ",\"transaction_id\":\"{}\",\"package_id\":\"{}\"}}",
+                lower_hex(&transaction_id),
+                lower_hex(&package_id),
+            ));
+        }
         let response = self.exchange(3, prepare.into_bytes())?;
         let fields = parse_flat_response(&response.payload)?;
         let invocation_id = fields
@@ -719,6 +933,92 @@ impl SubmissionClient {
         Ok(invocation_id)
     }
 
+    /// Start a sealed package in its transaction. `actor` carries an
+    /// independently authenticated RUNAS identity; its secret is zeroized on
+    /// return. The transaction controller remains the connection identity.
+    pub fn start_interactive_package(
+        &mut self,
+        invocation_id: [u8; 16],
+        transaction_id: [u8; 16],
+        package_id: [u8; 16],
+        actor: Option<crate::client_protocol::ClientStartActorCredentials>,
+        receipt_path: &std::path::Path,
+    ) -> Result<StartedInvocation<'_>, ClientSubmitError> {
+        self.require_v2()?;
+        if transaction_id == [0; 16]
+            || package_id == [0; 16]
+            || invocation_id == [0; 16]
+            || self.started_invocations.contains(&invocation_id)
+        {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        if actor
+            .as_ref()
+            .is_some_and(|actor| !is_normalized_interactive_username(&actor.expected_name))
+        {
+            return Err(ClientSubmitError::InvalidCredentials);
+        }
+        if actor
+            .as_ref()
+            .is_some_and(|actor| !is_normalized_interactive_username(&actor.expected_name))
+        {
+            return Err(ClientSubmitError::InvalidCredentials);
+        }
+        write_start_receipt(receipt_path, invocation_id)?;
+        self.started_invocations.insert(invocation_id);
+        let request_id = self.next_request_id;
+        let mut payload = Zeroizing::new(format!(
+            "{{\"invocation_id\":\"{}\",\"transaction_id\":\"{}\",\"package_id\":\"{}\"",
+            lower_hex(&invocation_id),
+            lower_hex(&transaction_id),
+            lower_hex(&package_id),
+        ));
+        if let Some(actor) = actor {
+            let mut encoded_secret = Zeroizing::new(encode_base64(&actor.token_secret[..]));
+            use std::fmt::Write as _;
+            write!(
+                &mut *payload,
+                ",\"expected_actor_name\":\"{}\",\"actor_token_id\":\"{}\",\"actor_token_secret\":\"{}\"",
+                actor.expected_name,
+                lower_hex(&actor.token_id),
+                encoded_secret.as_str(),
+            )
+            .map_err(|_| ClientSubmitError::InvalidResponse)?;
+            encoded_secret.zeroize();
+        }
+        payload.push('}');
+        let response = match self.exchange(7, std::mem::take(&mut *payload).into_bytes()) {
+            Ok(response) => response,
+            Err(error @ ClientSubmitError::ServerRejected(_)) => return Err(error),
+            Err(_) => {
+                return Err(ClientSubmitError::InteractivePackageOutcomeUncertain {
+                    transaction_id,
+                    package_id,
+                });
+            }
+        };
+        let fields = parse_flat_response(&response.payload).map_err(|_| {
+            ClientSubmitError::InteractivePackageOutcomeUncertain {
+                transaction_id,
+                package_id,
+            }
+        })?;
+        if fields.len() != 1 || take_string(&fields, "state").as_deref() != Some("accepted") {
+            return Err(ClientSubmitError::InteractivePackageOutcomeUncertain {
+                transaction_id,
+                package_id,
+            });
+        }
+        Ok(StartedInvocation {
+            client: self,
+            request_id,
+            next_sequence: 1,
+            invocation_id,
+            interactive_package: Some((transaction_id, package_id)),
+            terminal: false,
+        })
+    }
+
     /// Start a sealed reservation once. If the request may have reached the
     /// gateway but its reply is lost or invalid, callers must reconcile the ID
     /// with `status` over a newly authenticated connection. START is never retried.
@@ -749,6 +1049,7 @@ impl SubmissionClient {
             request_id,
             next_sequence: 1,
             invocation_id,
+            interactive_package: None,
             terminal: false,
         })
     }
@@ -854,7 +1155,12 @@ impl SubmissionClient {
             request.payload.zeroize();
             return Err(ClientSubmitError::InvalidResponse);
         }
-        let mut encoded = match request.encode() {
+        let encoded_request = if self.protocol_major == 2 {
+            request.encode_v2()
+        } else {
+            request.encode()
+        };
+        let mut encoded = match encoded_request {
             Ok(encoded) => encoded,
             Err(error) => {
                 request.payload.zeroize();
@@ -935,6 +1241,7 @@ impl MetadataClient {
             token_secret,
             timeout,
             crate::client_protocol::ClientMode::Control,
+            1,
         )?;
         Ok(Self { transport })
     }
@@ -1194,6 +1501,7 @@ impl AdminClient {
             token_secret,
             timeout,
             crate::client_protocol::ClientMode::Control,
+            1,
         )?;
         Ok(Self { transport })
     }
@@ -7090,21 +7398,49 @@ impl StartedInvocation<'_> {
         let frame = self
             .client
             .receive_frame()
-            .map_err(|_| ClientSubmitError::OutcomeUncertain(self.invocation_id))?;
+            .map_err(|_| self.uncertain_error())?;
         if frame.request_id != self.request_id || frame.response_sequence != self.next_sequence {
-            return Err(ClientSubmitError::OutcomeUncertain(self.invocation_id));
+            return Err(self.uncertain_error());
         }
         self.next_sequence = self
             .next_sequence
             .checked_add(1)
-            .ok_or(ClientSubmitError::OutcomeUncertain(self.invocation_id))?;
+            .ok_or_else(|| self.uncertain_error())?;
         match frame.kind {
             102 => Ok(Some(ClientResultEvent::Data(frame.payload))),
             103 => {
-                let fields = parse_flat_response(&frame.payload)
-                    .map_err(|_| ClientSubmitError::OutcomeUncertain(self.invocation_id))?;
+                if let Some((transaction_id, package_id)) = self.interactive_package {
+                    let response = crate::client_protocol::ClientV2Response::decode(
+                        crate::client_protocol::CLIENT_V2_PACKAGE_STATUS_KIND,
+                        &frame.payload,
+                    )
+                    .map_err(|_| self.uncertain_error())?;
+                    let crate::client_protocol::ClientV2Response::Package {
+                        transaction_id: response_transaction_id,
+                        package_id: response_package_id,
+                        state,
+                        result_lost,
+                    } = response
+                    else {
+                        return Err(self.uncertain_error());
+                    };
+                    if response_transaction_id != transaction_id
+                        || response_package_id != package_id
+                    {
+                        return Err(self.uncertain_error());
+                    }
+                    self.terminal = true;
+                    return Ok(Some(ClientResultEvent::PackageTerminal {
+                        transaction_id,
+                        package_id,
+                        state,
+                        result_lost,
+                    }));
+                }
+                let fields =
+                    parse_flat_response(&frame.payload).map_err(|_| self.uncertain_error())?;
                 if fields.len() != 3 {
-                    return Err(ClientSubmitError::OutcomeUncertain(self.invocation_id));
+                    return Err(self.uncertain_error());
                 }
                 let response_id = fields
                     .get("invocation_id")
@@ -7114,12 +7450,12 @@ impl StartedInvocation<'_> {
                     Some("committed") => TerminalOutcome::Committed,
                     Some("aborted") => TerminalOutcome::Aborted,
                     Some("unknown") => TerminalOutcome::Unknown,
-                    _ => return Err(ClientSubmitError::OutcomeUncertain(self.invocation_id)),
+                    _ => return Err(self.uncertain_error()),
                 };
-                let reason_code = take_string(&fields, "reason_code")
-                    .ok_or(ClientSubmitError::OutcomeUncertain(self.invocation_id))?;
+                let reason_code =
+                    take_string(&fields, "reason_code").ok_or_else(|| self.uncertain_error())?;
                 if response_id != Some(self.invocation_id) || reason_code.len() > 64 {
-                    return Err(ClientSubmitError::OutcomeUncertain(self.invocation_id));
+                    return Err(self.uncertain_error());
                 }
                 self.terminal = true;
                 Ok(Some(ClientResultEvent::Terminal(InvocationTerminal {
@@ -7128,8 +7464,19 @@ impl StartedInvocation<'_> {
                     reason_code,
                 })))
             }
-            _ => Err(ClientSubmitError::OutcomeUncertain(self.invocation_id)),
+            _ => Err(self.uncertain_error()),
         }
+    }
+
+    fn uncertain_error(&self) -> ClientSubmitError {
+        self.interactive_package
+            .map(|(transaction_id, package_id)| {
+                ClientSubmitError::InteractivePackageOutcomeUncertain {
+                    transaction_id,
+                    package_id,
+                }
+            })
+            .unwrap_or(ClientSubmitError::OutcomeUncertain(self.invocation_id))
     }
 }
 
@@ -7560,11 +7907,161 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CLIENT_MAX_CONTROL_BYTES, ClientSubmitError, ResponseValue, decode_hex_array,
-        decode_token_secret, encode_admin_table_columns, is_normalized_index_name,
-        parse_bounded_json_value, parse_canonical_positive_u64, parse_flat_response,
-        validate_admin_id, validate_admin_name, validate_index_request,
+        CLIENT_MAX_CONTROL_BYTES, ClientSubmitError, ResponseValue, SubmissionClient,
+        decode_hex_array, decode_token_secret, encode_admin_table_columns,
+        is_normalized_index_name, parse_bounded_json_value, parse_canonical_positive_u64,
+        parse_flat_response, validate_admin_id, validate_admin_name, validate_index_request,
     };
+    use crate::client_protocol::{
+        CLIENT_MAX_CHUNK_BYTES, CLIENT_MAX_PAYLOAD_BYTES, ClientFrame, ClientFrameDecoder,
+    };
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+
+    fn read_v2_frame(stream: &mut TcpStream, decoder: &mut ClientFrameDecoder) -> ClientFrame {
+        let mut input = [0; 8192];
+        loop {
+            let count = stream.read(&mut input).unwrap();
+            assert_ne!(count, 0);
+            let mut frames = decoder.push(&input[..count]).unwrap();
+            if !frames.is_empty() {
+                assert_eq!(frames.len(), 1);
+                return frames.remove(0);
+            }
+        }
+    }
+
+    fn write_v2_response(stream: &mut TcpStream, request: &ClientFrame, payload: &str) {
+        let response = ClientFrame {
+            kind: 100,
+            request_id: request.request_id,
+            response_sequence: 0,
+            payload: payload.as_bytes().to_vec(),
+        }
+        .encode_v2()
+        .unwrap();
+        stream.write_all(&response).unwrap();
+    }
+
+    fn serve_v2_auth(stream: &mut TcpStream, decoder: &mut ClientFrameDecoder) {
+        let hello = read_v2_frame(stream, decoder);
+        assert_eq!(hello.kind, 1);
+        let hello_response = format!(
+            "{{\"major\":2,\"minor\":0,\"mode\":\"query\",\"transport\":\"plaintext_tcp\",\"limits\":{{\"payload_bytes\":{CLIENT_MAX_PAYLOAD_BYTES},\"control_bytes\":{CLIENT_MAX_CONTROL_BYTES},\"chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES}}}}}"
+        );
+        write_v2_response(stream, &hello, &hello_response);
+        let auth = read_v2_frame(stream, decoder);
+        assert_eq!(auth.kind, 2);
+        let auth_json = std::str::from_utf8(&auth.payload).unwrap();
+        assert!(auth_json.contains("\"token_id\":\"01010101010101010101010101010101\""));
+        write_v2_response(
+            stream,
+            &auth,
+            "{\"session_id\":\"11111111111111111111111111111111\",\"authenticated\":true}",
+        );
+    }
+
+    #[test]
+    fn interactive_client_retries_begin_with_same_key_and_reattaches_fresh() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let transaction_id = "abababababababababababababababab";
+            {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut decoder = ClientFrameDecoder::negotiating();
+                serve_v2_auth(&mut stream, &mut decoder);
+                let begin = read_v2_frame(&mut stream, &mut decoder);
+                assert_eq!(begin.kind, 13);
+                assert_eq!(
+                    begin.payload,
+                    b"{\"begin_request_id\":\"09090909090909090909090909090909\"}"
+                );
+                // Simulate a committed server-side begin whose response is lost.
+            }
+            {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut decoder = ClientFrameDecoder::negotiating();
+                serve_v2_auth(&mut stream, &mut decoder);
+                let begin = read_v2_frame(&mut stream, &mut decoder);
+                assert_eq!(begin.kind, 13);
+                assert_eq!(
+                    begin.payload,
+                    b"{\"begin_request_id\":\"09090909090909090909090909090909\"}"
+                );
+                write_v2_response(
+                    &mut stream,
+                    &begin,
+                    &format!(
+                        "{{\"transaction_id\":\"{transaction_id}\",\"state\":\"active\",\"idle_timeout_ms\":300000,\"lifetime_ms\":900000,\"max_package_bytes\":67108864,\"max_packages\":128}}"
+                    ),
+                );
+            }
+            {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut decoder = ClientFrameDecoder::negotiating();
+                serve_v2_auth(&mut stream, &mut decoder);
+                let attach = read_v2_frame(&mut stream, &mut decoder);
+                assert_eq!(attach.kind, 14);
+                assert_eq!(
+                    std::str::from_utf8(&attach.payload).unwrap(),
+                    format!("{{\"transaction_id\":\"{transaction_id}\"}}")
+                );
+                write_v2_response(
+                    &mut stream,
+                    &attach,
+                    &format!("{{\"transaction_id\":\"{transaction_id}\",\"state\":\"active\"}}"),
+                );
+            }
+        });
+
+        let mut first_secret = [7; 32];
+        let mut first = SubmissionClient::connect_interactive_authenticated(
+            address,
+            [1; 16],
+            &mut first_secret,
+        )
+        .unwrap();
+        assert_eq!(first_secret, [0; 32]);
+        assert!(matches!(
+            first.interactive_transaction_begin([9; 16]),
+            Err(ClientSubmitError::InteractiveTransactionBeginOutcomeUncertain)
+        ));
+        drop(first);
+
+        let mut retry_secret = [8; 32];
+        let mut retry = SubmissionClient::connect_interactive_authenticated(
+            address,
+            [1; 16],
+            &mut retry_secret,
+        )
+        .unwrap();
+        let begin = retry.interactive_transaction_begin([9; 16]).unwrap();
+        let transaction_id = match begin {
+            crate::client_protocol::ClientV2Response::TransactionBegun {
+                transaction_id, ..
+            } => transaction_id,
+            _ => panic!("expected transaction begin response"),
+        };
+        drop(retry);
+
+        let mut next_secret = [7; 32];
+        let mut second =
+            SubmissionClient::connect_interactive_authenticated(address, [1; 16], &mut next_secret)
+                .unwrap();
+        let attached = second
+            .interactive_transaction_attach(transaction_id)
+            .unwrap();
+        assert!(matches!(
+            attached,
+            crate::client_protocol::ClientV2Response::Transaction {
+                transaction_id: attached_id,
+                state: crate::client_protocol::ClientV2TransactionState::Active,
+            } if attached_id == transaction_id
+        ));
+        server.join().unwrap();
+    }
 
     #[test]
     fn administrative_index_request_validation_rejects_invalid_ids_names_and_columns() {

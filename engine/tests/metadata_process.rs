@@ -28,7 +28,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 struct ChildGuard(Option<Child>);
 
 fn read_client_frame(stream: &mut std::net::TcpStream) -> std::io::Result<Option<ClientFrame>> {
-    let mut decoder = ClientFrameDecoder::default();
+    let mut decoder = ClientFrameDecoder::negotiating();
     let mut input = [0u8; 8192];
     loop {
         let bytes = stream.read(&mut input)?;
@@ -42,6 +42,38 @@ fn read_client_frame(stream: &mut std::net::TcpStream) -> std::io::Result<Option
             return Ok(Some(frames.remove(0)));
         }
     }
+}
+
+fn read_raw_client_frame(
+    stream: &mut std::net::TcpStream,
+) -> std::io::Result<Option<(Vec<u8>, u16)>> {
+    let mut header = [0u8; prdb_engine::client_protocol::CLIENT_FRAME_HEADER_BYTES];
+    match stream.read(&mut header[..1])? {
+        0 => return Ok(None),
+        1 => (),
+        _ => unreachable!("one-byte read cannot exceed its buffer"),
+    }
+    stream.read_exact(&mut header[1..])?;
+    if &header[..4] != b"PDBN" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid client frame magic",
+        ));
+    }
+    let payload_bytes =
+        u32::from_le_bytes(header[12..16].try_into().expect("fixed frame header")) as usize;
+    if payload_bytes > prdb_engine::client_protocol::CLIENT_MAX_PAYLOAD_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "client frame exceeds the payload limit",
+        ));
+    }
+    let kind = u16::from_le_bytes([header[8], header[9]]);
+    let mut raw = Vec::with_capacity(header.len() + payload_bytes);
+    raw.extend_from_slice(&header);
+    raw.resize(header.len() + payload_bytes, 0);
+    stream.read_exact(&mut raw[header.len()..])?;
+    Ok(Some((raw, kind)))
 }
 
 fn start_response_dropping_proxy(
@@ -81,6 +113,77 @@ fn start_response_dropping_proxy(
             }
             Ok(starts)
         });
+    Ok((proxy_address, handle))
+}
+
+type InteractiveResponseDropStats = (usize, usize, usize, usize);
+type InteractiveResponseDropHandle =
+    std::thread::JoinHandle<std::io::Result<InteractiveResponseDropStats>>;
+
+fn start_interactive_response_dropping_proxy(
+    gateway_address: std::net::SocketAddr,
+    dropped_request_kind: u16,
+    dropped_request_occurrence: usize,
+) -> std::io::Result<(std::net::SocketAddr, InteractiveResponseDropHandle)> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let proxy_address = listener.local_addr()?;
+    let handle = std::thread::spawn(move || {
+        let mut dropped = 0usize;
+        let mut matching_requests = 0usize;
+        let mut status_requests = 0usize;
+        let mut begin_requests = 0usize;
+        let mut last_activity = Instant::now();
+        while last_activity.elapsed() < Duration::from_secs(3) {
+            let (mut client, _) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            last_activity = Instant::now();
+            let mut gateway = std::net::TcpStream::connect(gateway_address)?;
+            client.set_read_timeout(Some(Duration::from_secs(10)))?;
+            client.set_write_timeout(Some(Duration::from_secs(10)))?;
+            gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
+            gateway.set_write_timeout(Some(Duration::from_secs(10)))?;
+            while let Some((request, request_kind)) = read_raw_client_frame(&mut client)? {
+                if request_kind == dropped_request_kind {
+                    matching_requests += 1;
+                }
+                let is_admin_status = request
+                    .windows(b"runtime.invocation.status".len())
+                    .any(|window| window == b"runtime.invocation.status");
+                if request_kind == 8
+                    || is_admin_status
+                    || request_kind == prdb_engine::client_protocol::CLIENT_V2_TX_STATUS_KIND
+                    || request_kind == prdb_engine::client_protocol::CLIENT_V2_PACKAGE_STATUS_KIND
+                {
+                    status_requests += 1;
+                }
+                if request_kind == prdb_engine::client_protocol::CLIENT_V2_TX_BEGIN_KIND {
+                    begin_requests += 1;
+                }
+                gateway.write_all(&request)?;
+                let Some((response, response_kind)) = read_raw_client_frame(&mut gateway)? else {
+                    break;
+                };
+                if request_kind == dropped_request_kind
+                    && matching_requests == dropped_request_occurrence
+                    && response_kind == 100
+                    && dropped == 0
+                {
+                    dropped += 1;
+                    last_activity = Instant::now();
+                    break;
+                }
+                client.write_all(&response)?;
+            }
+        }
+        Ok((dropped, status_requests, begin_requests, matching_requests))
+    });
     Ok((proxy_address, handle))
 }
 
@@ -724,6 +827,9 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                         terminal_outcome = Some(terminal.outcome);
                         break;
                     }
+                    prdb_engine::client_submit::ClientResultEvent::PackageTerminal { .. } => {
+                        panic!("expected one-shot invocation terminal")
+                    }
                 }
             }
             (results, terminal_outcome)
@@ -949,6 +1055,508 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             status_client.status(multiple_statement_receipt_id)?,
             InvocationStatus::Aborted
         );
+
+        let interactive_admin_credentials_path = root.join("interactive-admin.cred");
+        write_client_credentials(
+            &interactive_admin_credentials_path,
+            &ClientCredentials {
+                token_id,
+                token_secret,
+            },
+        )?;
+        let interactive_sql_path = root.join("interactive-mixed.sql");
+        std::fs::write(
+            &interactive_sql_path,
+            "CREATE SCHEMA interactive_client_probe;\n\
+             RUNAS metadata_reader\n\
+             SELECT schema_name FROM schemata WHERE schema_name = $1 LIMIT 1;\n\
+             ENDRUNAS;\n\
+             BEGIN;\n\
+             RUNAS metadata_reader\n\
+             SELECT schema_name FROM schemata WHERE schema_name = $1 LIMIT 1;\n\
+             ENDRUNAS;\n\
+             ROLLBACK;\n\
+             DROP SCHEMA interactive_client_probe RESTRICT;\n",
+        )?;
+        std::fs::set_permissions(
+            &interactive_sql_path,
+            std::fs::Permissions::from_mode(0o600),
+        )?;
+        let interactive_receipt_dir = root.join("interactive-receipts");
+        std::fs::create_dir(&interactive_receipt_dir)?;
+        std::fs::set_permissions(
+            &interactive_receipt_dir,
+            std::fs::Permissions::from_mode(0o700),
+        )?;
+        let interactive = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "interactive-sql",
+                "--address",
+                &sql_address,
+                "--credentials",
+                interactive_admin_credentials_path
+                    .to_str()
+                    .ok_or("interactive admin credentials path is not UTF-8")?,
+                "--default-user",
+                "metadata_process_admin",
+                "--credential-profile",
+                &format!(
+                    "metadata_reader={}",
+                    credentials_path
+                        .to_str()
+                        .ok_or("interactive reader credentials path is not UTF-8")?
+                ),
+                "--sql-file",
+                interactive_sql_path
+                    .to_str()
+                    .ok_or("interactive SQL path is not UTF-8")?,
+                "--schema",
+                "information_schema",
+                "--scope",
+                requested_scope_path
+                    .to_str()
+                    .ok_or("interactive scope path is not UTF-8")?,
+                "--sdk-library",
+                sql_sdk.to_str().ok_or("SQL SDK path is not UTF-8")?,
+                "--include-dir",
+                include_dir
+                    .to_str()
+                    .ok_or("SQL SDK include path is not UTF-8")?,
+                "--sdk-release",
+                "1",
+                "--cpu-baseline",
+                "x86_64-v1",
+                "--runtime-profile",
+                "test-runtime",
+                "--compiler-identity",
+                "TinyCC interactive SQL process integration",
+                "--parameters",
+                parameters_path
+                    .to_str()
+                    .ok_or("interactive parameters path is not UTF-8")?,
+            ])
+            .current_dir(&interactive_receipt_dir)
+            .output()?;
+        assert!(
+            interactive.status.success(),
+            "interactive-sql process failed: {}",
+            String::from_utf8_lossy(&interactive.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&interactive.stdout)
+                .matches("empty_roundtrip")
+                .count(),
+            2,
+            "interactive-sql did not execute both RUNAS packages: stdout={:?}",
+            String::from_utf8_lossy(&interactive.stdout)
+        );
+        let interactive_stderr = String::from_utf8_lossy(&interactive.stderr);
+        assert!(interactive_stderr.contains("began transaction"));
+        assert!(interactive_stderr.contains("rolled back transaction"));
+        assert!(interactive_stderr.contains("results are provisional until this package commits"));
+        assert!(
+            interactive_receipt_dir.read_dir()?.next().is_none(),
+            "interactive transaction receipts should not be persisted as ordinary invocations"
+        );
+        let mut schema_verify_credentials =
+            read_client_credentials(&interactive_admin_credentials_path)?;
+        let mut schema_verify = AdminClient::connect_authenticated(
+            address,
+            schema_verify_credentials.token_id,
+            &mut schema_verify_credentials.token_secret,
+        )?;
+        assert!(
+            !schema_verify
+                .list_schemas_page(128, None)?
+                .records
+                .iter()
+                .any(|schema| schema.name == "interactive_client_probe"),
+            "interactive DDL did not drop its temporary schema"
+        );
+
+        let uncertain_commit_sql_path = root.join("interactive-uncertain-commit.sql");
+        std::fs::write(&uncertain_commit_sql_path, "BEGIN;\nCOMMIT;\n")?;
+        std::fs::set_permissions(
+            &uncertain_commit_sql_path,
+            std::fs::Permissions::from_mode(0o600),
+        )?;
+        let (commit_proxy_address, commit_proxy) = start_interactive_response_dropping_proxy(
+            address,
+            prdb_engine::client_protocol::CLIENT_V2_TX_COMMIT_KIND,
+            1,
+        )?;
+        let uncertain_commit = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "interactive-sql",
+                "--address",
+                &commit_proxy_address.to_string(),
+                "--credentials",
+                interactive_admin_credentials_path
+                    .to_str()
+                    .ok_or("interactive admin credentials path is not UTF-8")?,
+                "--default-user",
+                "metadata_process_admin",
+                "--credential-profile",
+                &format!(
+                    "metadata_reader={}",
+                    credentials_path
+                        .to_str()
+                        .ok_or("interactive reader credentials path is not UTF-8")?
+                ),
+                "--sql-file",
+                uncertain_commit_sql_path
+                    .to_str()
+                    .ok_or("uncertain COMMIT SQL path is not UTF-8")?,
+                "--schema",
+                "information_schema",
+                "--scope",
+                requested_scope_path
+                    .to_str()
+                    .ok_or("interactive scope path is not UTF-8")?,
+                "--sdk-library",
+                sql_sdk.to_str().ok_or("SQL SDK path is not UTF-8")?,
+                "--include-dir",
+                include_dir
+                    .to_str()
+                    .ok_or("SQL SDK include path is not UTF-8")?,
+                "--sdk-release",
+                "1",
+                "--cpu-baseline",
+                "x86_64-v1",
+                "--runtime-profile",
+                "test-runtime",
+                "--compiler-identity",
+                "TinyCC interactive uncertain COMMIT fixture",
+                "--parameters",
+                parameters_path
+                    .to_str()
+                    .ok_or("interactive parameters path is not UTF-8")?,
+            ])
+            .output()?;
+        let commit_proxy_result = commit_proxy.join().unwrap();
+        assert!(
+            uncertain_commit.status.success(),
+            "interactive-sql did not reconcile a lost COMMIT reply: {}; proxy={commit_proxy_result:?}",
+            String::from_utf8_lossy(&uncertain_commit.stderr),
+        );
+        assert_eq!(commit_proxy_result?, (1, 1, 1, 1));
+        assert!(uncertain_commit.stdout.is_empty());
+
+        let (start_proxy_address, start_proxy) =
+            start_interactive_response_dropping_proxy(address, 7, 1)?;
+        let uncertain_start = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "interactive-sql",
+                "--address",
+                &start_proxy_address.to_string(),
+                "--credentials",
+                credentials_path
+                    .to_str()
+                    .ok_or("interactive reader credentials path is not UTF-8")?,
+                "--default-user",
+                "metadata_reader",
+                "--sql-file",
+                sql_path
+                    .to_str()
+                    .ok_or("interactive query path is not UTF-8")?,
+                "--schema",
+                "information_schema",
+                "--scope",
+                requested_scope_path
+                    .to_str()
+                    .ok_or("interactive scope path is not UTF-8")?,
+                "--sdk-library",
+                sql_sdk.to_str().ok_or("SQL SDK path is not UTF-8")?,
+                "--include-dir",
+                include_dir
+                    .to_str()
+                    .ok_or("SQL SDK include path is not UTF-8")?,
+                "--sdk-release",
+                "1",
+                "--cpu-baseline",
+                "x86_64-v1",
+                "--runtime-profile",
+                "test-runtime",
+                "--compiler-identity",
+                "TinyCC interactive uncertain START fixture",
+                "--parameters",
+                parameters_path
+                    .to_str()
+                    .ok_or("interactive parameters path is not UTF-8")?,
+            ])
+            .output()?;
+        let start_proxy_result = start_proxy.join().unwrap();
+        assert!(
+            !uncertain_start.status.success(),
+            "interactive-sql should report the lost package result instead of replaying it"
+        );
+        let uncertain_start_stderr = String::from_utf8_lossy(&uncertain_start.stderr);
+        assert!(
+            uncertain_start_stderr.contains("uncertain START reply"),
+            "interactive-sql failed without reconciling the lost START reply: {uncertain_start_stderr}"
+        );
+        assert_eq!(start_proxy_result?, (1, 1, 0, 1));
+
+        let uncertain_package_sql_path = root.join("interactive-uncertain-package.sql");
+        std::fs::write(
+            &uncertain_package_sql_path,
+            "BEGIN;\n\
+             RUNAS metadata_reader\n\
+             SELECT schema_name FROM schemata WHERE schema_name = $1 LIMIT 1;\n\
+             ENDRUNAS;\n\
+             COMMIT;\n",
+        )?;
+        std::fs::set_permissions(
+            &uncertain_package_sql_path,
+            std::fs::Permissions::from_mode(0o600),
+        )?;
+        let (package_proxy_address, package_proxy) =
+            start_interactive_response_dropping_proxy(address, 7, 1)?;
+        let uncertain_package = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "interactive-sql",
+                "--address",
+                &package_proxy_address.to_string(),
+                "--credentials",
+                interactive_admin_credentials_path
+                    .to_str()
+                    .ok_or("interactive admin credentials path is not UTF-8")?,
+                "--default-user",
+                "metadata_process_admin",
+                "--credential-profile",
+                &format!(
+                    "metadata_reader={}",
+                    credentials_path
+                        .to_str()
+                        .ok_or("interactive reader credentials path is not UTF-8")?
+                ),
+                "--sql-file",
+                uncertain_package_sql_path
+                    .to_str()
+                    .ok_or("uncertain package SQL path is not UTF-8")?,
+                "--schema",
+                "information_schema",
+                "--scope",
+                requested_scope_path
+                    .to_str()
+                    .ok_or("interactive scope path is not UTF-8")?,
+                "--sdk-library",
+                sql_sdk.to_str().ok_or("SQL SDK path is not UTF-8")?,
+                "--include-dir",
+                include_dir
+                    .to_str()
+                    .ok_or("SQL SDK include path is not UTF-8")?,
+                "--sdk-release",
+                "1",
+                "--cpu-baseline",
+                "x86_64-v1",
+                "--runtime-profile",
+                "test-runtime",
+                "--compiler-identity",
+                "TinyCC interactive uncertain transaction package fixture",
+                "--parameters",
+                parameters_path
+                    .to_str()
+                    .ok_or("interactive parameters path is not UTF-8")?,
+            ])
+            .output()?;
+        let package_proxy_result = package_proxy.join().unwrap();
+        assert!(
+            !uncertain_package.status.success(),
+            "interactive-sql should report a completed package with a lost result"
+        );
+        assert!(
+            String::from_utf8_lossy(&uncertain_package.stderr)
+                .contains("completed but its result was lost"),
+            "interactive-sql did not reconcile the lost package reply: {}",
+            String::from_utf8_lossy(&uncertain_package.stderr)
+        );
+        assert_eq!(package_proxy_result?, (1, 1, 1, 1));
+        assert!(uncertain_package.stdout.is_empty());
+
+        let begin_uncertain_sql_path = root.join("interactive-uncertain-begin.sql");
+        std::fs::write(&begin_uncertain_sql_path, "BEGIN;\nROLLBACK;\n")?;
+        std::fs::set_permissions(
+            &begin_uncertain_sql_path,
+            std::fs::Permissions::from_mode(0o600),
+        )?;
+        let (begin_proxy_address, begin_proxy) = start_interactive_response_dropping_proxy(
+            address,
+            prdb_engine::client_protocol::CLIENT_V2_TX_BEGIN_KIND,
+            1,
+        )?;
+        let uncertain_begin = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "interactive-sql",
+                "--address",
+                &begin_proxy_address.to_string(),
+                "--credentials",
+                interactive_admin_credentials_path
+                    .to_str()
+                    .ok_or("interactive admin credentials path is not UTF-8")?,
+                "--default-user",
+                "metadata_process_admin",
+                "--sql-file",
+                begin_uncertain_sql_path
+                    .to_str()
+                    .ok_or("uncertain BEGIN SQL path is not UTF-8")?,
+                "--schema",
+                "information_schema",
+                "--scope",
+                requested_scope_path
+                    .to_str()
+                    .ok_or("interactive scope path is not UTF-8")?,
+                "--sdk-library",
+                sql_sdk.to_str().ok_or("SQL SDK path is not UTF-8")?,
+                "--include-dir",
+                include_dir
+                    .to_str()
+                    .ok_or("SQL SDK include path is not UTF-8")?,
+                "--sdk-release",
+                "1",
+                "--cpu-baseline",
+                "x86_64-v1",
+                "--runtime-profile",
+                "test-runtime",
+                "--compiler-identity",
+                "TinyCC interactive uncertain BEGIN fixture",
+            ])
+            .output()?;
+        let begin_proxy_result = begin_proxy.join().unwrap();
+        assert!(
+            uncertain_begin.status.success(),
+            "interactive-sql did not retry an idempotent BEGIN after a lost reply: {}; proxy={begin_proxy_result:?}",
+            String::from_utf8_lossy(&uncertain_begin.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&uncertain_begin.stderr).contains("rolled back transaction")
+        );
+        assert_eq!(begin_proxy_result?, (1, 0, 2, 2));
+
+        let rollback_uncertain_sql_path = root.join("interactive-uncertain-rollback.sql");
+        std::fs::write(&rollback_uncertain_sql_path, "BEGIN;\nROLLBACK;\n")?;
+        std::fs::set_permissions(
+            &rollback_uncertain_sql_path,
+            std::fs::Permissions::from_mode(0o600),
+        )?;
+        let (rollback_proxy_address, rollback_proxy) = start_interactive_response_dropping_proxy(
+            address,
+            prdb_engine::client_protocol::CLIENT_V2_TX_ROLLBACK_KIND,
+            1,
+        )?;
+        let uncertain_rollback = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "interactive-sql",
+                "--address",
+                &rollback_proxy_address.to_string(),
+                "--credentials",
+                interactive_admin_credentials_path
+                    .to_str()
+                    .ok_or("interactive admin credentials path is not UTF-8")?,
+                "--default-user",
+                "metadata_process_admin",
+                "--sql-file",
+                rollback_uncertain_sql_path
+                    .to_str()
+                    .ok_or("uncertain ROLLBACK SQL path is not UTF-8")?,
+                "--schema",
+                "information_schema",
+                "--scope",
+                requested_scope_path
+                    .to_str()
+                    .ok_or("interactive scope path is not UTF-8")?,
+                "--sdk-library",
+                sql_sdk.to_str().ok_or("SQL SDK path is not UTF-8")?,
+                "--include-dir",
+                include_dir
+                    .to_str()
+                    .ok_or("SQL SDK include path is not UTF-8")?,
+                "--sdk-release",
+                "1",
+                "--cpu-baseline",
+                "x86_64-v1",
+                "--runtime-profile",
+                "test-runtime",
+                "--compiler-identity",
+                "TinyCC interactive uncertain ROLLBACK fixture",
+            ])
+            .output()?;
+        let rollback_proxy_result = rollback_proxy.join().unwrap();
+        assert!(
+            uncertain_rollback.status.success(),
+            "interactive-sql did not reconcile a lost ROLLBACK reply: {}; proxy={rollback_proxy_result:?}",
+            String::from_utf8_lossy(&uncertain_rollback.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&uncertain_rollback.stderr).contains("rolled back transaction")
+        );
+        assert_eq!(rollback_proxy_result?, (1, 1, 1, 1));
+
+        let uncertain_ddl_sql_path = root.join("interactive-uncertain-ddl.sql");
+        std::fs::write(
+            &uncertain_ddl_sql_path,
+            "CREATE SCHEMA interactive_ddl_uncertain_probe;\n",
+        )?;
+        std::fs::set_permissions(
+            &uncertain_ddl_sql_path,
+            std::fs::Permissions::from_mode(0o600),
+        )?;
+        let (ddl_proxy_address, ddl_proxy) =
+            start_interactive_response_dropping_proxy(address, 10, 2)?;
+        let uncertain_ddl = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .args([
+                "interactive-sql",
+                "--address",
+                &ddl_proxy_address.to_string(),
+                "--credentials",
+                interactive_admin_credentials_path
+                    .to_str()
+                    .ok_or("interactive admin credentials path is not UTF-8")?,
+                "--default-user",
+                "metadata_process_admin",
+                "--sql-file",
+                uncertain_ddl_sql_path
+                    .to_str()
+                    .ok_or("uncertain DDL SQL path is not UTF-8")?,
+                "--schema",
+                "information_schema",
+                "--scope",
+                requested_scope_path
+                    .to_str()
+                    .ok_or("interactive scope path is not UTF-8")?,
+                "--sdk-library",
+                sql_sdk.to_str().ok_or("SQL SDK path is not UTF-8")?,
+                "--include-dir",
+                include_dir
+                    .to_str()
+                    .ok_or("SQL SDK include path is not UTF-8")?,
+                "--sdk-release",
+                "1",
+                "--cpu-baseline",
+                "x86_64-v1",
+                "--runtime-profile",
+                "test-runtime",
+                "--compiler-identity",
+                "TinyCC interactive uncertain DDL fixture",
+            ])
+            .output()?;
+        let ddl_proxy_result = ddl_proxy.join().unwrap();
+        assert!(
+            uncertain_ddl.status.success(),
+            "interactive-sql did not reconcile a lost DDL reply: {}; proxy={ddl_proxy_result:?}",
+            String::from_utf8_lossy(&uncertain_ddl.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&uncertain_ddl.stderr).contains("committed after reconnect")
+        );
+        assert_eq!(ddl_proxy_result?, (1, 1, 0, 2));
+        let created_uncertain_schema = schema_verify
+            .list_schemas_page(128, None)?
+            .records
+            .into_iter()
+            .find(|schema| schema.name == "interactive_ddl_uncertain_probe")
+            .ok_or("uncertain DDL operation was not committed")?;
+        schema_verify.drop_schema(created_uncertain_schema.schema_id)?;
 
         let scope_reader_credentials_path = root.join("run-sql-scope-reader.cred");
         write_client_credentials(
@@ -6655,6 +7263,7 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
     let recovery_token_id = recovery_token.token_id;
     let mut restart_recovery_secret = *recovery_token.token_secret();
     let mut durable_recovery_secret = *recovery_token.token_secret();
+    let mut interactive_restart_secret = *recovery_token.token_secret();
     let invocation_list_credentials_path = root.join("invocation-list-owner.cred");
     write_client_credentials(
         &invocation_list_credentials_path,
@@ -6887,6 +7496,37 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         cancellation_requested_at.elapsed() < Duration::from_secs(2),
         "non-cooperative worker did not reach durable ABORTED within two seconds"
     );
+    let mut interactive_begin_client = SubmissionClient::connect_interactive_authenticated(
+        replacement_address,
+        recovery_token_id,
+        &mut interactive_restart_secret,
+    )?;
+    let interactive_transaction_id =
+        match interactive_begin_client.interactive_transaction_begin([0xe1; 16])? {
+            prdb_engine::client_protocol::ClientV2Response::TransactionBegun {
+                transaction_id,
+                state: prdb_engine::client_protocol::ClientV2TransactionState::Active,
+                ..
+            } => transaction_id,
+            response => return Err(format!("interactive BEGIN failed: {response:?}").into()),
+        };
+    let interactive_committed_id =
+        match interactive_begin_client.interactive_transaction_begin([0xe2; 16])? {
+            prdb_engine::client_protocol::ClientV2Response::TransactionBegun {
+                transaction_id,
+                state: prdb_engine::client_protocol::ClientV2TransactionState::Active,
+                ..
+            } => transaction_id,
+            response => return Err(format!("second interactive BEGIN failed: {response:?}").into()),
+        };
+    assert!(matches!(
+        interactive_begin_client.interactive_transaction_commit(interactive_committed_id)?,
+        prdb_engine::client_protocol::ClientV2Response::Transaction {
+            transaction_id,
+            state: prdb_engine::client_protocol::ClientV2TransactionState::Committed,
+        } if transaction_id == interactive_committed_id
+    ));
+    drop(interactive_begin_client);
     drop(status_client);
     drop(admin);
     assert!(replacement_gateway.stop()?.success());
@@ -6974,6 +7614,35 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         InvocationStatus::Aborted,
         "ABORTED must survive closing and reopening the storage process"
     );
+    let mut interactive_status_secret = *recovery_token.token_secret();
+    let mut interactive_status_client = SubmissionClient::connect_interactive_authenticated(
+        recovered_address,
+        recovery_token_id,
+        &mut interactive_status_secret,
+    )?;
+    let interactive_status_response =
+        interactive_status_client.interactive_transaction_status(interactive_transaction_id)?;
+    assert!(
+        matches!(
+            &interactive_status_response,
+            prdb_engine::client_protocol::ClientV2Response::Transaction {
+                transaction_id,
+                state: prdb_engine::client_protocol::ClientV2TransactionState::Aborted,
+            } if *transaction_id == interactive_transaction_id
+        ),
+        "an undecided interactive transaction must be aborted by supervisor restart: {interactive_status_response:?}"
+    );
+    assert!(
+        matches!(
+            interactive_status_client.interactive_transaction_status(interactive_committed_id)?,
+            prdb_engine::client_protocol::ClientV2Response::Transaction {
+                transaction_id,
+                state: prdb_engine::client_protocol::ClientV2TransactionState::Committed,
+            } if transaction_id == interactive_committed_id
+        ),
+        "a committed interactive transaction outcome must survive supervisor restart"
+    );
+    drop(interactive_status_client);
     drop(recovered_status_client);
     assert!(recovered_gateway.stop()?.success());
     assert!(restarted_supervisor.stop()?.success());

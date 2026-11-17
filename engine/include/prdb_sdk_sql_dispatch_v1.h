@@ -28,4 +28,12 @@ int32_t prdb_sdk_sql_run_v1(
     uint32_t schema_len, const uint8_t *sql, uint64_t sql_len,
     const uint8_t *parameters, uint64_t parameters_len);
 
+/* Runs one supported SELECT or DML statement. INSERT v3, UPDATE v1, and
+ * DELETE v1 use the bounded mutation executor APIs; other input is delegated
+ * to the SELECT-only v1 entry point. Errors latch statement failure. */
+int32_t prdb_sdk_sql_run_statement_v1(
+    const prdb_host_api_v3 *host, const uint8_t *schema,
+    uint32_t schema_len, const uint8_t *sql, uint64_t sql_len,
+    const uint8_t *parameters, uint64_t parameters_len);
+
 #endif /* PRDB_SDK_SQL_DISPATCH_V1_H */

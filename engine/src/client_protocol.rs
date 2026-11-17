@@ -14,9 +14,373 @@ pub const CLIENT_MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 pub const CLIENT_MAX_CONTROL_BYTES: usize = 64 * 1024;
 pub const CLIENT_MAX_CHUNK_BYTES: usize = 256 * 1024;
 pub const CLIENT_ERROR_KIND: u16 = 101;
+pub const CLIENT_V2_TX_BEGIN_KIND: u16 = 13;
+pub const CLIENT_V2_TX_ATTACH_KIND: u16 = 14;
+pub const CLIENT_V2_TX_COMMIT_KIND: u16 = 15;
+pub const CLIENT_V2_TX_ROLLBACK_KIND: u16 = 16;
+pub const CLIENT_V2_TX_STATUS_KIND: u16 = 17;
+pub const CLIENT_V2_PACKAGE_STATUS_KIND: u16 = 18;
 const CLIENT_MAGIC: [u8; 4] = *b"PDBN";
 const CLIENT_METADATA_CURSOR_KIND: u8 = 0xd3;
 pub const CLIENT_METADATA_MAX_PAGE: usize = 128;
+
+/// Transaction-control requests carried by protocol v2.0 frames.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClientV2Request {
+    TxBegin {
+        begin_request_id: [u8; 16],
+    },
+    TxAttach {
+        transaction_id: [u8; 16],
+    },
+    TxCommit {
+        transaction_id: [u8; 16],
+    },
+    TxRollback {
+        transaction_id: [u8; 16],
+    },
+    TxStatus {
+        transaction_id: [u8; 16],
+    },
+    PackageStatus {
+        transaction_id: [u8; 16],
+        package_id: [u8; 16],
+    },
+}
+
+impl ClientV2Request {
+    /// Decode the strict JSON payload for one v2 transaction-control frame.
+    pub fn decode(kind: u16, payload: &[u8]) -> Result<Self, ClientControlError> {
+        if payload.len() > CLIENT_MAX_CONTROL_BYTES {
+            return Err(ClientControlError::InvalidJson);
+        }
+        let mut fields = parse_string_object(payload)?;
+        let request = match kind {
+            CLIENT_V2_TX_BEGIN_KIND => Self::TxBegin {
+                begin_request_id: decode_lower_hex_id(&take_required(
+                    &mut fields,
+                    "begin_request_id",
+                )?)?,
+            },
+            CLIENT_V2_TX_ATTACH_KIND => Self::TxAttach {
+                transaction_id: decode_lower_hex_id(&take_required(
+                    &mut fields,
+                    "transaction_id",
+                )?)?,
+            },
+            CLIENT_V2_TX_COMMIT_KIND => Self::TxCommit {
+                transaction_id: decode_lower_hex_id(&take_required(
+                    &mut fields,
+                    "transaction_id",
+                )?)?,
+            },
+            CLIENT_V2_TX_ROLLBACK_KIND => Self::TxRollback {
+                transaction_id: decode_lower_hex_id(&take_required(
+                    &mut fields,
+                    "transaction_id",
+                )?)?,
+            },
+            CLIENT_V2_TX_STATUS_KIND => Self::TxStatus {
+                transaction_id: decode_lower_hex_id(&take_required(
+                    &mut fields,
+                    "transaction_id",
+                )?)?,
+            },
+            CLIENT_V2_PACKAGE_STATUS_KIND => Self::PackageStatus {
+                transaction_id: decode_lower_hex_id(&take_required(
+                    &mut fields,
+                    "transaction_id",
+                )?)?,
+                package_id: decode_lower_hex_id(&take_required(&mut fields, "package_id")?)?,
+            },
+            _ => return Err(ClientControlError::UnsupportedV2Operation),
+        };
+        reject_unknown_fields(fields)?;
+        Ok(request)
+    }
+
+    /// Encode this request using the canonical v2 JSON field order and hex IDs.
+    pub fn encode(self) -> Result<(u16, Vec<u8>), ClientControlError> {
+        let (kind, payload) = match self {
+            Self::TxBegin { begin_request_id } => (
+                CLIENT_V2_TX_BEGIN_KIND,
+                format!(
+                    "{{\"begin_request_id\":\"{}\"}}",
+                    encode_lower_hex_id(begin_request_id)
+                ),
+            ),
+            Self::TxAttach { transaction_id } => (
+                CLIENT_V2_TX_ATTACH_KIND,
+                format!(
+                    "{{\"transaction_id\":\"{}\"}}",
+                    encode_lower_hex_id(transaction_id)
+                ),
+            ),
+            Self::TxCommit { transaction_id } => (
+                CLIENT_V2_TX_COMMIT_KIND,
+                format!(
+                    "{{\"transaction_id\":\"{}\"}}",
+                    encode_lower_hex_id(transaction_id)
+                ),
+            ),
+            Self::TxRollback { transaction_id } => (
+                CLIENT_V2_TX_ROLLBACK_KIND,
+                format!(
+                    "{{\"transaction_id\":\"{}\"}}",
+                    encode_lower_hex_id(transaction_id)
+                ),
+            ),
+            Self::TxStatus { transaction_id } => (
+                CLIENT_V2_TX_STATUS_KIND,
+                format!(
+                    "{{\"transaction_id\":\"{}\"}}",
+                    encode_lower_hex_id(transaction_id)
+                ),
+            ),
+            Self::PackageStatus {
+                transaction_id,
+                package_id,
+            } => (
+                CLIENT_V2_PACKAGE_STATUS_KIND,
+                format!(
+                    "{{\"transaction_id\":\"{}\",\"package_id\":\"{}\"}}",
+                    encode_lower_hex_id(transaction_id),
+                    encode_lower_hex_id(package_id)
+                ),
+            ),
+        };
+        Ok((kind, payload.into_bytes()))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClientV2TransactionState {
+    Active,
+    AbortOnly,
+    Committing,
+    Committed,
+    Aborted,
+    Expired,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClientV2PackageState {
+    Running,
+    Completed,
+    Failed,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClientV2Response {
+    TransactionBegun {
+        transaction_id: [u8; 16],
+        state: ClientV2TransactionState,
+        idle_timeout_ms: u64,
+        lifetime_ms: u64,
+        max_package_bytes: u64,
+        max_packages: u64,
+    },
+    Transaction {
+        transaction_id: [u8; 16],
+        state: ClientV2TransactionState,
+    },
+    Package {
+        transaction_id: [u8; 16],
+        package_id: [u8; 16],
+        state: ClientV2PackageState,
+        result_lost: bool,
+    },
+}
+
+impl ClientV2Response {
+    /// Decode the strict response schema associated with a v2 request kind.
+    pub fn decode(request_kind: u16, payload: &[u8]) -> Result<Self, ClientControlError> {
+        let mut fields = parse_scalar_object(payload)?;
+        let response = match request_kind {
+            CLIENT_V2_TX_BEGIN_KIND => {
+                let transaction_id =
+                    decode_lower_hex_id(&take_string(&mut fields, "transaction_id")?)?;
+                let state = decode_tx_state(&take_string(&mut fields, "state")?)?;
+                let idle_timeout_ms = take_number(&mut fields, "idle_timeout_ms")?;
+                let lifetime_ms = take_number(&mut fields, "lifetime_ms")?;
+                let max_package_bytes = take_number(&mut fields, "max_package_bytes")?;
+                let max_packages = take_number(&mut fields, "max_packages")?;
+                if idle_timeout_ms == 0
+                    || lifetime_ms == 0
+                    || max_package_bytes == 0
+                    || max_packages == 0
+                {
+                    return Err(ClientControlError::InvalidPrepare);
+                }
+                Self::TransactionBegun {
+                    transaction_id,
+                    state,
+                    idle_timeout_ms,
+                    lifetime_ms,
+                    max_package_bytes,
+                    max_packages,
+                }
+            }
+            CLIENT_V2_TX_ATTACH_KIND
+            | CLIENT_V2_TX_COMMIT_KIND
+            | CLIENT_V2_TX_ROLLBACK_KIND
+            | CLIENT_V2_TX_STATUS_KIND => {
+                let transaction_id =
+                    decode_lower_hex_id(&take_string(&mut fields, "transaction_id")?)?;
+                let state = decode_tx_state(&take_string(&mut fields, "state")?)?;
+                if request_kind == CLIENT_V2_TX_ATTACH_KIND
+                    && !matches!(
+                        state,
+                        ClientV2TransactionState::Active | ClientV2TransactionState::AbortOnly
+                    )
+                    || request_kind == CLIENT_V2_TX_COMMIT_KIND
+                        && !matches!(
+                            state,
+                            ClientV2TransactionState::Committed
+                                | ClientV2TransactionState::Aborted
+                                | ClientV2TransactionState::Expired
+                        )
+                    || request_kind == CLIENT_V2_TX_ROLLBACK_KIND
+                        && !matches!(
+                            state,
+                            ClientV2TransactionState::Aborted | ClientV2TransactionState::Expired
+                        )
+                {
+                    return Err(ClientControlError::InvalidPrepare);
+                }
+                Self::Transaction {
+                    transaction_id,
+                    state,
+                }
+            }
+            CLIENT_V2_PACKAGE_STATUS_KIND => {
+                let transaction_id =
+                    decode_lower_hex_id(&take_string(&mut fields, "transaction_id")?)?;
+                let package_id = decode_lower_hex_id(&take_string(&mut fields, "package_id")?)?;
+                let state = decode_package_state(&take_string(&mut fields, "state")?)?;
+                let result_lost = take_bool(&mut fields, "result_lost")?;
+                if result_lost && state != ClientV2PackageState::Completed {
+                    return Err(ClientControlError::InvalidPrepare);
+                }
+                Self::Package {
+                    transaction_id,
+                    package_id,
+                    state,
+                    result_lost,
+                }
+            }
+            _ => return Err(ClientControlError::UnsupportedV2Operation),
+        };
+        reject_unknown_scalars(fields)?;
+        Ok(response)
+    }
+
+    /// Encode this response as canonical JSON payload for a kind-100 frame.
+    pub fn encode(&self) -> Vec<u8> {
+        let payload = match self {
+            Self::TransactionBegun {
+                transaction_id,
+                state,
+                idle_timeout_ms,
+                lifetime_ms,
+                max_package_bytes,
+                max_packages,
+            } => format!(
+                "{{\"transaction_id\":\"{}\",\"state\":\"{}\",\"idle_timeout_ms\":{idle_timeout_ms},\"lifetime_ms\":{lifetime_ms},\"max_package_bytes\":{max_package_bytes},\"max_packages\":{max_packages}}}",
+                encode_lower_hex_id(*transaction_id),
+                encode_tx_state(*state)
+            ),
+            Self::Transaction {
+                transaction_id,
+                state,
+            } => format!(
+                "{{\"transaction_id\":\"{}\",\"state\":\"{}\"}}",
+                encode_lower_hex_id(*transaction_id),
+                encode_tx_state(*state)
+            ),
+            Self::Package {
+                transaction_id,
+                package_id,
+                state,
+                result_lost,
+            } => format!(
+                "{{\"transaction_id\":\"{}\",\"package_id\":\"{}\",\"state\":\"{}\",\"result_lost\":{result_lost}}}",
+                encode_lower_hex_id(*transaction_id),
+                encode_lower_hex_id(*package_id),
+                encode_package_state(*state)
+            ),
+        };
+        payload.into_bytes()
+    }
+}
+
+fn decode_tx_state(text: &str) -> Result<ClientV2TransactionState, ClientControlError> {
+    match text {
+        "active" => Ok(ClientV2TransactionState::Active),
+        "abort_only" => Ok(ClientV2TransactionState::AbortOnly),
+        "committing" => Ok(ClientV2TransactionState::Committing),
+        "committed" => Ok(ClientV2TransactionState::Committed),
+        "aborted" => Ok(ClientV2TransactionState::Aborted),
+        "expired" => Ok(ClientV2TransactionState::Expired),
+        _ => Err(ClientControlError::InvalidPrepare),
+    }
+}
+
+fn encode_tx_state(state: ClientV2TransactionState) -> &'static str {
+    match state {
+        ClientV2TransactionState::Active => "active",
+        ClientV2TransactionState::AbortOnly => "abort_only",
+        ClientV2TransactionState::Committing => "committing",
+        ClientV2TransactionState::Committed => "committed",
+        ClientV2TransactionState::Aborted => "aborted",
+        ClientV2TransactionState::Expired => "expired",
+    }
+}
+
+fn client_v2_transaction_state(
+    state: crate::storage_manager::InteractiveTransactionState,
+) -> ClientV2TransactionState {
+    match state {
+        crate::storage_manager::InteractiveTransactionState::Active => {
+            ClientV2TransactionState::Active
+        }
+        crate::storage_manager::InteractiveTransactionState::AbortOnly => {
+            ClientV2TransactionState::AbortOnly
+        }
+        crate::storage_manager::InteractiveTransactionState::Committing => {
+            ClientV2TransactionState::Committing
+        }
+        crate::storage_manager::InteractiveTransactionState::Committed => {
+            ClientV2TransactionState::Committed
+        }
+        crate::storage_manager::InteractiveTransactionState::Aborted => {
+            ClientV2TransactionState::Aborted
+        }
+        crate::storage_manager::InteractiveTransactionState::Expired => {
+            ClientV2TransactionState::Expired
+        }
+    }
+}
+
+fn decode_package_state(text: &str) -> Result<ClientV2PackageState, ClientControlError> {
+    match text {
+        "running" => Ok(ClientV2PackageState::Running),
+        "completed" => Ok(ClientV2PackageState::Completed),
+        "failed" => Ok(ClientV2PackageState::Failed),
+        "unknown" => Ok(ClientV2PackageState::Unknown),
+        _ => Err(ClientControlError::InvalidPrepare),
+    }
+}
+
+fn encode_package_state(state: ClientV2PackageState) -> &'static str {
+    match state {
+        ClientV2PackageState::Running => "running",
+        ClientV2PackageState::Completed => "completed",
+        ClientV2PackageState::Failed => "failed",
+        ClientV2PackageState::Unknown => "unknown",
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClientFrame {
@@ -76,6 +440,7 @@ pub enum ClientSessionError {
     UnsupportedRequest,
     ResourceLimit,
     InvalidControlPayload(ClientControlError),
+    InteractiveTransaction(crate::storage_manager::InteractiveTransactionError),
     Staging(crate::supervisor::StagingError),
     Status(crate::storage_manager::InvocationStatusError),
     AdministrativeStatus(crate::storage_manager::AdministrativeInvocationListError),
@@ -131,6 +496,7 @@ pub enum ClientControlError {
     InvalidPrepare,
     InvalidInvocationId,
     UnsupportedAdminOperation,
+    UnsupportedV2Operation,
     InvalidMetadataCursor,
     InvalidMetadataPageLimit,
 }
@@ -176,6 +542,10 @@ pub struct ClientPrepare {
     pub requested_scope: Vec<u8>,
     pub deadline_ms: u64,
     pub workload_class: crate::supervisor::WorkloadClass,
+    /// Present together only for protocol v2 packages executing inside an
+    /// explicit transaction.
+    pub transaction_id: Option<[u8; 16]>,
+    pub package_id: Option<[u8; 16]>,
 }
 
 enum PendingAdminAction {
@@ -3337,6 +3707,19 @@ pub fn decode_client_chunk(payload: &[u8]) -> Result<ClientChunk, ClientControlE
 /// Decode the exact PREPARE JSON schema, validating declared sizes and all
 /// canonical representations before allocating decoded metadata buffers.
 pub fn decode_client_prepare(payload: &[u8]) -> Result<ClientPrepare, ClientControlError> {
+    decode_client_prepare_for_protocol(payload, 1)
+}
+
+/// Decode PREPARE using the negotiated protocol major. Protocol v2 permits a
+/// package to bind its immutable staged bytes to a retained transaction; v1
+/// rejects those fields and keeps its original one-shot semantics.
+pub fn decode_client_prepare_for_protocol(
+    payload: &[u8],
+    protocol_major: u16,
+) -> Result<ClientPrepare, ClientControlError> {
+    if !matches!(protocol_major, 1 | 2) {
+        return Err(ClientControlError::InvalidPrepare);
+    }
     let mut fields = parse_scalar_object(payload)?;
     let manifest_version = take_number(&mut fields, "manifest_version")?
         .try_into()
@@ -3368,6 +3751,23 @@ pub fn decode_client_prepare(payload: &[u8]) -> Result<ClientPrepare, ClientCont
         "analytical" => crate::supervisor::WorkloadClass::Analytical,
         _ => return Err(ClientControlError::InvalidPrepare),
     };
+    let transaction_id = fields
+        .contains_key("transaction_id")
+        .then(|| take_string(&mut fields, "transaction_id"))
+        .transpose()?
+        .map(|value| decode_lower_hex_id(&value).map_err(|_| ClientControlError::InvalidPrepare))
+        .transpose()?;
+    let package_id = fields
+        .contains_key("package_id")
+        .then(|| take_string(&mut fields, "package_id"))
+        .transpose()?
+        .map(|value| decode_lower_hex_id(&value).map_err(|_| ClientControlError::InvalidPrepare))
+        .transpose()?;
+    if transaction_id.is_some() != package_id.is_some()
+        || protocol_major == 1 && transaction_id.is_some()
+    {
+        return Err(ClientControlError::InvalidPrepare);
+    }
     reject_unknown_scalars(fields)?;
     if artifact_bytes == 0
         || artifact_bytes > crate::supervisor::MAX_ARTIFACT_BYTES
@@ -3399,6 +3799,8 @@ pub fn decode_client_prepare(payload: &[u8]) -> Result<ClientPrepare, ClientCont
         requested_scope,
         deadline_ms,
         workload_class,
+        transaction_id,
+        package_id,
     })
 }
 
@@ -3410,10 +3812,90 @@ pub fn decode_client_seal(payload: &[u8]) -> Result<[u8; 16], ClientControlError
     Ok(invocation_id)
 }
 
+pub struct ClientStartPayload {
+    pub invocation_id: [u8; 16],
+    pub transaction_id: Option<[u8; 16]>,
+    pub package_id: Option<[u8; 16]>,
+    pub actor: Option<ClientStartActorCredentials>,
+}
+
+pub struct ClientStartActorCredentials {
+    pub expected_name: String,
+    pub token_id: [u8; 16],
+    pub token_secret: Zeroizing<[u8; TOKEN_SECRET_BYTES]>,
+}
+
+pub(crate) struct ValidatedInteractiveStartCredentials {
+    pub controller_token_id: [u8; 16],
+    pub controller_token_secret: Zeroizing<[u8; TOKEN_SECRET_BYTES]>,
+    pub actor: Option<ClientStartActorCredentials>,
+}
+
+/// Decode START identity fields under the negotiated protocol. Explicit v2
+/// packages must echo the PREPARE transaction/package binding; v1 cannot
+/// carry these fields.
+pub fn decode_client_start_for_protocol(
+    payload: &[u8],
+    protocol_major: u16,
+) -> Result<ClientStartPayload, ClientControlError> {
+    if !matches!(protocol_major, 1 | 2) || payload.len() > CLIENT_MAX_CONTROL_BYTES {
+        return Err(ClientControlError::InvalidInvocationId);
+    }
+    let mut fields = parse_string_object(payload)?;
+    let invocation_id = decode_lower_hex_id(&take_required(&mut fields, "invocation_id")?)
+        .map_err(|_| ClientControlError::InvalidInvocationId)?;
+    let transaction_id = fields
+        .remove("transaction_id")
+        .map(|value| decode_lower_hex_id(&value).map_err(|_| ClientControlError::InvalidPrepare))
+        .transpose()?;
+    let package_id = fields
+        .remove("package_id")
+        .map(|value| decode_lower_hex_id(&value).map_err(|_| ClientControlError::InvalidPrepare))
+        .transpose()?;
+    let has_actor_name = fields.contains_key("expected_actor_name");
+    let has_actor_token_id = fields.contains_key("actor_token_id");
+    let has_actor_token_secret = fields.contains_key("actor_token_secret");
+    let actor = match (has_actor_name, has_actor_token_id, has_actor_token_secret) {
+        (false, false, false) => None,
+        (true, true, true) if protocol_major == 2 => {
+            let expected_name = take_required(&mut fields, "expected_actor_name")?;
+            if !is_canonical_admin_principal_name(&expected_name) {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            let token_id = decode_lower_hex_id(&take_required(&mut fields, "actor_token_id")?)
+                .map_err(|_| ClientControlError::InvalidPrepare)?;
+            let secret_text = Zeroizing::new(take_required(&mut fields, "actor_token_secret")?);
+            let secret_bytes = decode_canonical_base64(&secret_text)?;
+            let token_secret = <[u8; TOKEN_SECRET_BYTES]>::try_from(secret_bytes.as_slice())
+                .map(Zeroizing::new)
+                .map_err(|_| ClientControlError::InvalidTokenSecret)?;
+            Some(ClientStartActorCredentials {
+                expected_name,
+                token_id,
+                token_secret,
+            })
+        }
+        _ => return Err(ClientControlError::InvalidPrepare),
+    };
+    if transaction_id.is_some() != package_id.is_some()
+        || protocol_major == 1 && transaction_id.is_some()
+    {
+        return Err(ClientControlError::InvalidPrepare);
+    }
+    reject_unknown_fields(fields)?;
+    Ok(ClientStartPayload {
+        invocation_id,
+        transaction_id,
+        package_id,
+        actor,
+    })
+}
+
 #[derive(Debug)]
 enum JsonScalar {
     String(String),
     Number(u64),
+    Boolean(bool),
 }
 
 fn parse_scalar_object(payload: &[u8]) -> Result<HashMap<String, JsonScalar>, ClientControlError> {
@@ -3438,8 +3920,14 @@ fn parse_scalar_object(payload: &[u8]) -> Result<HashMap<String, JsonScalar>, Cl
             parser.skip_whitespace();
             let value = if parser.text.get(parser.offset) == Some(&b'"') {
                 JsonScalar::String(parser.parse_string()?)
-            } else {
+            } else if parser
+                .text
+                .get(parser.offset)
+                .is_some_and(u8::is_ascii_digit)
+            {
                 JsonScalar::Number(parser.parse_u64_number()?)
+            } else {
+                JsonScalar::Boolean(parser.parse_boolean()?)
             };
             if fields.insert(key, value).is_some() {
                 return Err(ClientControlError::DuplicateKey);
@@ -3464,7 +3952,7 @@ fn take_string(
 ) -> Result<String, ClientControlError> {
     match fields.remove(key).ok_or(ClientControlError::MissingKey)? {
         JsonScalar::String(value) => Ok(value),
-        JsonScalar::Number(_) => Err(ClientControlError::InvalidPrepare),
+        JsonScalar::Number(_) | JsonScalar::Boolean(_) => Err(ClientControlError::InvalidPrepare),
     }
 }
 
@@ -3474,7 +3962,17 @@ fn take_number(
 ) -> Result<u64, ClientControlError> {
     match fields.remove(key).ok_or(ClientControlError::MissingKey)? {
         JsonScalar::Number(value) => Ok(value),
-        JsonScalar::String(_) => Err(ClientControlError::InvalidPrepare),
+        JsonScalar::String(_) | JsonScalar::Boolean(_) => Err(ClientControlError::InvalidPrepare),
+    }
+}
+
+fn take_bool(
+    fields: &mut HashMap<String, JsonScalar>,
+    key: &str,
+) -> Result<bool, ClientControlError> {
+    match fields.remove(key).ok_or(ClientControlError::MissingKey)? {
+        JsonScalar::Boolean(value) => Ok(value),
+        JsonScalar::String(_) | JsonScalar::Number(_) => Err(ClientControlError::InvalidPrepare),
     }
 }
 
@@ -4309,8 +4807,8 @@ impl std::error::Error for ClientSessionError {}
 /// Per-connection authentication and mode state used by the gateway dispatcher.
 /// It keeps the bearer secret only for this connection lifetime, zeroizes it
 /// on drop, and gives staging authority only after storage AUTH.
-#[derive(Default)]
 pub struct ClientConnectionSession {
+    protocol_major: u16,
     hello: Option<ClientMode>,
     authenticated: Option<AuthenticatedQuerySession>,
     token_secret: Option<[u8; TOKEN_SECRET_BYTES]>,
@@ -4319,7 +4817,203 @@ pub struct ClientConnectionSession {
     metadata_page_snapshot: Option<ActiveMetadataPageSnapshot>,
 }
 
+impl Default for ClientConnectionSession {
+    fn default() -> Self {
+        Self {
+            protocol_major: 1,
+            hello: None,
+            authenticated: None,
+            token_secret: None,
+            request_ids: ClientRequestIds::default(),
+            pending_admin_operation: None,
+            metadata_page_snapshot: None,
+        }
+    }
+}
+
 impl ClientConnectionSession {
+    /// Select the negotiated client framing version before processing HELLO.
+    pub fn set_protocol_major(&mut self, major: u16) -> Result<(), ClientSessionError> {
+        if !matches!(major, 1 | 2) || self.hello.is_some() {
+            return Err(ClientSessionError::UnsupportedRequest);
+        }
+        self.protocol_major = major;
+        Ok(())
+    }
+
+    pub(crate) fn protocol_major(&self) -> u16 {
+        self.protocol_major
+    }
+
+    /// Validate a transaction-bound START request and return zeroizing
+    /// controller credentials for trusted service orchestration.
+    pub(crate) fn validate_interactive_start_request(
+        &mut self,
+        storage: &StorageManager<'_>,
+        request: &ClientFrame,
+        expected_binding: crate::supervisor::InteractivePackageBinding,
+    ) -> Result<ValidatedInteractiveStartCredentials, ClientSessionError> {
+        if self.protocol_major != 2 || request.kind != 7 || request.response_sequence != 0 {
+            return Err(ClientSessionError::UnsupportedRequest);
+        }
+        self.request_ids
+            .accept(request)
+            .map_err(|_| ClientSessionError::UnsupportedRequest)?;
+        if !self.permits_request_kind(request.kind) {
+            return Err(if self.authenticated.is_none() {
+                ClientSessionError::AuthenticationRequired
+            } else {
+                ClientSessionError::WrongMode
+            });
+        }
+        self.revalidate_storage(storage)?;
+        let mut start = decode_client_start_for_protocol(&request.payload, self.protocol_major)
+            .map_err(ClientSessionError::InvalidControlPayload)?;
+        if start.transaction_id != Some(expected_binding.transaction_id)
+            || start.package_id != Some(expected_binding.package_id)
+        {
+            return Err(ClientSessionError::InvalidControlPayload(
+                ClientControlError::InvalidPrepare,
+            ));
+        }
+        let token_id = self
+            .authenticated
+            .as_ref()
+            .ok_or(ClientSessionError::AuthenticationRequired)?
+            .token_id();
+        let token_secret = self
+            .token_secret
+            .as_ref()
+            .ok_or(ClientSessionError::AuthenticationRequired)?;
+        Ok(ValidatedInteractiveStartCredentials {
+            controller_token_id: token_id,
+            controller_token_secret: Zeroizing::new(*token_secret),
+            actor: start.actor.take(),
+        })
+    }
+
+    /// Dispatch one authenticated v2 transaction-control request. The caller
+    /// must have negotiated v2 framing before invoking this method.
+    pub fn handle_v2_transaction_request(
+        &mut self,
+        storage: &StorageManager<'_>,
+        request: ClientFrame,
+        outcome_retention_deadline_us: i64,
+    ) -> Result<ClientFrame, ClientSessionError> {
+        if request.response_sequence != 0
+            || !(CLIENT_V2_TX_BEGIN_KIND..=CLIENT_V2_PACKAGE_STATUS_KIND).contains(&request.kind)
+        {
+            return Err(ClientSessionError::UnsupportedRequest);
+        }
+        self.request_ids
+            .accept_v2(&request)
+            .map_err(|_| ClientSessionError::UnsupportedRequest)?;
+        if self.hello != Some(ClientMode::Query) {
+            return Err(if self.authenticated.is_none() {
+                ClientSessionError::AuthenticationRequired
+            } else {
+                ClientSessionError::WrongMode
+            });
+        }
+        self.revalidate_storage(storage)?;
+        let controller = self
+            .authenticated
+            .as_ref()
+            .ok_or(ClientSessionError::AuthenticationRequired)?;
+        let token_id = controller.token_id();
+        let token_secret = self
+            .token_secret
+            .as_ref()
+            .ok_or(ClientSessionError::AuthenticationRequired)?;
+        let decoded = ClientV2Request::decode(request.kind, &request.payload)
+            .map_err(ClientSessionError::InvalidControlPayload)?;
+        let response = match decoded {
+            ClientV2Request::TxBegin { begin_request_id } => {
+                let begun = storage
+                    .begin_interactive_transaction_with_request_id(
+                        token_id,
+                        token_secret,
+                        outcome_retention_deadline_us,
+                        begin_request_id,
+                    )
+                    .map_err(ClientSessionError::InteractiveTransaction)?;
+                ClientV2Response::TransactionBegun {
+                    transaction_id: begun.transaction_id,
+                    state: client_v2_transaction_state(begun.state),
+                    idle_timeout_ms: begun.idle_timeout_ms,
+                    lifetime_ms: begun.lifetime_ms,
+                    max_package_bytes: begun.max_package_bytes,
+                    max_packages: begun.max_packages,
+                }
+            }
+            ClientV2Request::TxAttach { transaction_id } => {
+                let state = storage
+                    .attach_interactive_transaction(token_id, token_secret, transaction_id)
+                    .map_err(ClientSessionError::InteractiveTransaction)?;
+                ClientV2Response::Transaction {
+                    transaction_id,
+                    state: client_v2_transaction_state(state),
+                }
+            }
+            ClientV2Request::TxCommit { transaction_id } => {
+                let result = storage
+                    .commit_interactive_transaction(token_id, token_secret, transaction_id)
+                    .map_err(ClientSessionError::InteractiveTransaction)?;
+                let _commit_sequence = result;
+                ClientV2Response::Transaction {
+                    transaction_id,
+                    state: crate::client_protocol::ClientV2TransactionState::Committed,
+                }
+            }
+            ClientV2Request::TxRollback { transaction_id } => {
+                storage
+                    .rollback_interactive_transaction(token_id, token_secret, transaction_id)
+                    .map_err(ClientSessionError::InteractiveTransaction)?;
+                ClientV2Response::Transaction {
+                    transaction_id,
+                    state: crate::client_protocol::ClientV2TransactionState::Aborted,
+                }
+            }
+            ClientV2Request::TxStatus { transaction_id } => {
+                let state = storage
+                    .interactive_transaction_status(token_id, token_secret, transaction_id)
+                    .map_err(ClientSessionError::InteractiveTransaction)?;
+                ClientV2Response::Transaction {
+                    transaction_id,
+                    state: client_v2_transaction_state(state),
+                }
+            }
+            ClientV2Request::PackageStatus {
+                transaction_id,
+                package_id,
+            } => {
+                let status = storage
+                    .interactive_package_status(token_id, token_secret, transaction_id, package_id)
+                    .map_err(ClientSessionError::InteractiveTransaction)?;
+                ClientV2Response::Package {
+                    transaction_id,
+                    package_id,
+                    state: match status.state {
+                        crate::storage_manager::InteractivePackageState::Running => {
+                            ClientV2PackageState::Running
+                        }
+                        crate::storage_manager::InteractivePackageState::Completed => {
+                            ClientV2PackageState::Completed
+                        }
+                        crate::storage_manager::InteractivePackageState::Failed => {
+                            ClientV2PackageState::Failed
+                        }
+                        crate::storage_manager::InteractivePackageState::Unknown => {
+                            ClientV2PackageState::Unknown
+                        }
+                    },
+                    result_lost: status.result_lost,
+                }
+            }
+        };
+        self.json_response(request.request_id, response.encode())
+    }
+
     /// Process the protocol handshake and PING requests. The TCP adapter must
     /// decode bounded frames first and close the connection on framing errors.
     pub fn handle_handshake_request(
@@ -4352,7 +5046,8 @@ impl ClientConnectionSession {
                 };
                 self.accept_hello(hello.mode, &hello.client_name)?;
                 format!(
-                    "{{\"major\":1,\"minor\":0,\"mode\":\"{mode_text}\",\"limits\":{{\"payload_bytes\":{CLIENT_MAX_PAYLOAD_BYTES},\"control_bytes\":{CLIENT_MAX_CONTROL_BYTES},\"chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES}}},\"transport\":\"plaintext_tcp\"}}"
+                    "{{\"major\":{},\"minor\":0,\"mode\":\"{mode_text}\",\"limits\":{{\"payload_bytes\":{CLIENT_MAX_PAYLOAD_BYTES},\"control_bytes\":{CLIENT_MAX_CONTROL_BYTES},\"chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES}}},\"transport\":\"plaintext_tcp\"}}",
+                    self.protocol_major
                 )
                 .into_bytes()
             }
@@ -4445,7 +5140,7 @@ impl ClientConnectionSession {
             });
         }
         self.revalidate_storage(storage)?;
-        let prepare = decode_client_prepare(&request.payload)
+        let prepare = decode_client_prepare_for_protocol(&request.payload, self.protocol_major)
             .map_err(ClientSessionError::InvalidControlPayload)?;
         let reservation = staging
             .prepare(
@@ -4466,6 +5161,18 @@ impl ClientConnectionSession {
                 },
             )
             .map_err(ClientSessionError::Staging)?;
+        if let (Some(transaction_id), Some(package_id)) =
+            (prepare.transaction_id, prepare.package_id)
+        {
+            staging
+                .bind_interactive_package(
+                    self.staging_owner()?,
+                    reservation.invocation_id,
+                    transaction_id,
+                    package_id,
+                )
+                .map_err(ClientSessionError::Staging)?;
+        }
         let invocation_id = encode_lower_hex_id(reservation.invocation_id);
         let payload = if prepare.sql_library_bytes == 0 {
             format!(
@@ -4551,9 +5258,11 @@ impl ClientConnectionSession {
                 ClientSessionError::WrongMode
             }));
         }
-        let invocation_id = decode_client_seal(&request.payload).map_err(|error| {
-            ClientStartError::Session(ClientSessionError::InvalidControlPayload(error))
-        })?;
+        let invocation_id = decode_client_start_for_protocol(&request.payload, self.protocol_major)
+            .map(|start| start.invocation_id)
+            .map_err(|error| {
+                ClientStartError::Session(ClientSessionError::InvalidControlPayload(error))
+            })?;
         let invocation = self.start_submission(
             storage,
             staging,
@@ -4606,9 +5315,11 @@ impl ClientConnectionSession {
                 ClientSessionError::WrongMode
             }));
         }
-        let invocation_id = decode_client_seal(&request.payload).map_err(|error| {
-            ClientStartError::Session(ClientSessionError::InvalidControlPayload(error))
-        })?;
+        let invocation_id = decode_client_start_for_protocol(&request.payload, self.protocol_major)
+            .map(|start| start.invocation_id)
+            .map_err(|error| {
+                ClientStartError::Session(ClientSessionError::InvalidControlPayload(error))
+            })?;
         let (invocation, worker) = self.start_submission_with_executor(
             storage,
             staging,
@@ -9296,15 +10007,58 @@ impl Drop for ClientConnectionSession {
     }
 }
 
-#[derive(Default)]
 pub struct ClientFrameDecoder {
     header: [u8; CLIENT_FRAME_HEADER_BYTES],
     header_bytes: usize,
     pending_header: Option<Header>,
     pending_payload: Vec<u8>,
+    protocol_major: u16,
+    protocol_minor: u16,
+}
+
+impl Default for ClientFrameDecoder {
+    fn default() -> Self {
+        Self {
+            header: [0; CLIENT_FRAME_HEADER_BYTES],
+            header_bytes: 0,
+            pending_header: None,
+            pending_payload: Vec::new(),
+            protocol_major: 1,
+            protocol_minor: 0,
+        }
+    }
 }
 
 impl ClientFrameDecoder {
+    /// Select protocol 1.0 or 2.0 from the first complete frame header, then
+    /// require every later frame on this connection to use that version.
+    pub fn negotiating() -> Self {
+        Self {
+            header: [0; CLIENT_FRAME_HEADER_BYTES],
+            header_bytes: 0,
+            pending_header: None,
+            pending_payload: Vec::new(),
+            protocol_major: 0,
+            protocol_minor: 0,
+        }
+    }
+
+    /// Decode the connection-independent interactive SQL protocol v2.0.
+    pub fn v2() -> Self {
+        Self {
+            header: [0; CLIENT_FRAME_HEADER_BYTES],
+            header_bytes: 0,
+            pending_header: None,
+            pending_payload: Vec::new(),
+            protocol_major: 2,
+            protocol_minor: 0,
+        }
+    }
+
+    pub fn protocol_version(&self) -> Option<(u16, u16)> {
+        (self.protocol_major != 0).then_some((self.protocol_major, self.protocol_minor))
+    }
+
     /// Add any part of the TCP byte stream and return all complete frames.
     /// Header limits are checked before payload storage is reserved.
     pub fn push(&mut self, mut input: &[u8]) -> Result<Vec<ClientFrame>, ClientFrameError> {
@@ -9320,7 +10074,12 @@ impl ClientFrameDecoder {
                 if self.header_bytes < CLIENT_FRAME_HEADER_BYTES {
                     continue;
                 }
-                let header = decode_header(&self.header)?;
+                let (header, major, minor) =
+                    decode_header(&self.header, self.protocol_major, self.protocol_minor)?;
+                if self.protocol_major == 0 {
+                    self.protocol_major = major;
+                    self.protocol_minor = minor;
+                }
                 self.pending_payload = Vec::new();
                 self.pending_payload
                     .try_reserve_exact(header.payload_bytes)
@@ -9374,13 +10133,25 @@ impl Drop for ClientFrameDecoder {
 
 impl ClientFrame {
     pub fn encode(&self) -> Result<Vec<u8>, ClientFrameError> {
+        self.encode_for_version(1, 0)
+    }
+
+    pub fn encode_v2(&self) -> Result<Vec<u8>, ClientFrameError> {
+        self.encode_for_version(2, 0)
+    }
+
+    fn encode_for_version(
+        &self,
+        protocol_major: u16,
+        protocol_minor: u16,
+    ) -> Result<Vec<u8>, ClientFrameError> {
         let header = Header {
             kind: self.kind,
             payload_bytes: self.payload.len(),
             request_id: self.request_id,
             response_sequence: self.response_sequence,
         };
-        validate_header_fields(header)?;
+        validate_header_fields(header, protocol_major)?;
         let payload_bytes =
             u32::try_from(self.payload.len()).map_err(|_| ClientFrameError::PayloadTooLarge)?;
         let total_bytes = CLIENT_FRAME_HEADER_BYTES
@@ -9392,8 +10163,8 @@ impl ClientFrame {
             .map_err(|_| ClientFrameError::AllocationFailed)?;
         let header = crate::query_abi::encode_client_frame_header_record(
             CLIENT_MAGIC,
-            1,
-            0,
+            protocol_major,
+            protocol_minor,
             self.kind,
             0,
             payload_bytes,
@@ -9406,7 +10177,11 @@ impl ClientFrame {
     }
 }
 
-fn decode_header(bytes: &[u8; CLIENT_FRAME_HEADER_BYTES]) -> Result<Header, ClientFrameError> {
+fn decode_header(
+    bytes: &[u8; CLIENT_FRAME_HEADER_BYTES],
+    expected_major: u16,
+    expected_minor: u16,
+) -> Result<(Header, u16, u16), ClientFrameError> {
     let Some((magic, major, minor, kind, flags, payload_length, request_id, response_sequence)) =
         crate::query_abi::decode_client_frame_header_record(bytes)
     else {
@@ -9415,7 +10190,8 @@ fn decode_header(bytes: &[u8; CLIENT_FRAME_HEADER_BYTES]) -> Result<Header, Clie
     if magic != CLIENT_MAGIC {
         return Err(ClientFrameError::InvalidMagic);
     }
-    if major != 1 || minor != 0 {
+    let supported_negotiation = expected_major == 0 && matches!((major, minor), (1, 0) | (2, 0));
+    if !supported_negotiation && (major != expected_major || minor != expected_minor) {
         return Err(ClientFrameError::UnsupportedVersion { major, minor });
     }
     if flags != 0 {
@@ -9429,13 +10205,15 @@ fn decode_header(bytes: &[u8; CLIENT_FRAME_HEADER_BYTES]) -> Result<Header, Clie
         request_id,
         response_sequence,
     };
-    validate_header_fields(header)?;
-    Ok(header)
+    validate_header_fields(header, major)?;
+    Ok((header, major, minor))
 }
 
-fn validate_header_fields(header: Header) -> Result<(), ClientFrameError> {
+fn validate_header_fields(header: Header, protocol_major: u16) -> Result<(), ClientFrameError> {
+    let v2 = protocol_major == 2;
     let maximum = match header.kind {
         1..=3 | 6..=11 | 100 | 101 | 103 => CLIENT_MAX_CONTROL_BYTES,
+        13..=18 if v2 => CLIENT_MAX_CONTROL_BYTES,
         4 | 5 | 12 => CLIENT_MAX_CHUNK_BYTES + 24,
         102 => CLIENT_MAX_PAYLOAD_BYTES,
         kind => return Err(ClientFrameError::InvalidKind(kind)),
@@ -9448,7 +10226,7 @@ fn validate_header_fields(header: Header) -> Result<(), ClientFrameError> {
     }
     match header.kind {
         4 | 5 | 12 if header.payload_bytes <= 24 => Err(ClientFrameError::InvalidChunkLength),
-        1..=12 if header.response_sequence != 0 => Err(ClientFrameError::InvalidSequence),
+        1..=18 if header.response_sequence != 0 => Err(ClientFrameError::InvalidSequence),
         100 | 101 if header.response_sequence != 0 => Err(ClientFrameError::InvalidSequence),
         102 | 103 if header.response_sequence == 0 => Err(ClientFrameError::InvalidSequence),
         _ => Ok(()),
@@ -9463,7 +10241,20 @@ pub struct ClientRequestIds {
 impl ClientRequestIds {
     /// Enforce strictly increasing nonzero IDs on a single client connection.
     pub fn accept(&mut self, frame: &ClientFrame) -> Result<(), ClientFrameError> {
-        if !(1..=12).contains(&frame.kind)
+        self.accept_through(frame, 12)
+    }
+
+    /// Enforce v2 request kinds and strictly increasing nonzero IDs.
+    pub fn accept_v2(&mut self, frame: &ClientFrame) -> Result<(), ClientFrameError> {
+        self.accept_through(frame, 18)
+    }
+
+    fn accept_through(
+        &mut self,
+        frame: &ClientFrame,
+        max_kind: u16,
+    ) -> Result<(), ClientFrameError> {
+        if !(1..=max_kind).contains(&frame.kind)
             || frame.request_id == 0
             || frame.request_id <= self.last_request_id
         {
@@ -9609,5 +10400,315 @@ mod runtime_wait_tests {
         );
         assert!(!legacy_output.contains("outcome_maintenance_passes_total"));
         assert!(legacy_output.contains("\"fence_waits\":[]"));
+    }
+}
+
+#[cfg(test)]
+mod client_v2_frame_tests {
+    use super::{
+        CLIENT_V2_PACKAGE_STATUS_KIND, CLIENT_V2_TX_ATTACH_KIND, CLIENT_V2_TX_BEGIN_KIND,
+        CLIENT_V2_TX_COMMIT_KIND, CLIENT_V2_TX_ROLLBACK_KIND, CLIENT_V2_TX_STATUS_KIND,
+        ClientControlError, ClientFrame, ClientFrameDecoder, ClientFrameError,
+        ClientV2PackageState, ClientV2Request, ClientV2Response, ClientV2TransactionState,
+        TOKEN_SECRET_BYTES, decode_client_prepare_for_protocol, decode_client_start_for_protocol,
+        encode_base64,
+    };
+
+    #[test]
+    fn v2_transaction_frames_roundtrip_fragmented_and_v1_rejects_them() {
+        let frame = ClientFrame {
+            kind: CLIENT_V2_TX_BEGIN_KIND,
+            request_id: 1,
+            response_sequence: 0,
+            payload: b"{}".to_vec(),
+        };
+        let bytes = frame.encode_v2().unwrap();
+        assert_eq!(
+            &bytes[4..10],
+            &[2, 0, 0, 0, CLIENT_V2_TX_BEGIN_KIND as u8, 0]
+        );
+
+        let mut decoder = ClientFrameDecoder::v2();
+        let mut decoded = Vec::new();
+        for part in bytes.chunks(3) {
+            decoded.extend(decoder.push(part).unwrap());
+        }
+        decoder.finish().unwrap();
+        assert_eq!(decoded, vec![frame.clone()]);
+
+        let mut v1_decoder = ClientFrameDecoder::default();
+        assert_eq!(
+            v1_decoder.push(&bytes),
+            Err(ClientFrameError::UnsupportedVersion { major: 2, minor: 0 })
+        );
+
+        let mut negotiating = ClientFrameDecoder::negotiating();
+        assert_eq!(negotiating.protocol_version(), None);
+        assert_eq!(negotiating.push(&bytes).unwrap(), vec![frame]);
+        assert_eq!(negotiating.protocol_version(), Some((2, 0)));
+        let v1_frame = ClientFrame {
+            kind: 11,
+            request_id: 2,
+            response_sequence: 0,
+            payload: b"{}".to_vec(),
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(
+            negotiating.push(&v1_frame),
+            Err(ClientFrameError::UnsupportedVersion { major: 1, minor: 0 })
+        );
+    }
+
+    #[test]
+    fn negotiating_decoder_selects_v1_for_legacy_connections() {
+        let bytes = ClientFrame {
+            kind: 11,
+            request_id: 1,
+            response_sequence: 0,
+            payload: b"{}".to_vec(),
+        }
+        .encode()
+        .unwrap();
+        let mut decoder = ClientFrameDecoder::negotiating();
+        assert_eq!(decoder.push(&bytes).unwrap().len(), 1);
+        assert_eq!(decoder.protocol_version(), Some((1, 0)));
+    }
+
+    #[test]
+    fn v1_encoder_cannot_emit_v2_only_transaction_kinds() {
+        let frame = ClientFrame {
+            kind: CLIENT_V2_TX_BEGIN_KIND,
+            request_id: 1,
+            response_sequence: 0,
+            payload: b"{}".to_vec(),
+        };
+        assert_eq!(frame.encode(), Err(ClientFrameError::InvalidKind(13)));
+    }
+
+    #[test]
+    fn prepare_transaction_binding_is_v2_only_and_requires_both_ids() {
+        let base = r#"{"manifest_version":1,"manifest":"AQ==","artifact_bytes":"1","artifact_sha256":"0000000000000000000000000000000000000000000000000000000000000000","parameter_bytes":"0","parameter_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","scope_version":1,"requested_scope":"AQ==","deadline_ms":"1","workload_class":"operational""#;
+        let v2 = format!(
+            "{base},\"transaction_id\":\"11111111111111111111111111111111\",\"package_id\":\"22222222222222222222222222222222\"}}"
+        );
+        let decoded = decode_client_prepare_for_protocol(v2.as_bytes(), 2).unwrap();
+        assert_eq!(decoded.transaction_id, Some([0x11; 16]));
+        assert_eq!(decoded.package_id, Some([0x22; 16]));
+        assert_eq!(
+            decode_client_prepare_for_protocol(v2.as_bytes(), 1),
+            Err(ClientControlError::InvalidPrepare)
+        );
+
+        let only_transaction =
+            format!("{base},\"transaction_id\":\"11111111111111111111111111111111\"}}");
+        assert_eq!(
+            decode_client_prepare_for_protocol(only_transaction.as_bytes(), 2),
+            Err(ClientControlError::InvalidPrepare)
+        );
+        let zero_package = format!(
+            "{base},\"transaction_id\":\"11111111111111111111111111111111\",\"package_id\":\"00000000000000000000000000000000\"}}"
+        );
+        assert_eq!(
+            decode_client_prepare_for_protocol(zero_package.as_bytes(), 2),
+            Err(ClientControlError::InvalidPrepare)
+        );
+    }
+
+    #[test]
+    fn start_must_echo_sealed_v2_package_binding() {
+        let start = br#"{"invocation_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transaction_id":"11111111111111111111111111111111","package_id":"22222222222222222222222222222222"}"#;
+        let decoded = decode_client_start_for_protocol(start, 2).unwrap();
+        assert_eq!(decoded.invocation_id, [0xaa; 16]);
+        assert_eq!(decoded.transaction_id, Some([0x11; 16]));
+        assert_eq!(decoded.package_id, Some([0x22; 16]));
+        assert!(decoded.actor.is_none());
+        assert_eq!(
+            decode_client_start_for_protocol(start, 1).err(),
+            Some(ClientControlError::InvalidPrepare)
+        );
+        let missing_package = br#"{"invocation_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transaction_id":"11111111111111111111111111111111"}"#;
+        assert_eq!(
+            decode_client_start_for_protocol(missing_package, 2).err(),
+            Some(ClientControlError::InvalidPrepare)
+        );
+    }
+
+    #[test]
+    fn start_actor_proof_requires_a_complete_v2_credential_set() {
+        let secret = encode_base64(&[0x5a; TOKEN_SECRET_BYTES]);
+        let start = format!(
+            "{{\"invocation_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expected_actor_name\":\"target_user\",\"actor_token_id\":\"11111111111111111111111111111111\",\"actor_token_secret\":\"{secret}\"}}"
+        );
+        let decoded = decode_client_start_for_protocol(start.as_bytes(), 2).unwrap();
+        let actor = decoded.actor.expect("actor proof");
+        assert_eq!(actor.expected_name, "target_user");
+        assert_eq!(actor.token_id, [0x11; 16]);
+        assert_eq!(*actor.token_secret, [0x5a; TOKEN_SECRET_BYTES]);
+        assert_eq!(
+            decode_client_start_for_protocol(start.as_bytes(), 1).err(),
+            Some(ClientControlError::InvalidPrepare)
+        );
+        let incomplete = br#"{"invocation_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expected_actor_name":"target_user","actor_token_id":"11111111111111111111111111111111"}"#;
+        assert_eq!(
+            decode_client_start_for_protocol(incomplete, 2).err(),
+            Some(ClientControlError::InvalidPrepare)
+        );
+    }
+
+    #[test]
+    fn transaction_request_payloads_have_canonical_golden_encodings() {
+        let transaction_id = [0xabu8; 16];
+        let package_id = [0xcdu8; 16];
+        let cases = [
+            (
+                ClientV2Request::TxBegin {
+                    begin_request_id: [0xabu8; 16],
+                },
+                CLIENT_V2_TX_BEGIN_KIND,
+                "{\"begin_request_id\":\"abababababababababababababababab\"}",
+            ),
+            (
+                ClientV2Request::TxAttach { transaction_id },
+                CLIENT_V2_TX_ATTACH_KIND,
+                "{\"transaction_id\":\"abababababababababababababababab\"}",
+            ),
+            (
+                ClientV2Request::TxCommit { transaction_id },
+                CLIENT_V2_TX_COMMIT_KIND,
+                "{\"transaction_id\":\"abababababababababababababababab\"}",
+            ),
+            (
+                ClientV2Request::TxRollback { transaction_id },
+                CLIENT_V2_TX_ROLLBACK_KIND,
+                "{\"transaction_id\":\"abababababababababababababababab\"}",
+            ),
+            (
+                ClientV2Request::TxStatus { transaction_id },
+                CLIENT_V2_TX_STATUS_KIND,
+                "{\"transaction_id\":\"abababababababababababababababab\"}",
+            ),
+            (
+                ClientV2Request::PackageStatus {
+                    transaction_id,
+                    package_id,
+                },
+                CLIENT_V2_PACKAGE_STATUS_KIND,
+                "{\"transaction_id\":\"abababababababababababababababab\",\"package_id\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\"}",
+            ),
+        ];
+        for (request, expected_kind, expected_payload) in cases {
+            let (kind, payload) = request.encode().unwrap();
+            assert_eq!(kind, expected_kind);
+            assert_eq!(payload, expected_payload.as_bytes());
+            assert_eq!(ClientV2Request::decode(kind, &payload), Ok(request));
+        }
+    }
+
+    #[test]
+    fn transaction_request_decoder_rejects_ambiguous_or_extra_fields() {
+        assert!(ClientV2Request::decode(CLIENT_V2_TX_BEGIN_KIND, b"{\"extra\":\"x\"}").is_err());
+        assert!(
+            ClientV2Request::decode(
+                CLIENT_V2_TX_ATTACH_KIND,
+                b"{\"transaction_id\":\"abababababababababababababababab\",\"extra\":\"x\"}"
+            )
+            .is_err()
+        );
+        assert!(
+            ClientV2Request::decode(
+                CLIENT_V2_TX_STATUS_KIND,
+                b"{\"transaction_id\":\"ABABABABABABABABABABABABABABABAB\"}"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn transaction_responses_match_canonical_schemas() {
+        let transaction_id = [0xabu8; 16];
+        let begin = ClientV2Response::TransactionBegun {
+            transaction_id,
+            state: ClientV2TransactionState::Active,
+            idle_timeout_ms: 1_000,
+            lifetime_ms: 60_000,
+            max_package_bytes: 65_536,
+            max_packages: 128,
+        };
+        let begin_bytes = begin.encode();
+        assert_eq!(
+            begin_bytes,
+            b"{\"transaction_id\":\"abababababababababababababababab\",\"state\":\"active\",\"idle_timeout_ms\":1000,\"lifetime_ms\":60000,\"max_package_bytes\":65536,\"max_packages\":128}"
+        );
+        assert_eq!(
+            ClientV2Response::decode(CLIENT_V2_TX_BEGIN_KIND, &begin_bytes),
+            Ok(begin)
+        );
+        let expired_begin = ClientV2Response::TransactionBegun {
+            transaction_id,
+            state: ClientV2TransactionState::Expired,
+            idle_timeout_ms: 1_000,
+            lifetime_ms: 60_000,
+            max_package_bytes: 65_536,
+            max_packages: 128,
+        };
+        assert_eq!(
+            ClientV2Response::decode(CLIENT_V2_TX_BEGIN_KIND, &expired_begin.encode()),
+            Ok(expired_begin)
+        );
+
+        let committed = ClientV2Response::Transaction {
+            transaction_id,
+            state: ClientV2TransactionState::Committed,
+        };
+        let committed_bytes = committed.encode();
+        assert_eq!(
+            committed_bytes,
+            b"{\"transaction_id\":\"abababababababababababababababab\",\"state\":\"committed\"}"
+        );
+        assert_eq!(
+            ClientV2Response::decode(CLIENT_V2_TX_COMMIT_KIND, &committed_bytes),
+            Ok(committed)
+        );
+
+        let attached = ClientV2Response::Transaction {
+            transaction_id,
+            state: ClientV2TransactionState::AbortOnly,
+        };
+        assert_eq!(
+            ClientV2Response::decode(CLIENT_V2_TX_ATTACH_KIND, &attached.encode()),
+            Ok(attached)
+        );
+        assert!(ClientV2Response::decode(CLIENT_V2_TX_ROLLBACK_KIND, &committed_bytes).is_err());
+
+        let package = ClientV2Response::Package {
+            transaction_id,
+            package_id: [0xcdu8; 16],
+            state: ClientV2PackageState::Completed,
+            result_lost: true,
+        };
+        let package_bytes = package.encode();
+        assert_eq!(
+            package_bytes,
+            b"{\"transaction_id\":\"abababababababababababababababab\",\"package_id\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"state\":\"completed\",\"result_lost\":true}"
+        );
+        assert_eq!(
+            ClientV2Response::decode(CLIENT_V2_PACKAGE_STATUS_KIND, &package_bytes),
+            Ok(package)
+        );
+    }
+
+    #[test]
+    fn transaction_response_decoder_rejects_invalid_limits_and_lost_state() {
+        assert!(ClientV2Response::decode(
+            CLIENT_V2_TX_BEGIN_KIND,
+            b"{\"transaction_id\":\"abababababababababababababababab\",\"state\":\"active\",\"idle_timeout_ms\":0,\"lifetime_ms\":1,\"max_package_bytes\":1,\"max_packages\":1}"
+        )
+        .is_err());
+        assert!(ClientV2Response::decode(
+            CLIENT_V2_PACKAGE_STATUS_KIND,
+            b"{\"transaction_id\":\"abababababababababababababababab\",\"package_id\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"state\":\"running\",\"result_lost\":true}"
+        )
+        .is_err());
     }
 }

@@ -62,6 +62,7 @@ pub enum Operation {
     SubmitAdministrativeOperation = crate::query_abi::IPC_OP_SUBMIT_ADMINISTRATIVE_OPERATION,
     OpenClientSession = crate::query_abi::IPC_OP_OPEN_CLIENT_SESSION,
     PingClientSession = crate::query_abi::IPC_OP_PING_CLIENT_SESSION,
+    InteractiveTransaction = crate::query_abi::IPC_OP_INTERACTIVE_TRANSACTION,
     GatewayResultData = crate::query_abi::IPC_OP_GATEWAY_RESULT_DATA,
     GatewayTerminal = crate::query_abi::IPC_OP_GATEWAY_TERMINAL,
     GatewayClientError = crate::query_abi::IPC_OP_GATEWAY_CLIENT_ERROR,
@@ -125,6 +126,7 @@ impl Operation {
             }
             crate::query_abi::IPC_OP_OPEN_CLIENT_SESSION => Ok(Self::OpenClientSession),
             crate::query_abi::IPC_OP_PING_CLIENT_SESSION => Ok(Self::PingClientSession),
+            crate::query_abi::IPC_OP_INTERACTIVE_TRANSACTION => Ok(Self::InteractiveTransaction),
             crate::query_abi::IPC_OP_GATEWAY_RESULT_DATA => Ok(Self::GatewayResultData),
             crate::query_abi::IPC_OP_GATEWAY_TERMINAL => Ok(Self::GatewayTerminal),
             crate::query_abi::IPC_OP_GATEWAY_CLIENT_ERROR => Ok(Self::GatewayClientError),
@@ -208,6 +210,7 @@ pub fn authorize_operation(role: ServiceRole, operation: Operation) -> Result<()
                 | Operation::ClientCancelInvocation
                 | Operation::OpenClientSession
                 | Operation::PingClientSession
+                | Operation::InteractiveTransaction
                 | Operation::SubmitAdministrativeOperation
         ),
         ServiceRole::AdminControl => matches!(

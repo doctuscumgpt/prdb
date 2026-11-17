@@ -189,9 +189,23 @@ pub struct SealedSubmission {
 #[derive(Debug)]
 struct SealedSubmissionData {
     metadata: SubmissionMetadata,
+    interactive_package: Option<InteractivePackageBinding>,
     artifact: Arc<[u8]>,
     sql_library: Arc<[u8]>,
     parameters: Arc<[u8]>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InteractivePackageBinding {
+    pub transaction_id: [u8; 16],
+    pub package_id: [u8; 16],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InteractivePackageIdentity {
+    pub binding: InteractivePackageBinding,
+    pub package_digest: [u8; 32],
+    pub requested_scope: Vec<u8>,
 }
 
 impl SealedSubmission {
@@ -201,6 +215,37 @@ impl SealedSubmission {
 
     pub fn metadata(&self) -> &SubmissionMetadata {
         &self.data.metadata
+    }
+
+    /// Return server-retained transaction/package identity for protocol v2
+    /// submissions. Artifact bytes cannot select or alter this binding.
+    pub fn interactive_package(&self) -> Option<InteractivePackageBinding> {
+        self.data.interactive_package
+    }
+
+    /// Hash the immutable package metadata and bytes using a domain-separated
+    /// encoding for duplicate package ID detection in interactive SQL.
+    pub fn interactive_package_digest(&self) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        digest.update(b"PRDB-INTERACTIVE-PACKAGE-1\0");
+        digest.update(self.data.metadata.manifest_version.to_le_bytes());
+        digest.update(self.data.metadata.scope_version.to_le_bytes());
+        digest.update(self.data.metadata.deadline_ms.to_le_bytes());
+        digest.update([match self.data.metadata.workload_class {
+            WorkloadClass::Operational => 1,
+            WorkloadClass::Analytical => 2,
+        }]);
+        for bytes in [
+            self.data.metadata.manifest.as_slice(),
+            self.data.metadata.requested_scope.as_slice(),
+            self.data.artifact.as_ref(),
+            self.data.sql_library.as_ref(),
+            self.data.parameters.as_ref(),
+        ] {
+            digest.update((bytes.len() as u64).to_le_bytes());
+            digest.update(bytes);
+        }
+        digest.finalize().into()
     }
 
     pub fn artifact(&self) -> &[u8] {
@@ -234,6 +279,7 @@ struct Reservation {
     connection_id: [u8; 16],
     principal_id: [u8; 16],
     metadata: SubmissionMetadata,
+    interactive_package: Option<InteractivePackageBinding>,
     artifact_bytes: u64,
     artifact_sha256: [u8; 32],
     sql_library_bytes: u64,
@@ -521,6 +567,7 @@ impl StagingStore {
                     deadline_ms: request.deadline_ms,
                     workload_class: request.workload_class,
                 },
+                interactive_package: None,
                 artifact_bytes: request.artifact_bytes,
                 artifact_sha256: request.artifact_sha256,
                 sql_library_bytes: request.sql_library_bytes,
@@ -595,6 +642,77 @@ impl StagingStore {
         Ok(next_offset)
     }
 
+    /// Bind a protocol v2 staged package to a retained transaction. The
+    /// binding is immutable after PREPARE and is copied into the sealed
+    /// submission that trusted START orchestration receives.
+    pub fn bind_interactive_package(
+        &self,
+        owner: StagingOwner,
+        invocation_id: [u8; 16],
+        transaction_id: [u8; 16],
+        package_id: [u8; 16],
+    ) -> Result<(), StagingError> {
+        if transaction_id == [0; 16] || package_id == [0; 16] {
+            return Err(StagingError::InvalidRequest);
+        }
+        let mut state = self.state.lock().map_err(|_| StagingError::Poisoned)?;
+        reap_expired(
+            &mut state,
+            self.limits.reservation_ttl,
+            Instant::now(),
+            OPPORTUNISTIC_REAPER_SCAN_LIMIT,
+        );
+        let reservation = owned_reservation_mut(&mut state, owner, invocation_id)?;
+        if reservation.state != ReservationState::Uploading
+            || reservation.interactive_package.is_some()
+        {
+            return Err(StagingError::InvalidState);
+        }
+        reservation.interactive_package = Some(InteractivePackageBinding {
+            transaction_id,
+            package_id,
+        });
+        Ok(())
+    }
+
+    /// Read the immutable binding and digest of a sealed interactive package
+    /// before START. The authenticated staging owner must match the PREPARE
+    /// connection; neither opaque ID is accepted as authority.
+    pub fn interactive_package_identity(
+        &self,
+        owner: StagingOwner,
+        invocation_id: [u8; 16],
+    ) -> Result<Option<InteractivePackageIdentity>, StagingError> {
+        let mut state = self.state.lock().map_err(|_| StagingError::Poisoned)?;
+        reap_expired(
+            &mut state,
+            self.limits.reservation_ttl,
+            Instant::now(),
+            OPPORTUNISTIC_REAPER_SCAN_LIMIT,
+        );
+        let reservation = owned_reservation_mut(&mut state, owner, invocation_id)?;
+        if reservation.state != ReservationState::Sealed {
+            return Err(StagingError::InvalidState);
+        }
+        let Some(binding) = reservation.interactive_package else {
+            return Ok(None);
+        };
+        let data = reservation
+            .sealed
+            .as_ref()
+            .ok_or(StagingError::InvalidState)?;
+        let submission = SealedSubmission {
+            invocation_id,
+            data: Arc::clone(data),
+            sdk_library_pin: None,
+        };
+        Ok(Some(InteractivePackageIdentity {
+            binding,
+            package_digest: submission.interactive_package_digest(),
+            requested_scope: data.metadata.requested_scope.clone(),
+        }))
+    }
+
     /// Verify declared lengths and hashes, validate versioned metadata, and
     /// freeze the upload into immutable shared buffers.
     pub fn seal(&self, owner: StagingOwner, invocation_id: [u8; 16]) -> Result<(), StagingError> {
@@ -622,6 +740,7 @@ impl StagingStore {
             let sql_library_sha256 = reservation.sql_library_sha256;
             let sealed_data = Arc::new(SealedSubmissionData {
                 metadata: reservation.metadata.clone(),
+                interactive_package: reservation.interactive_package,
                 artifact: Arc::from(std::mem::take(&mut reservation.artifact)),
                 sql_library: Arc::from(std::mem::take(&mut reservation.sql_library)),
                 parameters: Arc::from(std::mem::take(&mut reservation.parameters)),
@@ -1387,6 +1506,61 @@ mod tests {
             deadline_ms: 30_000,
             workload_class,
         }
+    }
+
+    #[test]
+    fn sealed_submission_preserves_interactive_package_binding() {
+        let store = store(Arc::new(AcceptMetadata));
+        let owner = make_owner(12, 19);
+        let artifact = b"interactive artifact";
+        let reservation = store.prepare(owner, request(artifact, b"")).unwrap();
+        store
+            .bind_interactive_package(owner, reservation.invocation_id, [0x31; 16], [0x41; 16])
+            .unwrap();
+        store
+            .upload_chunk(
+                owner,
+                reservation.invocation_id,
+                ChunkKind::Artifact,
+                0,
+                artifact,
+            )
+            .unwrap();
+        store.seal(owner, reservation.invocation_id).unwrap();
+        let identity = store
+            .interactive_package_identity(owner, reservation.invocation_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(identity.binding.transaction_id, [0x31; 16]);
+        assert_eq!(identity.binding.package_id, [0x41; 16]);
+        assert_eq!(identity.package_digest.len(), 32);
+        assert_eq!(
+            store.interactive_package_identity(make_owner(13, 19), reservation.invocation_id),
+            Err(StagingError::Unavailable)
+        );
+        store
+            .start_with(owner, reservation.invocation_id, |_| Ok::<_, ()>(()))
+            .unwrap();
+        let submission = store
+            .started_submission(owner, reservation.invocation_id)
+            .unwrap();
+        assert_eq!(
+            submission.interactive_package(),
+            Some(InteractivePackageBinding {
+                transaction_id: [0x31; 16],
+                package_id: [0x41; 16],
+            })
+        );
+
+        assert_eq!(
+            store.bind_interactive_package(
+                owner,
+                reservation.invocation_id,
+                [0x32; 16],
+                [0x42; 16]
+            ),
+            Err(StagingError::InvalidState)
+        );
     }
 
     fn store(validator: Arc<dyn SubmissionMetadataValidator>) -> StagingStore {

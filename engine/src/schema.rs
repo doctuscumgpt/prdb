@@ -37,6 +37,12 @@ pub const OUTCOMES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("outcom
 pub const AUDIT: TableDefinition<&[u8], &[u8]> = TableDefinition::new("audit_v1");
 pub const STATS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("stats_v1");
 
+/// Durable startup-recovery markers stored as additional keyed records in
+/// ENGINE_META. They identify interactive transactions that must resolve to
+/// ABORTED if the supervisor exits before writing a terminal outcome.
+pub const INTERACTIVE_TXN_RECOVERY_PREFIX: &[u8] = b"interactive_txn_v1:";
+pub const INTERACTIVE_TXN_RECOVERY_MAGIC: &[u8; 4] = b"ITR1";
+
 /// Stable set of engine-owned logical tables used by offline image checks.
 pub const ENGINE_TABLE_NAMES: [&str; 20] = [
     "engine_meta_v1",
