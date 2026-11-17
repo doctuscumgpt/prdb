@@ -1168,6 +1168,11 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 - Extended `storage_manager_creates_schema_atomically_for_privileged_actor` to retain a pre-drop schema-name snapshot, verify removal in a fresh snapshot, and create a new schema under the same name. The new DDL publishes a distinct stable ID; the old snapshot continues resolving the dropped ID.
 - Verification: focused real-redb lifecycle regression, locked workspace build, format check, warning-denied all-target Clippy, and the complete serial delegated-cgroup suite passed with sandbox/process tests enabled and zero ignored tests (293 unit, 188 commit, 76 transaction tests, plus all remaining targets).
 
+## DS-4 / DS-7: foreign-key creation races row-policy DDL — verified slice
+
+- Added `foreign_key_creation_racing_row_policy_creation_is_atomic`, which releases a referenced foreign-key addition and row-policy creation on the same child table from a barrier. It accepts only complete committed definitions or a durable conflict for a losing DDL operation, verifies per-operation outcomes, source and target table epochs, absence of partial family-13 policy records, FK dependency shape, and final startup catalog integrity.
+- Verification: focused delegated real-redb race passed; format check, locked workspace build, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
+
 ## DS-2: maximum DECIMAL, DATE, and TIMESTAMPTZ boundaries — verified slice
 
 - Added a tuple-codec round trip for both signs of the 38-digit DECIMAL limit, the minimum and maximum supported DATE day values, and the minimum and maximum UTC TIMESTAMPTZ microseconds. The regression rejects a 39-digit DECIMAL and timestamp values one microsecond outside either endpoint; existing range coverage rejects DATE overflow.

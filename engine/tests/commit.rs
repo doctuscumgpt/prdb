@@ -13370,6 +13370,226 @@ fn foreign_key_creation_racing_orphan_child_insert_is_atomic()
 }
 
 #[test]
+fn foreign_key_creation_racing_row_policy_creation_is_atomic()
+-> Result<(), Box<dyn std::error::Error>> {
+    use prdb_engine::storage_manager::{CreateForeignKeyRequest, TableLifecycleError};
+
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(500))?;
+    let admin_role = builtin_owner_id();
+    let actor = id(0xf1);
+    let foreign_key_id = id_catalog_key(8, id(86));
+    let foreign_key_object_id = id_catalog_key(2, id(86));
+    let foreign_key_edge = dependency_write(id(86), id(85), 3).key;
+    let mut setup_writes = foreign_key_catalog_writes(false, true)
+        .into_iter()
+        .filter(|write| {
+            write.key != foreign_key_id
+                && write.key != foreign_key_object_id
+                && write.key != foreign_key_edge
+        })
+        .collect::<Vec<_>>();
+    setup_writes.extend([
+        principal_write_with_name(actor, 1, 1, "fk_policy_race_admin"),
+        object_write_with_name(actor, 8, "fk_policy_race_admin"),
+        membership_write(actor, admin_role),
+        dependency_write(actor, admin_role, 5),
+        grant_write(actor, id(81), 6, 1, id(81), admin_role),
+        dependency_write(actor, id(81), 5),
+    ]);
+    let mut setup_audit = identity_audit_event(0xf2, admin_role, actor);
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0xf2), admin_role, 9_999, &setup_writes, &[setup_audit])?;
+
+    let foreign_key_invocation = id(0xf3);
+    let policy_invocation = id(0xf4);
+    let before_race = commit_sequence(&database)?;
+    let barrier = Arc::new(Barrier::new(3));
+    let (foreign_key_result, policy_result) = std::thread::scope(|scope| {
+        let foreign_key_barrier = barrier.clone();
+        let foreign_key_storage = &storage;
+        let foreign_key_thread = scope.spawn(move || {
+            let mut audit = identity_audit_event(0xf5, actor, id(82));
+            audit.correlation_id = foreign_key_invocation;
+            foreign_key_barrier.wait();
+            foreign_key_storage.create_foreign_key(CreateForeignKeyRequest {
+                invocation_id: foreign_key_invocation,
+                authenticated_actor_id: actor,
+                source_table_id: id(82),
+                source_column_ids: vec![id(84)],
+                target_constraint_id: id(85),
+                retention_deadline_us: 9_999,
+                audit_event: audit,
+            })
+        });
+        let policy_barrier = barrier.clone();
+        let policy_storage = &storage;
+        let policy_thread = scope.spawn(move || {
+            let mut audit = identity_audit_event(0xf6, actor, id(82));
+            audit.correlation_id = policy_invocation;
+            policy_barrier.wait();
+            policy_storage.create_policy(prdb_engine::storage_manager::CreatePolicyRequest {
+                invocation_id: policy_invocation,
+                authenticated_actor_id: actor,
+                table_id: id(82),
+                name: "fk_policy_race_row_policy".to_owned(),
+                kind: prdb_engine::storage_manager::PolicyKind::Row,
+                operation: prdb_engine::authorization::Operation::Select,
+                effect: prdb_engine::authorization::Effect::Allow,
+                recipients: vec![prdb_engine::authorization::Subject::Principal(actor)],
+                target_column_ids: Vec::new(),
+                using_expression: Some(prdb_engine::authorization::Expr::Literal(Some(
+                    ScalarValue::Boolean(true),
+                ))),
+                with_check_expression: None,
+                retention_deadline_us: 9_999,
+                audit_event: audit,
+            })
+        });
+        barrier.wait();
+        (
+            foreign_key_thread
+                .join()
+                .expect("foreign-key race thread panicked"),
+            policy_thread.join().expect("policy race thread panicked"),
+        )
+    });
+
+    let (foreign_key_status, created_foreign_key_id) = match foreign_key_result {
+        Ok(created) => (OutcomeStatus::Committed, Some(created.foreign_key_id)),
+        Err(TableLifecycleError::Commit(CommitError::Conflict)) => (OutcomeStatus::Aborted, None),
+        Err(error) => return Err(format!("unexpected FK/policy race result: {error:?}").into()),
+    };
+    let (policy_status, created_policy) = match policy_result {
+        Ok(created) => (OutcomeStatus::Committed, Some(created)),
+        Err(TableLifecycleError::Commit(CommitError::Conflict)) => (OutcomeStatus::Aborted, None),
+        Err(error) => return Err(format!("unexpected FK/policy race result: {error:?}").into()),
+    };
+    assert!(
+        foreign_key_status == OutcomeStatus::Committed || policy_status == OutcomeStatus::Committed,
+        "at least one fenced DDL operation must publish"
+    );
+    let committed_count = u64::from(foreign_key_status == OutcomeStatus::Committed)
+        + u64::from(policy_status == OutcomeStatus::Committed);
+    assert_eq!(commit_sequence(&database)?, before_race + committed_count);
+    for (invocation_id, status) in [
+        (foreign_key_invocation, foreign_key_status),
+        (policy_invocation, policy_status),
+    ] {
+        assert_eq!(
+            lookup_outcome(&database, invocation_id, actor, 1)?
+                .ok_or("missing FK/policy race outcome")?
+                .status,
+            status
+        );
+    }
+
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    if let Some(foreign_key_id) = created_foreign_key_id {
+        for key in [
+            id_catalog_key(8, foreign_key_id),
+            id_catalog_key(2, foreign_key_id),
+            dependency_write(foreign_key_id, id(85), 3).key,
+        ] {
+            assert!(
+                catalog.get(key.as_slice())?.is_some(),
+                "committed foreign key is missing {key:?}"
+            );
+        }
+    } else {
+        assert!(catalog.get(foreign_key_id.as_slice())?.is_none());
+        assert!(catalog.get(foreign_key_object_id.as_slice())?.is_none());
+        assert!(catalog.get(foreign_key_edge.as_slice())?.is_none());
+    }
+    let mut source_policy_count = 0usize;
+    let policy_prefix = 13u16.to_be_bytes();
+    for entry in catalog.range(policy_prefix.as_slice()..)? {
+        let (key, value) = entry?;
+        let key = key.value();
+        if !key.starts_with(&policy_prefix) {
+            break;
+        }
+        let policy_record = decode_registered_envelope(value.value())?;
+        if policy_record
+            .fields
+            .iter()
+            .find(|field| field.tag == 1)
+            .ok_or("policy table ID is missing")?
+            .payload
+            == id(82)
+        {
+            source_policy_count += 1;
+        }
+    }
+    assert_eq!(
+        source_policy_count,
+        usize::from(policy_status == OutcomeStatus::Committed),
+        "a failed policy DDL race must not leave a partial definition"
+    );
+    if let Some(policy) = created_policy {
+        assert!(
+            catalog
+                .get(id_catalog_key(13, policy.policy_id).as_slice())?
+                .is_some()
+        );
+        assert!(
+            catalog
+                .get(id_catalog_key(2, policy.policy_id).as_slice())?
+                .is_some()
+        );
+        let expression_id = policy
+            .using_expression_id
+            .ok_or("committed row policy is missing its expression")?;
+        assert!(
+            catalog
+                .get(id_catalog_key(7, expression_id).as_slice())?
+                .is_some()
+        );
+    }
+    let source_table = catalog
+        .get(id_catalog_key(5, id(82)).as_slice())?
+        .ok_or("source table disappeared during FK/policy race")?
+        .value()
+        .to_vec();
+    let source_epoch = u64::from_le_bytes(
+        decode_registered_envelope(&source_table)?
+            .fields
+            .iter()
+            .find(|field| field.tag == 3)
+            .ok_or("source table write epoch is missing")?
+            .payload
+            .as_slice()
+            .try_into()?,
+    );
+    assert_eq!(source_epoch, 1 + committed_count);
+    let target_table = catalog
+        .get(id_catalog_key(5, id(81)).as_slice())?
+        .ok_or("referenced table disappeared during FK/policy race")?
+        .value()
+        .to_vec();
+    let target_epoch = u64::from_le_bytes(
+        decode_registered_envelope(&target_table)?
+            .fields
+            .iter()
+            .find(|field| field.tag == 3)
+            .ok_or("referenced table write epoch is missing")?
+            .payload
+            .as_slice()
+            .try_into()?,
+    );
+    assert_eq!(
+        target_epoch,
+        1 + u64::from(foreign_key_status == OutcomeStatus::Committed)
+    );
+    drop(catalog);
+    drop(read);
+    prdb_engine::startup::validate_persisted_records(&database)?;
+    Ok(())
+}
+
+#[test]
 fn storage_manager_creates_named_unique_index_and_backfills_atomically()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
