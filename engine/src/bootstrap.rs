@@ -593,6 +593,12 @@ pub fn migrate_catalog_v1(
     if test_migration_exit_after_exchange() {
         unsafe { libc::_exit(86) };
     }
+    if test_migration_fail_directory_sync_after_exchange() {
+        return Err(std::io::Error::other(
+            "injected migration directory sync failure after exchange",
+        )
+        .into());
+    }
     sync_directory(&directory)?;
 
     validate_private_file(&active_path)?;
@@ -639,6 +645,17 @@ fn test_migration_exit_after_exchange() -> bool {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64", not(debug_assertions)))]
 fn test_migration_exit_after_exchange() -> bool {
+    false
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", debug_assertions))]
+fn test_migration_fail_directory_sync_after_exchange() -> bool {
+    std::env::var_os("PRDB_TEST_MIGRATION_FAIL_SYNC_AFTER_EXCHANGE").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", not(debug_assertions)))]
+fn test_migration_fail_directory_sync_after_exchange() -> bool {
     false
 }
 

@@ -2425,6 +2425,91 @@ fn migration_apply_keeps_the_published_target_after_process_exit_at_exchange() {
 }
 
 #[test]
+fn migration_apply_recovers_after_directory_sync_failure_at_exchange() {
+    let fixture = Fixture::new();
+    let mut session = prdb_engine::bootstrap::initialize(
+        fixture.instance_dir(),
+        "migration_sync_admin",
+        i64::MAX,
+    )
+    .expect("initialize migration source");
+    let mut secret = session.take_secret().expect("bootstrap secret");
+    use zeroize::Zeroize;
+    secret.zeroize();
+    drop(session.acknowledge().expect("publish source READY"));
+
+    let source_path = fixture.instance_dir().join("storage.redb");
+    let metadata = downgrade_ready_fixture_to_v1(&source_path);
+    let source_bytes = std::fs::read(&source_path).expect("read exact v1 source bytes");
+    let backup_path = fixture.0.join("sync-v1-backup");
+    prdb_engine::offline_backup::create_verified_migration_backup(
+        fixture.instance_dir(),
+        &backup_path,
+    )
+    .expect("create verified source backup");
+    let history_path = fixture.0.join("sync-identity-history.txt");
+    let history = prdb_engine::identity_history::IdentityHistory {
+        database_id: metadata.database_id,
+        commit_sequence: metadata.commit_sequence,
+        tombstone_ids: vec![[0xfa; 16]],
+    };
+    std::fs::write(
+        &history_path,
+        history.encode().expect("encode identity history"),
+    )
+    .expect("write identity history");
+    std::fs::set_permissions(&history_path, std::fs::Permissions::from_mode(0o600))
+        .expect("restrict identity history permissions");
+
+    let failed = Command::new(env!("CARGO_BIN_EXE_prdb-maintain"))
+        .args(["migration-apply", "--instance-dir"])
+        .arg(fixture.instance_dir())
+        .arg("--backup-dir")
+        .arg(&backup_path)
+        .arg("--identity-history")
+        .arg(&history_path)
+        .arg("--confirm-complete-identity-history")
+        .env("PRDB_TEST_MIGRATION_FAIL_SYNC_AFTER_EXCHANGE", "1")
+        .output()
+        .expect("inject migration directory-sync failure after exchange");
+    assert!(!failed.status.success());
+    assert!(
+        String::from_utf8_lossy(&failed.stderr)
+            .contains("injected migration directory sync failure after exchange"),
+        "stderr: {}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
+
+    let active = ReadOnlyStorageInstance::open(fixture.instance_dir())
+        .expect("open published target after directory-sync failure");
+    let active_report =
+        prdb_engine::startup::validate_persisted_records_read_only(active.database())
+            .expect("validate active target after directory-sync failure");
+    assert_eq!(active_report.metadata.catalog_version, 2);
+    assert_eq!(active_report.metadata.database_id, metadata.database_id);
+    assert_eq!(
+        active_report.metadata.commit_sequence,
+        metadata.commit_sequence
+    );
+    drop(active);
+
+    let retained_path = fixture.instance_dir().join(".prdb-migration.next");
+    assert_eq!(
+        std::fs::read(&retained_path).expect("read retained v1 source"),
+        source_bytes,
+        "the pre-migration source must remain byte-identical after the sync error"
+    );
+    let retained = ReadOnlyDatabase::open(&retained_path).expect("open retained v1 source");
+    let retained_report = prdb_engine::startup::validate_v1_migration_source_read_only(&retained)
+        .expect("validate retained catalog-v1 source");
+    assert_eq!(retained_report.metadata.database_id, metadata.database_id);
+    assert_eq!(
+        retained_report.metadata.commit_sequence,
+        metadata.commit_sequence
+    );
+}
+
+#[test]
 fn restore_requires_data_loss_ack_and_recovers_an_unreadable_newer_active_image() {
     let fixture = Fixture::new();
     let mut session =

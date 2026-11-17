@@ -1,5 +1,11 @@
 # Catalog Lifecycle Progress
 
+## CL-5: migration recovers after post-exchange directory-sync failure — verified slice
+
+- Added a debug-only injection point after catalog-v1 migration atomically exchanges the active and staging filenames, before syncing the instance directory. The subprocess regression confirms the command reports the sync error, the active catalog-v2 image passes read-only READY validation after reopen, and the retained catalog-v1 source remains byte-identical and passes migration-source validation.
+- Verification: focused delegated `bootstrap_binary` regression passed; locked workspace build, format check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed (966 passed, 0 failed, 0 ignored). `git diff --check` passed. Cargo.lock is unchanged.
+- Limit: injected directory-sync failure with a live kernel and filesystem does not simulate power loss or device-cache behavior; archived prior-release fixtures and broader filesystem fault campaigns remain open.
+
 ## CL-3 / DD-3 / DS-3: final catalog validation requires object tombstones — verified slice
 
 - Foreign-key DDL validation requires an exact family-17 reservation for each removed FK constraint. Final catalog validation also requires tombstones for deleted family-2 objects of kinds 1 and 3–10, preventing trusted generic catalog commits from bypassing retirement.
