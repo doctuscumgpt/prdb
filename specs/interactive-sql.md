@@ -2,11 +2,11 @@
 
 ## Status and Scope
 
-This document specifies a proposed higher-level SQL client and the server support it requires. It is not implemented behavior. It extends the current one-package/one-transaction submission model so a client can issue `BEGIN`, execute multiple query packages in one MVCC transaction, and finish with `COMMIT` or `ROLLBACK`. The client may also route supported DDL statements through the authenticated administrative control API.
+This document specifies a proposed higher-level SQL client and the server support it requires. It is not implemented behavior. It extends the current one-package/one-transaction submission model so a client can issue `BEGIN`, execute multiple query packages in one MVCC transaction, and finish with `COMMIT` or `ROLLBACK`. It also defines `RUNAS username ... ENDRUNAS` blocks, which compile the enclosed SQL text into one query package executed with that user's authenticated permissions. The client may also route supported DDL statements through the authenticated administrative control API.
 
 The executor remains untrusted. It does not receive administrative credentials, does not own transaction state, and cannot commit or roll back storage directly. The trusted supervisor and storage manager own the transaction across package executions. Administrative DDL remains a separate control operation.
 
-This extension does not promise transactional DDL. DDL is permitted only when the SQL client has no active explicit transaction; each DDL operation is an independent durable administrative operation. DDL inside `BEGIN` is rejected before dispatch and leaves the transaction active. The current v1 protocol and `prdb-client run-sql` behavior remain unchanged; this feature requires a separately versioned protocol/API that cannot silently fall back to v1.
+This extension does not promise transactional DDL. DDL is permitted only when the SQL client has no active explicit transaction and is not inside a `RUNAS` block; each DDL operation is an independent durable administrative operation. DDL inside `BEGIN` or `RUNAS` is rejected before dispatch. Rejected DDL inside `BEGIN` leaves the transaction active. The current v1 protocol and `prdb-client run-sql` behavior remain unchanged; this feature requires a separately versioned protocol/API that cannot silently fall back to v1.
 
 ## Client Statement Routing
 
@@ -20,12 +20,41 @@ The client classifies each statement and routes it as follows:
 | Supported DML/query | Compile/package and execute it against the current transaction, or use one implicit transaction in autocommit mode. |
 | `COMMIT` | Ask the query service to durably commit the active explicit transaction. |
 | `ROLLBACK` | Ask the query service to abort and release the active explicit transaction. |
-| Supported DDL | Only when no explicit transaction is active, translate SQL locally to a typed `ADMIN` control operation and wait for its durable outcome. |
+| `RUNAS username ... ENDRUNAS` | Resolve the named local credential profile and execute the complete enclosed SQL body as one query package, either in an implicit transaction or the active explicit transaction. |
+| Supported DDL | Only when no explicit transaction or `RUNAS` block is active, translate SQL locally to a typed `ADMIN` control operation and wait for its durable outcome. |
 | Other transaction/session commands | Reject as unsupported. |
 
 DDL text is never sent to the query executor or gateway as executable SQL. DDL parsing and name resolution follow the existing authenticated `admin-sql` contract. SQL query parsing/binding/execution remains the versioned SDK behavior in the confined executor. The client may split and classify statements, but classification is not an authorization decision; storage independently validates every query and administrative operation.
 
 When reading a script, the client may detect statement boundaries and obvious unsupported transaction syntax before sending anything. It cannot promise that all query statements are semantically valid before execution unless a compatible trusted parse-only SDK is available. In autocommit mode, statements completed before a later parse or execution error remain committed. In an explicit transaction, a query error aborts the whole transaction as specified below.
+
+### `RUNAS` block syntax and packaging
+
+The block form is:
+
+```sql
+RUNAS username
+  -- one or more supported SQL statements
+ENDRUNAS;
+```
+
+`username` is a normalized database user name and selects a locally loaded credential profile. The block body is parsed as ordinary SDK SQL, not as DDL. It must contain at least one supported query/DML statement. The client compiles the whole body into exactly one query package; statements in the body execute sequentially through the versioned SDK within that package. The body is bounded to 65,536 UTF-8 bytes and 64 statements in the initial profile. The package has one ordered result stream, with each statement result tagged by its statement ordinal, and one package outcome. A block is not split into a package per statement. Nesting, crossing block boundaries, an omitted `ENDRUNAS`, empty blocks, and DDL or transaction-control statements inside a block are syntax/unsupported-operation errors. String literals and comments containing `ENDRUNAS` do not terminate a block.
+
+Each block selects one effective database user for every statement in its package. It does not change the transaction controller, create a nested transaction, or grant the executor a credential. SQL parameters and output use bounded package interfaces. The SDK must expose a sequential batch entry point (or equivalent generated wrapper behavior) that executes each statement once, emits statement-ordinal result boundaries, and latches any statement error as package failure. A malformed or unsupported body is rejected before package execution when the local trusted parser can establish that fact; the SDK remains authoritative for parse, bind, and execution errors.
+
+## Credential Profiles and Effective Identity
+
+The client can load multiple named database credential profiles at startup or on demand. Each profile maps one normalized database username to a token ID and secret held in a private credential file. Files must be readable only by the invoking OS user; the client bounds their size, rejects malformed encodings, keeps secrets out of command-line arguments and logs, and zeroizes in-memory copies when profiles are unloaded or the client exits. The username in a profile is a selector/expectation only; it is never proof of identity.
+
+Authentication proofs remain bearer secrets: client, gateway, and supervisor code must not log them, reflect them, place them in query artifacts/parameters, or retain them in transaction state. The server retains only authenticated principal IDs and the minimum credential/authority epochs needed for revalidation. V2 inherits the gateway transport security contract; it remains loopback-only by default, and non-loopback deployment must use a confidential authenticated transport before transmitting multiple user credentials.
+
+The client selects one default profile at startup. Plain query packages, `BEGIN`, transaction control, and DDL use this profile. A `RUNAS` block selects another loaded profile for that package only and does not change the default. Changing the default requires an explicit client action while no explicit transaction is active; implicit identity changes inside a transaction are unsupported.
+
+For a `RUNAS username` package, the client authenticates the selected profile to the server. Storage must verify that the supplied token authenticates the exact named live user and revalidate token, login, and current role closure at package admission. Unknown usernames, missing profiles, revoked/expired credentials, or a username/credential mismatch fail closed with a bounded non-disclosing error. Possession of the target user's valid credential is the authorization to execute as that user; the initial feature adds no separate impersonation privilege. The query artifact receives neither token bytes nor the credential profile name as authority; trusted admission binds the invocation to the authenticated effective principal.
+
+In an explicit transaction, the transaction controller and a `RUNAS` package actor may be distinct identities. `BEGIN`, `COMMIT`, `ROLLBACK`, transaction attachment, and transaction status are authorized as the controller that opened the transaction. A normal query package uses that controller as its effective actor. A `RUNAS` package authenticates its named user independently while also proving authority to attach to the controller's transaction. The controller's permissions do not augment the `RUNAS` user's permissions, and the `RUNAS` user's permissions do not grant transaction-control authority. A caller must possess valid credentials for both identities to execute a `RUNAS` block inside a transaction owned by a different user. In autocommit mode, the `RUNAS` actor is also the owner of that block's implicit package transaction; only that actor's credential is needed.
+
+Every package is authorized as exactly one effective actor. Storage applies that actor's grants, role closure, row policies, cell policies, and package scope; it never unions the controller's or another participant's privileges into the actor's view. Every package's requested scope is an independent ceiling. Within an explicit transaction, the storage overlay is also filtered through the current package actor's authorized view: prior private writes by another actor do not become readable solely because they are in the shared write set. Writes retain their authorizing actor for commit-time credential/authority epoch revalidation. The transaction controller may observe returned `RUNAS` results in the local client; possession and use of multiple local credentials is not a data-isolation boundary between people sharing that client process.
 
 ## Transaction Semantics
 
@@ -37,17 +66,19 @@ Each DDL statement also runs independently through its existing authenticated ad
 
 ### Explicit transaction
 
-`BEGIN` creates a transaction owned by the authenticated principal and bound to the query session. Storage opens one MVCC snapshot at that point and retains the transaction's private write set and validation state across multiple package executions. Each query package executes sequentially against this same context. Later packages see earlier writes from that transaction; other transactions do not see them before commit.
+`BEGIN` creates a transaction controlled by the authenticated principal. Storage opens one MVCC snapshot at that point and retains the transaction's private write set and validation state across multiple package executions. The transaction is identified by a server-generated opaque ID and is not bound to a TCP connection. Each later package attaches to this transaction after authenticating the controller; a `RUNAS` package additionally authenticates its effective actor. Packages execute sequentially against the same snapshot/write set. An actor can read prior private writes only through that actor's own authorized view. Other transactions do not see the write set before commit.
 
 There is one transaction snapshot, one commit decision, and one durable transaction outcome for the entire explicit transaction. Individual package completion is provisional and does not publish writes. `COMMIT` asks the supervisor/storage path to validate and atomically publish the accumulated write set. Existing snapshot-isolation conflict rules, authority revalidation, and durable-commit requirements apply. A conflict or failed validation aborts the full transaction. `ROLLBACK` aborts it without publishing any writes.
 
-`BEGIN` takes no arguments in the initial version. Isolation levels, read-only modes, nested transactions, savepoints, and transaction-local configuration are unsupported. `BEGIN` while a transaction is active, or `COMMIT`/`ROLLBACK` with no active transaction, returns a bounded `invalid_state` error and performs no state change.
+`BEGIN` takes no arguments in the initial version. Isolation levels, read-only modes, nested transactions, savepoints, and transaction-local configuration are unsupported. `BEGIN` while a transaction is active, or `COMMIT`/`ROLLBACK` with no active transaction, returns a bounded `invalid_state` error and performs no state change. The transaction can be reattached from a different TCP connection after authenticating as its controller; an ID alone is never sufficient.
 
 ### Failure behavior
 
 Any query package error, SDK statement failure, worker crash, cancellation, deadline expiry, or fatal protocol error marks the explicit transaction abort-only and discards its private writes. The session may issue `ROLLBACK` to release the retained transaction state. Further query execution and `COMMIT` are rejected while abort-only; `COMMIT` reports the aborted outcome and closes the transaction. No partial package writes are retained for a later package. Savepoints and recovery within the transaction are not provided.
 
-An unsupported DDL statement inside an explicit transaction is rejected by the client before sending it and does not make the transaction abort-only. The client may continue with query statements or issue `ROLLBACK`. The client must not transparently commit, rollback, or split the transaction to run DDL.
+A failure in any statement inside a `RUNAS` body fails that single package. In autocommit mode, the block's package transaction aborts without publishing any of its writes. Inside `BEGIN`, the failure marks the enclosing transaction abort-only and discards its complete write set, including writes from packages executed under other actors.
+
+An unsupported DDL statement inside an explicit transaction or `RUNAS` block is rejected by the client before sending it and does not make the explicit transaction abort-only. The client may continue with query statements or issue `ROLLBACK`. The client must not transparently commit, rollback, split the transaction, or change `RUNAS` identity to run DDL.
 
 ## Results, Cancellation, and Outcomes
 
@@ -57,41 +88,45 @@ Cancellation of a running package aborts the enclosing explicit transaction. Can
 
 Every explicit transaction has an opaque server-generated transaction ID. If the `COMMIT` reply is lost, the client reconnects and authenticates, then queries the transaction outcome by ID; it never sends `COMMIT` again blindly. A response of `unknown` requires reconciliation according to the transaction outcome contract and does not authorize retrying the work as a new transaction. Package execution requests are not replayed after an uncertain reply.
 
-The first version does not resume an active transaction on a different connection. Losing the owning query connection, client process, gateway session, or supervisor session aborts any transaction that has not crossed the durable commit barrier. A lost commit reply is the exception: the transaction may already have reached a durable decision, so its outcome must be looked up. Committed outcomes are retained for the configured outcome-retention period.
+The first version permits transaction reattachment on different authenticated connections but does not permit concurrent execution. A disconnected client does not immediately destroy the transaction; the controller may reconnect, authenticate, and resume by transaction ID until the server-enforced idle or lifetime limit expires. Losing the client process leaves the transaction open only until those bounded limits expire. Losing the supervisor/storage process aborts any transaction that has not crossed the durable commit barrier. A lost commit reply is the exception: the transaction may already have reached a durable decision, so its outcome must be looked up. Committed outcomes are retained for the configured outcome-retention period.
 
 ## DDL Boundaries
 
-The SQL client maintains separate authenticated query and control connections, or equivalent separately authorized logical channels. It uses the query service for `BEGIN`, query package execution, `COMMIT`, `ROLLBACK`, and transaction status. It uses the control service for DDL. Both are authenticated as the same database principal; neither connection's mode itself grants administrative authority.
+The SQL client uses the query service for `BEGIN`, query package execution, `COMMIT`, `ROLLBACK`, transaction attachment, and transaction status. It uses the control service for DDL. These may be separate connections and can be recreated between operations. For a normal package, the query request authenticates the transaction controller as its effective actor. For a `RUNAS` package, the protocol authenticates both the transaction controller (to attach to/control the transaction) and the selected effective actor (to authorize the package). Neither a connection mode nor a transaction ID grants authority. The control connection authenticates the principal whose privileges are used for the DDL operation.
 
 DDL is allowed only when the SQL client is in autocommit state, with no active explicit transaction. The client waits for the DDL operation's durable outcome before sending the next statement. A successful DDL operation commits independently; a failed or uncertain DDL operation follows the existing ADMIN outcome lookup and no-replay rules. A subsequent query starts a fresh snapshot and observes DDL only if it is authorized and committed.
 
-The initial client does not implement implicit transaction boundaries around DDL. It does not implicitly commit before DDL, nor automatically begin a new transaction after DDL. If a script reaches DDL while an explicit transaction is active, the DDL is rejected and the transaction remains active. Users must commit or roll back explicitly, then issue DDL.
+The initial client does not implement implicit transaction boundaries around DDL. It does not implicitly commit before DDL, nor automatically begin a new transaction after DDL. If a script reaches DDL while an explicit transaction is active, or inside a `RUNAS` block, the DDL is rejected and any active transaction remains active. Users must commit or roll back explicitly, then issue DDL.
 
 ## Server and Protocol Requirements
 
-The existing client protocol v1 binds a query connection to one staged invocation and one invocation transaction. It cannot preserve a transaction across multiple START requests. This feature therefore requires a new protocol/API version with explicit transaction operations; sending new message kinds or `transaction_id` fields to a v1 peer is forbidden. A client requires the advertised transaction capability and fails closed if it is unavailable.
+The existing client protocol v1 binds a query connection to one staged invocation and one invocation transaction. It cannot preserve a transaction across multiple START requests or authenticate a separate transaction controller and `RUNAS` actor for one package. This feature therefore requires a new protocol/API version with explicit transaction operations, connection-independent reattachment, and per-package effective-identity authentication; sending new message kinds or `transaction_id` fields to a v1 peer is forbidden. A client requires the advertised transaction and multi-identity package capabilities and fails closed if either is unavailable.
 
 The new query service must provide semantic operations equivalent to:
 
-- `BEGIN`: authenticate/revalidate the caller, reserve transaction resources, open the snapshot, and return a transaction ID and negotiated limits.
-- `EXECUTE_PACKAGE`: bind one sealed query package to the active transaction, create a disposable executor, and run it sequentially. The artifact cannot choose or change the transaction ID. Package execution does not finalize the transaction.
-- `COMMIT`: stop new package executions, validate authorization epochs and write conflicts, durably publish atomically, and return the transaction outcome.
-- `ROLLBACK`: stop new work, discard private writes, release the snapshot and resources, and return an aborted outcome.
-- `STATUS`: report an authorized transaction state/outcome, including reconciliation after a lost commit reply.
+- `BEGIN`: authenticate/revalidate the controller, reserve transaction resources, open the snapshot, and return a transaction ID and negotiated limits.
+- `ATTACH`: on any new authenticated connection, verify the controller identity and transaction ownership; the transaction ID alone is not a capability. Serialize attachment so only one package/control operation can run at a time.
+- `EXECUTE_PACKAGE`: bind one sealed query package to the active transaction, create a disposable executor, and run it sequentially. Normal packages use the controller as actor. A `RUNAS` package also supplies independently authenticated actor credentials and the expected normalized username; storage checks the match. The artifact cannot choose or change the transaction ID or actor. Package execution does not finalize the transaction.
+- `COMMIT`: authenticate the controller, stop new package executions, validate conflicts and authority/credential epochs for every actor whose package contributed writes, durably publish atomically, and return the transaction outcome.
+- `ROLLBACK`: authenticate the controller, stop new work, discard private writes, release the snapshot and resources, and return an aborted outcome.
+- `STATUS`: authenticate the controller or an authorized current administrator and report a transaction state/outcome, including reconciliation after a lost commit reply.
 
-The supervisor/storage own the transaction ID, snapshot, write set, cumulative accounting, cancellation state, and durable outcome. Each executor remains a disposable, separately confined process and receives only invocation-scoped host capabilities bound by trusted server state to that transaction. The executor cannot access transaction control operations or name another transaction. A package's requested scope remains a per-package ceiling; transaction reuse does not widen any package's authority. Credentials are revalidated for each package and at commit as required by the authorization contract.
+The supervisor/storage own the transaction ID, controller identity, snapshot, write set, write-actor attribution, cumulative accounting, cancellation state, and durable outcome. Each executor remains a disposable, separately confined process and receives only invocation-scoped host capabilities bound by trusted server state to that transaction and package actor. The executor cannot access transaction control operations or name another transaction. A package's requested scope remains a per-package ceiling; transaction reuse does not widen any package's authority. The client authenticates the controller on every attach/control operation and the selected actor on every `RUNAS` package. Storage revalidates credentials, role closure, and permission epochs for each package and validates the recorded write actors at commit.
 
-The server enforces bounded transaction lifetime, idle time, retained snapshot/write-set resources, active transactions per principal and globally, and concurrent package execution. Only one package may run in a transaction at a time. Limits are negotiated or reported at `BEGIN`, may be lowered by server policy, and cannot be raised by the client. Expiration aborts the transaction and releases its retained resources. Exact default values are an implementation-profile decision and must be specified before release acceptance.
+The server enforces bounded transaction lifetime, idle time, retained snapshot/write-set resources, active transactions per controller and globally, credential-profile count/size at the client, and concurrent package execution. Only one package may run in a transaction at a time. Limits are negotiated or reported at `BEGIN`, may be lowered by server policy, and cannot be raised by the client. Expiration aborts the transaction and releases its retained resources. Exact default values are an implementation-profile decision and must be specified before release acceptance.
+
+The implementation crosses the client SQL parser/packager, SQL SDK batch dispatcher and result encoding, client credential storage, gateway authentication/session service, supervisor transaction registry, executor admission, storage MVCC context, authorization projection, cancellation, and durable outcome lookup. Update the corresponding [client protocol](client-protocol.md), [gateway](client-gateway.md), [supervisor](supervisor.md), [executor](query-worker.md), [authorization](authorization.md), [storage manager](storage-manager.md), and [SQL library](sql-library.md) contracts when this proposal is accepted. The `RUNAS` client feature does not weaken the existing rule that untrusted query code cannot access ADMIN operations or credentials.
 
 ## Compatibility and Failure Cases
 
 - Existing v1 clients retain current behavior: one query package owns one transaction; DDL uses the control API.
 - New clients require the transaction protocol version and reject unsupported versions/capabilities without silent fallback.
-- Reusing a transaction ID under another principal, connection, or session is rejected.
+- Reusing a transaction ID without authenticating its controller is rejected. Reattachment by that controller on another connection is supported.
+- A `RUNAS` package is rejected unless the actor credential independently authenticates the exact requested username. Controller privileges are never added to the actor's package authority.
 - Duplicate, out-of-order, or concurrent package execution requests are rejected; there is no implicit multiplexing.
 - A transaction ID is not a bearer capability. Every status/control request authenticates and checks ownership or current administrator authority.
 - Gateway/supervisor restart aborts active transactions that have no durable decision. Durable commit outcomes remain recoverable through STATUS.
-- DDL authorization failure, name-resolution failure, or uncertain outcome never changes the state of a query transaction, because DDL is not sent while one is active.
+- DDL authorization failure, name-resolution failure, or uncertain outcome never changes the state of a query transaction, because the interactive client rejects DDL while a transaction or `RUNAS` block is active.
 
 ## Acceptance Evidence
 
@@ -100,10 +135,13 @@ The implementation must demonstrate, across the real client, gateway, supervisor
 1. Two sequential packages in one explicit transaction read each other's writes, while a concurrent transaction cannot see those writes before commit.
 2. COMMIT publishes the combined write set atomically; ROLLBACK publishes none of it.
 3. A package failure, cancellation, crash, timeout, authorization-epoch change, or write conflict prevents the whole explicit transaction from committing.
-4. DDL outside a transaction commits independently and is visible to a later transaction; DDL attempted inside an explicit transaction is rejected without silently committing or aborting that transaction.
-5. A lost COMMIT reply is resolved by authenticated STATUS without replay; active transactions are released after owner disconnect and after every configured limit expires.
-6. A hostile query artifact cannot read/write outside its per-package authorization, forge another transaction ID, invoke ADMIN, or commit/rollback its transaction.
-7. Existing v1 submission, ADMIN, and sandbox integration behavior remains unchanged.
+4. DDL outside a transaction commits independently and is visible to a later transaction; DDL attempted inside an explicit transaction or `RUNAS` block is rejected without silently committing or aborting the transaction.
+5. A lost COMMIT reply is resolved by authenticated STATUS without replay; active transactions can be reattached on another connection and are released after configured idle/lifetime limits.
+6. A hostile query artifact cannot read/write outside its per-package actor authorization, inspect another actor's private writes without authorization, forge a transaction ID/actor, invoke ADMIN, or commit/rollback its transaction.
+7. `RUNAS` blocks with multiple SQL statements execute as one package; a block failure aborts the package and, inside an explicit transaction, the entire transaction.
+8. The transaction can be detached and reattached across separate connections by its authenticated controller, but cannot be taken over by another principal or executed concurrently.
+9. A `RUNAS` block under a lower-privilege user cannot use the controller's additional grants; missing, revoked, or mismatched target credentials fail closed. Its result and writes use only the target actor's authorization.
+10. Existing v1 submission, ADMIN, and sandbox integration behavior remains unchanged.
 
 ## Open Profile Decisions
 
@@ -111,5 +149,6 @@ The implementation must demonstrate, across the real client, gateway, supervisor
 - Whether interactive result rows are streamed as explicitly provisional or buffered per package until package completion; neither choice may imply transaction commit.
 - Exact v2 frame kinds, transaction status schema, and how client disconnect detection interacts with an in-flight durable commit.
 - Which currently supported SDK query/DML statement forms are admitted in the first transaction-capable release.
+- Exact credential-profile file format and how the new protocol carries independent controller and `RUNAS` authentication proofs without retaining secrets in executor artifacts.
 
-These choices must be settled in the versioned protocol and runtime profiles before implementation acceptance; they do not change the rules that transactions span packages, DDL remains outside them, and storage alone decides durable outcomes.
+These choices must be settled in the versioned protocol and runtime profiles before implementation acceptance; they do not change the rules that transactions span packages and connections, each package has one independently authenticated effective actor, DDL remains outside transactions and `RUNAS` blocks, and storage alone decides durable outcomes.
