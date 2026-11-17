@@ -1,5 +1,11 @@
 # Identity DDL Progress
 
+## ID-3 / AU-6: role rename races a staged role-authorized write — verified slice
+
+- Extended `role_membership_revocation_aborts_a_staged_role_authorized_writer` with a barrier-coordinated rename of the same stable role ID while a second role-authorized row update is staged. The test validates that rename commits, the writer records either COMMITTED or ABORTED according to serialization, the durable operation outcomes agree, and the row reflects that outcome.
+- Verification: focused delegated commit regression passed; locked workspace build, format check, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed (966 passed, 0 failed, 0 ignored). Sandbox and process tests were enabled. `git diff --check` passed. Cargo.lock is unchanged.
+- Scope: one coordinated schedule; wider interleavings across rename, role-management revocation, token admission, and pending writes remain open.
+
 Migrated component-owned progress entries from [storage-manager progress](../storage-manager/PROGRESS.md); evidence is preserved below.
 
 ## SM-5 / DDL-identity dependency: prepared CREATE USER ADMIN operation

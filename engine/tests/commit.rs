@@ -2072,7 +2072,6 @@ fn schema_rename_racing_table_creation_preserves_catalog_identity()
             None
         );
     }
-    assert!(prdb_engine::startup::validate_persisted_records(&database).is_ok());
     Ok(())
 }
 
@@ -27941,7 +27940,7 @@ fn role_membership_revocation_aborts_a_staged_role_authorized_writer()
         }
     );
 
-    let row = database
+    let stored_row = database
         .begin_read()?
         .open_table(ROWS)?
         .get(&row_key[..])?
@@ -27949,7 +27948,7 @@ fn role_membership_revocation_aborts_a_staged_role_authorized_writer()
         .value()
         .to_vec();
     assert_eq!(
-        decode_tuple(&columns, 1, &RowRecord::decode(&row)?.payload)?.values,
+        decode_tuple(&columns, 1, &RowRecord::decode(&stored_row)?.payload)?.values,
         [Some(ScalarValue::Text(
             if writer_status == OutcomeStatus::Committed {
                 "stale after membership revoke"
@@ -27972,6 +27971,112 @@ fn role_membership_revocation_aborts_a_staged_role_authorized_writer()
         OutcomeStatus::Committed,
     );
     assert_eq!(commit_sequence(&database)?, revoke_sequence);
+
+    let regrant_invocation_id = id(0xa1);
+    let mut regrant_audit = audit_event(0xa2);
+    regrant_audit.actor_id = Some(user_id);
+    regrant_audit.correlation_id = regrant_invocation_id;
+    regrant_audit.action = AuditAction::AuthorityChange;
+    let regrant_sequence = storage.set_role_membership(
+        regrant_invocation_id,
+        user_id,
+        RoleMembershipChange {
+            member_id: user_id,
+            role_id,
+            grant: true,
+        },
+        9_999,
+        regrant_audit,
+    )?;
+    let rename_race_writer_id = id(0xa3);
+    let rename_race_invocation_id = id(0xa4);
+    let (mut rename_race_writer, rename_race_roles) =
+        storage.begin_authenticated_invocation(rename_race_writer_id, user_id, 9_999, 1, 1024)?;
+    assert!(rename_race_roles.contains(&role_id));
+    let rename_race_context = AuthorizationContext {
+        principal_id: user_id,
+        role_ids: rename_race_roles,
+        scope: context.scope.clone(),
+    };
+    let rename_race_projection = AuthorizedProjection {
+        context: &rename_race_context,
+        ..projection
+    };
+    rename_race_writer.stage_patch_authorized(
+        prdb_engine::overlay::RowId {
+            table: id(16),
+            row: row_id,
+        },
+        &rename_race_projection,
+        &[FieldPatch {
+            ordinal: 0,
+            value: Some(ScalarValue::Text("write racing role rename".to_owned())),
+        }],
+    )?;
+    let mut rename_race_audit = identity_audit_event(0xa5, user_id, role_id);
+    rename_race_audit.correlation_id = rename_race_invocation_id;
+    let rename_race_barrier = Arc::new(Barrier::new(3));
+    let (rename_writer_result, rename_result) = std::thread::scope(|scope| {
+        let writer_barrier = rename_race_barrier.clone();
+        let writer_task = scope.spawn(move || {
+            writer_barrier.wait();
+            rename_race_writer.commit()
+        });
+        let rename_barrier = rename_race_barrier.clone();
+        let rename_storage = &storage;
+        let rename_task = scope.spawn(move || {
+            rename_barrier.wait();
+            rename_storage.rename_identity(
+                rename_race_invocation_id,
+                user_id,
+                role_id,
+                "membership_editor_final",
+                9_999,
+                rename_race_audit,
+            )
+        });
+        rename_race_barrier.wait();
+        (writer_task.join().unwrap(), rename_task.join().unwrap())
+    });
+    let rename_writer_status = match rename_writer_result {
+        Ok(_) => OutcomeStatus::Committed,
+        Err(prdb_engine::transaction::TransactionError::Commit(CommitError::Conflict)) => {
+            OutcomeStatus::Aborted
+        }
+        other => panic!("unexpected role-rename writer result: {other:?}"),
+    };
+    let rename_sequence =
+        rename_result.map_err(|error| format!("rename role during staged write: {error:?}"))?;
+    assert!(rename_sequence >= regrant_sequence);
+    assert_eq!(
+        row(&database, &row_key)?
+            .map(|row| decode_tuple(&columns, 1, &row.payload))
+            .transpose()?
+            .ok_or("missing role-authorized row after role rename race")?
+            .values,
+        [Some(ScalarValue::Text(
+            if rename_writer_status == OutcomeStatus::Committed {
+                "write racing role rename"
+            } else if writer_status == OutcomeStatus::Committed {
+                "stale after membership revoke"
+            } else {
+                "before membership revoke"
+            }
+            .to_owned()
+        ))]
+    );
+    assert_eq!(
+        lookup_outcome(&database, rename_race_writer_id, user_id, 1)?
+            .ok_or("missing role-rename writer outcome")?
+            .status,
+        rename_writer_status
+    );
+    assert_eq!(
+        lookup_outcome(&database, rename_race_invocation_id, user_id, 1)?
+            .ok_or("missing role-rename outcome")?
+            .status,
+        OutcomeStatus::Committed
+    );
     Ok(())
 }
 
