@@ -1839,6 +1839,28 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     );
     std::fs::write(
         &object_privilege_sql_path,
+        "GRANT SELECT (label) ON TABLE process_ddl.records TO USER process_member_user;",
+    )?;
+    let grant_sibling_column = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            object_privilege_sql_path_text,
+        ])
+        .output()?;
+    assert!(
+        grant_sibling_column.status.success(),
+        "sibling-column privilege GRANT SQL failed: {}",
+        String::from_utf8_lossy(&grant_sibling_column.stderr)
+    );
+    std::fs::write(
+        &object_privilege_sql_path,
         "REVOKE SELECT (key) ON TABLE process_ddl.records FROM USER process_member_user;",
     )?;
     let revoke_existing_column = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
@@ -1858,6 +1880,48 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         revoke_existing_column.status.success(),
         "single-column privilege REVOKE SQL failed: {}",
         String::from_utf8_lossy(&revoke_existing_column.stderr)
+    );
+    let after_single_column_revoke =
+        admin.list_grants_page(ddl_schema.identity_id, ddl_table.table_id, 128, None)?;
+    assert!(
+        ddl_table
+            .column_ids
+            .iter()
+            .enumerate()
+            .all(|(index, column_id)| {
+                let has_select = after_single_column_revoke.records.iter().any(|grant| {
+                    grant.grantee_id == member_user.identity_id
+                && grant.privilege
+                    == prdb_engine::metadata_discovery::AdministrativeGrantPrivilege::Select
+                && grant.target_scope
+                    == prdb_engine::metadata_discovery::AdministrativeGrantTargetScope::Column
+                && grant.target_id == *column_id
+                });
+                has_select == (index == 1)
+            }),
+        "partial column REVOKE must remove key while preserving label"
+    );
+    std::fs::write(
+        &object_privilege_sql_path,
+        "REVOKE SELECT (label) ON TABLE process_ddl.records FROM USER process_member_user;",
+    )?;
+    let revoke_sibling_column = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .args([
+            "admin-sql",
+            "--address",
+            &address.to_string(),
+            "--credentials",
+            admin_cancel_credentials_path
+                .to_str()
+                .ok_or("credential path is not UTF-8")?,
+            "--sql-file",
+            object_privilege_sql_path_text,
+        ])
+        .output()?;
+    assert!(
+        revoke_sibling_column.status.success(),
+        "sibling-column privilege REVOKE SQL failed: {}",
+        String::from_utf8_lossy(&revoke_sibling_column.stderr)
     );
     std::fs::write(
         &object_privilege_sql_path,

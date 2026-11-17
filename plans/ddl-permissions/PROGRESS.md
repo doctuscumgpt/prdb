@@ -258,3 +258,13 @@
 ## 2026-11-16 delegated workspace verification after retained ADD COLUMN compaction check
 
 - The complete serial `cargo test --workspace --locked -- --test-threads=1` suite passed inside the delegated `systemd --user` service. Sandbox and cross-process coverage were enabled; zero tests were ignored. This includes the mixed-scope grant batch race, authenticated grant SQL, policy DDL, and permission enforcement regressions on the current tree.
+
+## DP-SQL-2 / DP-8: partial column revoke through gateway and supervisor — verified slice
+
+- Extended `authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_processes` with an authenticated `GRANT SELECT (label)` followed by `REVOKE SELECT (key)`. Filtered grant discovery confirms the `key` grant is gone while the sibling `label` grant remains; a separate revoke then resets the fixture for its following multi-column grant case.
+- Clarified in the permission contract that a column-targeted revoke preserves sibling-column grants and follows the atomic catalog grant/provenance path.
+- Verification: focused delegated gateway/supervisor process regression passed; format check, locked workspace build, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed with sandbox/process coverage enabled and zero ignored tests. `git diff --check` passed.
+
+## 2026-11-17 delegated workspace verification after partial column revoke SQL coverage
+
+- `cargo test --workspace --locked -- --test-threads=1` passed inside the delegated `systemd --user` service using the documented TinyCC fixtures and runtime profile. Sandbox and process integration tests were enabled; zero tests were ignored. This includes the sibling-column preservation assertion in the authenticated gateway/supervisor permission DDL lifecycle.
