@@ -1,0 +1,55 @@
+# Interactive SQL Client Implementation Plan
+
+## Objective and Dependencies
+
+Implement the proposed [interactive SQL sessions and transactions contract](../../specs/interactive-sql.md), including `BEGIN`/`COMMIT`/`ROLLBACK`, connection-independent transaction attachment, `RUNAS username ... ENDRUNAS`, multiple credential profiles, and autocommit DDL through typed `ADMIN` operations. This is a cross-component feature; the client alone cannot keep an MVCC context alive across query packages.
+
+Preserve the current v1 one-package/one-transaction protocol and behavior. The new feature requires a separately versioned client protocol/API, supervisor/storage-owned transaction state, and a SQL SDK batch entry point. Keep SQL text parsing and native execution in the existing trusted client and confined SDK boundaries; no SQL is sent to the gateway and no user artifact receives credentials or transaction-control authority.
+
+Coordinate with [client protocol](../client-protocol/README.md), [client gateway](../client-gateway/README.md), [client SDK](../client-sdk/README.md), [`prdb-client` SQL input](../client-sql-command/README.md), [SQL library](../sql-library/README.md), [supervisor](../supervisor/README.md), [transactions/MVCC](../concurrency-mvcc/README.md), [storage manager](../storage-manager/README.md), [authorization](../authorization/README.md), [identity/authentication](../ddl-identity/README.md), and [sandbox](../linux-sandbox/README.md). Update normative specs before implementation when a decision below changes the current proposal.
+
+## Decisions Before Implementation
+
+Freeze these contracts in `specs/interactive-sql.md` and all affected protocol/component specs before adding cross-process interfaces:
+
+- New protocol major/version and capability negotiation; v1 must reject or ignore no new transaction semantics and must never be used as a silent fallback.
+- The request authentication envelope for both transaction controller and `RUNAS` actor; exact username normalization and non-disclosing mismatch errors; whether every package presents fresh token proofs or authenticated short-lived session proofs.
+- Confidential transport requirements for multiple bearer tokens, including loopback and remote deployment behavior.
+- Transaction ID ownership, reattachment, lease/idle expiry, restart semantics, active resource limits, and status retention.
+- Handling an uncertain `EXECUTE_PACKAGE` reply. The client must not replay it; decide whether the server exposes per-package reconciliation or the client must roll back the transaction.
+- Result framing for multiple statement results inside one `RUNAS` package, output buffering/streaming, statement ordinals, and the point at which results are labeled provisional.
+- Default credential profile selection and secure profile-file format/permissions; exact profile-count and secret-size limits.
+- Which SQL SDK statements are allowed in batch mode. DDL and transaction-control statements remain forbidden inside `RUNAS`.
+- Commit-time write-actor attribution and the exact visibility rules for another actor's private writes in the transaction overlay.
+
+The existing spec currently chooses that possession of the target user's valid token authenticates `RUNAS` without a separate impersonation grant, that DDL cannot run inside a transaction or `RUNAS` block, and that the transaction controller alone controls commit/rollback. Revisit those choices explicitly if security review changes them.
+
+## Increments
+
+| ID | Observable failure first | Minimum implementation | Acceptance evidence |
+| --- | --- | --- | --- |
+| ISQL-1: Contract and protocol fixtures | A v1 peer accepts or ambiguously interprets a transaction/RUNAS request | Resolve the decisions above; define v2 operation schemas for BEGIN, ATTACH, package execution, COMMIT, ROLLBACK, STATUS, and dual controller/actor authentication; add independent golden request/response fixtures and explicit v1 rejection. | Version/capability matrix, malformed/duplicate/out-of-order frames, authentication mismatch, transaction ID non-capability, bounded payloads, and v1 compatibility tests pass. |
+| ISQL-2: Client credentials and block parser | Bad RUNAS boundaries or a wrong credential profile reach network submission | Add private profile loading/zeroization and the interactive SQL lexer/parser for transaction commands, DDL routing, and non-nested RUNAS blocks. Classify only supported statements; do not use semicolon splitting or trust the username field as identity. | Unit tests cover strings/comments containing ENDRUNAS, nested/missing/empty blocks, size/count caps, normalized names, profile missing/mismatch/revocation paths, secret redaction, and invalid DDL placement without opening a connection. |
+| ISQL-3: One-package SQL batch SDK | A RUNAS body is split into multiple invocations or a later statement error leaves a successful package result | Add a versioned bounded batch entry point (or generated wrapper contract) that runs up to the selected statement cap sequentially, uses typed parameters, emits statement-indexed result boundaries, and latches any statement failure. Keep all statements in the block in one package transaction. | Maintained TinyCC SDK tests cover ordered results, shared writes within the package, malformed/multiple input, output callback failure, statement error after prior writes, result ordinal framing, and package-wide abort. Run code only through the confined harness. |
+| ISQL-4: Storage transaction handle across packages | A second package creates a new snapshot or cannot see the transaction's own writes | Refactor transaction ownership from a single invocation into a bounded storage transaction context with Begin/Attach/Execute/Commit/Rollback/Status semantics. Retain one snapshot, private overlay, conflict set, limits, and durable outcome across disposable package executors. It must survive client TCP disconnects and reattach only after controller authentication. | Storage-level tests demonstrate same-snapshot reads, read-your-authorized-writes, isolation from concurrent transactions, all-or-nothing commit/rollback, stale-write conflicts, idle expiry, and no reattachment by ID alone. Process restart aborts undecided transactions and preserves committed outcome lookup. |
+| ISQL-5: Per-package effective actor | A RUNAS user inherits controller grants or reads another actor's private writes without authorization | Bind each package to exactly one authenticated actor; add actor-aware authorization projection over the retained snapshot and transaction overlay; record write actors and revalidate their credential/authority epochs at commit. Keep transaction-control APIs controller-only. | Two-user storage tests cover exact target identity, role/policy changes, denied reads/writes despite stronger controller grants, authorized reads of visible prior writes, hidden private writes, and commit rejection after actor credential/authority revocation. |
+| ISQL-6: Gateway, supervisor, and protocol v2 | A detached transaction is connection-bound, can be used concurrently, or accepts forged actor/controller identity | Implement v2 gateway auth and transaction registry; authenticate the controller on every reattachment/control operation and actor independently for RUNAS packages; serialize one operation per transaction; bind disposable executor host capabilities to server-selected transaction and actor. Keep ADMIN on its control role. | Real TCP tests reattach from fresh connections, disconnect/reconnect before commit, reject cross-user takeover, duplicate/concurrent requests, actor mismatch, forged transaction/actor fields, and ADMIN from worker IPC. Exercise lost reply, cancellation, lease expiry, and restart. |
+| ISQL-7: Interactive dispatcher and autocommit DDL | The client routes DDL through a query artifact or silently commits around DDL in BEGIN | Compose parser, profiles, SDK batch package, transaction v2 operations, and existing typed AdminClient calls. Default profile controls ordinary/autocommit DDL; RUNAS selects a profile per block; DDL is rejected inside explicit transactions and RUNAS without changing an active transaction. | CLI tests cover scripts and interactive sequences across autocommit, BEGIN/COMMIT/ROLLBACK, RUNAS under multiple profiles, independent DDL outcomes, stopping after error, exact statement order, and credential cleanup. Verify uncertain operations are reconciled, never replayed. |
+| ISQL-8: Confined end-to-end acceptance | Unit and mock tests pass while the real TinyCC package crosses a trust boundary incorrectly | Exercise the new path with actual client, v2 TCP gateway, supervisor, storage, SDK package, and disposable confined executor. Keep authorization, quotas, cancellation, outcome reconciliation, and durable publication enabled. | Delegated-cgroup integration proves one RUNAS block equals one package, multiple packages share one explicit transaction across fresh connections, commit/rollback outcomes are correct, DDL remains separate, failures abort atomically, and hostile artifacts cannot access credentials, ADMIN, or transaction control. Run applicable locked Rust/C checks from `AGENTS.md`. |
+
+## Cross-Component Acceptance
+
+Do not mark this feature complete from a local SQL parser, storage unit test, protocol mock, or client-only workflow. Acceptance requires the real network path and confined executor. Specifically test:
+
+- A block executed in autocommit uses one implicit transaction; the same block inside BEGIN uses the already-open transaction and does not commit it.
+- SQL in a RUNAS block is one query package even when it contains several statements; all statements use exactly the selected user's authorization, and any statement failure invalidates the package.
+- The transaction controller can reconnect on a new TCP connection, but the transaction ID is never sufficient to attach, query status, commit, or roll back.
+- A transaction owner can attach a separate RUNAS actor only with both authenticated proofs; the actor cannot commit the transaction and the controller's grants do not augment actor permissions.
+- DDL uses the separate typed control API, commits independently in autocommit mode, and is rejected without implicit boundaries inside BEGIN/RUNAS.
+- Lost replies, gateway/supervisor restart, client crashes, revoked tokens, policy changes, output backpressure, and transaction resource expiry have bounded outcomes and cleanup.
+
+Use explicit barriers and deadlines for races. Keep v1 fixtures and maintained SDK fixtures passing unchanged. Hostile query/SDK libraries run only in the delegated-cgroup sandbox harness described in `AGENTS.md`; no privileged process loads submitted native code.
+
+## Handoff
+
+Record each increment in a future `PROGRESS.md` with: normative sections, first observed failing assertion, changed interfaces, actor/transaction trust assumptions, exact commands/results, delegated-cgroup status, unresolved limits, and the next smallest increment. No implementation or runtime behavior is claimed by this plan.

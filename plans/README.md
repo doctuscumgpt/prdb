@@ -16,6 +16,7 @@ These plans cover every component and supporting contract in the [specification 
 | [Client SDK](client-sdk/README.md) | C runtime bindings, compiler wrapper and separate submission/admin helpers |
 | [`prdb-client` SQL input](client-sql-command/README.md) | SQL file/stdin input, generated C wrapper, packaging and authenticated submission |
 | [SQL library](sql-library/README.md) | C frontend, expressions, interpreter, writes and required analytics |
+| [Interactive SQL client](interactive-sql/README.md) | Multi-credential RUNAS blocks, explicit transactions across connections, and typed DDL routing |
 | [Optimizer](planner-compiler/README.md) | Isolated Rust binding/planning with scoped metadata and estimates |
 | [Statistics](statistics-service/README.md) | Storage-owned authorized estimates and later private collection |
 | [Storage manager](storage-manager/README.md) | redb integration, engine codecs, logical indexes and durable publication |
@@ -86,6 +87,7 @@ Each specification has a primary owning plan. Other plans link adjacent contract
 | [Client SDK](../specs/client-sdk.md) | [Client SDK](client-sdk/README.md) |
 | [`prdb-client` SQL input](../specs/client-sql-command.md) | [`prdb-client` SQL input](client-sql-command/README.md) |
 | [SQL library](../specs/sql-library.md) | [SQL library](sql-library/README.md) |
+| [Interactive SQL sessions](../specs/interactive-sql.md) | [Interactive SQL client](interactive-sql/README.md) |
 | [IPC](../specs/ipc-protocol.md) | [Internal IPC](ipc-protocol/README.md) |
 | [Linux sandbox](../specs/linux-sandbox.md) | [Linux sandbox](linux-sandbox/README.md) |
 
