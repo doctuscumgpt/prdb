@@ -12507,6 +12507,69 @@ fn storage_manager_drops_foreign_key_and_advances_both_table_epochs()
 }
 
 #[test]
+fn catalog_rejects_foreign_key_deletion_without_identity_tombstone()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let storage = StorageManager::new(&database, Duration::from_millis(100))?;
+    let admin_role = builtin_owner_id();
+    let actor = id(0xda);
+    let mut setup_writes = foreign_key_catalog_writes(true, true);
+    setup_writes.extend([
+        principal_write_with_name(actor, 1, 1, "fk_tombstone_guard_admin"),
+        object_write_with_name(actor, 8, "fk_tombstone_guard_admin"),
+        membership_write(actor, admin_role),
+        dependency_write(actor, admin_role, 5),
+    ]);
+    let mut setup_audit = identity_audit_event(0xdb, admin_role, id(80));
+    setup_audit.action = AuditAction::AuthorityChange;
+    storage.commit_catalog_and_audit(id(0xdc), admin_role, 9_999, &setup_writes, &[setup_audit])?;
+
+    let fk_key = id_catalog_key(8, id(86));
+    let object_key = id_catalog_key(2, id(86));
+    let edge_key = dependency_write(id(86), id(85), 3).key;
+    let mut raw_drop_writes = Vec::new();
+    for mut write in foreign_key_catalog_writes(true, true) {
+        if write.key == fk_key || write.key == object_key || write.key == edge_key {
+            write.expected_value = write.payload.take();
+            write.payload = None;
+            raw_drop_writes.push(write);
+        }
+    }
+    for table_id in [id(81), id(82)] {
+        raw_drop_writes.push(catalog_expect(
+            table_write_with_versions(table_id, id(80), 1, 2),
+            table_write(table_id, id(80))
+                .payload
+                .ok_or("missing fixture table definition")?,
+        ));
+    }
+    let invocation_id = id(0xdd);
+    let mut audit = identity_audit_event(0xde, actor, id(86));
+    audit.correlation_id = invocation_id;
+    assert_eq!(
+        storage.commit_catalog_and_audit(invocation_id, actor, 9_999, &raw_drop_writes, &[audit],),
+        Err(CommitError::InvalidCatalog)
+    );
+    assert!(
+        lookup_outcome(&database, invocation_id, actor, 1)?
+            .ok_or("missing rejected raw FK drop outcome")?
+            .status
+            == OutcomeStatus::Aborted
+    );
+    let read = database.begin_read()?;
+    let catalog = read.open_table(CATALOG)?;
+    assert!(catalog.get(fk_key.as_slice())?.is_some());
+    assert!(catalog.get(object_key.as_slice())?.is_some());
+    assert!(
+        catalog
+            .get(id_catalog_key(17, id(86)).as_slice())?
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
 fn storage_manager_drops_self_referential_foreign_key_once_per_table()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();

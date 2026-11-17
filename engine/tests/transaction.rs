@@ -150,6 +150,17 @@ fn catalog_id_key(family: u16, id: [u8; 16]) -> Vec<u8> {
     key
 }
 
+fn catalog_tombstone_write(
+    object_id: [u8; 16],
+) -> Result<CatalogWrite, Box<dyn std::error::Error>> {
+    let key = catalog_id_key(17, object_id);
+    Ok(CatalogWrite {
+        payload: Some(catalog_record_payload(17, &key, &[])?),
+        key,
+        expected_value: None,
+    })
+}
+
 fn dependency_catalog_write(
     dependent_id: [u8; 16],
     referenced_id: [u8; 16],
@@ -11871,6 +11882,8 @@ fn catalog_rejects_deleting_expression_used_by_existing_check()
                 &[],
             )?),
         },
+        catalog_tombstone_write(expression_id)?,
+        catalog_tombstone_write([185; 16])?,
     ];
     assert_eq!(
         commit_catalog_and_audit(

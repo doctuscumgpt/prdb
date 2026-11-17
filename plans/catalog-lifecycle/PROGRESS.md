@@ -1,9 +1,9 @@
 # Catalog Lifecycle Progress
 
-## CL-3 / DD-3 / DS-3: DROP FOREIGN KEY reserves its constraint ID — verified slice
+## CL-3 / DD-3 / DS-3: final catalog validation requires object tombstones — verified slice
 
-- Foreign-key DDL validation now requires an exact family-17 reservation for each removed FK constraint. The authorized storage entry point publishes the reservation with the constraint, object, dependency, and participating-table epoch changes.
-- `storage_manager_drops_foreign_key_and_advances_both_table_epochs` passes with a fresh-snapshot tombstone assertion. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests; build, formatting, warning-denied all-target Clippy, and `git diff --check` passed.
+- Foreign-key DDL validation requires an exact family-17 reservation for each removed FK constraint. Final catalog validation also requires tombstones for deleted family-2 objects of kinds 1 and 3–10, preventing trusted generic catalog commits from bypassing retirement.
+- `catalog_rejects_foreign_key_deletion_without_identity_tombstone` first reproduced a successful unreserved generic deletion and now rejects it without publication. The FK drop and expression/constraint cleanup regressions pass with explicit tombstones. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests; workspace build, formatting, warning-denied all-target Clippy, and `git diff --check` passed.
 
 
 ## CL-3 / DD-3 / DS-3: constraint DDL retires constraint and expression identifiers — verified slice

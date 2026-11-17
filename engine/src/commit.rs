@@ -3042,7 +3042,7 @@ fn validate_final_identity_tombstones(
                 .value()
                 .to_vec();
             let kind = catalog_field_u16(&write.key, &current, 2, 1)?;
-            if matches!(kind, 1 | 3 | 8 | 9) {
+            if matches!(kind, 1 | 3..=10) {
                 let id: [u8; 16] = write
                     .key
                     .get(3..19)

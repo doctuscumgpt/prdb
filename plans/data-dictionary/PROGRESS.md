@@ -1,16 +1,16 @@
 # Data Dictionary Progress
 
-## DD-3 / CL-3 / DS-3: foreign-key drops reserve constraint IDs — verified slice
+## DD-3 / CL-3 / DS-3: final catalog validation requires object tombstones — verified slice
 
-- DROP FOREIGN KEY now atomically reserves the deleted FK constraint ID in family 17. Serialized FK DDL validation requires a reservation for every deleted FK and rejects unrelated or malformed tombstones.
-- `storage_manager_drops_foreign_key_and_advances_both_table_epochs` passes with the reservation assertion. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests; build, formatting, warning-denied all-target Clippy, and `git diff --check` passed.
+- DROP FOREIGN KEY now atomically reserves the deleted FK constraint ID in family 17. Serialized FK DDL validation requires a reservation for every deleted FK; final catalog validation requires reservations for every deleted family-2 schema or object of kinds 3–10, including trusted generic catalog commits.
+- `storage_manager_drops_foreign_key_and_advances_both_table_epochs` checks the reservation. `catalog_rejects_foreign_key_deletion_without_identity_tombstone` reproduced and closed the generic-commit bypass. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests; build, format, warning-denied all-target Clippy, and `git diff --check` passed.
 
 
 ## DD-3 / CL-3 / DS-3: constraint DDL retires constraint and expression IDs — verified slice
 
 - CHECK, NOT NULL, PRIMARY KEY, and UNIQUE drops now reserve every deleted constraint/expression/index object ID in family 17. The constraint DDL validator requires exact agreement with deleted object records; key-constraint backing-index reservations remain included.
 - `storage_manager_authorizes_constraint_ddl_by_table_alter` and all DROP COLUMN regressions passed. The complete serial delegated-cgroup workspace suite passed with sandbox and process integration tests enabled and zero ignored tests; workspace build, formatting, and warning-denied all-target Clippy passed.
-- Remaining: foreign-key constraint IDs and other independent object-deletion paths; historical pre-v2 drop history.
+- Remaining: type-object retirement has no current drop path; historical pre-v2 drop history is handled separately by the migration contract.
 
 
 ## DD-3 / CL-3 / DP-3: DROP POLICY reserves removed object IDs — verified slice

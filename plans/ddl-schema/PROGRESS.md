@@ -1,9 +1,9 @@
 # Schema DDL Progress
 
-## DS-3 / CL-3 / DD-3: DROP FOREIGN KEY reserves its constraint ID — verified slice
+## DS-3 / CL-3 / DD-3: FK drops and generic catalog deletion retain identity tombstones — verified slice
 
-- The authorized FK drop publishes the immutable family-17 reservation in the same transaction as FK/object/dependency removal and both participating table-epoch updates. Serialized FK validation requires the exact deleted-ID set.
-- `storage_manager_drops_foreign_key_and_advances_both_table_epochs` passes with the reservation assertion. The complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests; build, formatting, warning-denied all-target Clippy, and `git diff --check` passed.
+- The authorized FK drop publishes the immutable family-17 reservation in the same transaction as FK/object/dependency removal and both participating table-epoch updates. Serialized FK validation requires the exact deleted-ID set; final catalog validation blocks unreserved constraint deletion through trusted generic commits.
+- The focused FK drop assertion passes. A raw generic FK deletion first demonstrated the bypass and now rejects without publication; the expression/check cleanup fixture also reserves its deleted expression and constraint identities. The complete serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests; build, format, warning-denied all-target Clippy, and `git diff --check` passed.
 
 
 ## DS-3 / CL-3 / DD-3: constraint drops reserve constraint-owned identifiers — verified slice
