@@ -3703,6 +3703,11 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         &redacted_source_table.column_ids,
         hidden_target_unique.constraint_id,
     )?;
+    let second_redacted_foreign_key = admin.create_foreign_key(
+        redacted_source_table.table_id,
+        &redacted_source_table.column_ids,
+        hidden_target_unique.constraint_id,
+    )?;
     let dependency_list = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
         .args([
             "dependency-list",
@@ -3745,18 +3750,29 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let redacted_constraints = redacted_owner.list_constraints_page(
         redacted_source_schema.identity_id,
         redacted_source_table.table_id,
+        1,
+        None,
+    )?;
+    assert_eq!(redacted_constraints.records.len(), 1);
+    let redacted_constraint_cursor = redacted_constraints
+        .next_cursor
+        .ok_or("constraint metadata omitted a continuation for a second constraint")?;
+    let redacted_foreign_key_page = redacted_constraints
+        .records
+        .iter()
+        .find(|constraint| {
+            constraint.constraint_id == redacted_foreign_key.foreign_key_id
+                || constraint.constraint_id == second_redacted_foreign_key.foreign_key_id
+        })
+        .ok_or("owner constraint page omitted both foreign keys")?;
+    let redacted_foreign_key = redacted_foreign_key_page.clone();
+    assert_eq!(redacted_foreign_key_page.referenced_table_id, None);
+    assert!(redacted_foreign_key_page.referenced_column_ids.is_empty());
+    let redacted_dependencies = redacted_owner.list_dependencies_page(
+        redacted_foreign_key_page.constraint_id,
         128,
         None,
     )?;
-    let redacted_foreign_key = redacted_constraints
-        .records
-        .iter()
-        .find(|constraint| constraint.constraint_id == redacted_foreign_key.foreign_key_id)
-        .ok_or("owner constraint page omitted the foreign key")?;
-    assert_eq!(redacted_foreign_key.referenced_table_id, None);
-    assert!(redacted_foreign_key.referenced_column_ids.is_empty());
-    let redacted_dependencies =
-        redacted_owner.list_dependencies_page(redacted_foreign_key.constraint_id, 128, None)?;
     assert!(
         redacted_dependencies.records.is_empty(),
         "dependency metadata must omit edges whose target is hidden"
@@ -3765,8 +3781,19 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         redacted_dependencies.next_cursor.is_none(),
         "an omitted hidden edge must not affect continuation or counts"
     );
-    drop(redacted_owner);
     admin.set_schema_owner(redacted_source_schema.identity_id, admin_user_id)?;
+    assert!(
+        redacted_owner
+            .list_constraints_page(
+                redacted_source_schema.identity_id,
+                redacted_source_table.table_id,
+                1,
+                Some(&redacted_constraint_cursor),
+            )
+            .is_err(),
+        "a constraint cursor must be reauthorized after schema ownership transfer"
+    );
+    drop(redacted_owner);
     let constraint_uuid = format!(
         "{}-{}-{}-{}-{}",
         &foreign_key_cli_id[0..8],
