@@ -8116,15 +8116,18 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
     let varchar_column_id = [0x68; 16];
     let uuid_column_id = [0x69; 16];
     let date_column_id = [0x6a; 16];
+    let boolean_column_id = [0x6b; 16];
     let index_id = [0x57; 16];
     let varchar_index_id = [0x58; 16];
     let uuid_index_id = [0x59; 16];
     let date_index_id = [0x5a; 16];
+    let boolean_index_id = [0x5b; 16];
     let schema_id = [145; 16];
     let type_id = [0x41; 16];
     let varchar_type_id = [0x42; 16];
     let uuid_type_id = [0x43; 16];
     let date_type_id = [0x44; 16];
+    let boolean_type_id = [0x45; 16];
     let index_key = catalog_id_key(9, index_id);
     let mut indexed_columns = 2u32.to_le_bytes().to_vec();
     indexed_columns.extend_from_slice(&column_id);
@@ -8200,6 +8203,14 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
         date_index_id,
         table_id,
         date_column_id,
+        1,
+        true,
+        None,
+    )?;
+    let (boolean_index_key, boolean_index_value) = index_catalog_record_with_constraint(
+        boolean_index_id,
+        table_id,
+        boolean_column_id,
         1,
         true,
         None,
@@ -8426,6 +8437,54 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             },
         ],
     )?;
+    let boolean_column_key = catalog_id_key(6, boolean_column_id);
+    let boolean_column_value = catalog_record_payload(
+        6,
+        &boolean_column_key,
+        &[
+            CatalogField {
+                tag: 1,
+                wire_type: WireType::Id,
+                payload: table_id.to_vec(),
+            },
+            CatalogField {
+                tag: 2,
+                wire_type: WireType::U32,
+                payload: 4u32.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 3,
+                wire_type: WireType::Text,
+                payload: b"boolean_key".to_vec(),
+            },
+            CatalogField {
+                tag: 4,
+                wire_type: WireType::Id,
+                payload: boolean_type_id.to_vec(),
+            },
+            CatalogField {
+                tag: 5,
+                wire_type: WireType::Bytes,
+                payload: vec![0; 8],
+            },
+            CatalogField {
+                tag: 6,
+                wire_type: WireType::Bool,
+                payload: vec![1],
+            },
+            CatalogField {
+                tag: 8,
+                wire_type: WireType::U16,
+                payload: 0u16.to_le_bytes().to_vec(),
+            },
+            CatalogField {
+                tag: 9,
+                wire_type: WireType::U64,
+                payload: 1u64.to_le_bytes().to_vec(),
+            },
+        ],
+    )?;
+    let boolean_type = boolean_type_catalog_write(boolean_type_id)?;
     let type_key = catalog_id_key(4, type_id);
     let type_value = catalog_record_payload(
         4,
@@ -8584,6 +8643,8 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
         object_catalog_record_with_name(uuid_column_id, 4, "uuid_probe_column");
     let (date_object_key, date_object_value) =
         object_catalog_record_with_name(date_column_id, 4, "date_probe_column");
+    let (boolean_object_key, boolean_object_value) =
+        object_catalog_record_with_name(boolean_column_id, 4, "boolean_probe_column");
     {
         let write = database.begin_write()?;
         let mut catalog = write.open_table(CATALOG)?;
@@ -8593,19 +8654,29 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             (varchar_column_key, varchar_column_value),
             (uuid_column_key, uuid_column_value),
             (date_column_key, date_column_value),
+            (boolean_column_key, boolean_column_value),
             (type_key, type_value),
             (varchar_type_key, varchar_type_value),
             (uuid_type_key, uuid_type_value),
             (date_type_key, date_type_value),
+            (
+                boolean_type.key.clone(),
+                boolean_type
+                    .payload
+                    .clone()
+                    .ok_or("missing boolean type payload")?,
+            ),
             (index_key, index_value),
             (varchar_index_key, varchar_index_value),
             (uuid_index_key, uuid_index_value),
             (date_index_key, date_index_value),
+            (boolean_index_key, boolean_index_value),
             (table_object_key, table_object_value),
             (column_object_key, column_object_value),
             (varchar_object_key, varchar_object_value),
             (uuid_object_key, uuid_object_value),
             (date_object_key, date_object_value),
+            (boolean_object_key, boolean_object_value),
         ] {
             catalog.insert(key.as_slice(), value.as_slice())?;
         }
@@ -8624,6 +8695,7 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             Some(ScalarValue::Varchar("match".to_owned())),
             Some(ScalarValue::Uuid([0xa1; 16])),
             Some(ScalarValue::Date(20_000)),
+            Some(ScalarValue::Boolean(true)),
         ],
     )?;
     let other_payload = encode_tuple(
@@ -8634,6 +8706,7 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             Some(ScalarValue::Varchar("other".to_owned())),
             Some(ScalarValue::Uuid([0xa2; 16])),
             Some(ScalarValue::Date(20_001)),
+            None,
         ],
     )?;
     seed.stage_put(
@@ -8690,6 +8763,13 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
                     column_id: date_column_id,
                 },
             ),
+            (
+                Operation::Select,
+                AccessTarget::Column {
+                    table_id,
+                    column_id: boolean_column_id,
+                },
+            ),
         ]
         .into_iter()
         .collect(),
@@ -8735,6 +8815,14 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             target: AccessTarget::Column {
                 table_id,
                 column_id: date_column_id,
+            },
+        },
+        Grant {
+            subject: Subject::Principal(principal_id),
+            operation: Operation::Select,
+            target: AccessTarget::Column {
+                table_id,
+                column_id: boolean_column_id,
             },
         },
     ];
@@ -8791,6 +8879,17 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             using: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
             with_check: None,
         },
+        Policy {
+            subjects: vec![Subject::Principal(principal_id)],
+            operation: Operation::Select,
+            target: AccessTarget::Column {
+                table_id,
+                column_id: boolean_column_id,
+            },
+            effect: Effect::Allow,
+            using: Some(Expr::Literal(Some(ScalarValue::Boolean(true)))),
+            with_check: None,
+        },
     ];
     let projection = AuthorizedProjection {
         columns: &schema.columns,
@@ -8809,6 +8908,7 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
         SanitizedCell::Value(ScalarValue::Varchar("match".to_owned())),
         SanitizedCell::Value(ScalarValue::Uuid([0xa1; 16])),
         SanitizedCell::Value(ScalarValue::Date(20_000)),
+        SanitizedCell::Value(ScalarValue::Boolean(true)),
     ];
     let mut reference_matches = Vec::new();
     let mut cursor = None;
@@ -8946,6 +9046,40 @@ fn authorized_composite_integer_varchar_unique_probe_matches_reference()
             table_id,
             date_index_id,
             &[Some(ScalarValue::Date(20_010))],
+            &projection,
+        )?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::NoMatch,
+    );
+
+    let boolean_target = SanitizedCell::Value(ScalarValue::Boolean(true));
+    let mut boolean_reference_matches = Vec::new();
+    let mut boolean_cursor = None;
+    loop {
+        let page = invocation.scan_authorized(table_id, boolean_cursor.as_ref(), 8, &projection)?;
+        boolean_reference_matches.extend(page.rows.into_iter().filter_map(|(row_id, cells)| {
+            (cells.get(4) == Some(&boolean_target)).then_some((row_id, cells))
+        }));
+        let Some(next) = page.continuation else {
+            break;
+        };
+        boolean_cursor = Some(next);
+    }
+    assert_eq!(boolean_reference_matches.len(), 1);
+    assert!(matches!(
+        invocation.probe_catalog_unique_index(
+            table_id,
+            boolean_index_id,
+            &[Some(ScalarValue::Boolean(true))],
+            &projection,
+        )?,
+        prdb_engine::transaction::AuthorizedUniqueIndexProbe::Match { id, cells }
+            if id == boolean_reference_matches[0].0 && cells == boolean_reference_matches[0].1
+    ));
+    assert_eq!(
+        invocation.probe_catalog_unique_index(
+            table_id,
+            boolean_index_id,
+            &[Some(ScalarValue::Boolean(false))],
             &projection,
         )?,
         prdb_engine::transaction::AuthorizedUniqueIndexProbe::NoMatch,

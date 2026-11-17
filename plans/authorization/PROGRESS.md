@@ -2,6 +2,11 @@
 
 Migrated component-owned progress entries from [storage-manager progress](../storage-manager/PROGRESS.md); evidence is preserved below.
 
+## AU-3: BOOLEAN unique probes match the authorized reference scan — verified slice
+
+- Extended the real-redb unique-probe parity fixture with a nullable BOOLEAN column and unique index. The TRUE lookup must return the same row ID and sanitized cells as the independent authorized scan; FALSE returns `NoMatch` when the other row is NULL.
+- `authorized_composite_integer_varchar_unique_probe_matches_reference` passes. The full serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests; workspace format, build, warning-denied all-target Clippy, and `git diff --check` passed.
+
 ## AU-1 dependency: bounded policy composition — in progress
 
 - Contract: [authorization](../../specs/authorization.md), Policy Evaluation. Added trusted typed expressions for field reads, principal/role context, comparisons, Boolean composition, and NULL checks. Work is bounded to 256 nodes and 32 nested levels; runtime errors fail closed. Authorization independently requires an invocation-scope capability and direct/inherited grant. Applicable ALLOWs are alternatives, every RESTRICT must pass, and an UPDATE ALLOW must pass both old/new predicates on that same policy.
