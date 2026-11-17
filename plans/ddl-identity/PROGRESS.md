@@ -352,3 +352,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added a subprocess regression that injects one `sync_data` failure during `DROP USER`, then reopens the same redb file. Recovery accepts only the full pre-drop state or the full committed state; the committed branch requires removal of both identity records, a permanent tombstone, token revocation, audit event, committed outcome, and matching sequence. Startup validates the recovered image.
 - Verification: focused real-redb subprocess regression, workspace build, formatting, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed. Sandbox and process tests were enabled; zero tests were ignored. This live-kernel sync error test does not claim power-loss or device-cache evidence.
+
+## ID-3: role drop recovers atomically after commit sync failure — verified slice
+
+- Added a subprocess regression for `DROP ROLE` that injects one backend sync failure and reopens the same redb image. Recovery accepts only the full pre-drop role state or the committed state containing the role tombstone, authority-change audit, durable outcome, and advanced commit sequence; startup validates the reopened catalog.
+- Verification: focused delegated commit regression, format check, locked workspace build, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. The sync error runs with a live kernel/filesystem and is not power-loss evidence.

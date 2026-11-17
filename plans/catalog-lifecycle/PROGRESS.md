@@ -433,3 +433,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - The identity DDL subprocess regression now injects a redb `sync_data` failure while deleting a user. Reopen validation requires either the untouched identity/credential with no audit or outcome, or the committed deletion with tombstone, revoked credential, audit, durable outcome, and advanced frontier. The storage manager stays quarantined after the ambiguous error until reopen.
 - Verification: focused regression, workspace build, formatting, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed with sandbox and process tests enabled and zero ignored tests. This does not simulate power loss or device-cache failure.
+
+## CL-2 / ID-3: role deletion sync failure recovers as one catalog transition — verified slice
+
+- Added the role counterpart to the identity-drop recovery regression. After an injected sync error, reopening accepts only the intact source role or its complete deletion with immutable family-17 reservation, audit event, durable operation outcome, and matching commit frontier; startup integrity validation must pass.
+- Verification: focused delegated commit regression, format check, locked workspace build, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. The injected error does not simulate power loss or device-cache failure.
