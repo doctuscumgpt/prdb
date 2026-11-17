@@ -5639,39 +5639,60 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         conditional_drop_credentials.token_id,
         &mut conditional_drop_credentials.token_secret,
     )?;
+    conditional_drop_admin
+        .execute_role_membership_sql("GRANT sql_conditional_role TO USER sql_service")?;
     assert!(
         conditional_drop_admin
+            .execute_drop_identity_if_exists_sql(
+                "DROP ROLE IF EXISTS sql_conditional_role RESTRICT"
+            )
+            .is_err(),
+        "RESTRICT must reject dropping a role that still has a member"
+    );
+    drop(conditional_drop_admin);
+    drop(conditional_drop_credentials);
+    let mut membership_cleanup_credentials =
+        read_client_credentials(&admin_cancel_credentials_path)?;
+    let mut membership_cleanup_admin = AdminClient::connect_authenticated(
+        address,
+        membership_cleanup_credentials.token_id,
+        &mut membership_cleanup_credentials.token_secret,
+    )?;
+    membership_cleanup_admin
+        .execute_role_membership_sql("REVOKE sql_conditional_role FROM USER sql_service")?;
+    assert!(
+        membership_cleanup_admin
             .execute_drop_identity_if_exists_sql(
                 "DROP ROLE IF EXISTS missing_conditional_role RESTRICT"
             )?
             .is_none()
     );
     assert!(
-        conditional_drop_admin
+        membership_cleanup_admin
             .execute_drop_identity_if_exists_sql("DROP USER IF EXISTS sql_service RESTRICT")?
             .is_some()
     );
     assert!(
-        conditional_drop_admin
+        membership_cleanup_admin
             .execute_drop_identity_if_exists_sql("DROP USER IF EXISTS sql_service RESTRICT")?
             .is_none()
     );
     assert!(
-        conditional_drop_admin
+        membership_cleanup_admin
             .execute_drop_identity_if_exists_sql(
                 "DROP ROLE IF EXISTS sql_conditional_role RESTRICT"
             )?
             .is_some()
     );
     assert!(
-        conditional_drop_admin
+        membership_cleanup_admin
             .execute_drop_identity_if_exists_sql(
                 "DROP ROLE IF EXISTS sql_conditional_role RESTRICT"
             )?
             .is_none()
     );
-    drop(conditional_drop_admin);
-    drop(conditional_drop_credentials);
+    drop(membership_cleanup_admin);
+    drop(membership_cleanup_credentials);
     drop(no_login_admin);
     drop(no_login_admin_credentials);
     remove_client_credentials(&admin_cancel_credentials_path)?;

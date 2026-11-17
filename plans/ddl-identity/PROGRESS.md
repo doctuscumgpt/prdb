@@ -357,3 +357,8 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 - Added a subprocess regression for `DROP ROLE` that injects one backend sync failure and reopens the same redb image. Recovery accepts only the full pre-drop role state or the committed state containing the role tombstone, authority-change audit, durable outcome, and advanced commit sequence; startup validates the reopened catalog.
 - Verification: focused delegated commit regression, format check, locked workspace build, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests. The sync error runs with a live kernel/filesystem and is not power-loss evidence.
+
+## ID-3 / ID-SQL-7: role DROP RESTRICT preserves referenced identity — verified slice
+
+- Extended the authenticated gateway/supervisor lifecycle to grant a created role to a user, require `DROP ROLE IF EXISTS ... RESTRICT` to fail while the membership exists, revoke that membership, then successfully drop the role. The existing repeat-drop assertion confirms the second drop is a no-op.
+- Verification: focused delegated gateway/supervisor process regression passed; format check, locked workspace build, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed with sandbox/process tests enabled and zero ignored tests.
