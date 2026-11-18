@@ -1,125 +1,181 @@
-# PRDB client image
+# PRDB images with Podman
 
-The root `Dockerfile` builds a Linux x86_64 image containing `prdb-client`,
-TinyCC 0.9.27, the SQL SDK headers and shared library, GCC's linker, and
-`patchelf`.
-The image connects to a separately running PRDB gateway; it does not start or
-initialize a database server. Its default command is `prdb-client --help`.
+The root `Dockerfile` contains two image targets for Linux x86_64:
 
-Build from the repository root:
+- `client` provides `prdb-client`, TinyCC, and the matching SQL SDK. It connects
+  to a separately running gateway.
+- `server` provides the supervisor, gateway, executor, optimizer, client,
+  bootstrap tools, and SQL SDK. Its default command initializes the instance
+  on first start and launches the supervisor and gateway.
+
+The examples below use Podman commands. Run them from the repository root.
+
+## Build the images
 
 ```sh
-docker build -t prdb-client .
-podman build -t localhost/prdb-client .
+podman build --target client --tag localhost/prdb-client:latest .
+podman build --target server --tag localhost/prdb-server:latest .
 ```
 
-Pass any `prdb-client` command after the image name. Mount credentials and
-client input files read-only, and mount an output directory when a command
-creates a receipt, scope file, or token credential:
+The image build defaults to CPU baseline `x86_64-v1`, runtime profile
+`debian-bookworm-glibc-2.36`, SDK release `1`, and SDK ABIs `1,2,3,4,5`. If the
+server uses a different compatible profile, build both images with matching
+arguments. For example:
 
 ```sh
-docker run --rm \
-  --user "$(id -u):$(id -g)" \
-  -v "$PWD/client:/work:rw" \
-  prdb-client discover \
-    --address 127.0.0.1:8765 \
-    --credentials /work/user.credentials
-```
-
-When the gateway runs on the Docker host, use `host.docker.internal` on Docker
-Desktop. On Linux, add `--add-host=host.docker.internal:host-gateway` and use
-that hostname, or connect to the host's reachable address. The gateway must
-bind an address reachable from the container; its loopback-only default is
-not reachable from a separate container.
-
-For `run-sql` and interactive SQL, the image includes a Debian Bookworm SDK
-release at `/opt/prdb/sdk/releases/linux-x86_64/x86_64-v1/debian-bookworm-glibc-2.36/`
-and headers at `/opt/prdb/include`. The client command must use a CPU baseline
-and runtime profile accepted by the server. These image build arguments select
-the SDK release metadata and directory:
-
-```sh
-docker build -t prdb-client \
+podman build --target client --tag localhost/prdb-client:latest \
   --build-arg PRDB_CPU_BASELINE=x86_64-v1 \
   --build-arg PRDB_RUNTIME_PROFILE=debian-bookworm-glibc-2.36 \
   --build-arg PRDB_SDK_RELEASE=1 \
   --build-arg PRDB_SDK_ABIS=1,2,3,4,5 .
 ```
 
-Example SQL invocation (scope and receipt are files in the mounted directory):
+The same build arguments can be supplied when building the `server` target.
+Keep the client and server SDK release, CPU baseline, runtime profile, and ABI
+set compatible. The server includes its SDK at
+`/opt/prdb/sdk/releases/linux-x86_64/<cpu-baseline>/<runtime-profile>/`.
+
+## Run the client image
+
+With no arguments, the client image prints its command help:
 
 ```sh
-docker run --rm --user "$(id -u):$(id -g)" \
-  -v "$PWD/client:/work:rw" prdb-client run-sql \
-  --address host.docker.internal:8765 \
-  --credentials /work/user.credentials \
-  --sql-file /work/query.sql --schema public \
-  --scope /work/scope.json --receipt /work/receipt.json \
-  --sdk-library /opt/prdb/sdk/releases/linux-x86_64/x86_64-v1/debian-bookworm-glibc-2.36/sdk-1-abis1,2,3,4,5/libprdb_sql.so.1 \
-  --include-dir /opt/prdb/include \
-  --sdk-release 1 --cpu-baseline x86_64-v1 \
-  --runtime-profile debian-bookworm-glibc-2.36 \
-  --compiler-identity 'tcc-container-debian-bookworm'
+podman run --rm localhost/prdb-client:latest
 ```
 
-The image runs as an unprivileged `prdb` user by default. Supplying the host
-UID/GID is useful when bind-mounted output files need to be owned by the host
-user. Preserve mode `0600` on credential files; do not bake credentials into
-the image or pass token secrets as command-line arguments.
-
-The default build target is the client image. A server container needs a
-validated runtime profile and delegated writable cgroup v2 subtree for the
-query executor; see [the system service deployment guide](../contrib/systemd/README.md).
-
-## Server image
-
-Build the server target from the same Dockerfile:
+The client accepts a numeric IP address and port. For a gateway published on
+the same Linux host, use host networking and `127.0.0.1`:
 
 ```sh
-docker build --target server -t prdb-server .
-# or
-podman build --target server -t localhost/prdb-server .
+podman run --rm --network=host \
+  --userns=keep-id:uid=10001,gid=10001 \
+  --volume "$PWD/prdb-data:/var/lib/prdb:ro" \
+  localhost/prdb-client:latest discover \
+    --address 127.0.0.1:8765 \
+    --credentials /var/lib/prdb/admin.credentials
 ```
 
-The server image includes the client, supervisor, gateway, executor, optimizer,
-bootstrap and maintenance tools, and the matching SQL SDK. Its default command
-initializes `/var/lib/prdb/instance` on first start, saves the initial
-administrator credential at `/var/lib/prdb/admin.credentials`, and starts the
-supervisor plus gateway. Persist all of `/var/lib/prdb`; keep the credential
-file private. The default gateway ports are 8765 (query) and 8766 (control).
+For a gateway on another host, replace `127.0.0.1` with its numeric IP address
+reachable from the client container. `prdb-client` does not accept DNS names
+for `--address`.
 
-The server deliberately refuses to start unless `PRDB_CGROUP_PARENT` names an
-absolute writable cgroup v2 directory with `cpu`, `memory`, and `pids` both
-available and enabled for child cgroups. The container runtime must expose a
-delegated writable subtree; mounting `/sys/fs/cgroup` read-write by itself
-does not create that delegation. Use a systemd-managed delegated service or a
-runtime configuration that delegates those controllers. The image runs as UID
-10001, so the persistent data directory must be writable by that UID.
+To run SQL, mount the SQL file and writable output directory. The SDK shared
+library and headers are already in the image:
 
-Example after the host has provided a delegated cgroup parent visible at the
-same path inside the container:
+```sh
+podman run --rm --network=host \
+  --userns=keep-id:uid=10001,gid=10001 \
+  --volume "$PWD/prdb-data:/var/lib/prdb:ro" \
+  --volume "$PWD/client-files:/work:rw" \
+  localhost/prdb-client:latest run-sql \
+    --address 127.0.0.1:8765 \
+    --credentials /var/lib/prdb/admin.credentials \
+    --sql-file /work/query.sql --schema public \
+    --scope /work/scope.json --receipt /work/receipt.json \
+    --sdk-library /opt/prdb/sdk/releases/linux-x86_64/x86_64-v1/debian-bookworm-glibc-2.36/sdk-1-abis1,2,3,4,5/libprdb_sql.so.1 \
+    --include-dir /opt/prdb/include \
+    --sdk-release 1 --cpu-baseline x86_64-v1 \
+    --runtime-profile debian-bookworm-glibc-2.36 \
+    --compiler-identity tcc-container-debian-bookworm
+```
+
+The SDK library path and profile arguments must match the image build and the
+server's accepted compatibility profile. Interactive SQL uses the same SDK
+options; see the client help for its full argument list.
+
+## Start the server image
+
+The server needs delegated cgroup v2 controllers for query worker limits. It
+refuses to start unless `PRDB_CGROUP_PARENT` points to a writable cgroup v2
+directory with `cpu`, `memory`, and `pids` available and enabled for child
+cgroups. Mounting `/sys/fs/cgroup` read-write does not create delegation by
+itself.
+
+On a Linux host managed by systemd, the repository helper below moves the
+container launcher into a child cgroup and passes the writable delegated
+parent to the container. Create a private persistent data directory first:
 
 ```sh
 install -d -m 0700 "$PWD/prdb-data"
-podman run -d --name prdb \
-  --cgroupns=host \
-  --userns=keep-id:uid=10001,gid=10001 \
-  --volume "$PWD/prdb-data:/var/lib/prdb:rw" \
-  --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
-  --env PRDB_CGROUP_PARENT=/sys/fs/cgroup/DELEGATED/PARENT \
-  --publish 8765:8765 --publish 8766:8766 \
-  localhost/prdb-server
 ```
 
-Replace `DELEGATED/PARENT` with the actual host delegated subtree path. Do not
-expose these plaintext TCP ports on an untrusted network. `podman logs prdb`
-confirms when initial storage setup completes; the credential secret itself is
-not printed. To see the administrator credential, read the mode-0600 file from
-the persistent host directory.
+Then start the server as a user service. The `keep-id` mapping makes the host
+user own the files written by the image's UID 10001 process:
 
-Set `PRDB_BIND`, `PRDB_CONTROL_BIND`, `PRDB_RUNTIME_PROFILE`,
-`PRDB_CPU_BASELINE`, `PRDB_ADMINISTRATOR`, and `PRDB_CREDENTIAL_FILE` to change
-the defaults. The runtime profile must match the SDK release profile built
-into the image and accepted by clients. The image does not weaken worker
-confinement when cgroup delegation or other required sandbox features are
-unavailable.
+```sh
+systemd-run --user --collect --unit=prdb-container.service --slice=prdb-tests.slice \
+  --property='Delegate=cpu memory pids' \
+  --property="WorkingDirectory=$PWD" \
+  "$PWD/engine/tools/with_delegated_cgroup.sh" \
+  env bash -c '
+    exec podman run --replace --name prdb \
+      --cgroupns=host \
+      --userns=keep-id:uid=10001,gid=10001 \
+      --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
+      --volume "$PWD/prdb-data:/var/lib/prdb:rw" \
+      --env "PRDB_CGROUP_PARENT=$PRDB_TEST_CGROUP_PARENT" \
+      --publish 8765:8765 --publish 8766:8766 \
+      localhost/prdb-server:latest
+  '
+```
+
+The query gateway listens on port 8765 and the control gateway on 8766. The
+protocol is plaintext TCP; publish these ports only on a trusted network. The
+service stays active while the container runs. Inspect or stop it with:
+
+```sh
+systemctl --user status prdb-container.service
+journalctl --user -u prdb-container.service
+systemctl --user stop prdb-container.service
+```
+
+On the first start, the server initializes `/var/lib/prdb/instance` and writes
+the initial administrator credential to
+`/var/lib/prdb/admin.credentials` with mode 0600. The secret is not printed.
+The bind-mounted host file is `$PWD/prdb-data/admin.credentials`; the client
+example above mounts it read-only. Preserve the full `prdb-data` directory
+across container replacement or upgrades.
+
+If initialization was interrupted, do not delete the instance directory.
+Remove any unacknowledged credential file from the incomplete attempt, then
+resume bootstrap against the same persistent directory:
+
+```sh
+podman run --rm \
+  --userns=keep-id:uid=10001,gid=10001 \
+  --volume "$PWD/prdb-data:/var/lib/prdb:rw" \
+  --entrypoint /usr/local/bin/prdb-init \
+  localhost/prdb-server:latest \
+    --instance-dir /var/lib/prdb/instance \
+    --administrator prdb_admin \
+    --credential-file /var/lib/prdb/admin.credentials \
+    --expires-in-seconds 2592000 --resume
+```
+
+The existing credentials file must be removed before running this command; the
+resume operation issues a replacement token. See the
+[user-service bootstrap instructions](../contrib/systemd/README.md#per-login-user-service)
+for the credential handoff contract.
+
+## Configuration and limits
+
+The server image runs as UID 10001 and persists database state, scratch files,
+SDK cache, and administrator credentials under `/var/lib/prdb`. Useful
+environment settings include:
+
+- `PRDB_CGROUP_PARENT`: required writable delegated cgroup v2 parent.
+- `PRDB_BIND` and `PRDB_CONTROL_BIND`: gateway listen addresses; defaults are
+  `0.0.0.0:8765` and `0.0.0.0:8766`.
+- `PRDB_ADMINISTRATOR` and `PRDB_CREDENTIAL_FILE`: first administrator name
+  and credential path.
+- `PRDB_CPU_BASELINE`, `PRDB_RUNTIME_PROFILE`, `PRDB_SDK_RELEASE`, and
+  `PRDB_SDK_ABIS`: must match the SDK built into the image and the client
+  compatibility profile.
+- `PRDB_MAX_ROWS`, `PRDB_MAX_BYTES`, `PRDB_CPU_QUOTA_US`,
+  `PRDB_CPU_PERIOD_US`, `PRDB_MEMORY_MAX_BYTES`, and `PRDB_MAX_PROCESSES`:
+  worker resource limits.
+
+Use a runtime profile validated for the host. The server image does not bypass
+the executor's sandbox requirements when the host lacks required features.
+For the host's broader runtime and confinement setup, see
+[the system service deployment guide](../contrib/systemd/README.md).
