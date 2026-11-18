@@ -1,5 +1,5 @@
 # Client image for connecting to a separately configured PRDB gateway.
-FROM rust:1.95.0-bookworm AS build
+FROM docker.io/library/rust:1.95.0-bookworm AS build
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
@@ -28,7 +28,7 @@ RUN cargo build --release --locked -p prdb-engine --bin prdb-client \
         SDK_RUNTIME_PROFILE="${PRDB_RUNTIME_PROFILE}" \
         SHARED_LINKER=cc
 
-FROM debian:bookworm-slim AS client
+FROM docker.io/library/debian:bookworm-slim AS client
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
