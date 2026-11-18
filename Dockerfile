@@ -19,7 +19,7 @@ ARG PRDB_RUNTIME_PROFILE=debian-bookworm-glibc-2.36
 ARG PRDB_SDK_RELEASE=1
 ARG PRDB_SDK_ABIS=1,2,3,4,5
 
-RUN cargo build --release --locked -p prdb-engine --bin prdb-client \
+RUN cargo build --release --locked -p prdb-engine --bins \
     && make -f engine/sdk/Makefile sdk-shared-release \
         BUILD_DIR=target/docker-sdk \
         SDK_RELEASE="${PRDB_SDK_RELEASE}" \
@@ -61,3 +61,30 @@ WORKDIR /work
 USER prdb
 ENTRYPOINT ["/usr/local/bin/prdb-client"]
 CMD ["--help"]
+
+# Full server image. It includes the client as well as the supervisor and
+# gateway, but requires an explicitly delegated writable cgroup v2 subtree.
+FROM client AS server
+
+USER root
+RUN install -d -o prdb -g prdb -m 0700 \
+      /var/lib/prdb /var/lib/prdb/scratch /var/lib/prdb/sdk-cache \
+      /run/prdb
+
+COPY --from=build /src/target/release/prdb-executor /usr/local/bin/prdb-executor
+COPY --from=build /src/target/release/prdb-gateway /usr/local/bin/prdb-gateway
+COPY --from=build /src/target/release/prdb-init /usr/local/bin/prdb-init
+COPY --from=build /src/target/release/prdb-landlock-run /usr/local/bin/prdb-landlock-run
+COPY --from=build /src/target/release/prdb-maintain /usr/local/bin/prdb-maintain
+COPY --from=build /src/target/release/prdb-optimizer /usr/local/bin/prdb-optimizer
+COPY --from=build /src/target/release/prdb-packager /usr/local/bin/prdb-packager
+COPY --from=build /src/target/release/prdb-supervisor /usr/local/bin/prdb-supervisor
+COPY engine/tools/with_delegated_cgroup.sh /usr/local/bin/with_delegated_cgroup.sh
+COPY docker/server-entrypoint.sh /usr/local/bin/prdb-server-entrypoint
+RUN chmod 0755 /usr/local/bin/prdb-server-entrypoint \
+    && chmod 0755 /usr/local/bin/with_delegated_cgroup.sh
+
+USER prdb
+EXPOSE 8765 8766
+ENTRYPOINT ["/usr/local/bin/prdb-server-entrypoint"]
+CMD ["serve"]
