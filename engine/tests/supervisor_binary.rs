@@ -37,11 +37,8 @@ fn supervisor_help_documents_explicit_runtime_and_compatibility_configuration() 
         "--runtime-read-execute",
         "--cpu-baseline",
         "--runtime-profile",
-        "--sdk-release",
-        "--sdk-release-dir",
-        "--sdk-cache-dir",
-        "--sdk-cache-max-bytes",
-        "--allow-legacy-static-sdk-release",
+        "--sdk-repository-dir",
+        "--sdk-repository-max-bytes",
         "--allowed-dependency",
         "--max-active-operational",
         "--max-active-analytical",
@@ -54,6 +51,25 @@ fn supervisor_help_documents_explicit_runtime_and_compatibility_configuration() 
         "--max-storage-active-analytical-snapshots",
     ] {
         assert!(help.contains(option), "missing {option} from help");
+    }
+    for retired_option in [
+        "--sdk-release",
+        "--sdk-release-dir",
+        "--sdk-cache-dir",
+        "--sdk-cache-max-bytes",
+        "--allow-legacy-static-sdk-release",
+    ] {
+        assert!(
+            !help.contains(retired_option),
+            "retired option {retired_option} remains in help"
+        );
+        let output = Command::new(env!("CARGO_BIN_EXE_prdb-supervisor"))
+            .arg(retired_option)
+            .arg("/tmp/retired-option")
+            .output()
+            .expect("run supervisor with retired SDK option");
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unknown option"));
     }
 }
 
@@ -176,6 +192,10 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
     let query_source = root.join("query.c");
     let query_object = root.join("query.o");
     let query_artifact = root.join("query.so");
+    let sdk_release_dir = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR")
+        .map(std::path::PathBuf::from)
+        .expect("installed SDK release fixture for repository startup test");
+    assert!(sdk_release_dir.is_absolute());
     std::fs::write(
         &query_source,
         "#include \"prdb_query_abi_v3.h\"\n\
@@ -218,6 +238,11 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
         .arg("-shared")
         .arg("-Wl,--no-eh-frame-hdr,-z,noexecstack")
         .arg(&query_object)
+        .arg("-L")
+        .arg(&sdk_release_dir)
+        .arg("-Wl,--no-as-needed")
+        .arg("-l:libprdb_sql.so.1")
+        .arg("-Wl,-rpath,$ORIGIN")
         .arg("-o")
         .arg(&query_artifact)
         .output()
@@ -242,6 +267,26 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
     let instance_dir = root.join("instance");
     let mut setup =
         initialize(&instance_dir, "tcp_test_admin", i64::MAX).expect("initialize test instance");
+    let sdk_repository = prdb_engine::sdk_registry::SdkLibraryRepository::open(
+        &instance_dir.join("sdk-libraries"),
+        "linux-x86_64".to_owned(),
+        "x86_64-v1".to_owned(),
+        "nixos-x86_64-glibc-2.42".to_owned(),
+        dependencies.iter().cloned().collect(),
+        128 * 1024 * 1024,
+    )
+    .expect("open instance SDK repository");
+    let sdk_metadata = std::fs::read(sdk_release_dir.join("sdk-release.json"))
+        .expect("read installed SDK metadata");
+    let sdk_library = std::fs::read(sdk_release_dir.join("libprdb_sql.so.1"))
+        .expect("read installed SDK library");
+    sdk_repository
+        .install(
+            &sdk_metadata,
+            &sdk_library,
+            &dependencies.iter().cloned().collect(),
+        )
+        .expect("install SDK release in instance repository");
     let token_id = setup.token_id();
     let admin_user_id = setup.admin_user_id();
     let mut bootstrap_secret = setup.take_secret().expect("take setup secret");
@@ -281,10 +326,6 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
         "x86_64-v1",
         "--runtime-profile",
         "nixos-x86_64-glibc-2.42",
-        "--sdk-release",
-        "1",
-        "--allow-legacy-static-sdk-release",
-        "1",
         "--retention-seconds",
         "3600",
         "--max-rows",
@@ -305,13 +346,6 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
     }
     for path in &runtime_read_only {
         supervisor_command.arg("--runtime-read-only").arg(path);
-    }
-    if let Some(release_dir) = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR") {
-        supervisor_command
-            .arg("--sdk-release-dir")
-            .arg(release_dir)
-            .arg("--sdk-cache-dir")
-            .arg(root.join("sdk-cache"));
     }
     for dependency in &dependencies {
         supervisor_command
@@ -402,12 +436,13 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
             &mut buffered,
             1,
             1,
-            br#"{"mode":"query","client_name":"supervisor-e2e"}"#.to_vec(),
+            br#"{"mode":"query","client_name":"supervisor-e2e","sdk_library_mode":"repository"}"#
+                .to_vec(),
         );
         assert_eq!(hello.kind, 100);
         assert_eq!(hello.request_id, 1);
         let expected_hello = format!(
-            "{{\"major\":1,\"minor\":0,\"mode\":\"query\",\"limits\":{{\"payload_bytes\":{},\"control_bytes\":{},\"chunk_bytes\":{}}},\"transport\":\"plaintext_tcp\"}}",
+            "{{\"major\":1,\"minor\":0,\"mode\":\"query\",\"sdk_library_mode\":\"repository\",\"limits\":{{\"payload_bytes\":{},\"control_bytes\":{},\"chunk_bytes\":{}}},\"transport\":\"plaintext_tcp\"}}",
             prdb_engine::client_protocol::CLIENT_MAX_PAYLOAD_BYTES,
             prdb_engine::client_protocol::CLIENT_MAX_CONTROL_BYTES,
             prdb_engine::client_protocol::CLIENT_MAX_CHUNK_BYTES,
@@ -438,7 +473,7 @@ fn supervisor_and_gateway_binaries_commit_a_confined_submission() {
         let artifact_sha256 = Sha256::digest(&artifact);
         let empty_sha256 = Sha256::digest([]);
         let prepare_payload = format!(
-            "{{\"manifest_version\":1,\"manifest\":\"{}\",\"artifact_bytes\":\"{}\",\"artifact_sha256\":\"{}\",\"parameter_bytes\":\"0\",\"parameter_sha256\":\"{}\",\"scope_version\":1,\"requested_scope\":\"{}\",\"deadline_ms\":\"30000\",\"workload_class\":\"operational\"}}",
+            "{{\"manifest_version\":1,\"manifest\":\"{}\",\"artifact_bytes\":\"{}\",\"artifact_sha256\":\"{}\",\"parameter_bytes\":\"0\",\"parameter_sha256\":\"{}\",\"scope_version\":1,\"requested_scope\":\"{}\",\"deadline_ms\":\"30000\",\"workload_class\":\"operational\",\"sdk_library_mode\":\"repository\"}}",
             encode_base64(&manifest),
             artifact.len(),
             encode_hex(&artifact_sha256),

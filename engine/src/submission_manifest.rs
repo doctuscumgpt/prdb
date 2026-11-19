@@ -145,7 +145,9 @@ pub enum ManifestError {
 pub struct ArtifactCompatibilityProfile {
     pub cpu_baseline: String,
     pub runtime_profile: String,
-    pub sdk_release: u32,
+    /// `Some` constrains a standalone/test profile to one release. Instance
+    /// repositories use `None` and resolve the exact manifest release at START.
+    pub sdk_release: Option<u32>,
     pub allowed_dependencies: HashSet<String>,
 }
 
@@ -168,7 +170,28 @@ impl ArtifactCompatibilityProfile {
         Ok(Self {
             cpu_baseline,
             runtime_profile,
-            sdk_release,
+            sdk_release: Some(sdk_release),
+            allowed_dependencies,
+        })
+    }
+
+    pub fn for_repository(
+        cpu_baseline: String,
+        runtime_profile: String,
+        allowed_dependencies: HashSet<String>,
+    ) -> Result<Self, ManifestError> {
+        if !is_profile_identifier(&cpu_baseline)
+            || !is_profile_identifier(&runtime_profile)
+            || allowed_dependencies
+                .iter()
+                .any(|name| !is_dependency_name(name))
+        {
+            return Err(ManifestError::InvalidEncoding);
+        }
+        Ok(Self {
+            cpu_baseline,
+            runtime_profile,
+            sdk_release: None,
             allowed_dependencies,
         })
     }
@@ -176,7 +199,9 @@ impl ArtifactCompatibilityProfile {
     pub fn validate(&self, manifest: &ArtifactManifestV1) -> Result<(), ManifestError> {
         if manifest.cpu_baseline != self.cpu_baseline
             || manifest.runtime_profile != self.runtime_profile
-            || manifest.sdk_release != self.sdk_release
+            || self
+                .sdk_release
+                .is_some_and(|sdk_release| manifest.sdk_release != sdk_release)
         {
             return Err(ManifestError::IncompatibleProfile);
         }
@@ -211,7 +236,8 @@ impl VersionedSubmissionMetadataValidator {
         mut self,
         sdk_release: u32,
     ) -> Result<Self, ManifestError> {
-        if sdk_release != LAST_LEGACY_STATIC_SDK_RELEASE || sdk_release != self.profile.sdk_release
+        if sdk_release != LAST_LEGACY_STATIC_SDK_RELEASE
+            || self.profile.sdk_release != Some(sdk_release)
         {
             return Err(ManifestError::IncompatibleProfile);
         }
@@ -1479,6 +1505,36 @@ mod tests {
             HashSet::from(["../libc.so".to_owned()]),
         );
         assert_eq!(invalid.err(), Some(ManifestError::InvalidEncoding));
+    }
+
+    #[test]
+    fn repository_profile_accepts_multiple_installed_sdk_release_numbers() {
+        let mut manifest = manifest();
+        manifest.sdk_release = 7;
+        manifest.dependencies = vec![
+            "libc.so.6".to_owned(),
+            "libm.so.6".to_owned(),
+            "libprdb_sql.so.7".to_owned(),
+        ];
+        let repository_profile = ArtifactCompatibilityProfile::for_repository(
+            manifest.cpu_baseline.clone(),
+            manifest.runtime_profile.clone(),
+            HashSet::from(["libc.so.6".to_owned(), "libm.so.6".to_owned()]),
+        )
+        .unwrap();
+        assert_eq!(repository_profile.validate(&manifest), Ok(()));
+
+        let fixed_release_profile = ArtifactCompatibilityProfile::new(
+            manifest.cpu_baseline.clone(),
+            manifest.runtime_profile.clone(),
+            1,
+            HashSet::from(["libc.so.6".to_owned(), "libm.so.6".to_owned()]),
+        )
+        .unwrap();
+        assert_eq!(
+            fixed_release_profile.validate(&manifest),
+            Err(ManifestError::IncompatibleProfile)
+        );
     }
 
     #[test]

@@ -45,6 +45,7 @@ const REDB_UPGRADE_STAGING_FILE: &str = ".prdb-redb-upgrade.next";
 const LOCK_FILE: &str = ".prdb.lock";
 const MARKER_FILE: &str = ".prdb-bootstrap";
 const SETUP_SOCKET_FILE: &str = ".prdb-setup.sock";
+pub const SDK_REPOSITORY_DIRECTORY: &str = "sdk-libraries";
 const MARKER: &[u8] = b"PRDB-LOCAL-SETUP-1\n";
 const SETUP_IO_TIMEOUT: Duration = Duration::from_secs(60);
 pub const SETUP_CREDENTIAL_OPERATION: u16 = Operation::BootstrapDeliverCredential as u16;
@@ -2341,6 +2342,7 @@ fn validate_managed_directory(
                 validate_private_file(&entry.path())?;
                 saw_database = true;
             }
+            Some(SDK_REPOSITORY_DIRECTORY) => validate_private_directory(&entry.path())?,
             Some(MIGRATION_STAGING_FILE) => validate_private_file(&entry.path())?,
             Some(RESTORE_COPY_FILE) => validate_private_file(&entry.path())?,
             Some(REDB_UPGRADE_STAGING_FILE) => validate_private_file(&entry.path())?,
@@ -2379,6 +2381,17 @@ fn validate_private_file(path: &Path) -> Result<(), BootstrapError> {
         || metadata.uid() != effective_uid()
         || metadata.permissions().mode() & 0o7777 != 0o600
         || metadata.nlink() != 1
+    {
+        return Err(BootstrapError::NotPrivate);
+    }
+    Ok(())
+}
+
+fn validate_private_directory(path: &Path) -> Result<(), BootstrapError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_dir()
+        || metadata.uid() != effective_uid()
+        || metadata.permissions().mode() & 0o7777 != 0o700
     {
         return Err(BootstrapError::NotPrivate);
     }

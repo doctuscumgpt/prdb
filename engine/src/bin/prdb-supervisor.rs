@@ -46,13 +46,8 @@ mod service {
         runtime_read_only: Vec<PathBuf>,
         profile_cpu: Option<String>,
         profile_runtime: Option<String>,
-        sdk_release: Option<u32>,
         sdk_repository_dir: Option<PathBuf>,
         sdk_repository_max_bytes: Option<u64>,
-        sdk_release_dirs: Vec<PathBuf>,
-        sdk_cache_dir: Option<PathBuf>,
-        sdk_cache_max_bytes: Option<u64>,
-        legacy_static_sdk_release: Option<u32>,
         dependencies: HashSet<String>,
         retention_seconds: Option<u64>,
         max_rows: Option<usize>,
@@ -94,10 +89,8 @@ mod service {
              [--service-socket-mode 0600|0660]\n\
              --cgroup-parent PATH --executor PATH --optimizer PATH --scratch-parent PATH\n\
              --runtime-read-execute PATH (repeatable) --runtime-profile NAME\n\
-             --cpu-baseline NAME --sdk-release NUMBER --allowed-dependency NAME (repeatable)\n\
+             --cpu-baseline NAME --allowed-dependency NAME (repeatable)\n\
              [--sdk-repository-dir PATH --sdk-repository-max-bytes N]\n\
-             [--sdk-release-dir DIR (repeatable) --sdk-cache-dir DIR --sdk-cache-max-bytes N]\n\
-             [--allow-legacy-static-sdk-release NUMBER (temporary compatibility)]\n\
              --retention-seconds N --max-rows N --max-bytes N\n\
              --max-principal-reservations N\n\
              [--max-pending-operational N --max-pending-analytical N]\n\
@@ -127,7 +120,6 @@ mod service {
         let scratch_parent = required(options.scratch_parent, "--scratch-parent")?;
         let cpu_baseline = required(options.profile_cpu, "--cpu-baseline")?;
         let runtime_profile = required(options.profile_runtime, "--runtime-profile")?;
-        let sdk_release = required(options.sdk_release, "--sdk-release")?;
         let retention_seconds = required(options.retention_seconds, "--retention-seconds")?;
         let retention_period_us = retention_seconds
             .checked_mul(1_000_000)
@@ -190,16 +182,15 @@ mod service {
         if options.runtime_read_execute.is_empty() {
             return Err("at least one --runtime-read-execute path is required".into());
         }
-        let profile = ArtifactCompatibilityProfile::new(
+        let profile = ArtifactCompatibilityProfile::for_repository(
             cpu_baseline.clone(),
             runtime_profile.clone(),
-            sdk_release,
             options.dependencies.clone(),
         )
         .map_err(|error| format!("invalid compatibility profile: {error:?}"))?;
         let repository_root = options
             .sdk_repository_dir
-            .unwrap_or_else(|| instance_dir.join("sdk-libraries"));
+            .unwrap_or_else(|| instance_dir.join(prdb_engine::bootstrap::SDK_REPOSITORY_DIRECTORY));
         let repository = Arc::new(
             prdb_engine::sdk_registry::SdkLibraryRepository::open(
                 &repository_root,
@@ -214,32 +205,9 @@ mod service {
             .map_err(|error| format!("invalid SQL SDK library repository: {error:?}"))?,
         );
         let mut validator = VersionedSubmissionMetadataValidator::new(profile);
-        if let Some(legacy_release) = options.legacy_static_sdk_release {
-            validator = validator
-                .allow_legacy_static_sdk_release(legacy_release)
-                .map_err(|error| format!("invalid legacy static SDK release policy: {error:?}"))?;
-        }
-        if !options.sdk_release_dirs.is_empty() {
-            let cache_dir = required(options.sdk_cache_dir, "--sdk-cache-dir")?;
-            let registry = prdb_engine::sdk_registry::SdkReleaseRegistry::load(
-                &options.sdk_release_dirs,
-                &cache_dir,
-                "linux-x86_64".to_owned(),
-                cpu_baseline.clone(),
-                runtime_profile.clone(),
-                options.sdk_cache_max_bytes.unwrap_or(1024 * 1024 * 1024),
-            )
-            .map_err(|error| format!("invalid SQL SDK release registry: {error:?}"))?;
-            validator = validator
-                .with_sdk_registry(Arc::new(registry))
-                .map_err(|error| format!("invalid SQL SDK registry profile: {error:?}"))?;
-        } else if options.sdk_cache_dir.is_some() || options.sdk_cache_max_bytes.is_some() {
-            return Err("SDK cache options require at least one --sdk-release-dir".into());
-        } else {
-            validator = validator
-                .with_sdk_registry(Arc::clone(&repository))
-                .map_err(|error| format!("invalid SQL SDK repository profile: {error:?}"))?;
-        }
+        validator = validator
+            .with_sdk_registry(Arc::clone(&repository))
+            .map_err(|error| format!("invalid SQL SDK repository profile: {error:?}"))?;
         let validator = Arc::new(validator);
         let default_staging_limits = StagingLimits::default();
         let staging_limits = StagingLimits {
@@ -478,16 +446,9 @@ mod service {
                 "--runtime-read-only" => options.runtime_read_only.push(value.into()),
                 "--cpu-baseline" => set!(profile_cpu, value),
                 "--runtime-profile" => set!(profile_runtime, value),
-                "--sdk-release" => set!(sdk_release, value.parse::<u32>()?),
                 "--sdk-repository-dir" => set!(sdk_repository_dir, PathBuf::from(value)),
                 "--sdk-repository-max-bytes" => {
                     set!(sdk_repository_max_bytes, value.parse::<u64>()?)
-                }
-                "--sdk-release-dir" => options.sdk_release_dirs.push(value.into()),
-                "--sdk-cache-dir" => set!(sdk_cache_dir, PathBuf::from(value)),
-                "--sdk-cache-max-bytes" => set!(sdk_cache_max_bytes, value.parse::<u64>()?),
-                "--allow-legacy-static-sdk-release" => {
-                    set!(legacy_static_sdk_release, value.parse::<u32>()?)
                 }
                 "--allowed-dependency" => {
                     if !options.dependencies.insert(value) {
