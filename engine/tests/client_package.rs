@@ -2398,6 +2398,96 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         2
     );
 
+    let admin_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let admin_address = admin_listener.local_addr().unwrap();
+    configured.instances[0].address = admin_address.ip().to_string();
+    configured.instances[0].port = admin_address.port();
+    configured.instances[0].sdk.release = 1;
+    configured.instances[0].sdk.native_abi = 3;
+    configured.save_atomic(&client_config_path).unwrap();
+    let admin_library = fs::read(release_dir.join("libprdb_sql.so.1")).unwrap();
+    let admin_digest: [u8; 32] = Sha256::digest(&admin_library).into();
+    let admin_digest = hex(&admin_digest);
+    let admin_library_bytes = admin_library.len();
+    let admin_server = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = admin_listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut decoder = ClientFrameDecoder::default();
+            let hello = read_client_frame(&mut stream, &mut decoder);
+            assert_eq!(hello.kind, 1);
+            assert!(String::from_utf8_lossy(&hello.payload).contains(r#""mode":"control""#));
+            write_server_response(
+                &mut stream,
+                &hello,
+                br#"{"transport":"plaintext_tcp","limits":{"chunk_bytes":131072,"control_bytes":32768,"payload_bytes":524288},"mode":"control","minor":0,"major":1}"#,
+            );
+            let auth = read_client_frame(&mut stream, &mut decoder);
+            assert_eq!(auth.kind, 2);
+            write_server_response(
+                &mut stream,
+                &auth,
+                br#"{"session_id":"abababababababababababababababab","authenticated":true}"#,
+            );
+            let list = read_client_frame(&mut stream, &mut decoder);
+            assert_eq!(list.kind, 10);
+            assert!(
+                String::from_utf8_lossy(&list.payload)
+                    .contains(r#""operation":"sdk_libraries.list""#)
+            );
+            write_server_response(
+                &mut stream,
+                &list,
+                format!(
+                    r#"{{"sdk_libraries":[{{"release":1,"native_abis":[1,2,3,4,5],"target":"linux-x86_64","cpu_baseline":"x86_64-v1","runtime_profile":"test-runtime","soname":"libprdb_sql.so.1","sha256":"{admin_digest}","needed":["libc.so.6"],"library_bytes":{admin_library_bytes}}}],"next_cursor":null}}"#
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    let list_output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .arg("sdk-library")
+        .arg("list")
+        .arg("--config")
+        .arg(&client_config_path)
+        .arg("--instance")
+        .arg("local")
+        .output()
+        .unwrap();
+    assert!(
+        list_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&list_output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&list_output.stdout).contains("1 abi=[1, 2, 3, 4, 5]"));
+    let select_output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .arg("sdk-library")
+        .arg("select")
+        .arg("--config")
+        .arg(&client_config_path)
+        .arg("--instance")
+        .arg("local")
+        .arg("--release")
+        .arg("1")
+        .arg("--abi")
+        .arg("3")
+        .output()
+        .unwrap();
+    assert!(
+        select_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&select_output.stderr)
+    );
+    admin_server.join().unwrap();
+    assert_eq!(
+        ClientConfig::load(&client_config_path).unwrap().instances[0]
+            .sdk
+            .release,
+        1
+    );
+
     let second = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
         .arg("--source")
         .arg(&source)

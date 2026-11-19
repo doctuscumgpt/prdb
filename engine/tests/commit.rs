@@ -39247,6 +39247,7 @@ fn run_sandboxed_v3_sql_error_fixture(
     expect_terminal_without_result: bool,
     expect_query_error: bool,
     upload_client_sdk: bool,
+    repository_backed: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::client_protocol::{ClientConnectionSession, ClientFrame, ClientMode};
     use prdb_engine::ipc::{Operation, read_frame};
@@ -39378,6 +39379,25 @@ fn run_sandboxed_v3_sql_error_fixture(
         let sql_library = std::fs::read(release_dir.join("libprdb_sql.so.1"))?;
         let registry = if upload_client_sdk {
             None
+        } else if repository_backed {
+            let repository = prdb_engine::sdk_registry::SdkLibraryRepository::open(
+                &fixture.path().parent().unwrap().join("sdk-libraries"),
+                "linux-x86_64".to_owned(),
+                "x86_64-v1".to_owned(),
+                runtime_profile.to_owned(),
+                ["libc.so.6".to_owned()].into_iter().collect(),
+                128 * 1024 * 1024,
+            )
+            .map_err(|error| format!("open test SDK repository: {error:?}"))?;
+            let metadata = std::fs::read(release_dir.join("sdk-release.json"))?;
+            repository
+                .install(
+                    &metadata,
+                    &sql_library,
+                    &["libc.so.6".to_owned()].into_iter().collect(),
+                )
+                .map_err(|error| format!("install test SDK repository release: {error:?}"))?;
+            Some(Arc::new(repository))
         } else {
             let cache_dir = std::env::var_os("PRDB_TEST_SDK_CACHE_DIR")
                 .map(PathBuf::from)
@@ -39535,7 +39555,14 @@ fn run_sandboxed_v3_sql_error_fixture(
     )?;
     assert_eq!(accepted.payload, b"{\"state\":\"accepted\"}");
     if let Some(registry) = &registry_for_assertion {
-        assert_eq!(registry.evict_unpinned().unwrap(), 0);
+        if repository_backed {
+            assert_eq!(
+                registry.remove_release(1),
+                Err(prdb_engine::sdk_registry::SdkRegistryError::ReleasePinned)
+            );
+        } else {
+            assert_eq!(registry.evict_unpinned().unwrap(), 0);
+        }
     }
 
     let (mut service, mut gateway) = UnixStream::pair()?;
@@ -39558,7 +39585,13 @@ fn run_sandboxed_v3_sql_error_fixture(
     staging.finish_started(owner, reservation.invocation_id)?;
     drop(executor);
     if let Some(registry) = &registry_for_assertion {
-        assert!(registry.evict_unpinned().unwrap() > 0);
+        if repository_backed {
+            registry
+                .remove_release(1)
+                .map_err(|error| format!("remove unpinned SDK repository release: {error:?}"))?;
+        } else {
+            assert!(registry.evict_unpinned().unwrap() > 0);
+        }
     }
 
     let first_frame = read_frame(&mut gateway)?.ok_or("missing worker result")?;
@@ -39617,7 +39650,15 @@ fn run_sandboxed_v3_sql_error_fixture(
 #[test]
 fn sandboxed_v3_sql_error_latches_failure_and_durably_aborts_after_partial_output()
 -> Result<(), Box<dyn std::error::Error>> {
-    run_sandboxed_v3_sql_error_fixture("PRDB_TEST_QUERY_ARTIFACT", false, None, false, false, false)
+    run_sandboxed_v3_sql_error_fixture(
+        "PRDB_TEST_QUERY_ARTIFACT",
+        false,
+        None,
+        false,
+        false,
+        false,
+        false,
+    )
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -39631,6 +39672,22 @@ fn sandboxed_v3_shared_sql_library_resolves_loads_and_durably_aborts_on_sql_erro
         false,
         false,
         false,
+        false,
+    )
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn sandboxed_repository_sdk_library_loads_and_stays_pinned_until_worker_cleanup()
+-> Result<(), Box<dyn std::error::Error>> {
+    run_sandboxed_v3_sql_error_fixture(
+        "PRDB_TEST_SHARED_SQL_QUERY_ARTIFACT",
+        false,
+        Some("PRDB_TEST_SDK_RELEASE_DIR"),
+        false,
+        false,
+        false,
+        true,
     )
 }
 
@@ -39645,6 +39702,7 @@ fn sandboxed_shared_sql_missing_dependency_aborts_inside_executor()
         true,
         false,
         false,
+        false,
     )
 }
 
@@ -39656,6 +39714,7 @@ fn sandboxed_v3_constructor_cannot_connect_to_host_loopback()
         "PRDB_TEST_NETWORK_CONSTRUCTOR_ARTIFACT",
         true,
         None,
+        false,
         false,
         false,
         false,
@@ -39673,6 +39732,7 @@ fn sandboxed_direct_executor_ipc_rejects_forged_relation_handle()
         true,
         true,
         false,
+        false,
     )
 }
 
@@ -39686,6 +39746,7 @@ fn sandboxed_direct_executor_ipc_rejects_forged_row_handle_mutation()
         None,
         true,
         true,
+        false,
         false,
     )
 }
@@ -39701,6 +39762,7 @@ fn sandboxed_client_supplied_sql_library_loads_and_durably_aborts_on_sql_error()
         false,
         false,
         true,
+        false,
     )
 }
 

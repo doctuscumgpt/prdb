@@ -1,3 +1,7 @@
+use prdb_engine::client_config::{
+    CONFIG_FORMAT, ClientConfig, ClientCredential as ConfigCredential, ClientInstance,
+    SdkSelection, encode_token_secret,
+};
 use prdb_engine::client_protocol::{
     ClientAdminCommand, ClientControlError, ClientFrame, ClientFrameDecoder,
     decode_client_admin_command,
@@ -8,8 +12,11 @@ use prdb_engine::client_submit::{
 };
 use prdb_engine::tuple::{ScalarType, ScalarValue};
 use sha2::{Digest, Sha256};
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::fs::PermissionsExt;
+use std::process::Command;
 use std::time::Duration;
 
 #[test]
@@ -3746,6 +3753,179 @@ fn admin_client_sends_typed_constraint_and_foreign_key_operations() {
     assert_eq!(foreign_key.foreign_key_id, foreign_key_id);
     client.drop_foreign_key(foreign_key_id).unwrap();
     server.join().unwrap();
+}
+
+#[test]
+fn configured_sdk_library_install_and_remove_commands_use_typed_gateway_operations() {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("prdb-sdk-admin-cli-{stamp}"));
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let config_path = root.join("client.json");
+    let metadata_path = root.join("sdk-release.json");
+    let library_path = root.join("libprdb_sql.so.7");
+    let metadata = b"repository metadata fixture";
+    let library = b"repository library fixture";
+    fs::write(&metadata_path, metadata).unwrap();
+    fs::write(&library_path, library).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    ClientConfig {
+        format: CONFIG_FORMAT.to_owned(),
+        default_instance: Some("test".to_owned()),
+        client_tools: None,
+        instances: vec![ClientInstance {
+            name: "test".to_owned(),
+            address: address.ip().to_string(),
+            port: address.port(),
+            sdk: SdkSelection {
+                release: 7,
+                target: "linux-x86_64".to_owned(),
+                cpu_baseline: "x86_64-v1".to_owned(),
+                runtime_profile: "test-runtime".to_owned(),
+                native_abi: 5,
+            },
+            default_credential: "admin".to_owned(),
+            credentials: vec![ConfigCredential {
+                name: "admin".to_owned(),
+                username: "admin".to_owned(),
+                token_id: "07".repeat(16),
+                token_secret: encode_token_secret(&[9; 32]),
+            }],
+        }],
+    }
+    .save_atomic(&config_path)
+    .unwrap();
+
+    let library_digest: [u8; 32] = Sha256::digest(library).into();
+    let library_digest_text = library_digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let begin = read_frame(&mut stream, &mut decoder);
+        assert_eq!(begin.kind, 10);
+        let operation_id = operation_id_from_payload(&begin.payload);
+        let operation_id_text = hex(&operation_id);
+        assert!(
+            std::str::from_utf8(&begin.payload)
+                .unwrap()
+                .contains(r#""operation":"sdk_libraries.install""#)
+        );
+        respond(
+            &mut stream,
+            &begin,
+            format!(r#"{{"operation_id":"{operation_id_text}","next_offset":"0"}}"#).as_bytes(),
+        );
+        let mut transferred = Vec::new();
+        let expected = [metadata.as_slice(), library.as_slice()].concat();
+        while transferred.len() < expected.len() {
+            let chunk = read_frame(&mut stream, &mut decoder);
+            assert_eq!(chunk.kind, 19);
+            assert_eq!(&chunk.payload[..16], &operation_id);
+            assert_eq!(
+                u64::from_le_bytes(chunk.payload[16..24].try_into().unwrap()),
+                transferred.len() as u64
+            );
+            transferred.extend_from_slice(&chunk.payload[24..]);
+            respond(
+                &mut stream,
+                &chunk,
+                format!(r#"{{"next_offset":"{}"}}"#, transferred.len()).as_bytes(),
+            );
+        }
+        assert_eq!(transferred, expected);
+        let finish = read_frame(&mut stream, &mut decoder);
+        assert!(
+            std::str::from_utf8(&finish.payload)
+                .unwrap()
+                .contains("sdk_libraries.install.finish")
+        );
+        respond(
+            &mut stream,
+            &finish,
+            format!(
+                r#"{{"operation_id":"{operation_id_text}","release":7,"sha256":"{library_digest_text}","library_bytes":{}}}"#,
+                library.len()
+            )
+            .as_bytes(),
+        );
+        let list = read_frame(&mut stream, &mut decoder);
+        respond(
+            &mut stream,
+            &list,
+            format!(
+                r#"{{"sdk_libraries":[{{"release":7,"native_abis":[5],"target":"linux-x86_64","cpu_baseline":"x86_64-v1","runtime_profile":"test-runtime","soname":"libprdb_sql.so.7","sha256":"{library_digest_text}","needed":["libc.so.6"],"library_bytes":{}}}],"next_cursor":null}}"#,
+                library.len()
+            )
+            .as_bytes(),
+        );
+
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let remove = read_frame(&mut stream, &mut decoder);
+        assert_eq!(remove.kind, 10);
+        let remove_operation = operation_id_from_payload(&remove.payload);
+        let remove_operation_text = hex(&remove_operation);
+        assert!(
+            std::str::from_utf8(&remove.payload)
+                .unwrap()
+                .contains(r#""operation":"sdk_libraries.remove""#)
+        );
+        respond(
+            &mut stream,
+            &remove,
+            format!(
+                r#"{{"operation_id":"{remove_operation_text}","release":7,"removed_bytes":{}}}"#,
+                library.len()
+            )
+            .as_bytes(),
+        );
+    });
+
+    let client_binary = std::env::var_os("CARGO_BIN_EXE_prdb-client").unwrap();
+    let install = Command::new(&client_binary)
+        .arg("sdk-library")
+        .arg("install")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--metadata")
+        .arg(&metadata_path)
+        .arg("--library")
+        .arg(&library_path)
+        .output()
+        .unwrap();
+    assert!(
+        install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    let remove = Command::new(&client_binary)
+        .arg("sdk-library")
+        .arg("remove")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--release")
+        .arg("7")
+        .output()
+        .unwrap();
+    assert!(
+        remove.status.success(),
+        "{}",
+        String::from_utf8_lossy(&remove.stderr)
+    );
+    server.join().unwrap();
+    fs::remove_dir_all(root).unwrap();
 }
 
 fn hex(id: &[u8; 16]) -> String {
