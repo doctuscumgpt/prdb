@@ -7,7 +7,7 @@ use prdb_engine::client_credentials::{
     ClientCredentialProfiles, read_client_credentials, remove_client_credentials,
     write_client_credentials,
 };
-use prdb_engine::client_package::{PackageOptions, package_query};
+use prdb_engine::client_package::{PackageOptions, package_query, package_query_repository};
 use prdb_engine::client_protocol::ClientCredentials;
 use prdb_engine::client_sql::{
     MAX_SQL_PARAMETER_BYTES, encode_parameter_file, generate_query_source, read_sql_input,
@@ -189,6 +189,27 @@ fn run() -> Result<(), String> {
         return run_client_config_command(&command, &mut fields, &credential_profile_options);
     }
 
+    if (command == "submit" || command == "run-sql")
+        && (fields.contains_key("--instance")
+            || fields.contains_key("--config")
+            || !fields.contains_key("--address")
+            || !fields.contains_key("--credentials"))
+    {
+        return run_configured_query_command(&command, &mut fields);
+    }
+
+    if command == "interactive-sql"
+        && (fields.contains_key("--instance")
+            || fields.contains_key("--config")
+            || !fields.contains_key("--address")
+            || !fields.contains_key("--credentials"))
+    {
+        if !credential_profile_options.is_empty() {
+            return Err("configure interactive credential profiles with instance set before using config mode".to_owned());
+        }
+        return run_configured_interactive(&mut fields);
+    }
+
     if command == "credential-remove" {
         let credentials_path = take_path(&mut fields, "--credentials")?;
         reject_unknown(&fields)?;
@@ -221,6 +242,8 @@ fn run() -> Result<(), String> {
             default_user,
             &additional_profiles,
             &mut fields,
+            None,
+            false,
         );
     }
 
@@ -643,6 +666,411 @@ fn client_credential_from_file(
     };
     material.token_secret.zeroize();
     Ok(credential)
+}
+
+fn run_configured_query_command(
+    command: &str,
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<(), String> {
+    let config_path = fields
+        .remove("--config")
+        .map(PathBuf::from)
+        .map(Ok)
+        .unwrap_or_else(default_config_path)
+        .map_err(|error| error.to_string())?;
+    let config = ClientConfig::load(&config_path).map_err(|error| error.to_string())?;
+    let requested_instance = take_optional_text(fields, "--instance")?;
+    let instance = config
+        .instance(requested_instance.as_deref())
+        .map_err(|error| error.to_string())?
+        .clone();
+    let credential_name = fields
+        .remove("--credential")
+        .map(|value| {
+            value
+                .into_string()
+                .map_err(|_| "--credential must be UTF-8".to_owned())
+        })
+        .transpose()?
+        .unwrap_or_else(|| instance.default_credential.clone());
+    let credential = instance
+        .credentials
+        .iter()
+        .find(|entry| entry.name == credential_name)
+        .ok_or_else(|| format!("credential profile {credential_name:?} is not configured"))?;
+    if fields.remove("--credentials").is_some() {
+        return Err(
+            "--credentials cannot be combined with persistent instance configuration".to_owned(),
+        );
+    }
+    let configured_address = format!("{}:{}", instance.address, instance.port)
+        .parse::<SocketAddr>()
+        .map_err(|_| "configured instance endpoint is invalid".to_owned())?;
+    if let Some(value) = fields.remove("--address") {
+        let address = value
+            .into_string()
+            .map_err(|_| "--address must be UTF-8".to_owned())?
+            .parse::<SocketAddr>()
+            .map_err(|_| "--address must be a numeric IP:PORT socket address".to_owned())?;
+        if address != configured_address {
+            return Err(
+                "explicit endpoint does not match the selected configured instance".to_owned(),
+            );
+        }
+    }
+    if let Some(value) = fields.remove("--port") {
+        let port = value
+            .into_string()
+            .map_err(|_| "--port must be UTF-8".to_owned())?
+            .parse::<u16>()
+            .map_err(|_| "--port must be in 1..65535".to_owned())?;
+        if port != instance.port {
+            return Err("explicit port does not match the selected configured instance".to_owned());
+        }
+    }
+    let token_id = credential
+        .token_id_bytes()
+        .map_err(|error| error.to_string())?;
+    let token_secret = credential
+        .token_secret_bytes()
+        .map_err(|error| error.to_string())?;
+    let credentials = ClientCredentials {
+        token_id,
+        token_secret,
+    };
+
+    match command {
+        "submit" => {
+            let package = take_path(fields, "--package")?;
+            let receipt = take_path(fields, "--receipt")?;
+            let parameters_path = fields.remove("--parameters").map(PathBuf::from);
+            let deadline_ms = fields
+                .remove("--deadline-ms")
+                .map(|value| parse_number(value, "--deadline-ms"))
+                .transpose()?
+                .unwrap_or(30_000u64);
+            let workload = parse_workload(fields)?;
+            reject_unknown(fields)?;
+            validate_package_selection(&package, &instance.sdk)?;
+            let mut parameters = read_parameters(parameters_path.as_ref())?;
+            let result = submit_package_and_stream_with_profile(
+                configured_address,
+                credentials,
+                &package,
+                &receipt,
+                &mut parameters,
+                deadline_ms,
+                workload,
+                true,
+            );
+            parameters.fill(0);
+            result
+        }
+        "run-sql" => {
+            let sql_path = take_path(fields, "--sql-file")?;
+            let schema = take_text(fields, "--schema")?;
+            validate_schema_name(&schema).map_err(|error| error.to_string())?;
+            let scope = take_path(fields, "--scope")?;
+            let receipt = take_path(fields, "--receipt")?;
+            let parameters_path = fields.remove("--parameters").map(PathBuf::from);
+            let deadline_ms = fields
+                .remove("--deadline-ms")
+                .map(|value| parse_number(value, "--deadline-ms"))
+                .transpose()?
+                .unwrap_or(30_000u64);
+            let workload = parse_workload(fields)?;
+            reject_unknown(fields)?;
+            if instance.sdk.native_abi != 3 {
+                return Err("run-sql currently generates native ABI 3 queries; select ABI 3 for this instance".to_owned());
+            }
+            let tools = config
+                .client_tools
+                .as_ref()
+                .ok_or_else(|| "client_tools must be configured before run-sql".to_owned())?;
+            let (include_dir, sdk_library) = local_sdk_paths(&config_path, tools, &instance.sdk)?;
+            let tcc = resolve_client_program(&config_path, &tools.tcc);
+            let shared_linker = resolve_client_program(&config_path, &tools.shared_linker);
+            let patchelf = resolve_client_program(&config_path, &tools.patchelf);
+            let sql = read_sql_input(&sql_path).map_err(|error| error.to_string())?;
+            let generated_source =
+                generate_query_source(&schema, &sql).map_err(|error| error.to_string())?;
+            let mut parameters = read_sql_parameters(parameters_path.as_deref())?;
+            let workspace = SqlWorkspace::create()?;
+            let source_path = workspace.path.join("query.c");
+            write_private_file(&source_path, &generated_source)?;
+            let package_dir = workspace.path.join("package");
+            package_query_repository(&PackageOptions {
+                tcc,
+                shared_linker,
+                patchelf,
+                source: source_path,
+                sdk_library,
+                include_dir,
+                requested_scope: scope,
+                output_dir: package_dir.clone(),
+                native_abi_version: instance.sdk.native_abi,
+                sdk_release: instance.sdk.release,
+                cpu_baseline: instance.sdk.cpu_baseline,
+                runtime_profile: instance.sdk.runtime_profile,
+                compiler_identity: "prdb-client/tcc".to_owned(),
+            })
+            .map_err(|error| error.to_string())?;
+            let result = submit_package_and_stream_with_profile(
+                configured_address,
+                credentials,
+                &package_dir,
+                &receipt,
+                &mut parameters,
+                deadline_ms,
+                workload,
+                true,
+            );
+            parameters.fill(0);
+            result
+        }
+        _ => Err(format!("unsupported configured query command {command}")),
+    }
+}
+
+fn run_configured_interactive(
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<(), String> {
+    let config_path = fields
+        .remove("--config")
+        .map(PathBuf::from)
+        .map(Ok)
+        .unwrap_or_else(default_config_path)
+        .map_err(|error| error.to_string())?;
+    let config = ClientConfig::load(&config_path).map_err(|error| error.to_string())?;
+    let requested_instance = take_optional_text(fields, "--instance")?;
+    let instance = config
+        .instance(requested_instance.as_deref())
+        .map_err(|error| error.to_string())?
+        .clone();
+    let credential_name = fields
+        .remove("--credential")
+        .map(|value| {
+            value
+                .into_string()
+                .map_err(|_| "--credential must be UTF-8".to_owned())
+        })
+        .transpose()?
+        .unwrap_or_else(|| instance.default_credential.clone());
+    let default_user = instance
+        .credentials
+        .iter()
+        .find(|entry| entry.name == credential_name)
+        .map(|entry| entry.username.clone())
+        .ok_or_else(|| format!("credential profile {credential_name:?} is not configured"))?;
+    if fields.remove("--credentials").is_some() {
+        return Err(
+            "--credentials cannot be combined with persistent instance configuration".to_owned(),
+        );
+    }
+    let address = format!("{}:{}", instance.address, instance.port)
+        .parse::<SocketAddr>()
+        .map_err(|_| "configured instance endpoint is invalid".to_owned())?;
+    if let Some(value) = fields.remove("--address") {
+        let explicit = value
+            .into_string()
+            .map_err(|_| "--address must be UTF-8".to_owned())?
+            .parse::<SocketAddr>()
+            .map_err(|_| "--address must be a numeric IP:PORT socket address".to_owned())?;
+        if explicit != address {
+            return Err(
+                "explicit endpoint does not match the selected configured instance".to_owned(),
+            );
+        }
+    }
+    if let Some(value) = fields.remove("--port") {
+        let port = value
+            .into_string()
+            .map_err(|_| "--port must be UTF-8".to_owned())?
+            .parse::<u16>()
+            .map_err(|_| "--port must be in 1..65535".to_owned())?;
+        if port != instance.port {
+            return Err("explicit port does not match the selected configured instance".to_owned());
+        }
+    }
+    if instance.sdk.native_abi != 3 {
+        return Err("interactive-sql currently generates native ABI 3 queries; select ABI 3 for this instance".to_owned());
+    }
+    let tools = config
+        .client_tools
+        .as_ref()
+        .ok_or_else(|| "client_tools must be configured before interactive-sql".to_owned())?;
+    let (include_dir, sdk_library) = local_sdk_paths(&config_path, tools, &instance.sdk)?;
+    for option in [
+        "--sdk-library",
+        "--include-dir",
+        "--sdk-release",
+        "--abi",
+        "--cpu-baseline",
+        "--runtime-profile",
+    ] {
+        if fields.remove(option).is_some() {
+            return Err(format!(
+                "{option} is read from persistent instance configuration"
+            ));
+        }
+    }
+    fields.insert("--sdk-library".to_owned(), sdk_library.into_os_string());
+    fields.insert("--include-dir".to_owned(), include_dir.into_os_string());
+    fields.insert(
+        "--sdk-release".to_owned(),
+        instance.sdk.release.to_string().into(),
+    );
+    fields.insert(
+        "--cpu-baseline".to_owned(),
+        instance.sdk.cpu_baseline.clone().into(),
+    );
+    fields.insert(
+        "--runtime-profile".to_owned(),
+        instance.sdk.runtime_profile.clone().into(),
+    );
+    fields.insert("--compiler-identity".to_owned(), "prdb-client/tcc".into());
+    fields.insert(
+        "--tcc".to_owned(),
+        resolve_client_program(&config_path, &tools.tcc).into_os_string(),
+    );
+    fields.insert(
+        "--shared-linker".to_owned(),
+        resolve_client_program(&config_path, &tools.shared_linker).into_os_string(),
+    );
+    fields.insert(
+        "--patchelf".to_owned(),
+        resolve_client_program(&config_path, &tools.patchelf).into_os_string(),
+    );
+    let profiles = instance
+        .credentials
+        .iter()
+        .map(|profile| {
+            Ok((
+                profile.username.clone(),
+                profile
+                    .token_id_bytes()
+                    .map_err(|error| error.to_string())?,
+                Zeroizing::new(
+                    profile
+                        .token_secret_bytes()
+                        .map_err(|error| error.to_string())?,
+                ),
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let profiles = ClientCredentialProfiles::from_material(&default_user, profiles)
+        .map_err(|error| error.to_string())?;
+    interactive_sql(
+        address,
+        PathBuf::new(),
+        default_user,
+        &[],
+        fields,
+        Some(profiles),
+        true,
+    )
+}
+
+fn parse_workload(
+    fields: &mut HashMap<String, std::ffi::OsString>,
+) -> Result<WorkloadClass, String> {
+    match fields.remove("--workload") {
+        None => Ok(WorkloadClass::Operational),
+        Some(value) if value == "operational" => Ok(WorkloadClass::Operational),
+        Some(value) if value == "analytical" => Ok(WorkloadClass::Analytical),
+        Some(_) => Err("--workload must be operational or analytical".to_owned()),
+    }
+}
+
+fn validate_package_selection(package: &Path, selection: &SdkSelection) -> Result<(), String> {
+    let manifest_bytes = fs::read(package.join("manifest.pmf1"))
+        .map_err(|error| format!("could not read package manifest: {error}"))?;
+    let manifest = prdb_engine::submission_manifest::decode_manifest_v1(&manifest_bytes)
+        .map_err(|error| format!("invalid package manifest: {error:?}"))?;
+    if manifest.sdk_release != selection.release
+        || manifest.native_abi_version != selection.native_abi
+        || manifest.cpu_baseline != selection.cpu_baseline
+        || manifest.runtime_profile != selection.runtime_profile
+    {
+        return Err(
+            "package SDK release/profile/ABI does not match the selected instance settings"
+                .to_owned(),
+        );
+    }
+    for sidecar in ["sql.so", "sql-library.sha256"] {
+        if fs::symlink_metadata(package.join(sidecar)).is_ok() {
+            return Err(
+                "repository-profile packages must not contain an SDK library or its digest sidecar"
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn local_sdk_paths(
+    config_path: &Path,
+    tools: &ClientTools,
+    selection: &SdkSelection,
+) -> Result<(PathBuf, PathBuf), String> {
+    let include_dir = resolve_config_path(config_path, &tools.include_dir);
+    let sdk_root = include_dir
+        .parent()
+        .ok_or_else(|| "client_tools.include_dir must be inside an SDK directory".to_owned())?;
+    let release_root = sdk_root
+        .join("releases")
+        .join(&selection.target)
+        .join(&selection.cpu_baseline)
+        .join(&selection.runtime_profile);
+    let prefix = format!("sdk-{}-abis", selection.release);
+    let entries = fs::read_dir(&release_root).map_err(|error| error.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let entry_name = entry.file_name();
+        let Some(abi_list) = entry_name
+            .to_string_lossy()
+            .strip_prefix(&prefix)
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if abi_list
+            .split(',')
+            .any(|abi| abi == selection.native_abi.to_string())
+        {
+            let library = entry
+                .path()
+                .join(format!("libprdb_sql.so.{}", selection.release));
+            if library.is_file() {
+                return Ok((include_dir, library));
+            }
+        }
+    }
+    Err(format!(
+        "matching local SDK release {} is unavailable",
+        selection.release
+    ))
+}
+
+fn resolve_config_path(config_path: &Path, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(path)
+    }
+}
+
+fn resolve_client_program(config_path: &Path, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() || path.components().count() == 1 {
+        path
+    } else {
+        resolve_config_path(config_path, value)
+    }
 }
 
 fn verify_local_sdk_build(
@@ -2692,19 +3120,51 @@ fn submit_package_and_stream(
 
 fn submit_package_and_stream_with_credentials(
     address: SocketAddr,
-    mut credentials: ClientCredentials,
+    credentials: ClientCredentials,
     package: &Path,
     receipt: &Path,
     parameters: &mut [u8],
     deadline_ms: u64,
     workload: WorkloadClass,
 ) -> Result<(), String> {
+    submit_package_and_stream_with_profile(
+        address,
+        credentials,
+        package,
+        receipt,
+        parameters,
+        deadline_ms,
+        workload,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn submit_package_and_stream_with_profile(
+    address: SocketAddr,
+    mut credentials: ClientCredentials,
+    package: &Path,
+    receipt: &Path,
+    parameters: &mut [u8],
+    deadline_ms: u64,
+    workload: WorkloadClass,
+    repository_profile: bool,
+) -> Result<(), String> {
     let result = (|| {
-        let mut client = SubmissionClient::connect_authenticated(
-            address,
-            credentials.token_id,
-            &mut credentials.token_secret,
-        )
+        let mut client = if repository_profile {
+            SubmissionClient::connect_repository_authenticated_with_timeout(
+                address,
+                credentials.token_id,
+                &mut credentials.token_secret,
+                Duration::from_secs(10),
+            )
+        } else {
+            SubmissionClient::connect_authenticated(
+                address,
+                credentials.token_id,
+                &mut credentials.token_secret,
+            )
+        }
         .map_err(|error| error.to_string())?;
         let invocation_id = client
             .upload_and_seal(package, parameters, deadline_ms, workload)
@@ -2835,6 +3295,8 @@ fn interactive_sql(
     default_user: String,
     additional_profiles: &[(String, PathBuf)],
     fields: &mut HashMap<String, std::ffi::OsString>,
+    configured_profiles: Option<ClientCredentialProfiles>,
+    repository_profile: bool,
 ) -> Result<(), String> {
     if !address.ip().is_loopback() {
         return Err("interactive SQL v2 is available only on loopback addresses".to_owned());
@@ -2880,12 +3342,15 @@ fn interactive_sql(
     };
     reject_unknown(fields)?;
 
-    let profiles = ClientCredentialProfiles::load(
-        &default_user,
-        &default_credentials_path,
-        additional_profiles,
-    )
-    .map_err(|error| error.to_string())?;
+    let profiles = match configured_profiles {
+        Some(profiles) => profiles,
+        None => ClientCredentialProfiles::load(
+            &default_user,
+            &default_credentials_path,
+            additional_profiles,
+        )
+        .map_err(|error| error.to_string())?,
+    };
     let mut parameters = read_sql_parameters(parameters_path.as_deref())?;
     let workspace = SqlWorkspace::create()?;
     let mut explicit_transaction = None;
@@ -2900,10 +3365,11 @@ fn interactive_sql(
                         return Err("BEGIN cannot be nested".to_owned());
                     }
                     let mut controller = profile_credentials(&profiles, &default_user)?;
-                    let mut client = SubmissionClient::connect_interactive_authenticated(
+                    let mut client = connect_interactive_client(
                         address,
                         controller.token_id,
                         &mut controller.token_secret,
+                        repository_profile,
                     )
                     .map_err(|error| error.to_string())?;
                     let begin_request_id = random_nonzero_id()?;
@@ -2916,11 +3382,7 @@ fn interactive_sql(
                             let mut retry_controller =
                                 profile_credentials(&profiles, &default_user)?;
                             let mut retry_client =
-                                SubmissionClient::connect_interactive_authenticated(
-                                    address,
-                                    retry_controller.token_id,
-                                    &mut retry_controller.token_secret,
-                                )
+                                connect_interactive_client(address, retry_controller.token_id, &mut retry_controller.token_secret, repository_profile)
                                 .map_err(|error| error.to_string())?;
                             retry_client
                                 .interactive_transaction_begin(begin_request_id)
@@ -2964,10 +3426,11 @@ fn interactive_sql(
                         return Err("transaction is abort-only; issue ROLLBACK".to_owned());
                     }
                     let mut controller = profile_credentials(&profiles, &default_user)?;
-                    let mut client = SubmissionClient::connect_interactive_authenticated(
+                    let mut client = connect_interactive_client(
                         address,
                         controller.token_id,
                         &mut controller.token_secret,
+                        repository_profile,
                     )
                     .map_err(|error| error.to_string())?;
                     match client.interactive_transaction_commit(transaction_id) {
@@ -2981,13 +3444,13 @@ fn interactive_sql(
                         Ok(_) => return Err("transaction did not commit".to_owned()),
                         Err(error) => {
                             let mut controller = profile_credentials(&profiles, &default_user)?;
-                            let mut status_client =
-                                SubmissionClient::connect_interactive_authenticated(
-                                    address,
-                                    controller.token_id,
-                                    &mut controller.token_secret,
-                                )
-                                .map_err(|connect_error| connect_error.to_string())?;
+                            let mut status_client = connect_interactive_client(
+                                address,
+                                controller.token_id,
+                                &mut controller.token_secret,
+                                repository_profile,
+                            )
+                            .map_err(|connect_error| connect_error.to_string())?;
                             match status_client.interactive_transaction_status(transaction_id) {
                             Ok(prdb_engine::client_protocol::ClientV2Response::Transaction {
                                 transaction_id: response_id,
@@ -3011,10 +3474,11 @@ fn interactive_sql(
                     let transaction_id = explicit_transaction
                         .ok_or_else(|| "ROLLBACK requires an active transaction".to_owned())?;
                     let mut controller = profile_credentials(&profiles, &default_user)?;
-                    let mut client = SubmissionClient::connect_interactive_authenticated(
+                    let mut client = connect_interactive_client(
                         address,
                         controller.token_id,
                         &mut controller.token_secret,
+                        repository_profile,
                     )
                     .map_err(|error| error.to_string())?;
                     match client.interactive_transaction_rollback(transaction_id) {
@@ -3028,13 +3492,13 @@ fn interactive_sql(
                         Ok(_) => return Err("transaction did not roll back".to_owned()),
                         Err(error) => {
                             let mut controller = profile_credentials(&profiles, &default_user)?;
-                            let mut status_client =
-                                SubmissionClient::connect_interactive_authenticated(
-                                    address,
-                                    controller.token_id,
-                                    &mut controller.token_secret,
-                                )
-                                .map_err(|connect_error| connect_error.to_string())?;
+                            let mut status_client = connect_interactive_client(
+                                address,
+                                controller.token_id,
+                                &mut controller.token_secret,
+                                repository_profile,
+                            )
+                            .map_err(|connect_error| connect_error.to_string())?;
                             match status_client.interactive_transaction_status(transaction_id) {
                             Ok(prdb_engine::client_protocol::ClientV2Response::Transaction {
                                 transaction_id: response_id,
@@ -3087,6 +3551,7 @@ fn interactive_sql(
                         &mut parameters,
                         deadline_ms,
                         workload,
+                        repository_profile,
                     )?;
                 }
                 InteractiveStatement::RunAs { username, sql, .. } => {
@@ -3114,6 +3579,7 @@ fn interactive_sql(
                         &mut parameters,
                         deadline_ms,
                         workload,
+                        repository_profile,
                     )?;
                 }
             }
@@ -3156,10 +3622,11 @@ fn interactive_sql(
     if result.is_err()
         && let Some(transaction_id) = explicit_transaction
         && let Ok(mut controller) = profile_credentials(&profiles, &default_user)
-        && let Ok(mut client) = SubmissionClient::connect_interactive_authenticated(
+        && let Ok(mut client) = connect_interactive_client(
             address,
             controller.token_id,
             &mut controller.token_secret,
+            repository_profile,
         )
     {
         let _ = client.interactive_transaction_rollback(transaction_id);
@@ -3167,10 +3634,11 @@ fn interactive_sql(
     if result.is_ok()
         && let Some(transaction_id) = explicit_transaction
         && let Ok(mut controller) = profile_credentials(&profiles, &default_user)
-        && let Ok(mut client) = SubmissionClient::connect_interactive_authenticated(
+        && let Ok(mut client) = connect_interactive_client(
             address,
             controller.token_id,
             &mut controller.token_secret,
+            repository_profile,
         )
     {
         let _ = client.interactive_transaction_rollback(transaction_id);
@@ -3208,6 +3676,7 @@ fn execute_interactive_package(
     parameters: &mut [u8],
     deadline_ms: u64,
     workload: WorkloadClass,
+    repository_profile: bool,
 ) -> Result<(), String> {
     if *abort_only {
         return Err("transaction is abort-only; issue ROLLBACK".to_owned());
@@ -3217,7 +3686,7 @@ fn execute_interactive_package(
     let source_path = workspace.join(format!("interactive-{ordinal}.c"));
     let package_dir = workspace.join(format!("interactive-package-{ordinal}"));
     write_private_file(&source_path, &generated_source)?;
-    package_query(&PackageOptions {
+    let package_options = PackageOptions {
         tcc: tcc.to_path_buf(),
         shared_linker: shared_linker.to_path_buf(),
         patchelf: patchelf.to_path_buf(),
@@ -3231,7 +3700,12 @@ fn execute_interactive_package(
         cpu_baseline: cpu_baseline.to_owned(),
         runtime_profile: runtime_profile.to_owned(),
         compiler_identity: compiler_identity.to_owned(),
-    })
+    };
+    if repository_profile {
+        package_query_repository(&package_options)
+    } else {
+        package_query(&package_options)
+    }
     .map_err(|error| error.to_string())?;
     let receipt = workspace.join(format!("interactive-{ordinal}.receipt"));
     let mut package_parameters = Zeroizing::new(parameters.to_vec());
@@ -3239,10 +3713,11 @@ fn execute_interactive_package(
         let (controller_id, mut controller_secret) = profiles
             .authentication_material(profiles.default_username())
             .ok_or_else(|| "default credential profile disappeared".to_owned())?;
-        let mut client = SubmissionClient::connect_interactive_authenticated(
+        let mut client = connect_interactive_client(
             address,
             controller_id,
             &mut controller_secret[..],
+            repository_profile,
         )
         .map_err(|error| error.to_string())?;
         match client
@@ -3299,10 +3774,14 @@ fn execute_interactive_package(
         };
         let terminal = match stream_result {
             Ok(terminal) => terminal,
-            Err(error) => {
-                reconcile_interactive_package(address, profiles, transaction_id, package_id)
-                    .map_err(|reconcile_error| format!("{error}; {reconcile_error}"))?
-            }
+            Err(error) => reconcile_interactive_package(
+                address,
+                profiles,
+                transaction_id,
+                package_id,
+                repository_profile,
+            )
+            .map_err(|reconcile_error| format!("{error}; {reconcile_error}"))?,
         };
         match terminal {
             InteractivePackageTerminal::Completed { result_lost: false } => Ok(()),
@@ -3330,6 +3809,24 @@ fn execute_interactive_package(
             deadline_ms,
             workload,
         )
+    }
+}
+
+fn connect_interactive_client(
+    address: SocketAddr,
+    token_id: [u8; 16],
+    token_secret: &mut [u8],
+    repository_profile: bool,
+) -> Result<SubmissionClient, prdb_engine::client_submit::ClientSubmitError> {
+    if repository_profile {
+        SubmissionClient::connect_repository_interactive_authenticated_with_timeout(
+            address,
+            token_id,
+            token_secret,
+            Duration::from_secs(10),
+        )
+    } else {
+        SubmissionClient::connect_interactive_authenticated(address, token_id, token_secret)
     }
 }
 
@@ -3460,16 +3957,14 @@ fn reconcile_interactive_package(
     profiles: &ClientCredentialProfiles,
     transaction_id: [u8; 16],
     package_id: [u8; 16],
+    repository_profile: bool,
 ) -> Result<InteractivePackageTerminal, String> {
     let (token_id, mut token_secret) = profiles
         .authentication_material(profiles.default_username())
         .ok_or_else(|| "default credential profile disappeared".to_owned())?;
-    let mut client = SubmissionClient::connect_interactive_authenticated(
-        address,
-        token_id,
-        &mut token_secret[..],
-    )
-    .map_err(|error| error.to_string())?;
+    let mut client =
+        connect_interactive_client(address, token_id, &mut token_secret[..], repository_profile)
+            .map_err(|error| error.to_string())?;
     match client
         .interactive_package_status(transaction_id, package_id)
         .map_err(|error| error.to_string())?
@@ -5136,6 +5631,48 @@ mod tests {
             verify_local_sdk_build(&root.join("client.json"), Some(&tools), &bad_digest, 4,)
                 .is_err()
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn configured_submit_rejects_package_mismatch_and_legacy_sdk_files() {
+        let root = std::env::temp_dir().join(format!(
+            "prdb-client-submit-selection-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let manifest = prdb_engine::submission_manifest::encode_manifest_v1(
+            &prdb_engine::submission_manifest::ArtifactManifestV1 {
+                native_abi_version: 3,
+                sdk_release: 7,
+                cpu_baseline: "x86_64-v1".to_owned(),
+                runtime_profile: "glibc-test".to_owned(),
+                compiler_identity: "test".to_owned(),
+                descriptor_symbol: "prdb_query_descriptor_v3".to_owned(),
+                entry_point_symbol: "prdb_query_main_v3".to_owned(),
+                dependencies: vec!["libc.so.6".to_owned(), "libprdb_sql.so.7".to_owned()],
+            },
+        )
+        .unwrap();
+        std::fs::write(root.join("manifest.pmf1"), manifest).unwrap();
+        let selection = SdkSelection {
+            release: 7,
+            target: "linux-x86_64".to_owned(),
+            cpu_baseline: "x86_64-v1".to_owned(),
+            runtime_profile: "glibc-test".to_owned(),
+            native_abi: 3,
+        };
+        assert!(validate_package_selection(&root, &selection).is_ok());
+        let mut mismatch = selection.clone();
+        mismatch.release = 8;
+        assert!(validate_package_selection(&root, &mismatch).is_err());
+        std::fs::write(root.join("sql.so"), b"legacy SDK").unwrap();
+        assert!(validate_package_selection(&root, &selection).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 

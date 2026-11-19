@@ -83,11 +83,22 @@ impl From<ManifestError> for PackageError {
     }
 }
 
-/// Compile one source with TinyCC, link it to the client-supplied SQL library,
-/// derive metadata from ELF data, and atomically publish query.so plus PMF1,
-/// PSC1 and a SHA-256 sidecar. Build tools get no inherited environment, and
-/// the query library is never loaded or executed here.
+/// Compile one source with TinyCC and publish the legacy package layout,
+/// including the SDK library used only as a link input.
 pub fn package_query(options: &PackageOptions) -> Result<PackageSummary, PackageError> {
+    package_query_inner(options, true)
+}
+
+/// Compile and publish a repository-profile package. The matching SDK shared
+/// library remains a local link input and is not copied into the package.
+pub fn package_query_repository(options: &PackageOptions) -> Result<PackageSummary, PackageError> {
+    package_query_inner(options, false)
+}
+
+fn package_query_inner(
+    options: &PackageOptions,
+    include_sdk_library: bool,
+) -> Result<PackageSummary, PackageError> {
     let source = canonical_regular_file(&options.source, MAX_SOURCE_BYTES)?;
     let sdk_library = canonical_regular_file(&options.sdk_library, MAX_SDK_LIBRARY_BYTES)?;
     let tcc = canonical_compiler(&options.tcc)?;
@@ -158,7 +169,11 @@ pub fn package_query(options: &PackageOptions) -> Result<PackageSummary, Package
     }
     let manifest_bytes = encode_manifest_v1(&manifest)?;
     let artifact_sha256: [u8; 32] = Sha256::digest(&artifact).into();
-    let sql_library = read_bounded_file(&sdk_library, MAX_SDK_LIBRARY_BYTES)?;
+    let sql_library = if include_sdk_library {
+        read_bounded_file(&sdk_library, MAX_SDK_LIBRARY_BYTES)?
+    } else {
+        Vec::new()
+    };
     let sql_library_sha256: [u8; 32] = Sha256::digest(&sql_library).into();
     fs::set_permissions(
         staging.path.join("query.so"),
@@ -171,11 +186,13 @@ pub fn package_query(options: &PackageOptions) -> Result<PackageSummary, Package
         &staging.path.join("artifact.sha256"),
         format!("{}\n", lower_hex(&artifact_sha256)).as_bytes(),
     )?;
-    write_private_file(&staging.path.join("sql.so"), &sql_library)?;
-    write_private_file(
-        &staging.path.join("sql-library.sha256"),
-        format!("{}\n", lower_hex(&sql_library_sha256)).as_bytes(),
-    )?;
+    if include_sdk_library {
+        write_private_file(&staging.path.join("sql.so"), &sql_library)?;
+        write_private_file(
+            &staging.path.join("sql-library.sha256"),
+            format!("{}\n", lower_hex(&sql_library_sha256)).as_bytes(),
+        )?;
+    }
     File::open(&staging.path)?.sync_all()?;
     staging.publish(&package_dir)?;
 

@@ -943,7 +943,7 @@ impl SubmissionClient {
         }) {
             return Err(ClientSubmitError::InvalidPackage);
         }
-        let package = read_package(package_dir)?;
+        let package = read_package(package_dir, self.repository_sdk_library)?;
         let artifact_hash: [u8; 32] = Sha256::digest(&package.artifact).into();
         let sql_library_hash: [u8; 32] = Sha256::digest(&package.sql_library).into();
         let parameter_hash: [u8; 32] = Sha256::digest(parameters).into();
@@ -7981,16 +7981,28 @@ impl StartedInvocation<'_> {
     }
 }
 
-fn read_package(package_dir: &std::path::Path) -> Result<PackageBytes, ClientSubmitError> {
+fn read_package(
+    package_dir: &std::path::Path,
+    repository_sdk_library: bool,
+) -> Result<PackageBytes, ClientSubmitError> {
     let metadata = fs::symlink_metadata(package_dir)?;
     if !metadata.is_dir() || metadata.permissions().mode() & 0o077 != 0 {
         return Err(ClientSubmitError::InvalidPackage);
     }
     let artifact = read_private_file(&package_dir.join("query.so"), MAX_PACKAGE_ARCHIVE_BYTES)?;
-    let sql_library = read_private_file(
-        &package_dir.join("sql.so"),
-        crate::supervisor::MAX_SQL_LIBRARY_BYTES,
-    )?;
+    let sql_library = if repository_sdk_library {
+        if std::fs::symlink_metadata(package_dir.join("sql.so")).is_ok()
+            || std::fs::symlink_metadata(package_dir.join("sql-library.sha256")).is_ok()
+        {
+            return Err(ClientSubmitError::InvalidPackage);
+        }
+        Vec::new()
+    } else {
+        read_private_file(
+            &package_dir.join("sql.so"),
+            crate::supervisor::MAX_SQL_LIBRARY_BYTES,
+        )?
+    };
     let manifest = read_private_file(
         &package_dir.join("manifest.pmf1"),
         MAX_MANIFEST_BYTES as u64,
@@ -8001,7 +8013,11 @@ fn read_package(package_dir: &std::path::Path) -> Result<PackageBytes, ClientSub
     )?;
     let expected_hash = read_private_file(&package_dir.join("artifact.sha256"), 65)?;
     let calculated_hash: [u8; 32] = Sha256::digest(&artifact).into();
-    let library_hash = read_private_file(&package_dir.join("sql-library.sha256"), 65)?;
+    let library_hash = if repository_sdk_library {
+        Vec::new()
+    } else {
+        read_private_file(&package_dir.join("sql-library.sha256"), 65)?
+    };
     let calculated_library_hash: [u8; 32] = Sha256::digest(&sql_library).into();
     if artifact.is_empty()
         || decode_manifest_v1(&manifest).is_err()
@@ -8011,11 +8027,12 @@ fn read_package(package_dir: &std::path::Path) -> Result<PackageBytes, ClientSub
         || !decode_lower_hex(std::str::from_utf8(&expected_hash[..64]).unwrap_or(""), 32)
         || decode_hex_array::<32>(std::str::from_utf8(&expected_hash[..64]).unwrap_or(""))
             != Some(calculated_hash)
-        || sql_library.is_empty()
-        || library_hash.len() != 65
-        || library_hash[64] != b'\n'
-        || decode_hex_array::<32>(std::str::from_utf8(&library_hash[..64]).unwrap_or(""))
-            != Some(calculated_library_hash)
+        || !repository_sdk_library
+            && (sql_library.is_empty()
+                || library_hash.len() != 65
+                || library_hash[64] != b'\n'
+                || decode_hex_array::<32>(std::str::from_utf8(&library_hash[..64]).unwrap_or(""))
+                    != Some(calculated_library_hash))
     {
         return Err(ClientSubmitError::InvalidPackage);
     }

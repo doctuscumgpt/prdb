@@ -1,4 +1,4 @@
-use prdb_engine::client_package::{PackageOptions, package_query};
+use prdb_engine::client_package::{PackageOptions, package_query, package_query_repository};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -6,11 +6,12 @@ const USAGE: &str = "Usage: prdb-packager \\
   --source FILE --sdk-library FILE --shared-linker FILE \\
   --include-dir DIR --scope FILE --output-dir DIR \\
   --abi 1|2|3|4 --sdk-release NUMBER --cpu-baseline NAME --runtime-profile NAME \\
-  --compiler-identity TEXT [--tcc FILE]\n\n\
+  --compiler-identity TEXT [--tcc FILE] [--legacy-package]\n\n\
 Compiles one C source with TinyCC, links it to the selected SQL SDK shared release, \\
 validates the final ELF without loading it, \\
-and atomically publishes query.so, sql.so, manifest.pmf1, requested_scope.psc1, and \\
-both SHA-256 sidecars. The compiler subprocess has a cleared environment, resource \\
+and atomically publishes query.so, manifest.pmf1, requested_scope.psc1, and artifact digest. \\
+The SDK library remains a local link input and is omitted from the package by default. \\
+The temporary --legacy-package option includes sql.so for legacy peers. The compiler subprocess has a cleared environment, resource \\
 limits, and a 60-second wall-clock bound.";
 
 fn main() -> std::process::ExitCode {
@@ -26,6 +27,7 @@ fn main() -> std::process::ExitCode {
 fn run() -> Result<(), String> {
     let mut arguments = std::env::args_os().skip(1);
     let mut fields = HashMap::<String, std::ffi::OsString>::new();
+    let mut legacy_package = false;
     while let Some(option) = arguments.next() {
         if option == "--help" || option == "-h" {
             println!("{USAGE}");
@@ -34,6 +36,13 @@ fn run() -> Result<(), String> {
         let option = option
             .into_string()
             .map_err(|_| "options must be UTF-8".to_owned())?;
+        if option == "--legacy-package" {
+            if legacy_package {
+                return Err("duplicate option --legacy-package".to_owned());
+            }
+            legacy_package = true;
+            continue;
+        }
         if !option.starts_with("--") {
             return Err(format!("unexpected argument {option}; use --help"));
         }
@@ -72,7 +81,7 @@ fn run() -> Result<(), String> {
             fields.keys().next().expect("nonempty option map")
         ));
     }
-    let summary = package_query(&PackageOptions {
+    let options = PackageOptions {
         tcc,
         shared_linker,
         patchelf,
@@ -86,7 +95,12 @@ fn run() -> Result<(), String> {
         cpu_baseline,
         runtime_profile,
         compiler_identity,
-    })
+    };
+    let summary = if legacy_package {
+        package_query(&options)
+    } else {
+        package_query_repository(&options)
+    }
     .map_err(|error| error.to_string())?;
     println!(
         "package={} artifact_bytes={} sha256={} sql_library_bytes={} sql_library_sha256={}",

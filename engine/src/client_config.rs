@@ -271,6 +271,9 @@ impl ClientConfig {
             let mut profile_names = std::collections::HashSet::new();
             let mut usernames = std::collections::HashSet::new();
             let mut default_found = false;
+            if instance.credentials.is_empty() || instance.credentials.len() > 16 {
+                return Err(invalid("each instance requires 1..=16 credential profiles"));
+            }
             for credential in &instance.credentials {
                 if !valid_identifier(&credential.name)
                     || !profile_names.insert(credential.name.as_str())
@@ -328,9 +331,7 @@ impl ClientConfig {
     }
 
     pub fn load(path: &Path) -> Result<Self, ClientConfigError> {
-        let parent = path
-            .parent()
-            .ok_or_else(|| invalid("config path has no parent"))?;
+        let parent = config_parent(path)?;
         let directory = open_directory(parent)?;
         validate_directory_metadata(&directory.metadata()?)?;
         let mut options = OpenOptions::new();
@@ -349,9 +350,7 @@ impl ClientConfig {
 
     pub fn save_atomic(&self, path: &Path) -> Result<(), ClientConfigError> {
         self.validate()?;
-        let parent = path
-            .parent()
-            .ok_or_else(|| invalid("config path has no parent"))?;
+        let parent = config_parent(path)?;
         let existed = parent.exists();
         fs::create_dir_all(parent)?;
         if !existed {
@@ -438,6 +437,14 @@ fn open_directory(path: &Path) -> Result<File, ClientConfigError> {
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
     Ok(options.open(path)?)
+}
+
+fn config_parent(path: &Path) -> Result<&Path, ClientConfigError> {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => Ok(parent),
+        Some(_) => Ok(Path::new(".")),
+        None => Err(invalid("config path has no parent")),
+    }
 }
 
 fn temporary_path(path: &Path) -> PathBuf {

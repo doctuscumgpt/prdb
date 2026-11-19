@@ -1583,6 +1583,7 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         sdk_build.join("releases/linux-x86_64/x86_64-v1/test-runtime/sdk-1-abis1,2,3,4,5");
     let library = release_dir.join("libprdb_sql.so.1");
     let status = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
+        .arg("--legacy-package")
         .arg("--source")
         .arg(&source)
         .arg("--sdk-library")
@@ -1907,6 +1908,44 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
     );
     server.join().unwrap();
 
+    let repository_package = temp.join("repository-package");
+    let repository_packager = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
+        .arg("--source")
+        .arg(&source)
+        .arg("--sdk-library")
+        .arg(&library)
+        .arg("--shared-linker")
+        .arg("cc")
+        .arg("--include-dir")
+        .arg(root.join("engine/include"))
+        .arg("--scope")
+        .arg(&scope)
+        .arg("--output-dir")
+        .arg(&repository_package)
+        .args([
+            "--abi",
+            "4",
+            "--sdk-release",
+            "1",
+            "--cpu-baseline",
+            "x86_64-v1",
+            "--runtime-profile",
+            "test-runtime",
+            "--compiler-identity",
+            "TinyCC integration test",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        repository_packager.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&repository_packager.stdout),
+        String::from_utf8_lossy(&repository_packager.stderr)
+    );
+    assert!(repository_package.join("query.so").is_file());
+    assert!(repository_package.join("manifest.pmf1").is_file());
+    assert!(!repository_package.join("sql.so").exists());
+    assert!(!repository_package.join("sql-library.sha256").exists());
     let repository_artifact = artifact.clone();
     let repository_manifest = manifest_bytes.clone();
     let repository_scope = scope_bytes.clone();
@@ -1985,7 +2024,12 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
     assert_eq!(repository_secret, [0; 32]);
     assert_eq!(
         repository_client
-            .upload_and_seal(&package, &parameters, 30_000, WorkloadClass::Operational,)
+            .upload_and_seal(
+                &repository_package,
+                &parameters,
+                30_000,
+                WorkloadClass::Operational,
+            )
             .unwrap(),
         [2; 16]
     );

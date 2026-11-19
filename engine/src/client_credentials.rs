@@ -47,6 +47,46 @@ struct LoadedCredential {
 }
 
 impl ClientCredentialProfiles {
+    /// Build profiles from already-validated persistent client configuration.
+    /// Secrets enter this API in zeroizing buffers and remain zeroizing in
+    /// the profile set for each future authenticated connection.
+    pub fn from_material(
+        default_username: &str,
+        profiles: Vec<(String, [u8; 16], Zeroizing<[u8; TOKEN_SECRET_BYTES]>)>,
+    ) -> Result<Self, ClientCredentialFileError> {
+        if !is_normalized_database_username(default_username) {
+            return Err(ClientCredentialFileError::InvalidUsername);
+        }
+        if profiles.is_empty() || profiles.len() > MAX_CLIENT_CREDENTIAL_PROFILES {
+            return Err(ClientCredentialFileError::TooManyProfiles);
+        }
+        let mut loaded = HashMap::with_capacity(profiles.len());
+        for (username, token_id, token_secret) in profiles {
+            if !is_normalized_database_username(&username) {
+                return Err(ClientCredentialFileError::InvalidUsername);
+            }
+            if loaded
+                .insert(
+                    username,
+                    LoadedCredential {
+                        token_id,
+                        token_secret,
+                    },
+                )
+                .is_some()
+            {
+                return Err(ClientCredentialFileError::DuplicateUsername);
+            }
+        }
+        if !loaded.contains_key(default_username) {
+            return Err(ClientCredentialFileError::InvalidUsername);
+        }
+        Ok(Self {
+            default_username: default_username.to_owned(),
+            profiles: loaded,
+        })
+    }
+
     /// Load a default profile and up to fifteen additional named profiles.
     /// Every file is validated by the existing no-follow, owner, mode, and
     /// canonical-format checks in [`read_client_credentials`].
@@ -355,6 +395,34 @@ mod tests {
             token_id: [1; 16],
             token_secret: [2; TOKEN_SECRET_BYTES],
         }
+    }
+
+    #[test]
+    fn in_memory_profiles_keep_default_and_named_credentials_zeroizing() {
+        let profiles = ClientCredentialProfiles::from_material(
+            "alice",
+            vec![
+                ("alice".to_owned(), [1; 16], Zeroizing::new([2; 32])),
+                ("bob".to_owned(), [3; 16], Zeroizing::new([4; 32])),
+            ],
+        )
+        .unwrap();
+        assert!(profiles.contains_username("alice"));
+        assert!(profiles.contains_username("bob"));
+        assert!(!profiles.contains_username("carol"));
+        let (token_id, token_secret) = profiles.authentication_material("bob").unwrap();
+        assert_eq!(token_id, [3; 16]);
+        assert_eq!(*token_secret, [4; 32]);
+        assert!(matches!(
+            ClientCredentialProfiles::from_material(
+                "alice",
+                vec![
+                    ("alice".to_owned(), [1; 16], Zeroizing::new([2; 32])),
+                    ("alice".to_owned(), [3; 16], Zeroizing::new([4; 32])),
+                ],
+            ),
+            Err(ClientCredentialFileError::DuplicateUsername)
+        ));
     }
 
     #[test]
