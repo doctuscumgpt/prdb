@@ -1,4 +1,8 @@
 use prdb_engine::authorization::Operation;
+use prdb_engine::client_config::{
+    ClientConfig, ClientCredential, ClientInstance, ClientTools, SdkSelection, default_config_path,
+    encode_token_secret,
+};
 use prdb_engine::client_credentials::{
     ClientCredentialProfiles, read_client_credentials, remove_client_credentials,
     write_client_credentials,
@@ -14,12 +18,13 @@ use prdb_engine::client_submit::{
     AdminClient, AdminColumnDefault, AdminColumnDefinition, AdminCreatePolicyRequest,
     AdminObjectGrantTarget, AdminObjectPrivilege, AdminPolicyEffect, AdminPolicyKind,
     AdminPolicyOperation, AdminPolicyRecipient, AdminSystemPrivilege, CancellationResult,
-    ClientResultEvent, InvocationStatus, SubmissionClient, TerminalOutcome,
+    ClientResultEvent, InvocationStatus, SdkLibraryInfo, SubmissionClient, TerminalOutcome,
 };
 use prdb_engine::interactive_sql::{InteractiveStatement, parse_interactive_sql};
 use prdb_engine::submission_scope::RequestedScopeBuilder;
 use prdb_engine::supervisor::{MAX_PARAMETER_BYTES, WorkloadClass};
 use prdb_engine::tuple::{ScalarType, ScalarValue};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, IsTerminal, Read, Write};
@@ -27,9 +32,13 @@ use std::net::SocketAddr;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 const USAGE: &str = "Usage:\n\
+  prdb-client instance list [--config FILE]\n\
+  prdb-client instance show [--instance NAME] [--config FILE]\n\
+  prdb-client instance set --instance NAME --address IP --port N [SDK options] \\\n    --default-credential PROFILE --username USER --credentials FILE \\\n    [--include-dir DIR --tcc FILE --shared-linker FILE --patchelf FILE] \\\n    [--make-default true|false] [--config FILE]\n\
+  prdb-client sdk-library list|select|install|remove --instance NAME [options]\n\
   prdb-client submit --address IP:PORT --credentials FILE --package DIR --receipt FILE \\\n    [--parameters FILE] [--deadline-ms N] [--workload operational|analytical]\n\
   prdb-client run-sql --address IP:PORT --credentials FILE --sql-file FILE|- --schema NAME \\
     --scope FILE --receipt FILE --sdk-library FILE --include-dir DIR --sdk-release N \\
@@ -136,9 +145,17 @@ fn run() -> Result<(), String> {
         println!("{USAGE}");
         return Ok(());
     }
-    let command = command
+    let mut command = command
         .into_string()
         .map_err(|_| "command must be UTF-8".to_owned())?;
+    if command == "instance" || command == "sdk-library" {
+        let subcommand = arguments
+            .next()
+            .ok_or_else(|| format!("missing {command} subcommand"))?
+            .into_string()
+            .map_err(|_| "subcommand must be UTF-8".to_owned())?;
+        command = format!("{command} {subcommand}");
+    }
     let mut fields = HashMap::<String, std::ffi::OsString>::new();
     let mut credential_profile_options = Vec::new();
     while let Some(option) = arguments.next() {
@@ -159,9 +176,17 @@ fn run() -> Result<(), String> {
             credential_profile_options.push(value);
             continue;
         }
+        if command == "instance set" && option == "--credential-profile" {
+            credential_profile_options.push(value);
+            continue;
+        }
         if fields.insert(option.clone(), value).is_some() {
             return Err(format!("duplicate option {option}"));
         }
+    }
+
+    if command.starts_with("instance ") || command.starts_with("sdk-library ") {
+        return run_client_config_command(&command, &mut fields, &credential_profile_options);
     }
 
     if command == "credential-remove" {
@@ -280,6 +305,410 @@ fn admin_sql(
     let credentials =
         read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
     admin_sql_with_credentials(address, credentials, &sql_bytes)
+}
+
+fn run_client_config_command(
+    command: &str,
+    fields: &mut HashMap<String, std::ffi::OsString>,
+    credential_profile_options: &[std::ffi::OsString],
+) -> Result<(), String> {
+    let config_path = fields
+        .remove("--config")
+        .map(PathBuf::from)
+        .map(Ok)
+        .unwrap_or_else(default_config_path)
+        .map_err(|error| error.to_string())?;
+    let mut config = match ClientConfig::load(&config_path) {
+        Ok(config) => config,
+        Err(prdb_engine::client_config::ClientConfigError::Io(error))
+            if error.kind() == io::ErrorKind::NotFound =>
+        {
+            ClientConfig::empty()
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+
+    match command {
+        "instance list" => {
+            reject_unknown(fields)?;
+            for instance in &config.instances {
+                let marker = if config.default_instance.as_deref() == Some(&instance.name) {
+                    " *"
+                } else {
+                    ""
+                };
+                println!(
+                    "{} {}:{}{}",
+                    instance.name, instance.address, instance.port, marker
+                );
+            }
+            Ok(())
+        }
+        "instance show" => {
+            let name = take_optional_text(fields, "--instance")?;
+            reject_unknown(fields)?;
+            let instance = config
+                .instance(name.as_deref())
+                .map_err(|error| error.to_string())?;
+            println!(
+                "{} {}:{} sdk={} abi={} target={} cpu={} runtime={}",
+                instance.name,
+                instance.address,
+                instance.port,
+                instance.sdk.release,
+                instance.sdk.native_abi,
+                instance.sdk.target,
+                instance.sdk.cpu_baseline,
+                instance.sdk.runtime_profile
+            );
+            Ok(())
+        }
+        "instance set" => {
+            let name = take_text(fields, "--instance")?;
+            let address = take_text(fields, "--address")?;
+            let port = take_text(fields, "--port")?
+                .parse::<u16>()
+                .map_err(|_| "--port must be in 1..65535".to_owned())?;
+            let sdk_options = [
+                "--release",
+                "--target",
+                "--cpu-baseline",
+                "--runtime-profile",
+                "--abi",
+            ]
+            .map(|option| take_optional_text(fields, option))
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+            let old_sdk = config
+                .instances
+                .iter()
+                .find(|instance| instance.name == name)
+                .map(|instance| instance.sdk.clone());
+            let sdk = if sdk_options.iter().all(Option::is_none) {
+                old_sdk.ok_or_else(|| "new instances require --release, --target, --cpu-baseline, --runtime-profile, and --abi".to_owned())?
+            } else if sdk_options.iter().all(Option::is_some) {
+                SdkSelection {
+                    release: sdk_options[0]
+                        .as_ref()
+                        .unwrap()
+                        .parse::<u32>()
+                        .map_err(|_| "--release must be a nonzero integer".to_owned())?,
+                    target: sdk_options[1].clone().unwrap(),
+                    cpu_baseline: sdk_options[2].clone().unwrap(),
+                    runtime_profile: sdk_options[3].clone().unwrap(),
+                    native_abi: sdk_options[4]
+                        .as_ref()
+                        .unwrap()
+                        .parse::<u8>()
+                        .map_err(|_| "--abi must be a supported integer".to_owned())?,
+                }
+            } else {
+                return Err("supply all five SDK options together, or omit them to preserve the current selection".to_owned());
+            };
+            let tool_options = ["--include-dir", "--tcc", "--shared-linker", "--patchelf"]
+                .map(|option| take_optional_text(fields, option))
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?;
+            if tool_options.iter().all(Option::is_some) {
+                config.client_tools = Some(ClientTools {
+                    include_dir: tool_options[0].clone().unwrap(),
+                    tcc: tool_options[1].clone().unwrap(),
+                    shared_linker: tool_options[2].clone().unwrap(),
+                    patchelf: tool_options[3].clone().unwrap(),
+                });
+            } else if !tool_options.iter().all(Option::is_none) {
+                return Err(
+                    "supply --include-dir, --tcc, --shared-linker, and --patchelf together"
+                        .to_owned(),
+                );
+            }
+            let default_credential = take_text(fields, "--default-credential")?;
+            let username = take_text(fields, "--username")?;
+            let credentials_path = take_path(fields, "--credentials")?;
+            let make_default = fields
+                .remove("--make-default")
+                .map(|value| {
+                    value
+                        .into_string()
+                        .map_err(|_| "--make-default must be true or false".to_owned())
+                })
+                .transpose()?
+                .map(|value| match value.as_str() {
+                    "true" => Ok(true),
+                    "false" => Ok(false),
+                    _ => Err("--make-default must be true or false".to_owned()),
+                })
+                .transpose()?
+                .unwrap_or(config.default_instance.is_none());
+            reject_unknown(fields)?;
+            let credential = client_credential_from_file(
+                default_credential.clone(),
+                username,
+                credentials_path,
+            )?;
+            let mut credentials = config
+                .instances
+                .iter()
+                .find(|instance| instance.name == name)
+                .map(|instance| instance.credentials.clone())
+                .unwrap_or_default();
+            if let Some(existing) = credentials
+                .iter_mut()
+                .find(|entry| entry.name == default_credential)
+            {
+                *existing = credential;
+            } else {
+                credentials.push(credential);
+            }
+            for profile_option in credential_profile_options {
+                let value = profile_option
+                    .clone()
+                    .into_string()
+                    .map_err(|_| "--credential-profile must be UTF-8".to_owned())?;
+                let (profile_name, rest) = value
+                    .split_once('=')
+                    .ok_or_else(|| "--credential-profile must be NAME=USERNAME=FILE".to_owned())?;
+                let (profile_username, profile_path) = rest
+                    .split_once('=')
+                    .ok_or_else(|| "--credential-profile must be NAME=USERNAME=FILE".to_owned())?;
+                if profile_name.is_empty() || profile_username.is_empty() || profile_path.is_empty()
+                {
+                    return Err("--credential-profile must be NAME=USERNAME=FILE".to_owned());
+                }
+                let named = client_credential_from_file(
+                    profile_name.to_owned(),
+                    profile_username.to_owned(),
+                    PathBuf::from(profile_path),
+                )?;
+                if let Some(existing) = credentials
+                    .iter_mut()
+                    .find(|entry| entry.name == profile_name)
+                {
+                    *existing = named;
+                } else {
+                    credentials.push(named);
+                }
+            }
+            config.upsert_instance(
+                ClientInstance {
+                    name: name.clone(),
+                    address,
+                    port,
+                    sdk,
+                    default_credential,
+                    credentials,
+                },
+                make_default,
+            );
+            config
+                .save_atomic(&config_path)
+                .map_err(|error| error.to_string())
+        }
+        "sdk-library list"
+        | "sdk-library select"
+        | "sdk-library install"
+        | "sdk-library remove" => {
+            let name = take_optional_text(fields, "--instance")?;
+            let instance = config
+                .instance(name.as_deref())
+                .map_err(|error| error.to_string())?
+                .clone();
+            let credential = instance
+                .credentials
+                .iter()
+                .find(|entry| entry.name == instance.default_credential)
+                .ok_or_else(|| "default credential profile is missing".to_owned())?;
+            let address = format!("{}:{}", instance.address, instance.port)
+                .parse::<SocketAddr>()
+                .map_err(|_| "configured endpoint is invalid".to_owned())?;
+            let token_id = credential
+                .token_id_bytes()
+                .map_err(|error| error.to_string())?;
+            let mut token_secret = credential
+                .token_secret_bytes()
+                .map_err(|error| error.to_string())?;
+            let mut client =
+                AdminClient::connect_authenticated(address, token_id, &mut token_secret)
+                    .map_err(|error| error.to_string())?;
+            match command {
+                "sdk-library list" => {
+                    reject_unknown(fields)?;
+                    for release in client
+                        .list_sdk_libraries()
+                        .map_err(|error| error.to_string())?
+                    {
+                        println!(
+                            "{} abi={:?} target={} cpu={} runtime={} bytes={} sha256={}",
+                            release.sdk_release,
+                            release.native_abis,
+                            release.target,
+                            release.cpu_baseline,
+                            release.runtime_profile,
+                            release.library_bytes,
+                            lower_hex(&release.sha256)
+                        );
+                    }
+                    Ok(())
+                }
+                "sdk-library select" => {
+                    let release = take_text(fields, "--release")?
+                        .parse::<u32>()
+                        .map_err(|_| "--release must be a nonzero integer".to_owned())?;
+                    let abi = take_text(fields, "--abi")?
+                        .parse::<u8>()
+                        .map_err(|_| "--abi must be a supported integer".to_owned())?;
+                    reject_unknown(fields)?;
+                    let listed = client
+                        .list_sdk_libraries()
+                        .map_err(|error| error.to_string())?;
+                    let selected = listed
+                        .into_iter()
+                        .find(|entry| entry.sdk_release == release)
+                        .ok_or_else(|| {
+                            "requested SDK release is not installed on this instance".to_owned()
+                        })?;
+                    if !selected.native_abis.contains(&abi) {
+                        return Err(
+                            "requested native ABI is not provided by this release".to_owned()
+                        );
+                    }
+                    verify_local_sdk_build(
+                        &config_path,
+                        config.client_tools.as_ref(),
+                        &selected,
+                        abi,
+                    )?;
+                    let current = config
+                        .instances
+                        .iter_mut()
+                        .find(|entry| entry.name == instance.name)
+                        .ok_or_else(|| "configured instance was not found".to_owned())?;
+                    current.sdk = SdkSelection {
+                        release,
+                        target: selected.target,
+                        cpu_baseline: selected.cpu_baseline,
+                        runtime_profile: selected.runtime_profile,
+                        native_abi: abi,
+                    };
+                    config
+                        .save_atomic(&config_path)
+                        .map_err(|error| error.to_string())
+                }
+                "sdk-library install" => {
+                    let metadata_path = take_path(fields, "--metadata")?;
+                    let library_path = take_path(fields, "--library")?;
+                    reject_unknown(fields)?;
+                    let metadata = fs::read(metadata_path).map_err(|error| error.to_string())?;
+                    let library = fs::read(library_path).map_err(|error| error.to_string())?;
+                    let release = client
+                        .install_sdk_library(&metadata, &library)
+                        .map_err(|error| error.to_string())?;
+                    println!(
+                        "installed SDK release {} ({})",
+                        release.sdk_release,
+                        lower_hex(&release.sha256)
+                    );
+                    Ok(())
+                }
+                "sdk-library remove" => {
+                    let release = take_text(fields, "--release")?
+                        .parse::<u32>()
+                        .map_err(|_| "--release must be a nonzero integer".to_owned())?;
+                    reject_unknown(fields)?;
+                    let removed = client
+                        .remove_sdk_library(release)
+                        .map_err(|error| error.to_string())?;
+                    println!("removed SDK release {release} ({removed} bytes)");
+                    Ok(())
+                }
+                _ => unreachable!(),
+            }
+        }
+        _ => Err(format!("unknown command {command}\n{USAGE}")),
+    }
+}
+
+fn client_credential_from_file(
+    name: String,
+    username: String,
+    credentials_path: PathBuf,
+) -> Result<ClientCredential, String> {
+    let mut material =
+        read_client_credentials(credentials_path).map_err(|error| error.to_string())?;
+    let credential = ClientCredential {
+        name,
+        username,
+        token_id: lower_hex(&material.token_id),
+        token_secret: encode_token_secret(&material.token_secret),
+    };
+    material.token_secret.zeroize();
+    Ok(credential)
+}
+
+fn verify_local_sdk_build(
+    config_path: &Path,
+    tools: Option<&prdb_engine::client_config::ClientTools>,
+    release_info: &SdkLibraryInfo,
+    native_abi: u8,
+) -> Result<(), String> {
+    let release = release_info.sdk_release;
+    let tools = tools.ok_or_else(|| {
+        "configure client_tools.include_dir before selecting an SDK release".to_owned()
+    })?;
+    let include = PathBuf::from(&tools.include_dir);
+    let include = if include.is_absolute() {
+        include
+    } else {
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(include)
+    };
+    let sdk_root = include
+        .parent()
+        .ok_or_else(|| "client_tools.include_dir must be inside an SDK directory".to_owned())?;
+    let release_root = sdk_root
+        .join("releases")
+        .join(&release_info.target)
+        .join(&release_info.cpu_baseline)
+        .join(&release_info.runtime_profile);
+    let prefix = format!("sdk-{release}-abis");
+    let entries = fs::read_dir(&release_root).map_err(|_| {
+        format!(
+            "matching local SDK release {release} is not installed under {}",
+            release_root.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let entry_name = entry.file_name();
+        let Some(abi_list) = entry_name
+            .to_string_lossy()
+            .strip_prefix(&prefix)
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if !abi_list
+            .split(',')
+            .any(|value| value == native_abi.to_string())
+        {
+            continue;
+        }
+        let library_path = entry.path().join(format!("libprdb_sql.so.{release}"));
+        let metadata = fs::metadata(&library_path).map_err(|error| error.to_string())?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 128 * 1024 * 1024 {
+            continue;
+        }
+        let library = fs::read(&library_path).map_err(|error| error.to_string())?;
+        if Sha256::digest(&library).as_slice() == release_info.sha256 {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "matching local SDK release {release} is not installed under {}",
+        release_root.display()
+    ))
 }
 
 fn admin_sql_with_credentials(
@@ -4471,6 +4900,20 @@ fn reject_unknown(fields: &HashMap<String, std::ffi::OsString>) -> Result<(), St
     }
 }
 
+fn take_optional_text(
+    fields: &mut HashMap<String, std::ffi::OsString>,
+    name: &str,
+) -> Result<Option<String>, String> {
+    fields
+        .remove(name)
+        .map(|value| {
+            value
+                .into_string()
+                .map_err(|_| format!("{name} must be UTF-8"))
+        })
+        .transpose()
+}
+
 fn take_path(
     fields: &mut HashMap<String, std::ffi::OsString>,
     name: &str,
@@ -4565,6 +5008,136 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn instance_set_preserves_sdk_selection_and_updates_endpoint_credentials() {
+        let root = std::env::temp_dir().join(format!(
+            "prdb-client-instance-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config_path = root.join("client.json");
+        let credential_path = root.join("credential.json");
+        let named_credential_path = root.join("runas.json");
+        let config = ClientConfig {
+            format: prdb_engine::client_config::CONFIG_FORMAT.to_owned(),
+            default_instance: Some("dev".to_owned()),
+            client_tools: None,
+            instances: vec![ClientInstance {
+                name: "dev".to_owned(),
+                address: "127.0.0.1".to_owned(),
+                port: 7443,
+                sdk: SdkSelection {
+                    release: 7,
+                    target: "linux-x86_64".to_owned(),
+                    cpu_baseline: "x86_64-v1".to_owned(),
+                    runtime_profile: "glibc-test".to_owned(),
+                    native_abi: 4,
+                },
+                default_credential: "alice".to_owned(),
+                credentials: vec![ClientCredential {
+                    name: "alice".to_owned(),
+                    username: "alice".to_owned(),
+                    token_id: "00".repeat(16),
+                    token_secret: encode_token_secret(&[0; 32]),
+                }],
+            }],
+        };
+        config.save_atomic(&config_path).unwrap();
+        let credentials = ClientCredentials {
+            token_id: [0x12; 16],
+            token_secret: [0x34; 32],
+        };
+        write_client_credentials(&credential_path, &credentials).unwrap();
+        drop(credentials);
+        let runas = ClientCredentials {
+            token_id: [0x56; 16],
+            token_secret: [0x78; 32],
+        };
+        write_client_credentials(&named_credential_path, &runas).unwrap();
+        drop(runas);
+        let mut fields = HashMap::from([
+            ("--config".to_owned(), config_path.clone().into_os_string()),
+            ("--instance".to_owned(), "dev".into()),
+            ("--address".to_owned(), "192.0.2.8".into()),
+            ("--port".to_owned(), "7444".into()),
+            ("--default-credential".to_owned(), "alice".into()),
+            ("--username".to_owned(), "alice".into()),
+            ("--credentials".to_owned(), credential_path.into_os_string()),
+        ]);
+        run_client_config_command(
+            "instance set",
+            &mut fields,
+            &[std::ffi::OsString::from(format!(
+                "runas=bob={}",
+                named_credential_path.display()
+            ))],
+        )
+        .unwrap();
+        let updated = ClientConfig::load(&config_path).unwrap();
+        let instance = updated.instance(None).unwrap();
+        assert_eq!(instance.address, "192.0.2.8");
+        assert_eq!(instance.port, 7444);
+        assert_eq!(instance.sdk.release, 7);
+        assert_eq!(instance.sdk.native_abi, 4);
+        assert_eq!(instance.credentials[0].token_id, "12".repeat(16));
+        assert_eq!(instance.credentials[1].name, "runas");
+        assert_eq!(instance.credentials[1].username, "bob");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sdk_selection_requires_exact_local_release_profile_abi_and_digest() {
+        let root = std::env::temp_dir().join(format!(
+            "prdb-client-sdk-selection-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let include = root.join("sdk/include");
+        let release = root.join("sdk/releases/linux-x86_64/x86_64-v1/glibc-test/sdk-3-abis1,4");
+        std::fs::create_dir_all(&include).unwrap();
+        std::fs::create_dir_all(&release).unwrap();
+        let bytes = b"matching sdk release";
+        std::fs::write(release.join("libprdb_sql.so.3"), bytes).unwrap();
+        std::fs::write(release.join("sdk-release.json"), b"metadata").unwrap();
+        let tools = ClientTools {
+            include_dir: include.display().to_string(),
+            tcc: "tcc".to_owned(),
+            shared_linker: "cc".to_owned(),
+            patchelf: "patchelf".to_owned(),
+        };
+        let digest: [u8; 32] = Sha256::digest(bytes).into();
+        let info = SdkLibraryInfo {
+            sdk_release: 3,
+            native_abis: vec![1, 4],
+            target: "linux-x86_64".to_owned(),
+            cpu_baseline: "x86_64-v1".to_owned(),
+            runtime_profile: "glibc-test".to_owned(),
+            soname: "libprdb_sql.so.3".to_owned(),
+            sha256: digest,
+            needed: vec!["libc.so.6".to_owned()],
+            library_bytes: bytes.len() as u64,
+        };
+        assert!(verify_local_sdk_build(&root.join("client.json"), Some(&tools), &info, 4,).is_ok());
+        assert!(
+            verify_local_sdk_build(&root.join("client.json"), Some(&tools), &info, 2,).is_err()
+        );
+        let mut bad_digest = info.clone();
+        bad_digest.sha256 = [0; 32];
+        assert!(
+            verify_local_sdk_build(&root.join("client.json"), Some(&tools), &bad_digest, 4,)
+                .is_err()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn interactive_script_rejects_invalid_transaction_placement_before_dispatch() {
