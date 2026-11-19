@@ -1588,7 +1588,6 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         sdk_build.join("releases/linux-x86_64/x86_64-v1/test-runtime/sdk-1-abis1,2,3,4,5");
     let library = release_dir.join("libprdb_sql.so.1");
     let status = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
-        .arg("--legacy-package")
         .arg("--source")
         .arg(&source)
         .arg("--sdk-library")
@@ -1623,7 +1622,6 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
     );
 
     let artifact = fs::read(package.join("query.so")).unwrap();
-    let supplied_sql_library = fs::read(package.join("sql.so")).unwrap();
     let manifest_bytes = fs::read(package.join("manifest.pmf1")).unwrap();
     let manifest = decode_manifest_v1(&manifest_bytes).unwrap();
     assert_eq!(manifest.native_abi_version, 4);
@@ -1645,14 +1643,8 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         fs::read_to_string(package.join("artifact.sha256")).unwrap(),
         digest
     );
-    assert_eq!(
-        fs::read_to_string(package.join("sql-library.sha256")).unwrap(),
-        Sha256::digest(&supplied_sql_library)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-            + "\n"
-    );
+    assert!(!package.join("sql.so").exists());
+    assert!(!package.join("sql-library.sha256").exists());
     let dynamic = decode_elf_dynamic_info(&artifact).unwrap();
     assert_eq!(dynamic.runpath.as_deref(), Some("$ORIGIN"));
     assert!(dynamic.rpath.is_none());
@@ -1685,20 +1677,6 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
     .unwrap();
     let validator = VersionedSubmissionMetadataValidator::new(profile);
     assert!(!validator.validate_artifact(&metadata, &fs::read(&invalid_runpath_artifact).unwrap()));
-    assert!(validator.validate_sql_library(&metadata, &supplied_sql_library));
-    let invalid_library = temp.join("sql-invalid-runpath.so");
-    fs::write(&invalid_library, &supplied_sql_library).unwrap();
-    assert!(
-        Command::new("patchelf")
-            .arg("--set-rpath")
-            .arg("/tmp")
-            .arg(&invalid_library)
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(!validator.validate_sql_library(&metadata, &fs::read(invalid_library).unwrap()));
-
     let rejected_release = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
         .arg("--source")
         .arg(&source)
@@ -1730,7 +1708,6 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
     assert!(!temp.join("rejected-release-package").exists());
 
     let expected_artifact = artifact.clone();
-    let expected_sql_library = supplied_sql_library.clone();
     let expected_manifest = manifest_bytes.clone();
     let expected_scope = scope_bytes.clone();
     let parameters = vec![0x5a; 300_000];
@@ -1747,7 +1724,7 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         let mut decoder = ClientFrameDecoder::default();
         let hello = read_client_frame(&mut stream, &mut decoder);
         assert_eq!(hello.kind, 1);
-        write_server_response(&mut stream, &hello, br#"{"transport":"plaintext_tcp","limits":{"chunk_bytes":131072,"control_bytes":32768,"payload_bytes":524288},"mode":"query","minor":0,"major":1}"#);
+        write_server_response(&mut stream, &hello, br#"{"transport":"plaintext_tcp","limits":{"chunk_bytes":131072,"control_bytes":32768,"payload_bytes":524288},"mode":"query","sdk_library_mode":"repository","minor":0,"major":1}"#);
         let auth = read_client_frame(&mut stream, &mut decoder);
         assert_eq!(auth.kind, 2);
         let decoded_credentials = decode_client_credentials(&auth.payload).unwrap();
@@ -1762,22 +1739,19 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         );
         let prepare = read_client_frame(&mut stream, &mut decoder);
         assert_eq!(prepare.kind, 3);
+        assert!(
+            String::from_utf8_lossy(&prepare.payload)
+                .contains(r#""sdk_library_mode":"repository""#)
+        );
         let decoded = decode_client_prepare(&prepare.payload).unwrap();
+        assert!(decoded.repository_sdk_library);
         assert_eq!(decoded.artifact_bytes as usize, expected_artifact.len());
-        assert_eq!(
-            decoded.sql_library_bytes as usize,
-            expected_sql_library.len()
-        );
-        assert_eq!(
-            decoded.sql_library_sha256,
-            Sha256::digest(&expected_sql_library).as_slice()
-        );
         assert_eq!(decoded.manifest, expected_manifest);
         assert_eq!(decoded.requested_scope, expected_scope);
         assert_eq!(decoded.parameter_bytes as usize, expected_parameters.len());
         let expected_parameter_hash: [u8; 32] = Sha256::digest(&expected_parameters).into();
         assert_eq!(decoded.parameter_sha256, expected_parameter_hash);
-        write_server_response(&mut stream, &prepare, br#"{"invocation_id":"01010101010101010101010101010101","artifact_chunk_bytes":131072,"parameter_chunk_bytes":131072,"sql_library_chunk_bytes":131072}"#);
+        write_server_response(&mut stream, &prepare, br#"{"invocation_id":"01010101010101010101010101010101","artifact_chunk_bytes":131072,"parameter_chunk_bytes":131072}"#);
         let mut offset = 0usize;
         while offset < expected_artifact.len() {
             let frame = read_client_frame(&mut stream, &mut decoder);
@@ -1811,25 +1785,6 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
                 &mut stream,
                 &frame,
                 format!("{{\"next_offset\":\"{parameter_offset}\"}}").as_bytes(),
-            );
-        }
-        let mut sql_library_offset = 0usize;
-        while sql_library_offset < expected_sql_library.len() {
-            let frame = read_client_frame(&mut stream, &mut decoder);
-            assert_eq!(frame.kind, 12);
-            let chunk = decode_client_chunk(&frame.payload).unwrap();
-            assert_eq!(chunk.invocation_id, [1; 16]);
-            assert_eq!(chunk.offset, sql_library_offset as u64);
-            let next_offset = sql_library_offset + chunk.data.len();
-            assert_eq!(
-                chunk.data,
-                expected_sql_library[sql_library_offset..next_offset]
-            );
-            sql_library_offset = next_offset;
-            write_server_response(
-                &mut stream,
-                &frame,
-                format!("{{\"next_offset\":\"{sql_library_offset}\"}}").as_bytes(),
             );
         }
         let seal = read_client_frame(&mut stream, &mut decoder);
@@ -1988,7 +1943,6 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         assert_eq!(prepare.kind, 3);
         let decoded = decode_client_prepare(&prepare.payload).unwrap();
         assert!(decoded.repository_sdk_library);
-        assert_eq!(decoded.sql_library_bytes, 0);
         assert_eq!(decoded.manifest, repository_manifest);
         assert_eq!(decoded.requested_scope, repository_scope);
         assert_eq!(decoded.artifact_bytes as usize, repository_artifact.len());
@@ -2162,7 +2116,6 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         assert_eq!(prepare.kind, 3);
         let decoded = decode_client_prepare(&prepare.payload).unwrap();
         assert!(decoded.repository_sdk_library);
-        assert_eq!(decoded.sql_library_bytes, 0);
         assert_eq!(decoded.parameter_bytes, 0);
         assert_eq!(decoded.requested_scope, run_sql_scope);
         let manifest = decode_manifest_v1(&decoded.manifest).unwrap();

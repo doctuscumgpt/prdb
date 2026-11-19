@@ -694,10 +694,6 @@ fn build_command(
         &config.scratch_parent,
         submission.invocation_id(),
         submission.artifact(),
-        submission.sql_library(),
-        crate::submission_manifest::decode_manifest_v1(&submission.metadata().manifest)
-            .ok()
-            .map(|manifest| format!("libprdb_sql.so.{}", manifest.sdk_release)),
         submission.sdk_library_pin(),
     )?;
     let parameters = create_sealed_parameters(submission.parameters())?;
@@ -811,8 +807,6 @@ impl PrivateArtifactDirectory {
         parent: &Path,
         invocation_id: [u8; 16],
         artifact: &[u8],
-        sql_library: Option<&[u8]>,
-        sql_library_soname: Option<String>,
         sdk_library_pin: Option<&crate::sdk_registry::SdkLibraryPin>,
     ) -> io::Result<Self> {
         let parent = parent.canonicalize()?;
@@ -854,20 +848,6 @@ impl PrivateArtifactDirectory {
                 .mode(0o500)
                 .open(&staged_library_path)?;
             io::copy(&mut source, &mut staged_library)?;
-            staged_library.sync_all()?;
-            fs::set_permissions(&staged_library_path, fs::Permissions::from_mode(0o500))?;
-        }
-        if let Some(library) = sql_library {
-            let soname = sql_library_soname.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "SQL library SONAME is missing")
-            })?;
-            let staged_library_path = directory.path.join(soname);
-            let mut staged_library = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o500)
-                .open(&staged_library_path)?;
-            staged_library.write_all(library)?;
             staged_library.sync_all()?;
             fs::set_permissions(&staged_library_path, fs::Permissions::from_mode(0o500))?;
         }
@@ -947,8 +927,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&parent);
         std::fs::create_dir(&parent).unwrap();
         let directory =
-            PrivateArtifactDirectory::create(&parent, [7; 16], b"artifact", None, None, None)
-                .unwrap();
+            PrivateArtifactDirectory::create(&parent, [7; 16], b"artifact", None).unwrap();
         assert_eq!(
             std::fs::read(&directory.artifact_path).unwrap(),
             b"artifact"

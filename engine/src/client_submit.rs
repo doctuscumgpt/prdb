@@ -107,7 +107,6 @@ pub struct SubmissionClient {
     max_control_bytes: usize,
     max_chunk_bytes: usize,
     protocol_major: u16,
-    repository_sdk_library: bool,
 }
 
 /// Authenticated control-mode client for permission-filtered metadata reads.
@@ -593,7 +592,6 @@ pub struct StartedInvocation<'a> {
 
 struct PackageBytes {
     artifact: Vec<u8>,
-    sql_library: Vec<u8>,
     manifest: Vec<u8>,
     scope: Vec<u8>,
 }
@@ -622,7 +620,7 @@ impl SubmissionClient {
             timeout,
             crate::client_protocol::ClientMode::Query,
             1,
-            false,
+            true,
         )
     }
 
@@ -640,7 +638,7 @@ impl SubmissionClient {
             DEFAULT_TIMEOUT,
             crate::client_protocol::ClientMode::Query,
             2,
-            false,
+            true,
         )
     }
 
@@ -719,7 +717,6 @@ impl SubmissionClient {
             max_control_bytes: CLIENT_MAX_CONTROL_BYTES,
             max_chunk_bytes: CLIENT_MAX_CHUNK_BYTES,
             protocol_major,
-            repository_sdk_library,
         };
 
         let mode_name = match mode {
@@ -943,37 +940,22 @@ impl SubmissionClient {
         }) {
             return Err(ClientSubmitError::InvalidPackage);
         }
-        let package = read_package(package_dir, self.repository_sdk_library)?;
+        let package = read_package(package_dir)?;
         let artifact_hash: [u8; 32] = Sha256::digest(&package.artifact).into();
-        let sql_library_hash: [u8; 32] = Sha256::digest(&package.sql_library).into();
         let parameter_hash: [u8; 32] = Sha256::digest(parameters).into();
         let workload = match workload_class {
             WorkloadClass::Operational => "operational",
             WorkloadClass::Analytical => "analytical",
         };
-        let mut prepare = if self.repository_sdk_library {
-            format!(
-                "{{\"manifest_version\":1,\"manifest\":\"{}\",\"artifact_bytes\":\"{}\",\"artifact_sha256\":\"{}\",\"parameter_bytes\":\"{}\",\"parameter_sha256\":\"{}\",\"scope_version\":1,\"requested_scope\":\"{}\",\"deadline_ms\":\"{deadline_ms}\",\"workload_class\":\"{workload}\",\"sdk_library_mode\":\"repository\"}}",
-                encode_base64(&package.manifest),
-                package.artifact.len(),
-                lower_hex(&artifact_hash),
-                parameters.len(),
-                lower_hex(&parameter_hash),
-                encode_base64(&package.scope),
-            )
-        } else {
-            format!(
-                "{{\"manifest_version\":1,\"manifest\":\"{}\",\"artifact_bytes\":\"{}\",\"artifact_sha256\":\"{}\",\"sql_library_bytes\":\"{}\",\"sql_library_sha256\":\"{}\",\"parameter_bytes\":\"{}\",\"parameter_sha256\":\"{}\",\"scope_version\":1,\"requested_scope\":\"{}\",\"deadline_ms\":\"{deadline_ms}\",\"workload_class\":\"{workload}\"}}",
-                encode_base64(&package.manifest),
-                package.artifact.len(),
-                lower_hex(&artifact_hash),
-                package.sql_library.len(),
-                lower_hex(&sql_library_hash),
-                parameters.len(),
-                lower_hex(&parameter_hash),
-                encode_base64(&package.scope),
-            )
-        };
+        let mut prepare = format!(
+            "{{\"manifest_version\":1,\"manifest\":\"{}\",\"artifact_bytes\":\"{}\",\"artifact_sha256\":\"{}\",\"parameter_bytes\":\"{}\",\"parameter_sha256\":\"{}\",\"scope_version\":1,\"requested_scope\":\"{}\",\"deadline_ms\":\"{deadline_ms}\",\"workload_class\":\"{workload}\",\"sdk_library_mode\":\"repository\"}}",
+            encode_base64(&package.manifest),
+            package.artifact.len(),
+            lower_hex(&artifact_hash),
+            parameters.len(),
+            lower_hex(&parameter_hash),
+            encode_base64(&package.scope),
+        );
         if let Some((transaction_id, package_id)) = transaction_binding {
             prepare.pop();
             prepare.push_str(&format!(
@@ -1000,26 +982,12 @@ impl SubmissionClient {
             .filter(|bytes| (1..=self.max_chunk_bytes as u64).contains(bytes))
             .ok_or(ClientSubmitError::InvalidResponse)?
             as usize;
-        let sql_library_chunk_bytes = if self.repository_sdk_library {
-            None
-        } else {
-            Some(
-                fields
-                    .get("sql_library_chunk_bytes")
-                    .and_then(ResponseValue::as_number)
-                    .filter(|bytes| (1..=self.max_chunk_bytes as u64).contains(bytes))
-                    .ok_or(ClientSubmitError::InvalidResponse)? as usize,
-            )
-        };
-        if fields.len() != if self.repository_sdk_library { 3 } else { 4 } {
+        if fields.len() != 3 {
             return Err(ClientSubmitError::InvalidResponse);
         }
 
         self.upload_chunks(4, invocation_id, &package.artifact, artifact_chunk_bytes)?;
         self.upload_chunks(5, invocation_id, parameters, parameter_chunk_bytes)?;
-        if let Some(chunk_bytes) = sql_library_chunk_bytes {
-            self.upload_chunks(12, invocation_id, &package.sql_library, chunk_bytes)?;
-        }
         let seal_payload = format!("{{\"invocation_id\":\"{}\"}}", lower_hex(&invocation_id));
         let sealed = self.exchange(6, seal_payload.into_bytes())?;
         let fields = parse_flat_response(&sealed.payload)?;
@@ -7981,28 +7949,17 @@ impl StartedInvocation<'_> {
     }
 }
 
-fn read_package(
-    package_dir: &std::path::Path,
-    repository_sdk_library: bool,
-) -> Result<PackageBytes, ClientSubmitError> {
+fn read_package(package_dir: &std::path::Path) -> Result<PackageBytes, ClientSubmitError> {
     let metadata = fs::symlink_metadata(package_dir)?;
     if !metadata.is_dir() || metadata.permissions().mode() & 0o077 != 0 {
         return Err(ClientSubmitError::InvalidPackage);
     }
     let artifact = read_private_file(&package_dir.join("query.so"), MAX_PACKAGE_ARCHIVE_BYTES)?;
-    let sql_library = if repository_sdk_library {
-        if std::fs::symlink_metadata(package_dir.join("sql.so")).is_ok()
-            || std::fs::symlink_metadata(package_dir.join("sql-library.sha256")).is_ok()
-        {
-            return Err(ClientSubmitError::InvalidPackage);
-        }
-        Vec::new()
-    } else {
-        read_private_file(
-            &package_dir.join("sql.so"),
-            crate::supervisor::MAX_SQL_LIBRARY_BYTES,
-        )?
-    };
+    if std::fs::symlink_metadata(package_dir.join("sql.so")).is_ok()
+        || std::fs::symlink_metadata(package_dir.join("sql-library.sha256")).is_ok()
+    {
+        return Err(ClientSubmitError::InvalidPackage);
+    }
     let manifest = read_private_file(
         &package_dir.join("manifest.pmf1"),
         MAX_MANIFEST_BYTES as u64,
@@ -8013,12 +7970,6 @@ fn read_package(
     )?;
     let expected_hash = read_private_file(&package_dir.join("artifact.sha256"), 65)?;
     let calculated_hash: [u8; 32] = Sha256::digest(&artifact).into();
-    let library_hash = if repository_sdk_library {
-        Vec::new()
-    } else {
-        read_private_file(&package_dir.join("sql-library.sha256"), 65)?
-    };
-    let calculated_library_hash: [u8; 32] = Sha256::digest(&sql_library).into();
     if artifact.is_empty()
         || decode_manifest_v1(&manifest).is_err()
         || decode_requested_scope_v1(&scope).is_err()
@@ -8027,18 +7978,11 @@ fn read_package(
         || !decode_lower_hex(std::str::from_utf8(&expected_hash[..64]).unwrap_or(""), 32)
         || decode_hex_array::<32>(std::str::from_utf8(&expected_hash[..64]).unwrap_or(""))
             != Some(calculated_hash)
-        || !repository_sdk_library
-            && (sql_library.is_empty()
-                || library_hash.len() != 65
-                || library_hash[64] != b'\n'
-                || decode_hex_array::<32>(std::str::from_utf8(&library_hash[..64]).unwrap_or(""))
-                    != Some(calculated_library_hash))
     {
         return Err(ClientSubmitError::InvalidPackage);
     }
     Ok(PackageBytes {
         artifact,
-        sql_library,
         manifest,
         scope,
     })
@@ -8470,7 +8414,7 @@ mod tests {
         let hello = read_v2_frame(stream, decoder);
         assert_eq!(hello.kind, 1);
         let hello_response = format!(
-            "{{\"major\":2,\"minor\":0,\"mode\":\"query\",\"transport\":\"plaintext_tcp\",\"limits\":{{\"payload_bytes\":{CLIENT_MAX_PAYLOAD_BYTES},\"control_bytes\":{CLIENT_MAX_CONTROL_BYTES},\"chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES}}}}}"
+            "{{\"major\":2,\"minor\":0,\"mode\":\"query\",\"sdk_library_mode\":\"repository\",\"transport\":\"plaintext_tcp\",\"limits\":{{\"payload_bytes\":{CLIENT_MAX_PAYLOAD_BYTES},\"control_bytes\":{CLIENT_MAX_CONTROL_BYTES},\"chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES}}}}}"
         );
         write_v2_response(stream, &hello, &hello_response);
         let auth = read_v2_frame(stream, decoder);

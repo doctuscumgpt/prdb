@@ -1,4 +1,4 @@
-//! Client-side bounded compilation and shared-SDK packaging for submissions.
+//! Client-side bounded compilation and query-only packaging for submissions.
 
 use crate::submission_manifest::{
     ManifestError, decode_elf_dynamic_info, encode_manifest_v1, manifest_v1_from_elf,
@@ -44,8 +44,6 @@ pub struct PackageSummary {
     pub package_dir: PathBuf,
     pub artifact_bytes: u64,
     pub artifact_sha256: [u8; 32],
-    pub sql_library_bytes: u64,
-    pub sql_library_sha256: [u8; 32],
 }
 
 #[derive(Debug)]
@@ -83,22 +81,9 @@ impl From<ManifestError> for PackageError {
     }
 }
 
-/// Compile one source with TinyCC and publish the legacy package layout,
-/// including the SDK library used only as a link input.
-pub fn package_query(options: &PackageOptions) -> Result<PackageSummary, PackageError> {
-    package_query_inner(options, true)
-}
-
 /// Compile and publish a repository-profile package. The matching SDK shared
 /// library remains a local link input and is not copied into the package.
 pub fn package_query_repository(options: &PackageOptions) -> Result<PackageSummary, PackageError> {
-    package_query_inner(options, false)
-}
-
-fn package_query_inner(
-    options: &PackageOptions,
-    include_sdk_library: bool,
-) -> Result<PackageSummary, PackageError> {
     let source = canonical_regular_file(&options.source, MAX_SOURCE_BYTES)?;
     let sdk_library = canonical_regular_file(&options.sdk_library, MAX_SDK_LIBRARY_BYTES)?;
     let tcc = canonical_compiler(&options.tcc)?;
@@ -169,12 +154,6 @@ fn package_query_inner(
     }
     let manifest_bytes = encode_manifest_v1(&manifest)?;
     let artifact_sha256: [u8; 32] = Sha256::digest(&artifact).into();
-    let sql_library = if include_sdk_library {
-        read_bounded_file(&sdk_library, MAX_SDK_LIBRARY_BYTES)?
-    } else {
-        Vec::new()
-    };
-    let sql_library_sha256: [u8; 32] = Sha256::digest(&sql_library).into();
     fs::set_permissions(
         staging.path.join("query.so"),
         fs::Permissions::from_mode(0o600),
@@ -186,13 +165,6 @@ fn package_query_inner(
         &staging.path.join("artifact.sha256"),
         format!("{}\n", lower_hex(&artifact_sha256)).as_bytes(),
     )?;
-    if include_sdk_library {
-        write_private_file(&staging.path.join("sql.so"), &sql_library)?;
-        write_private_file(
-            &staging.path.join("sql-library.sha256"),
-            format!("{}\n", lower_hex(&sql_library_sha256)).as_bytes(),
-        )?;
-    }
     File::open(&staging.path)?.sync_all()?;
     staging.publish(&package_dir)?;
 
@@ -200,8 +172,6 @@ fn package_query_inner(
         package_dir,
         artifact_bytes: artifact.len() as u64,
         artifact_sha256,
-        sql_library_bytes: sql_library.len() as u64,
-        sql_library_sha256,
     })
 }
 

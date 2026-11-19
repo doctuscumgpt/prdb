@@ -160,7 +160,7 @@ for the credential handoff contract.
 ## Configuration and limits
 
 The server image runs as UID 10001 and persists database state, scratch files,
-SDK cache, and administrator credentials under `/var/lib/prdb`. Useful
+the immutable SDK repository, and administrator credentials under `/var/lib/prdb`. SDK releases are installed explicitly by an administrator after startup with `prdb-client sdk-library install`; the repository is not seeded from a client SDK directory. Useful
 environment settings include:
 
 - `PRDB_CGROUP_PARENT`: required writable delegated cgroup v2 parent.
@@ -168,9 +168,10 @@ environment settings include:
   `0.0.0.0:8765` and `0.0.0.0:8766`.
 - `PRDB_ADMINISTRATOR` and `PRDB_CREDENTIAL_FILE`: first administrator name
   and credential path.
-- `PRDB_CPU_BASELINE`, `PRDB_RUNTIME_PROFILE`, `PRDB_SDK_RELEASE`, and
-  `PRDB_SDK_ABIS`: must match the SDK built into the image and the client
+- `PRDB_CPU_BASELINE` and `PRDB_RUNTIME_PROFILE`: define the instance SDK
   compatibility profile.
+- `PRDB_SDK_REPOSITORY_DIR` and `PRDB_SDK_REPOSITORY_MAX_BYTES`: optional
+  repository location and quota; defaults are under the instance directory.
 - `PRDB_MAX_ROWS`, `PRDB_MAX_BYTES`, `PRDB_CPU_QUOTA_US`,
   `PRDB_CPU_PERIOD_US`, `PRDB_MEMORY_MAX_BYTES`, and `PRDB_MAX_PROCESSES`:
   worker resource limits.

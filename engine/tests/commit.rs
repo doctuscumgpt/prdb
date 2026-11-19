@@ -176,6 +176,24 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fn make_removable(path: &std::path::Path) {
+            let metadata = std::fs::symlink_metadata(path).unwrap();
+            if metadata.file_type().is_symlink() {
+                return;
+            }
+            if metadata.is_dir() {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+                for entry in std::fs::read_dir(path).unwrap() {
+                    make_removable(&entry.unwrap().path());
+                }
+            } else {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+        }
+
+        make_removable(&self.0);
         std::fs::remove_dir_all(&self.0).unwrap();
     }
 }
@@ -404,8 +422,6 @@ fn run_sandboxed_forged_handle_client(
             manifest: manifest.clone(),
             artifact_bytes: u64::try_from(artifact.len())?,
             artifact_sha256: Sha256::digest(&artifact).into(),
-            sql_library_bytes: 0,
-            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: requested_scope_fixture(),
             parameter_bytes: 0,
@@ -32279,7 +32295,11 @@ fn client_handshake_requires_hello_first_and_sequences_responses()
             }};
         }
 
-        let hello = round_trip!(1, 2, br#"{"mode":"query","client_name":"test"}"#.to_vec());
+        let hello = round_trip!(
+            1,
+            2,
+            br#"{"mode":"query","client_name":"test","sdk_library_mode":"repository"}"#.to_vec()
+        );
         assert_eq!(hello.kind, 100);
         assert!(std::str::from_utf8(&hello.payload)?.contains("\"mode\":\"query\""));
         let auth = round_trip!(2, 3, auth_payload.into_bytes());
@@ -32296,7 +32316,7 @@ fn client_handshake_requires_hello_first_and_sequences_responses()
         let prepare = round_trip!(
             3,
             4,
-            format!("{{\"manifest_version\":1,\"manifest\":\"bQ==\",\"artifact_bytes\":\"6\",\"artifact_sha256\":\"{artifact_hash}\",\"parameter_bytes\":\"0\",\"parameter_sha256\":\"{empty_hash}\",\"scope_version\":1,\"requested_scope\":\"UFNDMQABAgIBAQEBAQEBAQEBAQEBAQEB\",\"deadline_ms\":\"30000\",\"workload_class\":\"operational\"}}").into_bytes()
+            format!("{{\"manifest_version\":1,\"manifest\":\"bQ==\",\"artifact_bytes\":\"6\",\"artifact_sha256\":\"{artifact_hash}\",\"parameter_bytes\":\"0\",\"parameter_sha256\":\"{empty_hash}\",\"scope_version\":1,\"requested_scope\":\"UFNDMQABAgIBAQEBAQEBAQEBAQEBAQEB\",\"deadline_ms\":\"30000\",\"workload_class\":\"operational\",\"sdk_library_mode\":\"repository\"}}").into_bytes()
         );
         let prepare_response = std::str::from_utf8(&prepare.payload)?;
         let invocation_hex = prepare_response
@@ -39246,8 +39266,6 @@ fn run_sandboxed_v3_sql_error_fixture(
     shared_sdk_release_dir_env: Option<&str>,
     expect_terminal_without_result: bool,
     expect_query_error: bool,
-    upload_client_sdk: bool,
-    repository_backed: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use prdb_engine::client_protocol::{ClientConnectionSession, ClientFrame, ClientMode};
     use prdb_engine::ipc::{Operation, read_frame};
@@ -39364,22 +39382,16 @@ fn run_sandboxed_v3_sql_error_fixture(
     client.authenticate(&storage, token_id, &secret)?;
     let owner = client.staging_owner()?;
     let mut registry_for_assertion = None;
-    let (manifest, validator, sql_library): (
-        Vec<u8>,
-        Arc<dyn SubmissionMetadataValidator>,
-        Option<Vec<u8>>,
-    ) = if let Some(release_dir_env) = shared_sdk_release_dir_env {
-        let release_dir = std::env::var_os(release_dir_env)
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("{release_dir_env} must name the installed SDK release"))?;
-        if !release_dir.is_absolute() {
-            return Err("SDK release and cache paths must be absolute".into());
-        }
-        let runtime_profile = "nixos-x86_64-glibc-2.42";
-        let sql_library = std::fs::read(release_dir.join("libprdb_sql.so.1"))?;
-        let registry = if upload_client_sdk {
-            None
-        } else if repository_backed {
+    let (manifest, validator): (Vec<u8>, Arc<dyn SubmissionMetadataValidator>) =
+        if let Some(release_dir_env) = shared_sdk_release_dir_env {
+            let release_dir = std::env::var_os(release_dir_env)
+                .map(PathBuf::from)
+                .ok_or_else(|| format!("{release_dir_env} must name the installed SDK release"))?;
+            if !release_dir.is_absolute() {
+                return Err("SDK release and cache paths must be absolute".into());
+            }
+            let runtime_profile = "nixos-x86_64-glibc-2.42";
+            let sql_library = std::fs::read(release_dir.join("libprdb_sql.so.1"))?;
             let repository = prdb_engine::sdk_registry::SdkLibraryRepository::open(
                 &fixture.path().parent().unwrap().join("sdk-libraries"),
                 "linux-x86_64".to_owned(),
@@ -39397,65 +39409,39 @@ fn run_sandboxed_v3_sql_error_fixture(
                     &["libc.so.6".to_owned()].into_iter().collect(),
                 )
                 .map_err(|error| format!("install test SDK repository release: {error:?}"))?;
-            Some(Arc::new(repository))
-        } else {
-            let cache_dir = std::env::var_os("PRDB_TEST_SDK_CACHE_DIR")
-                .map(PathBuf::from)
-                .ok_or("PRDB_TEST_SDK_CACHE_DIR must name the SDK cache directory")?;
-            if !cache_dir.is_absolute() {
-                return Err("SDK cache path must be absolute".into());
-            }
-            let registry = prdb_engine::sdk_registry::SdkReleaseRegistry::load(
-                &[release_dir],
-                &cache_dir,
-                "linux-x86_64".to_owned(),
+            let derived = manifest_v1_from_elf(
+                &artifact,
+                3,
+                1,
                 "x86_64-v1".to_owned(),
                 runtime_profile.to_owned(),
-                128 * 1024 * 1024,
+                "shared SQL sandbox fixture".to_owned(),
             )
-            .map_err(|error| format!("load shared SDK release: {error:?}"))?;
-            Some(Arc::new(registry))
-        };
-        let derived = manifest_v1_from_elf(
-            &artifact,
-            3,
-            1,
-            "x86_64-v1".to_owned(),
-            runtime_profile.to_owned(),
-            "shared SQL sandbox fixture".to_owned(),
-        )
-        .map_err(|error| format!("derive shared fixture manifest: {error:?}"))?;
-        let manifest = encode_manifest_v1(&derived)
-            .map_err(|error| format!("encode shared fixture manifest: {error:?}"))?;
-        let mut allowed_dependencies = ["libc.so.6".to_owned()].into_iter().collect::<HashSet<_>>();
-        if let Some(extra) = std::env::var_os("PRDB_TEST_EXTRA_ALLOWED_DEPENDENCY") {
-            allowed_dependencies.insert(extra.to_string_lossy().into_owned());
-        }
-        let profile = ArtifactCompatibilityProfile::new(
-            "x86_64-v1".to_owned(),
-            runtime_profile.to_owned(),
-            1,
-            allowed_dependencies,
-        )
-        .map_err(|error| format!("build shared fixture profile: {error:?}"))?;
-        let validator = VersionedSubmissionMetadataValidator::new(profile);
-        let validator = if upload_client_sdk {
-            validator
-        } else {
-            let registry = registry.ok_or("expected registry mode")?;
+            .map_err(|error| format!("derive shared fixture manifest: {error:?}"))?;
+            let manifest = encode_manifest_v1(&derived)
+                .map_err(|error| format!("encode shared fixture manifest: {error:?}"))?;
+            let mut allowed_dependencies =
+                ["libc.so.6".to_owned()].into_iter().collect::<HashSet<_>>();
+            if let Some(extra) = std::env::var_os("PRDB_TEST_EXTRA_ALLOWED_DEPENDENCY") {
+                allowed_dependencies.insert(extra.to_string_lossy().into_owned());
+            }
+            let profile = ArtifactCompatibilityProfile::new(
+                "x86_64-v1".to_owned(),
+                runtime_profile.to_owned(),
+                1,
+                allowed_dependencies,
+            )
+            .map_err(|error| format!("build shared fixture profile: {error:?}"))?;
+            let validator = VersionedSubmissionMetadataValidator::new(profile);
+            let registry = Arc::new(repository);
             registry_for_assertion = Some(Arc::clone(&registry));
-            validator
+            let validator = validator
                 .with_sdk_registry(registry)
-                .map_err(|error| format!("configure shared SDK registry: {error:?}"))?
+                .map_err(|error| format!("configure shared SDK repository: {error:?}"))?;
+            (manifest, Arc::new(validator))
+        } else {
+            (b"m".to_vec(), Arc::new(AcceptFixture))
         };
-        (
-            manifest,
-            Arc::new(validator),
-            upload_client_sdk.then_some(sql_library),
-        )
-    } else {
-        (b"m".to_vec(), Arc::new(AcceptFixture), None)
-    };
     let staging = StagingStore::new(StagingLimits::default(), validator)?;
     let reservation = staging.prepare(
         owner,
@@ -39464,13 +39450,6 @@ fn run_sandboxed_v3_sql_error_fixture(
             manifest,
             artifact_bytes: u64::try_from(artifact.len())?,
             artifact_sha256: Sha256::digest(&artifact).into(),
-            sql_library_bytes: sql_library
-                .as_ref()
-                .map_or(0, |library| library.len() as u64),
-            sql_library_sha256: sql_library.as_ref().map_or_else(
-                || Sha256::digest([]).into(),
-                |library| Sha256::digest(library).into(),
-            ),
             scope_version: 1,
             requested_scope: requested_scope_fixture(),
             parameter_bytes: 0,
@@ -39490,20 +39469,6 @@ fn run_sandboxed_v3_sql_error_fixture(
                 chunk,
             )
             .map_err(|error| format!("SQL artifact chunk upload: {error:?}"))?;
-    }
-    if let Some(sql_library) = &sql_library {
-        let mut sql_library_offset = 0;
-        for chunk in sql_library.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
-            sql_library_offset = staging
-                .upload_chunk(
-                    owner,
-                    reservation.invocation_id,
-                    ChunkKind::SqlLibrary,
-                    sql_library_offset,
-                    chunk,
-                )
-                .map_err(|error| format!("SQL library chunk upload: {error:?}"))?;
-        }
     }
     staging
         .seal(owner, reservation.invocation_id)
@@ -39555,14 +39520,10 @@ fn run_sandboxed_v3_sql_error_fixture(
     )?;
     assert_eq!(accepted.payload, b"{\"state\":\"accepted\"}");
     if let Some(registry) = &registry_for_assertion {
-        if repository_backed {
-            assert_eq!(
-                registry.remove_release(1),
-                Err(prdb_engine::sdk_registry::SdkRegistryError::ReleasePinned)
-            );
-        } else {
-            assert_eq!(registry.evict_unpinned().unwrap(), 0);
-        }
+        assert_eq!(
+            registry.remove_release(1),
+            Err(prdb_engine::sdk_registry::SdkRegistryError::ReleasePinned)
+        );
     }
 
     let (mut service, mut gateway) = UnixStream::pair()?;
@@ -39585,13 +39546,9 @@ fn run_sandboxed_v3_sql_error_fixture(
     staging.finish_started(owner, reservation.invocation_id)?;
     drop(executor);
     if let Some(registry) = &registry_for_assertion {
-        if repository_backed {
-            registry
-                .remove_release(1)
-                .map_err(|error| format!("remove unpinned SDK repository release: {error:?}"))?;
-        } else {
-            assert!(registry.evict_unpinned().unwrap() > 0);
-        }
+        registry
+            .remove_release(1)
+            .map_err(|error| format!("remove unpinned SDK repository release: {error:?}"))?;
     }
 
     let first_frame = read_frame(&mut gateway)?.ok_or("missing worker result")?;
@@ -39650,15 +39607,7 @@ fn run_sandboxed_v3_sql_error_fixture(
 #[test]
 fn sandboxed_v3_sql_error_latches_failure_and_durably_aborts_after_partial_output()
 -> Result<(), Box<dyn std::error::Error>> {
-    run_sandboxed_v3_sql_error_fixture(
-        "PRDB_TEST_QUERY_ARTIFACT",
-        false,
-        None,
-        false,
-        false,
-        false,
-        false,
-    )
+    run_sandboxed_v3_sql_error_fixture("PRDB_TEST_QUERY_ARTIFACT", false, None, false, false)
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -39669,8 +39618,6 @@ fn sandboxed_v3_shared_sql_library_resolves_loads_and_durably_aborts_on_sql_erro
         "PRDB_TEST_SHARED_SQL_QUERY_ARTIFACT",
         false,
         Some("PRDB_TEST_SDK_RELEASE_DIR"),
-        false,
-        false,
         false,
         false,
     )
@@ -39686,8 +39633,6 @@ fn sandboxed_repository_sdk_library_loads_and_stays_pinned_until_worker_cleanup(
         Some("PRDB_TEST_SDK_RELEASE_DIR"),
         false,
         false,
-        false,
-        true,
     )
 }
 
@@ -39701,8 +39646,6 @@ fn sandboxed_shared_sql_missing_dependency_aborts_inside_executor()
         Some("PRDB_TEST_SDK_RELEASE_DIR"),
         true,
         false,
-        false,
-        false,
     )
 }
 
@@ -39714,8 +39657,6 @@ fn sandboxed_v3_constructor_cannot_connect_to_host_loopback()
         "PRDB_TEST_NETWORK_CONSTRUCTOR_ARTIFACT",
         true,
         None,
-        false,
-        false,
         false,
         false,
     )
@@ -39731,8 +39672,6 @@ fn sandboxed_direct_executor_ipc_rejects_forged_relation_handle()
         None,
         true,
         true,
-        false,
-        false,
     )
 }
 
@@ -39746,23 +39685,6 @@ fn sandboxed_direct_executor_ipc_rejects_forged_row_handle_mutation()
         None,
         true,
         true,
-        false,
-        false,
-    )
-}
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-#[test]
-fn sandboxed_client_supplied_sql_library_loads_and_durably_aborts_on_sql_error()
--> Result<(), Box<dyn std::error::Error>> {
-    run_sandboxed_v3_sql_error_fixture(
-        "PRDB_TEST_SHARED_SQL_QUERY_ARTIFACT",
-        false,
-        Some("PRDB_TEST_SDK_RELEASE_DIR"),
-        false,
-        false,
-        true,
-        false,
     )
 }
 
@@ -39824,17 +39746,39 @@ fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
         4,
         1,
         "x86_64-v1".to_owned(),
-        "test-runtime".to_owned(),
+        "nixos-x86_64-glibc-2.42".to_owned(),
         "TinyCC integration test".to_owned(),
     )
     .map_err(|error| format!("manifest inspection failed: {error:?}"))?;
     let manifest_bytes = encode_manifest_v1(&manifest)
         .map_err(|error| format!("manifest encoding failed: {error:?}"))?;
-    let validator = VersionedSubmissionMetadataValidator::new(
-        ArtifactCompatibilityProfile::new(
+    let fixture = Fixture::new();
+    let database = initialize(&fixture.path())?;
+    let sdk_release_dir = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR")
+        .map(PathBuf::from)
+        .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR must name the installed SDK")?;
+    let sdk_repository = Arc::new(
+        prdb_engine::sdk_registry::SdkLibraryRepository::open(
+            &fixture.path().parent().unwrap().join("sdk-libraries"),
+            "linux-x86_64".to_owned(),
             manifest.cpu_baseline.clone(),
             manifest.runtime_profile.clone(),
-            manifest.sdk_release,
+            ["libc.so.6".to_owned()].into_iter().collect(),
+            128 * 1024 * 1024,
+        )
+        .map_err(|error| format!("open SDK repository: {error:?}"))?,
+    );
+    sdk_repository
+        .install(
+            &std::fs::read(sdk_release_dir.join("sdk-release.json"))?,
+            &std::fs::read(sdk_release_dir.join("libprdb_sql.so.1"))?,
+            &["libc.so.6".to_owned()].into_iter().collect(),
+        )
+        .map_err(|error| format!("install SDK release: {error:?}"))?;
+    let validator = VersionedSubmissionMetadataValidator::new(
+        ArtifactCompatibilityProfile::for_repository(
+            manifest.cpu_baseline.clone(),
+            manifest.runtime_profile.clone(),
             manifest
                 .dependencies
                 .iter()
@@ -39843,11 +39787,9 @@ fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
         )
         .map_err(|error| format!("compatibility profile failed: {error:?}"))?,
     )
-    .allow_legacy_static_sdk_release(1)
-    .map_err(|error| format!("legacy compatibility policy failed: {error:?}"))?;
+    .with_sdk_registry(sdk_repository)
+    .map_err(|error| format!("configure SDK repository: {error:?}"))?;
 
-    let fixture = Fixture::new();
-    let database = initialize(&fixture.path())?;
     let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?;
     let storage = StorageManager::new(&database, Duration::from_millis(100))?;
     let user_id = id(0xc0);
@@ -40004,12 +39946,7 @@ fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
     let package = fixture.0.join("package");
     std::fs::create_dir(&package)?;
     std::fs::set_permissions(&package, std::fs::Permissions::from_mode(0o700))?;
-    let sdk_release_dir = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR")
-        .map(PathBuf::from)
-        .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR must name the compatible SDK")?;
-    let sql_library = std::fs::read(sdk_release_dir.join("libprdb_sql.so.1"))?;
     std::fs::write(package.join("query.so"), &artifact)?;
-    std::fs::write(package.join("sql.so"), &sql_library)?;
     std::fs::write(package.join("manifest.pmf1"), &manifest_bytes)?;
     std::fs::write(package.join("requested_scope.psc1"), &requested_scope)?;
     let artifact_digest = Sha256::digest(&artifact)
@@ -40018,19 +39955,11 @@ fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
         .collect::<String>()
         + "\n";
     std::fs::write(package.join("artifact.sha256"), artifact_digest)?;
-    let sql_library_digest = Sha256::digest(&sql_library)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()
-        + "\n";
-    std::fs::write(package.join("sql-library.sha256"), sql_library_digest)?;
     for name in [
         "query.so",
         "manifest.pmf1",
         "requested_scope.psc1",
         "artifact.sha256",
-        "sql.so",
-        "sql-library.sha256",
     ] {
         std::fs::set_permissions(package.join(name), std::fs::Permissions::from_mode(0o600))?;
     }
@@ -40140,7 +40069,7 @@ fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
             let optimizer_estimate_count = Arc::clone(&optimizer_estimate_count);
             let mut session = prdb_engine::client_protocol::ClientConnectionSession::default();
             loop {
-                match serve_gateway_client_session_with_executor(
+                let event = serve_gateway_client_session_with_executor(
                     &mut supervisor_service,
                     &storage,
                     &staging,
@@ -40148,8 +40077,8 @@ fn sandboxed_optimizer_metadata_submission_cancels_over_tcp()
                     admission,
                     &runtime,
                 )
-                .map_err(|error| format!("supervisor session failed: {error:?}"))?
-                {
+                .map_err(|error| format!("supervisor session failed: {error:?}"))?;
+                match event {
                     GatewayClientServiceEvent::Disconnected => return Ok(()),
                     GatewayClientServiceEvent::Started {
                         request_id,
@@ -40391,6 +40320,10 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         CreatePolicyRequest, CreateTableRequest, PolicyKind, StorageManagerConfig,
         TableColumnDefault, TableColumnDefinition,
     };
+    use prdb_engine::submission_manifest::{
+        ArtifactCompatibilityProfile, VersionedSubmissionMetadataValidator, encode_manifest_v1,
+        manifest_v1_from_elf,
+    };
     use prdb_engine::supervisor::{
         ChunkKind, PrepareSubmission, StagingLimits, StagingStore, SubmissionMetadata,
         SubmissionMetadataValidator, WorkloadClass,
@@ -40409,14 +40342,32 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
 
     struct AcceptFixture {
         requested_scope: Vec<u8>,
+        inner: Arc<VersionedSubmissionMetadataValidator>,
     }
     impl SubmissionMetadataValidator for AcceptFixture {
         fn supports_versions(&self, manifest_version: u32, scope_version: u32) -> bool {
-            manifest_version == 1 && scope_version == 1
+            self.inner
+                .supports_versions(manifest_version, scope_version)
         }
 
         fn validate(&self, metadata: &SubmissionMetadata) -> bool {
-            metadata.manifest == b"m" && metadata.requested_scope == self.requested_scope
+            self.inner.validate(metadata) && metadata.requested_scope == self.requested_scope
+        }
+
+        fn validate_artifact(&self, metadata: &SubmissionMetadata, artifact: &[u8]) -> bool {
+            self.inner.validate_artifact(metadata, artifact)
+                && metadata.requested_scope == self.requested_scope
+        }
+
+        fn resolve_sdk_release(
+            &self,
+            metadata: &SubmissionMetadata,
+            artifact: &[u8],
+        ) -> Result<
+            Option<prdb_engine::sdk_registry::SdkLibraryPin>,
+            prdb_engine::submission_manifest::ManifestError,
+        > {
+            self.inner.resolve_sdk_release(metadata, artifact)
         }
     }
 
@@ -40484,6 +40435,56 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     let restricted_artifact = std::fs::read(&restricted_artifact_path)?;
     let fixture = Fixture::new();
     let database = initialize(&fixture.path())?;
+    let sdk_release_dir = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR")
+        .map(PathBuf::from)
+        .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR must name the installed SDK")?;
+    let sdk_repository = Arc::new(
+        prdb_engine::sdk_registry::SdkLibraryRepository::open(
+            &fixture.0.join("sdk-libraries"),
+            "linux-x86_64".to_owned(),
+            "x86_64-v1".to_owned(),
+            "nixos-x86_64-glibc-2.42".to_owned(),
+            ["libc.so.6".to_owned()].into_iter().collect(),
+            128 * 1024 * 1024,
+        )
+        .map_err(|error| format!("open SQL SDK repository: {error:?}"))?,
+    );
+    sdk_repository
+        .install(
+            &std::fs::read(sdk_release_dir.join("sdk-release.json"))?,
+            &std::fs::read(sdk_release_dir.join("libprdb_sql.so.1"))?,
+            &["libc.so.6".to_owned()].into_iter().collect(),
+        )
+        .map_err(|error| format!("install SQL SDK repository release: {error:?}"))?;
+    let manifest = encode_manifest_v1(
+        &manifest_v1_from_elf(
+            &artifact,
+            4,
+            1,
+            "x86_64-v1".to_owned(),
+            "nixos-x86_64-glibc-2.42".to_owned(),
+            "TinyCC DML integration fixture".to_owned(),
+        )
+        .map_err(|error| format!("derive DML manifest: {error:?}"))?,
+    )
+    .map_err(|error| format!("encode DML manifest: {error:?}"))?;
+    let profile = ArtifactCompatibilityProfile::for_repository(
+        "x86_64-v1".to_owned(),
+        "nixos-x86_64-glibc-2.42".to_owned(),
+        ["libc.so.6".to_owned()].into_iter().collect(),
+    )
+    .map_err(|error| format!("build DML compatibility profile: {error:?}"))?;
+    let base_validator = Arc::new(
+        VersionedSubmissionMetadataValidator::new(profile)
+            .with_sdk_registry(Arc::clone(&sdk_repository))
+            .map_err(|error| format!("configure DML SDK repository: {error:?}"))?,
+    );
+    let validator_for_scope = |requested_scope| -> Arc<dyn SubmissionMetadataValidator> {
+        Arc::new(AcceptFixture {
+            requested_scope,
+            inner: Arc::clone(&base_validator),
+        })
+    };
     let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?;
     let user_id = id(0x7a);
     let token_id = id(0x7b);
@@ -42170,19 +42171,15 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             max_active_analytical_per_principal: 8,
             ..StagingLimits::default()
         },
-        Arc::new(AcceptFixture {
-            requested_scope: requested_scope.clone(),
-        }),
+        validator_for_scope(requested_scope.clone()),
     )?;
     let reservation = staging.prepare(
         owner,
         PrepareSubmission {
             manifest_version: 1,
-            manifest: b"m".to_vec(),
+            manifest: manifest.clone(),
             artifact_bytes: u64::try_from(artifact.len())?,
             artifact_sha256: Sha256::digest(&artifact).into(),
-            sql_library_bytes: 0,
-            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: requested_scope.clone(),
             parameter_bytes: 0,
@@ -42266,11 +42263,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         cancellation_owner,
         PrepareSubmission {
             manifest_version: 1,
-            manifest: b"m".to_vec(),
+            manifest: manifest.clone(),
             artifact_bytes: u64::try_from(artifact.len())?,
             artifact_sha256: Sha256::digest(&artifact).into(),
-            sql_library_bytes: 0,
-            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: requested_scope.clone(),
             parameter_bytes: 1,
@@ -42338,11 +42333,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             worker_owner,
             PrepareSubmission {
                 manifest_version: 1,
-                manifest: b"m".to_vec(),
+                manifest: manifest.clone(),
                 artifact_bytes: u64::try_from(artifact.len())?,
                 artifact_sha256: Sha256::digest(&artifact).into(),
-                sql_library_bytes: 0,
-                sql_library_sha256: Sha256::digest([]).into(),
                 scope_version: 1,
                 requested_scope: requested_scope.clone(),
                 parameter_bytes: 1,
@@ -42416,11 +42409,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         saturated_owner,
         PrepareSubmission {
             manifest_version: 1,
-            manifest: b"m".to_vec(),
+            manifest: manifest.clone(),
             artifact_bytes: u64::try_from(artifact.len())?,
             artifact_sha256: Sha256::digest(&artifact).into(),
-            sql_library_bytes: 0,
-            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: requested_scope.clone(),
             parameter_bytes: 0,
@@ -44169,11 +44160,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         owner,
         PrepareSubmission {
             manifest_version: 1,
-            manifest: b"m".to_vec(),
+            manifest: manifest.clone(),
             artifact_bytes: u64::try_from(artifact.len())?,
             artifact_sha256: Sha256::digest(&artifact).into(),
-            sql_library_bytes: 0,
-            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: requested_scope.clone(),
             parameter_bytes: 1,
@@ -44341,11 +44330,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         owner,
         PrepareSubmission {
             manifest_version: 1,
-            manifest: b"m".to_vec(),
+            manifest: manifest.clone(),
             artifact_bytes: u64::try_from(artifact.len())?,
             artifact_sha256: Sha256::digest(&artifact).into(),
-            sql_library_bytes: 0,
-            sql_library_sha256: Sha256::digest([]).into(),
             parameter_bytes: 1,
             parameter_sha256: Sha256::digest(cancelled_output_parameter).into(),
             scope_version: 1,
@@ -44498,11 +44485,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         owner,
         PrepareSubmission {
             manifest_version: 1,
-            manifest: b"m".to_vec(),
+            manifest: manifest.clone(),
             artifact_bytes: u64::try_from(artifact.len())?,
             artifact_sha256: Sha256::digest(&artifact).into(),
-            sql_library_bytes: 0,
-            sql_library_sha256: Sha256::digest([]).into(),
             parameter_bytes: 1,
             parameter_sha256: Sha256::digest(timed_out_output_parameter).into(),
             scope_version: 1,
@@ -44645,20 +44630,16 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     let failure_owner = failure_client.staging_owner()?;
     let failure_staging = StagingStore::new(
         StagingLimits::default(),
-        Arc::new(AcceptFixture {
-            requested_scope: requested_scope.clone(),
-        }),
+        validator_for_scope(requested_scope.clone()),
     )?;
     let failure_reservation = failure_staging
         .prepare(
             failure_owner,
             PrepareSubmission {
                 manifest_version: 1,
-                manifest: b"m".to_vec(),
+                manifest: manifest.clone(),
                 artifact_bytes: u64::try_from(artifact.len())?,
                 artifact_sha256: Sha256::digest(&artifact).into(),
-                sql_library_bytes: 0,
-                sql_library_sha256: Sha256::digest([]).into(),
                 scope_version: 1,
                 requested_scope: requested_scope.clone(),
                 parameter_bytes: 1,
@@ -44784,20 +44765,16 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     let target_limit_owner = target_limit_client.staging_owner()?;
     let target_limit_staging = StagingStore::new(
         StagingLimits::default(),
-        Arc::new(AcceptFixture {
-            requested_scope: requested_scope.clone(),
-        }),
+        validator_for_scope(requested_scope.clone()),
     )?;
     let target_limit_reservation = target_limit_staging
         .prepare(
             target_limit_owner,
             PrepareSubmission {
                 manifest_version: 1,
-                manifest: b"m".to_vec(),
+                manifest: manifest.clone(),
                 artifact_bytes: u64::try_from(artifact.len())?,
                 artifact_sha256: Sha256::digest(&artifact).into(),
-                sql_library_bytes: 0,
-                sql_library_sha256: Sha256::digest([]).into(),
                 scope_version: 1,
                 requested_scope: requested_scope.clone(),
                 parameter_bytes: 1,
@@ -44916,19 +44893,15 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     let stage_failure_owner = stage_failure_client.staging_owner()?;
     let stage_failure_staging = StagingStore::new(
         StagingLimits::default(),
-        Arc::new(AcceptFixture {
-            requested_scope: requested_scope.clone(),
-        }),
+        validator_for_scope(requested_scope.clone()),
     )?;
     let stage_failure_reservation = stage_failure_staging.prepare(
         stage_failure_owner,
         PrepareSubmission {
             manifest_version: 1,
-            manifest: b"m".to_vec(),
+            manifest: manifest.clone(),
             artifact_bytes: u64::try_from(artifact.len())?,
             artifact_sha256: Sha256::digest(&artifact).into(),
-            sql_library_bytes: 0,
-            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: requested_scope.clone(),
             parameter_bytes: 1,
@@ -45047,19 +45020,15 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     let restricted_owner = restricted_client.staging_owner()?;
     let restricted_staging = StagingStore::new(
         StagingLimits::default(),
-        Arc::new(AcceptFixture {
-            requested_scope: restricted_scope.clone(),
-        }),
+        validator_for_scope(restricted_scope.clone()),
     )?;
     let restricted_reservation = restricted_staging.prepare(
         restricted_owner,
         PrepareSubmission {
             manifest_version: 1,
-            manifest: b"m".to_vec(),
+            manifest: manifest.clone(),
             artifact_bytes: u64::try_from(restricted_artifact.len())?,
             artifact_sha256: Sha256::digest(&restricted_artifact).into(),
-            sql_library_bytes: 0,
-            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: restricted_scope,
             parameter_bytes: 0,
@@ -45746,8 +45715,6 @@ fn sealed_start_admits_only_current_credentials_and_enforces_request_deadline()
             manifest: b"m".to_vec(),
             artifact_bytes: artifact.len() as u64,
             artifact_sha256: Sha256::digest(artifact).into(),
-            sql_library_bytes: 0,
-            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: requested_scope_fixture(),
             parameter_bytes: 0,
@@ -45834,8 +45801,6 @@ fn sealed_start_admits_only_current_credentials_and_enforces_request_deadline()
             manifest: b"m".to_vec(),
             artifact_bytes: artifact.len() as u64,
             artifact_sha256: Sha256::digest(artifact).into(),
-            sql_library_bytes: 0,
-            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: requested_scope_fixture(),
             parameter_bytes: 0,

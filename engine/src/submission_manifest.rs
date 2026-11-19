@@ -9,7 +9,6 @@ pub const MAX_MANIFEST_DEPENDENCIES: usize = 32;
 pub const MAX_MANIFEST_DEPENDENCY_NAME_BYTES: usize = 128;
 pub const CLIENT_PROTOCOL_MAJOR: u16 = 1;
 pub const CLIENT_PROTOCOL_MINOR: u16 = 0;
-pub const LAST_LEGACY_STATIC_SDK_RELEASE: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArtifactManifestV1 {
@@ -217,8 +216,7 @@ impl ArtifactCompatibilityProfile {
 
 pub struct VersionedSubmissionMetadataValidator {
     profile: ArtifactCompatibilityProfile,
-    sdk_registry: Option<std::sync::Arc<crate::sdk_registry::SdkReleaseRegistry>>,
-    legacy_static_sdk_release: Option<u32>,
+    sdk_registry: Option<std::sync::Arc<crate::sdk_registry::SdkLibraryRepository>>,
 }
 
 impl VersionedSubmissionMetadataValidator {
@@ -226,28 +224,12 @@ impl VersionedSubmissionMetadataValidator {
         Self {
             profile,
             sdk_registry: None,
-            legacy_static_sdk_release: None,
         }
-    }
-
-    /// Temporarily admit archive-linked packages for exactly one explicitly
-    /// selected SDK release. The default accepts no static SDK fallback.
-    pub fn allow_legacy_static_sdk_release(
-        mut self,
-        sdk_release: u32,
-    ) -> Result<Self, ManifestError> {
-        if sdk_release != LAST_LEGACY_STATIC_SDK_RELEASE
-            || self.profile.sdk_release != Some(sdk_release)
-        {
-            return Err(ManifestError::IncompatibleProfile);
-        }
-        self.legacy_static_sdk_release = Some(sdk_release);
-        Ok(self)
     }
 
     pub fn with_sdk_registry(
         mut self,
-        registry: std::sync::Arc<crate::sdk_registry::SdkReleaseRegistry>,
+        registry: std::sync::Arc<crate::sdk_registry::SdkLibraryRepository>,
     ) -> Result<Self, ManifestError> {
         self.profile.allowed_dependencies.extend(
             registry
@@ -294,21 +276,6 @@ impl SubmissionMetadataValidator for VersionedSubmissionMetadataValidator {
         })
     }
 
-    fn validate_sql_library(&self, metadata: &SubmissionMetadata, library: &[u8]) -> bool {
-        let Ok(manifest) = decode_manifest_v1(&metadata.manifest) else {
-            return false;
-        };
-        let Ok(info) = decode_elf_dynamic_info(library) else {
-            return false;
-        };
-        info.soname.as_deref() == Some(format!("libprdb_sql.so.{}", manifest.sdk_release).as_str())
-            && info.rpath.is_none()
-            && info.runpath.is_none()
-            && info.needed.iter().all(|dependency| {
-                self.profile.allowed_dependencies.contains(dependency) || dependency == "libc.so.6"
-            })
-    }
-
     fn resolve_sdk_release(
         &self,
         metadata: &SubmissionMetadata,
@@ -320,16 +287,8 @@ impl SubmissionMetadataValidator for VersionedSubmissionMetadataValidator {
             .iter()
             .any(|dependency| dependency.starts_with("libprdb_sql.so."));
         if !shared_sql_dependency {
-            return if self.legacy_static_sdk_release == Some(manifest.sdk_release) {
-                Ok(None)
-            } else {
-                Err(ManifestError::UnavailableDependency)
-            };
+            return Err(ManifestError::UnavailableDependency);
         }
-        // A client-supplied library is validated at SEAL and staged directly
-        // from immutable submission bytes. The registry remains the explicit
-        // compatibility path for older packages without an uploaded library.
-        // The caller skips this resolver when uploaded bytes are present.
         let registry = self
             .sdk_registry
             .as_ref()
@@ -1453,27 +1412,13 @@ mod tests {
     }
 
     #[test]
-    fn static_sdk_packages_require_explicit_release_one_compatibility() {
+    fn static_sdk_packages_are_rejected_without_repository_sdk_dependency() {
         let metadata = metadata(encode(&manifest()));
         let validator = VersionedSubmissionMetadataValidator::new(profile());
         assert!(matches!(
             validator.resolve_sdk_release(&metadata, b"static query"),
             Err(ManifestError::UnavailableDependency)
         ));
-        let legacy = VersionedSubmissionMetadataValidator::new(profile())
-            .allow_legacy_static_sdk_release(1)
-            .unwrap();
-        assert!(matches!(
-            legacy.resolve_sdk_release(&metadata, b"static query"),
-            Ok(None)
-        ));
-        assert_eq!(
-            VersionedSubmissionMetadataValidator::new(profile())
-                .allow_legacy_static_sdk_release(2)
-                .err(),
-            Some(ManifestError::IncompatibleProfile)
-        );
-
         let owner = StagingOwner::authenticated([0x31; 16], [0x32; 16]);
         let store = StagingStore::new(
             StagingLimits::default(),
@@ -1614,8 +1559,6 @@ mod tests {
                     manifest: encode(manifest),
                     artifact_bytes: artifact.len() as u64,
                     artifact_sha256: Sha256::digest(artifact).into(),
-                    sql_library_bytes: 0,
-                    sql_library_sha256: Sha256::digest([]).into(),
                     scope_version: 1,
                     requested_scope: requested_scope(),
                     parameter_bytes: 0,

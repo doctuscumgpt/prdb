@@ -7,7 +7,7 @@ use prdb_engine::client_credentials::{
     ClientCredentialProfiles, read_client_credentials, remove_client_credentials,
     write_client_credentials,
 };
-use prdb_engine::client_package::{PackageOptions, package_query, package_query_repository};
+use prdb_engine::client_package::{PackageOptions, package_query_repository};
 use prdb_engine::client_protocol::ClientCredentials;
 use prdb_engine::client_sql::{
     MAX_SQL_PARAMETER_BYTES, encode_parameter_file, generate_query_source, read_sql_input,
@@ -3169,23 +3169,15 @@ fn submit_package_and_stream_with_profile(
     parameters: &mut [u8],
     deadline_ms: u64,
     workload: WorkloadClass,
-    repository_profile: bool,
+    _repository_profile: bool,
 ) -> Result<(), String> {
     let result = (|| {
-        let mut client = if repository_profile {
-            SubmissionClient::connect_repository_authenticated_with_timeout(
-                address,
-                credentials.token_id,
-                &mut credentials.token_secret,
-                Duration::from_secs(10),
-            )
-        } else {
-            SubmissionClient::connect_authenticated(
-                address,
-                credentials.token_id,
-                &mut credentials.token_secret,
-            )
-        }
+        let mut client = SubmissionClient::connect_repository_authenticated_with_timeout(
+            address,
+            credentials.token_id,
+            &mut credentials.token_secret,
+            Duration::from_secs(10),
+        )
         .map_err(|error| error.to_string())?;
         let invocation_id = client
             .upload_and_seal(package, parameters, deadline_ms, workload)
@@ -3283,7 +3275,7 @@ fn run_sql(
     let source_path = workspace.path.join("query.c");
     write_private_file(&source_path, &generated_source)?;
     let package_dir = workspace.path.join("package");
-    package_query(&PackageOptions {
+    package_query_repository(&PackageOptions {
         tcc,
         shared_linker,
         patchelf,
@@ -3754,12 +3746,7 @@ fn execute_interactive_package(
         runtime_profile: runtime_profile.to_owned(),
         compiler_identity: compiler_identity.to_owned(),
     };
-    if repository_profile {
-        package_query_repository(&package_options)
-    } else {
-        package_query(&package_options)
-    }
-    .map_err(|error| error.to_string())?;
+    package_query_repository(&package_options).map_err(|error| error.to_string())?;
     let receipt = workspace.join(format!("interactive-{ordinal}.receipt"));
     let mut package_parameters = Zeroizing::new(parameters.to_vec());
     if let Some(transaction_id) = transaction_id {
@@ -3872,18 +3859,14 @@ fn connect_interactive_client(
     address: SocketAddr,
     token_id: [u8; 16],
     token_secret: &mut [u8],
-    repository_profile: bool,
+    _repository_profile: bool,
 ) -> Result<SubmissionClient, prdb_engine::client_submit::ClientSubmitError> {
-    if repository_profile {
-        SubmissionClient::connect_repository_interactive_authenticated_with_timeout(
-            address,
-            token_id,
-            token_secret,
-            Duration::from_secs(10),
-        )
-    } else {
-        SubmissionClient::connect_interactive_authenticated(address, token_id, token_secret)
-    }
+    SubmissionClient::connect_repository_interactive_authenticated_with_timeout(
+        address,
+        token_id,
+        token_secret,
+        Duration::from_secs(10),
+    )
 }
 
 fn profile_credentials(

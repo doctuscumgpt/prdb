@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
-pub const MAX_SQL_LIBRARY_BYTES: u64 = 128 * 1024 * 1024;
 pub const MAX_PARAMETER_BYTES: u64 = 1024 * 1024;
 pub const MAX_MANIFEST_BYTES: usize = 16 * 1024;
 pub const MAX_SCOPE_BYTES: usize = 8 * 1024;
@@ -84,7 +83,6 @@ impl Default for StagingLimits {
         Self {
             max_global_reserved_bytes: 256 * 1024 * 1024,
             max_principal_reserved_bytes: MAX_ARTIFACT_BYTES
-                + MAX_SQL_LIBRARY_BYTES
                 + MAX_PARAMETER_BYTES
                 + MAX_MANIFEST_BYTES as u64
                 + MAX_SCOPE_BYTES as u64,
@@ -110,8 +108,6 @@ pub struct PrepareSubmission {
     pub manifest: Vec<u8>,
     pub artifact_bytes: u64,
     pub artifact_sha256: [u8; 32],
-    pub sql_library_bytes: u64,
-    pub sql_library_sha256: [u8; 32],
     pub scope_version: u32,
     pub requested_scope: Vec<u8>,
     pub parameter_bytes: u64,
@@ -148,11 +144,6 @@ pub trait SubmissionMetadataValidator: Send + Sync {
         self.validate(metadata)
     }
 
-    /// Validate client-supplied SQL library bytes as data; never load them here.
-    fn validate_sql_library(&self, _metadata: &SubmissionMetadata, _library: &[u8]) -> bool {
-        false
-    }
-
     /// Resolve shared SDK dependencies before storage admission. Returned pins
     /// remain owned by the started submission through worker completion.
     fn resolve_sdk_release(
@@ -169,7 +160,6 @@ pub trait SubmissionMetadataValidator: Send + Sync {
 pub enum ChunkKind {
     Artifact,
     Parameters,
-    SqlLibrary,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -191,7 +181,6 @@ struct SealedSubmissionData {
     metadata: SubmissionMetadata,
     interactive_package: Option<InteractivePackageBinding>,
     artifact: Arc<[u8]>,
-    sql_library: Arc<[u8]>,
     parameters: Arc<[u8]>,
 }
 
@@ -239,7 +228,6 @@ impl SealedSubmission {
             self.data.metadata.manifest.as_slice(),
             self.data.metadata.requested_scope.as_slice(),
             self.data.artifact.as_ref(),
-            self.data.sql_library.as_ref(),
             self.data.parameters.as_ref(),
         ] {
             digest.update((bytes.len() as u64).to_le_bytes());
@@ -258,10 +246,6 @@ impl SealedSubmission {
 
     pub fn sdk_library_pin(&self) -> Option<&crate::sdk_registry::SdkLibraryPin> {
         self.sdk_library_pin.as_ref()
-    }
-
-    pub fn sql_library(&self) -> Option<&[u8]> {
-        (!self.data.sql_library.is_empty()).then_some(&self.data.sql_library)
     }
 }
 
@@ -282,12 +266,9 @@ struct Reservation {
     interactive_package: Option<InteractivePackageBinding>,
     artifact_bytes: u64,
     artifact_sha256: [u8; 32],
-    sql_library_bytes: u64,
-    sql_library_sha256: [u8; 32],
     parameter_bytes: u64,
     parameter_sha256: [u8; 32],
     artifact: Vec<u8>,
-    sql_library: Vec<u8>,
     parameters: Vec<u8>,
     sealed: Option<Arc<SealedSubmissionData>>,
     state: ReservationState,
@@ -489,7 +470,6 @@ impl StagingStore {
             || owner.principal_id == [0; 16]
             || request.artifact_bytes == 0
             || request.artifact_bytes > self.limits.max_artifact_bytes
-            || request.sql_library_bytes > MAX_SQL_LIBRARY_BYTES
             || request.parameter_bytes > self.limits.max_parameter_bytes
             || request.deadline_ms == 0
             || request.deadline_ms > self.limits.max_deadline_ms
@@ -503,7 +483,6 @@ impl StagingStore {
         let reservation_size = request
             .artifact_bytes
             .checked_add(request.parameter_bytes)
-            .and_then(|size| size.checked_add(request.sql_library_bytes))
             .and_then(|size| size.checked_add(request.manifest.len() as u64))
             .and_then(|size| size.checked_add(request.requested_scope.len() as u64))
             .ok_or(StagingError::InvalidRequest)?;
@@ -586,12 +565,9 @@ impl StagingStore {
                 interactive_package: None,
                 artifact_bytes: request.artifact_bytes,
                 artifact_sha256: request.artifact_sha256,
-                sql_library_bytes: request.sql_library_bytes,
-                sql_library_sha256: request.sql_library_sha256,
                 parameter_bytes: request.parameter_bytes,
                 parameter_sha256: request.parameter_sha256,
                 artifact: Vec::new(),
-                sql_library: Vec::new(),
                 parameters: Vec::new(),
                 sealed: None,
                 state: ReservationState::Uploading,
@@ -638,7 +614,6 @@ impl StagingStore {
         let (buffer, declared_bytes) = match kind {
             ChunkKind::Artifact => (&mut reservation.artifact, reservation.artifact_bytes),
             ChunkKind::Parameters => (&mut reservation.parameters, reservation.parameter_bytes),
-            ChunkKind::SqlLibrary => (&mut reservation.sql_library, reservation.sql_library_bytes),
         };
         let expected_offset =
             u64::try_from(buffer.len()).map_err(|_| StagingError::InvalidChunk)?;
@@ -732,7 +707,7 @@ impl StagingStore {
     /// Verify declared lengths and hashes, validate versioned metadata, and
     /// freeze the upload into immutable shared buffers.
     pub fn seal(&self, owner: StagingOwner, invocation_id: [u8; 16]) -> Result<(), StagingError> {
-        let (sealed_data, artifact_sha256, parameter_sha256, sql_library_sha256) = {
+        let (sealed_data, artifact_sha256, parameter_sha256) = {
             let mut state = self.state.lock().map_err(|_| StagingError::Poisoned)?;
             reap_expired(
                 &mut state,
@@ -746,34 +721,25 @@ impl StagingStore {
             }
             if reservation.artifact.len() as u64 != reservation.artifact_bytes
                 || reservation.parameters.len() as u64 != reservation.parameter_bytes
-                || reservation.sql_library.len() as u64 != reservation.sql_library_bytes
             {
                 discard_reservation(&mut state, invocation_id);
                 return Err(StagingError::InvalidContentLength);
             }
             let artifact_sha256 = reservation.artifact_sha256;
             let parameter_sha256 = reservation.parameter_sha256;
-            let sql_library_sha256 = reservation.sql_library_sha256;
             let sealed_data = Arc::new(SealedSubmissionData {
                 metadata: reservation.metadata.clone(),
                 interactive_package: reservation.interactive_package,
                 artifact: Arc::from(std::mem::take(&mut reservation.artifact)),
-                sql_library: Arc::from(std::mem::take(&mut reservation.sql_library)),
                 parameters: Arc::from(std::mem::take(&mut reservation.parameters)),
             });
             reservation.sealed = Some(Arc::clone(&sealed_data));
             reservation.state = ReservationState::Sealing;
-            (
-                sealed_data,
-                artifact_sha256,
-                parameter_sha256,
-                sql_library_sha256,
-            )
+            (sealed_data, artifact_sha256, parameter_sha256)
         };
 
         let digests_match = Sha256::digest(&sealed_data.artifact).as_slice() == artifact_sha256
-            && Sha256::digest(&sealed_data.parameters).as_slice() == parameter_sha256
-            && Sha256::digest(&sealed_data.sql_library).as_slice() == sql_library_sha256;
+            && Sha256::digest(&sealed_data.parameters).as_slice() == parameter_sha256;
         if !digests_match {
             let mut state = self.state.lock().map_err(|_| StagingError::Poisoned)?;
             discard_reservation(&mut state, invocation_id);
@@ -792,10 +758,6 @@ impl StagingStore {
         let metadata_is_valid = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.metadata_validator
                 .validate_artifact(&sealed_data.metadata, &sealed_data.artifact)
-                && (sealed_data.sql_library.is_empty()
-                    || self
-                        .metadata_validator
-                        .validate_sql_library(&sealed_data.metadata, &sealed_data.sql_library))
         }))
         .unwrap_or(false);
         if !metadata_is_valid {
@@ -891,17 +853,13 @@ impl StagingStore {
         };
 
         let mut submission = submission;
-        let resolved_sdk = if submission.sql_library().is_some() {
-            Ok(None)
-        } else {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.metadata_validator
-                    .resolve_sdk_release(&submission.data.metadata, &submission.data.artifact)
-            }))
-            .unwrap_or(Err(
-                crate::submission_manifest::ManifestError::InvalidArtifact,
-            ))
-        };
+        let resolved_sdk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.metadata_validator
+                .resolve_sdk_release(&submission.data.metadata, &submission.data.artifact)
+        }))
+        .unwrap_or(Err(
+            crate::submission_manifest::ManifestError::InvalidArtifact,
+        ));
         match resolved_sdk {
             Ok(pin) => submission.sdk_library_pin = pin,
             Err(_) => {
@@ -1288,7 +1246,6 @@ fn discard_reservation(state: &mut StagingState, invocation_id: [u8; 16]) {
     let reservation_size = reservation
         .artifact_bytes
         .saturating_add(reservation.parameter_bytes)
-        .saturating_add(reservation.sql_library_bytes)
         .saturating_add(reservation.metadata.manifest.len() as u64)
         .saturating_add(reservation.metadata.requested_scope.len() as u64);
     state.global_reserved_bytes = state.global_reserved_bytes.saturating_sub(reservation_size);
@@ -1442,10 +1399,6 @@ mod tests {
             metadata.manifest == b"manifest"
                 && metadata.requested_scope == requested_scope_fixture()
         }
-
-        fn validate_sql_library(&self, _metadata: &SubmissionMetadata, library: &[u8]) -> bool {
-            library == b"client sql.so"
-        }
     }
 
     struct BlockingMetadata {
@@ -1456,7 +1409,7 @@ mod tests {
     struct RejectSdkResolution;
 
     struct RepositorySdkResolver {
-        repository: Arc<crate::sdk_registry::SdkReleaseRegistry>,
+        repository: Arc<crate::sdk_registry::SdkLibraryRepository>,
     }
 
     impl SubmissionMetadataValidator for RepositorySdkResolver {
@@ -1542,8 +1495,6 @@ mod tests {
             manifest: b"manifest".to_vec(),
             artifact_bytes: artifact.len() as u64,
             artifact_sha256: Sha256::digest(artifact).into(),
-            sql_library_bytes: 0,
-            sql_library_sha256: Sha256::digest([]).into(),
             scope_version: 1,
             requested_scope: requested_scope_fixture(),
             parameter_bytes: parameters.len() as u64,
@@ -1782,44 +1733,6 @@ mod tests {
     }
 
     #[test]
-    fn client_supplied_sql_library_is_digest_checked_and_carried_to_start() {
-        let store = store(Arc::new(AcceptMetadata));
-        let owner = make_owner(15, 16);
-        let artifact = b"query";
-        let library = b"client sql.so";
-        let parameters = b"";
-        let mut request = request(artifact, parameters);
-        request.sql_library_bytes = library.len() as u64;
-        request.sql_library_sha256 = Sha256::digest(library).into();
-        let reservation = store.prepare(owner, request).unwrap();
-        store
-            .upload_chunk(
-                owner,
-                reservation.invocation_id,
-                ChunkKind::Artifact,
-                0,
-                artifact,
-            )
-            .unwrap();
-        store
-            .upload_chunk(
-                owner,
-                reservation.invocation_id,
-                ChunkKind::SqlLibrary,
-                0,
-                library,
-            )
-            .unwrap();
-        store.seal(owner, reservation.invocation_id).unwrap();
-        store
-            .start_with(owner, reservation.invocation_id, |submission| {
-                assert_eq!(submission.sql_library(), Some(&library[..]));
-                Ok::<(), ()>(())
-            })
-            .unwrap();
-    }
-
-    #[test]
     fn sealed_submission_starts_once_and_releases_quota_at_finish() {
         let store = store(Arc::new(AcceptMetadata));
         let owner = make_owner(1, 2);
@@ -1922,7 +1835,7 @@ mod tests {
         let library = fs::read(release.join("libprdb_sql.so.1")).unwrap();
         let allowed = HashSet::from(["libc.so.6".to_owned()]);
         let repository = Arc::new(
-            crate::sdk_registry::SdkReleaseRegistry::open(
+            crate::sdk_registry::SdkLibraryRepository::open(
                 &root.join("instance/sdk-libraries"),
                 "linux-x86_64".to_owned(),
                 "x86_64-v1".to_owned(),
@@ -1970,7 +1883,6 @@ mod tests {
                 let pin = submission.sdk_library_pin().unwrap();
                 assert_eq!(pin.soname(), "libprdb_sql.so.1");
                 assert_eq!(pin.sha256(), Sha256::digest(&library).as_slice());
-                assert_eq!(submission.sql_library(), None);
                 assert_eq!(
                     repository.remove_release(1).unwrap_err(),
                     crate::sdk_registry::SdkRegistryError::ReleasePinned

@@ -1259,7 +1259,7 @@ fn client_request_to_ipc(
             Operation::AuthenticateSession
         }
         3 => Operation::PrepareSubmission,
-        4 | 5 | 12 | crate::client_protocol::CLIENT_SDK_LIBRARY_CHUNK_KIND => {
+        4 | 5 | crate::client_protocol::CLIENT_SDK_LIBRARY_CHUNK_KIND => {
             payload.insert(0, kind as u8);
             Operation::UploadSubmissionChunk
         }
@@ -1337,10 +1337,11 @@ mod gateway_error_payload_tests {
     }
 
     #[test]
-    fn sql_library_chunk_routes_to_submission_upload_operation() {
-        let (operation, payload) = client_request_to_ipc(12, vec![0xaa, 0xbb], 1).unwrap();
-        assert_eq!(operation, crate::ipc::Operation::UploadSubmissionChunk);
-        assert_eq!(payload, [12, 0xaa, 0xbb]);
+    fn sql_library_chunk_kind_is_rejected_at_the_gateway_boundary() {
+        assert!(matches!(
+            client_request_to_ipc(12, vec![0xaa, 0xbb], 1),
+            Err(super::GatewayConnectionError::UnsupportedClientKind(12))
+        ));
     }
 
     #[test]

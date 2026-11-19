@@ -138,7 +138,7 @@ fn binary_chunks_validate_id_offset_and_data_bounds() {
 }
 
 #[test]
-fn sql_library_chunk_kind_is_a_valid_monotonic_client_request() {
+fn request_id_sequence_tracks_frames_independently_of_authorization() {
     let mut ids = prdb_engine::client_protocol::ClientRequestIds::default();
     assert!(
         ids.accept(&prdb_engine::client_protocol::ClientFrame {
@@ -164,44 +164,25 @@ fn sql_library_chunk_kind_is_a_valid_monotonic_client_request() {
 fn prepare_decoder_enforces_exact_canonical_schema_and_limits() {
     let hash = "00".repeat(32);
     let payload = format!(
-        "{{\"manifest_version\":1,\"manifest\":\"bQ==\",\"artifact_bytes\":\"3\",\"artifact_sha256\":\"{hash}\",\"sql_library_bytes\":\"1\",\"sql_library_sha256\":\"{hash}\",\"parameter_bytes\":\"0\",\"parameter_sha256\":\"{hash}\",\"scope_version\":1,\"requested_scope\":\"cw==\",\"deadline_ms\":\"30000\",\"workload_class\":\"analytical\"}}"
+        "{{\"manifest_version\":1,\"manifest\":\"bQ==\",\"artifact_bytes\":\"3\",\"artifact_sha256\":\"{hash}\",\"parameter_bytes\":\"0\",\"parameter_sha256\":\"{hash}\",\"scope_version\":1,\"requested_scope\":\"cw==\",\"deadline_ms\":\"30000\",\"workload_class\":\"analytical\",\"sdk_library_mode\":\"repository\"}}"
     );
     let prepare = decode_client_prepare(payload.as_bytes()).unwrap();
     assert_eq!(prepare.manifest, b"m");
     assert_eq!(prepare.requested_scope, b"s");
     assert_eq!(prepare.artifact_bytes, 3);
-    assert_eq!(prepare.sql_library_bytes, 1);
-    assert!(!prepare.repository_sdk_library);
-    let registry_mode = payload.replace(
-        &format!(",\"sql_library_bytes\":\"1\",\"sql_library_sha256\":\"{hash}\""),
-        "",
-    );
+    assert!(prepare.repository_sdk_library);
+    let without_repository = payload.replace(",\"sdk_library_mode\":\"repository\"", "");
     assert_eq!(
-        decode_client_prepare(registry_mode.as_bytes())
-            .unwrap()
-            .sql_library_bytes,
-        0
-    );
-    let repository_mode = registry_mode.replace(
-        "\"workload_class\":\"analytical\"",
-        "\"workload_class\":\"analytical\",\"sdk_library_mode\":\"repository\"",
-    );
-    let query_only = decode_client_prepare(repository_mode.as_bytes()).unwrap();
-    assert!(query_only.repository_sdk_library);
-    assert_eq!(query_only.sql_library_bytes, 0);
-    let repo_with_library = payload.replace(
-        "\"workload_class\":\"analytical\"",
-        "\"workload_class\":\"analytical\",\"sdk_library_mode\":\"repository\"",
-    );
-    assert_eq!(
-        decode_client_prepare(repo_with_library.as_bytes()),
+        decode_client_prepare(without_repository.as_bytes()),
         Err(ClientControlError::InvalidPrepare)
     );
-    let empty_sql_library =
-        payload.replace("\"sql_library_bytes\":\"1\"", "\"sql_library_bytes\":\"0\"");
+    let legacy_fields = payload.replace(
+        "\"parameter_bytes\":\"0\"",
+        &format!("\"sql_library_bytes\":\"1\",\"sql_library_sha256\":\"{hash}\",\"parameter_bytes\":\"0\""),
+    );
     assert_eq!(
-        decode_client_prepare(empty_sql_library.as_bytes()),
-        Err(ClientControlError::InvalidPrepare)
+        decode_client_prepare(legacy_fields.as_bytes()),
+        Err(ClientControlError::UnknownKey)
     );
     assert_eq!(prepare.parameter_bytes, 0);
     assert_eq!(

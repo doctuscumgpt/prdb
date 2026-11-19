@@ -57,7 +57,7 @@ rotates the unacknowledged bootstrap token.
 
 ```ini
 # ~/.config/prdb/supervisor.env
-PRDB_SUPERVISOR_ARGS=--instance-dir\ /home/USER/.local/state/prdb/instance\ --service-socket\ /run/user/1000/prdb/supervisor.sock\ --gateway-uid\ 1000\ --cgroup-parent\ systemd\ --executor\ /home/USER/.local/libexec/prdb/prdb-executor\ --optimizer\ /home/USER/.local/libexec/prdb/prdb-optimizer\ --scratch-parent\ /home/USER/.local/state/prdb/scratch\ --runtime-read-execute\ /usr/lib64/ld-linux-x86-64.so.2\ --runtime-read-execute\ /usr/lib64/libc.so.6\ --runtime-profile\ nixos-x86_64-glibc-2.42\ --cpu-baseline\ x86_64-v1\ --sdk-release\ 1\ --sdk-release-dir\ /home/USER/.local/lib/prdb/sql-sdk\ --sdk-cache-dir\ /home/USER/.local/state/prdb/sdk-cache\ --sdk-cache-max-bytes\ 1073741824\ --allowed-dependency\ libc.so.6\ --retention-seconds\ 86400\ --max-rows\ 100000\ --max-bytes\ 67108864\ --cpu-quota-us\ 100000\ --cpu-period-us\ 100000\ --memory-max-bytes\ 536870912\ --max-processes\ 32
+PRDB_SUPERVISOR_ARGS=--instance-dir\ /home/USER/.local/state/prdb/instance\ --service-socket\ /run/user/1000/prdb/supervisor.sock\ --gateway-uid\ 1000\ --cgroup-parent\ systemd\ --executor\ /home/USER/.local/libexec/prdb/prdb-executor\ --optimizer\ /home/USER/.local/libexec/prdb/prdb-optimizer\ --scratch-parent\ /home/USER/.local/state/prdb/scratch\ --runtime-read-execute\ /usr/lib64/ld-linux-x86-64.so.2\ --runtime-read-execute\ /usr/lib64/libc.so.6\ --runtime-profile\ nixos-x86_64-glibc-2.42\ --cpu-baseline\ x86_64-v1\ --sdk-repository-max-bytes\ 1073741824\ --allowed-dependency\ libc.so.6\ --retention-seconds\ 86400\ --max-rows\ 100000\ --max-bytes\ 67108864\ --cpu-quota-us\ 100000\ --cpu-period-us\ 100000\ --memory-max-bytes\ 536870912\ --max-processes\ 32
 PRDB_AUDIT_JSONL_PATH=/home/USER/.local/state/prdb/audit.jsonl
 PRDB_LANDLOCK_TRAVERSE_PATHS=/home\ /home/USER\ /home/USER/.local\ /home/USER/.local/lib\ /home/USER/.local/lib/prdb\ /run\ /run/user\ /run/user/1000\ /sys\ /sys/fs\ /sys/fs/cgroup\ /nix\ /nix/store
 PRDB_SUPERVISOR_LANDLOCK_PATHS=/home/USER/.local/libexec/prdb/prdb-executor\ /home/USER/.local/libexec/prdb/prdb-optimizer\ /home/USER/.local/lib/prdb/sql-sdk\ /nix/store/HASH-glibc\ /nix/store/HASH-gcc-lib
@@ -66,13 +66,11 @@ PRDB_SUPERVISOR_LANDLOCK_PATHS=/home/USER/.local/libexec/prdb/prdb-executor\ /ho
 `EnvironmentFile` does not process shell quoting; systemd expands the unquoted
 `$PRDB_SUPERVISOR_ARGS` as whitespace-separated arguments. Keep configured
 paths free of whitespace. Add any runtime libraries required by the selected
-profile using repeated `--runtime-read-execute` values. Client packages normally
-upload their compatible `sql.so`; install trusted SDK release directories and
-configure repeatable `--sdk-release-dir` plus a writable bounded
-`--sdk-cache-dir` only when accepting older submissions without uploaded bytes.
-Add the SDK's non-SDK dependencies to `--allowed-dependency`. Do not enable
-`--allow-legacy-static-sdk-release 1` for new installations; it exists only for
-the SDK 1 transition and will be removed at the SDK 2 cutoff. Set the gateway UID to
+profile using repeated `--runtime-read-execute` values. Administrators install
+SDK releases into the instance-local repository through the authenticated control
+API; clients upload query DLLs only. There are no release-directory, cache,
+uploaded-SDK, or static-SDK fallback options. Add the SDK's non-SDK dependencies
+to `--allowed-dependency`. Set the gateway UID to
 the login UID (use `id -u`). The user service uses the default 0600 local
 socket.
 
@@ -226,7 +224,9 @@ PRDB_SUPERVISOR_LANDLOCK_PATHS=/usr/libexec/prdb/prdb-executor\ /usr/libexec/prd
 
 The supervisor executable and `/dev` traversal are granted directly by its
 unit. The environment-backed traversal list provides ancestors for its state,
-runtime, delegated cgroup, executable, optional legacy SDK release, and runtime-library paths. Install the selected release directory as /usr/lib/prdb/sql-sdk when legacy registry resolution is enabled; the SDK cache is written under the supervisor state directory. On systems
+runtime, delegated cgroup, executable, SDK repository, and runtime-library paths.
+The repository is stored under the managed instance directory and query resolution
+uses immutable installed releases. On systems
 without Nix, omit `/nix` and add the actual loader/library directories used by
 the validated runtime profile.
 

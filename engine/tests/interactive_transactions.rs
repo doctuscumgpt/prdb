@@ -339,7 +339,7 @@ fn v2_transaction_attaches_and_commits_through_fresh_tcp_connections() {
 #[test]
 fn runas_package_crosses_v2_tcp_gateway_and_confined_executor()
 -> Result<(), Box<dyn std::error::Error>> {
-    use prdb_engine::client_package::{PackageOptions, package_query};
+    use prdb_engine::client_package::{PackageOptions, package_query_repository};
     use prdb_engine::client_protocol::{
         ClientStartActorCredentials, ClientV2PackageState, ClientV2Response,
         ClientV2TransactionState,
@@ -843,7 +843,7 @@ int32_t prdb_query_main_v3(const prdb_host_api_v3 *host,
             .find(|path| path.is_file())
             .ok_or_else(|| format!("{tool} was not found in PATH").into())
     };
-    package_query(&PackageOptions {
+    package_query_repository(&PackageOptions {
         tcc: find_tool("tcc")?,
         shared_linker: find_tool("cc")?,
         patchelf: find_tool("patchelf")?,
@@ -858,7 +858,7 @@ int32_t prdb_query_main_v3(const prdb_host_api_v3 *host,
         runtime_profile: "nixos-x86_64-glibc-2.42".to_owned(),
         compiler_identity: "interactive RUNAS integration".to_owned(),
     })?;
-    package_query(&PackageOptions {
+    package_query_repository(&PackageOptions {
         tcc: find_tool("tcc")?,
         shared_linker: find_tool("cc")?,
         patchelf: find_tool("patchelf")?,
@@ -873,7 +873,7 @@ int32_t prdb_query_main_v3(const prdb_host_api_v3 *host,
         runtime_profile: "nixos-x86_64-glibc-2.42".to_owned(),
         compiler_identity: "interactive RUNAS visibility integration".to_owned(),
     })?;
-    package_query(&PackageOptions {
+    package_query_repository(&PackageOptions {
         tcc: find_tool("tcc")?,
         shared_linker: find_tool("cc")?,
         patchelf: find_tool("patchelf")?,
@@ -892,10 +892,9 @@ int32_t prdb_query_main_v3(const prdb_host_api_v3 *host,
         package.join("manifest.pmf1"),
     )?)
     .map_err(|error| format!("generated package manifest is invalid: {error:?}"))?;
-    let profile = ArtifactCompatibilityProfile::new(
+    let profile = ArtifactCompatibilityProfile::for_repository(
         manifest.cpu_baseline.clone(),
         manifest.runtime_profile.clone(),
-        manifest.sdk_release,
         manifest
             .dependencies
             .iter()
@@ -903,9 +902,27 @@ int32_t prdb_query_main_v3(const prdb_host_api_v3 *host,
             .collect::<HashSet<_>>(),
     )
     .map_err(|error| format!("package compatibility profile failed: {error:?}"))?;
+    let sdk_repository = Arc::new(
+        prdb_engine::sdk_registry::SdkLibraryRepository::open(
+            &fixture.0.join("sdk-libraries"),
+            "linux-x86_64".to_owned(),
+            manifest.cpu_baseline.clone(),
+            manifest.runtime_profile.clone(),
+            ["libc.so.6".to_owned()].into_iter().collect(),
+            128 * 1024 * 1024,
+        )
+        .map_err(|error| format!("open SDK repository: {error:?}"))?,
+    );
+    sdk_repository
+        .install(
+            &fs::read(sdk_release_dir.join("sdk-release.json"))?,
+            &fs::read(sdk_release_dir.join("libprdb_sql.so.1"))?,
+            &["libc.so.6".to_owned()].into_iter().collect(),
+        )
+        .map_err(|error| format!("install SDK release: {error:?}"))?;
     let validator = VersionedSubmissionMetadataValidator::new(profile)
-        .allow_legacy_static_sdk_release(1)
-        .map_err(|error| format!("legacy SDK compatibility failed: {error:?}"))?;
+        .with_sdk_registry(sdk_repository)
+        .map_err(|error| format!("configure SDK repository: {error:?}"))?;
 
     let staging = StagingStore::new(StagingLimits::default(), Arc::new(validator))?;
     let runtime = GatewayExecutorConfig {

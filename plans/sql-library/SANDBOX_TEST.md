@@ -58,8 +58,7 @@ Configure these environment variables in the shell command run by the unit:
 - `PRDB_TEST_SHARED_SQL_LOAD_FAILURE_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-missing-dependency.so`.
 - `PRDB_TEST_EXTRA_ALLOWED_DEPENDENCY`: set to `libprdb_missing.so.1` for the missing-dependency fixture so manifest admission succeeds and the confined loader observes the missing runtime file.
 - `PRDB_TEST_SDK_RELEASE_DIR`: absolute path to the test release directory containing the hostile SDK constructor, normally `target/sdk-v1/hostile-sdk/releases/linux-x86_64/x86_64-v1/nixos-x86_64-glibc-2.42/sdk-1-abis1,2,3,4,5` for the pinned release profile.
-- `PRDB_TEST_INSTALLED_SDK_RELEASE_DIR`: absolute path to the normal SDK release installed in `target/release-profile`; the supervisor binary integration test loads this directory during startup.
-- `PRDB_TEST_SDK_CACHE_DIR`: absolute path on a filesystem that supports `renameat2(RENAME_NOREPLACE)`, for example `/tmp/prdb-sdk-cache`. The repository workspace NFS mount does not support atomic cache publication.
+- `PRDB_TEST_INSTALLED_SDK_RELEASE_DIR`: absolute path to the normal SDK release in `target/release-profile`; process tests install these artifacts into a temporary instance repository.
 - `PRDB_TEST_WRITE_READ_QUERY_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-write-read.so`.
 - `PRDB_TEST_RESTRICTED_METADATA_QUERY_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-restricted-metadata.so`, used by the restricted-principal metadata acceptance.
 - `PRDB_TEST_NETWORK_CONSTRUCTOR_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-network-constructor.so`.
@@ -81,7 +80,6 @@ systemd-run --user --wait --pipe --collect \
     export PRDB_TEST_EXTRA_ALLOWED_DEPENDENCY=libprdb_missing.so.1
     export PRDB_TEST_SDK_RELEASE_DIR="$PWD/target/sdk-v1/hostile-sdk/releases/linux-x86_64/x86_64-v1/nixos-x86_64-glibc-2.42/sdk-1-abis1,2,3,4,5"
     export PRDB_TEST_INSTALLED_SDK_RELEASE_DIR="$PWD/target/release-profile/sdk/releases/linux-x86_64/x86_64-v1/nixos-x86_64-glibc-2.42/sdk-1-abis1,2,3,4,5"
-    export PRDB_TEST_SDK_CACHE_DIR="/tmp/prdb-sdk-cache"
     export PRDB_TEST_NETWORK_CONSTRUCTOR_ARTIFACT="$PWD/target/sdk-v1/sql-v3-network-constructor.so"
     export PRDB_TEST_FORGED_HANDLE_QUERY_ARTIFACT="$PWD/target/sdk-v1/sql-v3-forged-relation-handle.so"
     export PRDB_TEST_FORGED_ROW_HANDLE_QUERY_ARTIFACT="$PWD/target/sdk-v1/sql-v3-forged-row-handle.so"

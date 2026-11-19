@@ -36,7 +36,6 @@ fi
 
 instance_dir=${PRDB_INSTANCE_DIR:-/var/lib/prdb/instance}
 scratch_dir=${PRDB_SCRATCH_DIR:-/var/lib/prdb/scratch}
-sdk_cache_dir=${PRDB_SDK_CACHE_DIR:-/var/lib/prdb/sdk-cache}
 credential_file=${PRDB_CREDENTIAL_FILE:-/var/lib/prdb/admin.credentials}
 administrator=${PRDB_ADMINISTRATOR:-prdb_admin}
 expires_in_seconds=${PRDB_ADMIN_EXPIRES_IN_SECONDS:-2592000}
@@ -47,9 +46,7 @@ bind_address=${PRDB_BIND:-0.0.0.0:8765}
 control_bind_address=${PRDB_CONTROL_BIND:-0.0.0.0:8766}
 cpu_baseline=${PRDB_CPU_BASELINE:-x86_64-v1}
 runtime_profile=${PRDB_RUNTIME_PROFILE:-debian-bookworm-glibc-2.36}
-sdk_release=${PRDB_SDK_RELEASE:-1}
-sdk_abis=${PRDB_SDK_ABIS:-1,2,3,4,5}
-sdk_release_dir=${PRDB_SDK_RELEASE_DIR:-/opt/prdb/sdk/releases/linux-x86_64/$cpu_baseline/$runtime_profile/sdk-$sdk_release-abis$sdk_abis}
+sdk_repository_dir=${PRDB_SDK_REPOSITORY_DIR:-$instance_dir/sdk-libraries}
 
 if [[ -z "$cgroup_parent" || "$cgroup_parent" != /* ]]; then
     echo "prdb-server-entrypoint: set PRDB_CGROUP_PARENT to an absolute writable delegated cgroup v2 parent" >&2
@@ -72,8 +69,8 @@ for controller in cpu memory pids; do
     fi
 done
 
-mkdir -p "$(dirname "$instance_dir")" "$scratch_dir" "$sdk_cache_dir" "$service_dir"
-chmod 0700 "$(dirname "$instance_dir")" "$scratch_dir" "$sdk_cache_dir" "$service_dir"
+mkdir -p "$(dirname "$instance_dir")" "$scratch_dir" "$sdk_repository_dir" "$service_dir"
+chmod 0700 "$(dirname "$instance_dir")" "$scratch_dir" "$sdk_repository_dir" "$service_dir"
 if [[ ! -e "$instance_dir/storage.redb" ]]; then
     /usr/local/bin/prdb-init \
         --instance-dir "$instance_dir" \
@@ -96,10 +93,8 @@ supervisor_args=(
     --runtime-read-execute /lib/x86_64-linux-gnu/libc.so.6
     --runtime-profile "$runtime_profile"
     --cpu-baseline "$cpu_baseline"
-    --sdk-release "$sdk_release"
-    --sdk-release-dir "$sdk_release_dir"
-    --sdk-cache-dir "$sdk_cache_dir"
-    --sdk-cache-max-bytes "${PRDB_SDK_CACHE_MAX_BYTES:-1073741824}"
+    --sdk-repository-dir "$sdk_repository_dir"
+    --sdk-repository-max-bytes "${PRDB_SDK_REPOSITORY_MAX_BYTES:-1073741824}"
     --allowed-dependency libc.so.6
     --retention-seconds "${PRDB_RETENTION_SECONDS:-86400}"
     --max-rows "${PRDB_MAX_ROWS:-100000}"

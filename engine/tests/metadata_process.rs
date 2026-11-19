@@ -27,6 +27,31 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 struct ChildGuard(Option<Child>);
 
+fn install_test_sdk_repository(
+    instance_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let sdk_release_dir = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR")
+        .map(std::path::PathBuf::from)
+        .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR is required for process tests")?;
+    let repository = prdb_engine::sdk_registry::SdkLibraryRepository::open(
+        &instance_dir.join("sdk-libraries"),
+        "linux-x86_64".to_owned(),
+        "x86_64-v1".to_owned(),
+        "nixos-x86_64-glibc-2.42".to_owned(),
+        ["libc.so.6".to_owned()].into_iter().collect(),
+        128 * 1024 * 1024,
+    )
+    .map_err(|error| format!("open test SDK repository: {error:?}"))?;
+    repository
+        .install(
+            &std::fs::read(sdk_release_dir.join("sdk-release.json"))?,
+            &std::fs::read(sdk_release_dir.join("libprdb_sql.so.1"))?,
+            &["libc.so.6".to_owned()].into_iter().collect(),
+        )
+        .map_err(|error| format!("install test SDK release: {error:?}"))?;
+    Ok(())
+}
+
 fn read_client_frame(stream: &mut std::net::TcpStream) -> std::io::Result<Option<ClientFrame>> {
     let mut decoder = ClientFrameDecoder::negotiating();
     let mut input = [0u8; 8192];
@@ -614,6 +639,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 if outcome.status == prdb_engine::outcome::OutcomeStatus::Committed
         ));
     }
+    install_test_sdk_repository(&instance_dir)?;
     let mut outcome_status_secret = token_secret;
 
     let network_sql_package = if let Some(artifact_path) =
@@ -625,17 +651,13 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             3,
             1,
             "x86_64-v1".to_owned(),
-            "test-runtime".to_owned(),
+            "nixos-x86_64-glibc-2.42".to_owned(),
             "TinyCC restricted metadata process fixture".to_owned(),
         )
         .map_err(|error| format!("derive network SQL fixture manifest: {error:?}"))?;
         let dependencies = manifest.dependencies.clone();
         let manifest_bytes = encode_manifest_v1(&manifest)
             .map_err(|error| format!("encode network SQL fixture manifest: {error:?}"))?;
-        let sdk_release_dir = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR")
-            .map(std::path::PathBuf::from)
-            .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR is required for SQL package tests")?;
-        let sql_library = std::fs::read(sdk_release_dir.join("libprdb_sql.so.1"))?;
         let mut requested_scope = b"PSC1\0\x01\x01\x01".to_vec();
         requested_scope.extend_from_slice(&sql_visible_schema_id);
         let package = root.join("restricted-metadata-package");
@@ -643,7 +665,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         std::fs::set_permissions(&package, std::fs::Permissions::from_mode(0o700))?;
         for (name, bytes) in [
             ("query.so", artifact.as_slice()),
-            ("sql.so", sql_library.as_slice()),
             ("manifest.pmf1", manifest_bytes.as_slice()),
             ("requested_scope.psc1", requested_scope.as_slice()),
         ] {
@@ -657,13 +678,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             .collect::<String>();
         let hash_path = package.join("artifact.sha256");
         std::fs::write(&hash_path, format!("{artifact_hash}\n"))?;
-        std::fs::set_permissions(&hash_path, std::fs::Permissions::from_mode(0o600))?;
-        let sql_library_hash = Sha256::digest(&sql_library)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let hash_path = package.join("sql-library.sha256");
-        std::fs::write(&hash_path, format!("{sql_library_hash}\n"))?;
         std::fs::set_permissions(&hash_path, std::fs::Permissions::from_mode(0o600))?;
         Some((package, dependencies))
     } else {
@@ -721,11 +735,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         "--cpu-baseline",
         "x86_64-v1",
         "--runtime-profile",
-        "test-runtime",
-        "--sdk-release",
-        "1",
-        "--allow-legacy-static-sdk-release",
-        "1",
+        "nixos-x86_64-glibc-2.42",
         "--retention-seconds",
         "3600",
         "--max-rows",
@@ -919,7 +929,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                     "--cpu-baseline",
                     "x86_64-v1",
                     "--runtime-profile",
-                    "test-runtime",
+                    "nixos-x86_64-glibc-2.42",
                     "--compiler-identity",
                     "TinyCC process integration fixture",
                     "--parameters",
@@ -1127,7 +1137,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 "--cpu-baseline",
                 "x86_64-v1",
                 "--runtime-profile",
-                "test-runtime",
+                "nixos-x86_64-glibc-2.42",
                 "--compiler-identity",
                 "TinyCC interactive SQL process integration",
                 "--parameters",
@@ -1224,7 +1234,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 "--cpu-baseline",
                 "x86_64-v1",
                 "--runtime-profile",
-                "test-runtime",
+                "nixos-x86_64-glibc-2.42",
                 "--compiler-identity",
                 "TinyCC interactive uncertain COMMIT fixture",
                 "--parameters",
@@ -1276,7 +1286,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 "--cpu-baseline",
                 "x86_64-v1",
                 "--runtime-profile",
-                "test-runtime",
+                "nixos-x86_64-glibc-2.42",
                 "--compiler-identity",
                 "TinyCC interactive uncertain START fixture",
                 "--parameters",
@@ -1351,7 +1361,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 "--cpu-baseline",
                 "x86_64-v1",
                 "--runtime-profile",
-                "test-runtime",
+                "nixos-x86_64-glibc-2.42",
                 "--compiler-identity",
                 "TinyCC interactive uncertain transaction package fixture",
                 "--parameters",
@@ -1417,7 +1427,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 "--cpu-baseline",
                 "x86_64-v1",
                 "--runtime-profile",
-                "test-runtime",
+                "nixos-x86_64-glibc-2.42",
                 "--compiler-identity",
                 "TinyCC interactive uncertain BEGIN fixture",
             ])
@@ -1476,7 +1486,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 "--cpu-baseline",
                 "x86_64-v1",
                 "--runtime-profile",
-                "test-runtime",
+                "nixos-x86_64-glibc-2.42",
                 "--compiler-identity",
                 "TinyCC interactive uncertain ROLLBACK fixture",
             ])
@@ -1535,7 +1545,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 "--cpu-baseline",
                 "x86_64-v1",
                 "--runtime-profile",
-                "test-runtime",
+                "nixos-x86_64-glibc-2.42",
                 "--compiler-identity",
                 "TinyCC interactive uncertain DDL fixture",
             ])
@@ -6377,6 +6387,7 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
     let admin_user_id = setup.admin_user_id();
     let token_secret = setup.take_secret().ok_or("bootstrap secret missing")?;
     drop(setup.acknowledge()?);
+    install_test_sdk_repository(&instance_dir)?;
 
     let cgroup_parent = std::env::var_os("PRDB_TEST_CGROUP_PARENT")
         .map(std::path::PathBuf::from)
@@ -6408,11 +6419,9 @@ fn self_referencing_create_table_sql_crosses_gateway_and_supervisor_processes()
         "--cpu-baseline",
         "x86_64-v1",
         "--runtime-profile",
-        "test-runtime",
-        "--sdk-release",
-        "1",
-        "--allow-legacy-static-sdk-release",
-        "1",
+        "nixos-x86_64-glibc-2.42",
+        "--allowed-dependency",
+        "libc.so.6",
         "--retention-seconds",
         "3600",
         "--max-rows",
@@ -6990,6 +6999,10 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
     let source = root.join("query.c");
     let object_path = root.join("query.o");
     let artifact_path = root.join("query.so");
+    let sdk_release_dir = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR")
+        .map(std::path::PathBuf::from)
+        .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR is required for SQL package tests")?;
+    let sdk_library_path = sdk_release_dir.join("libprdb_sql.so.1");
     std::fs::write(
         &source,
         "#include <stddef.h>\n\
@@ -7028,6 +7041,12 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         .arg("-shared")
         .arg("-Wl,-z,noexecstack")
         .arg(&object_path)
+        .arg("-Wl,--no-as-needed")
+        .arg(&sdk_library_path)
+        .arg("-Wl,--no-as-needed")
+        .arg("-lc")
+        .arg("-Wl,--as-needed")
+        .arg("-Wl,-rpath,$ORIGIN")
         .arg("-o")
         .arg(&artifact_path)
         .env_remove("NIX_LDFLAGS")
@@ -7046,7 +7065,7 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         3,
         1,
         "x86_64-v1".to_owned(),
-        "test-runtime".to_owned(),
+        "nixos-x86_64-glibc-2.42".to_owned(),
         "TinyCC process integration fixture".to_owned(),
     )
     .map_err(|error| format!("derive TinyCC fixture manifest: {error:?}"))?;
@@ -7056,15 +7075,10 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
     let package = root.join("package");
     std::fs::create_dir(&package)?;
     std::fs::set_permissions(&package, std::fs::Permissions::from_mode(0o700))?;
-    let sdk_release_dir = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR")
-        .map(std::path::PathBuf::from)
-        .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR is required for SQL package tests")?;
-    let sql_library = std::fs::read(sdk_release_dir.join("libprdb_sql.so.1"))?;
     let mut requested_scope = b"PSC1\0\x01\x01\x01".to_vec();
     requested_scope.extend_from_slice(&[1; 16]);
     for (name, bytes) in [
         ("query.so", artifact.as_slice()),
-        ("sql.so", sql_library.as_slice()),
         ("manifest.pmf1", manifest.as_slice()),
         // One canonical schema-USAGE capability; the query performs no data access.
         ("requested_scope.psc1", requested_scope.as_slice()),
@@ -7085,25 +7099,12 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         package.join("artifact.sha256"),
         std::fs::Permissions::from_mode(0o600),
     )?;
-    let sql_library_hash = Sha256::digest(&sql_library);
-    let sql_library_sidecar = format!(
-        "{}\n",
-        sql_library_hash
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    );
-    std::fs::write(package.join("sql-library.sha256"), sql_library_sidecar)?;
-    std::fs::set_permissions(
-        package.join("sql-library.sha256"),
-        std::fs::Permissions::from_mode(0o600),
-    )?;
-
     let instance_dir = root.join("instance");
     let mut setup = initialize(&instance_dir, "outcome_process_admin", i64::MAX)?;
     let token_id = setup.token_id();
     let token_secret = setup.take_secret().ok_or("bootstrap secret missing")?;
     drop(setup.acknowledge()?);
+    install_test_sdk_repository(&instance_dir)?;
 
     let service_socket = root.join("supervisor.sock");
     let uid = unsafe { libc::geteuid() };
@@ -7131,11 +7132,7 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         "--cpu-baseline",
         "x86_64-v1",
         "--runtime-profile",
-        "test-runtime",
-        "--sdk-release",
-        "1",
-        "--allow-legacy-static-sdk-release",
-        "1",
+        "nixos-x86_64-glibc-2.42",
         "--retention-seconds",
         "3600",
         "--max-rows",
@@ -7552,11 +7549,7 @@ fn disconnected_submission_is_reconciled_after_gateway_restart()
         "--cpu-baseline",
         "x86_64-v1",
         "--runtime-profile",
-        "test-runtime",
-        "--sdk-release",
-        "1",
-        "--allow-legacy-static-sdk-release",
-        "1",
+        "nixos-x86_64-glibc-2.42",
         "--retention-seconds",
         "3600",
         "--max-rows",
@@ -7673,6 +7666,23 @@ fn decode_id_hex(encoded: &str) -> Option<[u8; 16]> {
 
 impl Drop for DirectoryGuard {
     fn drop(&mut self) {
+        fn make_removable(path: &std::path::Path) -> std::io::Result<()> {
+            let metadata = std::fs::symlink_metadata(path)?;
+            if metadata.file_type().is_symlink() {
+                return Ok(());
+            }
+            if metadata.is_dir() {
+                for entry in std::fs::read_dir(path)? {
+                    make_removable(&entry?.path())?;
+                }
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+            } else {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            }
+            Ok(())
+        }
+
+        let _ = make_removable(&self.0);
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }

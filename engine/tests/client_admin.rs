@@ -138,10 +138,15 @@ fn establish_query_session(stream: &mut TcpStream, decoder: &mut ClientFrameDeco
             .unwrap()
             .contains("\"mode\":\"query\"")
     );
+    assert!(
+        String::from_utf8(hello.payload.clone())
+            .unwrap()
+            .contains("\"sdk_library_mode\":\"repository\"")
+    );
     respond(
         stream,
         &hello,
-        br#"{"transport":"plaintext_tcp","limits":{"chunk_bytes":131072,"control_bytes":32768,"payload_bytes":524288},"mode":"query","minor":0,"major":1}"#,
+        br#"{"transport":"plaintext_tcp","limits":{"chunk_bytes":131072,"control_bytes":32768,"payload_bytes":524288},"mode":"query","sdk_library_mode":"repository","minor":0,"major":1}"#,
     );
     let auth = read_frame(stream, decoder);
     assert_eq!(auth.kind, 2);

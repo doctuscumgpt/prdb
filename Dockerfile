@@ -68,7 +68,7 @@ FROM client AS server
 
 USER root
 RUN install -d -o prdb -g prdb -m 0700 \
-      /var/lib/prdb /var/lib/prdb/scratch /var/lib/prdb/sdk-cache \
+      /var/lib/prdb /var/lib/prdb/scratch /var/lib/prdb/instance/sdk-libraries \
       /run/prdb
 
 COPY --from=build /src/target/release/prdb-executor /usr/local/bin/prdb-executor

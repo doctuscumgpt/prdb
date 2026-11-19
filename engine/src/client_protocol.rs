@@ -4,7 +4,6 @@ use crate::credentials::TOKEN_SECRET_BYTES;
 use crate::storage_manager::{AuthenticatedQuerySession, StorageManager};
 use crate::supervisor::StagingOwner;
 use crate::transaction::TransactionError;
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -539,8 +538,6 @@ pub struct ClientPrepare {
     pub manifest: Vec<u8>,
     pub artifact_bytes: u64,
     pub artifact_sha256: [u8; 32],
-    pub sql_library_bytes: u64,
-    pub sql_library_sha256: [u8; 32],
     pub repository_sdk_library: bool,
     pub parameter_bytes: u64,
     pub parameter_sha256: [u8; 32],
@@ -3914,18 +3911,8 @@ pub fn decode_client_prepare_for_protocol(
         Some(JsonScalar::String(value)) if value == "repository" => true,
         Some(_) => return Err(ClientControlError::InvalidPrepare),
     };
-    let has_sql_library = fields.contains_key("sql_library_bytes");
-    let (sql_library_bytes, sql_library_sha256) = match (
-        fields.contains_key("sql_library_bytes"),
-        fields.contains_key("sql_library_sha256"),
-    ) {
-        (true, true) => (
-            take_decimal_string(&mut fields, "sql_library_bytes")?,
-            decode_lower_hex_hash(&take_string(&mut fields, "sql_library_sha256")?)?,
-        ),
-        (false, false) => (0, Sha256::digest([]).into()),
-        _ => return Err(ClientControlError::InvalidPrepare),
-    };
+    let has_sql_library =
+        fields.contains_key("sql_library_bytes") || fields.contains_key("sql_library_sha256");
     let parameter_bytes = take_decimal_string(&mut fields, "parameter_bytes")?;
     let parameter_sha256 = decode_lower_hex_hash(&take_string(&mut fields, "parameter_sha256")?)?;
     let scope_version = take_number(&mut fields, "scope_version")?
@@ -3952,15 +3939,14 @@ pub fn decode_client_prepare_for_protocol(
         .transpose()?;
     if transaction_id.is_some() != package_id.is_some()
         || protocol_major == 1 && transaction_id.is_some()
-        || repository_sdk_library && has_sql_library
+        || !repository_sdk_library
     {
         return Err(ClientControlError::InvalidPrepare);
     }
     reject_unknown_scalars(fields)?;
     if artifact_bytes == 0
         || artifact_bytes > crate::supervisor::MAX_ARTIFACT_BYTES
-        || has_sql_library && sql_library_bytes == 0
-        || sql_library_bytes > crate::supervisor::MAX_SQL_LIBRARY_BYTES
+        || has_sql_library
         || parameter_bytes > crate::supervisor::MAX_PARAMETER_BYTES
         || deadline_ms == 0
         || manifest_text.len() > crate::supervisor::MAX_MANIFEST_BYTES.div_ceil(3) * 4
@@ -3979,8 +3965,6 @@ pub fn decode_client_prepare_for_protocol(
         manifest,
         artifact_bytes,
         artifact_sha256,
-        sql_library_bytes,
-        sql_library_sha256,
         repository_sdk_library,
         parameter_bytes,
         parameter_sha256,
@@ -5302,9 +5286,6 @@ impl ClientConnectionSession {
         self.revalidate_storage(storage)?;
         let chunk = decode_client_chunk(&request.payload)
             .map_err(ClientSessionError::InvalidControlPayload)?;
-        if request.kind == 12 && self.repository_sdk_library {
-            return Err(ClientSessionError::WrongMode);
-        }
         if request.kind == CLIENT_SDK_LIBRARY_CHUNK_KIND {
             let actor_id = self
                 .authenticated
@@ -5333,7 +5314,6 @@ impl ClientConnectionSession {
         let kind = match request.kind {
             4 => crate::supervisor::ChunkKind::Artifact,
             5 => crate::supervisor::ChunkKind::Parameters,
-            12 => crate::supervisor::ChunkKind::SqlLibrary,
             _ => unreachable!("chunk kind was checked"),
         };
         let next_offset = staging
@@ -5390,8 +5370,6 @@ impl ClientConnectionSession {
                     manifest: prepare.manifest,
                     artifact_bytes: prepare.artifact_bytes,
                     artifact_sha256: prepare.artifact_sha256,
-                    sql_library_bytes: prepare.sql_library_bytes,
-                    sql_library_sha256: prepare.sql_library_sha256,
                     scope_version: prepare.scope_version,
                     requested_scope: prepare.requested_scope,
                     parameter_bytes: prepare.parameter_bytes,
@@ -5414,15 +5392,9 @@ impl ClientConnectionSession {
                 .map_err(ClientSessionError::Staging)?;
         }
         let invocation_id = encode_lower_hex_id(reservation.invocation_id);
-        let payload = if prepare.sql_library_bytes == 0 {
-            format!(
-                "{{\"invocation_id\":\"{invocation_id}\",\"artifact_chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES},\"parameter_chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES}}}"
-            )
-        } else {
-            format!(
-                "{{\"invocation_id\":\"{invocation_id}\",\"artifact_chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES},\"parameter_chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES},\"sql_library_chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES}}}"
-            )
-        };
+        let payload = format!(
+            "{{\"invocation_id\":\"{invocation_id}\",\"artifact_chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES},\"parameter_chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES}}}"
+        );
         Ok(ClientFrame {
             kind: 100,
             request_id: request.request_id,
@@ -9924,7 +9896,9 @@ impl ClientConnectionSession {
         client_name: &str,
         repository_sdk_library: bool,
     ) -> Result<(), ClientSessionError> {
-        if repository_sdk_library && mode != ClientMode::Query {
+        if mode == ClientMode::Query && !repository_sdk_library
+            || repository_sdk_library && mode != ClientMode::Query
+        {
             return Err(ClientSessionError::InvalidHello);
         }
         self.accept_hello(mode, client_name)?;
@@ -10149,7 +10123,7 @@ impl ClientConnectionSession {
             return kind == 2 || kind == 11;
         };
         match mode {
-            ClientMode::Query => (3..=9).contains(&kind) || matches!(kind, 11 | 12),
+            ClientMode::Query => (3..=9).contains(&kind) || kind == 11,
             ClientMode::Control => {
                 (8..=10).contains(&kind) || matches!(kind, 11 | CLIENT_SDK_LIBRARY_CHUNK_KIND)
             }
@@ -11149,7 +11123,7 @@ mod client_v2_frame_tests {
 
     #[test]
     fn prepare_transaction_binding_is_v2_only_and_requires_both_ids() {
-        let base = r#"{"manifest_version":1,"manifest":"AQ==","artifact_bytes":"1","artifact_sha256":"0000000000000000000000000000000000000000000000000000000000000000","parameter_bytes":"0","parameter_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","scope_version":1,"requested_scope":"AQ==","deadline_ms":"1","workload_class":"operational""#;
+        let base = r#"{"manifest_version":1,"manifest":"AQ==","artifact_bytes":"1","artifact_sha256":"0000000000000000000000000000000000000000000000000000000000000000","parameter_bytes":"0","parameter_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","scope_version":1,"requested_scope":"AQ==","deadline_ms":"1","workload_class":"operational","sdk_library_mode":"repository""#;
         let v2 = format!(
             "{base},\"transaction_id\":\"11111111111111111111111111111111\",\"package_id\":\"22222222222222222222222222222222\"}}"
         );
