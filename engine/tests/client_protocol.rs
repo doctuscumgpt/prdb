@@ -37,6 +37,18 @@ fn hello_decoder_accepts_the_version_one_shape_and_json_escapes() {
     let hello = decode_client_hello(br#"{"mode":"query","client_name":"tool\u0041"}"#).unwrap();
     assert_eq!(hello.mode, ClientMode::Query);
     assert_eq!(hello.client_name, "toolA");
+    assert!(!hello.repository_sdk_library);
+    let repository = decode_client_hello(
+        br#"{"mode":"query","client_name":"tool","sdk_library_mode":"repository"}"#,
+    )
+    .unwrap();
+    assert!(repository.repository_sdk_library);
+    assert_eq!(
+        decode_client_hello(
+            br#"{"mode":"control","client_name":"tool","sdk_library_mode":"repository"}"#
+        ),
+        Err(ClientControlError::InvalidMode)
+    );
 }
 
 #[test]
@@ -137,6 +149,15 @@ fn sql_library_chunk_kind_is_a_valid_monotonic_client_request() {
         })
         .is_ok()
     );
+    assert!(
+        ids.accept(&prdb_engine::client_protocol::ClientFrame {
+            kind: prdb_engine::client_protocol::CLIENT_SDK_LIBRARY_CHUNK_KIND,
+            request_id: 2,
+            response_sequence: 0,
+            payload: vec![1; 25],
+        })
+        .is_ok()
+    );
 }
 
 #[test]
@@ -150,6 +171,7 @@ fn prepare_decoder_enforces_exact_canonical_schema_and_limits() {
     assert_eq!(prepare.requested_scope, b"s");
     assert_eq!(prepare.artifact_bytes, 3);
     assert_eq!(prepare.sql_library_bytes, 1);
+    assert!(!prepare.repository_sdk_library);
     let registry_mode = payload.replace(
         &format!(",\"sql_library_bytes\":\"1\",\"sql_library_sha256\":\"{hash}\""),
         "",
@@ -159,6 +181,21 @@ fn prepare_decoder_enforces_exact_canonical_schema_and_limits() {
             .unwrap()
             .sql_library_bytes,
         0
+    );
+    let repository_mode = registry_mode.replace(
+        "\"workload_class\":\"analytical\"",
+        "\"workload_class\":\"analytical\",\"sdk_library_mode\":\"repository\"",
+    );
+    let query_only = decode_client_prepare(repository_mode.as_bytes()).unwrap();
+    assert!(query_only.repository_sdk_library);
+    assert_eq!(query_only.sql_library_bytes, 0);
+    let repo_with_library = payload.replace(
+        "\"workload_class\":\"analytical\"",
+        "\"workload_class\":\"analytical\",\"sdk_library_mode\":\"repository\"",
+    );
+    assert_eq!(
+        decode_client_prepare(repo_with_library.as_bytes()),
+        Err(ClientControlError::InvalidPrepare)
     );
     let empty_sql_library =
         payload.replace("\"sql_library_bytes\":\"1\"", "\"sql_library_bytes\":\"0\"");

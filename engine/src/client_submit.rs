@@ -107,6 +107,7 @@ pub struct SubmissionClient {
     max_control_bytes: usize,
     max_chunk_bytes: usize,
     protocol_major: u16,
+    repository_sdk_library: bool,
 }
 
 /// Authenticated control-mode client for permission-filtered metadata reads.
@@ -621,6 +622,7 @@ impl SubmissionClient {
             timeout,
             crate::client_protocol::ClientMode::Query,
             1,
+            false,
         )
     }
 
@@ -638,6 +640,45 @@ impl SubmissionClient {
             DEFAULT_TIMEOUT,
             crate::client_protocol::ClientMode::Query,
             2,
+            false,
+        )
+    }
+
+    /// Connect only when the peer advertises the repository-backed SDK
+    /// profile. The client never retries this handshake as a legacy upload.
+    pub fn connect_repository_authenticated_with_timeout(
+        address: SocketAddr,
+        token_id: [u8; 16],
+        token_secret: &mut [u8],
+        timeout: Duration,
+    ) -> Result<Self, ClientSubmitError> {
+        Self::connect_authenticated_mode(
+            address,
+            token_id,
+            token_secret,
+            timeout,
+            crate::client_protocol::ClientMode::Query,
+            1,
+            true,
+        )
+    }
+
+    /// Interactive v2 counterpart that requires repository SDK negotiation
+    /// and retains the transaction binding behavior of the v2 protocol.
+    pub fn connect_repository_interactive_authenticated_with_timeout(
+        address: SocketAddr,
+        token_id: [u8; 16],
+        token_secret: &mut [u8],
+        timeout: Duration,
+    ) -> Result<Self, ClientSubmitError> {
+        Self::connect_authenticated_mode(
+            address,
+            token_id,
+            token_secret,
+            timeout,
+            crate::client_protocol::ClientMode::Query,
+            2,
+            true,
         )
     }
 
@@ -648,6 +689,7 @@ impl SubmissionClient {
         timeout: Duration,
         mode: crate::client_protocol::ClientMode,
         protocol_major: u16,
+        repository_sdk_library: bool,
     ) -> Result<Self, ClientSubmitError> {
         let secret = Zeroizing::new(token_secret.to_vec());
         token_secret.zeroize();
@@ -677,13 +719,20 @@ impl SubmissionClient {
             max_control_bytes: CLIENT_MAX_CONTROL_BYTES,
             max_chunk_bytes: CLIENT_MAX_CHUNK_BYTES,
             protocol_major,
+            repository_sdk_library,
         };
 
         let mode_name = match mode {
             crate::client_protocol::ClientMode::Query => "query",
             crate::client_protocol::ClientMode::Control => "control",
         };
-        let hello = format!("{{\"mode\":\"{mode_name}\",\"client_name\":\"{CLIENT_NAME}\"}}");
+        let hello = if repository_sdk_library {
+            format!(
+                "{{\"mode\":\"{mode_name}\",\"client_name\":\"{CLIENT_NAME}\",\"sdk_library_mode\":\"repository\"}}"
+            )
+        } else {
+            format!("{{\"mode\":\"{mode_name}\",\"client_name\":\"{CLIENT_NAME}\"}}")
+        };
         let response = client.exchange(1, hello.into_bytes())?;
         let hello_fields = parse_flat_response(&response.payload)?;
         let limits = hello_fields
@@ -704,11 +753,16 @@ impl SubmissionClient {
             .get("chunk_bytes")
             .and_then(ResponseValue::as_number)
             .and_then(|bytes| usize::try_from(bytes).ok());
-        if hello_fields.len() != 5
+        if hello_fields.len() != if repository_sdk_library { 6 } else { 5 }
             || hello_fields.get("major") != Some(&ResponseValue::Number(protocol_major as u64))
             || hello_fields.get("minor") != Some(&ResponseValue::Number(0))
             || take_string(&hello_fields, "mode").as_deref() != Some(mode_name)
             || take_string(&hello_fields, "transport").as_deref() != Some("plaintext_tcp")
+            || repository_sdk_library
+                && hello_fields
+                    .get("sdk_library_mode")
+                    .and_then(ResponseValue::as_string)
+                    != Some("repository")
             || limits.len() != 3
             || max_payload_bytes.is_none_or(|bytes| bytes == 0 || bytes > CLIENT_MAX_PAYLOAD_BYTES)
             || max_control_bytes.is_none_or(|bytes| bytes == 0 || bytes > CLIENT_MAX_CONTROL_BYTES)
@@ -897,17 +951,29 @@ impl SubmissionClient {
             WorkloadClass::Operational => "operational",
             WorkloadClass::Analytical => "analytical",
         };
-        let mut prepare = format!(
-            "{{\"manifest_version\":1,\"manifest\":\"{}\",\"artifact_bytes\":\"{}\",\"artifact_sha256\":\"{}\",\"sql_library_bytes\":\"{}\",\"sql_library_sha256\":\"{}\",\"parameter_bytes\":\"{}\",\"parameter_sha256\":\"{}\",\"scope_version\":1,\"requested_scope\":\"{}\",\"deadline_ms\":\"{deadline_ms}\",\"workload_class\":\"{workload}\"}}",
-            encode_base64(&package.manifest),
-            package.artifact.len(),
-            lower_hex(&artifact_hash),
-            package.sql_library.len(),
-            lower_hex(&sql_library_hash),
-            parameters.len(),
-            lower_hex(&parameter_hash),
-            encode_base64(&package.scope),
-        );
+        let mut prepare = if self.repository_sdk_library {
+            format!(
+                "{{\"manifest_version\":1,\"manifest\":\"{}\",\"artifact_bytes\":\"{}\",\"artifact_sha256\":\"{}\",\"parameter_bytes\":\"{}\",\"parameter_sha256\":\"{}\",\"scope_version\":1,\"requested_scope\":\"{}\",\"deadline_ms\":\"{deadline_ms}\",\"workload_class\":\"{workload}\",\"sdk_library_mode\":\"repository\"}}",
+                encode_base64(&package.manifest),
+                package.artifact.len(),
+                lower_hex(&artifact_hash),
+                parameters.len(),
+                lower_hex(&parameter_hash),
+                encode_base64(&package.scope),
+            )
+        } else {
+            format!(
+                "{{\"manifest_version\":1,\"manifest\":\"{}\",\"artifact_bytes\":\"{}\",\"artifact_sha256\":\"{}\",\"sql_library_bytes\":\"{}\",\"sql_library_sha256\":\"{}\",\"parameter_bytes\":\"{}\",\"parameter_sha256\":\"{}\",\"scope_version\":1,\"requested_scope\":\"{}\",\"deadline_ms\":\"{deadline_ms}\",\"workload_class\":\"{workload}\"}}",
+                encode_base64(&package.manifest),
+                package.artifact.len(),
+                lower_hex(&artifact_hash),
+                package.sql_library.len(),
+                lower_hex(&sql_library_hash),
+                parameters.len(),
+                lower_hex(&parameter_hash),
+                encode_base64(&package.scope),
+            )
+        };
         if let Some((transaction_id, package_id)) = transaction_binding {
             prepare.pop();
             prepare.push_str(&format!(
@@ -934,24 +1000,26 @@ impl SubmissionClient {
             .filter(|bytes| (1..=self.max_chunk_bytes as u64).contains(bytes))
             .ok_or(ClientSubmitError::InvalidResponse)?
             as usize;
-        let sql_library_chunk_bytes = fields
-            .get("sql_library_chunk_bytes")
-            .and_then(ResponseValue::as_number)
-            .filter(|bytes| (1..=self.max_chunk_bytes as u64).contains(bytes))
-            .ok_or(ClientSubmitError::InvalidResponse)?
-            as usize;
-        if fields.len() != 4 {
+        let sql_library_chunk_bytes = if self.repository_sdk_library {
+            None
+        } else {
+            Some(
+                fields
+                    .get("sql_library_chunk_bytes")
+                    .and_then(ResponseValue::as_number)
+                    .filter(|bytes| (1..=self.max_chunk_bytes as u64).contains(bytes))
+                    .ok_or(ClientSubmitError::InvalidResponse)? as usize,
+            )
+        };
+        if fields.len() != if self.repository_sdk_library { 3 } else { 4 } {
             return Err(ClientSubmitError::InvalidResponse);
         }
 
         self.upload_chunks(4, invocation_id, &package.artifact, artifact_chunk_bytes)?;
         self.upload_chunks(5, invocation_id, parameters, parameter_chunk_bytes)?;
-        self.upload_chunks(
-            12,
-            invocation_id,
-            &package.sql_library,
-            sql_library_chunk_bytes,
-        )?;
+        if let Some(chunk_bytes) = sql_library_chunk_bytes {
+            self.upload_chunks(12, invocation_id, &package.sql_library, chunk_bytes)?;
+        }
         let seal_payload = format!("{{\"invocation_id\":\"{}\"}}", lower_hex(&invocation_id));
         let sealed = self.exchange(6, seal_payload.into_bytes())?;
         let fields = parse_flat_response(&sealed.payload)?;
@@ -1273,6 +1341,7 @@ impl MetadataClient {
             timeout,
             crate::client_protocol::ClientMode::Control,
             1,
+            false,
         )?;
         Ok(Self { transport })
     }
@@ -1533,6 +1602,7 @@ impl AdminClient {
             timeout,
             crate::client_protocol::ClientMode::Control,
             1,
+            false,
         )?;
         Ok(Self { transport })
     }

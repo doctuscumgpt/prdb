@@ -17544,6 +17544,42 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
             .map_err(|error| format!("SDK post-remove listing failed: {error:?}"))?
             .is_empty()
     );
+    let mut repository_query = ClientConnectionSession::default();
+    repository_query.accept_hello_with_sdk_library_mode(
+        ClientMode::Query,
+        "repository-query",
+        true,
+    )?;
+    repository_query.authenticate(&storage, id(242), &[0x6b; 32])?;
+    let repository_prepare = repository_query.handle_prepare_request(
+        &storage,
+        &staging,
+        ClientFrame {
+            kind: 3,
+            request_id: 1,
+            response_sequence: 0,
+            payload: br#"{"manifest_version":1,"manifest":"bQ==","artifact_bytes":"3","artifact_sha256":"0000000000000000000000000000000000000000000000000000000000000000","parameter_bytes":"0","parameter_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","scope_version":1,"requested_scope":"cw==","deadline_ms":"30000","workload_class":"analytical","sdk_library_mode":"repository"}"#.to_vec(),
+        },
+    )?;
+    assert!(
+        !String::from_utf8_lossy(&repository_prepare.payload).contains("sql_library_chunk_bytes")
+    );
+    let mut legacy_library_chunk = vec![0x55; 16];
+    legacy_library_chunk.extend_from_slice(&0u64.to_le_bytes());
+    legacy_library_chunk.push(0x01);
+    assert!(matches!(
+        repository_query.handle_upload_request(
+            &storage,
+            &staging,
+            ClientFrame {
+                kind: 12,
+                request_id: 2,
+                response_sequence: 0,
+                payload: legacy_library_chunk,
+            },
+        ),
+        Err(prdb_engine::client_protocol::ClientSessionError::WrongMode)
+    ));
     let schema_discovery = prdb_engine::supervisor_ipc::dispatch_gateway_client_request(
         prdb_engine::ipc::ServiceRole::Gateway,
         &storage,

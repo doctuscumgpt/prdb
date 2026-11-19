@@ -458,6 +458,42 @@ fn admin_client_reads_owner_scoped_sdk_library_operation_status() {
 }
 
 #[test]
+fn repository_profile_does_not_fall_back_when_peer_omits_capability() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        let hello = read_frame(&mut stream, &mut decoder);
+        assert!(
+            std::str::from_utf8(&hello.payload)
+                .unwrap()
+                .contains(r#""sdk_library_mode":"repository""#)
+        );
+        respond(
+            &mut stream,
+            &hello,
+            br#"{"transport":"plaintext_tcp","limits":{"chunk_bytes":131072,"control_bytes":32768,"payload_bytes":524288},"mode":"query","minor":0,"major":1}"#,
+        );
+        let mut byte = [0; 1];
+        assert_eq!(stream.read(&mut byte).unwrap(), 0);
+    });
+    let mut secret = [9; 32];
+    let result = SubmissionClient::connect_repository_authenticated_with_timeout(
+        address,
+        [7; 16],
+        &mut secret,
+        Duration::from_secs(5),
+    );
+    assert!(matches!(
+        result,
+        Err(prdb_engine::client_submit::ClientSubmitError::InvalidResponse)
+    ));
+    assert_eq!(secret, [0; 32]);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_streams_sdk_library_install_over_control_chunks() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

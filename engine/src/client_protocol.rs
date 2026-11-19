@@ -517,6 +517,7 @@ impl std::error::Error for ClientControlError {}
 pub struct ClientHello {
     pub mode: ClientMode,
     pub client_name: String,
+    pub repository_sdk_library: bool,
 }
 
 #[derive(Eq, PartialEq)]
@@ -540,6 +541,7 @@ pub struct ClientPrepare {
     pub artifact_sha256: [u8; 32],
     pub sql_library_bytes: u64,
     pub sql_library_sha256: [u8; 32],
+    pub repository_sdk_library: bool,
     pub parameter_bytes: u64,
     pub parameter_sha256: [u8; 32],
     pub scope_version: u32,
@@ -3823,8 +3825,20 @@ pub fn decode_client_hello(payload: &[u8]) -> Result<ClientHello, ClientControlE
     if client_name.len() > 128 {
         return Err(ClientControlError::InvalidClientName);
     }
+    let repository_sdk_library = match fields.remove("sdk_library_mode") {
+        None => false,
+        Some(mode) if mode == "repository" => true,
+        Some(_) => return Err(ClientControlError::InvalidClientName),
+    };
+    if repository_sdk_library && mode != ClientMode::Query {
+        return Err(ClientControlError::InvalidMode);
+    }
     reject_unknown_fields(fields)?;
-    Ok(ClientHello { mode, client_name })
+    Ok(ClientHello {
+        mode,
+        client_name,
+        repository_sdk_library,
+    })
 }
 
 /// Decode the exact AUTH v1 JSON object, requiring a lowercase opaque token
@@ -3895,6 +3909,11 @@ pub fn decode_client_prepare_for_protocol(
     let manifest_text = take_string(&mut fields, "manifest")?;
     let artifact_bytes = take_decimal_string(&mut fields, "artifact_bytes")?;
     let artifact_sha256 = decode_lower_hex_hash(&take_string(&mut fields, "artifact_sha256")?)?;
+    let repository_sdk_library = match fields.remove("sdk_library_mode") {
+        None => false,
+        Some(JsonScalar::String(value)) if value == "repository" => true,
+        Some(_) => return Err(ClientControlError::InvalidPrepare),
+    };
     let has_sql_library = fields.contains_key("sql_library_bytes");
     let (sql_library_bytes, sql_library_sha256) = match (
         fields.contains_key("sql_library_bytes"),
@@ -3933,6 +3952,7 @@ pub fn decode_client_prepare_for_protocol(
         .transpose()?;
     if transaction_id.is_some() != package_id.is_some()
         || protocol_major == 1 && transaction_id.is_some()
+        || repository_sdk_library && has_sql_library
     {
         return Err(ClientControlError::InvalidPrepare);
     }
@@ -3961,6 +3981,7 @@ pub fn decode_client_prepare_for_protocol(
         artifact_sha256,
         sql_library_bytes,
         sql_library_sha256,
+        repository_sdk_library,
         parameter_bytes,
         parameter_sha256,
         scope_version,
@@ -4977,6 +4998,7 @@ impl std::error::Error for ClientSessionError {}
 /// on drop, and gives staging authority only after storage AUTH.
 pub struct ClientConnectionSession {
     protocol_major: u16,
+    repository_sdk_library: bool,
     hello: Option<ClientMode>,
     authenticated: Option<AuthenticatedQuerySession>,
     token_secret: Option<[u8; TOKEN_SECRET_BYTES]>,
@@ -4990,6 +5012,7 @@ impl Default for ClientConnectionSession {
     fn default() -> Self {
         Self {
             protocol_major: 1,
+            repository_sdk_library: false,
             hello: None,
             authenticated: None,
             token_secret: None,
@@ -5214,12 +5237,24 @@ impl ClientConnectionSession {
                     ClientMode::Query => "query",
                     ClientMode::Control => "control",
                 };
-                self.accept_hello(hello.mode, &hello.client_name)?;
-                format!(
-                    "{{\"major\":{},\"minor\":0,\"mode\":\"{mode_text}\",\"limits\":{{\"payload_bytes\":{CLIENT_MAX_PAYLOAD_BYTES},\"control_bytes\":{CLIENT_MAX_CONTROL_BYTES},\"chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES}}},\"transport\":\"plaintext_tcp\"}}",
-                    self.protocol_major
-                )
-                .into_bytes()
+                self.accept_hello_with_sdk_library_mode(
+                    hello.mode,
+                    &hello.client_name,
+                    hello.repository_sdk_library,
+                )?;
+                if hello.repository_sdk_library {
+                    format!(
+                        "{{\"major\":{},\"minor\":0,\"mode\":\"{mode_text}\",\"sdk_library_mode\":\"repository\",\"limits\":{{\"payload_bytes\":{CLIENT_MAX_PAYLOAD_BYTES},\"control_bytes\":{CLIENT_MAX_CONTROL_BYTES},\"chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES}}},\"transport\":\"plaintext_tcp\"}}",
+                        self.protocol_major
+                    )
+                    .into_bytes()
+                } else {
+                    format!(
+                        "{{\"major\":{},\"minor\":0,\"mode\":\"{mode_text}\",\"limits\":{{\"payload_bytes\":{CLIENT_MAX_PAYLOAD_BYTES},\"control_bytes\":{CLIENT_MAX_CONTROL_BYTES},\"chunk_bytes\":{CLIENT_MAX_CHUNK_BYTES}}},\"transport\":\"plaintext_tcp\"}}",
+                        self.protocol_major
+                    )
+                    .into_bytes()
+                }
             }
             2 => {
                 let credentials = decode_client_credentials(&request.payload)
@@ -5267,6 +5302,9 @@ impl ClientConnectionSession {
         self.revalidate_storage(storage)?;
         let chunk = decode_client_chunk(&request.payload)
             .map_err(ClientSessionError::InvalidControlPayload)?;
+        if request.kind == 12 && self.repository_sdk_library {
+            return Err(ClientSessionError::WrongMode);
+        }
         if request.kind == CLIENT_SDK_LIBRARY_CHUNK_KIND {
             let actor_id = self
                 .authenticated
@@ -5339,6 +5377,11 @@ impl ClientConnectionSession {
         self.revalidate_storage(storage)?;
         let prepare = decode_client_prepare_for_protocol(&request.payload, self.protocol_major)
             .map_err(ClientSessionError::InvalidControlPayload)?;
+        if prepare.repository_sdk_library != self.repository_sdk_library {
+            return Err(ClientSessionError::InvalidControlPayload(
+                ClientControlError::InvalidPrepare,
+            ));
+        }
         let reservation = staging
             .prepare(
                 self.staging_owner()?,
@@ -9875,10 +9918,28 @@ impl ClientConnectionSession {
         Ok(())
     }
 
+    pub fn accept_hello_with_sdk_library_mode(
+        &mut self,
+        mode: ClientMode,
+        client_name: &str,
+        repository_sdk_library: bool,
+    ) -> Result<(), ClientSessionError> {
+        if repository_sdk_library && mode != ClientMode::Query {
+            return Err(ClientSessionError::InvalidHello);
+        }
+        self.accept_hello(mode, client_name)?;
+        self.repository_sdk_library = repository_sdk_library;
+        Ok(())
+    }
+
     pub fn accept_hello_payload(&mut self, payload: &[u8]) -> Result<(), ClientSessionError> {
         let hello =
             decode_client_hello(payload).map_err(ClientSessionError::InvalidControlPayload)?;
-        self.accept_hello(hello.mode, &hello.client_name)
+        self.accept_hello_with_sdk_library_mode(
+            hello.mode,
+            &hello.client_name,
+            hello.repository_sdk_library,
+        )
     }
 
     /// Authenticate using storage's current token and login/role snapshot.
