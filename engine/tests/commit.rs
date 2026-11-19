@@ -17315,6 +17315,28 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         sdk_library_discovery,
         br#"{"sdk_libraries":[],"next_cursor":null}"#
     );
+    let denied_sdk_library_remove = prdb_engine::supervisor_ipc::dispatch_gateway_client_request(
+        prdb_engine::ipc::ServiceRole::Gateway,
+        &storage,
+        &staging,
+        &mut sdk_library_control,
+        &prdb_engine::ipc::IpcFrame {
+            operation: prdb_engine::ipc::Operation::SubmitAdministrativeOperation as u16,
+            request_id: 2,
+            payload: br#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{"release":"1"}}"#.to_vec(),
+        },
+        prdb_engine::supervisor_ipc::GatewayAdmissionConfig {
+            retention_period_us: 60_000_000,
+            max_rows: 1,
+            max_bytes: 1,
+        },
+    );
+    assert!(matches!(
+        denied_sdk_library_remove,
+        Err(prdb_engine::supervisor_ipc::GatewayRequestError::Client(
+            prdb_engine::client_protocol::ClientSessionError::SdkLibraryRepositoryUnauthorized
+        ))
+    ));
     let schema_discovery = prdb_engine::supervisor_ipc::dispatch_gateway_client_request(
         prdb_engine::ipc::ServiceRole::Gateway,
         &storage,

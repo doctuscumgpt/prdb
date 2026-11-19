@@ -1658,6 +1658,29 @@ impl AdminClient {
         })
     }
 
+    /// Remove one exact SDK release. The server checks current database-admin
+    /// authority and refuses removal while any invocation holds a pin.
+    pub fn remove_sdk_library(&mut self, sdk_release: u32) -> Result<u64, ClientSubmitError> {
+        if sdk_release == 0 {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let request = format!(
+            "{{\"phase\":\"write\",\"operation_version\":1,\"operation\":\"sdk_libraries.remove\",\"arguments\":{{\"release\":\"{sdk_release}\"}}}}"
+        );
+        let response = self.transport.exchange(10, request.into_bytes())?;
+        let fields = parse_flat_response(&response.payload)?;
+        if fields.len() != 2
+            || fields.get("release").and_then(ResponseValue::as_number)
+                != Some(u64::from(sdk_release))
+        {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        fields
+            .get("removed_bytes")
+            .and_then(ResponseValue::as_number)
+            .ok_or(ClientSubmitError::InvalidResponse)
+    }
+
     /// Return one best-effort page of this authenticated owner's live
     /// invocations. The server binds and revalidates every cursor to the owner.
     pub fn list_own_invocations_page(

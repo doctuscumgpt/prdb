@@ -369,6 +369,33 @@ fn admin_client_follows_opaque_sdk_library_page_cursors() {
 }
 
 #[test]
+fn admin_client_sends_typed_sdk_library_remove_request() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(request.kind, 10);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            r#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{"release":"7"}}"#
+        );
+        respond(
+            &mut stream,
+            &request,
+            br#"{"release":7,"removed_bytes":4096}"#,
+        );
+    });
+
+    let mut secret = [7; 32];
+    let mut client = AdminClient::connect_authenticated(address, [1; 16], &mut secret).unwrap();
+    assert_eq!(client.remove_sdk_library(7).unwrap(), 4096);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

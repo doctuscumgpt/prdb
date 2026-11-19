@@ -447,6 +447,7 @@ pub enum ClientSessionError {
     AdministrativeRuntimeList(crate::storage_manager::AdministrativeInvocationListError),
     AdministrativeAuditList(crate::storage_manager::AdministrativeAuditListError),
     AdministrativeCancellation(crate::storage_manager::AdministrativeCancellationError),
+    SdkLibraryRepositoryUnauthorized,
     SdkLibraryRepositoryUnavailable,
     SdkLibraryRepository(crate::sdk_registry::SdkRegistryError),
     TokenInventory(crate::storage_manager::TokenLifecycleError),
@@ -1041,6 +1042,9 @@ pub enum ClientAdminCommand {
         response_version: u64,
         page_limit: usize,
         cursor: Option<crate::storage_manager::InvocationListCursor>,
+    },
+    RemoveSdkLibrary {
+        sdk_release: u32,
     },
     PrepareCreateUser {
         name: String,
@@ -2102,6 +2106,24 @@ pub fn decode_client_admin_command(
                 page_limit,
                 cursor,
             })
+        }
+        Some("write")
+            if version == Some(1) && operation.as_deref() == Some("sdk_libraries.remove") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let release = args
+                .remove("release")
+                .ok_or(ClientControlError::MissingKey)?;
+            let sdk_release = parse_canonical_positive_i64(&release)
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or(ClientControlError::InvalidPrepare)?;
+            if !args.is_empty() {
+                return Err(ClientControlError::UnknownKey);
+            }
+            Ok(ClientAdminCommand::RemoveSdkLibrary { sdk_release })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("users.create") => {
             if operation_id.is_some() || seen.len() != 4 {
@@ -5661,6 +5683,23 @@ impl ClientConnectionSession {
             }
             ClientAdminCommand::ListSdkLibrariesPage { page_limit, cursor } => {
                 self.handle_sdk_library_page(staging, request.request_id, page_limit, cursor)
+            }
+            ClientAdminCommand::RemoveSdkLibrary { sdk_release } => {
+                if !storage
+                    .is_database_admin(actor_id)
+                    .map_err(ClientSessionError::TokenInventory)?
+                {
+                    return Err(ClientSessionError::SdkLibraryRepositoryUnauthorized);
+                }
+                let repository = staging
+                    .and_then(crate::supervisor::StagingStore::sdk_repository)
+                    .ok_or(ClientSessionError::SdkLibraryRepositoryUnavailable)?;
+                let removed_bytes = repository
+                    .remove_release(sdk_release)
+                    .map_err(ClientSessionError::SdkLibraryRepository)?;
+                let payload =
+                    format!("{{\"release\":{sdk_release},\"removed_bytes\":{removed_bytes}}}");
+                self.json_response(request.request_id, payload.into_bytes())
             }
             ClientAdminCommand::ListSdkLibraries => {
                 let repository = staging
@@ -10611,6 +10650,19 @@ mod runtime_wait_tests {
         assert!(decode_client_admin_command(unexpected_argument).is_err());
         let unsupported_version = br#"{"phase":"read","operation_version":2,"operation":"sdk_libraries.list","arguments":{"limit":"4"}}"#;
         assert!(decode_client_admin_command(unsupported_version).is_err());
+    }
+
+    #[test]
+    fn sdk_library_remove_is_a_typed_write_command() {
+        let request = br#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{"release":"7"}}"#;
+        assert_eq!(
+            decode_client_admin_command(request).unwrap(),
+            ClientAdminCommand::RemoveSdkLibrary { sdk_release: 7 }
+        );
+        let zero = br#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{"release":"0"}}"#;
+        assert!(decode_client_admin_command(zero).is_err());
+        let unknown = br#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{"release":"7","abi":"5"}}"#;
+        assert!(decode_client_admin_command(unknown).is_err());
     }
 
     #[test]
