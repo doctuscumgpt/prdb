@@ -1455,6 +1455,35 @@ mod tests {
 
     struct RejectSdkResolution;
 
+    struct RepositorySdkResolver {
+        repository: Arc<crate::sdk_registry::SdkReleaseRegistry>,
+    }
+
+    impl SubmissionMetadataValidator for RepositorySdkResolver {
+        fn supports_versions(&self, manifest_version: u32, scope_version: u32) -> bool {
+            manifest_version == 1 && scope_version == 1
+        }
+
+        fn validate(&self, _metadata: &SubmissionMetadata) -> bool {
+            true
+        }
+
+        fn resolve_sdk_release(
+            &self,
+            metadata: &SubmissionMetadata,
+            _artifact: &[u8],
+        ) -> Result<
+            Option<crate::sdk_registry::SdkLibraryPin>,
+            crate::submission_manifest::ManifestError,
+        > {
+            let manifest = crate::submission_manifest::decode_manifest_v1(&metadata.manifest)?;
+            self.repository
+                .resolve(&manifest)
+                .map(Some)
+                .map_err(|_| crate::submission_manifest::ManifestError::UnavailableDependency)
+        }
+    }
+
     impl SubmissionMetadataValidator for RejectSdkResolution {
         fn supports_versions(&self, manifest_version: u32, scope_version: u32) -> bool {
             manifest_version == 1 && scope_version == 1
@@ -1848,6 +1877,112 @@ mod tests {
             store.status(owner, invocation_id),
             Err(StagingError::Unavailable)
         );
+    }
+
+    #[test]
+    fn repository_sdk_pin_is_held_from_admission_until_finish() {
+        use crate::submission_manifest::{ArtifactManifestV1, encode_manifest_v1};
+        use std::collections::HashSet;
+        use std::fs;
+        use std::process::Command;
+
+        let root = std::env::temp_dir().join(format!(
+            "prdb-supervisor-sdk-pin-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let build_dir = root.join("build");
+        let output = Command::new("make")
+            .current_dir(workspace)
+            .args([
+                "-f",
+                "engine/sdk/Makefile",
+                &format!("BUILD_DIR={}", build_dir.display()),
+                "SDK_RUNTIME_PROFILE=test-runtime",
+                "sdk-shared-release",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let release =
+            build_dir.join("releases/linux-x86_64/x86_64-v1/test-runtime/sdk-1-abis1,2,3,4,5");
+        let metadata = fs::read(release.join("sdk-release.json")).unwrap();
+        let library = fs::read(release.join("libprdb_sql.so.1")).unwrap();
+        let allowed = HashSet::from(["libc.so.6".to_owned()]);
+        let repository = Arc::new(
+            crate::sdk_registry::SdkReleaseRegistry::open(
+                &root.join("instance/sdk-libraries"),
+                "linux-x86_64".to_owned(),
+                "x86_64-v1".to_owned(),
+                "test-runtime".to_owned(),
+                allowed.clone(),
+                128 * 1024 * 1024,
+            )
+            .unwrap(),
+        );
+        repository.install(&metadata, &library, &allowed).unwrap();
+
+        let manifest = encode_manifest_v1(&ArtifactManifestV1 {
+            native_abi_version: 4,
+            sdk_release: 1,
+            cpu_baseline: "x86_64-v1".to_owned(),
+            runtime_profile: "test-runtime".to_owned(),
+            compiler_identity: "supervisor test".to_owned(),
+            descriptor_symbol: "prdb_query_descriptor_v4".to_owned(),
+            entry_point_symbol: "prdb_query_main_v4".to_owned(),
+            dependencies: vec!["libc.so.6".to_owned(), "libprdb_sql.so.1".to_owned()],
+        })
+        .unwrap();
+        let artifact = b"query bytes";
+        let mut prepare = request(artifact, b"");
+        prepare.manifest = manifest;
+        prepare.artifact_bytes = artifact.len() as u64;
+        prepare.artifact_sha256 = Sha256::digest(artifact).into();
+        let owner = make_owner(73, 74);
+        let store = store(Arc::new(RepositorySdkResolver {
+            repository: Arc::clone(&repository),
+        }));
+        let reservation = store.prepare(owner, prepare).unwrap();
+        store
+            .upload_chunk(
+                owner,
+                reservation.invocation_id,
+                ChunkKind::Artifact,
+                0,
+                artifact,
+            )
+            .unwrap();
+        store.seal(owner, reservation.invocation_id).unwrap();
+        store
+            .start_with(owner, reservation.invocation_id, |submission| {
+                let pin = submission.sdk_library_pin().unwrap();
+                assert_eq!(pin.soname(), "libprdb_sql.so.1");
+                assert_eq!(pin.sha256(), Sha256::digest(&library).as_slice());
+                assert_eq!(submission.sql_library(), None);
+                assert_eq!(
+                    repository.remove_release(1).unwrap_err(),
+                    crate::sdk_registry::SdkRegistryError::ReleasePinned
+                );
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        store
+            .finish_started(owner, reservation.invocation_id)
+            .unwrap();
+        assert_eq!(repository.remove_release(1).unwrap(), library.len() as u64);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
