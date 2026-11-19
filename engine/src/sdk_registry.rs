@@ -1,8 +1,8 @@
-//! Trusted registry and immutable content cache for shared SQL SDK releases.
+//! Durable administrator-managed repository for immutable SQL SDK releases.
 
 use crate::submission_manifest::{ArtifactManifestV1, decode_elf_dynamic_info};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -13,7 +13,7 @@ use std::sync::{Arc, RwLock};
 const MAX_RELEASE_LIBRARY_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_RELEASE_METADATA_BYTES: u64 = 64 * 1024;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ReleaseRecord {
     sdk_release: u32,
     soname: String,
@@ -32,7 +32,20 @@ struct CachedRelease {
     pins: AtomicUsize,
 }
 
-/// A strong reference keeps the immutable cache file from being evicted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SdkReleaseInfo {
+    pub sdk_release: u32,
+    pub native_abis: Vec<u8>,
+    pub target: String,
+    pub cpu_baseline: String,
+    pub runtime_profile: String,
+    pub soname: String,
+    pub sha256: [u8; 32],
+    pub needed: Vec<String>,
+    pub library_bytes: u64,
+}
+
+/// A strong reference keeps the immutable repository release from removal.
 #[derive(Debug)]
 pub struct SdkLibraryPin(Arc<CachedRelease>);
 
@@ -75,6 +88,10 @@ pub struct SdkReleaseRegistry {
     releases: RwLock<HashMap<(u32, u8), Arc<CachedRelease>>>,
 }
 
+/// Repository-oriented name for the release manager. The older name remains
+/// temporarily available to the legacy deployment-cache path during migration.
+pub type SdkLibraryRepository = SdkReleaseRegistry;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SdkRegistryError {
     InvalidConfiguration,
@@ -84,6 +101,9 @@ pub enum SdkRegistryError {
     DigestMismatch,
     CacheFull,
     AtomicPublishUnsupported,
+    ReleaseConflict,
+    ReleasePinned,
+    DependencyNotAllowed,
     Io(io::ErrorKind),
 }
 
@@ -94,6 +114,107 @@ impl From<io::Error> for SdkRegistryError {
 }
 
 impl SdkReleaseRegistry {
+    /// Open an instance-local durable repository and validate every published
+    /// release before making it available for resolution.
+    pub fn open(
+        repository_root: &Path,
+        target: String,
+        cpu_baseline: String,
+        runtime_profile: String,
+        allowed_dependencies: HashSet<String>,
+        max_repository_bytes: u64,
+    ) -> Result<Self, SdkRegistryError> {
+        if max_repository_bytes == 0
+            || target != "linux-x86_64"
+            || !is_profile_token(&cpu_baseline)
+            || !is_profile_token(&runtime_profile)
+        {
+            return Err(SdkRegistryError::InvalidConfiguration);
+        }
+        let repository_root = prepare_repository_root(repository_root)?;
+        let mut releases = HashMap::new();
+        let mut repository_bytes = 0u64;
+        for item in fs::read_dir(&repository_root)? {
+            let item = item?;
+            let name = item.file_name();
+            let name = name.to_str().ok_or(SdkRegistryError::InvalidMetadata)?;
+            let path = item.path();
+            let file_type = item.file_type()?;
+            if name.starts_with(".install-") {
+                if !file_type.is_dir() {
+                    return Err(SdkRegistryError::InvalidMetadata);
+                }
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+                fs::remove_dir_all(path)?;
+                continue;
+            }
+            if !name.starts_with("release-") || !file_type.is_dir() {
+                return Err(SdkRegistryError::InvalidMetadata);
+            }
+            let directory_release = name["release-".len()..]
+                .parse::<u32>()
+                .map_err(|_| SdkRegistryError::InvalidMetadata)?;
+            let children = fs::read_dir(&path)?
+                .map(|child| {
+                    child
+                        .map(|child| child.file_name())
+                        .map_err(SdkRegistryError::from)
+                })
+                .collect::<Result<HashSet<_>, _>>()?;
+            let expected_children = HashSet::from([
+                std::ffi::OsString::from("sdk-release.json"),
+                std::ffi::OsString::from(format!("libprdb_sql.so.{directory_release}")),
+            ]);
+            if children != expected_children {
+                return Err(SdkRegistryError::InvalidMetadata);
+            }
+            validate_immutable_permissions(&path)?;
+            let metadata =
+                read_regular(&path.join("sdk-release.json"), MAX_RELEASE_METADATA_BYTES)?;
+            let record = parse_release_record(&metadata)?;
+            if directory_release != record.sdk_release
+                || record.cpu_baseline != cpu_baseline
+                || record.runtime_profile != runtime_profile
+                || record
+                    .needed
+                    .iter()
+                    .any(|dependency| !allowed_dependencies.contains(dependency))
+            {
+                return Err(SdkRegistryError::IncompatibleProfile);
+            }
+            let library_path = path.join(&record.soname);
+            validate_immutable_permissions(&path.join("sdk-release.json"))?;
+            validate_immutable_permissions(&library_path)?;
+            let library = read_regular(&library_path, MAX_RELEASE_LIBRARY_BYTES)?;
+            validate_library(&record, &library)?;
+            if sha256(&library) != record.sha256 {
+                return Err(SdkRegistryError::DigestMismatch);
+            }
+            repository_bytes = repository_bytes
+                .checked_add(library.len() as u64)
+                .ok_or(SdkRegistryError::CacheFull)?;
+            if repository_bytes > max_repository_bytes {
+                return Err(SdkRegistryError::CacheFull);
+            }
+            let entry = Arc::new(CachedRelease {
+                record: record.clone(),
+                library_path,
+                library_bytes: library.len() as u64,
+                pins: AtomicUsize::new(0),
+            });
+            insert_release_abis(&mut releases, entry)?;
+        }
+        File::open(&repository_root)?.sync_all()?;
+        Ok(Self {
+            cache_root: repository_root,
+            target,
+            cpu_baseline,
+            runtime_profile,
+            max_cache_bytes: max_repository_bytes,
+            releases: RwLock::new(releases),
+        })
+    }
+
     /// Validate installed release directories and atomically copy their
     /// libraries into a digest-keyed, read-only cache. Each directory must
     /// contain `sdk-release.json` and the named versioned library.
@@ -215,6 +336,131 @@ impl SdkReleaseRegistry {
         Ok(SdkLibraryPin(Arc::clone(release)))
     }
 
+    /// Validate and atomically install one immutable release. Metadata and
+    /// library bytes are supplied by the authenticated repository API.
+    pub fn install(
+        &self,
+        metadata: &[u8],
+        library: &[u8],
+        allowed_dependencies: &HashSet<String>,
+    ) -> Result<SdkReleaseInfo, SdkRegistryError> {
+        if library.is_empty()
+            || library.len() as u64 > MAX_RELEASE_LIBRARY_BYTES
+            || metadata.is_empty()
+            || metadata.len() as u64 > MAX_RELEASE_METADATA_BYTES
+        {
+            return Err(SdkRegistryError::InvalidMetadata);
+        }
+        let record = parse_release_record(metadata)?;
+        if record.cpu_baseline != self.cpu_baseline
+            || record.runtime_profile != self.runtime_profile
+            || self.target != "linux-x86_64"
+        {
+            return Err(SdkRegistryError::IncompatibleProfile);
+        }
+        if record
+            .needed
+            .iter()
+            .any(|dependency| !allowed_dependencies.contains(dependency))
+        {
+            return Err(SdkRegistryError::DependencyNotAllowed);
+        }
+        if sha256(library) != record.sha256 {
+            return Err(SdkRegistryError::DigestMismatch);
+        }
+        validate_library(&record, library)?;
+
+        let mut releases = self
+            .releases
+            .write()
+            .map_err(|_| SdkRegistryError::InvalidConfiguration)?;
+        if let Some(existing) = releases
+            .values()
+            .find(|entry| entry.record.sdk_release == record.sdk_release)
+        {
+            if existing.record == record && existing.library_bytes == library.len() as u64 {
+                let cached = read_regular(&existing.library_path, MAX_RELEASE_LIBRARY_BYTES)?;
+                if sha256(&cached) != record.sha256 {
+                    return Err(SdkRegistryError::DigestMismatch);
+                }
+                return Ok(release_info(&record, library.len() as u64));
+            }
+            return Err(SdkRegistryError::ReleaseConflict);
+        }
+        let mut unique_releases = HashMap::<u32, u64>::new();
+        for entry in releases.values() {
+            unique_releases
+                .entry(entry.record.sdk_release)
+                .or_insert(entry.library_bytes);
+        }
+        let current_bytes = unique_releases
+            .values()
+            .try_fold(0u64, |total, bytes| total.checked_add(*bytes))
+            .ok_or(SdkRegistryError::CacheFull)?;
+        let next_bytes = current_bytes
+            .checked_add(library.len() as u64)
+            .ok_or(SdkRegistryError::CacheFull)?;
+        if next_bytes > self.max_cache_bytes {
+            return Err(SdkRegistryError::CacheFull);
+        }
+
+        let destination = self
+            .cache_root
+            .join(format!("release-{}", record.sdk_release));
+        let published =
+            publish_repository_entry(&self.cache_root, &destination, metadata, library, &record)?;
+        let entry = Arc::new(CachedRelease {
+            record: record.clone(),
+            library_path: published,
+            library_bytes: library.len() as u64,
+            pins: AtomicUsize::new(0),
+        });
+        insert_release_abis(&mut releases, entry)?;
+        Ok(release_info(&record, library.len() as u64))
+    }
+
+    /// Return bounded compatibility metadata in stable release/ABI order.
+    pub fn list(&self) -> Result<Vec<SdkReleaseInfo>, SdkRegistryError> {
+        let releases = self
+            .releases
+            .read()
+            .map_err(|_| SdkRegistryError::InvalidConfiguration)?;
+        let mut unique = HashMap::<u32, SdkReleaseInfo>::new();
+        for entry in releases.values() {
+            unique
+                .entry(entry.record.sdk_release)
+                .or_insert_with(|| release_info(&entry.record, entry.library_bytes));
+        }
+        let mut result = unique.into_values().collect::<Vec<_>>();
+        result.sort_by_key(|entry| entry.sdk_release);
+        Ok(result)
+    }
+
+    /// Remove a complete SDK release after all ABI pins have drained.
+    pub fn remove_release(&self, sdk_release: u32) -> Result<u64, SdkRegistryError> {
+        let mut releases = self
+            .releases
+            .write()
+            .map_err(|_| SdkRegistryError::InvalidConfiguration)?;
+        let entry = releases
+            .values()
+            .find(|entry| entry.record.sdk_release == sdk_release)
+            .cloned()
+            .ok_or(SdkRegistryError::UnavailableRelease)?;
+        if entry.pins.load(Ordering::Acquire) != 0 {
+            return Err(SdkRegistryError::ReleasePinned);
+        }
+        let directory = entry
+            .library_path
+            .parent()
+            .ok_or(SdkRegistryError::InvalidConfiguration)?;
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+        fs::remove_dir_all(directory)?;
+        releases.retain(|(release, _), _| *release != sdk_release);
+        File::open(&self.cache_root)?.sync_all()?;
+        Ok(entry.library_bytes)
+    }
+
     pub fn cache_bytes(&self) -> Result<u64, SdkRegistryError> {
         let releases = self
             .releases
@@ -287,6 +533,112 @@ fn prepare_cache_root(path: &Path) -> Result<PathBuf, SdkRegistryError> {
     }
     fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
     Ok(path)
+}
+
+fn prepare_repository_root(path: &Path) -> Result<PathBuf, SdkRegistryError> {
+    if path.exists() {
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_dir() {
+            return Err(SdkRegistryError::InvalidConfiguration);
+        }
+    } else {
+        fs::create_dir_all(path)?;
+    }
+    let path = fs::canonicalize(path)?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+    Ok(path)
+}
+
+fn validate_immutable_permissions(path: &Path) -> Result<(), SdkRegistryError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.permissions().mode() & 0o222 != 0 {
+        return Err(SdkRegistryError::InvalidMetadata);
+    }
+    Ok(())
+}
+
+fn insert_release_abis(
+    releases: &mut HashMap<(u32, u8), Arc<CachedRelease>>,
+    entry: Arc<CachedRelease>,
+) -> Result<(), SdkRegistryError> {
+    if releases
+        .keys()
+        .any(|(release, _)| *release == entry.record.sdk_release)
+    {
+        return Err(SdkRegistryError::InvalidMetadata);
+    }
+    for abi in &entry.record.native_abis {
+        releases.insert((entry.record.sdk_release, *abi), Arc::clone(&entry));
+    }
+    Ok(())
+}
+
+fn release_info(record: &ReleaseRecord, library_bytes: u64) -> SdkReleaseInfo {
+    SdkReleaseInfo {
+        sdk_release: record.sdk_release,
+        native_abis: record.native_abis.clone(),
+        target: "linux-x86_64".to_owned(),
+        cpu_baseline: record.cpu_baseline.clone(),
+        runtime_profile: record.runtime_profile.clone(),
+        soname: record.soname.clone(),
+        sha256: record.sha256,
+        needed: record.needed.clone(),
+        library_bytes,
+    }
+}
+
+fn publish_repository_entry(
+    repository_root: &Path,
+    destination: &Path,
+    metadata: &[u8],
+    library: &[u8],
+    record: &ReleaseRecord,
+) -> Result<PathBuf, SdkRegistryError> {
+    let mut nonce = [0u8; 8];
+    getrandom::fill(&mut nonce).map_err(|_| SdkRegistryError::InvalidConfiguration)?;
+    let temporary = repository_root.join(format!(
+        ".install-{}-{}",
+        std::process::id(),
+        lower_hex(&nonce)
+    ));
+    fs::create_dir(&temporary)?;
+    let staged_library = temporary.join(&record.soname);
+    let staged_metadata = temporary.join("sdk-release.json");
+    let result = (|| {
+        write_new_synced(&staged_metadata, metadata)?;
+        write_new_synced(&staged_library, library)?;
+        if sha256(&read_regular(&staged_library, MAX_RELEASE_LIBRARY_BYTES)?) != record.sha256 {
+            return Err(SdkRegistryError::DigestMismatch);
+        }
+        validate_library(
+            record,
+            &read_regular(&staged_library, MAX_RELEASE_LIBRARY_BYTES)?,
+        )?;
+        File::open(&temporary)?.sync_all()?;
+        fs::set_permissions(&staged_metadata, fs::Permissions::from_mode(0o444))?;
+        fs::set_permissions(&staged_library, fs::Permissions::from_mode(0o444))?;
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o500))?;
+        File::open(&temporary)?.sync_all()?;
+        rename_noreplace(&temporary, destination)?;
+        File::open(repository_root)?.sync_all()?;
+        Ok(destination.join(&record.soname))
+    })();
+    if result.is_err() {
+        let _ = fs::set_permissions(&temporary, fs::Permissions::from_mode(0o700));
+        let _ = fs::remove_dir_all(&temporary);
+    }
+    result
+}
+
+fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), SdkRegistryError> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
 }
 
 fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>, SdkRegistryError> {

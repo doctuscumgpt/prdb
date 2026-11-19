@@ -33,9 +33,10 @@ These documents capture the current research design for an operational database 
 - [Statistics service](statistics-service.md): trusted collection, scoped estimates, and statistics disclosure.
 - [Executor](query-worker.md): untrusted execution and the native extension contract.
 - [Client SDK](client-sdk.md): TinyCC compilation, component contracts, and artifact packaging.
+- [SDK library repository](sdk-library-repository.md): administrator-installed immutable SDK libraries, authenticated repository operations, and persistent client release selection.
 - [`prdb-client` SQL input command](client-sql-command.md): local SQL input, generated C wrapper, SDK packaging, and submission composition.
 - [Interactive SQL sessions and transactions](interactive-sql.md): proposed higher-level client with explicit transactions spanning sequential query packages and separately routed autocommit DDL.
-- [Separate SQL library implementation plan](../plans/client-sdk/SEPARATE_SQL_LIBRARY.md): versioned SDK shared library, supervisor cache, packaging, and confined loading increments.
+- [Separate SQL library implementation plan](../plans/client-sdk/SEPARATE_SQL_LIBRARY.md): historical implementation plan for versioned SDK shared libraries; repository behavior is specified in [SDK library repository](sdk-library-repository.md).
 - [SQL library](sql-library.md): SDK SQL frontend, initial language subset, and plan execution.
 - [IPC protocol](ipc-protocol.md): scoped handles, bounded requests, and authorized batches.
 - [Linux sandbox](linux-sandbox.md): confinement requirements and launch ordering.
@@ -46,7 +47,7 @@ These documents capture the current research design for an operational database 
 - **SQL statement:** one SDK SQL call within an invocation. Sequential calls share one transaction; only one statement/request stream is active at a time initially. Any statement error aborts the transaction in the baseline.
 - **Executor:** the sandboxed native host, also called the query worker in earlier discussions. `query-worker.md` retains its filename.
 - **Optimizer:** the isolated planning service, also called the planner. It returns structured physical plans, not native libraries. `planner-compiler.md` retains its historical filename; compilation runs in the client.
-- **Query library:** the client-built `query.so`, dynamically linked to a versioned SQL/runtime SDK library selected from the supervisor's verified local cache. A physical plan is data, not this native artifact.
+- **Query library:** the client-built `query.so`, dynamically linked to a versioned SQL/runtime SDK library selected from the client’s persistent per-instance setting and installed in the server’s administrator-managed repository. The client submits `query.so`; the server stages the matching SDK library from its repository. A physical plan is data, not this native artifact.
 
 Administrative DDL is a separate authenticated catalog transaction, not a query-library statement. It includes schema, identity, role, and permission changes; catalog authority does not automatically grant executor data access.
 

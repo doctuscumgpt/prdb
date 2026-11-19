@@ -1,5 +1,7 @@
 # Separate SQL Shared Library and Supervisor Cache Plan
 
+> Historical implementation plan. Its cache and client-supplied-library design is superseded by the [SDK library repository specification](../../specs/sdk-library-repository.md), which requires administrator-installed releases and query.so-only submission.
+
 ## Objective
 
 Replace the statically linked SQL/runtime SDK archive in submitted query artifacts with a versioned shared library. New clients may supply the shared library bytes with the query; older submissions can still resolve a server-installed release. Keep compilation in the bounded client packager, keep native library loading in the confined executor, and preserve storage authorization and transaction boundaries.

@@ -4,7 +4,7 @@
 
 Implement the [SDK](../../specs/client-sdk.md) using the pinned [toolchain](../toolchain/README.md), generated [IPC](../ipc-protocol/README.md)/ABI contracts and [SQL library](../sql-library/README.md). Runtime C code linked into query.so and the client-only submission/authentication/admin helper are distinct packages and authority surfaces.
 
-The migration from a statically linked SDK archive to a supervisor-cached shared SQL library is planned in [Separate SQL Shared Library and Supervisor Cache](SEPARATE_SQL_LIBRARY.md).
+The shared SQL library design is specified in [SDK library repository](../../specs/sdk-library-repository.md): administrators install immutable releases per database instance, clients persist a per-instance selection, and submissions upload query.so only. [Separate SQL Shared Library and Supervisor Cache](SEPARATE_SQL_LIBRARY.md) records the earlier implementation plan and is superseded where it describes a cache or client-supplied SQL library.
 
 ## Decisions Before Implementation
 
