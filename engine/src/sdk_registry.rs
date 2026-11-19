@@ -4,14 +4,18 @@ use crate::submission_manifest::{ArtifactManifestV1, decode_elf_dynamic_info};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 const MAX_RELEASE_LIBRARY_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_RELEASE_METADATA_BYTES: u64 = 64 * 1024;
+const MAX_PENDING_SDK_UPLOADS: usize = 8;
+const SDK_UPLOAD_TTL: Duration = Duration::from_secs(15 * 60);
+const SDK_OPERATION_RECORD_BYTES: usize = 65;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ReleaseRecord {
@@ -84,8 +88,39 @@ pub struct SdkReleaseRegistry {
     target: String,
     cpu_baseline: String,
     runtime_profile: String,
+    allowed_dependencies: HashSet<String>,
     max_cache_bytes: u64,
     releases: RwLock<HashMap<(u32, u8), Arc<CachedRelease>>>,
+    uploads: Mutex<HashMap<[u8; 16], SdkUpload>>,
+    completed_operations: RwLock<HashMap<[u8; 16], SdkLibraryOperationOutcome>>,
+    operation_gate: Mutex<()>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SdkLibraryOperationOutcome {
+    Installed {
+        owner_id: [u8; 16],
+        sdk_release: u32,
+        sha256: [u8; 32],
+        library_bytes: u64,
+    },
+    Removed {
+        owner_id: [u8; 16],
+        sdk_release: u32,
+        removed_bytes: u64,
+    },
+}
+
+#[derive(Debug)]
+struct SdkUpload {
+    owner_id: [u8; 16],
+    metadata_bytes: u64,
+    library_bytes: u64,
+    library_sha256: [u8; 32],
+    allowed_dependencies: HashSet<String>,
+    next_offset: u64,
+    path: PathBuf,
+    expires_at: Instant,
 }
 
 /// Repository-oriented name for the release manager. The older name remains
@@ -104,6 +139,10 @@ pub enum SdkRegistryError {
     ReleaseConflict,
     ReleasePinned,
     DependencyNotAllowed,
+    UploadUnavailable,
+    UploadOwnerMismatch,
+    UploadIncomplete,
+    UploadConflict,
     Io(io::ErrorKind),
 }
 
@@ -133,6 +172,7 @@ impl SdkReleaseRegistry {
         }
         let repository_root = prepare_repository_root(repository_root)?;
         let mut releases = HashMap::new();
+        let mut completed_operations = HashMap::new();
         let mut repository_bytes = 0u64;
         for item in fs::read_dir(&repository_root)? {
             let item = item?;
@@ -146,6 +186,32 @@ impl SdkReleaseRegistry {
                 }
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
                 fs::remove_dir_all(path)?;
+                continue;
+            }
+            if name.starts_with(".upload-") {
+                if !file_type.is_file() {
+                    return Err(SdkRegistryError::InvalidMetadata);
+                }
+                fs::remove_file(path)?;
+                continue;
+            }
+            if let Some(operation_id) = name.strip_prefix(".operation-tmp-") {
+                if decode_lower_hex_id(operation_id).is_none() || !file_type.is_file() {
+                    return Err(SdkRegistryError::InvalidMetadata);
+                }
+                fs::remove_file(path)?;
+                continue;
+            }
+            if let Some(operation_id) = name.strip_prefix(".operation-") {
+                let operation_id =
+                    decode_lower_hex_id(operation_id).ok_or(SdkRegistryError::InvalidMetadata)?;
+                if !file_type.is_file() {
+                    return Err(SdkRegistryError::InvalidMetadata);
+                }
+                let outcome = read_operation_outcome(&path)?;
+                if completed_operations.insert(operation_id, outcome).is_some() {
+                    return Err(SdkRegistryError::InvalidMetadata);
+                }
                 continue;
             }
             if !name.starts_with("release-") || !file_type.is_dir() {
@@ -210,8 +276,12 @@ impl SdkReleaseRegistry {
             target,
             cpu_baseline,
             runtime_profile,
+            allowed_dependencies,
             max_cache_bytes: max_repository_bytes,
             releases: RwLock::new(releases),
+            uploads: Mutex::new(HashMap::new()),
+            completed_operations: RwLock::new(completed_operations),
+            operation_gate: Mutex::new(()),
         })
     }
 
@@ -290,8 +360,12 @@ impl SdkReleaseRegistry {
             target,
             cpu_baseline,
             runtime_profile,
+            allowed_dependencies: HashSet::new(),
             max_cache_bytes,
             releases: RwLock::new(releases),
+            uploads: Mutex::new(HashMap::new()),
+            completed_operations: RwLock::new(HashMap::new()),
+            operation_gate: Mutex::new(()),
         })
     }
 
@@ -419,6 +493,276 @@ impl SdkReleaseRegistry {
         Ok(release_info(&record, library.len() as u64))
     }
 
+    /// Reserve a bounded on-disk upload for one authenticated administrator.
+    /// Metadata and SDK bytes arrive as one contiguous stream and are parsed
+    /// only after the declared byte count has been received.
+    pub fn begin_install_upload(
+        &self,
+        operation_id: [u8; 16],
+        owner_id: [u8; 16],
+        metadata_bytes: u64,
+        library_bytes: u64,
+        library_sha256: [u8; 32],
+    ) -> Result<u64, SdkRegistryError> {
+        let total_bytes = metadata_bytes
+            .checked_add(library_bytes)
+            .ok_or(SdkRegistryError::InvalidMetadata)?;
+        if operation_id == [0; 16]
+            || owner_id == [0; 16]
+            || metadata_bytes == 0
+            || metadata_bytes > MAX_RELEASE_METADATA_BYTES
+            || library_bytes == 0
+            || library_bytes > MAX_RELEASE_LIBRARY_BYTES
+        {
+            return Err(SdkRegistryError::InvalidMetadata);
+        }
+        if let Some(outcome) = self.operation_outcome(operation_id)? {
+            return match outcome {
+                SdkLibraryOperationOutcome::Installed {
+                    owner_id: outcome_owner,
+                    library_bytes: outcome_bytes,
+                    sha256,
+                    ..
+                } if outcome_owner == owner_id
+                    && outcome_bytes == library_bytes
+                    && sha256 == library_sha256 =>
+                {
+                    Ok(total_bytes)
+                }
+                SdkLibraryOperationOutcome::Installed {
+                    owner_id: outcome_owner,
+                    ..
+                } if outcome_owner != owner_id => Err(SdkRegistryError::UploadOwnerMismatch),
+                _ => Err(SdkRegistryError::UploadConflict),
+            };
+        }
+        let mut uploads = self
+            .uploads
+            .lock()
+            .map_err(|_| SdkRegistryError::InvalidConfiguration)?;
+        let now = Instant::now();
+        let expired = uploads
+            .iter()
+            .filter_map(|(id, upload)| (upload.expires_at <= now).then_some(*id))
+            .collect::<Vec<_>>();
+        for id in expired {
+            if let Some(upload) = uploads.remove(&id) {
+                let _ = fs::remove_file(upload.path);
+            }
+        }
+        if let Some(upload) = uploads.get(&operation_id) {
+            if upload.owner_id == owner_id
+                && upload.metadata_bytes == metadata_bytes
+                && upload.library_bytes == library_bytes
+                && upload.library_sha256 == library_sha256
+                && upload.allowed_dependencies == self.allowed_dependencies
+            {
+                return Ok(upload.next_offset);
+            }
+            return Err(SdkRegistryError::UploadConflict);
+        }
+        if uploads.len() >= MAX_PENDING_SDK_UPLOADS {
+            return Err(SdkRegistryError::CacheFull);
+        }
+        let pending_bytes = uploads.values().try_fold(0u64, |total, upload| {
+            total
+                .checked_add(upload.metadata_bytes)?
+                .checked_add(upload.library_bytes)
+        });
+        if pending_bytes
+            .and_then(|pending| pending.checked_add(total_bytes))
+            .is_none_or(|pending| pending > self.max_cache_bytes)
+        {
+            return Err(SdkRegistryError::CacheFull);
+        }
+        let path = self
+            .cache_root
+            .join(format!(".upload-{}", lower_hex(&operation_id)));
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&path)?;
+        File::open(&self.cache_root)?.sync_all()?;
+        uploads.insert(
+            operation_id,
+            SdkUpload {
+                owner_id,
+                metadata_bytes,
+                library_bytes,
+                library_sha256,
+                allowed_dependencies: self.allowed_dependencies.clone(),
+                next_offset: 0,
+                path,
+                expires_at: now + SDK_UPLOAD_TTL,
+            },
+        );
+        Ok(0)
+    }
+
+    /// Append the next contiguous SDK upload chunk and acknowledge its offset.
+    pub fn upload_install_chunk(
+        &self,
+        operation_id: [u8; 16],
+        owner_id: [u8; 16],
+        offset: u64,
+        data: &[u8],
+    ) -> Result<u64, SdkRegistryError> {
+        if data.is_empty() || data.len() > 256 * 1024 {
+            return Err(SdkRegistryError::InvalidMetadata);
+        }
+        let mut uploads = self
+            .uploads
+            .lock()
+            .map_err(|_| SdkRegistryError::InvalidConfiguration)?;
+        let upload = uploads
+            .get_mut(&operation_id)
+            .ok_or(SdkRegistryError::UploadUnavailable)?;
+        if upload.owner_id != owner_id {
+            return Err(SdkRegistryError::UploadOwnerMismatch);
+        }
+        if upload.expires_at <= Instant::now() {
+            let path = uploads
+                .remove(&operation_id)
+                .ok_or(SdkRegistryError::UploadUnavailable)?
+                .path;
+            let _ = fs::remove_file(path);
+            return Err(SdkRegistryError::UploadUnavailable);
+        }
+        if offset != upload.next_offset {
+            return Err(SdkRegistryError::InvalidMetadata);
+        }
+        let total_bytes = upload.metadata_bytes + upload.library_bytes;
+        let next_offset = offset
+            .checked_add(u64::try_from(data.len()).map_err(|_| SdkRegistryError::InvalidMetadata)?)
+            .filter(|next| *next <= total_bytes)
+            .ok_or(SdkRegistryError::InvalidMetadata)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&upload.path)?;
+        file.seek(SeekFrom::Start(offset))?;
+        file.write_all(data)?;
+        file.sync_data()?;
+        upload.next_offset = next_offset;
+        upload.expires_at = Instant::now() + SDK_UPLOAD_TTL;
+        Ok(next_offset)
+    }
+
+    /// Validate and publish one complete streamed SDK upload.
+    pub fn finish_install_upload(
+        &self,
+        operation_id: [u8; 16],
+        owner_id: [u8; 16],
+    ) -> Result<SdkReleaseInfo, SdkRegistryError> {
+        let _operation_guard = self
+            .operation_gate
+            .lock()
+            .map_err(|_| SdkRegistryError::InvalidConfiguration)?;
+        if let Some(outcome) = self.operation_outcome(operation_id)? {
+            return match outcome {
+                SdkLibraryOperationOutcome::Installed {
+                    owner_id: outcome_owner,
+                    sdk_release,
+                    sha256,
+                    library_bytes,
+                } if outcome_owner == owner_id => {
+                    let releases = self
+                        .releases
+                        .read()
+                        .map_err(|_| SdkRegistryError::InvalidConfiguration)?;
+                    let entry = releases
+                        .values()
+                        .find(|entry| entry.record.sdk_release == sdk_release)
+                        .ok_or(SdkRegistryError::UnavailableRelease)?;
+                    if entry.record.sha256 != sha256 || entry.library_bytes != library_bytes {
+                        return Err(SdkRegistryError::ReleaseConflict);
+                    }
+                    Ok(release_info(&entry.record, library_bytes))
+                }
+                _ => Err(SdkRegistryError::UploadOwnerMismatch),
+            };
+        }
+        let upload = {
+            let mut uploads = self
+                .uploads
+                .lock()
+                .map_err(|_| SdkRegistryError::InvalidConfiguration)?;
+            let upload = uploads
+                .get(&operation_id)
+                .ok_or(SdkRegistryError::UploadUnavailable)?;
+            if upload.owner_id != owner_id {
+                return Err(SdkRegistryError::UploadOwnerMismatch);
+            }
+            let total_bytes = upload.metadata_bytes + upload.library_bytes;
+            if upload.next_offset != total_bytes {
+                return Err(SdkRegistryError::UploadIncomplete);
+            }
+            uploads
+                .remove(&operation_id)
+                .ok_or(SdkRegistryError::UploadUnavailable)?
+        };
+        let result = (|| {
+            let total_bytes = upload.metadata_bytes + upload.library_bytes;
+            let bytes = read_regular(&upload.path, total_bytes)?;
+            if bytes.len() as u64 != total_bytes {
+                return Err(SdkRegistryError::UploadIncomplete);
+            }
+            let split = usize::try_from(upload.metadata_bytes)
+                .map_err(|_| SdkRegistryError::InvalidMetadata)?;
+            let (metadata, library) = bytes.split_at(split);
+            if sha256(library) != upload.library_sha256 {
+                return Err(SdkRegistryError::DigestMismatch);
+            }
+            self.install(metadata, library, &upload.allowed_dependencies)
+        })();
+        fs::remove_file(&upload.path)?;
+        File::open(&self.cache_root)?.sync_all()?;
+        let info = result?;
+        let outcome = SdkLibraryOperationOutcome::Installed {
+            owner_id,
+            sdk_release: info.sdk_release,
+            sha256: info.sha256,
+            library_bytes: info.library_bytes,
+        };
+        self.record_operation_outcome(operation_id, outcome)?;
+        Ok(info)
+    }
+
+    pub fn operation_outcome(
+        &self,
+        operation_id: [u8; 16],
+    ) -> Result<Option<SdkLibraryOperationOutcome>, SdkRegistryError> {
+        Ok(self
+            .completed_operations
+            .read()
+            .map_err(|_| SdkRegistryError::InvalidConfiguration)?
+            .get(&operation_id)
+            .cloned())
+    }
+
+    fn record_operation_outcome(
+        &self,
+        operation_id: [u8; 16],
+        outcome: SdkLibraryOperationOutcome,
+    ) -> Result<(), SdkRegistryError> {
+        let mut outcomes = self
+            .completed_operations
+            .write()
+            .map_err(|_| SdkRegistryError::InvalidConfiguration)?;
+        if let Some(existing) = outcomes.get(&operation_id) {
+            return if existing == &outcome {
+                Ok(())
+            } else {
+                Err(SdkRegistryError::UploadConflict)
+            };
+        }
+        write_operation_outcome(&self.cache_root, operation_id, &outcome)?;
+        outcomes.insert(operation_id, outcome);
+        Ok(())
+    }
+
     /// Return bounded compatibility metadata in stable release/ABI order.
     pub fn list(&self) -> Result<Vec<SdkReleaseInfo>, SdkRegistryError> {
         let releases = self
@@ -459,6 +803,47 @@ impl SdkReleaseRegistry {
         releases.retain(|(release, _), _| *release != sdk_release);
         File::open(&self.cache_root)?.sync_all()?;
         Ok(entry.library_bytes)
+    }
+
+    pub fn remove_release_with_operation(
+        &self,
+        operation_id: [u8; 16],
+        owner_id: [u8; 16],
+        sdk_release: u32,
+    ) -> Result<u64, SdkRegistryError> {
+        if operation_id == [0; 16] || owner_id == [0; 16] || sdk_release == 0 {
+            return Err(SdkRegistryError::InvalidMetadata);
+        }
+        let _operation_guard = self
+            .operation_gate
+            .lock()
+            .map_err(|_| SdkRegistryError::InvalidConfiguration)?;
+        if let Some(outcome) = self.operation_outcome(operation_id)? {
+            return match outcome {
+                SdkLibraryOperationOutcome::Removed {
+                    owner_id: outcome_owner,
+                    sdk_release: outcome_release,
+                    removed_bytes,
+                } if outcome_owner == owner_id && outcome_release == sdk_release => {
+                    Ok(removed_bytes)
+                }
+                SdkLibraryOperationOutcome::Removed {
+                    owner_id: outcome_owner,
+                    ..
+                } if outcome_owner != owner_id => Err(SdkRegistryError::UploadOwnerMismatch),
+                _ => Err(SdkRegistryError::UploadConflict),
+            };
+        }
+        let removed_bytes = self.remove_release(sdk_release)?;
+        self.record_operation_outcome(
+            operation_id,
+            SdkLibraryOperationOutcome::Removed {
+                owner_id,
+                sdk_release,
+                removed_bytes,
+            },
+        )?;
+        Ok(removed_bytes)
     }
 
     pub fn cache_bytes(&self) -> Result<u64, SdkRegistryError> {
@@ -639,6 +1024,94 @@ fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), SdkRegistryError> {
     file.write_all(bytes)?;
     file.sync_all()?;
     Ok(())
+}
+
+fn write_operation_outcome(
+    root: &Path,
+    operation_id: [u8; 16],
+    outcome: &SdkLibraryOperationOutcome,
+) -> Result<(), SdkRegistryError> {
+    let mut bytes = Vec::with_capacity(SDK_OPERATION_RECORD_BYTES);
+    bytes.extend_from_slice(b"SDKO");
+    let (kind, owner_id, sdk_release, count, digest) = match outcome {
+        SdkLibraryOperationOutcome::Installed {
+            owner_id,
+            sdk_release,
+            sha256,
+            library_bytes,
+        } => (1, owner_id, sdk_release, library_bytes, sha256),
+        SdkLibraryOperationOutcome::Removed {
+            owner_id,
+            sdk_release,
+            removed_bytes,
+        } => (2, owner_id, sdk_release, removed_bytes, &[0; 32]),
+    };
+    bytes.push(kind);
+    bytes.extend_from_slice(owner_id);
+    bytes.extend_from_slice(&sdk_release.to_be_bytes());
+    bytes.extend_from_slice(&count.to_be_bytes());
+    bytes.extend_from_slice(digest);
+    let temporary = root.join(format!(".operation-tmp-{}", lower_hex(&operation_id)));
+    let destination = root.join(format!(".operation-{}", lower_hex(&operation_id)));
+    write_new_synced(&temporary, &bytes)?;
+    rename_noreplace(&temporary, &destination)?;
+    File::open(root)?.sync_all()?;
+    Ok(())
+}
+
+fn read_operation_outcome(path: &Path) -> Result<SdkLibraryOperationOutcome, SdkRegistryError> {
+    let bytes = read_regular(path, SDK_OPERATION_RECORD_BYTES as u64)?;
+    if bytes.len() != SDK_OPERATION_RECORD_BYTES || &bytes[..4] != b"SDKO" {
+        return Err(SdkRegistryError::InvalidMetadata);
+    }
+    let owner_id: [u8; 16] = bytes[5..21]
+        .try_into()
+        .map_err(|_| SdkRegistryError::InvalidMetadata)?;
+    let sdk_release = u32::from_be_bytes(
+        bytes[21..25]
+            .try_into()
+            .map_err(|_| SdkRegistryError::InvalidMetadata)?,
+    );
+    let count = u64::from_be_bytes(
+        bytes[25..33]
+            .try_into()
+            .map_err(|_| SdkRegistryError::InvalidMetadata)?,
+    );
+    let digest: [u8; 32] = bytes[33..65]
+        .try_into()
+        .map_err(|_| SdkRegistryError::InvalidMetadata)?;
+    if owner_id == [0; 16] || sdk_release == 0 || count == 0 {
+        return Err(SdkRegistryError::InvalidMetadata);
+    }
+    match bytes[4] {
+        1 if digest != [0; 32] => Ok(SdkLibraryOperationOutcome::Installed {
+            owner_id,
+            sdk_release,
+            sha256: digest,
+            library_bytes: count,
+        }),
+        2 if digest == [0; 32] => Ok(SdkLibraryOperationOutcome::Removed {
+            owner_id,
+            sdk_release,
+            removed_bytes: count,
+        }),
+        _ => Err(SdkRegistryError::InvalidMetadata),
+    }
+}
+
+fn decode_lower_hex_id(value: &str) -> Option<[u8; 16]> {
+    if value.len() != 32
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    let mut id = [0; 16];
+    for (index, byte) in id.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(id)
 }
 
 fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>, SdkRegistryError> {

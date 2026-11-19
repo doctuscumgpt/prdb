@@ -7,6 +7,7 @@ use prdb_engine::client_submit::{
     CancellationResult, InvocationStatus, SubmissionClient, TerminalOutcome,
 };
 use prdb_engine::tuple::{ScalarType, ScalarValue};
+use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
@@ -81,6 +82,23 @@ fn respond(stream: &mut TcpStream, request: &ClientFrame, payload: &[u8]) {
             .unwrap(),
         )
         .unwrap();
+}
+
+fn operation_id_from_payload(payload: &[u8]) -> [u8; 16] {
+    let text = std::str::from_utf8(payload).unwrap();
+    let hex = text
+        .split_once("\"operation_id\":\"")
+        .unwrap()
+        .1
+        .split_once('"')
+        .unwrap()
+        .0;
+    assert_eq!(hex.len(), 32);
+    let mut operation_id = [0; 16];
+    for (index, byte) in operation_id.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).unwrap();
+    }
+    operation_id
 }
 
 fn establish_control_session(stream: &mut TcpStream, decoder: &mut ClientFrameDecoder) {
@@ -378,20 +396,168 @@ fn admin_client_sends_typed_sdk_library_remove_request() {
         establish_control_session(&mut stream, &mut decoder);
         let request = read_frame(&mut stream, &mut decoder);
         assert_eq!(request.kind, 10);
-        assert_eq!(
-            std::str::from_utf8(&request.payload).unwrap(),
-            r#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{"release":"7"}}"#
+        let operation_id = operation_id_from_payload(&request.payload);
+        assert!(
+            std::str::from_utf8(&request.payload)
+                .unwrap()
+                .contains(r#""release":"7"}}"#)
         );
         respond(
             &mut stream,
             &request,
-            br#"{"release":7,"removed_bytes":4096}"#,
+            format!(
+                r#"{{"operation_id":"{}","release":7,"removed_bytes":4096}}"#,
+                operation_id
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            )
+            .as_bytes(),
         );
     });
 
     let mut secret = [7; 32];
     let mut client = AdminClient::connect_authenticated(address, [1; 16], &mut secret).unwrap();
     assert_eq!(client.remove_sdk_library(7).unwrap(), 4096);
+    server.join().unwrap();
+}
+
+#[test]
+fn admin_client_reads_owner_scoped_sdk_library_operation_status() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let operation_id = [0x11; 16];
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(request.kind, 10);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            r#"{"phase":"read","operation_version":1,"operation":"sdk_libraries.operation_status","arguments":{"operation_id":"11111111111111111111111111111111"}}"#
+        );
+        respond(
+            &mut stream,
+            &request,
+            br#"{"operation_id":"11111111111111111111111111111111","state":"succeeded","operation":"install","release":7,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","library_bytes":4096}"#,
+        );
+    });
+
+    let mut secret = [7; 32];
+    let mut client = AdminClient::connect_authenticated(address, [1; 16], &mut secret).unwrap();
+    assert_eq!(
+        client.sdk_library_operation_status(operation_id).unwrap(),
+        prdb_engine::client_submit::SdkLibraryOperationStatus::Installed {
+            sdk_release: 7,
+            sha256: [0xaa; 32],
+            library_bytes: 4096,
+        }
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn admin_client_streams_sdk_library_install_over_control_chunks() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let metadata = b"metadata";
+    let library = b"library";
+    let digest: [u8; 32] = Sha256::digest(library).into();
+    let digest_text = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let server_digest = digest_text.clone();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let begin = read_frame(&mut stream, &mut decoder);
+        assert_eq!(begin.kind, 10);
+        let operation_id = operation_id_from_payload(&begin.payload);
+        let operation_id_text = operation_id
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let server_operation_id = operation_id_text.clone();
+        assert_eq!(
+            std::str::from_utf8(&begin.payload).unwrap(),
+            format!(
+                r#"{{"phase":"prepare","operation_version":1,"operation":"sdk_libraries.install","arguments":{{"operation_id":"{}","metadata_bytes":"{}","library_bytes":"{}","library_sha256":"{}"}}}}"#,
+                server_operation_id,
+                metadata.len(),
+                library.len(),
+                server_digest
+            )
+        );
+        respond(
+            &mut stream,
+            &begin,
+            format!(r#"{{"operation_id":"{server_operation_id}","next_offset":"0"}}"#).as_bytes(),
+        );
+        let metadata_chunk = read_frame(&mut stream, &mut decoder);
+        assert_eq!(metadata_chunk.kind, 19);
+        assert_eq!(&metadata_chunk.payload[..16], &operation_id);
+        assert_eq!(
+            u64::from_le_bytes(metadata_chunk.payload[16..24].try_into().unwrap()),
+            0
+        );
+        assert_eq!(&metadata_chunk.payload[24..], metadata);
+        respond(
+            &mut stream,
+            &metadata_chunk,
+            format!(r#"{{"next_offset":"{}"}}"#, metadata.len()).as_bytes(),
+        );
+        let library_chunk = read_frame(&mut stream, &mut decoder);
+        assert_eq!(library_chunk.kind, 19);
+        assert_eq!(&library_chunk.payload[..16], &operation_id);
+        assert_eq!(
+            u64::from_le_bytes(library_chunk.payload[16..24].try_into().unwrap()),
+            metadata.len() as u64
+        );
+        assert_eq!(&library_chunk.payload[24..], library);
+        respond(
+            &mut stream,
+            &library_chunk,
+            format!(r#"{{"next_offset":"{}"}}"#, metadata.len() + library.len()).as_bytes(),
+        );
+        let finish = read_frame(&mut stream, &mut decoder);
+        assert_eq!(finish.kind, 10);
+        assert_eq!(
+            std::str::from_utf8(&finish.payload).unwrap(),
+            format!(
+                r#"{{"phase":"write","operation_version":1,"operation":"sdk_libraries.install.finish","arguments":{{"operation_id":"{server_operation_id}"}}}}"#
+            )
+        );
+        respond(
+            &mut stream,
+            &finish,
+            format!(
+                r#"{{"operation_id":"{server_operation_id}","release":7,"sha256":"{server_digest}","library_bytes":{}}}"#,
+                library.len()
+            )
+            .as_bytes(),
+        );
+        let list = read_frame(&mut stream, &mut decoder);
+        assert_eq!(list.kind, 10);
+        respond(
+            &mut stream,
+            &list,
+            format!(
+                r#"{{"sdk_libraries":[{{"release":7,"native_abis":[5],"target":"linux-x86_64","cpu_baseline":"x86_64-v1","runtime_profile":"test-runtime","soname":"libprdb_sql.so.7","sha256":"{server_digest}","needed":["libc.so.6"],"library_bytes":{}}}],"next_cursor":null}}"#,
+                library.len()
+            )
+            .as_bytes(),
+        );
+    });
+
+    let mut secret = [7; 32];
+    let mut client = AdminClient::connect_authenticated(address, [1; 16], &mut secret).unwrap();
+    let installed = client.install_sdk_library(metadata, library).unwrap();
+    assert_eq!(installed.sdk_release, 7);
+    assert_eq!(installed.sha256, digest);
+    assert_eq!(installed.library_bytes, library.len() as u64);
     server.join().unwrap();
 }
 

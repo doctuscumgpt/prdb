@@ -20,6 +20,7 @@ pub const CLIENT_V2_TX_COMMIT_KIND: u16 = 15;
 pub const CLIENT_V2_TX_ROLLBACK_KIND: u16 = 16;
 pub const CLIENT_V2_TX_STATUS_KIND: u16 = 17;
 pub const CLIENT_V2_PACKAGE_STATUS_KIND: u16 = 18;
+pub const CLIENT_SDK_LIBRARY_CHUNK_KIND: u16 = 19;
 const CLIENT_MAGIC: [u8; 4] = *b"PDBN";
 const CLIENT_METADATA_CURSOR_KIND: u8 = 0xd3;
 pub const CLIENT_METADATA_MAX_PAGE: usize = 128;
@@ -1044,7 +1045,20 @@ pub enum ClientAdminCommand {
         cursor: Option<crate::storage_manager::InvocationListCursor>,
     },
     RemoveSdkLibrary {
+        operation_id: [u8; 16],
         sdk_release: u32,
+    },
+    BeginSdkLibraryInstall {
+        operation_id: [u8; 16],
+        metadata_bytes: u64,
+        library_bytes: u64,
+        library_sha256: [u8; 32],
+    },
+    FinishSdkLibraryInstall {
+        operation_id: [u8; 16],
+    },
+    SdkLibraryOperationStatus {
+        operation_id: [u8; 16],
     },
     PrepareCreateUser {
         name: String,
@@ -2107,6 +2121,66 @@ pub fn decode_client_admin_command(
                 cursor,
             })
         }
+        Some("prepare")
+            if version == Some(1) && operation.as_deref() == Some("sdk_libraries.install") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let operation_id = decode_lower_hex_id(
+                &args
+                    .remove("operation_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            if operation_id == [0; 16] {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            let metadata_bytes = args
+                .remove("metadata_bytes")
+                .and_then(|value| parse_canonical_positive_i64(&value))
+                .and_then(|value| u64::try_from(value).ok())
+                .filter(|bytes| *bytes <= 64 * 1024)
+                .ok_or(ClientControlError::InvalidPrepare)?;
+            let library_bytes = args
+                .remove("library_bytes")
+                .and_then(|value| parse_canonical_positive_i64(&value))
+                .and_then(|value| u64::try_from(value).ok())
+                .filter(|bytes| *bytes <= 128 * 1024 * 1024)
+                .ok_or(ClientControlError::InvalidPrepare)?;
+            let library_sha256 = decode_lower_hex_hash(
+                &args
+                    .remove("library_sha256")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            if !args.is_empty() {
+                return Err(ClientControlError::UnknownKey);
+            }
+            Ok(ClientAdminCommand::BeginSdkLibraryInstall {
+                operation_id,
+                metadata_bytes,
+                library_bytes,
+                library_sha256,
+            })
+        }
+        Some("write")
+            if version == Some(1)
+                && operation.as_deref() == Some("sdk_libraries.install.finish") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let operation_id = decode_lower_hex_id(
+                &args
+                    .remove("operation_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            if operation_id == [0; 16] || !args.is_empty() {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            Ok(ClientAdminCommand::FinishSdkLibraryInstall { operation_id })
+        }
         Some("write")
             if version == Some(1) && operation.as_deref() == Some("sdk_libraries.remove") =>
         {
@@ -2114,6 +2188,11 @@ pub fn decode_client_admin_command(
                 return Err(ClientControlError::UnknownKey);
             }
             let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let operation_id = decode_lower_hex_id(
+                &args
+                    .remove("operation_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
             let release = args
                 .remove("release")
                 .ok_or(ClientControlError::MissingKey)?;
@@ -2123,7 +2202,31 @@ pub fn decode_client_admin_command(
             if !args.is_empty() {
                 return Err(ClientControlError::UnknownKey);
             }
-            Ok(ClientAdminCommand::RemoveSdkLibrary { sdk_release })
+            if operation_id == [0; 16] {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            Ok(ClientAdminCommand::RemoveSdkLibrary {
+                operation_id,
+                sdk_release,
+            })
+        }
+        Some("read")
+            if version == Some(1)
+                && operation.as_deref() == Some("sdk_libraries.operation_status") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let operation_id = decode_lower_hex_id(
+                &args
+                    .remove("operation_id")
+                    .ok_or(ClientControlError::MissingKey)?,
+            )?;
+            if operation_id == [0; 16] || !args.is_empty() {
+                return Err(ClientControlError::InvalidPrepare);
+            }
+            Ok(ClientAdminCommand::SdkLibraryOperationStatus { operation_id })
         }
         Some("prepare") if version == Some(1) && operation.as_deref() == Some("users.create") => {
             if operation_id.is_some() || seen.len() != 4 {
@@ -5146,7 +5249,9 @@ impl ClientConnectionSession {
         staging: &crate::supervisor::StagingStore,
         request: ClientFrame,
     ) -> Result<ClientFrame, ClientSessionError> {
-        if request.response_sequence != 0 || !matches!(request.kind, 4 | 5 | 12) {
+        if request.response_sequence != 0
+            || !matches!(request.kind, 4 | 5 | 12 | CLIENT_SDK_LIBRARY_CHUNK_KIND)
+        {
             return Err(ClientSessionError::UnsupportedRequest);
         }
         self.request_ids
@@ -5162,6 +5267,31 @@ impl ClientConnectionSession {
         self.revalidate_storage(storage)?;
         let chunk = decode_client_chunk(&request.payload)
             .map_err(ClientSessionError::InvalidControlPayload)?;
+        if request.kind == CLIENT_SDK_LIBRARY_CHUNK_KIND {
+            let actor_id = self
+                .authenticated
+                .as_ref()
+                .ok_or(ClientSessionError::AuthenticationRequired)?
+                .principal_id();
+            if !storage
+                .is_database_admin(actor_id)
+                .map_err(ClientSessionError::TokenInventory)?
+            {
+                return Err(ClientSessionError::SdkLibraryRepositoryUnauthorized);
+            }
+            let repository = staging
+                .sdk_repository()
+                .ok_or(ClientSessionError::SdkLibraryRepositoryUnavailable)?;
+            let next_offset = repository
+                .upload_install_chunk(chunk.invocation_id, actor_id, chunk.offset, &chunk.data)
+                .map_err(ClientSessionError::SdkLibraryRepository)?;
+            return Ok(ClientFrame {
+                kind: 100,
+                request_id: request.request_id,
+                response_sequence: 0,
+                payload: format!("{{\"next_offset\":\"{next_offset}\"}}").into_bytes(),
+            });
+        }
         let kind = match request.kind {
             4 => crate::supervisor::ChunkKind::Artifact,
             5 => crate::supervisor::ChunkKind::Parameters,
@@ -5684,7 +5814,10 @@ impl ClientConnectionSession {
             ClientAdminCommand::ListSdkLibrariesPage { page_limit, cursor } => {
                 self.handle_sdk_library_page(staging, request.request_id, page_limit, cursor)
             }
-            ClientAdminCommand::RemoveSdkLibrary { sdk_release } => {
+            ClientAdminCommand::RemoveSdkLibrary {
+                operation_id,
+                sdk_release,
+            } => {
                 if !storage
                     .is_database_admin(actor_id)
                     .map_err(ClientSessionError::TokenInventory)?
@@ -5695,10 +5828,100 @@ impl ClientConnectionSession {
                     .and_then(crate::supervisor::StagingStore::sdk_repository)
                     .ok_or(ClientSessionError::SdkLibraryRepositoryUnavailable)?;
                 let removed_bytes = repository
-                    .remove_release(sdk_release)
+                    .remove_release_with_operation(operation_id, actor_id, sdk_release)
                     .map_err(ClientSessionError::SdkLibraryRepository)?;
-                let payload =
-                    format!("{{\"release\":{sdk_release},\"removed_bytes\":{removed_bytes}}}");
+                let payload = format!(
+                    "{{\"operation_id\":\"{}\",\"release\":{sdk_release},\"removed_bytes\":{removed_bytes}}}",
+                    encode_lower_hex_id(operation_id)
+                );
+                self.json_response(request.request_id, payload.into_bytes())
+            }
+            ClientAdminCommand::BeginSdkLibraryInstall {
+                operation_id,
+                metadata_bytes,
+                library_bytes,
+                library_sha256,
+            } => {
+                if !storage
+                    .is_database_admin(actor_id)
+                    .map_err(ClientSessionError::TokenInventory)?
+                {
+                    return Err(ClientSessionError::SdkLibraryRepositoryUnauthorized);
+                }
+                let repository = staging
+                    .and_then(crate::supervisor::StagingStore::sdk_repository)
+                    .ok_or(ClientSessionError::SdkLibraryRepositoryUnavailable)?;
+                let next_offset = repository
+                    .begin_install_upload(
+                        operation_id,
+                        actor_id,
+                        metadata_bytes,
+                        library_bytes,
+                        library_sha256,
+                    )
+                    .map_err(ClientSessionError::SdkLibraryRepository)?;
+                let payload = format!(
+                    "{{\"operation_id\":\"{}\",\"next_offset\":\"{next_offset}\"}}",
+                    encode_lower_hex_id(operation_id)
+                );
+                self.json_response(request.request_id, payload.into_bytes())
+            }
+            ClientAdminCommand::SdkLibraryOperationStatus { operation_id } => {
+                let repository = staging
+                    .and_then(crate::supervisor::StagingStore::sdk_repository)
+                    .ok_or(ClientSessionError::SdkLibraryRepositoryUnavailable)?;
+                let payload = match repository
+                    .operation_outcome(operation_id)
+                    .map_err(ClientSessionError::SdkLibraryRepository)?
+                {
+                    None => format!(
+                        "{{\"operation_id\":\"{}\",\"state\":\"unknown\"}}",
+                        encode_lower_hex_id(operation_id)
+                    ),
+                    Some(crate::sdk_registry::SdkLibraryOperationOutcome::Installed {
+                        owner_id,
+                        sdk_release,
+                        sha256,
+                        library_bytes,
+                    }) if owner_id == actor_id => format!(
+                        "{{\"operation_id\":\"{}\",\"state\":\"succeeded\",\"operation\":\"install\",\"release\":{sdk_release},\"sha256\":\"{}\",\"library_bytes\":{library_bytes}}}",
+                        encode_lower_hex_id(operation_id),
+                        encode_lower_hex_bytes(&sha256)
+                    ),
+                    Some(crate::sdk_registry::SdkLibraryOperationOutcome::Removed {
+                        owner_id,
+                        sdk_release,
+                        removed_bytes,
+                    }) if owner_id == actor_id => format!(
+                        "{{\"operation_id\":\"{}\",\"state\":\"succeeded\",\"operation\":\"remove\",\"release\":{sdk_release},\"removed_bytes\":{removed_bytes}}}",
+                        encode_lower_hex_id(operation_id)
+                    ),
+                    Some(_) => {
+                        return Err(ClientSessionError::SdkLibraryRepositoryUnauthorized);
+                    }
+                };
+                self.json_response(request.request_id, payload.into_bytes())
+            }
+            ClientAdminCommand::FinishSdkLibraryInstall { operation_id } => {
+                if !storage
+                    .is_database_admin(actor_id)
+                    .map_err(ClientSessionError::TokenInventory)?
+                {
+                    return Err(ClientSessionError::SdkLibraryRepositoryUnauthorized);
+                }
+                let repository = staging
+                    .and_then(crate::supervisor::StagingStore::sdk_repository)
+                    .ok_or(ClientSessionError::SdkLibraryRepositoryUnavailable)?;
+                let release = repository
+                    .finish_install_upload(operation_id, actor_id)
+                    .map_err(ClientSessionError::SdkLibraryRepository)?;
+                let payload = format!(
+                    "{{\"operation_id\":\"{}\",\"release\":{},\"sha256\":\"{}\",\"library_bytes\":{}}}",
+                    encode_lower_hex_id(operation_id),
+                    release.sdk_release,
+                    encode_lower_hex_bytes(&release.sha256),
+                    release.library_bytes
+                );
                 self.json_response(request.request_id, payload.into_bytes())
             }
             ClientAdminCommand::ListSdkLibraries => {
@@ -9866,7 +10089,9 @@ impl ClientConnectionSession {
         };
         match mode {
             ClientMode::Query => (3..=9).contains(&kind) || matches!(kind, 11 | 12),
-            ClientMode::Control => (8..=10).contains(&kind) || kind == 11,
+            ClientMode::Control => {
+                (8..=10).contains(&kind) || matches!(kind, 11 | CLIENT_SDK_LIBRARY_CHUNK_KIND)
+            }
         }
     }
 }
@@ -10518,7 +10743,7 @@ fn validate_header_fields(header: Header, protocol_major: u16) -> Result<(), Cli
     let maximum = match header.kind {
         1..=3 | 6..=11 | 100 | 101 | 103 => CLIENT_MAX_CONTROL_BYTES,
         13..=18 if v2 => CLIENT_MAX_CONTROL_BYTES,
-        4 | 5 | 12 => CLIENT_MAX_CHUNK_BYTES + 24,
+        4 | 5 | 12 | CLIENT_SDK_LIBRARY_CHUNK_KIND => CLIENT_MAX_CHUNK_BYTES + 24,
         102 => CLIENT_MAX_PAYLOAD_BYTES,
         kind => return Err(ClientFrameError::InvalidKind(kind)),
     };
@@ -10529,8 +10754,10 @@ fn validate_header_fields(header: Header, protocol_major: u16) -> Result<(), Cli
         return Err(ClientFrameError::ZeroRequestId);
     }
     match header.kind {
-        4 | 5 | 12 if header.payload_bytes <= 24 => Err(ClientFrameError::InvalidChunkLength),
-        1..=18 if header.response_sequence != 0 => Err(ClientFrameError::InvalidSequence),
+        4 | 5 | 12 | CLIENT_SDK_LIBRARY_CHUNK_KIND if header.payload_bytes <= 24 => {
+            Err(ClientFrameError::InvalidChunkLength)
+        }
+        1..=19 if header.response_sequence != 0 => Err(ClientFrameError::InvalidSequence),
         100 | 101 if header.response_sequence != 0 => Err(ClientFrameError::InvalidSequence),
         102 | 103 if header.response_sequence == 0 => Err(ClientFrameError::InvalidSequence),
         _ => Ok(()),
@@ -10545,7 +10772,14 @@ pub struct ClientRequestIds {
 impl ClientRequestIds {
     /// Enforce strictly increasing nonzero IDs on a single client connection.
     pub fn accept(&mut self, frame: &ClientFrame) -> Result<(), ClientFrameError> {
-        self.accept_through(frame, 12)
+        if !((1..=12).contains(&frame.kind) || frame.kind == CLIENT_SDK_LIBRARY_CHUNK_KIND)
+            || frame.request_id == 0
+            || frame.request_id <= self.last_request_id
+        {
+            return Err(ClientFrameError::RequestIdsNotIncreasing);
+        }
+        self.last_request_id = frame.request_id;
+        Ok(())
     }
 
     /// Enforce v2 request kinds and strictly increasing nonzero IDs.
@@ -10654,15 +10888,48 @@ mod runtime_wait_tests {
 
     #[test]
     fn sdk_library_remove_is_a_typed_write_command() {
-        let request = br#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{"release":"7"}}"#;
+        let request = br#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{"operation_id":"11111111111111111111111111111111","release":"7"}}"#;
         assert_eq!(
             decode_client_admin_command(request).unwrap(),
-            ClientAdminCommand::RemoveSdkLibrary { sdk_release: 7 }
+            ClientAdminCommand::RemoveSdkLibrary {
+                operation_id: [0x11; 16],
+                sdk_release: 7,
+            }
         );
-        let zero = br#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{"release":"0"}}"#;
+        let zero = br#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{"operation_id":"11111111111111111111111111111111","release":"0"}}"#;
         assert!(decode_client_admin_command(zero).is_err());
-        let unknown = br#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{"release":"7","abi":"5"}}"#;
+        let unknown = br#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{"operation_id":"11111111111111111111111111111111","release":"7","abi":"5"}}"#;
         assert!(decode_client_admin_command(unknown).is_err());
+    }
+
+    #[test]
+    fn sdk_library_install_prepare_and_finish_decode_strictly() {
+        let begin = br#"{"phase":"prepare","operation_version":1,"operation":"sdk_libraries.install","arguments":{"operation_id":"11111111111111111111111111111111","metadata_bytes":"128","library_bytes":"4096","library_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}"#;
+        assert_eq!(
+            decode_client_admin_command(begin).unwrap(),
+            ClientAdminCommand::BeginSdkLibraryInstall {
+                operation_id: [0x11; 16],
+                metadata_bytes: 128,
+                library_bytes: 4096,
+                library_sha256: [0xaa; 32],
+            }
+        );
+        let finish = br#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.install.finish","arguments":{"operation_id":"11111111111111111111111111111111"}}"#;
+        assert_eq!(
+            decode_client_admin_command(finish).unwrap(),
+            ClientAdminCommand::FinishSdkLibraryInstall {
+                operation_id: [0x11; 16],
+            }
+        );
+        let excessive = br#"{"phase":"prepare","operation_version":1,"operation":"sdk_libraries.install","arguments":{"operation_id":"11111111111111111111111111111111","metadata_bytes":"128","library_bytes":"134217729","library_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}"#;
+        assert!(decode_client_admin_command(excessive).is_err());
+        let status = br#"{"phase":"read","operation_version":1,"operation":"sdk_libraries.operation_status","arguments":{"operation_id":"11111111111111111111111111111111"}}"#;
+        assert_eq!(
+            decode_client_admin_command(status).unwrap(),
+            ClientAdminCommand::SdkLibraryOperationStatus {
+                operation_id: [0x11; 16],
+            }
+        );
     }
 
     #[test]

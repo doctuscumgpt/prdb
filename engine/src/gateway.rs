@@ -609,7 +609,12 @@ fn serve_tcp_client_connection_inner<C: GatewayClientStream, S: Read + Write>(
                     }
                 )
             );
-        if control_only && !matches!(client_kind, 1 | 2 | 8 | 9 | 10 | 11) {
+        if control_only
+            && !matches!(
+                client_kind,
+                1 | 2 | 8 | 9 | 10 | 11 | crate::client_protocol::CLIENT_SDK_LIBRARY_CHUNK_KIND
+            )
+        {
             write_client_error_version(
                 client,
                 request.request_id,
@@ -1254,7 +1259,7 @@ fn client_request_to_ipc(
             Operation::AuthenticateSession
         }
         3 => Operation::PrepareSubmission,
-        4 | 5 | 12 => {
+        4 | 5 | 12 | crate::client_protocol::CLIENT_SDK_LIBRARY_CHUNK_KIND => {
             payload.insert(0, kind as u8);
             Operation::UploadSubmissionChunk
         }

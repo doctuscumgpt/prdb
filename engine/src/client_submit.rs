@@ -144,6 +144,20 @@ pub struct SdkLibraryInfo {
     pub library_bytes: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SdkLibraryOperationStatus {
+    Unknown,
+    Installed {
+        sdk_release: u32,
+        sha256: [u8; 32],
+        library_bytes: u64,
+    },
+    Removed {
+        sdk_release: u32,
+        removed_bytes: u64,
+    },
+}
+
 /// Result of creating a user or role through the control channel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdminIdentityResult {
@@ -1160,7 +1174,10 @@ impl SubmissionClient {
             response_sequence: 0,
             payload: std::mem::take(&mut payload),
         };
-        let request_limit = if matches!(kind, 4 | 5 | 12) {
+        let request_limit = if matches!(
+            kind,
+            4 | 5 | 12 | crate::client_protocol::CLIENT_SDK_LIBRARY_CHUNK_KIND
+        ) {
             self.max_chunk_bytes.saturating_add(24)
         } else {
             self.max_control_bytes
@@ -1658,18 +1675,181 @@ impl AdminClient {
         })
     }
 
+    /// Stream a canonical repository metadata record and its SDK library to
+    /// the database instance. The SDK bytes are sent in control-mode chunks,
+    /// never as query-package or invocation data.
+    pub fn install_sdk_library(
+        &mut self,
+        metadata: &[u8],
+        library: &[u8],
+    ) -> Result<SdkLibraryInfo, ClientSubmitError> {
+        if metadata.is_empty()
+            || metadata.len() > 64 * 1024
+            || library.is_empty()
+            || library.len() > 128 * 1024 * 1024
+        {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let library_sha256: [u8; 32] = Sha256::digest(library).into();
+        let mut operation_id = [0; 16];
+        getrandom::fill(&mut operation_id)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if operation_id == [0; 16] {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let prepare = format!(
+            "{{\"phase\":\"prepare\",\"operation_version\":1,\"operation\":\"sdk_libraries.install\",\"arguments\":{{\"operation_id\":\"{}\",\"metadata_bytes\":\"{}\",\"library_bytes\":\"{}\",\"library_sha256\":\"{}\"}}}}",
+            lower_hex(&operation_id),
+            metadata.len(),
+            library.len(),
+            lower_hex(&library_sha256)
+        );
+        let prepared = match self.transport.exchange(10, prepare.into_bytes()) {
+            Ok(response) => response,
+            Err(ClientSubmitError::ServerRejected(message)) => {
+                return Err(ClientSubmitError::ServerRejected(message));
+            }
+            Err(_) => {
+                return Err(ClientSubmitError::AdministrativeOutcomeUncertain(
+                    operation_id,
+                ));
+            }
+        };
+        let fields = parse_flat_response(&prepared.payload)?;
+        if fields.len() != 2 {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        if response_id(&fields, "operation_id")? != operation_id {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+
+        let mut offset = response_decimal_u64(&fields, "next_offset")?;
+        let starting_offset = offset;
+        let mut stream_position = 0u64;
+        for part in [metadata, library] {
+            for data in part.chunks(CLIENT_MAX_CHUNK_BYTES) {
+                let chunk_start = stream_position;
+                stream_position = stream_position
+                    .checked_add(data.len() as u64)
+                    .ok_or(ClientSubmitError::InvalidResponse)?;
+                if stream_position <= starting_offset {
+                    continue;
+                }
+                let skip = usize::try_from(starting_offset.saturating_sub(chunk_start))
+                    .map_err(|_| ClientSubmitError::InvalidResponse)?;
+                if skip > data.len() {
+                    return Err(ClientSubmitError::InvalidResponse);
+                }
+                let data = &data[skip..];
+                let mut payload = Vec::with_capacity(24 + data.len());
+                payload.extend_from_slice(&operation_id);
+                payload.extend_from_slice(&offset.to_le_bytes());
+                payload.extend_from_slice(data);
+                let response = self
+                    .transport
+                    .exchange(
+                        crate::client_protocol::CLIENT_SDK_LIBRARY_CHUNK_KIND,
+                        payload,
+                    )
+                    .map_err(|_| ClientSubmitError::AdministrativeOutcomeUncertain(operation_id))?;
+                let fields = parse_flat_response(&response.payload)?;
+                let next_offset = response_decimal_u64(&fields, "next_offset")?;
+                offset = offset
+                    .checked_add(data.len() as u64)
+                    .ok_or(ClientSubmitError::InvalidResponse)?;
+                if fields.len() != 1 || next_offset != offset {
+                    return Err(ClientSubmitError::InvalidResponse);
+                }
+            }
+        }
+
+        let finish = format!(
+            "{{\"phase\":\"write\",\"operation_version\":1,\"operation\":\"sdk_libraries.install.finish\",\"arguments\":{{\"operation_id\":\"{}\"}}}}",
+            lower_hex(&operation_id)
+        );
+        let finished = match self.transport.exchange(10, finish.into_bytes()) {
+            Ok(response) => response,
+            Err(ClientSubmitError::ServerRejected(message)) => {
+                return Err(ClientSubmitError::ServerRejected(message));
+            }
+            Err(_) => {
+                return Err(ClientSubmitError::AdministrativeOutcomeUncertain(
+                    operation_id,
+                ));
+            }
+        };
+        let fields = parse_flat_response(&finished.payload)
+            .map_err(|_| ClientSubmitError::AdministrativeOutcomeUncertain(operation_id))?;
+        if fields.len() != 4 {
+            return Err(ClientSubmitError::AdministrativeOutcomeUncertain(
+                operation_id,
+            ));
+        }
+        let reported_operation = response_id(&fields, "operation_id")
+            .map_err(|_| ClientSubmitError::AdministrativeOutcomeUncertain(operation_id))?;
+        let reported_bytes = fields
+            .get("library_bytes")
+            .and_then(ResponseValue::as_number)
+            .ok_or(ClientSubmitError::AdministrativeOutcomeUncertain(
+                operation_id,
+            ))?;
+        if reported_operation != operation_id || reported_bytes != library.len() as u64 {
+            return Err(ClientSubmitError::AdministrativeOutcomeUncertain(
+                operation_id,
+            ));
+        }
+        let sdk_release = fields
+            .get("release")
+            .and_then(ResponseValue::as_number)
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|release| *release != 0)
+            .ok_or(ClientSubmitError::AdministrativeOutcomeUncertain(
+                operation_id,
+            ))?;
+        let digest_text = fields
+            .get("sha256")
+            .and_then(ResponseValue::as_string)
+            .ok_or(ClientSubmitError::AdministrativeOutcomeUncertain(
+                operation_id,
+            ))?;
+        let digest = decode_lower_hex_32(digest_text)
+            .map_err(|_| ClientSubmitError::AdministrativeOutcomeUncertain(operation_id))?;
+        if digest != library_sha256 {
+            return Err(ClientSubmitError::AdministrativeOutcomeUncertain(
+                operation_id,
+            ));
+        }
+        self.list_sdk_libraries()?
+            .into_iter()
+            .find(|release| release.sdk_release == sdk_release && release.sha256 == digest)
+            .ok_or(ClientSubmitError::AdministrativeOutcomeUncertain(
+                operation_id,
+            ))
+    }
+
     /// Remove one exact SDK release. The server checks current database-admin
     /// authority and refuses removal while any invocation holds a pin.
     pub fn remove_sdk_library(&mut self, sdk_release: u32) -> Result<u64, ClientSubmitError> {
         if sdk_release == 0 {
             return Err(ClientSubmitError::InvalidAdministrativeRequest);
         }
+        let mut operation_id = [0; 16];
+        getrandom::fill(&mut operation_id)
+            .map_err(|_| ClientSubmitError::InvalidAdministrativeRequest)?;
+        if operation_id == [0; 16] {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
         let request = format!(
-            "{{\"phase\":\"write\",\"operation_version\":1,\"operation\":\"sdk_libraries.remove\",\"arguments\":{{\"release\":\"{sdk_release}\"}}}}"
+            "{{\"phase\":\"write\",\"operation_version\":1,\"operation\":\"sdk_libraries.remove\",\"arguments\":{{\"operation_id\":\"{}\",\"release\":\"{sdk_release}\"}}}}",
+            lower_hex(&operation_id)
         );
-        let response = self.transport.exchange(10, request.into_bytes())?;
+        let response = self
+            .transport
+            .exchange(10, request.into_bytes())
+            .map_err(|_| ClientSubmitError::AdministrativeOutcomeUncertain(operation_id))?;
         let fields = parse_flat_response(&response.payload)?;
-        if fields.len() != 2
+        if fields.len() != 3
+            || response_id(&fields, "operation_id")? != operation_id
             || fields.get("release").and_then(ResponseValue::as_number)
                 != Some(u64::from(sdk_release))
         {
@@ -1679,6 +1859,63 @@ impl AdminClient {
             .get("removed_bytes")
             .and_then(ResponseValue::as_number)
             .ok_or(ClientSubmitError::InvalidResponse)
+    }
+
+    pub fn sdk_library_operation_status(
+        &mut self,
+        operation_id: [u8; 16],
+    ) -> Result<SdkLibraryOperationStatus, ClientSubmitError> {
+        if operation_id == [0; 16] {
+            return Err(ClientSubmitError::InvalidAdministrativeRequest);
+        }
+        let request = format!(
+            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"sdk_libraries.operation_status\",\"arguments\":{{\"operation_id\":\"{}\"}}}}",
+            lower_hex(&operation_id)
+        );
+        let response = self.transport.exchange(10, request.into_bytes())?;
+        let fields = parse_flat_response(&response.payload)?;
+        if response_id(&fields, "operation_id")? != operation_id {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        match fields.get("state").and_then(ResponseValue::as_string) {
+            Some("unknown") if fields.len() == 2 => Ok(SdkLibraryOperationStatus::Unknown),
+            Some("succeeded") => {
+                let release = fields
+                    .get("release")
+                    .and_then(ResponseValue::as_number)
+                    .and_then(|value| u32::try_from(value).ok())
+                    .filter(|value| *value > 0)
+                    .ok_or(ClientSubmitError::InvalidResponse)?;
+                match fields.get("operation").and_then(ResponseValue::as_string) {
+                    Some("install") if fields.len() == 6 => {
+                        Ok(SdkLibraryOperationStatus::Installed {
+                            sdk_release: release,
+                            sha256: decode_lower_hex_32(
+                                fields
+                                    .get("sha256")
+                                    .and_then(ResponseValue::as_string)
+                                    .ok_or(ClientSubmitError::InvalidResponse)?,
+                            )?,
+                            library_bytes: fields
+                                .get("library_bytes")
+                                .and_then(ResponseValue::as_number)
+                                .filter(|value| *value > 0)
+                                .ok_or(ClientSubmitError::InvalidResponse)?,
+                        })
+                    }
+                    Some("remove") if fields.len() == 5 => Ok(SdkLibraryOperationStatus::Removed {
+                        sdk_release: release,
+                        removed_bytes: fields
+                            .get("removed_bytes")
+                            .and_then(ResponseValue::as_number)
+                            .filter(|value| *value > 0)
+                            .ok_or(ClientSubmitError::InvalidResponse)?,
+                    }),
+                    _ => Err(ClientSubmitError::InvalidResponse),
+                }
+            }
+            _ => Err(ClientSubmitError::InvalidResponse),
+        }
     }
 
     /// Return one best-effort page of this authenticated owner's live
@@ -7440,6 +7677,25 @@ fn response_string(
         Some(ResponseValue::String(value)) => Ok(value),
         _ => Err(ClientSubmitError::InvalidResponse),
     }
+}
+
+fn response_decimal_u64(
+    fields: &HashMap<String, ResponseValue>,
+    key: &str,
+) -> Result<u64, ClientSubmitError> {
+    let value = fields
+        .get(key)
+        .and_then(ResponseValue::as_string)
+        .ok_or(ClientSubmitError::InvalidResponse)?;
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(ClientSubmitError::InvalidResponse);
+    }
+    value
+        .parse::<u64>()
+        .map_err(|_| ClientSubmitError::InvalidResponse)
 }
 
 fn response_id(

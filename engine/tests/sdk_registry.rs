@@ -285,6 +285,100 @@ fn repository_install_is_durable_listable_and_pin_safe_for_removal() {
 }
 
 #[test]
+fn repository_streamed_install_is_contiguous_owner_bound_and_durable() {
+    let root = temp_dir();
+    fs::create_dir(&root).unwrap();
+    let release = built_release(&root);
+    let metadata = fs::read(release.join("sdk-release.json")).unwrap();
+    let library = fs::read(release.join("libprdb_sql.so.1")).unwrap();
+    let repository_root = root.join("instance").join("sdk-libraries");
+    let allowed = HashSet::from(["libc.so.6".to_owned()]);
+    let repository = SdkReleaseRegistry::open(
+        &repository_root,
+        "linux-x86_64".to_owned(),
+        "x86_64-v1".to_owned(),
+        "test-runtime".to_owned(),
+        allowed,
+        128 * 1024 * 1024,
+    )
+    .unwrap();
+    let digest: [u8; 32] = Sha256::digest(&library).into();
+    let operation_id = [0x91; 16];
+    let owner_id = [0x72; 16];
+    assert_eq!(
+        repository
+            .begin_install_upload(
+                operation_id,
+                owner_id,
+                metadata.len() as u64,
+                library.len() as u64,
+                digest,
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        repository
+            .upload_install_chunk(operation_id, [0x73; 16], 0, &metadata[..1])
+            .unwrap_err(),
+        SdkRegistryError::UploadOwnerMismatch
+    );
+    assert_eq!(
+        repository
+            .upload_install_chunk(operation_id, owner_id, 1, &metadata[..1])
+            .unwrap_err(),
+        SdkRegistryError::InvalidMetadata
+    );
+    let mut offset = 0u64;
+    for bytes in [&metadata[..], &library[..]] {
+        for chunk in bytes.chunks(32 * 1024) {
+            offset = repository
+                .upload_install_chunk(operation_id, owner_id, offset, chunk)
+                .unwrap();
+        }
+    }
+    let installed = repository
+        .finish_install_upload(operation_id, owner_id)
+        .unwrap();
+    assert_eq!(installed.sdk_release, 1);
+    assert_eq!(installed.sha256, digest);
+    assert_eq!(repository.list().unwrap(), vec![installed.clone()]);
+    assert_eq!(
+        repository
+            .finish_install_upload(operation_id, owner_id)
+            .unwrap(),
+        installed
+    );
+    drop(repository);
+    let reopened = SdkReleaseRegistry::open(
+        &repository_root,
+        "linux-x86_64".to_owned(),
+        "x86_64-v1".to_owned(),
+        "test-runtime".to_owned(),
+        HashSet::from(["libc.so.6".to_owned()]),
+        128 * 1024 * 1024,
+    )
+    .unwrap();
+    assert_eq!(reopened.list().unwrap(), vec![installed]);
+    assert!(matches!(
+        reopened.operation_outcome(operation_id).unwrap(),
+        Some(prdb_engine::sdk_registry::SdkLibraryOperationOutcome::Installed {
+            owner_id: recorded_owner,
+            sdk_release: 1,
+            library_bytes,
+            ..
+        }) if recorded_owner == owner_id && library_bytes > 0
+    ));
+    drop(reopened);
+    fs::set_permissions(
+        repository_root.join("release-1"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn repository_rejects_identity_replacement_digest_corruption_and_disallowed_dependencies() {
     let root = temp_dir();
     fs::create_dir(&root).unwrap();

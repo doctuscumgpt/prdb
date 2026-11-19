@@ -16778,6 +16778,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         AdministrativeInvocationListError, InvocationStatus, InvocationStatusConsistency,
         MAX_ADMIN_INVOCATION_PAGE,
     };
+    use sha2::Digest;
     use zeroize::{Zeroize, Zeroizing};
 
     let fixture = Fixture::new();
@@ -17029,13 +17030,39 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
             true
         }
     }
+    let workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or("workspace root is missing")?
+        .to_path_buf();
+    let sdk_build_dir = fixture.0.join("sdk-build");
+    let sdk_build = std::process::Command::new("make")
+        .current_dir(&workspace)
+        .args([
+            "-f",
+            "engine/sdk/Makefile",
+            &format!("BUILD_DIR={}", sdk_build_dir.display()),
+            "SDK_RUNTIME_PROFILE=nixos-glibc-2.42",
+            "sdk-shared-release",
+        ])
+        .output()?;
+    if !sdk_build.status.success() {
+        return Err(format!(
+            "SDK fixture build failed: {}",
+            String::from_utf8_lossy(&sdk_build.stderr)
+        )
+        .into());
+    }
+    let sdk_release_dir =
+        sdk_build_dir.join("releases/linux-x86_64/x86_64-v1/nixos-glibc-2.42/sdk-1-abis1,2,3,4,5");
+    let sdk_metadata = std::fs::read(sdk_release_dir.join("sdk-release.json"))?;
+    let sdk_library = std::fs::read(sdk_release_dir.join("libprdb_sql.so.1"))?;
     let sdk_repository = std::sync::Arc::new(
         prdb_engine::sdk_registry::SdkLibraryRepository::open(
             &fixture.path().parent().unwrap().join("sdk-libraries"),
             "linux-x86_64".to_owned(),
             "x86_64-v1".to_owned(),
             "nixos-glibc-2.42".to_owned(),
-            std::collections::HashSet::new(),
+            std::collections::HashSet::from(["libc.so.6".to_owned()]),
             1024 * 1024,
         )
         .unwrap(),
@@ -17044,7 +17071,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         prdb_engine::supervisor::StagingLimits::default(),
         std::sync::Arc::new(AcceptMetadata),
     )?
-    .with_sdk_repository(sdk_repository);
+    .with_sdk_repository(sdk_repository.clone());
 
     use prdb_engine::storage_manager::{CreateTableRequest, TableColumnDefinition};
     let visible_schema_invocation = id(243);
@@ -17323,7 +17350,7 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
         &prdb_engine::ipc::IpcFrame {
             operation: prdb_engine::ipc::Operation::SubmitAdministrativeOperation as u16,
             request_id: 2,
-            payload: br#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{"release":"1"}}"#.to_vec(),
+            payload: br#"{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{"operation_id":"11111111111111111111111111111111","release":"1"}}"#.to_vec(),
         },
         prdb_engine::supervisor_ipc::GatewayAdmissionConfig {
             retention_period_us: 60_000_000,
@@ -17337,6 +17364,186 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
             prdb_engine::client_protocol::ClientSessionError::SdkLibraryRepositoryUnauthorized
         ))
     ));
+    let sdk_operation_id = [0x88; 16];
+    let sdk_operation_id_hex = sdk_operation_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let sdk_digest: [u8; 32] = sha2::Sha256::digest(&sdk_library).into();
+    let sdk_digest_hex = sdk_digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let mut sdk_admin_control = ClientConnectionSession::default();
+    sdk_admin_control.accept_hello(ClientMode::Control, "sdk-library-admin")?;
+    sdk_admin_control.authenticate(&storage, id(237), &[0x5a; 32])?;
+    let begin_install = prdb_engine::supervisor_ipc::dispatch_gateway_client_request(
+        prdb_engine::ipc::ServiceRole::Gateway,
+        &storage,
+        &staging,
+        &mut sdk_admin_control,
+        &prdb_engine::ipc::IpcFrame {
+            operation: prdb_engine::ipc::Operation::SubmitAdministrativeOperation as u16,
+            request_id: 1,
+            payload: format!(
+                r#"{{"phase":"prepare","operation_version":1,"operation":"sdk_libraries.install","arguments":{{"operation_id":"{sdk_operation_id_hex}","metadata_bytes":"{}","library_bytes":"{}","library_sha256":"{sdk_digest_hex}"}}}}"#,
+                sdk_metadata.len(),
+                sdk_library.len()
+            )
+            .into_bytes(),
+        },
+        prdb_engine::supervisor_ipc::GatewayAdmissionConfig {
+            retention_period_us: 60_000_000,
+            max_rows: 1,
+            max_bytes: 1,
+        },
+    )
+    .map_err(|error| std::io::Error::other(format!("SDK install begin dispatch: {error:?}")))?;
+    assert!(matches!(
+        begin_install,
+        prdb_engine::supervisor_ipc::GatewayClientDispatch::Response(_)
+    ));
+    let sdk_upload = [sdk_metadata.as_slice(), sdk_library.as_slice()].concat();
+    let mut sdk_offset = 0u64;
+    let mut sdk_request_id = 2u64;
+    for chunk in sdk_upload.chunks(prdb_engine::client_protocol::CLIENT_MAX_CHUNK_BYTES) {
+        let mut payload = vec![prdb_engine::client_protocol::CLIENT_SDK_LIBRARY_CHUNK_KIND as u8];
+        payload.extend_from_slice(&sdk_operation_id);
+        payload.extend_from_slice(&sdk_offset.to_le_bytes());
+        payload.extend_from_slice(chunk);
+        assert!(
+            sdk_admin_control
+                .permits_request_kind(prdb_engine::client_protocol::CLIENT_SDK_LIBRARY_CHUNK_KIND)
+        );
+        prdb_engine::client_protocol::decode_client_chunk(&payload[1..])
+            .map_err(|error| std::io::Error::other(format!("SDK test chunk decode: {error:?}")))?;
+        let response = prdb_engine::supervisor_ipc::dispatch_gateway_client_request(
+            prdb_engine::ipc::ServiceRole::Gateway,
+            &storage,
+            &staging,
+            &mut sdk_admin_control,
+            &prdb_engine::ipc::IpcFrame {
+                operation: prdb_engine::ipc::Operation::UploadSubmissionChunk as u16,
+                request_id: sdk_request_id,
+                payload,
+            },
+            prdb_engine::supervisor_ipc::GatewayAdmissionConfig {
+                retention_period_us: 60_000_000,
+                max_rows: 1,
+                max_bytes: 1,
+            },
+        )
+        .map_err(|error| std::io::Error::other(format!("SDK upload chunk dispatch: {error:?}")))?;
+        assert!(matches!(
+            response,
+            prdb_engine::supervisor_ipc::GatewayClientDispatch::Response(_)
+        ));
+        sdk_offset += chunk.len() as u64;
+        sdk_request_id += 1;
+    }
+    let finish_install = prdb_engine::supervisor_ipc::dispatch_gateway_client_request(
+        prdb_engine::ipc::ServiceRole::Gateway,
+        &storage,
+        &staging,
+        &mut sdk_admin_control,
+        &prdb_engine::ipc::IpcFrame {
+            operation: prdb_engine::ipc::Operation::SubmitAdministrativeOperation as u16,
+            request_id: sdk_request_id,
+            payload: format!(
+                r#"{{"phase":"write","operation_version":1,"operation":"sdk_libraries.install.finish","arguments":{{"operation_id":"{sdk_operation_id_hex}"}}}}"#
+            )
+            .into_bytes(),
+        },
+        prdb_engine::supervisor_ipc::GatewayAdmissionConfig {
+            retention_period_us: 60_000_000,
+            max_rows: 1,
+            max_bytes: 1,
+        },
+    )
+    .map_err(|error| std::io::Error::other(format!("SDK install finish dispatch: {error:?}")))?;
+    assert!(matches!(
+        finish_install,
+        prdb_engine::supervisor_ipc::GatewayClientDispatch::Response(_)
+    ));
+    assert_eq!(
+        sdk_repository
+            .list()
+            .map_err(|error| format!("SDK repository listing failed: {error:?}"))?
+            .len(),
+        1
+    );
+    assert!(matches!(
+        sdk_repository
+            .operation_outcome(sdk_operation_id)
+            .map_err(|error| format!("SDK operation lookup failed: {error:?}"))?,
+        Some(prdb_engine::sdk_registry::SdkLibraryOperationOutcome::Installed {
+            owner_id,
+            sdk_release: 1,
+            sha256,
+            ..
+        }) if owner_id == admin_id && sha256 == sdk_digest
+    ));
+    let install_status = prdb_engine::supervisor_ipc::dispatch_gateway_client_request(
+        prdb_engine::ipc::ServiceRole::Gateway,
+        &storage,
+        &staging,
+        &mut sdk_admin_control,
+        &prdb_engine::ipc::IpcFrame {
+            operation: prdb_engine::ipc::Operation::SubmitAdministrativeOperation as u16,
+            request_id: sdk_request_id + 1,
+            payload: format!(
+                r#"{{"phase":"read","operation_version":1,"operation":"sdk_libraries.operation_status","arguments":{{"operation_id":"{sdk_operation_id_hex}"}}}}"#
+            )
+            .into_bytes(),
+        },
+        prdb_engine::supervisor_ipc::GatewayAdmissionConfig {
+            retention_period_us: 60_000_000,
+            max_rows: 1,
+            max_bytes: 1,
+        },
+    )?;
+    assert!(matches!(
+        install_status,
+        prdb_engine::supervisor_ipc::GatewayClientDispatch::Response(response)
+            if String::from_utf8_lossy(&response.payload).contains("\"operation\":\"install\"")
+    ));
+    let remove_operation_id = [0x99; 16];
+    let remove_operation_id_hex = remove_operation_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    for request_id in [sdk_request_id + 2, sdk_request_id + 3] {
+        let remove = prdb_engine::supervisor_ipc::dispatch_gateway_client_request(
+            prdb_engine::ipc::ServiceRole::Gateway,
+            &storage,
+            &staging,
+            &mut sdk_admin_control,
+            &prdb_engine::ipc::IpcFrame {
+                operation: prdb_engine::ipc::Operation::SubmitAdministrativeOperation as u16,
+                request_id,
+                payload: format!(
+                    r#"{{"phase":"write","operation_version":1,"operation":"sdk_libraries.remove","arguments":{{"operation_id":"{remove_operation_id_hex}","release":"1"}}}}"#
+                )
+                .into_bytes(),
+            },
+            prdb_engine::supervisor_ipc::GatewayAdmissionConfig {
+                retention_period_us: 60_000_000,
+                max_rows: 1,
+                max_bytes: 1,
+            },
+        )?;
+        assert!(matches!(
+            remove,
+            prdb_engine::supervisor_ipc::GatewayClientDispatch::Response(response)
+                if String::from_utf8_lossy(&response.payload).contains("\"removed_bytes\"")
+        ));
+    }
+    assert!(
+        sdk_repository
+            .list()
+            .map_err(|error| format!("SDK post-remove listing failed: {error:?}"))?
+            .is_empty()
+    );
     let schema_discovery = prdb_engine::supervisor_ipc::dispatch_gateway_client_request(
         prdb_engine::ipc::ServiceRole::Gateway,
         &storage,
