@@ -319,6 +319,7 @@ struct StartQueueEntry {
 pub struct StagingStore {
     limits: StagingLimits,
     metadata_validator: Arc<dyn SubmissionMetadataValidator>,
+    sdk_repository: Option<Arc<crate::sdk_registry::SdkLibraryRepository>>,
     state: Mutex<StagingState>,
 }
 
@@ -396,8 +397,23 @@ impl StagingStore {
         Ok(Self {
             limits,
             metadata_validator,
+            sdk_repository: None,
             state: Mutex::new(StagingState::default()),
         })
+    }
+
+    /// Attach the instance-local SDK repository used by authenticated control
+    /// operations. Query workers never receive this handle.
+    pub fn with_sdk_repository(
+        mut self,
+        repository: Arc<crate::sdk_registry::SdkLibraryRepository>,
+    ) -> Self {
+        self.sdk_repository = Some(repository);
+        self
+    }
+
+    pub fn sdk_repository(&self) -> Option<&Arc<crate::sdk_registry::SdkLibraryRepository>> {
+        self.sdk_repository.as_ref()
     }
 
     /// Copy bounded aggregate queue usage for an authorized runtime response.

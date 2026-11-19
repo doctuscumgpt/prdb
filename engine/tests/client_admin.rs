@@ -281,6 +281,94 @@ fn admin_client_lists_administratively_visible_schema_pages() {
 }
 
 #[test]
+fn admin_client_lists_sdk_libraries_with_compatibility_metadata() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(request.kind, 10);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            r#"{"phase":"read","operation_version":1,"operation":"sdk_libraries.list","arguments":{"limit":"64"}}"#
+        );
+        respond(
+            &mut stream,
+            &request,
+            br#"{"sdk_libraries":[{"release":7,"native_abis":[5],"target":"linux-x86_64","cpu_baseline":"x86_64-v1","runtime_profile":"nixos-glibc-2.42","soname":"libprdb_sql.so.7","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","needed":["libc.so.6"],"library_bytes":4096}],"next_cursor":null}"#,
+        );
+    });
+
+    let mut secret = [7; 32];
+    let mut client = AdminClient::connect_authenticated(address, [1; 16], &mut secret).unwrap();
+    let releases = client.list_sdk_libraries().unwrap();
+    assert_eq!(releases.len(), 1);
+    assert_eq!(releases[0].sdk_release, 7);
+    assert_eq!(releases[0].native_abis, [5]);
+    assert_eq!(releases[0].target, "linux-x86_64");
+    assert_eq!(releases[0].soname, "libprdb_sql.so.7");
+    assert_eq!(releases[0].sha256, [0xaa; 32]);
+    assert_eq!(releases[0].needed, ["libc.so.6"]);
+    assert_eq!(releases[0].library_bytes, 4096);
+    server.join().unwrap();
+}
+
+#[test]
+fn admin_client_follows_opaque_sdk_library_page_cursors() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let cursor = "d30102030405060708090a0b0c0d0e0f";
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        establish_control_session(&mut stream, &mut decoder);
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            r#"{"phase":"read","operation_version":1,"operation":"sdk_libraries.list","arguments":{"limit":"1"}}"#
+        );
+        respond(
+            &mut stream,
+            &request,
+            format!(
+                r#"{{"sdk_libraries":[{{"release":7,"native_abis":[5],"target":"linux-x86_64","cpu_baseline":"x86_64-v1","runtime_profile":"test-runtime","soname":"libprdb_sql.so.7","sha256":"{}","needed":["libc.so.6"],"library_bytes":4096}}],"next_cursor":"{cursor}"}}"#,
+                "aa".repeat(32)
+            )
+            .as_bytes(),
+        );
+        let request = read_frame(&mut stream, &mut decoder);
+        assert_eq!(
+            std::str::from_utf8(&request.payload).unwrap(),
+            format!(
+                r#"{{"phase":"read","operation_version":1,"operation":"sdk_libraries.list","arguments":{{"limit":"1","cursor":"{cursor}"}}}}"#
+            )
+        );
+        respond(
+            &mut stream,
+            &request,
+            format!(
+                r#"{{"sdk_libraries":[{{"release":8,"native_abis":[5],"target":"linux-x86_64","cpu_baseline":"x86_64-v1","runtime_profile":"test-runtime","soname":"libprdb_sql.so.8","sha256":"{}","needed":["libc.so.6"],"library_bytes":4096}}],"next_cursor":null}}"#,
+                "bb".repeat(32)
+            )
+            .as_bytes(),
+        );
+    });
+
+    let mut secret = [7; 32];
+    let mut client = AdminClient::connect_authenticated(address, [1; 16], &mut secret).unwrap();
+    let first = client.list_sdk_libraries_page(1, None).unwrap();
+    assert_eq!(first.records[0].sdk_release, 7);
+    let second = client
+        .list_sdk_libraries_page(1, first.next_cursor.as_deref())
+        .unwrap();
+    assert_eq!(second.records[0].sdk_release, 8);
+    assert_eq!(second.next_cursor, None);
+    server.join().unwrap();
+}
+
+#[test]
 fn admin_client_lists_runtime_invocation_pages_with_best_effort_metadata() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

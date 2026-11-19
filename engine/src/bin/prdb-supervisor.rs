@@ -47,6 +47,8 @@ mod service {
         profile_cpu: Option<String>,
         profile_runtime: Option<String>,
         sdk_release: Option<u32>,
+        sdk_repository_dir: Option<PathBuf>,
+        sdk_repository_max_bytes: Option<u64>,
         sdk_release_dirs: Vec<PathBuf>,
         sdk_cache_dir: Option<PathBuf>,
         sdk_cache_max_bytes: Option<u64>,
@@ -93,6 +95,7 @@ mod service {
              --cgroup-parent PATH --executor PATH --optimizer PATH --scratch-parent PATH\n\
              --runtime-read-execute PATH (repeatable) --runtime-profile NAME\n\
              --cpu-baseline NAME --sdk-release NUMBER --allowed-dependency NAME (repeatable)\n\
+             [--sdk-repository-dir PATH --sdk-repository-max-bytes N]\n\
              [--sdk-release-dir DIR (repeatable) --sdk-cache-dir DIR --sdk-cache-max-bytes N]\n\
              [--allow-legacy-static-sdk-release NUMBER (temporary compatibility)]\n\
              --retention-seconds N --max-rows N --max-bytes N\n\
@@ -191,9 +194,25 @@ mod service {
             cpu_baseline.clone(),
             runtime_profile.clone(),
             sdk_release,
-            options.dependencies,
+            options.dependencies.clone(),
         )
         .map_err(|error| format!("invalid compatibility profile: {error:?}"))?;
+        let repository_root = options
+            .sdk_repository_dir
+            .unwrap_or_else(|| instance_dir.join("sdk-libraries"));
+        let repository = Arc::new(
+            prdb_engine::sdk_registry::SdkLibraryRepository::open(
+                &repository_root,
+                "linux-x86_64".to_owned(),
+                cpu_baseline.clone(),
+                runtime_profile.clone(),
+                options.dependencies.clone(),
+                options
+                    .sdk_repository_max_bytes
+                    .unwrap_or(1024 * 1024 * 1024),
+            )
+            .map_err(|error| format!("invalid SQL SDK library repository: {error:?}"))?,
+        );
         let mut validator = VersionedSubmissionMetadataValidator::new(profile);
         if let Some(legacy_release) = options.legacy_static_sdk_release {
             validator = validator
@@ -206,8 +225,8 @@ mod service {
                 &options.sdk_release_dirs,
                 &cache_dir,
                 "linux-x86_64".to_owned(),
-                cpu_baseline,
-                runtime_profile,
+                cpu_baseline.clone(),
+                runtime_profile.clone(),
                 options.sdk_cache_max_bytes.unwrap_or(1024 * 1024 * 1024),
             )
             .map_err(|error| format!("invalid SQL SDK release registry: {error:?}"))?;
@@ -216,6 +235,10 @@ mod service {
                 .map_err(|error| format!("invalid SQL SDK registry profile: {error:?}"))?;
         } else if options.sdk_cache_dir.is_some() || options.sdk_cache_max_bytes.is_some() {
             return Err("SDK cache options require at least one --sdk-release-dir".into());
+        } else {
+            validator = validator
+                .with_sdk_registry(Arc::clone(&repository))
+                .map_err(|error| format!("invalid SQL SDK repository profile: {error:?}"))?;
         }
         let validator = Arc::new(validator);
         let default_staging_limits = StagingLimits::default();
@@ -265,7 +288,8 @@ mod service {
             ..default_staging_limits
         };
         validate_storage_admission_capacity(&staging_limits, &storage_config)?;
-        let staging = StagingStore::new(staging_limits, validator)?;
+        let staging = StagingStore::new(staging_limits, validator)?
+            .with_sdk_repository(Arc::clone(&repository));
         let instance = StorageInstance::open(&instance_dir)?;
         let runtime = GatewayServiceRuntimeConfig {
             admission: GatewayAdmissionConfig {
@@ -455,6 +479,10 @@ mod service {
                 "--cpu-baseline" => set!(profile_cpu, value),
                 "--runtime-profile" => set!(profile_runtime, value),
                 "--sdk-release" => set!(sdk_release, value.parse::<u32>()?),
+                "--sdk-repository-dir" => set!(sdk_repository_dir, PathBuf::from(value)),
+                "--sdk-repository-max-bytes" => {
+                    set!(sdk_repository_max_bytes, value.parse::<u64>()?)
+                }
                 "--sdk-release-dir" => options.sdk_release_dirs.push(value.into()),
                 "--sdk-cache-dir" => set!(sdk_cache_dir, PathBuf::from(value)),
                 "--sdk-cache-max-bytes" => set!(sdk_cache_max_bytes, value.parse::<u64>()?),

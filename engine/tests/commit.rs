@@ -17029,10 +17029,22 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
             true
         }
     }
+    let sdk_repository = std::sync::Arc::new(
+        prdb_engine::sdk_registry::SdkLibraryRepository::open(
+            &fixture.path().parent().unwrap().join("sdk-libraries"),
+            "linux-x86_64".to_owned(),
+            "x86_64-v1".to_owned(),
+            "nixos-glibc-2.42".to_owned(),
+            std::collections::HashSet::new(),
+            1024 * 1024,
+        )
+        .unwrap(),
+    );
     let staging = prdb_engine::supervisor::StagingStore::new(
         prdb_engine::supervisor::StagingLimits::default(),
         std::sync::Arc::new(AcceptMetadata),
-    )?;
+    )?
+    .with_sdk_repository(sdk_repository);
 
     use prdb_engine::storage_manager::{CreateTableRequest, TableColumnDefinition};
     let visible_schema_invocation = id(243);
@@ -17272,6 +17284,37 @@ fn storage_manager_runtime_and_metadata_reads_enforce_authorization()
     let mut discovery_control = ClientConnectionSession::default();
     discovery_control.accept_hello(ClientMode::Control, "schema-discovery")?;
     discovery_control.authenticate(&storage, id(242), &[0x6b; 32])?;
+    assert!(storage.is_database_admin(admin_id)?);
+    assert!(!storage.is_database_admin(ordinary_id)?);
+    let mut sdk_library_control = ClientConnectionSession::default();
+    sdk_library_control.accept_hello(ClientMode::Control, "sdk-library-discovery")?;
+    sdk_library_control.authenticate(&storage, id(242), &[0x6b; 32])?;
+    let sdk_library_discovery = prdb_engine::supervisor_ipc::dispatch_gateway_client_request(
+        prdb_engine::ipc::ServiceRole::Gateway,
+        &storage,
+        &staging,
+        &mut sdk_library_control,
+        &prdb_engine::ipc::IpcFrame {
+            operation: prdb_engine::ipc::Operation::SubmitAdministrativeOperation as u16,
+            request_id: 1,
+            payload: br#"{"phase":"read","operation_version":1,"operation":"sdk_libraries.list","arguments":{"limit":"1"}}"#.to_vec(),
+        },
+        prdb_engine::supervisor_ipc::GatewayAdmissionConfig {
+            retention_period_us: 60_000_000,
+            max_rows: 1,
+            max_bytes: 1,
+        },
+    )?;
+    let sdk_library_discovery = match sdk_library_discovery {
+        prdb_engine::supervisor_ipc::GatewayClientDispatch::Response(response) => response.payload,
+        prdb_engine::supervisor_ipc::GatewayClientDispatch::Started { .. } => {
+            return Err("SDK library listing unexpectedly started an invocation".into());
+        }
+    };
+    assert_eq!(
+        sdk_library_discovery,
+        br#"{"sdk_libraries":[],"next_cursor":null}"#
+    );
     let schema_discovery = prdb_engine::supervisor_ipc::dispatch_gateway_client_request(
         prdb_engine::ipc::ServiceRole::Gateway,
         &storage,

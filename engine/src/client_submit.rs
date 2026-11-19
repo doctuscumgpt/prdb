@@ -130,6 +130,20 @@ pub struct AdminIndexResult {
     pub commit_sequence: u64,
 }
 
+/// One immutable SQL SDK release advertised by a database instance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SdkLibraryInfo {
+    pub sdk_release: u32,
+    pub native_abis: Vec<u8>,
+    pub target: String,
+    pub cpu_baseline: String,
+    pub runtime_profile: String,
+    pub soname: String,
+    pub sha256: [u8; 32],
+    pub needed: Vec<String>,
+    pub library_bytes: u64,
+}
+
 /// Result of creating a user or role through the control channel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdminIdentityResult {
@@ -1504,6 +1518,144 @@ impl AdminClient {
             1,
         )?;
         Ok(Self { transport })
+    }
+
+    /// List the SDK releases installed in the connected database instance.
+    /// Listing requires authentication but not database-administrator role.
+    pub fn list_sdk_libraries(&mut self) -> Result<Vec<SdkLibraryInfo>, ClientSubmitError> {
+        let mut releases = Vec::new();
+        let mut cursor = None;
+        let mut previous_release = 0;
+        loop {
+            let page =
+                self.list_sdk_libraries_page(DEFAULT_METADATA_PAGE_SIZE, cursor.as_deref())?;
+            for release in &page.records {
+                if release.sdk_release <= previous_release {
+                    return Err(ClientSubmitError::InvalidResponse);
+                }
+                previous_release = release.sdk_release;
+            }
+            releases.extend(page.records);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                return Ok(releases);
+            }
+        }
+    }
+
+    /// Return one ordered SDK release page. Continuations are opaque and
+    /// session-bound to the authenticated control connection.
+    pub fn list_sdk_libraries_page(
+        &mut self,
+        page_limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<MetadataPage<SdkLibraryInfo>, ClientSubmitError> {
+        validate_metadata_page_request(page_limit, cursor)?;
+        let arguments = metadata_page_arguments(page_limit, cursor);
+        let request = format!(
+            "{{\"phase\":\"read\",\"operation_version\":1,\"operation\":\"sdk_libraries.list\",\"arguments\":{arguments}}}"
+        );
+        let response = self.transport.exchange(10, request.into_bytes())?;
+        let root = parse_bounded_json_value(&response.payload, CLIENT_MAX_CONTROL_BYTES)?;
+        let fields = root.as_object().ok_or(ClientSubmitError::InvalidResponse)?;
+        if fields.len() != 2 {
+            return Err(ClientSubmitError::InvalidResponse);
+        }
+        let releases = fields
+            .get("sdk_libraries")
+            .and_then(crate::client_submit::ResponseValue::as_array)
+            .ok_or(ClientSubmitError::InvalidResponse)?;
+        let mut decoded = Vec::with_capacity(releases.len());
+        let mut previous_release = 0;
+        for release in releases {
+            let mut fields = release
+                .as_object()
+                .cloned()
+                .ok_or(ClientSubmitError::InvalidResponse)?;
+            if fields.len() != 9 {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let sdk_release = fields
+                .get("release")
+                .and_then(crate::client_submit::ResponseValue::as_number)
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value > previous_release)
+                .ok_or(ClientSubmitError::InvalidResponse)?;
+            previous_release = sdk_release;
+            let native_abis = fields
+                .get("native_abis")
+                .and_then(crate::client_submit::ResponseValue::as_array)
+                .ok_or(ClientSubmitError::InvalidResponse)?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_number()
+                        .and_then(|number| u8::try_from(number).ok())
+                        .filter(|abi| *abi != 0)
+                        .ok_or(ClientSubmitError::InvalidResponse)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if native_abis.is_empty() || native_abis.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            let target = response_string(&mut fields, "target")?;
+            let cpu_baseline = response_string(&mut fields, "cpu_baseline")?;
+            let runtime_profile = response_string(&mut fields, "runtime_profile")?;
+            let soname = response_string(&mut fields, "soname")?;
+            let sha256 = decode_lower_hex_32(&response_string(&mut fields, "sha256")?)?;
+            let needed = fields
+                .get("needed")
+                .and_then(crate::client_submit::ResponseValue::as_array)
+                .ok_or(ClientSubmitError::InvalidResponse)?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_string()
+                        .map(str::to_owned)
+                        .ok_or(ClientSubmitError::InvalidResponse)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let library_bytes = fields
+                .get("library_bytes")
+                .and_then(crate::client_submit::ResponseValue::as_number)
+                .filter(|value| *value > 0)
+                .ok_or(ClientSubmitError::InvalidResponse)?;
+            for key in ["release", "native_abis", "needed", "library_bytes"] {
+                fields.remove(key);
+            }
+            if target.is_empty()
+                || cpu_baseline.is_empty()
+                || runtime_profile.is_empty()
+                || soname != format!("libprdb_sql.so.{sdk_release}")
+                || needed.iter().any(String::is_empty)
+                || !fields.is_empty()
+            {
+                return Err(ClientSubmitError::InvalidResponse);
+            }
+            decoded.push(SdkLibraryInfo {
+                sdk_release,
+                native_abis,
+                target,
+                cpu_baseline,
+                runtime_profile,
+                soname,
+                sha256,
+                needed,
+                library_bytes,
+            });
+        }
+        let next_cursor = match fields.get("next_cursor") {
+            Some(crate::client_submit::ResponseValue::Null) => None,
+            Some(crate::client_submit::ResponseValue::String(cursor)) => {
+                decode_metadata_cursor(cursor)?;
+                Some(cursor.clone())
+            }
+            _ => return Err(ClientSubmitError::InvalidResponse),
+        };
+        Ok(MetadataPage {
+            records: decoded,
+            next_cursor,
+        })
     }
 
     /// Return one best-effort page of this authenticated owner's live
@@ -7876,6 +8028,10 @@ fn encode_base64(bytes: &[u8]) -> String {
 
 fn lower_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn decode_lower_hex_32(text: &str) -> Result<[u8; 32], ClientSubmitError> {
+    decode_hex_array(text).ok_or(ClientSubmitError::InvalidResponse)
 }
 
 fn decode_lower_hex(text: &str, expected_bytes: usize) -> bool {

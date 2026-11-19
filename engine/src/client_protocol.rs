@@ -447,6 +447,8 @@ pub enum ClientSessionError {
     AdministrativeRuntimeList(crate::storage_manager::AdministrativeInvocationListError),
     AdministrativeAuditList(crate::storage_manager::AdministrativeAuditListError),
     AdministrativeCancellation(crate::storage_manager::AdministrativeCancellationError),
+    SdkLibraryRepositoryUnavailable,
+    SdkLibraryRepository(crate::sdk_registry::SdkRegistryError),
     TokenInventory(crate::storage_manager::TokenLifecycleError),
     IdentityLifecycle(crate::storage_manager::IdentityLifecycleError),
     MembershipLifecycle(crate::storage_manager::MembershipLifecycleError),
@@ -835,6 +837,16 @@ struct ActiveMetadataPageSnapshot {
     expires_at: std::time::Instant,
 }
 
+struct ActiveSdkLibraryPageSnapshot {
+    releases: Vec<crate::sdk_registry::SdkReleaseInfo>,
+    principal_id: [u8; 16],
+    role_ids: std::collections::HashSet<[u8; 16]>,
+    page_limit: usize,
+    next_index: usize,
+    current_cursor: Option<[u8; 16]>,
+    expires_at: std::time::Instant,
+}
+
 struct MetadataPagination {
     page_limit: usize,
     cursor: Option<[u8; 16]>,
@@ -863,6 +875,11 @@ pub enum ClientAdminRead {
         table_id: [u8; 16],
         name: String,
         is_cell: Option<bool>,
+    },
+    ListSdkLibraries,
+    ListSdkLibrariesPage {
+        page_limit: usize,
+        cursor: Option<[u8; 16]>,
     },
     ListSchemas,
     ListSchemasPage {
@@ -949,6 +966,11 @@ pub enum ClientAdminCommand {
         table_id: [u8; 16],
         name: String,
         is_cell: Option<bool>,
+    },
+    ListSdkLibraries,
+    ListSdkLibrariesPage {
+        page_limit: usize,
+        cursor: Option<[u8; 16]>,
     },
     ListSchemas,
     ListSchemasPage {
@@ -1259,6 +1281,10 @@ pub fn decode_client_admin_read(payload: &[u8]) -> Result<ClientAdminRead, Clien
             name,
             is_cell,
         }),
+        ClientAdminCommand::ListSdkLibraries => Ok(ClientAdminRead::ListSdkLibraries),
+        ClientAdminCommand::ListSdkLibrariesPage { page_limit, cursor } => {
+            Ok(ClientAdminRead::ListSdkLibrariesPage { page_limit, cursor })
+        }
         ClientAdminCommand::ListSchemas => Ok(ClientAdminRead::ListSchemas),
         ClientAdminCommand::ListSchemasPage { page_limit, cursor } => {
             Ok(ClientAdminRead::ListSchemasPage { page_limit, cursor })
@@ -1739,6 +1765,23 @@ pub fn decode_client_admin_command(
                 table_id,
                 name,
                 is_cell,
+            })
+        }
+        Some("read")
+            if version == Some(1) && operation.as_deref() == Some("sdk_libraries.list") =>
+        {
+            if operation_id.is_some() || seen.len() != 4 {
+                return Err(ClientControlError::UnknownKey);
+            }
+            let mut args = arguments.ok_or(ClientControlError::MissingKey)?;
+            let pagination =
+                decode_metadata_pagination(&mut args)?.ok_or(ClientControlError::MissingKey)?;
+            if !args.is_empty() {
+                return Err(ClientControlError::UnknownKey);
+            }
+            Ok(ClientAdminCommand::ListSdkLibrariesPage {
+                page_limit: pagination.page_limit,
+                cursor: pagination.cursor,
             })
         }
         Some("read")
@@ -4815,6 +4858,7 @@ pub struct ClientConnectionSession {
     request_ids: ClientRequestIds,
     pending_admin_operation: Option<PendingAdminOperation>,
     metadata_page_snapshot: Option<ActiveMetadataPageSnapshot>,
+    sdk_library_page_snapshot: Option<ActiveSdkLibraryPageSnapshot>,
 }
 
 impl Default for ClientConnectionSession {
@@ -4827,6 +4871,7 @@ impl Default for ClientConnectionSession {
             request_ids: ClientRequestIds::default(),
             pending_admin_operation: None,
             metadata_page_snapshot: None,
+            sdk_library_page_snapshot: None,
         }
     }
 }
@@ -5612,6 +5657,62 @@ impl ClientConnectionSession {
                     }
                     None => "{\"policy_id\":null}".to_owned(),
                 };
+                self.json_response(request.request_id, payload.into_bytes())
+            }
+            ClientAdminCommand::ListSdkLibrariesPage { page_limit, cursor } => {
+                self.handle_sdk_library_page(staging, request.request_id, page_limit, cursor)
+            }
+            ClientAdminCommand::ListSdkLibraries => {
+                let repository = staging
+                    .and_then(crate::supervisor::StagingStore::sdk_repository)
+                    .ok_or(ClientSessionError::SdkLibraryRepositoryUnavailable)?;
+                let releases = repository
+                    .list()
+                    .map_err(ClientSessionError::SdkLibraryRepository)?;
+                let mut payload = String::from("{\"sdk_libraries\":[");
+                for (index, release) in releases.iter().enumerate() {
+                    if index != 0 {
+                        payload.push(',');
+                    }
+                    payload.push_str("{\"release\":");
+                    payload.push_str(&release.sdk_release.to_string());
+                    payload.push_str(",\"native_abis\":[");
+                    for (abi_index, abi) in release.native_abis.iter().enumerate() {
+                        if abi_index != 0 {
+                            payload.push(',');
+                        }
+                        payload.push_str(&abi.to_string());
+                    }
+                    payload.push_str("],\"target\":\"");
+                    push_json_string(&mut payload, &release.target);
+                    payload.push_str("\",\"cpu_baseline\":\"");
+                    push_json_string(&mut payload, &release.cpu_baseline);
+                    payload.push_str("\",\"runtime_profile\":\"");
+                    push_json_string(&mut payload, &release.runtime_profile);
+                    payload.push_str("\",\"soname\":\"");
+                    push_json_string(&mut payload, &release.soname);
+                    payload.push_str("\",\"sha256\":\"");
+                    payload.push_str(&encode_lower_hex_bytes(&release.sha256));
+                    payload.push_str("\",\"needed\":[");
+                    for (dependency_index, dependency) in release.needed.iter().enumerate() {
+                        if dependency_index != 0 {
+                            payload.push(',');
+                        }
+                        payload.push('"');
+                        push_json_string(&mut payload, dependency);
+                        payload.push('"');
+                    }
+                    payload.push_str("],\"library_bytes\":");
+                    payload.push_str(&release.library_bytes.to_string());
+                    payload.push('}');
+                    if payload.len() > CLIENT_MAX_CONTROL_BYTES {
+                        return Err(ClientSessionError::ResourceLimit);
+                    }
+                }
+                payload.push_str("]}");
+                if payload.len() > CLIENT_MAX_CONTROL_BYTES {
+                    return Err(ClientSessionError::ResourceLimit);
+                }
                 self.json_response(request.request_id, payload.into_bytes())
             }
             ClientAdminCommand::ListSchemas => {
@@ -8948,6 +9049,106 @@ impl ClientConnectionSession {
 
     /// Cancel an unstarted reservation without creating a storage outcome.
     /// Started invocations require the supervisor's cancellation service.
+    fn handle_sdk_library_page(
+        &mut self,
+        staging: Option<&crate::supervisor::StagingStore>,
+        request_id: u64,
+        page_limit: usize,
+        cursor: Option<[u8; 16]>,
+    ) -> Result<ClientFrame, ClientSessionError> {
+        if !(1..=CLIENT_METADATA_MAX_PAGE).contains(&page_limit) {
+            return Err(ClientSessionError::InvalidControlPayload(
+                ClientControlError::InvalidMetadataPageLimit,
+            ));
+        }
+        let repository = staging
+            .and_then(crate::supervisor::StagingStore::sdk_repository)
+            .ok_or(ClientSessionError::SdkLibraryRepositoryUnavailable)?;
+        let session = self
+            .authenticated
+            .as_ref()
+            .ok_or(ClientSessionError::AuthenticationRequired)?;
+        let principal_id = session.principal_id();
+        let role_ids = session.role_ids().clone();
+
+        let mut snapshot = if let Some(cursor) = cursor {
+            let current = self.sdk_library_page_snapshot.as_ref();
+            let invalid = current.is_none_or(|snapshot| {
+                snapshot.expires_at <= std::time::Instant::now()
+                    || snapshot.principal_id != principal_id
+                    || snapshot.role_ids != role_ids
+                    || snapshot.current_cursor != Some(cursor)
+                    || snapshot.page_limit != page_limit
+            });
+            if invalid {
+                self.sdk_library_page_snapshot = None;
+                return Err(ClientSessionError::InvalidControlPayload(
+                    ClientControlError::InvalidMetadataCursor,
+                ));
+            }
+            let current_releases = repository
+                .list()
+                .map_err(ClientSessionError::SdkLibraryRepository)?;
+            if !current.is_some_and(|snapshot| snapshot.releases == current_releases) {
+                self.sdk_library_page_snapshot = None;
+                return Err(ClientSessionError::InvalidControlPayload(
+                    ClientControlError::InvalidMetadataCursor,
+                ));
+            }
+            self.sdk_library_page_snapshot.take().ok_or(
+                ClientSessionError::InvalidControlPayload(
+                    ClientControlError::InvalidMetadataCursor,
+                ),
+            )?
+        } else {
+            self.sdk_library_page_snapshot = None;
+            ActiveSdkLibraryPageSnapshot {
+                releases: repository
+                    .list()
+                    .map_err(ClientSessionError::SdkLibraryRepository)?,
+                principal_id,
+                role_ids,
+                page_limit,
+                next_index: 0,
+                current_cursor: None,
+                expires_at: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            }
+        };
+
+        let start = snapshot.next_index;
+        let end = start
+            .saturating_add(snapshot.page_limit)
+            .min(snapshot.releases.len());
+        let next_cursor = if end < snapshot.releases.len() {
+            let mut token = [0; 16];
+            loop {
+                getrandom::fill(&mut token).map_err(|_| {
+                    ClientSessionError::Storage(TransactionError::RandomnessUnavailable)
+                })?;
+                token[0] = CLIENT_METADATA_CURSOR_KIND;
+                if Some(token) != cursor {
+                    break;
+                }
+            }
+            Some(token)
+        } else {
+            None
+        };
+        let payload = encode_sdk_library_page(&snapshot.releases[start..end], next_cursor);
+        if payload.len() > CLIENT_MAX_CONTROL_BYTES {
+            return Err(ClientSessionError::ResourceLimit);
+        }
+        if let Some(next_cursor) = next_cursor {
+            snapshot.next_index = end;
+            snapshot.current_cursor = Some(next_cursor);
+            snapshot.expires_at = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            self.sdk_library_page_snapshot = Some(snapshot);
+        } else {
+            self.sdk_library_page_snapshot = None;
+        }
+        self.json_response(request_id, payload.into_bytes())
+    }
+
     fn handle_metadata_discovery_page(
         &mut self,
         storage: &StorageManager<'_>,
@@ -9641,6 +9842,16 @@ fn encode_lower_hex_id(id: [u8; 16]) -> String {
     encoded
 }
 
+fn encode_lower_hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
 fn push_json_string(output: &mut String, value: &str) {
     for character in value.chars() {
         match character {
@@ -9783,6 +9994,60 @@ fn encode_fence_waits(output: &mut String, summary: RuntimeInvocationSummary<'_>
     }
     output.push_str("],\"fence_waits_truncated\":");
     output.push_str(if summary.truncated { "true" } else { "false" });
+}
+
+fn encode_sdk_library_page(
+    releases: &[crate::sdk_registry::SdkReleaseInfo],
+    next_cursor: Option<[u8; 16]>,
+) -> String {
+    let mut payload = String::from("{\"sdk_libraries\":[");
+    for (index, release) in releases.iter().enumerate() {
+        if index != 0 {
+            payload.push(',');
+        }
+        payload.push_str("{\"release\":");
+        payload.push_str(&release.sdk_release.to_string());
+        payload.push_str(",\"native_abis\":[");
+        for (abi_index, abi) in release.native_abis.iter().enumerate() {
+            if abi_index != 0 {
+                payload.push(',');
+            }
+            payload.push_str(&abi.to_string());
+        }
+        payload.push_str("],\"target\":\"");
+        push_json_string(&mut payload, &release.target);
+        payload.push_str("\",\"cpu_baseline\":\"");
+        push_json_string(&mut payload, &release.cpu_baseline);
+        payload.push_str("\",\"runtime_profile\":\"");
+        push_json_string(&mut payload, &release.runtime_profile);
+        payload.push_str("\",\"soname\":\"");
+        push_json_string(&mut payload, &release.soname);
+        payload.push_str("\",\"sha256\":\"");
+        payload.push_str(&encode_lower_hex_bytes(&release.sha256));
+        payload.push_str("\",\"needed\":[");
+        for (dependency_index, dependency) in release.needed.iter().enumerate() {
+            if dependency_index != 0 {
+                payload.push(',');
+            }
+            payload.push('"');
+            push_json_string(&mut payload, dependency);
+            payload.push('"');
+        }
+        payload.push_str("],\"library_bytes\":");
+        payload.push_str(&release.library_bytes.to_string());
+        payload.push('}');
+    }
+    payload.push_str("],\"next_cursor\":");
+    match next_cursor {
+        Some(cursor) => {
+            payload.push('"');
+            payload.push_str(&encode_lower_hex_id(cursor));
+            payload.push('"');
+        }
+        None => payload.push_str("null"),
+    }
+    payload.push('}');
+    payload
 }
 
 fn encode_metadata_page(
@@ -10330,6 +10595,22 @@ mod runtime_wait_tests {
         }
         let unsupported = br#"{"phase":"read","operation_version":9,"operation":"runtime.invocations.list","arguments":{"limit":"1"}}"#;
         assert!(decode_client_admin_command(unsupported).is_err());
+    }
+
+    #[test]
+    fn sdk_library_list_is_a_strict_authenticated_read_command() {
+        let request = br#"{"phase":"read","operation_version":1,"operation":"sdk_libraries.list","arguments":{"limit":"4"}}"#;
+        assert_eq!(
+            decode_client_admin_command(request).unwrap(),
+            ClientAdminCommand::ListSdkLibrariesPage {
+                page_limit: 4,
+                cursor: None,
+            }
+        );
+        let unexpected_argument = br#"{"phase":"read","operation_version":1,"operation":"sdk_libraries.list","arguments":{"limit":"4","path":"/tmp"}}"#;
+        assert!(decode_client_admin_command(unexpected_argument).is_err());
+        let unsupported_version = br#"{"phase":"read","operation_version":2,"operation":"sdk_libraries.list","arguments":{"limit":"4"}}"#;
+        assert!(decode_client_admin_command(unsupported_version).is_err());
     }
 
     #[test]

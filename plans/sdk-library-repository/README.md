@@ -6,6 +6,24 @@ Implement the [SDK library repository specification](../../specs/sdk-library-rep
 
 This work spans the [client protocol](../../specs/client-protocol.md), [gateway](../client-gateway/README.md), [supervisor](../supervisor/README.md), [client SDK](../client-sdk/README.md), [SQL command](../client-sql-command/README.md), [interactive SQL client](../interactive-sql/README.md), and [sandbox](../linux-sandbox/README.md). Keep normative contracts in `specs/`. Existing v1 SQL-library upload and deployment-cache behavior is a legacy protocol/configuration path; repository-enabled clients and services must negotiate the query-only profile and never silently fall back.
 
+## Execution Order and Current Status
+
+Implement the increments below in dependency order, with focused failing tests before each behavior and spec updates in the same increment. Keep each increment independently reviewable and commit it after its applicable checks pass.
+
+```text
+SLR-1 repository storage
+  ├── SLR-2 authenticated API ── SLR-5 client config and repository commands
+  ├── SLR-3 query-only submission profile
+  └── SLR-4 supervisor resolve/pin/stage
+                 SLR-2 + SLR-3 + SLR-4 + SLR-5
+                               └── SLR-6 package and SQL client migration
+                                            └── SLR-7 legacy retirement and end-to-end acceptance
+```
+
+SLR-1 is implemented and committed; see [progress and verification evidence](PROGRESS.md). SLR-2 through SLR-7 remain. SLR-2, SLR-3, and SLR-4 can proceed after SLR-1 in parallel at the design level, but protocol and supervisor changes must converge on the same release identity and query-only PREPARE contract before SLR-6. SLR-5 depends on the typed API for remote list/select/install/remove, while its local config parser and filesystem behavior can be developed independently. SLR-7 is the final retirement gate and must not remove compatibility paths until the repository-only route has end-to-end evidence.
+
+For every increment, record in `PROGRESS.md`: the spec clauses implemented, the test that first exposed the missing behavior, the source and protocol changes, commands actually run, outcomes, and the next increment. A focused unit test establishes only the local contract; API, upload, and confinement claims require the corresponding real process boundary tests described below.
+
 ## Implementation Decisions
 
 - Store repository bytes and canonical metadata in instance-local service state outside transactional user catalog records. Use a single immutable release per SDK release/digest/compatibility identity, synchronize writes, and atomically publish without replacement.

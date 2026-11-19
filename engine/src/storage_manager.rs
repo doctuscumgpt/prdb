@@ -3067,6 +3067,21 @@ pub(crate) fn clear_uncertain_database_key(database_key: usize) {
 }
 
 impl<'db> StorageManager<'db> {
+    /// Return the caller's current database-administrator authority from a
+    /// fresh catalog snapshot. Callers must revalidate the authenticated
+    /// session before relying on this result.
+    pub fn is_database_admin(&self, actor_id: [u8; 16]) -> Result<bool, TokenLifecycleError> {
+        if actor_id == [0; 16] {
+            return Err(TokenLifecycleError::TokenUnavailable);
+        }
+        let read = self
+            .database
+            .begin_read()
+            .map_err(|error| TokenLifecycleError::Storage(error.to_string()))?;
+        let snapshot = RowSnapshot::new(read);
+        database_admin_authority(&snapshot, actor_id)
+    }
+
     pub(crate) fn database(&self) -> &'db Database {
         self.database
     }
