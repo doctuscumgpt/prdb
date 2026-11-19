@@ -4,7 +4,7 @@
 
 Implement the [SDK library repository specification](../../specs/sdk-library-repository.md). The repository is durable instance service state containing administrator-installed immutable SQL SDK shared libraries. Clients select a release in a protected persistent config and upload query.so only. The supervisor resolves and stages the exact repository release; only the confined executor loads it.
 
-This work spans the [client protocol](../../specs/client-protocol.md), [gateway](../client-gateway/README.md), [supervisor](../supervisor/README.md), [client SDK](../client-sdk/README.md), [SQL command](../client-sql-command/README.md), [interactive SQL client](../interactive-sql/README.md), and [sandbox](../linux-sandbox/README.md). Keep normative contracts in `specs/`. Existing v1 SQL-library upload and deployment-cache behavior is a legacy protocol/configuration path; repository-enabled clients and services must negotiate the query-only profile and never silently fall back.
+This work spans the [client protocol](../../specs/client-protocol.md), [gateway](../client-gateway/README.md), [supervisor](../supervisor/README.md), [client SDK](../client-sdk/README.md), [SQL command](../client-sql-command/README.md), [interactive SQL client](../interactive-sql/README.md), and [sandbox](../linux-sandbox/README.md). Keep normative contracts in `specs/`. Older SQL-library upload fields and chunks are rejected; the service has no deployment cache, static fallback, or silent protocol downgrade.
 
 ## Execution Order and Current Status
 

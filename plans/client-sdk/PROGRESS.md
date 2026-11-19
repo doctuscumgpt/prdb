@@ -1,5 +1,7 @@
 # Client SDK Progress
 
+> Historical implementation log for the earlier shared-library/cache design. Its client-supplied SDK upload and cache entries are superseded by the administrator-managed [SDK library repository plan](../sdk-library-repository/README.md) and [current specification](../../specs/sdk-library-repository.md). Use that plan for current behavior and acceptance status.
+
 ## DP-SQL-4: DROP ROW/CELL POLICY SQL entry point — verified
 
 - Added `AdminClient::execute_drop_policy_sql` and `admin-sql` dispatch for the bounded qualified DROP syntax. The client resolves the policy name through the scoped authenticated read and submits the stable ID to the existing typed drop operation.
