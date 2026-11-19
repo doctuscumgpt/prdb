@@ -4,12 +4,69 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::IpAddr;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
 
 pub const CONFIG_FORMAT: &str = "PRDB-CLIENT-CONFIG-1";
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
+/// A held SDK-selection lock. Interactive explicit transactions hold a shared
+/// lock; commands that change a saved selection need the exclusive lock.
+pub struct ClientSelectionLock {
+    _file: File,
+}
+
+pub fn lock_sdk_selection(
+    config_path: &Path,
+    instance_name: &str,
+    shared: bool,
+) -> Result<ClientSelectionLock, ClientConfigError> {
+    if !valid_identifier(instance_name) {
+        return Err(invalid("invalid instance name for SDK-selection lock"));
+    }
+    let parent = config_parent(config_path)?;
+    let existed = parent.exists();
+    fs::create_dir_all(parent)?;
+    if !existed {
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    }
+    let directory = open_directory(parent)?;
+    validate_directory_metadata(&directory.metadata()?)?;
+    let lock_path = parent.join(format!(".prdb-sdk-selection-{instance_name}.lock"));
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    let file = options.open(&lock_path)?;
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err(invalid(
+            "SDK-selection lock must be owner-owned with mode 0600",
+        ));
+    }
+    let operation = if shared {
+        libc::LOCK_SH | libc::LOCK_NB
+    } else {
+        libc::LOCK_EX | libc::LOCK_NB
+    };
+    // SAFETY: flock only changes the advisory lock associated with this live fd.
+    if unsafe { libc::flock(file.as_raw_fd(), operation) } != 0 {
+        return Err(invalid(
+            "SDK selection is locked by an active interactive transaction",
+        ));
+    }
+    Ok(ClientSelectionLock { _file: file })
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,7 +89,7 @@ pub struct ClientTools {
     pub patchelf: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SdkSelection {
     pub release: u32,
@@ -602,6 +659,38 @@ mod tests {
         fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(ClientConfig::load(&target).is_err());
         assert!(ClientConfig::parse(&vec![b' '; MAX_CONFIG_BYTES as usize + 1]).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn active_interactive_selection_lock_blocks_sdk_changes() {
+        let root =
+            std::env::temp_dir().join(format!("prdb-client-config-lock-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("client.json");
+        config().save_atomic(&path).unwrap();
+        let shared = lock_sdk_selection(&path, "dev", true).unwrap();
+        assert!(lock_sdk_selection(&path, "dev", false).is_err());
+        drop(shared);
+        let exclusive = lock_sdk_selection(&path, "dev", false).unwrap();
+        drop(exclusive);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sdk_selection_lock_creates_private_config_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "prdb-client-config-lock-parent-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let path = root.join("nested").join("client.json");
+        let lock = lock_sdk_selection(&path, "dev", true).unwrap();
+        let metadata = fs::metadata(path.parent().unwrap()).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+        drop(lock);
         fs::remove_dir_all(root).unwrap();
     }
 }

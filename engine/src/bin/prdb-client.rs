@@ -1,7 +1,7 @@
 use prdb_engine::authorization::Operation;
 use prdb_engine::client_config::{
     ClientConfig, ClientCredential, ClientInstance, ClientTools, SdkSelection, default_config_path,
-    encode_token_secret,
+    encode_token_secret, lock_sdk_selection,
 };
 use prdb_engine::client_credentials::{
     ClientCredentialProfiles, read_client_credentials, remove_client_credentials,
@@ -238,12 +238,15 @@ fn run() -> Result<(), String> {
         }
         return interactive_sql(
             address,
-            credentials_path,
-            default_user,
-            &additional_profiles,
+            InteractiveClientOptions {
+                default_credentials_path: credentials_path,
+                default_user,
+                additional_profiles,
+                configured_profiles: None,
+                repository_profile: false,
+                selection_lock_context: None,
+            },
             &mut fields,
-            None,
-            false,
         );
     }
 
@@ -448,6 +451,11 @@ fn run_client_config_command(
             let default_credential = take_text(fields, "--default-credential")?;
             let username = take_text(fields, "--username")?;
             let credentials_path = take_path(fields, "--credentials")?;
+            let selection_changed = config
+                .instances
+                .iter()
+                .find(|instance| instance.name == name)
+                .is_none_or(|instance| instance.sdk != sdk);
             let make_default = fields
                 .remove("--make-default")
                 .map(|value| {
@@ -523,6 +531,14 @@ fn run_client_config_command(
                 },
                 make_default,
             );
+            let _selection_lock = if selection_changed {
+                Some(
+                    lock_sdk_selection(&config_path, &name, false)
+                        .map_err(|error| error.to_string())?,
+                )
+            } else {
+                None
+            };
             config
                 .save_atomic(&config_path)
                 .map_err(|error| error.to_string())
@@ -601,6 +617,8 @@ fn run_client_config_command(
                         &selected,
                         abi,
                     )?;
+                    let _selection_lock = lock_sdk_selection(&config_path, &instance.name, false)
+                        .map_err(|error| error.to_string())?;
                     let current = config
                         .instances
                         .iter_mut()
@@ -962,12 +980,15 @@ fn run_configured_interactive(
         .map_err(|error| error.to_string())?;
     interactive_sql(
         address,
-        PathBuf::new(),
-        default_user,
-        &[],
+        InteractiveClientOptions {
+            default_credentials_path: PathBuf::new(),
+            default_user,
+            additional_profiles: Vec::new(),
+            configured_profiles: Some(profiles),
+            repository_profile: true,
+            selection_lock_context: Some((config_path, instance.name.clone())),
+        },
         fields,
-        Some(profiles),
-        true,
     )
 }
 
@@ -3289,15 +3310,34 @@ fn run_sql(
     )
 }
 
-fn interactive_sql(
-    address: SocketAddr,
+struct InteractiveClientOptions {
     default_credentials_path: PathBuf,
     default_user: String,
-    additional_profiles: &[(String, PathBuf)],
-    fields: &mut HashMap<String, std::ffi::OsString>,
+    additional_profiles: Vec<(String, PathBuf)>,
     configured_profiles: Option<ClientCredentialProfiles>,
     repository_profile: bool,
+    selection_lock_context: Option<(PathBuf, String)>,
+}
+
+struct InteractiveExecutionSettings {
+    deadline_ms: u64,
+    workload: WorkloadClass,
+    repository_profile: bool,
+}
+
+fn interactive_sql(
+    address: SocketAddr,
+    options: InteractiveClientOptions,
+    fields: &mut HashMap<String, std::ffi::OsString>,
 ) -> Result<(), String> {
+    let InteractiveClientOptions {
+        default_credentials_path,
+        default_user,
+        additional_profiles,
+        configured_profiles,
+        repository_profile,
+        selection_lock_context,
+    } = options;
     if !address.ip().is_loopback() {
         return Err("interactive SQL v2 is available only on loopback addresses".to_owned());
     }
@@ -3347,7 +3387,7 @@ fn interactive_sql(
         None => ClientCredentialProfiles::load(
             &default_user,
             &default_credentials_path,
-            additional_profiles,
+            &additional_profiles,
         )
         .map_err(|error| error.to_string())?,
     };
@@ -3355,6 +3395,7 @@ fn interactive_sql(
     let workspace = SqlWorkspace::create()?;
     let mut explicit_transaction = None;
     let mut abort_only = false;
+    let mut selection_lock = None;
     let result = {
         let mut dispatch = |statement: &InteractiveStatement<'_>,
                             ordinal: usize|
@@ -3364,6 +3405,13 @@ fn interactive_sql(
                     if explicit_transaction.is_some() {
                         return Err("BEGIN cannot be nested".to_owned());
                     }
+                    let pending_selection_lock = selection_lock_context
+                        .as_ref()
+                        .map(|(config_path, instance_name)| {
+                            lock_sdk_selection(config_path, instance_name, true)
+                                .map_err(|error| error.to_string())
+                        })
+                        .transpose()?;
                     let mut controller = profile_credentials(&profiles, &default_user)?;
                     let mut client = connect_interactive_client(
                         address,
@@ -3401,6 +3449,7 @@ fn interactive_sql(
                             state: prdb_engine::client_protocol::ClientV2TransactionState::Active,
                             ..
                         } => {
+                            selection_lock = pending_selection_lock;
                             explicit_transaction = Some(transaction_id);
                             abort_only = false;
                             eprintln!("began transaction {}", lower_hex(&transaction_id));
@@ -3439,6 +3488,7 @@ fn interactive_sql(
                             state: prdb_engine::client_protocol::ClientV2TransactionState::Committed,
                         }) if response_id == transaction_id => {
                             explicit_transaction = None;
+                            selection_lock = None;
                             eprintln!("committed transaction {}", lower_hex(&transaction_id));
                         }
                         Ok(_) => return Err("transaction did not commit".to_owned()),
@@ -3458,6 +3508,7 @@ fn interactive_sql(
                                     prdb_engine::client_protocol::ClientV2TransactionState::Committed,
                             }) if response_id == transaction_id => {
                                 explicit_transaction = None;
+                                selection_lock = None;
                                 eprintln!("committed transaction {}", lower_hex(&transaction_id));
                             }
                             _ => {
@@ -3487,6 +3538,7 @@ fn interactive_sql(
                             state: prdb_engine::client_protocol::ClientV2TransactionState::Aborted,
                         }) if response_id == transaction_id => {
                             explicit_transaction = None;
+                            selection_lock = None;
                             eprintln!("rolled back transaction {}", lower_hex(&transaction_id));
                         }
                         Ok(_) => return Err("transaction did not roll back".to_owned()),
@@ -3507,6 +3559,7 @@ fn interactive_sql(
                                     | prdb_engine::client_protocol::ClientV2TransactionState::Expired,
                             }) if response_id == transaction_id => {
                                 explicit_transaction = None;
+                                selection_lock = None;
                                 eprintln!("rolled back transaction {}", lower_hex(&transaction_id));
                             }
                             _ => {
@@ -3806,8 +3859,11 @@ fn execute_interactive_package(
             &package_dir,
             &receipt,
             &mut package_parameters,
-            deadline_ms,
-            workload,
+            InteractiveExecutionSettings {
+                deadline_ms,
+                workload,
+                repository_profile,
+            },
         )
     }
 }
@@ -3849,16 +3905,21 @@ fn stream_autocommit_interactive_package(
     package: &Path,
     receipt: &Path,
     parameters: &mut [u8],
-    deadline_ms: u64,
-    workload: WorkloadClass,
+    settings: InteractiveExecutionSettings,
 ) -> Result<(), String> {
+    let InteractiveExecutionSettings {
+        deadline_ms,
+        workload,
+        repository_profile,
+    } = settings;
     let result = (|| {
         let token_id = credentials.token_id;
         let mut reconciliation_secret = Zeroizing::new(credentials.token_secret);
-        let mut client = SubmissionClient::connect_authenticated(
+        let mut client = connect_interactive_client(
             address,
             token_id,
             &mut credentials.token_secret,
+            repository_profile,
         )
         .map_err(|error| error.to_string())?;
         let invocation_id = client
@@ -3885,10 +3946,11 @@ fn stream_autocommit_interactive_package(
             }
             Err(prdb_engine::client_submit::ClientSubmitError::OutcomeUncertain(_)) => {
                 drop(client);
-                let mut status_client = SubmissionClient::connect_authenticated(
+                let mut status_client = connect_interactive_client(
                     address,
                     token_id,
                     &mut reconciliation_secret[..],
+                    repository_profile,
                 )
                 .map_err(|error| {
                     format!(

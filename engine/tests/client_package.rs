@@ -1,3 +1,7 @@
+use prdb_engine::client_config::{
+    CONFIG_FORMAT, ClientConfig, ClientCredential as ConfigCredential, ClientInstance, ClientTools,
+    SdkSelection, encode_token_secret,
+};
 use prdb_engine::client_credentials::write_client_credentials;
 use prdb_engine::client_protocol::{
     CLIENT_FRAME_HEADER_BYTES, ClientCredentials, ClientFrame, ClientFrameDecoder,
@@ -17,6 +21,7 @@ use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use zeroize::Zeroize;
 
 fn unique_temp_dir() -> PathBuf {
@@ -1969,6 +1974,11 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         );
         let auth = read_client_frame(&mut stream, &mut decoder);
         assert_eq!(auth.kind, 2);
+        let decoded_credentials = decode_client_credentials(&auth.payload).unwrap();
+        assert_eq!(decoded_credentials.token_id, [7; 16]);
+        assert_eq!(decoded_credentials.token_secret, [9; 32]);
+        let mut decoded_credentials = decoded_credentials;
+        decoded_credentials.token_secret.zeroize();
         write_server_response(
             &mut stream,
             &auth,
@@ -2012,28 +2022,381 @@ fn packager_compiles_and_atomically_publishes_metadata_without_loading_query() {
         let seal = read_client_frame(&mut stream, &mut decoder);
         assert_eq!(seal.kind, 6);
         write_server_response(&mut stream, &seal, br#"{"state":"prepared"}"#);
-    });
-    let mut repository_secret = [9; 32];
-    let mut repository_client = SubmissionClient::connect_repository_authenticated_with_timeout(
-        repository_address,
-        [7; 16],
-        &mut repository_secret,
-        std::time::Duration::from_secs(10),
-    )
-    .unwrap();
-    assert_eq!(repository_secret, [0; 32]);
-    assert_eq!(
-        repository_client
-            .upload_and_seal(
-                &repository_package,
-                &parameters,
-                30_000,
-                WorkloadClass::Operational,
-            )
+        let start = read_client_frame(&mut stream, &mut decoder);
+        assert_eq!(start.kind, 7);
+        let mut events = ClientFrame {
+            kind: 100,
+            request_id: start.request_id,
+            response_sequence: 0,
+            payload: br#"{"state":"accepted"}"#.to_vec(),
+        }
+        .encode()
+        .unwrap();
+        events.extend(
+            ClientFrame {
+                kind: 103,
+                request_id: start.request_id,
+                response_sequence: 1,
+                payload: br#"{"invocation_id":"02020202020202020202020202020202","outcome":"committed","reason_code":"none"}"#.to_vec(),
+            }
+            .encode()
             .unwrap(),
-        [2; 16]
+        );
+        stream.write_all(&events).unwrap();
+    });
+    let config_dir = temp.join("client-config");
+    fs::create_dir(&config_dir).unwrap();
+    fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let client_config_path = config_dir.join("client.json");
+    let local_sdk_root = temp.join("local-sdk");
+    let local_include = local_sdk_root.join("include");
+    fs::create_dir_all(&local_include).unwrap();
+    for entry in fs::read_dir(root.join("engine/include")).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(entry.path(), local_include.join(entry.file_name())).unwrap();
+    }
+    let local_release =
+        local_sdk_root.join("releases/linux-x86_64/x86_64-v1/test-runtime/sdk-1-abis1,2,3,4,5");
+    fs::create_dir_all(&local_release).unwrap();
+    for entry in fs::read_dir(&release_dir).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_file() {
+            fs::copy(entry.path(), local_release.join(entry.file_name())).unwrap();
+        }
+    }
+    ClientConfig {
+        format: CONFIG_FORMAT.to_owned(),
+        default_instance: Some("local".to_owned()),
+        client_tools: Some(ClientTools {
+            include_dir: local_include.display().to_string(),
+            tcc: "tcc".to_owned(),
+            shared_linker: "cc".to_owned(),
+            patchelf: "patchelf".to_owned(),
+        }),
+        instances: vec![ClientInstance {
+            name: "local".to_owned(),
+            address: repository_address.ip().to_string(),
+            port: repository_address.port(),
+            sdk: SdkSelection {
+                release: 1,
+                target: "linux-x86_64".to_owned(),
+                cpu_baseline: "x86_64-v1".to_owned(),
+                runtime_profile: "test-runtime".to_owned(),
+                native_abi: 4,
+            },
+            default_credential: "alice".to_owned(),
+            credentials: vec![ConfigCredential {
+                name: "alice".to_owned(),
+                username: "alice".to_owned(),
+                token_id: "07".repeat(16),
+                token_secret: encode_token_secret(&[9; 32]),
+            }],
+        }],
+    }
+    .save_atomic(&client_config_path)
+    .unwrap();
+    let repository_parameters_path = temp.join("repository-parameters.bin");
+    fs::write(&repository_parameters_path, &parameters).unwrap();
+    let repository_receipt = temp.join("repository.receipt");
+    let client_output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .arg("submit")
+        .arg("--config")
+        .arg(&client_config_path)
+        .arg("--instance")
+        .arg("local")
+        .arg("--package")
+        .arg(&repository_package)
+        .arg("--receipt")
+        .arg(&repository_receipt)
+        .arg("--parameters")
+        .arg(repository_parameters_path)
+        .output()
+        .unwrap();
+    assert!(
+        client_output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&client_output.stdout),
+        String::from_utf8_lossy(&client_output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(repository_receipt).unwrap(),
+        "PDBR1 02020202020202020202020202020202\n"
     );
     repository_server.join().unwrap();
+
+    let mut configured = ClientConfig::load(&client_config_path).unwrap();
+    configured.instances[0].sdk.native_abi = 3;
+    configured.save_atomic(&client_config_path).unwrap();
+    let sql_path = temp.join("configured-run-sql.sql");
+    fs::write(&sql_path, "SELECT 1").unwrap();
+    let run_sql_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let run_sql_address = run_sql_listener.local_addr().unwrap();
+    configured.instances[0].address = run_sql_address.ip().to_string();
+    configured.instances[0].port = run_sql_address.port();
+    configured.save_atomic(&client_config_path).unwrap();
+    let run_sql_scope = scope_bytes.clone();
+    let run_sql_server = std::thread::spawn(move || {
+        let (mut stream, _) = run_sql_listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let mut decoder = ClientFrameDecoder::default();
+        let hello = read_client_frame(&mut stream, &mut decoder);
+        assert_eq!(hello.kind, 1);
+        assert!(
+            String::from_utf8_lossy(&hello.payload).contains(r#""sdk_library_mode":"repository""#)
+        );
+        write_server_response(
+            &mut stream,
+            &hello,
+            br#"{"transport":"plaintext_tcp","limits":{"chunk_bytes":131072,"control_bytes":32768,"payload_bytes":524288},"mode":"query","sdk_library_mode":"repository","minor":0,"major":1}"#,
+        );
+        let auth = read_client_frame(&mut stream, &mut decoder);
+        assert_eq!(auth.kind, 2);
+        write_server_response(
+            &mut stream,
+            &auth,
+            br#"{"session_id":"abababababababababababababababab","authenticated":true}"#,
+        );
+        let prepare = read_client_frame(&mut stream, &mut decoder);
+        assert_eq!(prepare.kind, 3);
+        let decoded = decode_client_prepare(&prepare.payload).unwrap();
+        assert!(decoded.repository_sdk_library);
+        assert_eq!(decoded.sql_library_bytes, 0);
+        assert_eq!(decoded.parameter_bytes, 0);
+        assert_eq!(decoded.requested_scope, run_sql_scope);
+        let manifest = decode_manifest_v1(&decoded.manifest).unwrap();
+        assert_eq!(manifest.native_abi_version, 3);
+        assert_eq!(manifest.sdk_release, 1);
+        write_server_response(
+            &mut stream,
+            &prepare,
+            br#"{"invocation_id":"03030303030303030303030303030303","artifact_chunk_bytes":131072,"parameter_chunk_bytes":131072}"#,
+        );
+        let mut offset = 0usize;
+        while offset < decoded.artifact_bytes as usize {
+            let frame = read_client_frame(&mut stream, &mut decoder);
+            assert_eq!(frame.kind, 4);
+            let chunk = decode_client_chunk(&frame.payload).unwrap();
+            assert_eq!(chunk.offset, offset as u64);
+            offset += chunk.data.len();
+            write_server_response(
+                &mut stream,
+                &frame,
+                format!(r#"{{"next_offset":"{offset}"}}"#).as_bytes(),
+            );
+        }
+        let seal = read_client_frame(&mut stream, &mut decoder);
+        assert_eq!(seal.kind, 6);
+        write_server_response(&mut stream, &seal, br#"{"state":"prepared"}"#);
+        let start = read_client_frame(&mut stream, &mut decoder);
+        assert_eq!(start.kind, 7);
+        let mut events = ClientFrame {
+            kind: 100,
+            request_id: start.request_id,
+            response_sequence: 0,
+            payload: br#"{"state":"accepted"}"#.to_vec(),
+        }
+        .encode()
+        .unwrap();
+        events.extend(
+            ClientFrame {
+                kind: 103,
+                request_id: start.request_id,
+                response_sequence: 1,
+                payload: br#"{"invocation_id":"03030303030303030303030303030303","outcome":"committed","reason_code":"none"}"#.to_vec(),
+            }
+            .encode()
+            .unwrap(),
+        );
+        stream.write_all(&events).unwrap();
+    });
+    let run_sql_receipt = temp.join("configured-run-sql.receipt");
+    let run_sql_output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .arg("run-sql")
+        .arg("--config")
+        .arg(&client_config_path)
+        .arg("--instance")
+        .arg("local")
+        .arg("--sql-file")
+        .arg(&sql_path)
+        .arg("--schema")
+        .arg("app")
+        .arg("--scope")
+        .arg(&scope)
+        .arg("--receipt")
+        .arg(&run_sql_receipt)
+        .output()
+        .unwrap();
+    assert!(
+        run_sql_output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&run_sql_output.stdout),
+        String::from_utf8_lossy(&run_sql_output.stderr)
+    );
+    run_sql_server.join().unwrap();
+
+    let interactive_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let interactive_address = interactive_listener.local_addr().unwrap();
+    configured.instances[0].address = interactive_address.ip().to_string();
+    configured.instances[0].port = interactive_address.port();
+    configured.instances[0].sdk.native_abi = 3;
+    configured.save_atomic(&client_config_path).unwrap();
+    let credentials = config_dir.join("alice.credentials");
+    write_client_credentials(
+        &credentials,
+        &ClientCredentials {
+            token_id: [7; 16],
+            token_secret: [9; 32],
+        },
+    )
+    .unwrap();
+    let interactive_sql_path = temp.join("configured-interactive.sql");
+    fs::write(&interactive_sql_path, "BEGIN; COMMIT;").unwrap();
+    let (began_tx, began_rx) = mpsc::channel();
+    let (continue_tx, continue_rx) = mpsc::channel();
+    let interactive_server = std::thread::spawn(move || {
+        let accept_transaction_control = |mut stream: TcpStream, expected_kind: u16| {
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut decoder = ClientFrameDecoder::negotiating();
+            let hello = read_client_frame(&mut stream, &mut decoder);
+            assert_eq!(hello.kind, 1);
+            assert!(
+                String::from_utf8_lossy(&hello.payload)
+                    .contains(r#""sdk_library_mode":"repository""#)
+            );
+            write_server_response_v2(
+                &mut stream,
+                &hello,
+                br#"{"transport":"plaintext_tcp","limits":{"chunk_bytes":131072,"control_bytes":32768,"payload_bytes":524288},"mode":"query","sdk_library_mode":"repository","minor":0,"major":2}"#,
+            );
+            let auth = read_client_frame(&mut stream, &mut decoder);
+            assert_eq!(auth.kind, 2);
+            write_server_response_v2(
+                &mut stream,
+                &auth,
+                br#"{"session_id":"abababababababababababababababab","authenticated":true}"#,
+            );
+            let request = read_client_frame(&mut stream, &mut decoder);
+            assert_eq!(request.kind, expected_kind);
+            (stream, decoder, request)
+        };
+
+        let (mut stream, _decoder, begin) = accept_transaction_control(
+            interactive_listener.accept().unwrap().0,
+            prdb_engine::client_protocol::CLIENT_V2_TX_BEGIN_KIND,
+        );
+        let begin_payload =
+            prdb_engine::client_protocol::ClientV2Request::decode(begin.kind, &begin.payload)
+                .unwrap();
+        assert!(matches!(
+            begin_payload,
+            prdb_engine::client_protocol::ClientV2Request::TxBegin { .. }
+        ));
+        let begun = prdb_engine::client_protocol::ClientV2Response::TransactionBegun {
+            transaction_id: [0x44; 16],
+            state: prdb_engine::client_protocol::ClientV2TransactionState::Active,
+            idle_timeout_ms: 30_000,
+            lifetime_ms: 3_600_000,
+            max_package_bytes: 1_048_576,
+            max_packages: 64,
+        };
+        write_server_response_v2(&mut stream, &begin, &begun.encode());
+        began_tx.send(()).unwrap();
+        continue_rx.recv().unwrap();
+
+        let (mut stream, _decoder, commit) = accept_transaction_control(
+            interactive_listener.accept().unwrap().0,
+            prdb_engine::client_protocol::CLIENT_V2_TX_COMMIT_KIND,
+        );
+        let committed = prdb_engine::client_protocol::ClientV2Response::Transaction {
+            transaction_id: [0x44; 16],
+            state: prdb_engine::client_protocol::ClientV2TransactionState::Committed,
+        };
+        write_server_response_v2(&mut stream, &commit, &committed.encode());
+    });
+
+    let interactive_output = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+        .arg("interactive-sql")
+        .arg("--config")
+        .arg(&client_config_path)
+        .arg("--instance")
+        .arg("local")
+        .arg("--sql-file")
+        .arg(&interactive_sql_path)
+        .arg("--schema")
+        .arg("app")
+        .arg("--scope")
+        .arg(&scope)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    began_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
+
+    let instance_set = || {
+        Command::new(env!("CARGO_BIN_EXE_prdb-client"))
+            .arg("instance")
+            .arg("set")
+            .arg("--config")
+            .arg(&client_config_path)
+            .arg("--instance")
+            .arg("local")
+            .arg("--address")
+            .arg(interactive_address.ip().to_string())
+            .arg("--port")
+            .arg(interactive_address.port().to_string())
+            .arg("--release")
+            .arg("2")
+            .arg("--target")
+            .arg("linux-x86_64")
+            .arg("--cpu-baseline")
+            .arg("x86_64-v1")
+            .arg("--runtime-profile")
+            .arg("test-runtime")
+            .arg("--abi")
+            .arg("3")
+            .arg("--default-credential")
+            .arg("alice")
+            .arg("--username")
+            .arg("alice")
+            .arg("--credentials")
+            .arg(&credentials)
+            .output()
+            .unwrap()
+    };
+    let blocked_selection = instance_set();
+    continue_tx.send(()).unwrap();
+    let interactive_output = interactive_output.wait_with_output().unwrap();
+    assert!(
+        !blocked_selection.status.success(),
+        "SDK selection changed during an active interactive transaction: {}",
+        String::from_utf8_lossy(&blocked_selection.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&blocked_selection.stderr)
+            .contains("active interactive transaction"),
+        "unexpected selection-change error: {}",
+        String::from_utf8_lossy(&blocked_selection.stderr)
+    );
+    assert!(
+        interactive_output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&interactive_output.stdout),
+        String::from_utf8_lossy(&interactive_output.stderr)
+    );
+    interactive_server.join().unwrap();
+    assert!(instance_set().status.success());
+    assert_eq!(
+        ClientConfig::load(&client_config_path).unwrap().instances[0]
+            .sdk
+            .release,
+        2
+    );
 
     let second = Command::new(env!("CARGO_BIN_EXE_prdb-packager"))
         .arg("--source")
@@ -2186,6 +2549,16 @@ fn write_server_response(stream: &mut TcpStream, request: &ClientFrame, payload:
         payload: payload.to_vec(),
     };
     stream.write_all(&response.encode().unwrap()).unwrap();
+}
+
+fn write_server_response_v2(stream: &mut TcpStream, request: &ClientFrame, payload: &[u8]) {
+    let response = ClientFrame {
+        kind: 100,
+        request_id: request.request_id,
+        response_sequence: 0,
+        payload: payload.to_vec(),
+    };
+    stream.write_all(&response.encode_v2().unwrap()).unwrap();
 }
 
 fn hex(bytes: &[u8]) -> String {
