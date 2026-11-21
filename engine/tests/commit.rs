@@ -43897,6 +43897,29 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         ]
         .concat()
     );
+    let grouped_composite_max_numeric_v21 =
+        read_frame(&mut gateway)?.ok_or("missing Decimal MAX v21 numeric HAVING SQLR result")?;
+    assert_eq!(
+        grouped_composite_max_numeric_v21.operation,
+        Operation::GatewayResultData as u16
+    );
+    assert_eq!(
+        grouped_composite_max_numeric_v21.request_id,
+        accepted.request_id
+    );
+    assert_eq!(
+        grouped_composite_max_numeric_v21.payload,
+        [
+            b"SQLR".as_slice(),
+            &[
+                0, 1, 0, 3, 0, 8, b'l', b'e', b'f', b't', b'_', b'k', b'e', b'y', 0, 0, 0, 3, 0, 0,
+                0, 0, 0, 0, 4, 0, 0, 0, 2, 0, 9, b'r', b'i', b'g', b'h', b't', b'_', b'k', b'e',
+                b'y', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 9, 0, 3, b'm', b'a', b'x', 0, 0, 0,
+                5, 4, 2, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 225,
+            ][..],
+        ]
+        .concat()
+    );
     let grouped_sum = read_frame(&mut gateway)?.ok_or("missing grouped SUM SQLR result")?;
     assert_eq!(grouped_sum.operation, Operation::GatewayResultData as u16);
     assert_eq!(grouped_sum.request_id, accepted.request_id);

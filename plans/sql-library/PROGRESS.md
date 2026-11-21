@@ -738,3 +738,10 @@
 - Verification: `make -f engine/sdk/Makefile test sandbox-query-fixture`, `cargo fmt --all -- --check`, and the focused `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed. The acceptance ran inside the delegated user cgroup service and exercised its live analytics/operational workload.
 - Red/green evidence: the first acceptance exposed that the fixture had incorrectly expected SUM's widened Decimal precision for MIN HAVING metadata; correcting the assertion to input precision 4 made execution pass. Exact SQLR comparison then exposed and corrected one extra expected zero byte.
 - Remaining: broader SQL/API parity, spill support, and mixed-workload analytical measurements remain open.
+
+## SQL-7 follow-up: Decimal MAX through v21 and confined SQL — verified
+
+- Contract: composite Decimal MAX retains the source DECIMAL precision and scale for HAVING comparison, and applies exact numeric-literal coercion before scanning. ORDER BY and LIMIT run after HAVING.
+- Regression: the maintained v21 runner executes `MAX(score) >= 8.00e0 ORDER BY id ASC LIMIT 1` over DECIMAL(10,2) data and verifies the bound literal, input metadata, maximum coefficient, and selected group. The confined query artifact runs `MAX(decimal_value) >= 2.00e0 ORDER BY left_key ASC LIMIT 1` on DECIMAL(4,2) groups and the Rust acceptance verifies the exact `(2,9,2.25)` SQLR frame.
+- Verification: focused `sdk-sql-execute-v10`, `make -f engine/sdk/Makefile sandbox-query-fixture`, and the delegated `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance passed. The acceptance also exercised the live analytics/operational workload.
+- Remaining: broader SQL/API parity, spill support, and mixed-workload analytical measurements remain open.
