@@ -469,7 +469,10 @@ static int32_t write_grouped_composite_aggregate_optimizer(
     composite_grouped_result_context *context;
     int32_t left_key, right_key, aggregate_integer = 0;
     if (expectation == NULL || expectation->results == NULL || binding == NULL ||
-        group_keys == NULL || aggregate_value == NULL) {
+        group_keys == NULL ||
+        (expectation->aggregate_kind !=
+             PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR &&
+         aggregate_value == NULL)) {
         return 1;
     }
     if (group_key_count != 2 || binding->group_key_count != 2) {
@@ -482,7 +485,17 @@ static int32_t write_grouped_composite_aggregate_optimizer(
         !decode_range_integer(&group_keys[1], &right_key)) {
         return 1;
     }
-    if (binding->base.aggregate_column.type_code ==
+    if (expectation->aggregate_kind ==
+        PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR) {
+        int64_t expected_count = left_key == 1 ? 2 : 3;
+        if ((left_key == 1 && right_key != 7) ||
+            (left_key == 2 && right_key != 9) ||
+            (left_key != 1 && left_key != 2) ||
+            matching_row_count != (uint64_t)expected_count ||
+            aggregate_value != NULL) {
+            return 1;
+        }
+    } else if (binding->base.aggregate_column.type_code ==
         PRDB_SDK_VALUE_TYPE_DECIMAL) {
         uint64_t expected_coefficient;
         if (expectation->aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_MIN) {
@@ -600,9 +613,13 @@ static int32_t write_grouped_composite_aggregate_optimizer(
         } else {
             return 1;
         }
-    } else if ((left_key == 4 && (right_key != 9 || matching_row_count != 2)) ||
-               (left_key == 2 && (right_key != 9 || matching_row_count != 3)) ||
-               (left_key != 4 && left_key != 2)) {
+    } else if (expectation->aggregate_kind !=
+                   PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR &&
+               ((left_key == 4 &&
+                 (right_key != 9 || matching_row_count != 2)) ||
+                (left_key == 2 &&
+                 (right_key != 9 || matching_row_count != 3)) ||
+                (left_key != 4 && left_key != 2))) {
         return 1;
     }
     if (binding->base.aggregate_column.type_code ==
@@ -649,14 +666,30 @@ static int32_t write_ordered_composite_group_aggregate_optimizer(
         binding->order_items[1].item.kind !=
             PRDB_SDK_SQL_V10_ORDER_GROUP_KEY ||
         binding->order_items[1].item.group_key_index != 0 ||
+        binding->order_items[0].item.null_order !=
+            PRDB_SDK_SQL_V11_NULLS_LAST ||
+        binding->order_items[1].item.direction !=
+            PRDB_SDK_SQL_V10_ORDER_ASCENDING ||
+        binding->order_items[1].item.null_order !=
+            PRDB_SDK_SQL_V11_NULLS_FIRST ||
         !decode_range_integer(&group_keys[0], &left_key) ||
         !decode_range_integer(&group_keys[1], &right_key)) {
         return 1;
     }
+    int32_t first_left =
+        expectation->aggregate.aggregate_kind ==
+                PRDB_SDK_SQL_V7_AGGREGATE_MIN
+            ? 1
+            : 2;
+    int32_t second_left = first_left == 1 ? 2 : 1;
+    int32_t first_right = first_left == 1 ? 7 : 9;
+    int32_t second_right = second_left == 1 ? 7 : 9;
     if ((expectation->next_group == 0 &&
-         (left_key != 2 || right_key != 9 || matching_row_count != 3)) ||
+         (left_key != first_left || right_key != first_right ||
+          matching_row_count != (first_left == 1 ? 2 : 3))) ||
         (expectation->next_group == 1 &&
-         (left_key != 1 || right_key != 7 || matching_row_count != 2)) ||
+         (left_key != second_left || right_key != second_right ||
+          matching_row_count != (second_left == 1 ? 2 : 3))) ||
         expectation->next_group > 1) {
         return 1;
     }
@@ -1232,18 +1265,28 @@ static int32_t run_write_read_fixture(
         "GROUP BY left_key, right_key LIMIT 2";
     static const uint8_t select_composite_decimal_avg_optimizer_sql[] =
         "SELECT left_key, right_key, AVG(decimal_value) "
-        "FROM decimal_grouped_records GROUP BY left_key, right_key LIMIT 2";
+        "FROM decimal_grouped_records GROUP BY left_key, right_key "
+        "ORDER BY AVG(decimal_value) DESC NULLS LAST, "
+        "left_key ASC NULLS FIRST LIMIT 2";
     static const uint8_t select_composite_decimal_min_optimizer_sql[] =
         "SELECT left_key, right_key, MIN(decimal_value) "
-        "FROM decimal_grouped_records GROUP BY left_key, right_key LIMIT 2";
+        "FROM decimal_grouped_records GROUP BY left_key, right_key "
+        "ORDER BY MIN(decimal_value) DESC NULLS LAST, "
+        "left_key ASC NULLS FIRST LIMIT 2";
     static const uint8_t select_composite_decimal_max_optimizer_sql[] =
         "SELECT left_key, right_key, MAX(decimal_value) "
-        "FROM decimal_grouped_records GROUP BY left_key, right_key LIMIT 2";
+        "FROM decimal_grouped_records GROUP BY left_key, right_key "
+        "ORDER BY MAX(decimal_value) DESC NULLS LAST, "
+        "left_key ASC NULLS FIRST LIMIT 2";
     static const uint8_t select_composite_decimal_sum_optimizer_sql[] =
         "SELECT left_key, right_key, SUM(decimal_value) "
         "FROM decimal_grouped_records GROUP BY left_key, right_key "
         "ORDER BY SUM(decimal_value) DESC NULLS LAST, left_key ASC NULLS FIRST "
         "LIMIT 2";
+    static const uint8_t select_composite_decimal_count_optimizer_sql[] =
+        "SELECT left_key, right_key, COUNT(*) "
+        "FROM decimal_grouped_records GROUP BY left_key, right_key "
+        "ORDER BY COUNT(*) DESC NULLS LAST, left_key ASC NULLS FIRST LIMIT 2";
     static const uint8_t select_composite_bigint_sum_optimizer_sql[] =
         "SELECT left_key, right_key, SUM(measure) "
         "FROM bigint_grouped_records GROUP BY left_key, right_key LIMIT 2";
@@ -1806,7 +1849,7 @@ static int32_t run_write_read_fixture(
                 expectation, 0};
             composite_grouped_results.row_count = 0;
             composite_grouped_results.output_len = 0;
-            if (index == 5) {
+            if (index >= 3 && index <= 6) {
                 status = prdb_sdk_sql_execute_ordered_composite_aggregate_optimizer_v1(
                     optimizer_host_v5, schema, sizeof(schema) - 1,
                     optimizer_sql[index], optimizer_sql_len[index], 16,
@@ -1838,7 +1881,8 @@ static int32_t run_write_read_fixture(
             }
             if (status != PRDB_SDK_SQL_EXEC_OK ||
                 composite_grouped_results.row_count != 2 ||
-                (index == 5 && ordered_expectation.next_group != 2)) {
+                (index >= 3 && index <= 6 &&
+                 ordered_expectation.next_group != 2)) {
                 if (invocation->parameters[0] == 'R') {
                     if (status == PRDB_SDK_SQL_EXEC_EVALUATION_ERROR &&
                         composite_grouped_results.row_count == 0) {
@@ -1894,6 +1938,40 @@ static int32_t run_write_read_fixture(
                 }
                 static const uint8_t message[] =
                     "fixture-error-confined-bigint-avg-rows";
+                return report_failure(host, message, sizeof(message) - 1);
+            }
+        }
+        if (invocation->parameters[0] == 'A') {
+            composite_aggregate_expectation count_expectation = {
+                &composite_grouped_results,
+                PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR};
+            ordered_composite_aggregate_expectation ordered_count_expectation = {
+                count_expectation, 0};
+            composite_grouped_results.row_count = 0;
+            composite_grouped_results.output_len = 0;
+            status = prdb_sdk_sql_execute_ordered_composite_aggregate_optimizer_v1(
+                optimizer_host_v5, schema, sizeof(schema) - 1,
+                select_composite_decimal_count_optimizer_sql,
+                sizeof(select_composite_decimal_count_optimizer_sql) - 1, 16,
+                sizeof(batch_response), group_count_optimizer_request,
+                sizeof(group_count_optimizer_request),
+                group_count_optimizer_response,
+                sizeof(group_count_optimizer_response), planner_response,
+                sizeof(planner_response), executor_response,
+                sizeof(executor_response), batch_response,
+                sizeof(batch_response), planner_columns, 9, executor_columns, 9,
+                cell_scratch, 9, grouped_materialized,
+                sizeof(grouped_materialized),
+                write_ordered_composite_group_aggregate_optimizer,
+                &ordered_count_expectation);
+            if (status != PRDB_SDK_SQL_EXEC_OK ||
+                composite_grouped_results.row_count != 2 ||
+                ordered_count_expectation.next_group != 2) {
+                static uint8_t message[] =
+                    "fixture-error-ordered-composite-count-status-0";
+                if (status >= 0 && status <= 9) {
+                    message[sizeof(message) - 2] = (uint8_t)('0' + status);
+                }
                 return report_failure(host, message, sizeof(message) - 1);
             }
         }

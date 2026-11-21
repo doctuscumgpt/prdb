@@ -3,9 +3,9 @@
 ## SQL-7 follow-up: ordered composite aggregate optimizer execution — verified
 
 - Contract: add an optimizer request and validated plan for composite `GROUP BY` with COUNT, MIN, MAX, SUM, or AVG, sorted by up to nine distinct selected group-key/aggregate expressions with explicit direction, NULL order, and LIMIT.
-- Implementation: optimizer statement 14 now has bounded decoding, authorized relation binding, scan-column derivation, canonical plan encoding/decoding, and optimizer-process dispatch. The C SDK encodes requests, decodes and matches plan kind 14 to the v15 parsed/bound statement, validates the executor relation, and invokes the ordered composite runner. The confined Decimal SUM matrix case orders groups by aggregate DESC then the first group key ASC and relays exact SQLR rows.
+- Implementation: optimizer statement 14 now has bounded decoding, authorized relation binding, scan-column derivation, canonical plan encoding/decoding, and optimizer-process dispatch. The C SDK encodes requests, decodes and matches plan kind 14 to the v15 parsed/bound statement, validates the executor relation, and invokes the ordered composite runner. The confined Decimal aggregate matrix orders MIN, MAX, SUM, AVG, and COUNT(*) by aggregate DESC then the first group key ASC, with exact SQLR rows relayed for every family.
 - Regression: Rust tests cover request decoding, authorized binding, plan round trips/rejections, optimizer process dispatch, and response validation. Maintained TinyCC fixtures verify request bytes and the executor path; the C plan decoder consumes both composite aggregate and ordered-sort node markers.
-- Verification: `make -f engine/sdk/Makefile test`, `make -f engine/sdk/Makefile release-profile`, locked workspace build, format check, warning-denied all-target Clippy, the focused delegated-cgroup `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance, and the full serial delegated-cgroup workspace test suite all passed. The suite reported 205 commit tests and all other workspace test targets passing.
+- Verification: `make -f engine/sdk/Makefile test`, locked workspace build, format check, warning-denied all-target Clippy, the focused delegated-cgroup `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance, and the full serial delegated-cgroup workspace test suite all passed. The suite reported 205 commit tests and all other workspace test targets passing.
 - Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
 
 ## SQL-8 follow-up: redacted aggregate input aborts confined query — verified
@@ -72,7 +72,7 @@
 - Contract: the v13 composite grouping runner computes COUNT(*), MIN, MAX, SUM, and AVG over the same authorized group tuple, preserving each aggregate's declared result type and exact numeric representation.
 - Regression: the maintained v10 executor fixture now runs all five aggregate kinds over duplicate two-key groups. It checks COUNT row totals, integer MIN/MAX, BIGINT SUM, and exact DECIMAL(38,6) AVG coefficients for INTEGER inputs.
 - Verification: focused `sdk-sql-execute-v10` and the complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` suite passed with the pinned TinyCC toolchain; `git diff --check` passed.
-- Remaining: optimizer-gated confined execution currently asserts composite SUM; broader optimizer/runtime aggregate pairing, analytical workloads, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+- Remaining: optimizer-gated confined execution now covers all five ordered aggregate families over Decimal input; broader optimizer/runtime pairing across types, analytical workloads, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
 
 ## SQL-7 follow-up: hidden COUNT with grouped AVG — verified
 

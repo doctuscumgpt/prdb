@@ -44778,14 +44778,14 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         }
         for (aggregate_name, precision, scale, coefficients) in [
             (b"min".as_slice(), 4, 2, [100u128, 100]),
-            (b"max".as_slice(), 4, 2, [100u128, 225]),
+            (b"max".as_slice(), 4, 2, [225u128, 100]),
             (b"sum".as_slice(), 38, 2, [450u128, 100]),
-            (b"avg".as_slice(), 38, 8, [100_000_000u128, 150_000_000]),
+            (b"avg".as_slice(), 38, 8, [150_000_000u128, 100_000_000]),
         ] {
-            let groups = if aggregate_name == b"sum" {
-                [(2i32, 9i32), (1, 7)]
-            } else {
+            let groups = if aggregate_name == b"min" {
                 [(1i32, 7i32), (2, 9)]
+            } else {
+                [(2i32, 9i32), (1, 7)]
             };
             for (index, (left_key, right_key)) in groups.into_iter().enumerate() {
                 let frame = aggregate_frames.next().ok_or_else(|| {
@@ -44809,6 +44809,25 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                     )
                 );
             }
+        }
+        for (left_key, right_key, count) in [(2i32, 9i32, 3u64), (1, 7, 2)] {
+            let frame = aggregate_frames
+                .next()
+                .ok_or("missing optimizer-backed composite Decimal COUNT SQLR row")?;
+            assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+            assert_eq!(frame.request_id, aggregate_accepted.request_id);
+            assert_eq!(
+                frame.payload,
+                expected_aggregate_row(
+                    b"count",
+                    4,
+                    0,
+                    0,
+                    left_key,
+                    right_key,
+                    &count.to_be_bytes(),
+                )
+            );
         }
         let aggregate_terminal = aggregate_frames
             .next()
