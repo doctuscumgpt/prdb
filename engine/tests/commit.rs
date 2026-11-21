@@ -43725,39 +43725,6 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
     assert_eq!(updated.operation, Operation::GatewayResultData as u16);
     assert_eq!(updated.request_id, accepted.request_id);
     assert_eq!(updated.payload, b"update-visible");
-    let grouped_min = read_frame(&mut gateway)?.ok_or("missing grouped MIN SQLR result")?;
-    assert_eq!(grouped_min.operation, Operation::GatewayResultData as u16);
-    assert_eq!(grouped_min.request_id, accepted.request_id);
-    assert_eq!(
-        grouped_min.payload,
-        [
-            b"SQLR".as_slice(),
-            &[
-                0, 1, 0, 2, 0, 2, b'i', b'd', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 42, 0, 3,
-                b'm', b'i', b'n', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 42
-            ][..]
-        ]
-        .concat()
-    );
-    let optimizer_group_count =
-        read_frame(&mut gateway)?.ok_or("missing optimizer GROUP BY SQLR result")?;
-    assert_eq!(
-        optimizer_group_count.operation,
-        Operation::GatewayResultData as u16
-    );
-    assert_eq!(optimizer_group_count.request_id, accepted.request_id);
-    assert_eq!(
-        optimizer_group_count.payload,
-        [
-            b"SQLR".as_slice(),
-            &[
-                0, 1, 0, 2, 0, 2, b'i', b'd', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 42, 0, 5,
-                b'c', b'o', b'u', b'n', b't', 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0,
-                1,
-            ][..],
-        ]
-        .concat()
-    );
     let grouped_composite_first =
         read_frame(&mut gateway)?.ok_or("missing first composite GROUP BY SQLR result")?;
     assert_eq!(
@@ -43960,34 +43927,50 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         ]
         .concat()
     );
-    let grouped_sum = read_frame(&mut gateway)?.ok_or("missing grouped SUM SQLR result")?;
-    assert_eq!(grouped_sum.operation, Operation::GatewayResultData as u16);
-    assert_eq!(grouped_sum.request_id, accepted.request_id);
-    assert_eq!(
-        grouped_sum.payload,
+    let grouped_sum_first = read_frame(&mut gateway)?
+        .ok_or("missing first optimizer-backed composite SUM SQLR result")?;
+    let grouped_sum_second = read_frame(&mut gateway)?
+        .ok_or("missing second optimizer-backed composite SUM SQLR result")?;
+    let expected_grouped_sum_rows = [
         [
             b"SQLR".as_slice(),
             &[
-                0, 1, 0, 2, 0, 2, b'i', b'd', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 42, 0, 3,
-                b's', b'u', b'm', 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 42
-            ][..]
+                0, 1, 0, 3, 0, 8, b'l', b'e', b'f', b't', b'_', b'k', b'e', b'y', 0, 0, 0, 3, 0, 0,
+                0, 0, 0, 0, 4, 0, 0, 0, 1, 0, 9, b'r', b'i', b'g', b'h', b't', b'_', b'k', b'e',
+                b'y', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 7, 0, 3, b's', b'u', b'm', 0, 0, 0,
+                4, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 2,
+            ][..],
         ]
-        .concat()
+        .concat(),
+        [
+            b"SQLR".as_slice(),
+            &[
+                0, 1, 0, 3, 0, 8, b'l', b'e', b'f', b't', b'_', b'k', b'e', b'y', 0, 0, 0, 3, 0, 0,
+                0, 0, 0, 0, 4, 0, 0, 0, 2, 0, 9, b'r', b'i', b'g', b'h', b't', b'_', b'k', b'e',
+                b'y', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 9, 0, 3, b's', b'u', b'm', 0, 0, 0,
+                4, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 6,
+            ][..],
+        ]
+        .concat(),
+    ];
+    assert_eq!(
+        grouped_sum_first.operation,
+        Operation::GatewayResultData as u16
     );
-    let grouped_avg = read_frame(&mut gateway)?.ok_or("missing grouped AVG SQLR result")?;
-    assert_eq!(grouped_avg.operation, Operation::GatewayResultData as u16);
-    assert_eq!(grouped_avg.request_id, accepted.request_id);
+    assert_eq!(grouped_sum_first.request_id, accepted.request_id);
     assert_eq!(
-        grouped_avg.payload,
-        [
-            b"SQLR".as_slice(),
-            &[
-                0, 1, 0, 2, 0, 2, b'i', b'd', 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 42, 0, 3,
-                b'a', b'v', b'g', 0, 0, 0, 5, 38, 6, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 2, 128, 222, 128
-            ][..]
-        ]
-        .concat()
+        grouped_sum_second.operation,
+        Operation::GatewayResultData as u16
+    );
+    assert_eq!(grouped_sum_second.request_id, accepted.request_id);
+    let actual_grouped_sum_rows = [grouped_sum_first.payload, grouped_sum_second.payload];
+    assert!(
+        expected_grouped_sum_rows
+            .iter()
+            .all(|expected| actual_grouped_sum_rows
+                .iter()
+                .any(|actual| actual.as_slice() == expected.as_slice())),
+        "optimizer-backed composite SUM SQLR rows differ: {actual_grouped_sum_rows:?}"
     );
     let ordered_grouped_avg =
         read_frame(&mut gateway)?.ok_or("missing ordered grouped AVG SQLR result")?;

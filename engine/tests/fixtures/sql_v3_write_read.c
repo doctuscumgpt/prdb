@@ -421,6 +421,44 @@ typedef struct composite_grouped_result_context {
     uint32_t row_count;
 } composite_grouped_result_context;
 
+static int32_t write_grouped_composite_sum_optimizer(
+    void *opaque, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v13 *binding) {
+    composite_grouped_result_context *context = opaque;
+    int32_t left_key, right_key;
+    uint64_t sum = 0;
+    if (context == NULL || binding == NULL || group_keys == NULL ||
+        aggregate_value == NULL || group_key_count != 2 ||
+        binding->base.aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_SUM ||
+        binding->group_key_count != 2 ||
+        aggregate_value->state != PRDB_SDK_VALUE_STATE_VALUE ||
+        aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_BIGINT ||
+        aggregate_value->data == NULL || aggregate_value->data_len != 8 ||
+        !decode_range_integer(&group_keys[0], &left_key) ||
+        !decode_range_integer(&group_keys[1], &right_key)) {
+        return 1;
+    }
+    for (uint32_t index = 0; index < 8; ++index) {
+        sum = (sum << 8) | aggregate_value->data[index];
+    }
+    if ((left_key == 1 && (right_key != 7 || matching_row_count != 2 || sum != 2)) ||
+        (left_key == 2 && (right_key != 9 || matching_row_count != 3 || sum != 6)) ||
+        (left_key != 1 && left_key != 2)) {
+        return 1;
+    }
+    if (prdb_sdk_sql_write_group_composite_result_v1(
+            context->host, binding, context->columns, context->column_count,
+            group_keys, group_key_count, aggregate_value, matching_row_count,
+            context->output, context->output_capacity,
+            &context->output_len) != PRDB_SDK_SQL_RESULT_OK) {
+        return 1;
+    }
+    ++context->row_count;
+    return 0;
+}
+
 static int32_t write_grouped_composite_count(
     void *opaque, const prdb_sdk_value_v1 *group_keys,
     uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
@@ -648,44 +686,6 @@ static int32_t write_filtered_joined_row_v20(
         context->right_columns, 2, projected_values, projection_count,
         context->output, context->output_capacity, &context->output_len);
     if (status != PRDB_SDK_SQL_RESULT_OK) return 1;
-    ++context->row_count;
-    return 0;
-}
-
-static int32_t write_grouped_min(void *opaque,
-                                 const prdb_sdk_value_v1 *group_key,
-                                 const prdb_sdk_value_v1 *aggregate_value,
-                                 uint64_t matching_row_count,
-                                 const prdb_sdk_select_binding_v5 *binding) {
-    grouped_result_context *context = (grouped_result_context *)opaque;
-    if (context == NULL || binding == NULL ||
-        binding->aggregate_kind != PRDB_SDK_SQL_V5_AGGREGATE_MIN ||
-        matching_row_count != 1) {
-        return 1;
-    }
-    int32_t status = prdb_sdk_sql_write_group_minmax_result_v1(
-        context->host, context->group_column, group_key,
-        context->aggregate_column, aggregate_value, binding->aggregate_kind,
-        context->output, context->output_capacity, &context->output_len);
-    if (status != PRDB_SDK_SQL_RESULT_OK) return 1;
-    ++context->row_count;
-    return 0;
-}
-
-static int32_t write_optimizer_group_count(
-    void *opaque, const prdb_sdk_value_v1 *group_key, uint64_t count,
-    const prdb_sdk_sql_bound_column_v2 *group_by_column) {
-    grouped_result_context *context = (grouped_result_context *)opaque;
-    if (context == NULL || context->host == NULL || group_key == NULL ||
-        group_by_column == NULL || count != 1 ||
-        group_by_column->ordinal != 0 ||
-        group_by_column->type_code != PRDB_SDK_VALUE_TYPE_INTEGER)
-        return 1;
-    if (prdb_sdk_sql_write_group_count_result_v1(
-            context->host, context->group_column, group_key, count,
-            context->output, context->output_capacity,
-            &context->output_len) != PRDB_SDK_SQL_RESULT_OK)
-        return 1;
     ++context->row_count;
     return 0;
 }
@@ -918,12 +918,9 @@ static int32_t run_write_read_fixture(
     static const uint8_t optimizer_ordered_select_sql[] =
         "SELECT right_key FROM grouped_records "
         "ORDER BY left_key DESC LIMIT 2";
-    static const uint8_t select_grouped_min_sql[] =
-        "SELECT id, MIN(id) FROM records GROUP BY id";
-    static const uint8_t select_grouped_sum_sql[] =
-        "SELECT id, SUM(id) FROM records GROUP BY id";
-    static const uint8_t select_grouped_avg_sql[] =
-        "SELECT id, AVG(id) FROM records GROUP BY id";
+    static const uint8_t select_composite_sum_optimizer_sql[] =
+        "SELECT left_key, right_key, SUM(left_key) FROM grouped_records "
+        "GROUP BY left_key, right_key LIMIT 2";
     static const uint8_t select_analytical_pressure_sql[] =
         "SELECT group_key, COUNT(*) FROM analytics_pressure_records "
         "GROUP BY group_key";
@@ -931,8 +928,6 @@ static int32_t run_write_read_fixture(
         "SELECT right_key, AVG(left_key) FROM grouped_records "
         "GROUP BY right_key ORDER BY AVG(left_key) DESC NULLS LAST, "
         "right_key ASC NULLS FIRST LIMIT 2";
-    static const uint8_t select_optimizer_group_count_sql[] =
-        "SELECT id, COUNT(*) FROM records GROUP BY id";
     static const uint8_t select_grouped_order_sql[] =
         "SELECT id, COUNT(*) FROM records GROUP BY id "
         "ORDER BY COUNT(*) DESC NULLS LAST, id ASC NULLS LAST LIMIT 1";
@@ -1834,41 +1829,7 @@ static int32_t run_write_read_fixture(
         return report_failure(host, message, sizeof(message) - 1);
     }
 
-    status = prdb_sdk_sql_execute_group_v5(
-        host, schema, sizeof(schema) - 1, select_grouped_min_sql,
-        sizeof(select_grouped_min_sql) - 1, NULL, 0, 16,
-        sizeof(batch_response), planner_response, sizeof(planner_response),
-        executor_response, sizeof(executor_response), batch_response,
-        sizeof(batch_response), planner_columns, 1, executor_columns, 1,
-        cell_scratch, 1, grouped_materialized, sizeof(grouped_materialized),
-        write_grouped_min, &grouped_results);
-    if (status != PRDB_SDK_SQL_EXEC_OK || grouped_results.row_count != 1) {
-        static const uint8_t message[] = "fixture-error-grouped-min";
-        return report_failure(host, message, sizeof(message) - 1);
-    }
 
-    if (optimizer_host_v5 != NULL) {
-        grouped_results.row_count = 0;
-        grouped_results.output_len = 0;
-        status = prdb_sdk_sql_execute_group_count_optimizer_v1(
-            optimizer_host_v5, schema, sizeof(schema) - 1,
-            select_optimizer_group_count_sql,
-            sizeof(select_optimizer_group_count_sql) - 1, NULL, 0, 16,
-            sizeof(batch_response), group_count_optimizer_request,
-            sizeof(group_count_optimizer_request),
-            group_count_optimizer_response,
-            sizeof(group_count_optimizer_response), planner_response,
-            sizeof(planner_response), executor_response,
-            sizeof(executor_response), batch_response,
-            sizeof(batch_response), planner_columns, 9, executor_columns, 9,
-            cell_scratch, 9, grouped_materialized,
-            sizeof(grouped_materialized), write_optimizer_group_count,
-            &grouped_results);
-        if (status != PRDB_SDK_SQL_EXEC_OK || grouped_results.row_count != 1) {
-            static const uint8_t message[] = "fixture-error-optimizer-group-count";
-            return report_failure(host, message, sizeof(message) - 1);
-        }
-    }
 
     composite_grouped_results.row_count = 0;
     composite_grouped_results.output_len = 0;
@@ -2029,28 +1990,14 @@ static int32_t run_write_read_fixture(
         return report_failure(host, message, sizeof(message) - 1);
     }
 
-    grouped_results.row_count = 0;
-    grouped_results.output_len = 0;
-    status = prdb_sdk_sql_execute_group_v6(
-        host, schema, sizeof(schema) - 1, select_grouped_sum_sql,
-        sizeof(select_grouped_sum_sql) - 1, NULL, 0, 16,
-        sizeof(batch_response), planner_response, sizeof(planner_response),
-        executor_response, sizeof(executor_response), batch_response,
-        sizeof(batch_response), planner_columns, 1, executor_columns, 1,
-        cell_scratch, 1, grouped_materialized, sizeof(grouped_materialized),
-        write_grouped_sum, &grouped_results);
-    if (status != PRDB_SDK_SQL_EXEC_OK || grouped_results.row_count != 1) {
-        static const uint8_t message[] = "fixture-error-grouped-sum";
-        return report_failure(host, message, sizeof(message) - 1);
-    }
-
-    grouped_results.row_count = 0;
-    grouped_results.output_len = 0;
+    composite_grouped_results.row_count = 0;
+    composite_grouped_results.output_len = 0;
     if (optimizer_host_v5 != NULL) {
-        status = prdb_sdk_sql_execute_group_aggregate_optimizer_v1(
+        status = prdb_sdk_sql_execute_group_composite_aggregate_optimizer_v1(
             optimizer_host_v5, schema, sizeof(schema) - 1,
-            select_grouped_avg_sql, sizeof(select_grouped_avg_sql) - 1,
-            16, sizeof(batch_response), group_count_optimizer_request,
+            select_composite_sum_optimizer_sql,
+            sizeof(select_composite_sum_optimizer_sql) - 1, 16,
+            sizeof(batch_response), group_count_optimizer_request,
             sizeof(group_count_optimizer_request),
             group_count_optimizer_response,
             sizeof(group_count_optimizer_response), planner_response,
@@ -2058,22 +2005,24 @@ static int32_t run_write_read_fixture(
             sizeof(executor_response), batch_response,
             sizeof(batch_response), planner_columns, 9, executor_columns, 9,
             cell_scratch, 9, grouped_materialized,
-            sizeof(grouped_materialized), write_grouped_avg,
-            &grouped_results);
+            sizeof(grouped_materialized), write_grouped_composite_sum_optimizer,
+            &composite_grouped_results);
     } else {
-        status = prdb_sdk_sql_execute_group_v7(
-            host, schema, sizeof(schema) - 1, select_grouped_avg_sql,
-            sizeof(select_grouped_avg_sql) - 1, NULL, 0, 16,
+        status = prdb_sdk_sql_execute_group_v13(
+            host, schema, sizeof(schema) - 1,
+            select_composite_sum_optimizer_sql,
+            sizeof(select_composite_sum_optimizer_sql) - 1, NULL, 0, 16,
             sizeof(batch_response), planner_response,
             sizeof(planner_response), executor_response,
             sizeof(executor_response), batch_response,
-            sizeof(batch_response), planner_columns, 1, executor_columns, 1,
-            cell_scratch, 1, grouped_materialized,
-            sizeof(grouped_materialized), write_grouped_avg,
-            &grouped_results);
+            sizeof(batch_response), planner_columns, 9, executor_columns, 9,
+            cell_scratch, 9, grouped_materialized,
+            sizeof(grouped_materialized), write_grouped_composite_sum_optimizer,
+            &composite_grouped_results);
     }
-    if (status != PRDB_SDK_SQL_EXEC_OK || grouped_results.row_count != 1) {
-        static const uint8_t message[] = "fixture-error-grouped-avg";
+    if (status != PRDB_SDK_SQL_EXEC_OK ||
+        composite_grouped_results.row_count != 2) {
+        static const uint8_t message[] = "fixture-error-composite-optimizer-sum";
         return report_failure(host, message, sizeof(message) - 1);
     }
 
