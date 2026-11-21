@@ -203,6 +203,7 @@ static uint32_t make_rows(uint8_t *p, uint32_t finished,
 static uint32_t make_decimal_rows(uint8_t *p, uint32_t finished,
                                  const int32_t *keys,
                                  const int64_t *coefficients,
+                                 const uint8_t *score_states,
                                  uint16_t row_count) {
     uint32_t offset = 0;
     put_u16(p, &offset, 1);
@@ -217,7 +218,12 @@ static uint32_t make_decimal_rows(uint8_t *p, uint32_t finished,
         memset(p + offset, (int)(index + 1), 15); offset += 15;
         put_u16(p, &offset, 2);
         append_integer_cell(p, &offset, keys[index]);
-        append_decimal_cell(p, &offset, coefficients[index]);
+        if (score_states == NULL ||
+            score_states[index] == PRDB_SDK_VALUE_STATE_VALUE) {
+            append_decimal_cell(p, &offset, coefficients[index]);
+        } else {
+            p[offset++] = score_states[index];
+        }
     }
     return offset;
 }
@@ -1829,7 +1835,7 @@ int main(void) {
             mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99);
         mock.executor_len = make_decimal_relation(mock.executor, 6, 0x22);
         mock.batch_len = make_decimal_rows(mock.batch, 1, keys,
-                                           decimal_coefficients, 3);
+                                           decimal_coefficients, NULL, 3);
         reset_scan(&mock, &capture, 1);
         assert(run_query_v21_decimal(
                    &mock, v21_decimal_literal_sql,
@@ -1840,7 +1846,7 @@ int main(void) {
                capture.aggregates[1] == 5 && mock.statement_failed == 0);
 
         mock.batch_len = make_decimal_rows(mock.batch, 1, keys,
-                                           decimal_coefficients, 3);
+                                           decimal_coefficients, NULL, 3);
         reset_scan(&mock, &capture, 1);
         assert(run_query_v21_min_decimal(
                    &mock, v21_decimal_min_literal_sql,
@@ -1856,6 +1862,37 @@ int main(void) {
                PRDB_SDK_SQL_EXEC_OK);
         assert(capture.calls == 1 && capture.keys[0] == 1 &&
                capture.aggregates[0] == 900 && mock.statement_failed == 0);
+
+        {
+            const uint8_t decimal_null_states[] = {
+                PRDB_SDK_VALUE_STATE_NULL, PRDB_SDK_VALUE_STATE_NULL,
+                PRDB_SDK_VALUE_STATE_NULL};
+            mock.batch_len = make_decimal_rows(mock.batch, 1, keys,
+                                               decimal_coefficients,
+                                               decimal_null_states, 3);
+            reset_scan(&mock, &capture, 1);
+            assert(run_query_v21_max_decimal(
+                       &mock, v21_decimal_max_literal_sql,
+                       sizeof(v21_decimal_max_literal_sql) - 1, &capture) ==
+                   PRDB_SDK_SQL_EXEC_OK);
+            assert(capture.calls == 0 && mock.statement_failed == 0);
+        }
+
+        {
+            const uint8_t decimal_redacted_states[] = {
+                PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_STATE_REDACTED,
+                PRDB_SDK_VALUE_STATE_VALUE};
+            mock.batch_len = make_decimal_rows(mock.batch, 1, keys,
+                                               decimal_coefficients,
+                                               decimal_redacted_states, 3);
+            reset_scan(&mock, &capture, 1);
+            assert(run_query_v21_max_decimal(
+                       &mock, v21_decimal_max_literal_sql,
+                       sizeof(v21_decimal_max_literal_sql) - 1, &capture) ==
+                   PRDB_SDK_SQL_EXEC_EVALUATION_ERROR);
+            assert(capture.calls == 0 && mock.executor_calls > 0 &&
+                   mock.statement_failed == 1);
+        }
     }
     return 0;
 }
