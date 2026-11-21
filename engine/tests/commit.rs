@@ -40859,6 +40859,24 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         retention_deadline_us: now + 3_600_000_000,
         audit_event: index_pressure_table_audit,
     })?;
+    let range_benchmark_table_invocation = id(0xb2);
+    let mut range_benchmark_table_audit = identity_audit_event(0xb3, user_id, schema.schema_id);
+    range_benchmark_table_audit.correlation_id = range_benchmark_table_invocation;
+    let range_benchmark_table = storage.create_table(CreateTableRequest {
+        invocation_id: range_benchmark_table_invocation,
+        authenticated_actor_id: user_id,
+        schema_id: schema.schema_id,
+        name: "analytics_range_benchmark_records".to_owned(),
+        columns: vec![TableColumnDefinition {
+            name: "range_key".to_owned(),
+            scalar_type: ScalarType::Integer,
+            nullable: false,
+            generated_uuid_identity: false,
+            default: None,
+        }],
+        retention_deadline_us: now + 3_600_000_000,
+        audit_event: range_benchmark_table_audit,
+    })?;
     let operational_pressure_table_invocation = id(0xeb);
     let mut operational_pressure_table_audit =
         identity_audit_event(0xec, user_id, schema.schema_id);
@@ -40919,6 +40937,32 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         builtin_owner_id(),
         now + 3_600_000_000,
         &index_pressure_rows,
+    )?;
+    let range_benchmark_schema = [ColumnSchema {
+        scalar_type: ScalarType::Integer,
+        nullable: false,
+    }];
+    let range_benchmark_rows = (0..1024u16)
+        .map(|index| {
+            let mut row_id = id(0);
+            row_id[14..].copy_from_slice(&(index + 1).to_be_bytes());
+            Ok(RowWrite {
+                key: table_row_key(range_benchmark_table.table_id, row_id),
+                expected_version: None,
+                payload: Some(encode_tuple(
+                    &range_benchmark_schema,
+                    1,
+                    &[Some(ScalarValue::Integer(i32::from(index / 8)))],
+                )?),
+            })
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    commit_rows(
+        &database,
+        id(0xb4),
+        builtin_owner_id(),
+        now + 3_600_000_000,
+        &range_benchmark_rows,
     )?;
     let operational_pressure_schema = [
         ColumnSchema {
@@ -41076,6 +41120,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         dependency_write(user_id, decimal_table.column_ids[2], 5),
         dependency_write(user_id, pressure_table.table_id, 5),
         dependency_write(user_id, pressure_table.column_ids[0], 5),
+        dependency_write(user_id, range_benchmark_table.table_id, 5),
+        dependency_write(user_id, range_benchmark_table.column_ids[0], 5),
         dependency_write(user_id, operational_pressure_table.table_id, 5),
         dependency_write(user_id, operational_pressure_table.column_ids[0], 5),
         dependency_write(user_id, operational_pressure_table.column_ids[1], 5),
@@ -41171,6 +41217,22 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             2,
             2,
             pressure_table.column_ids[0],
+            user_id,
+        ),
+        grant_write(
+            user_id,
+            range_benchmark_table.table_id,
+            2,
+            1,
+            range_benchmark_table.table_id,
+            user_id,
+        ),
+        grant_write(
+            user_id,
+            range_benchmark_table.table_id,
+            2,
+            2,
+            range_benchmark_table.column_ids[0],
             user_id,
         ),
     ]);
@@ -41511,6 +41573,17 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             .value()
             .to_vec(),
     );
+    let mut range_benchmark_policy_table_epoch =
+        table_write_with_versions(range_benchmark_table.table_id, schema.schema_id, 1, 2);
+    range_benchmark_policy_table_epoch.expected_value = Some(
+        database
+            .begin_read()?
+            .open_table(CATALOG)?
+            .get(id_catalog_key(5, range_benchmark_table.table_id).as_slice())?
+            .ok_or("sandbox range benchmark table record missing")?
+            .value()
+            .to_vec(),
+    );
     let select_using_id = id(0x8a);
     let update_using_id = id(0x8b);
     let mut policy_writes = vec![
@@ -41570,6 +41643,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         composite_policy_table_epoch,
         decimal_policy_table_epoch,
         pressure_policy_table_epoch,
+        range_benchmark_policy_table_epoch,
     ];
     let make_using_expression = |expression_id: [u8; 16], name: &str| {
         let key = id_catalog_key(7, expression_id);
@@ -41897,6 +41971,26 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         "sandbox_analytics_pressure_cell_select_policy",
     )?;
     add_table_policy(
+        range_benchmark_table.table_id,
+        range_benchmark_table.column_ids[0],
+        id(0xb7),
+        1,
+        Some(select_using_id),
+        None,
+        false,
+        "sandbox_range_benchmark_select_policy",
+    )?;
+    add_table_policy(
+        range_benchmark_table.table_id,
+        range_benchmark_table.column_ids[0],
+        id(0xb8),
+        1,
+        Some(select_using_id),
+        None,
+        true,
+        "sandbox_range_benchmark_cell_select_policy",
+    )?;
+    add_table_policy(
         composite_table.table_id,
         composite_table.column_ids[0],
         id(0xda),
@@ -42100,6 +42194,20 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         retention_deadline_us: now + 3_600_000_000,
         audit_event: range_index_audit,
     })?;
+    let range_benchmark_index_invocation = id(0xb5);
+    let mut range_benchmark_index_audit =
+        identity_audit_event(0xb6, user_id, range_benchmark_table.table_id);
+    range_benchmark_index_audit.correlation_id = range_benchmark_index_invocation;
+    storage.create_index(prdb_engine::storage_manager::CreateIndexRequest {
+        invocation_id: range_benchmark_index_invocation,
+        authenticated_actor_id: user_id,
+        table_id: range_benchmark_table.table_id,
+        name: "analytics_range_benchmark_key".to_owned(),
+        column_ids: vec![range_benchmark_table.column_ids[0]],
+        unique: false,
+        retention_deadline_us: now + 3_600_000_000,
+        audit_event: range_benchmark_index_audit,
+    })?;
     let records_index_invocation = id(0xf8);
     let mut records_index_audit = identity_audit_event(0xf9, user_id, records_table.table_id);
     records_index_audit.correlation_id = records_index_invocation;
@@ -42127,6 +42235,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 &composite_table,
                 &decimal_table,
                 &pressure_table,
+                &range_benchmark_table,
             ]
         } else if operation == 4 {
             vec![&records_table, &joined_table, &composite_table]
@@ -43534,16 +43643,16 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         2,
         "confined range fixture must report optimizer and reference timings"
     );
-    assert_eq!(optimizer_range_latency_samples[0].0, b'O');
-    assert_eq!(optimizer_range_latency_samples[1].0, b'R');
+    assert_eq!(optimizer_range_latency_samples[0].0, b'L');
+    assert_eq!(optimizer_range_latency_samples[1].0, b'F');
     assert!(
         optimizer_range_latency_samples
             .iter()
             .all(|(_, ns)| *ns > 0)
     );
     eprintln!(
-        "OP-5 confined SQL range latency (ns): optimizer={} reference={}",
-        optimizer_range_latency_samples[0].1, optimizer_range_latency_samples[1].1
+        "OP-5 confined SQL range latency (ns): 1,024-row duplicate range optimizer={} reference={}",
+        optimizer_range_latency_samples[0].1, optimizer_range_latency_samples[1].1,
     );
     staging.finish_started(owner, reservation.invocation_id)?;
     let analytical_group_started =

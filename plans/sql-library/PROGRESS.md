@@ -942,7 +942,7 @@
 ## SQL-8 follow-up: five-run confined analytical pressure sample — verified
 
 - Setup: ran `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` five times sequentially in one delegated `systemd --user` service, with a fresh test database per run, the current TinyCC artifact and installed SDK release, eight simultaneous analytical invocations, 64 operational threads, and the built-in 30-second saturation interval. Every run passed, including SQL relay, cancellation, result backpressure, and durable commit checks.
-- Measurements: the test's 64-sample operational-only baseline and roughly 2,700–3,000 concurrent samples report p99 values in microseconds. The range comparison uses the five-row `grouped_records` correctness fixture (two matching rows), not a representative large-table benchmark.
+- Measurements: the test's 64-sample operational-only baseline and roughly 2,700–3,000 concurrent samples report p99 values in microseconds. The five repeated runs below measured the five-row `grouped_records` fixture (two matching rows), not a representative large-table benchmark.
 
 | Run | Operational commits / 30 s | Analytical cgroup current / peak (KiB) | Point read p99 baseline / concurrent (µs) | Commit p99 baseline / concurrent (µs) | Optimizer / reference range (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -953,7 +953,8 @@
 | 5 | 2,414 | 13,240 / 17,280 | 4,043 / 88,441 | 24,267 / 356,153 | 91.7 / 72.1 |
 
 - Finding: all five runs sustained the required operational work and stayed far below the configured 256 MiB per-worker ceiling. Concurrent point-read and durable-commit p99s were substantially higher than their 64-sample baselines. The optimizer range path was slower on this five-row fixture, but the fixed relation-resolution and IPC work can dominate such a tiny population; these timings do not establish a large-table range performance result. None of the local samples establishes hardware-independent targets.
-- Remaining: target-hardware measurements, broader client saturation, a larger authorized range benchmark, analytical workload diversity, and secure spill remain open.
+- Follow-up: the confined acceptance now also compares an indexed range on a 1,024-row table against the reference scan, returning and validating eight duplicate keys from the first 16-row page. One successful run measured 87.6 ms optimizer versus 64.5 ms reference, with 2,386 operational commits in 30 seconds, analytical cgroup current/peak of 13,264/17,136 KiB, point-read p99 of 4.157/78.047 ms baseline/concurrent, and durable-commit p99 of 24.339/306.114 ms. This is an early-page bounded range comparison; it does not measure a deep range or establish a performance target. The confined acceptance passed after the added query stayed within the shared request budget.
+- Remaining: target-hardware measurements, broader client saturation, deeper range selectivity and pagination measurements, analytical workload diversity, and secure spill remain open.
 
 ## SQL-7 follow-up: integral SUM and AVG input matrix — verified
 
