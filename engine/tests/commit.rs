@@ -44429,7 +44429,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                     TableColumnDefinition {
                         name: "measure".to_owned(),
                         scalar_type: ScalarType::BigInt,
-                        nullable: false,
+                        nullable: true,
                         generated_uuid_identity: false,
                         default: None,
                     },
@@ -44564,15 +44564,15 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             },
             ColumnSchema {
                 scalar_type: ScalarType::BigInt,
-                nullable: false,
+                nullable: true,
             },
         ];
         let bigint_rows = [
-            (0x92, 1, 7, 2i64),
-            (0x93, 1, 7, 4i64),
-            (0x94, 2, 9, 6i64),
-            (0x95, 2, 9, 9i64),
-            (0x96, 2, 9, 12i64),
+            (0x92, 1, 7, Some(2i64)),
+            (0x93, 1, 7, None),
+            (0x94, 2, 9, Some(6i64)),
+            (0x95, 2, 9, Some(9i64)),
+            (0x96, 2, 9, Some(12i64)),
         ]
         .into_iter()
         .map(|(row_id, left, right, measure)| {
@@ -44585,7 +44585,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                     &[
                         Some(ScalarValue::Integer(left)),
                         Some(ScalarValue::Integer(right)),
-                        Some(ScalarValue::BigInt(measure)),
+                        measure.map(ScalarValue::BigInt),
                     ],
                 )?),
             })
@@ -44941,7 +44941,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         }
         bigint_staging.finish_started(bigint_owner, bigint_reservation.invocation_id)?;
         let mut bigint_frames = bigint_frames.into_iter();
-        for (left_key, right_key, sum) in [(1i32, 7i32, 6i64), (2, 9, 27)] {
+        for (left_key, right_key, sum) in [(1i32, 7i32, 2i64), (2, 9, 27)] {
             let frame = bigint_frames
                 .next()
                 .ok_or("missing optimizer-backed composite BIGINT SUM row")?;
@@ -44954,7 +44954,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         }
         for (aggregate, values) in [
             (b"min".as_slice(), [(1i32, 7i32, 2i64), (2, 9, 6)]),
-            (b"max".as_slice(), [(1i32, 7i32, 4i64), (2, 9, 12)]),
+            (b"max".as_slice(), [(1i32, 7i32, 2i64), (2, 9, 12)]),
         ] {
             for (left_key, right_key, value) in values {
                 let frame = bigint_frames
@@ -44976,7 +44976,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 );
             }
         }
-        for (left_key, right_key, average) in [(1i32, 7i32, 3_000_000u128), (2, 9, 9_000_000u128)] {
+        for (left_key, right_key, average) in [(1i32, 7i32, 2_000_000u128), (2, 9, 9_000_000u128)] {
             let frame = bigint_frames
                 .next()
                 .ok_or("missing optimizer-backed composite BIGINT AVG row")?;

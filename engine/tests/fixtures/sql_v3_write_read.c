@@ -513,7 +513,7 @@ static int32_t write_grouped_composite_aggregate_optimizer(
         }
         if (expectation->aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_SUM) {
             int64_t observed_sum = 0;
-            int64_t expected_sum = left_key == 1 ? 6 : 27;
+            int64_t expected_sum = left_key == 1 ? 2 : 27;
             if (aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_BIGINT ||
                 prdb_sdk_value_get_bigint_v1(aggregate_value, &observed_sum) !=
                     PRDB_SDK_VALUE_ACCESS_OK ||
@@ -522,7 +522,7 @@ static int32_t write_grouped_composite_aggregate_optimizer(
             }
         } else if (expectation->aggregate_kind ==
                    PRDB_SDK_SQL_V7_AGGREGATE_AVG) {
-            expected_coefficient = left_key == 1 ? 3000000 : 9000000;
+            expected_coefficient = left_key == 1 ? 2000000 : 9000000;
             if (!decimal_value_matches_coefficient(aggregate_value,
                                                    expected_coefficient)) {
                 return 1;
@@ -537,7 +537,7 @@ static int32_t write_grouped_composite_aggregate_optimizer(
                 PRDB_SDK_SQL_V7_AGGREGATE_MIN) {
                 expected_value = left_key == 1 ? 2 : 6;
             } else {
-                expected_value = left_key == 1 ? 4 : 12;
+                expected_value = left_key == 1 ? 2 : 12;
             }
             if (aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_BIGINT ||
                 prdb_sdk_value_get_bigint_v1(aggregate_value,
