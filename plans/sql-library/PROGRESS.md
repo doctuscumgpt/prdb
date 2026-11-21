@@ -954,3 +954,10 @@
 
 - Finding: all five runs sustained the required operational work and stayed far below the configured 256 MiB per-worker ceiling. Concurrent point-read and durable-commit p99s were substantially higher than their 64-sample baselines, and the optimizer range path was slower than the reference scan in each run. These local comparisons expose tail-latency and range-path optimization work; they do not establish hardware-independent targets.
 - Remaining: target-hardware measurements, broader client saturation, analytical workload diversity, optimizer range-path investigation, and secure spill remain open.
+
+## SQL-7 follow-up: integral SUM and AVG input matrix — verified
+
+- Contract: [`sql-library.md`](../../specs/sql-library.md). SUM accepts SMALLINT, INTEGER, and BIGINT with BIGINT results; AVG accepts the same types and returns DECIMAL(38,6).
+- Regression: the maintained aggregate fixture now sums `2 + 4` for each integral input type and checks widened BIGINT `6`; it averages the same values and checks the exact DECIMAL coefficient for `3.000000` and result scale 6. Existing Decimal SUM and AVG cases continue to cover Decimal precision/scale handling.
+- Verification: focused `sdk-sql-group-v1` and the complete pinned-toolchain `make -f engine/sdk/Makefile test` suite passed; `git diff --check` passed.
+- Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload optimization remain open.

@@ -164,6 +164,53 @@ static void test_analytical_scalar_type_matrix(void) {
                                  timestamp_higher, sizeof(timestamp_higher));
 }
 
+static void assert_integral_sum_avg_type(uint32_t type,
+                                         const uint8_t *first,
+                                         const uint8_t *second,
+                                         uint32_t input_width) {
+    prdb_sdk_value_v1 values[2] = {scalar_value(type, first, input_width),
+                                   scalar_value(type, second, input_width)};
+    uint8_t result_bytes[16] = {0};
+    prdb_sdk_value_v1 sum = {0};
+    prdb_sdk_value_v1 average = {0};
+    uint8_t result_scale = 0;
+    int64_t sum_number = 0;
+    static const uint8_t average_three[] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x2D, 0xC6, 0xC0};
+
+    assert(prdb_sdk_sql_sum_v1(values, 2, type, 0, 0, &sum, sizeof(sum),
+                               result_bytes, sizeof(result_bytes)) ==
+           PRDB_SDK_SQL_EVAL_OK);
+    assert(sum.type_code == PRDB_SDK_VALUE_TYPE_BIGINT &&
+           prdb_sdk_value_get_bigint_v1(&sum, &sum_number) ==
+               PRDB_SDK_VALUE_ACCESS_OK &&
+           sum_number == 6);
+    memset(result_bytes, 0, sizeof(result_bytes));
+    assert(prdb_sdk_sql_avg_v1(values, 2, type, 0, 0, &average,
+                               sizeof(average), result_bytes,
+                               sizeof(result_bytes), &result_scale) ==
+           PRDB_SDK_SQL_EVAL_OK);
+    assert(average.type_code == PRDB_SDK_VALUE_TYPE_DECIMAL &&
+           result_scale == 6 &&
+           memcmp(result_bytes, average_three, sizeof(average_three)) == 0);
+}
+
+static void test_integral_sum_avg_type_matrix(void) {
+    static const uint8_t smallint_two[] = {0, 2};
+    static const uint8_t smallint_four[] = {0, 4};
+    static const uint8_t integer_two[] = {0, 0, 0, 2};
+    static const uint8_t integer_four[] = {0, 0, 0, 4};
+    static const uint8_t bigint_two[] = {0, 0, 0, 0, 0, 0, 0, 2};
+    static const uint8_t bigint_four[] = {0, 0, 0, 0, 0, 0, 0, 4};
+
+    assert_integral_sum_avg_type(PRDB_SDK_VALUE_TYPE_SMALLINT, smallint_two,
+                                 smallint_four, sizeof(smallint_two));
+    assert_integral_sum_avg_type(PRDB_SDK_VALUE_TYPE_INTEGER, integer_two,
+                                 integer_four, sizeof(integer_two));
+    assert_integral_sum_avg_type(PRDB_SDK_VALUE_TYPE_BIGINT, bigint_two,
+                                 bigint_four, sizeof(bigint_two));
+}
+
 int main(void) {
     uint8_t bytes[3][4];
     prdb_sdk_value_v1 keys[] = {
@@ -173,6 +220,7 @@ int main(void) {
     uint32_t group_count = 999;
 
     test_analytical_scalar_type_matrix();
+    test_integral_sum_avg_type_matrix();
 
     assert(prdb_sdk_sql_group_count_v1(
                keys, 5, PRDB_SDK_VALUE_TYPE_INTEGER, 0, groups, 5,
