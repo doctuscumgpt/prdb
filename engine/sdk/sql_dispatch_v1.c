@@ -1,5 +1,6 @@
 #include "prdb_sdk_sql_dispatch_v1.h"
 #include "prdb_sdk_sql_dml_v3.h"
+#include "prdb_sdk_sql_exec_v10.h"
 #include "prdb_sdk_sql_exec_v22.h"
 
 #include <stdlib.h>
@@ -206,6 +207,58 @@ static int32_t write_group_sqlr_row_v22(
                : 1;
 }
 
+static int32_t write_group_sqlr_row_v10(
+    void *opaque, const prdb_sdk_value_v1 *group_key,
+    const prdb_sdk_value_v1 *aggregate_value, uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v10 *binding) {
+    sql_result_context *context = (sql_result_context *)opaque;
+    const prdb_sdk_select_binding_v7 *group_binding;
+    const prdb_sdk_sql_column_shape_v2 *group_column;
+    const prdb_sdk_sql_column_shape_v2 *aggregate_column;
+    uint32_t kind;
+    uint64_t output_len = 0;
+    int32_t status;
+
+    if (context == NULL || binding == NULL || group_key == NULL) return 1;
+    group_binding = &binding->base.base;
+    context->column_count = group_binding->base.relation_column_count;
+    if (group_binding->group_by_column.ordinal >= context->column_count)
+        return 1;
+    group_column = &context->columns[group_binding->group_by_column.ordinal];
+    kind = group_binding->aggregate_kind;
+    if (kind == PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR) {
+        status = prdb_sdk_sql_write_group_count_result_v1(
+            context->host, group_column, group_key, matching_row_count,
+            context->output, context->output_capacity, &output_len);
+    } else {
+        if (group_binding->aggregate_column.ordinal >= context->column_count ||
+            aggregate_value == NULL)
+            return 1;
+        aggregate_column =
+            &context->columns[group_binding->aggregate_column.ordinal];
+        if (kind == PRDB_SDK_SQL_V7_AGGREGATE_MIN ||
+            kind == PRDB_SDK_SQL_V7_AGGREGATE_MAX) {
+            status = prdb_sdk_sql_write_group_minmax_result_v1(
+                context->host, group_column, group_key, aggregate_column,
+                aggregate_value, kind, context->output,
+                context->output_capacity, &output_len);
+        } else if (kind == PRDB_SDK_SQL_V7_AGGREGATE_SUM) {
+            status = prdb_sdk_sql_write_group_sum_result_v1(
+                context->host, group_column, group_key, aggregate_column,
+                aggregate_value, context->output, context->output_capacity,
+                &output_len);
+        } else if (kind == PRDB_SDK_SQL_V7_AGGREGATE_AVG) {
+            status = prdb_sdk_sql_write_group_avg_result_v1(
+                context->host, group_column, group_key, aggregate_column,
+                aggregate_value, context->output, context->output_capacity,
+                &output_len);
+        } else {
+            return 1;
+        }
+    }
+    return status == PRDB_SDK_SQL_RESULT_OK ? 0 : 1;
+}
+
 static int32_t latch_sql_failure(const prdb_host_api_v3 *host, int32_t status) {
     if (host != NULL && host->statement_failure != NULL) {
         (void)host->statement_failure(host->context,
@@ -230,7 +283,9 @@ int32_t prdb_sdk_sql_run_v1(
     prdb_sdk_value_v1 *cell_scratch = NULL;
     sql_result_context result = {0};
     prdb_sdk_select_v22 grouped_statement = {0};
+    prdb_sdk_select_v10 single_grouped_statement = {0};
     int is_grouped = 0;
+    int is_single_grouped = 0;
     uint32_t parameter_count = 0;
     uint32_t declared_count = 0;
     int32_t status;
@@ -251,7 +306,13 @@ int32_t prdb_sdk_sql_run_v1(
     is_grouped = prdb_sdk_sql_parse_select_v22(
                      sql, sql_len, &grouped_statement,
                      sizeof(grouped_statement), NULL) == PRDB_SDK_SQL_OK;
-    if (is_grouped) {
+    if (!is_grouped) {
+        is_single_grouped = prdb_sdk_sql_parse_select_v10(
+                                sql, sql_len, &single_grouped_statement,
+                                sizeof(single_grouped_statement), NULL) ==
+                            PRDB_SDK_SQL_OK;
+    }
+    if (is_grouped || is_single_grouped) {
         materialized_bytes = (uint8_t *)calloc(1, SQL_DISPATCH_BATCH_BYTES);
         if (materialized_bytes == NULL) {
             return latch_sql_failure(host,
@@ -309,6 +370,17 @@ int32_t prdb_sdk_sql_run_v1(
             PRDB_SDK_SQL_MAX_RELATION_COLUMNS, cell_scratch,
             PRDB_SDK_SQL_MAX_RELATION_COLUMNS, materialized_bytes,
             SQL_DISPATCH_BATCH_BYTES, write_group_sqlr_row_v22, &result);
+    } else if (is_single_grouped) {
+        status = prdb_sdk_sql_execute_group_v10(
+            host, schema, schema_len, sql, sql_len, values, parameter_count,
+            SQL_DISPATCH_CANDIDATES, SQL_DISPATCH_BATCH_BYTES,
+            planner_response, SQL_DISPATCH_RESPONSE_BYTES, executor_response,
+            SQL_DISPATCH_RESPONSE_BYTES, batch_response,
+            SQL_DISPATCH_BATCH_BYTES, planner_columns,
+            PRDB_SDK_SQL_MAX_RELATION_COLUMNS, executor_columns,
+            PRDB_SDK_SQL_MAX_RELATION_COLUMNS, cell_scratch,
+            PRDB_SDK_SQL_MAX_RELATION_COLUMNS, materialized_bytes,
+            SQL_DISPATCH_BATCH_BYTES, write_group_sqlr_row_v10, &result);
     } else {
         status = prdb_sdk_sql_execute_select_typed_v1(
             host, schema, schema_len, sql, sql_len, values, metadata,

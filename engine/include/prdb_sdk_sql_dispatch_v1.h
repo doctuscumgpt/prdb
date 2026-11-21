@@ -21,8 +21,9 @@ int32_t prdb_sdk_sql_decode_parameters_v1(
     prdb_sdk_sql_parameter_metadata_v1 *metadata,
     uint32_t metadata_capacity, uint32_t *parameter_count_out);
 
-/* Runs one row SELECT or composite grouped SELECT through the bounded
- * executor APIs. Invalid PSP1/SQL input and execution errors latch failure. */
+/* Runs one row SELECT or supported single-key/composite grouped SELECT through
+ * bounded executor APIs. Invalid PSP1/SQL input and execution errors latch
+ * failure. */
 int32_t prdb_sdk_sql_run_v1(
     const prdb_host_api_v3 *host, const uint8_t *schema,
     uint32_t schema_len, const uint8_t *sql, uint64_t sql_len,

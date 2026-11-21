@@ -297,6 +297,70 @@ static int test_dispatch_grouped_select_emits_sqlr(void) {
     return 0;
 }
 
+static int test_dispatch_single_key_grouped_select_emits_sqlr(void) {
+    static const uint8_t sql[] =
+        "SELECT id, SUM(score) FROM widgets GROUP BY id";
+    dispatch_test_context context = {0};
+    prdb_host_api_v3 host = {0};
+    uint32_t offset = 0;
+    uint16_t name_len;
+
+    context.group_success = 1;
+    context.planner_reply_len = make_integer_relation(
+        context.planner_reply, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x22);
+    context.executor_reply_len = make_integer_relation(
+        context.executor_reply, 6, 0x22);
+    context.batch_reply_len = make_group_rows(context.batch_reply);
+    host.struct_size = sizeof(host);
+    host.abi_version = PRDB_QUERY_ABI_V3_VERSION;
+    host.context = &context;
+    host.executor_request = unused_executor_request;
+    host.planner_request = fail_planner_request;
+    host.write_result = discard_result;
+    host.statement_failure = count_statement_failure;
+    if (prdb_sdk_sql_run_statement_v1(
+            &host, (const uint8_t *)"app", 3, sql, sizeof(sql) - 1,
+            NULL, 0) != PRDB_SDK_SQL_DISPATCH_OK ||
+        context.planner_calls != 1 || context.failure_calls != 0 ||
+        context.result_calls != 1 || context.result_len < 8 ||
+        memcmp(context.result_bytes, "SQLR", 4) != 0) return 1;
+    offset = 4;
+    if (context.result_bytes[offset++] != 0 ||
+        context.result_bytes[offset++] != 1 ||
+        context.result_bytes[offset++] != 0 ||
+        context.result_bytes[offset++] != 2) return 1;
+    name_len = (uint16_t)(((uint16_t)context.result_bytes[offset] << 8) |
+                         context.result_bytes[offset + 1]);
+    offset += 2;
+    if (name_len != 2 || memcmp(context.result_bytes + offset, "id", 2) != 0)
+        return 1;
+    offset += name_len;
+    if (read_u32(context.result_bytes + offset) !=
+            PRDB_SDK_VALUE_TYPE_INTEGER) return 1;
+    offset += 6;
+    if (context.result_bytes[offset++] != PRDB_SDK_VALUE_STATE_VALUE ||
+        read_u32(context.result_bytes + offset) != 4) return 1;
+    offset += 4;
+    if (read_u32(context.result_bytes + offset) != 1) return 1;
+    offset += 4;
+    name_len = (uint16_t)(((uint16_t)context.result_bytes[offset] << 8) |
+                         context.result_bytes[offset + 1]);
+    offset += 2;
+    if (name_len != 3 || memcmp(context.result_bytes + offset, "sum", 3) != 0)
+        return 1;
+    offset += name_len;
+    if (read_u32(context.result_bytes + offset) != PRDB_SDK_VALUE_TYPE_BIGINT)
+        return 1;
+    offset += 6;
+    if (context.result_bytes[offset++] != PRDB_SDK_VALUE_STATE_VALUE ||
+        read_u32(context.result_bytes + offset) != 8) return 1;
+    offset += 4;
+    if (read_u32(context.result_bytes + offset + 4) != 6) return 1;
+    offset += 8;
+    if (offset != context.result_len) return 1;
+    return 0;
+}
+
 static void put_u32(uint8_t *out, uint32_t value) {
     out[0] = (uint8_t)(value >> 24);
     out[1] = (uint8_t)(value >> 16);
@@ -364,6 +428,10 @@ int main(void) {
     }
     if (test_dispatch_grouped_select_emits_sqlr() != 0) {
         fputs("grouped SELECT dispatch did not emit expected SQLR\n", stderr);
+        return 1;
+    }
+    if (test_dispatch_single_key_grouped_select_emits_sqlr() != 0) {
+        fputs("single-key grouped SELECT dispatch did not emit expected SQLR\n", stderr);
         return 1;
     }
     if (test_typed_values_and_null() != 0) {

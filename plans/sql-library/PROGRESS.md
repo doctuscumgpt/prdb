@@ -905,3 +905,11 @@
 - Integration finding: the first run used a stale staged SDK release and failed at dispatch. Rebuilding `release-profile` loaded the current dispatcher and produced the expected SQLR, then exposed the artifact's shared 256-request ceiling. The confined fixture now uses the dispatcher query in place of the separate Decimal SUM runner and drops redundant selected-COUNT and Decimal MAX scans; the TinyCC parser/binder/runner suite retains that v21 coverage.
 - Verification: `make -f engine/sdk/Makefile sandbox-query-fixture`, `make -f engine/sdk/Makefile release-profile`, and `cargo fmt --all -- --check` passed. The exact `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed inside the delegated `systemd --user` service in 39.47 seconds with the operational-load scenario active.
 - Remaining: broader analytical type/workload coverage, secure spill, repeatable pressure measurements, and mixed-workload measurements remain open.
+
+## SQL-7 follow-up: single-key grouped SELECT through statement dispatcher — implemented
+
+- Contract: [`sql-library.md`](../../specs/sql-library.md). The statement dispatcher accepts supported single-key grouped SELECT forms through the existing v10 parser, binder, bounded runner, and single-key SQLR writers.
+- Regression: the dispatch fixture first failed for `SELECT id, SUM(score) FROM widgets GROUP BY id`, then passed after routing it to the v10 grouped runner. It checks the emitted SQLR fields, source key value, and widened SUM value.
+- Implementation: `prdb_sdk_sql_run_v1` now classifies v22 composite grouping first and then v10 single-key grouping; both paths share bounded materialization storage. The single-key callback selects the existing COUNT, MIN/MAX, SUM, or AVG SQLR writer from the v7 binding.
+- Verification: focused dispatch fixture and full TinyCC SDK suite passed. `git diff --check` passed.
+- Remaining: broader analytical type/workload coverage, secure spill, repeatable pressure measurements, and mixed-workload measurements remain open.
