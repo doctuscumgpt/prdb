@@ -350,7 +350,7 @@ int32_t prdb_sdk_sql_parse_insert_v1(const uint8_t *sql, uint64_t sql_len,
         return PRDB_SDK_SQL_LIMIT_EXCEEDED;
     }
     state = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                     PRDB_SDK_SQL_OK};
+                     PRDB_SDK_SQL_OK, 0};
     result = (prdb_sdk_insert_v1){0};
     result.struct_size = sizeof(result);
     result.abi_version = PRDB_SDK_SQL_DML_ABI_V1_VERSION;
@@ -485,7 +485,7 @@ static int32_t parse_insert_v2_internal(
                             : PRDB_SDK_SQL_LIMIT_EXCEEDED;
     }
     state = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                     PRDB_SDK_SQL_OK};
+                     PRDB_SDK_SQL_OK, 0};
     result.struct_size = sizeof(result);
     result.abi_version = PRDB_SDK_SQL_DML_ABI_V2_VERSION;
     result.base.struct_size = sizeof(result.base);
@@ -707,7 +707,7 @@ int32_t prdb_sdk_sql_parse_update_v1(const uint8_t *sql, uint64_t sql_len,
         return PRDB_SDK_SQL_LIMIT_EXCEEDED;
     }
     state = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                     PRDB_SDK_SQL_OK};
+                     PRDB_SDK_SQL_OK, 0};
     result = (prdb_sdk_update_v1){0};
     result.struct_size = sizeof(result);
     result.abi_version = PRDB_SDK_SQL_DML_ABI_V1_VERSION;
@@ -850,7 +850,7 @@ int32_t prdb_sdk_sql_parse_delete_v1(const uint8_t *sql, uint64_t sql_len,
         return PRDB_SDK_SQL_LIMIT_EXCEEDED;
     }
     state = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                     PRDB_SDK_SQL_OK};
+                     PRDB_SDK_SQL_OK, 0};
     result = (prdb_sdk_delete_v1){0};
     result.struct_size = sizeof(result);
     result.abi_version = PRDB_SDK_SQL_DML_ABI_V1_VERSION;
@@ -1118,7 +1118,7 @@ int32_t prdb_sdk_sql_parse_select_v1(const uint8_t *sql, uint64_t sql_len,
         return PRDB_SDK_SQL_LIMIT_EXCEEDED;
     }
     state = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                     PRDB_SDK_SQL_OK};
+                     PRDB_SDK_SQL_OK, 0};
     result = (prdb_sdk_select_v1){0};
     result.struct_size = sizeof(result);
     result.abi_version = PRDB_SDK_SQL_ABI_V1_VERSION;
@@ -1311,7 +1311,7 @@ int32_t prdb_sdk_sql_parse_select_v2(const uint8_t *sql, uint64_t sql_len,
         return PRDB_SDK_SQL_LIMIT_EXCEEDED;
     }
     state = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                     PRDB_SDK_SQL_OK};
+                     PRDB_SDK_SQL_OK, 0};
     result = (prdb_sdk_select_v2){0};
     result.struct_size = sizeof(result);
     result.abi_version = PRDB_SDK_SQL_ABI_V2_VERSION;
@@ -2054,7 +2054,7 @@ int32_t prdb_sdk_sql_parse_select_v3(const uint8_t *sql, uint64_t sql_len,
     }
 
     scan = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                    PRDB_SDK_SQL_OK};
+                    PRDB_SDK_SQL_OK, 0};
     status = advance(&scan);
     while (status == PRDB_SDK_SQL_OK && scan.current.kind != TOKEN_END) {
         if (token_is_keyword(&scan, "ORDER")) {
@@ -2096,7 +2096,7 @@ int32_t prdb_sdk_sql_parse_select_v3(const uint8_t *sql, uint64_t sql_len,
     result.base.sql_len = sql_len;
 
     suffix = (parser){sql, (uint32_t)sql_len, by_end, {TOKEN_END, 0, 0}, 0,
-                      PRDB_SDK_SQL_OK};
+                      PRDB_SDK_SQL_OK, 0};
     status = advance(&suffix);
     if (status != PRDB_SDK_SQL_OK) {
         goto failed_v3;
@@ -2243,7 +2243,7 @@ int32_t prdb_sdk_sql_parse_select_v4(const uint8_t *sql, uint64_t sql_len,
         return PRDB_SDK_SQL_LIMIT_EXCEEDED;
     }
     state = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                     PRDB_SDK_SQL_OK};
+                     PRDB_SDK_SQL_OK, 0};
     result.base.struct_size = sizeof(result.base);
     result.base.abi_version = PRDB_SDK_SQL_ABI_V2_VERSION;
     result.base.sql = sql;
@@ -2577,7 +2577,7 @@ static int32_t parse_grouped_select_v5_internal(
         return PRDB_SDK_SQL_LIMIT_EXCEEDED;
     }
     state = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                     PRDB_SDK_SQL_OK};
+                     PRDB_SDK_SQL_OK, 0};
     result.base.struct_size = sizeof(result.base);
     result.base.abi_version = PRDB_SDK_SQL_ABI_V2_VERSION;
     result.base.sql = sql;
@@ -3591,7 +3591,7 @@ int32_t prdb_sdk_sql_parse_select_v13(const uint8_t *sql, uint64_t sql_len,
         return PRDB_SDK_SQL_LIMIT_EXCEEDED;
     }
     state = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                     PRDB_SDK_SQL_OK};
+                     PRDB_SDK_SQL_OK, 0};
     result.base.struct_size = sizeof(result.base);
     result.base.abi_version = PRDB_SDK_SQL_ABI_V7_VERSION;
     result.base.base.struct_size = sizeof(result.base.base);
@@ -3932,7 +3932,7 @@ int32_t prdb_sdk_sql_parse_select_v14(const uint8_t *sql, uint64_t sql_len,
     }
     memcpy(base_sql, sql, (size_t)sql_len);
     scan = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                    PRDB_SDK_SQL_OK};
+                    PRDB_SDK_SQL_OK, 0};
     status = advance(&scan);
     if (status != PRDB_SDK_SQL_OK) goto failed_v14;
     while (scan.current.kind != TOKEN_END &&
@@ -3969,7 +3969,7 @@ int32_t prdb_sdk_sql_parse_select_v14(const uint8_t *sql, uint64_t sql_len,
         /* Keep a trailing LIMIT and optional semicolon in the v13 parse. */
         scan = (parser){sql, (uint32_t)sql_len,
                         having_token.offset + having_token.length,
-                        {TOKEN_END, 0, 0}, 0, PRDB_SDK_SQL_OK};
+                        {TOKEN_END, 0, 0}, 0, PRDB_SDK_SQL_OK, 0};
         status = advance(&scan);
         if (status != PRDB_SDK_SQL_OK) goto failed_v14;
         while (scan.current.kind != TOKEN_END &&
@@ -3992,7 +3992,7 @@ int32_t prdb_sdk_sql_parse_select_v14(const uint8_t *sql, uint64_t sql_len,
         result.has_having = 1;
         having = (parser){sql, (uint32_t)sql_len,
                           having_token.offset + having_token.length,
-                          {TOKEN_END, 0, 0}, 0, PRDB_SDK_SQL_OK};
+                          {TOKEN_END, 0, 0}, 0, PRDB_SDK_SQL_OK, 0};
         status = advance(&having);
         if (status != PRDB_SDK_SQL_OK) goto failed_having_v14;
         if (token_is_keyword(&having, "COUNT")) {
@@ -4281,7 +4281,7 @@ int32_t prdb_sdk_sql_parse_select_v15(const uint8_t *sql, uint64_t sql_len,
     }
     memcpy(base_sql, sql, (size_t)sql_len);
     scan = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                    PRDB_SDK_SQL_OK};
+                    PRDB_SDK_SQL_OK, 0};
     status = advance(&scan);
     if (status != PRDB_SDK_SQL_OK) goto failed_v15;
     while (scan.current.kind != TOKEN_END &&
@@ -4328,7 +4328,7 @@ int32_t prdb_sdk_sql_parse_select_v15(const uint8_t *sql, uint64_t sql_len,
             goto failed_v15;
         }
         scan = (parser){sql, (uint32_t)sql_len, order_start,
-                        {TOKEN_END, 0, 0}, 0, PRDB_SDK_SQL_OK};
+                        {TOKEN_END, 0, 0}, 0, PRDB_SDK_SQL_OK, 0};
         status = advance(&scan);
         if (status != PRDB_SDK_SQL_OK ||
             !token_is_keyword(&scan, "ORDER")) {
@@ -4366,7 +4366,7 @@ int32_t prdb_sdk_sql_parse_select_v15(const uint8_t *sql, uint64_t sql_len,
         if (status != PRDB_SDK_SQL_OK) return status;
         result.base.base.base.base.sql = sql;
         order = (parser){sql, (uint32_t)sql_len, by_end,
-                         {TOKEN_END, 0, 0}, 0, PRDB_SDK_SQL_OK};
+                         {TOKEN_END, 0, 0}, 0, PRDB_SDK_SQL_OK, 0};
         status = advance(&order);
         if (status != PRDB_SDK_SQL_OK) goto failed_order_v15;
         for (;;) {
@@ -5037,7 +5037,7 @@ int32_t prdb_sdk_sql_parse_select_v8(const uint8_t *sql, uint64_t sql_len,
                             : PRDB_SDK_SQL_LIMIT_EXCEEDED;
     }
     state = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                     PRDB_SDK_SQL_OK};
+                     PRDB_SDK_SQL_OK, 0};
     status = advance(&state);
     if (status != PRDB_SDK_SQL_OK) goto failed_join_select_v8;
     if (!token_is_keyword(&state, "SELECT")) {
@@ -5324,7 +5324,7 @@ int32_t prdb_sdk_sql_parse_select_v16(const uint8_t *sql, uint64_t sql_len,
                             : PRDB_SDK_SQL_LIMIT_EXCEEDED;
     }
     state = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                     PRDB_SDK_SQL_OK};
+                     PRDB_SDK_SQL_OK, 0};
     status = advance(&state);
     if (status != PRDB_SDK_SQL_OK) goto failed_join_select_v16;
     if (!token_is_keyword(&state, "SELECT")) {
@@ -5574,7 +5574,7 @@ int32_t prdb_sdk_sql_parse_select_v19(const uint8_t *sql, uint64_t sql_len,
                             : PRDB_SDK_SQL_LIMIT_EXCEEDED;
     }
     state = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                     PRDB_SDK_SQL_OK};
+                     PRDB_SDK_SQL_OK, 0};
     status = advance(&state);
     if (status != PRDB_SDK_SQL_OK) goto failed_join_select_v19;
     if (!token_is_keyword(&state, "SELECT")) {
@@ -5895,7 +5895,7 @@ int32_t prdb_sdk_sql_parse_select_v20(const uint8_t *sql, uint64_t sql_len,
     }
 
     scan = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                    PRDB_SDK_SQL_OK};
+                    PRDB_SDK_SQL_OK, 0};
     status = advance(&scan);
     if (status != PRDB_SDK_SQL_OK) goto failed_v20;
     while (scan.current.kind != TOKEN_END) {
@@ -5924,7 +5924,7 @@ int32_t prdb_sdk_sql_parse_select_v20(const uint8_t *sql, uint64_t sql_len,
                 predicate = (parser){
                     sql, (uint32_t)sql_len,
                     where_offset + scan.current.length,
-                    {TOKEN_END, 0, 0}, 0, PRDB_SDK_SQL_OK};
+                    {TOKEN_END, 0, 0}, 0, PRDB_SDK_SQL_OK, 0};
                 status = advance(&predicate);
                 if (status != PRDB_SDK_SQL_OK) goto failed_predicate_v20;
                 status = parse_qualified_column_v8(
@@ -5979,7 +5979,7 @@ int32_t prdb_sdk_sql_parse_select_v20(const uint8_t *sql, uint64_t sql_len,
                 {
                     parser from_scan = {sql, (uint32_t)sql_len, 0,
                                         {TOKEN_END, 0, 0}, 0,
-                                        PRDB_SDK_SQL_OK};
+                                        PRDB_SDK_SQL_OK, 0};
                     status = advance(&from_scan);
                     if (status != PRDB_SDK_SQL_OK) goto failed_predicate_v20;
                     while (from_scan.current.kind != TOKEN_END) {
@@ -6207,7 +6207,7 @@ int32_t prdb_sdk_sql_parse_select_v17(const uint8_t *sql, uint64_t sql_len,
     }
 
     scan = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                    PRDB_SDK_SQL_OK};
+                    PRDB_SDK_SQL_OK, 0};
     status = advance(&scan);
     if (status != PRDB_SDK_SQL_OK) goto failed_v17;
     while (scan.current.kind != TOKEN_END &&
@@ -6247,7 +6247,7 @@ int32_t prdb_sdk_sql_parse_select_v17(const uint8_t *sql, uint64_t sql_len,
         clause_end = (uint32_t)sql_len;
         having = (parser){sql, (uint32_t)sql_len,
                           having_token.offset + having_token.length,
-                          {TOKEN_END, 0, 0}, 0, PRDB_SDK_SQL_OK};
+                          {TOKEN_END, 0, 0}, 0, PRDB_SDK_SQL_OK, 0};
         status = advance(&having);
         if (status != PRDB_SDK_SQL_OK) goto failed_having_v17;
         while (having.current.kind != TOKEN_END &&
@@ -6276,7 +6276,7 @@ int32_t prdb_sdk_sql_parse_select_v17(const uint8_t *sql, uint64_t sql_len,
 
         having = (parser){sql, (uint32_t)sql_len,
                           having_token.offset + having_token.length,
-                          {TOKEN_END, 0, 0}, 0, PRDB_SDK_SQL_OK};
+                          {TOKEN_END, 0, 0}, 0, PRDB_SDK_SQL_OK, 0};
         status = advance(&having);
         if (status != PRDB_SDK_SQL_OK) goto failed_having_v17;
         {
@@ -6635,7 +6635,7 @@ static int32_t parse_select_v18_mode(const uint8_t *sql, uint64_t sql_len,
         return PRDB_SDK_SQL_LIMIT_EXCEEDED;
     }
     scan = (parser){sql, (uint32_t)sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                    PRDB_SDK_SQL_OK};
+                    PRDB_SDK_SQL_OK, 0};
     status = advance(&scan);
     if (status != PRDB_SDK_SQL_OK) goto failed_v18;
     while (scan.current.kind != TOKEN_END &&
@@ -6970,7 +6970,7 @@ static int32_t scan_and_mask_having_literals_v21(
     numeric_literal_v21 *literals, uint32_t *literal_count,
     uint32_t *error_offset) {
     parser scan = {sql, sql_len, 0, {TOKEN_END, 0, 0}, 0,
-                   PRDB_SDK_SQL_OK};
+                   PRDB_SDK_SQL_OK, 0};
     int in_having = 0;
     token previous = {TOKEN_END, 0, 0};
     int32_t status = advance(&scan);

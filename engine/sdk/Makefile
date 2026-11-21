@@ -108,6 +108,7 @@ SDK_SQL_V18_FUZZER := $(BUILD_DIR)/fuzz-sql-v18
 SDK_SQL_V19_FUZZER := $(BUILD_DIR)/fuzz-sql-v19
 SDK_SQL_V20_FUZZER := $(BUILD_DIR)/fuzz-sql-v20
 SDK_SQL_V21_FUZZER := $(BUILD_DIR)/fuzz-sql-v21
+SDK_SQL_V22_FUZZER := $(BUILD_DIR)/fuzz-sql-v22
 SDK_PLANNER_TEST := $(BUILD_DIR)/sdk-planner-v1
 SDK_EXECUTOR_TEST := $(BUILD_DIR)/sdk-executor-v1
 SDK_SQL_EXEC_TEST := $(BUILD_DIR)/sdk-sql-execute-v2
@@ -384,6 +385,9 @@ $(SDK_SQL_V20_FUZZER): engine/tests/fuzz/sql_v20_fuzz.c $(SDK_SQL_SOURCE) $(SDK_
 $(SDK_SQL_V21_FUZZER): engine/tests/fuzz/sql_v21_fuzz.c $(SDK_SQL_SOURCE) $(SDK_VALUE_SOURCE) $(SDK_BATCH_SOURCE) $(INCLUDE_DIR)/prdb_sdk_sql_v21.h | $(BUILD_DIR)
 	$(FUZZ_CC) -Wall -Wextra -Werror -Wno-unused-variable -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer -I"$(INCLUDE_DIR)" engine/tests/fuzz/sql_v21_fuzz.c $(SDK_SQL_SOURCE) $(SDK_VALUE_SOURCE) $(SDK_BATCH_SOURCE) -o "$@"
 
+$(SDK_SQL_V22_FUZZER): engine/tests/fuzz/sql_v22_fuzz.c $(SDK_SQL_SOURCE) $(SDK_VALUE_SOURCE) $(SDK_BATCH_SOURCE) $(INCLUDE_DIR)/prdb_sdk_sql_v22.h | $(BUILD_DIR)
+	$(FUZZ_CC) -Wall -Wextra -Werror -Wno-unused-variable -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer -I"$(INCLUDE_DIR)" engine/tests/fuzz/sql_v22_fuzz.c $(SDK_SQL_SOURCE) $(SDK_VALUE_SOURCE) $(SDK_BATCH_SOURCE) -o "$@"
+
 fuzz-sql-v18: $(SDK_SQL_V18_FUZZER)
 	rm -rf "$(BUILD_DIR)/sql-v18-corpus"
 	mkdir -p "$(BUILD_DIR)/sql-v18-corpus"
@@ -415,6 +419,14 @@ fuzz-sql-v21: $(SDK_SQL_V21_FUZZER)
 	"$(SDK_SQL_V21_FUZZER)" -seed=21 -max_len=65536 -timeout=2 -runs=10000 "$(BUILD_DIR)/sql-v21-corpus"
 
 .PHONY: fuzz-sql-v21
+
+fuzz-sql-v22: $(SDK_SQL_V22_FUZZER)
+	rm -rf "$(BUILD_DIR)/sql-v22-corpus"
+	mkdir -p "$(BUILD_DIR)/sql-v22-corpus"
+	cp engine/tests/fuzz/corpus/sql_v22/* "$(BUILD_DIR)/sql-v22-corpus/"
+	"$(SDK_SQL_V22_FUZZER)" -seed=22 -max_len=65536 -timeout=2 -runs=10000 "$(BUILD_DIR)/sql-v22-corpus"
+
+.PHONY: fuzz-sql-v22
 
 $(SDK_PLANNER_TEST): engine/tests/fixtures/sdk_planner_v1.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_planner_v1.h $(INCLUDE_DIR)/prdb_sdk_sql_v2.h $(INCLUDE_DIR)/prdb_sdk_batch_v1.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
