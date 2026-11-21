@@ -773,3 +773,10 @@
 - Oracle: after successful binding, the fuzz target now checks numeric HAVING operands remain comparison nodes with cleared parameter/literal fields, Decimal literal scale matches the bound aggregate scale, and BIGINT coefficients are correctly sign-extended.
 - Verification: all three seed statements passed an explicit v21 parse/bind check. `make -f engine/sdk/Makefile fuzz-sql-v21` completed 10,000 ASan/UBSan/libFuzzer runs without findings (1,572 coverage counters, 3,822 features).
 - Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
+
+## SQL-7 / WI-7 follow-up: v21 malformed input preserves outputs under fuzzing — verified
+
+- Contract: v21 parse and bind APIs write output records only on success; malformed or inexact input must not expose partially initialized AST or binding data.
+- Oracle: the v21 fuzzer initializes outputs with sentinel bytes and traps if either API changes them on failure. Successful bindings continue to be checked for sized ABI fields and canonical numeric literal metadata.
+- Verification: `make -f engine/sdk/Makefile fuzz-sql-v21` completed 10,000 ASan/UBSan/libFuzzer runs without findings (1,574 coverage counters, 3,766 features).
+- Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
