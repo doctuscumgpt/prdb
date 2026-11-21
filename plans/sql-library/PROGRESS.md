@@ -811,6 +811,15 @@
 - Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed with TinyCC 0.9.27-unstable-2025-01-06; `git diff --check` passed.
 - Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
 
+## SQL-8 follow-up: v4 COUNT observes terminal-batch cancellation with no groups — verified
+
+- Contract: the independent v4 COUNT runner must notice cancellation during its terminal batch before local grouping, even when WHERE filters out every row and no output callback is reached.
+- Red/green evidence: the maintained TinyCC fixture applies a no-match `WHERE` predicate to two scan pages and raises cancellation at the final poll. Before the fix the invocation returned success; after it the runner returns executor error, emits no groups, and latches statement failure.
+- Implementation: v4 polls once after scan completion and cursor cleanup. Its 124-page cap leaves room for the final poll and up to four group-output polls within 255 executor requests.
+- Specification: [`sql-library.md`](../../specs/sql-library.md) records the terminal-batch poll and request bound.
+- Verification: the focused `sdk-sql-execute-v2` fixture and full TinyCC SDK suite passed; `git diff --check` passed.
+- Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
+
 ## SQL-7 / WI-7 follow-up: v21 HAVING fuzz seeds exercise successful binding — verified
 
 - Correction: the v21 fuzz corpus previously used `category` and `scores`, which did not match the harness's bound `id`/`score` shape. Those seeds could parse but did not reach successful binding. Replaced them with schema-matched statements and added a compound Decimal seed covering signed exponent literals, Boolean precedence, ORDER BY, and LIMIT.

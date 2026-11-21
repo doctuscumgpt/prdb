@@ -282,6 +282,12 @@ int32_t prdb_sdk_sql_execute_group_count_v4(
             final_status = PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR;
         }
     }
+    if (final_status == PRDB_SDK_SQL_EXEC_OK) {
+        int32_t cancelled = 0;
+        status = prdb_sdk_executor_check_cancelled_v1(host, &cancelled);
+        if (status != PRDB_SDK_EXECUTOR_OK || cancelled)
+            final_status = PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR;
+    }
     if (final_status != PRDB_SDK_SQL_EXEC_OK) {
         return fail_statement(host_v3, final_status);
     }
