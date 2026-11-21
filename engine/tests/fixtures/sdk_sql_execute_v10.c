@@ -1258,6 +1258,9 @@ int main(void) {
     static const uint8_t v21_decimal_sum_overflow_sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
         "HAVING SUM(score) >= 0.00e0";
+    static const uint8_t v21_decimal_inexact_scale_sql[] =
+        "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
+        "HAVING SUM(score) >= 1.251";
     static const uint8_t v13_many_groups_sql[] =
         "SELECT id, score, COUNT(*) FROM widgets GROUP BY id, score";
     static const uint8_t parameter_bytes[] = {0, 0, 0, 5};
@@ -1909,6 +1912,14 @@ int main(void) {
         assert(capture.calls == 2 && capture.keys[0] == 1 &&
                capture.aggregates[0] == 9 && capture.keys[1] == 2 &&
                capture.aggregates[1] == 5 && mock.statement_failed == 0);
+
+        reset_scan(&mock, &capture, 1);
+        assert(run_query_v21_decimal(
+                   &mock, v21_decimal_inexact_scale_sql,
+                   sizeof(v21_decimal_inexact_scale_sql) - 1, &capture) ==
+               PRDB_SDK_SQL_EXEC_BIND_ERROR);
+        assert(capture.calls == 0 && mock.next_calls == 0 &&
+               mock.statement_failed == 1);
 
         reset_scan(&mock, &capture, 1);
         mock.cancelled = 1;
