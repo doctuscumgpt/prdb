@@ -1019,3 +1019,9 @@
 - Change: the confined write/read artifact now runs its existing two-key v13 `COUNT(*)` case through `prdb_sdk_sql_execute_group_composite_aggregate_optimizer_v1` (plan kind 13) instead of the separate composite-count plan path. This keeps the same query and SQLR assertion while exercising the real optimizer process, AST/plan validation, executor-side relation re-resolution, authorized scan, and result relay.
 - Verification: rebuilt `sandbox-query-fixture` and `release-profile`; the focused `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance passed in the delegated cgroup service, including its live mixed-load checks and durable commit. The full serial `cargo test --workspace --locked -- --test-threads=1` suite also passed in the delegated service.
 - Remaining: confined process-level optimizer-backed composite aggregate coverage now includes COUNT and SUM; MIN, MAX, and AVG remain covered by SDK wrapper tests but not this process acceptance. Broader analytical workload coverage, secure spill, target-hardware measurements, and mixed-workload optimization remain open.
+
+## SQL-7 follow-up: confined aggregate matrix request budget — measured
+
+- Experiment: added optimizer-backed composite MIN, MAX, and AVG scans to the same confined write/read invocation, with callback value checks and exact SQLR expectations. All six MIN/MAX/AVG result frames were relayed and matched their expected values.
+- Boundary: the later optimizer-backed DELETE then failed with `Executor(RequestLimitExceeded)` because the invocation had consumed its cumulative executor request allowance. The added scans were removed from this single-invocation fixture; the previously passing COUNT/SUM process acceptance remains intact.
+- Next: place the additional aggregate process cases in a separate invocation with its own executor connection budget, or identify and measure enough redundant work to remove without weakening existing acceptance coverage.
