@@ -240,7 +240,8 @@ static uint32_t build_composite_group_count_plan(
     return offset;
 }
 
-static uint32_t build_composite_group_aggregate_plan(uint8_t *bytes) {
+static uint32_t build_composite_group_aggregate_plan(uint8_t *bytes,
+                                                     uint8_t aggregate_kind) {
     uint32_t offset = 0;
     uint8_t identifier[16];
     uint32_t column;
@@ -256,18 +257,22 @@ static uint32_t build_composite_group_aggregate_plan(uint8_t *bytes) {
     prdb_encode_optimizer_plan_relation_reference_record(bytes + offset,
                                                          identifier, 4);
     offset += PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES;
-    put_u16(bytes, &offset, 3);
+    put_u16(bytes, &offset, aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR
+                                ? 2
+                                : 3);
     column = put_column(bytes, &offset, PRDB_SDK_VALUE_TYPE_INTEGER, 0);
     bytes[column] = 5;
     set_column_ordinal(bytes, column, 0);
     column = put_column(bytes, &offset, PRDB_SDK_VALUE_TYPE_BOOLEAN, 0);
     bytes[column] = 4;
     set_column_ordinal(bytes, column, 1);
-    column = put_column(bytes, &offset, PRDB_SDK_VALUE_TYPE_BIGINT, 0);
-    bytes[column] = 6;
-    set_column_ordinal(bytes, column, 2);
+    if (aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR) {
+        column = put_column(bytes, &offset, PRDB_SDK_VALUE_TYPE_BIGINT, 0);
+        bytes[column] = 6;
+        set_column_ordinal(bytes, column, 2);
+    }
     bytes[offset++] = 13;
-    bytes[offset++] = PRDB_SDK_SQL_V7_AGGREGATE_SUM;
+    bytes[offset++] = aggregate_kind;
     bytes[offset++] = 2;
     column = put_column(bytes, &offset, PRDB_SDK_VALUE_TYPE_BOOLEAN, 0);
     bytes[column] = 4;
@@ -275,10 +280,14 @@ static uint32_t build_composite_group_aggregate_plan(uint8_t *bytes) {
     column = put_column(bytes, &offset, PRDB_SDK_VALUE_TYPE_INTEGER, 0);
     bytes[column] = 5;
     set_column_ordinal(bytes, column, 0);
-    bytes[offset++] = 1;
-    column = put_column(bytes, &offset, PRDB_SDK_VALUE_TYPE_BIGINT, 0);
-    bytes[column] = 6;
-    set_column_ordinal(bytes, column, 2);
+    bytes[offset++] = aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR
+                          ? 0
+                          : 1;
+    if (aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR) {
+        column = put_column(bytes, &offset, PRDB_SDK_VALUE_TYPE_BIGINT, 0);
+        bytes[column] = 6;
+        set_column_ordinal(bytes, column, 2);
+    }
     bytes[offset++] = 1;
     put_u32(bytes, &offset, 5);
     return offset;
@@ -2523,25 +2532,6 @@ int main(void) {
                sizeof(composite_group_count_decoded)) ==
            PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
 
-    uint32_t composite_group_aggregate_payload_len =
-        build_composite_group_aggregate_plan(composite_group_aggregate_payload);
-    assert(prdb_sdk_optimizer_decode_composite_group_aggregate_plan_v1(
-               composite_group_aggregate_payload,
-               composite_group_aggregate_payload_len,
-               &composite_group_aggregate_decoded,
-               sizeof(composite_group_aggregate_decoded)) ==
-           PRDB_SDK_OPTIMIZER_PLAN_OK);
-    assert(composite_group_aggregate_decoded.plan.plan_kind == 13 &&
-           composite_group_aggregate_decoded.plan.scan_column_count == 3 &&
-           composite_group_aggregate_decoded.group_key_count == 2 &&
-           composite_group_aggregate_decoded.group_keys[0].ordinal == 1 &&
-           composite_group_aggregate_decoded.group_keys[1].ordinal == 0 &&
-           composite_group_aggregate_decoded.aggregate_kind ==
-               PRDB_SDK_SQL_V7_AGGREGATE_SUM &&
-           composite_group_aggregate_decoded.aggregate_column.ordinal == 2 &&
-           composite_group_aggregate_decoded.plan.limit == 5);
-    static const uint8_t composite_group_sum_sql[] =
-        "SELECT active, id, SUM(amount) FROM items GROUP BY active, id LIMIT 5";
     composite_group_aggregate_columns[0] =
         (prdb_sdk_sql_column_shape_v2){
             (const uint8_t *)"id", 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0};
@@ -2551,24 +2541,79 @@ int main(void) {
     composite_group_aggregate_columns[2] =
         (prdb_sdk_sql_column_shape_v2){
             (const uint8_t *)"amount", 6, 2, PRDB_SDK_VALUE_TYPE_BIGINT, 0, 0};
-    assert(prdb_sdk_sql_parse_select_v13(
-               composite_group_sum_sql, sizeof(composite_group_sum_sql) - 1,
-               &composite_group_aggregate_statement,
-               sizeof(composite_group_aggregate_statement), NULL) ==
-           PRDB_SDK_SQL_OK);
-    assert(prdb_sdk_sql_bind_select_v13(
-               &composite_group_aggregate_statement,
-               (const uint8_t *)"items", 5, composite_group_aggregate_columns,
-               3, &composite_group_aggregate_binding,
-               sizeof(composite_group_aggregate_binding)) ==
-           PRDB_SDK_SQL_BIND_OK);
-    assert(prdb_sdk_optimizer_match_composite_group_aggregate_plan_v1(
-               &composite_group_aggregate_statement,
-               &composite_group_aggregate_binding,
-               (const uint8_t *)"public", 6,
-               composite_group_aggregate_payload,
-               composite_group_aggregate_payload_len) ==
-           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    static const uint8_t *const composite_group_aggregate_sql[] = {
+        (const uint8_t *)"SELECT active, id, COUNT(*) FROM items "
+                         "GROUP BY active, id LIMIT 5",
+        (const uint8_t *)"SELECT active, id, MIN(amount) FROM items "
+                         "GROUP BY active, id LIMIT 5",
+        (const uint8_t *)"SELECT active, id, MAX(amount) FROM items "
+                         "GROUP BY active, id LIMIT 5",
+        (const uint8_t *)"SELECT active, id, SUM(amount) FROM items "
+                         "GROUP BY active, id LIMIT 5",
+        (const uint8_t *)"SELECT active, id, AVG(amount) FROM items "
+                         "GROUP BY active, id LIMIT 5",
+    };
+    static const uint32_t composite_group_aggregate_sql_len[] = {
+        sizeof("SELECT active, id, COUNT(*) FROM items "
+               "GROUP BY active, id LIMIT 5") - 1,
+        sizeof("SELECT active, id, MIN(amount) FROM items "
+               "GROUP BY active, id LIMIT 5") - 1,
+        sizeof("SELECT active, id, MAX(amount) FROM items "
+               "GROUP BY active, id LIMIT 5") - 1,
+        sizeof("SELECT active, id, SUM(amount) FROM items "
+               "GROUP BY active, id LIMIT 5") - 1,
+        sizeof("SELECT active, id, AVG(amount) FROM items "
+               "GROUP BY active, id LIMIT 5") - 1,
+    };
+    for (uint8_t aggregate_kind = PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR;
+         aggregate_kind <= PRDB_SDK_SQL_V7_AGGREGATE_AVG; ++aggregate_kind) {
+        uint32_t composite_group_aggregate_payload_len =
+            build_composite_group_aggregate_plan(
+                composite_group_aggregate_payload, aggregate_kind);
+        assert(prdb_sdk_optimizer_decode_composite_group_aggregate_plan_v1(
+                   composite_group_aggregate_payload,
+                   composite_group_aggregate_payload_len,
+                   &composite_group_aggregate_decoded,
+                   sizeof(composite_group_aggregate_decoded)) ==
+               PRDB_SDK_OPTIMIZER_PLAN_OK);
+        assert(composite_group_aggregate_decoded.plan.plan_kind == 13 &&
+               composite_group_aggregate_decoded.group_key_count == 2 &&
+               composite_group_aggregate_decoded.aggregate_kind ==
+                   aggregate_kind &&
+               composite_group_aggregate_decoded.plan.scan_column_count ==
+                   (aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR
+                        ? 2
+                        : 3) &&
+               composite_group_aggregate_decoded.group_keys[0].ordinal == 1 &&
+               composite_group_aggregate_decoded.group_keys[1].ordinal == 0 &&
+               composite_group_aggregate_decoded.has_aggregate_column ==
+                   (aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR) &&
+               composite_group_aggregate_decoded.plan.limit == 5);
+        if (aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR) {
+            assert(composite_group_aggregate_decoded.aggregate_column.ordinal ==
+                   2);
+        }
+        assert(prdb_sdk_sql_parse_select_v13(
+                   composite_group_aggregate_sql[aggregate_kind - 1],
+                   composite_group_aggregate_sql_len[aggregate_kind - 1],
+                   &composite_group_aggregate_statement,
+                   sizeof(composite_group_aggregate_statement), NULL) ==
+               PRDB_SDK_SQL_OK);
+        assert(prdb_sdk_sql_bind_select_v13(
+                   &composite_group_aggregate_statement,
+                   (const uint8_t *)"items", 5,
+                   composite_group_aggregate_columns, 3,
+                   &composite_group_aggregate_binding,
+                   sizeof(composite_group_aggregate_binding)) ==
+               PRDB_SDK_SQL_BIND_OK);
+        assert(prdb_sdk_optimizer_match_composite_group_aggregate_plan_v1(
+                   &composite_group_aggregate_statement,
+                   &composite_group_aggregate_binding,
+                   (const uint8_t *)"public", 6,
+                   composite_group_aggregate_payload,
+                   composite_group_aggregate_payload_len) ==
+               PRDB_SDK_OPTIMIZER_PLAN_OK);
+    }
     uint32_t ordered_composite_group_count_payload_len =
         build_ordered_composite_group_count_plan(ordered_composite_group_count_payload);
     assert(prdb_sdk_optimizer_decode_ordered_composite_group_count_plan_v1(
