@@ -942,7 +942,7 @@
 ## SQL-8 follow-up: five-run confined analytical pressure sample — verified
 
 - Setup: ran `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` five times sequentially in one delegated `systemd --user` service, with a fresh test database per run, the current TinyCC artifact and installed SDK release, eight simultaneous analytical invocations, 64 operational threads, and the built-in 30-second saturation interval. Every run passed, including SQL relay, cancellation, result backpressure, and durable commit checks.
-- Measurements: the test's 64-sample operational-only baseline and roughly 2,700–3,000 concurrent samples report p99 values in microseconds. Range measurements compare the optimizer path and reference scan in milliseconds.
+- Measurements: the test's 64-sample operational-only baseline and roughly 2,700–3,000 concurrent samples report p99 values in microseconds. The range comparison uses the five-row `grouped_records` correctness fixture (two matching rows), not a representative large-table benchmark.
 
 | Run | Operational commits / 30 s | Analytical cgroup current / peak (KiB) | Point read p99 baseline / concurrent (µs) | Commit p99 baseline / concurrent (µs) | Optimizer / reference range (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -952,8 +952,8 @@
 | 4 | 2,426 | 13,148 / 17,400 | 3,795 / 83,633 | 32,034 / 347,047 | 50.4 / 23.6 |
 | 5 | 2,414 | 13,240 / 17,280 | 4,043 / 88,441 | 24,267 / 356,153 | 91.7 / 72.1 |
 
-- Finding: all five runs sustained the required operational work and stayed far below the configured 256 MiB per-worker ceiling. Concurrent point-read and durable-commit p99s were substantially higher than their 64-sample baselines, and the optimizer range path was slower than the reference scan in each run. These local comparisons expose tail-latency and range-path optimization work; they do not establish hardware-independent targets.
-- Remaining: target-hardware measurements, broader client saturation, analytical workload diversity, optimizer range-path investigation, and secure spill remain open.
+- Finding: all five runs sustained the required operational work and stayed far below the configured 256 MiB per-worker ceiling. Concurrent point-read and durable-commit p99s were substantially higher than their 64-sample baselines. The optimizer range path was slower on this five-row fixture, but the fixed relation-resolution and IPC work can dominate such a tiny population; these timings do not establish a large-table range performance result. None of the local samples establishes hardware-independent targets.
+- Remaining: target-hardware measurements, broader client saturation, a larger authorized range benchmark, analytical workload diversity, and secure spill remain open.
 
 ## SQL-7 follow-up: integral SUM and AVG input matrix — verified
 
