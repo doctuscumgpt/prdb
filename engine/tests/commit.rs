@@ -43705,6 +43705,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             || user_table.payload == b"linked_records"
             || user_table.payload == b"grouped_records"
             || user_table.payload == b"analytics_pressure_records"
+            || user_table.payload == b"analytics_range_benchmark_records"
             || user_table.payload == b"decimal_grouped_records"
             || user_table.payload == b"identity_records",
         "unexpected SQL user table result: {:?}",
@@ -44179,6 +44180,184 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             .status,
         OutcomeStatus::Committed
     );
+    {
+        fn expected_aggregate_row(
+            aggregate_name: &[u8],
+            aggregate_type: u32,
+            precision: u8,
+            scale: u8,
+            left_key: i32,
+            right_key: i32,
+            aggregate_bytes: &[u8],
+        ) -> Vec<u8> {
+            fn append_field(
+                output: &mut Vec<u8>,
+                name: &[u8],
+                type_code: u32,
+                precision: u8,
+                scale: u8,
+                value: &[u8],
+            ) {
+                output.extend_from_slice(&(name.len() as u16).to_be_bytes());
+                output.extend_from_slice(name);
+                output.extend_from_slice(&type_code.to_be_bytes());
+                output.extend_from_slice(&[precision, scale, 0]);
+                output.extend_from_slice(&(value.len() as u32).to_be_bytes());
+                output.extend_from_slice(value);
+            }
+            let mut output = b"SQLR".to_vec();
+            output.extend_from_slice(&1u16.to_be_bytes());
+            output.extend_from_slice(&3u16.to_be_bytes());
+            append_field(&mut output, b"left_key", 3, 0, 0, &left_key.to_be_bytes());
+            append_field(&mut output, b"right_key", 3, 0, 0, &right_key.to_be_bytes());
+            append_field(
+                &mut output,
+                aggregate_name,
+                aggregate_type,
+                precision,
+                scale,
+                aggregate_bytes,
+            );
+            output
+        }
+
+        let mut aggregate_client = ClientConnectionSession::default();
+        aggregate_client.accept_hello(ClientMode::Query, "sandbox-sql-aggregates")?;
+        aggregate_client.authenticate(&storage, token_id, &secret)?;
+        let aggregate_owner = aggregate_client.staging_owner()?;
+        let aggregate_parameter = [b'A'];
+        let aggregate_reservation = staging.prepare(
+            aggregate_owner,
+            PrepareSubmission {
+                manifest_version: 1,
+                manifest: manifest.clone(),
+                artifact_bytes: u64::try_from(artifact.len())?,
+                artifact_sha256: Sha256::digest(&artifact).into(),
+                scope_version: 1,
+                requested_scope: requested_scope.clone(),
+                parameter_bytes: 1,
+                parameter_sha256: Sha256::digest(aggregate_parameter).into(),
+                deadline_ms: 30_000,
+                workload_class: WorkloadClass::Analytical,
+            },
+        )?;
+        let mut aggregate_offset = 0;
+        for chunk in artifact.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
+            aggregate_offset = staging.upload_chunk(
+                aggregate_owner,
+                aggregate_reservation.invocation_id,
+                ChunkKind::Artifact,
+                aggregate_offset,
+                chunk,
+            )?;
+        }
+        staging.upload_chunk(
+            aggregate_owner,
+            aggregate_reservation.invocation_id,
+            ChunkKind::Parameters,
+            0,
+            &aggregate_parameter,
+        )?;
+        staging.seal(aggregate_owner, aggregate_reservation.invocation_id)?;
+        let aggregate_invocation_hex = aggregate_reservation
+            .invocation_id
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let (aggregate_accepted, mut aggregate_invocation, mut aggregate_executor) =
+            aggregate_client.handle_start_request_with_executor(
+                &storage,
+                &staging,
+                ClientFrame {
+                    kind: 7,
+                    request_id: 1,
+                    response_sequence: 0,
+                    payload: format!("{{\"invocation_id\":\"{aggregate_invocation_hex}\"}}")
+                        .into_bytes(),
+                },
+                GatewayAdmissionConfig {
+                    retention_period_us: 3_600_000_000,
+                    max_rows: 8,
+                    max_bytes: 4096,
+                },
+                &runtime,
+            )?;
+        assert_eq!(aggregate_accepted.payload, b"{\"state\":\"accepted\"}");
+        let (mut aggregate_service, mut aggregate_gateway) = UnixStream::pair()?;
+        aggregate_gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let aggregate_decision = observe_executor_relay_and_finalize_gateway(
+            &storage,
+            &mut aggregate_invocation,
+            &mut aggregate_executor,
+            &mut aggregate_service,
+            aggregate_accepted.request_id,
+        )?;
+        if aggregate_decision != GatewayTerminalDecision::Commit {
+            let mut relayed = Vec::new();
+            while let Some(frame) = read_frame(&mut aggregate_gateway)? {
+                let terminal = frame.operation == Operation::GatewayTerminal as u16;
+                relayed.push((frame.operation, frame.payload));
+                if terminal {
+                    break;
+                }
+            }
+            return Err(format!(
+                "confined aggregate matrix aborted: {aggregate_decision:?}; relayed {relayed:?}"
+            )
+            .into());
+        }
+        staging.finish_started(aggregate_owner, aggregate_reservation.invocation_id)?;
+        for (aggregate_name, aggregate_type, precision, scale) in [
+            (b"min".as_slice(), 3u32, 0u8, 0u8),
+            (b"max".as_slice(), 3u32, 0u8, 0u8),
+            (b"avg".as_slice(), 5u32, 38u8, 6u8),
+        ] {
+            for (left_key, right_key) in [(4i32, 9i32), (2i32, 9i32)] {
+                let aggregate_bytes = if aggregate_type == 5 {
+                    ((left_key as u128) * 1_000_000).to_be_bytes().to_vec()
+                } else {
+                    left_key.to_be_bytes().to_vec()
+                };
+                let frame = read_frame(&mut aggregate_gateway)?.ok_or_else(|| {
+                    format!(
+                        "missing optimizer-backed composite {} SQLR row",
+                        String::from_utf8_lossy(aggregate_name)
+                    )
+                })?;
+                assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+                assert_eq!(frame.request_id, aggregate_accepted.request_id);
+                assert_eq!(
+                    frame.payload,
+                    expected_aggregate_row(
+                        aggregate_name,
+                        aggregate_type,
+                        precision,
+                        scale,
+                        left_key,
+                        right_key,
+                        &aggregate_bytes,
+                    )
+                );
+            }
+        }
+        let aggregate_terminal = read_frame(&mut aggregate_gateway)?
+            .ok_or("missing confined aggregate matrix terminal")?;
+        assert_eq!(
+            aggregate_terminal.operation,
+            Operation::GatewayTerminal as u16
+        );
+        assert_eq!(aggregate_terminal.request_id, aggregate_accepted.request_id);
+        assert!(
+            String::from_utf8(aggregate_terminal.payload)?.contains("\"outcome\":\"committed\"")
+        );
+        assert_eq!(
+            storage
+                .lookup_invocation_outcome(aggregate_reservation.invocation_id, user_id, now + 1,)?
+                .ok_or("missing confined aggregate matrix outcome")?
+                .status,
+            OutcomeStatus::Committed
+        );
+    }
     {
         let read = database.begin_read()?;
         let rows = read.open_table(ROWS)?;

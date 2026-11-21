@@ -421,6 +421,59 @@ typedef struct composite_grouped_result_context {
     uint32_t row_count;
 } composite_grouped_result_context;
 
+typedef struct composite_aggregate_expectation {
+    composite_grouped_result_context *results;
+    uint32_t aggregate_kind;
+} composite_aggregate_expectation;
+
+static int32_t write_grouped_composite_aggregate_optimizer(
+    void *opaque, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v13 *binding) {
+    composite_aggregate_expectation *expectation = opaque;
+    composite_grouped_result_context *context;
+    int32_t left_key, right_key, aggregate_integer = 0;
+    if (expectation == NULL || expectation->results == NULL || binding == NULL ||
+        group_keys == NULL || aggregate_value == NULL) {
+        return 1;
+    }
+    if (group_key_count != 2 || binding->group_key_count != 2) {
+        return 1;
+    }
+    if (binding->base.aggregate_kind != expectation->aggregate_kind) {
+        return 1;
+    }
+    if (!decode_range_integer(&group_keys[0], &left_key) ||
+        !decode_range_integer(&group_keys[1], &right_key)) {
+        return 1;
+    }
+    if ((left_key == 4 && (right_key != 9 || matching_row_count != 2)) ||
+        (left_key == 2 && (right_key != 9 || matching_row_count != 3)) ||
+        (left_key != 4 && left_key != 2)) {
+        return 1;
+    }
+    if (expectation->aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_AVG &&
+        (aggregate_value->state != PRDB_SDK_VALUE_STATE_VALUE ||
+               aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_INTEGER ||
+               prdb_sdk_value_get_integer_v1(aggregate_value,
+                                             &aggregate_integer) !=
+                   PRDB_SDK_VALUE_ACCESS_OK ||
+               aggregate_integer != left_key)) {
+        return 1;
+    }
+    context = expectation->results;
+    if (prdb_sdk_sql_write_group_composite_result_v1(
+            context->host, binding, context->columns, context->column_count,
+            group_keys, group_key_count, aggregate_value, matching_row_count,
+            context->output, context->output_capacity,
+            &context->output_len) != PRDB_SDK_SQL_RESULT_OK) {
+        return 1;
+    }
+    ++context->row_count;
+    return 0;
+}
+
 static int32_t write_grouped_composite_sum_optimizer(
     void *opaque, const prdb_sdk_value_v1 *group_keys,
     uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
@@ -921,6 +974,15 @@ static int32_t run_write_read_fixture(
     static const uint8_t select_composite_sum_optimizer_sql[] =
         "SELECT left_key, right_key, SUM(left_key) FROM grouped_records "
         "GROUP BY left_key, right_key LIMIT 2";
+    static const uint8_t select_composite_min_optimizer_sql[] =
+        "SELECT left_key, right_key, MIN(left_key) FROM grouped_records "
+        "GROUP BY left_key, right_key LIMIT 2";
+    static const uint8_t select_composite_max_optimizer_sql[] =
+        "SELECT left_key, right_key, MAX(left_key) FROM grouped_records "
+        "GROUP BY left_key, right_key LIMIT 2";
+    static const uint8_t select_composite_avg_optimizer_sql[] =
+        "SELECT left_key, right_key, AVG(left_key) FROM grouped_records "
+        "GROUP BY left_key, right_key LIMIT 2";
     static const uint8_t select_analytical_pressure_sql[] =
         "SELECT group_key, COUNT(*) FROM analytics_pressure_records "
         "GROUP BY group_key";
@@ -1330,6 +1392,51 @@ static int32_t run_write_read_fixture(
             return report_failure(host, message, sizeof(message) - 1);
         }
         return 1;
+    }
+    if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
+        invocation->parameters[0] == 'A') {
+        static const uint8_t *const optimizer_sql[] = {
+            select_composite_min_optimizer_sql,
+            select_composite_max_optimizer_sql,
+            select_composite_avg_optimizer_sql};
+        static const uint32_t optimizer_sql_len[] = {
+            sizeof(select_composite_min_optimizer_sql) - 1,
+            sizeof(select_composite_max_optimizer_sql) - 1,
+            sizeof(select_composite_avg_optimizer_sql) - 1};
+        static const uint32_t optimizer_kinds[] = {
+            PRDB_SDK_SQL_V7_AGGREGATE_MIN,
+            PRDB_SDK_SQL_V7_AGGREGATE_MAX,
+            PRDB_SDK_SQL_V7_AGGREGATE_AVG};
+        if (optimizer_host_v5 == NULL ||
+            optimizer_host_v5->optimizer_request == NULL) {
+            return 1;
+        }
+        for (uint32_t index = 0; index < 3; ++index) {
+            composite_aggregate_expectation expectation = {
+                &composite_grouped_results, optimizer_kinds[index]};
+            composite_grouped_results.row_count = 0;
+            composite_grouped_results.output_len = 0;
+            status = prdb_sdk_sql_execute_group_composite_aggregate_optimizer_v1(
+                optimizer_host_v5, schema, sizeof(schema) - 1,
+                optimizer_sql[index], optimizer_sql_len[index], 16,
+                sizeof(batch_response), group_count_optimizer_request,
+                sizeof(group_count_optimizer_request),
+                group_count_optimizer_response,
+                sizeof(group_count_optimizer_response), planner_response,
+                sizeof(planner_response), executor_response,
+                sizeof(executor_response), batch_response,
+                sizeof(batch_response), planner_columns, 9, executor_columns, 9,
+                cell_scratch, 9, grouped_materialized,
+                sizeof(grouped_materialized),
+                write_grouped_composite_aggregate_optimizer, &expectation);
+            if (status != PRDB_SDK_SQL_EXEC_OK ||
+                composite_grouped_results.row_count != 2) {
+                static const uint8_t message[] =
+                    "fixture-error-confined-composite-aggregate-matrix";
+                return report_failure(host, message, sizeof(message) - 1);
+            }
+        }
+        return 0;
     }
     results.host = host;
     status = prdb_sdk_sql_execute_group_count_v4(
