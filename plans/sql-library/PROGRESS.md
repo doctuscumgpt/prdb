@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 follow-up: hidden COUNT with grouped AVG — verified
+
+- Contract: v22 permits an unselected `COUNT(*)` comparison in HAVING while the selected aggregate remains COUNT, MIN, MAX, SUM, or AVG.
+- Regression: the maintained grouped executor fixture now groups duplicate composite keys, filters on `COUNT(*) >= 2 AND AVG(score) >= 3.00000000e0`, and verifies the matching row count, Decimal group key, and exact widened `DECIMAL(38,8)` average bytes. This adds the AVG path alongside existing hidden-count SUM coverage.
+- Verification: the focused `sdk-sql-execute-v10` fixture and complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` suite passed with the pinned TinyCC toolchain; `git diff --check` passed.
+- Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+
 ## SQL-4 / AU-5: explicit INSERT column lists — implemented slice
 
 - Added INSERT AST v3 for optional unique explicit column names, retaining the schema-order v2 AST/parser behavior. The v2 executor now maps those names against the resolved executor relation shape, binds values by target ordinal, and passes DEFAULT for omitted fields to trusted storage materialization.
