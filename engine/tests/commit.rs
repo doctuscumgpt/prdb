@@ -44340,6 +44340,26 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 );
             }
         }
+        for (left_key, right_key, coefficient) in
+            [(1i32, 7i32, 112_500_000u128), (2, 9, 150_000_000)]
+        {
+            let frame = read_frame(&mut aggregate_gateway)?
+                .ok_or("missing optimizer-backed composite Decimal AVG SQLR row")?;
+            assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+            assert_eq!(frame.request_id, aggregate_accepted.request_id);
+            assert_eq!(
+                frame.payload,
+                expected_aggregate_row(
+                    b"avg",
+                    5,
+                    38,
+                    8,
+                    left_key,
+                    right_key,
+                    &coefficient.to_be_bytes(),
+                )
+            );
+        }
         let aggregate_terminal = read_frame(&mut aggregate_gateway)?
             .ok_or("missing confined aggregate matrix terminal")?;
         assert_eq!(
