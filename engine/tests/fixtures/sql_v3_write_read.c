@@ -1007,6 +1007,11 @@ static int32_t run_write_read_fixture(
         sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
         PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
         filtered_join_parameter_bytes, sizeof(filtered_join_parameter_bytes)};
+    static const uint8_t filtered_join_parameter_block[] = {
+        'P', 'S', 'P', '1', 0, 1, 0, 0,
+        0, 0, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0, 0, 0,
+        0, 0, 0, 4, 0, 0, 0, 42
+    };
     static const uint8_t delete_sql[] = "DELETE FROM records WHERE id = $1";
     static const uint8_t multi_insert_sql[] =
         "INSERT INTO records VALUES ($1), ($2)";
@@ -2276,27 +2281,11 @@ static int32_t run_write_read_fixture(
     joined_results.output_len = 0;
     joined_results.left_columns = composite_join_left_executor_columns;
     joined_results.right_columns = composite_join_right_executor_columns;
-    status = prdb_sdk_sql_execute_inner_join_v20(
+    status = prdb_sdk_sql_run_statement_v1(
         host, schema, sizeof(schema) - 1, select_filtered_composite_join_sql,
         sizeof(select_filtered_composite_join_sql) - 1,
-        &filtered_join_parameter, 1, 16, sizeof(batch_response),
-        composite_join_left_planner_response,
-        sizeof(composite_join_left_planner_response),
-        composite_join_right_planner_response,
-        sizeof(composite_join_right_planner_response),
-        composite_join_left_executor_response,
-        sizeof(composite_join_left_executor_response),
-        composite_join_right_executor_response,
-        sizeof(composite_join_right_executor_response), batch_response,
-        sizeof(batch_response), composite_join_left_planner_columns, 9,
-        composite_join_right_planner_columns, 9,
-        composite_join_left_executor_columns, 9,
-        composite_join_right_executor_columns, 9, cell_scratch, 9,
-        composite_join_left_rows, 128, composite_join_right_rows, 128,
-        composite_join_materialized_bytes,
-        sizeof(composite_join_materialized_bytes),
-        write_filtered_joined_row_v20, &joined_results);
-    if (status != PRDB_SDK_SQL_EXEC_OK || joined_results.row_count != 1) {
+        filtered_join_parameter_block, sizeof(filtered_join_parameter_block));
+    if (status != PRDB_SDK_SQL_DISPATCH_OK) {
         static const uint8_t message[] = "fixture-error-filtered-inner-join";
         return report_failure(host, message, sizeof(message) - 1);
     }

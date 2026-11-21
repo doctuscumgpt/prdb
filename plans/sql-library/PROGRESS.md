@@ -919,5 +919,6 @@
 - Contract: [`sql-library.md`](../../specs/sql-library.md). The general statement dispatcher carries supported v20 alias-aware INNER JOIN statements with qualified WHERE comparisons through the existing bounded two-scan runner and SQLR writer.
 - Regression: the dispatcher fixture executes a self-join with two equality keys, a typed qualified filter parameter, and LIMIT. It checks both relation descriptions and scans, then verifies the emitted SQLR projection values.
 - Implementation: `prdb_sdk_sql_run_v1` recognizes v20 JOIN statements before the single-key grouped and row SELECT routes, allocates disjoint bounded two-relation response, shape, row, and materialization buffers, and reuses the established joined SQLR writer.
-- Verification: the focused dispatcher fixture and full TinyCC SDK suite passed. `git diff --check` passed.
+- Confined acceptance: the maintained `sql_v3_write_read.c` artifact now routes its parameterized v20 filtered join through `prdb_sdk_sql_run_statement_v1`. The delegated `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed and checked the exact relayed SQLR frame before durable commit.
+- Verification: `make -f engine/sdk/Makefile test`, `make -f engine/sdk/Makefile sandbox-query-fixture release-profile`, the focused dispatch fixture, and `git diff --check` passed. The confined acceptance passed inside the delegated `systemd --user` service in 39.00 seconds.
 - Remaining: broader analytical type/workload coverage, secure spill, repeatable pressure measurements, and mixed-workload measurements remain open.
