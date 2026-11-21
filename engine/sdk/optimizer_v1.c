@@ -855,6 +855,115 @@ int32_t prdb_sdk_optimizer_encode_ordered_composite_group_count_v1(
     return PRDB_SDK_OPTIMIZER_ENCODE_OK;
 }
 
+int32_t prdb_sdk_optimizer_encode_ordered_composite_group_aggregate_v1(
+    const prdb_sdk_select_v15 *statement, const uint8_t *schema,
+    uint32_t schema_len, uint8_t *request, uint64_t request_capacity,
+    uint64_t *request_len) {
+    uint8_t base_request[OPTIMIZER_REQUEST_MAX_BYTES];
+    const prdb_sdk_select_v2 *base;
+    uint64_t base_len = 0;
+    uint64_t insert_len = 1;
+    uint64_t required;
+    uint64_t limit_len;
+    uint64_t limit_offset;
+    uint64_t output_offset = 0;
+    uint16_t seen_keys = 0;
+    uint32_t seen_aggregate = 0;
+    int32_t status;
+    if (statement == NULL || schema == NULL || request == NULL ||
+        request_len == NULL ||
+        statement->struct_size != sizeof(*statement) ||
+        statement->abi_version != PRDB_SDK_SQL_ABI_V15_VERSION ||
+        statement->base.struct_size != sizeof(statement->base) ||
+        statement->base.abi_version != PRDB_SDK_SQL_ABI_V14_VERSION ||
+        statement->base.base.struct_size != sizeof(statement->base.base) ||
+        statement->base.base.abi_version != PRDB_SDK_SQL_ABI_V13_VERSION ||
+        statement->base.base.group_key_count < 2 ||
+        statement->base.base.group_key_count > 8 ||
+        statement->base.base.base.aggregate_kind <
+            PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR ||
+        statement->base.base.base.aggregate_kind >
+            PRDB_SDK_SQL_V7_AGGREGATE_AVG ||
+        statement->base.has_having != 0 || statement->order_count == 0 ||
+        statement->order_count > PRDB_SDK_SQL_V15_MAX_ORDER_KEYS ||
+        statement->base.base.base.base.has_limit > 1 || schema_len == 0 ||
+        schema_len > 63 || !valid_identifier(schema, schema_len) ||
+        request_capacity > OPTIMIZER_REQUEST_MAX_BYTES)
+        return request_capacity > OPTIMIZER_REQUEST_MAX_BYTES
+                   ? PRDB_SDK_OPTIMIZER_ENCODE_LIMIT_EXCEEDED
+                   : PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    base = &statement->base.base.base.base;
+    if (ranges_overlap(statement, sizeof(*statement), request,
+                       request_capacity) ||
+        ranges_overlap(schema, schema_len, request, request_capacity) ||
+        ranges_overlap(request_len, sizeof(*request_len), request,
+                       request_capacity) ||
+        ranges_overlap(request_len, sizeof(*request_len), statement,
+                       sizeof(*statement)) ||
+        ranges_overlap(request_len, sizeof(*request_len), schema, schema_len) ||
+        (base->sql != NULL &&
+         (ranges_overlap(base->sql, base->sql_len, request,
+                         request_capacity) ||
+          ranges_overlap(request_len, sizeof(*request_len), base->sql,
+                         base->sql_len))))
+        return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    for (uint32_t index = 0; index < statement->order_count; ++index) {
+        const prdb_sdk_sql_order_item_v15 *item =
+            &statement->order_items[index];
+        if (item->direction > PRDB_SDK_SQL_V10_ORDER_DESCENDING ||
+            item->null_order > PRDB_SDK_SQL_V11_NULLS_LAST)
+            return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+        if (item->kind == PRDB_SDK_SQL_V10_ORDER_GROUP_KEY) {
+            if (item->group_key_index >= statement->base.base.group_key_count ||
+                (seen_keys & (uint16_t)(1u << item->group_key_index)) != 0)
+                return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+            seen_keys |= (uint16_t)(1u << item->group_key_index);
+            insert_len += 4;
+        } else if (item->kind == PRDB_SDK_SQL_V10_ORDER_AGGREGATE &&
+                   item->group_key_index == 0 && !seen_aggregate) {
+            seen_aggregate = 1;
+            insert_len += 3;
+        } else {
+            return PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED;
+        }
+    }
+    status = prdb_sdk_optimizer_encode_composite_group_aggregate_v1(
+        &statement->base.base, schema, schema_len, base_request,
+        sizeof(base_request), &base_len);
+    if (status != PRDB_SDK_OPTIMIZER_ENCODE_OK) return status;
+    limit_len = statement->base.base.base.base.has_limit ? 5 : 1;
+    if (base_len < limit_len) return PRDB_SDK_OPTIMIZER_ENCODE_INVALID_ARGUMENT;
+    limit_offset = base_len - limit_len;
+    required = base_len + insert_len;
+    if (required > OPTIMIZER_REQUEST_MAX_BYTES)
+        return PRDB_SDK_OPTIMIZER_ENCODE_LIMIT_EXCEEDED;
+    if (request_capacity < required) {
+        *request_len = required;
+        return PRDB_SDK_OPTIMIZER_ENCODE_BUFFER_TOO_SMALL;
+    }
+    memcpy(request, base_request, (size_t)limit_offset);
+    request[2] = PRDB_OPTIMIZER_ORDERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT;
+    output_offset = limit_offset;
+    request[output_offset++] = (uint8_t)statement->order_count;
+    for (uint32_t index = 0; index < statement->order_count; ++index) {
+        const prdb_sdk_sql_order_item_v15 *item =
+            &statement->order_items[index];
+        request[output_offset++] =
+            (uint8_t)(item->kind == PRDB_SDK_SQL_V10_ORDER_GROUP_KEY ? 0 : 1);
+        if (item->kind == PRDB_SDK_SQL_V10_ORDER_GROUP_KEY)
+            request[output_offset++] = (uint8_t)item->group_key_index;
+        request[output_offset++] = (uint8_t)item->direction;
+        request[output_offset++] =
+            (uint8_t)(item->null_order == PRDB_SDK_SQL_V11_NULL_ORDER_DEFAULT ||
+                      item->null_order == PRDB_SDK_SQL_V11_NULLS_FIRST);
+    }
+    memcpy(request + output_offset, base_request + limit_offset,
+           (size_t)limit_len);
+    output_offset += limit_len;
+    *request_len = output_offset;
+    return PRDB_SDK_OPTIMIZER_ENCODE_OK;
+}
+
 int32_t prdb_sdk_optimizer_encode_group_aggregate_v1(
     const prdb_sdk_select_v7 *statement, const uint8_t *schema,
     uint32_t schema_len, uint8_t *request, uint64_t request_capacity,

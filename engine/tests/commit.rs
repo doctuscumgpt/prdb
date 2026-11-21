@@ -44779,10 +44779,15 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         for (aggregate_name, precision, scale, coefficients) in [
             (b"min".as_slice(), 4, 2, [100u128, 100]),
             (b"max".as_slice(), 4, 2, [100u128, 225]),
-            (b"sum".as_slice(), 38, 2, [100u128, 450]),
+            (b"sum".as_slice(), 38, 2, [450u128, 100]),
             (b"avg".as_slice(), 38, 8, [100_000_000u128, 150_000_000]),
         ] {
-            for (index, (left_key, right_key)) in [(1i32, 7i32), (2, 9)].into_iter().enumerate() {
+            let groups = if aggregate_name == b"sum" {
+                [(2i32, 9i32), (1, 7)]
+            } else {
+                [(1i32, 7i32), (2, 9)]
+            };
+            for (index, (left_key, right_key)) in groups.into_iter().enumerate() {
                 let frame = aggregate_frames.next().ok_or_else(|| {
                     format!(
                         "missing optimizer-backed composite Decimal {} SQLR row",

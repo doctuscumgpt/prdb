@@ -110,6 +110,10 @@ int main(void) {
         "SELECT left_key, right_key, COUNT(*) FROM grouped_records "
         "GROUP BY left_key, right_key ORDER BY right_key DESC NULLS LAST, "
         "COUNT(*) DESC, left_key ASC NULLS FIRST LIMIT 2;";
+    static const uint8_t ordered_composite_group_sum_sql[] =
+        "SELECT left_key, right_key, SUM(measure) FROM grouped_records "
+        "GROUP BY left_key, right_key ORDER BY SUM(measure) DESC NULLS LAST, "
+        "left_key ASC NULLS FIRST LIMIT 2;";
     static const uint8_t group_average_sql[] =
         "SELECT category, AVG(amount) FROM items GROUP BY category LIMIT 5;";
     static const uint8_t ordered_group_average_sql[] =
@@ -135,6 +139,13 @@ int main(void) {
         0, 1, 9, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 15, 'g', 'r', 'o', 'u', 'p', 'e', 'd', '_', 'r', 'e', 'c', 'o', 'r', 'd', 's',
         2, 8, 'l', 'e', 'f', 't', '_', 'k', 'e', 'y', 9, 'r', 'i', 'g', 'h', 't', '_', 'k', 'e', 'y', 3,
         0, 1, 1, 0, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 2};
+    static const uint8_t expected_ordered_composite_group_sum_request[] = {
+        0, 1, 14, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c',
+        15, 'g', 'r', 'o', 'u', 'p', 'e', 'd', '_', 'r', 'e', 'c', 'o', 'r', 'd', 's',
+        2, 8, 'l', 'e', 'f', 't', '_', 'k', 'e', 'y',
+        9, 'r', 'i', 'g', 'h', 't', '_', 'k', 'e', 'y',
+        4, 7, 'm', 'e', 'a', 's', 'u', 'r', 'e',
+        2, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 2};
     static const uint8_t expected_group_average_request[] = {
         0, 1, 10, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'i', 't', 'e', 'm', 's',
         8, 'c', 'a', 't', 'e', 'g', 'o', 'r', 'y', 5, 6, 'a', 'm', 'o', 'u', 'n', 't', 1, 0, 0, 0, 5};
@@ -182,6 +193,7 @@ int main(void) {
     prdb_sdk_select_v13 composite_group_count_statement = {0};
     prdb_sdk_select_v13 composite_group_sum_statement = {0};
     prdb_sdk_select_v15 ordered_composite_group_count_statement = {0};
+    prdb_sdk_select_v15 ordered_composite_group_sum_statement = {0};
     prdb_sdk_select_v7 group_average_statement = {0};
     prdb_sdk_select_v12 ordered_group_average_statement = {0};
     prdb_sdk_select_v3 ordered_select_statement = {0};
@@ -311,6 +323,19 @@ int main(void) {
                encoded, sizeof(encoded), &encoded_len) == PRDB_SDK_OPTIMIZER_ENCODE_OK);
     assert(encoded_len == sizeof(expected_ordered_composite_group_count_request));
     assert(memcmp(encoded, expected_ordered_composite_group_count_request, encoded_len) == 0);
+    assert(prdb_sdk_sql_parse_select_v15(
+               ordered_composite_group_sum_sql,
+               sizeof(ordered_composite_group_sum_sql) - 1,
+               &ordered_composite_group_sum_statement,
+               sizeof(ordered_composite_group_sum_statement), &error_offset) ==
+           PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_optimizer_encode_ordered_composite_group_aggregate_v1(
+               &ordered_composite_group_sum_statement, schema,
+               sizeof(schema) - 1, encoded, sizeof(encoded), &encoded_len) ==
+           PRDB_SDK_OPTIMIZER_ENCODE_OK);
+    assert(encoded_len == sizeof(expected_ordered_composite_group_sum_request));
+    assert(memcmp(encoded, expected_ordered_composite_group_sum_request,
+                  encoded_len) == 0);
     assert(prdb_sdk_sql_parse_select_v7(group_average_sql, sizeof(group_average_sql) - 1,
                &group_average_statement, sizeof(group_average_statement), &error_offset) == PRDB_SDK_SQL_OK);
     assert(prdb_sdk_optimizer_encode_group_aggregate_v1(&group_average_statement, schema, sizeof(schema) - 1,

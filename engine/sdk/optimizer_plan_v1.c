@@ -2047,6 +2047,160 @@ int32_t prdb_sdk_optimizer_decode_composite_group_aggregate_plan_v1(
     return PRDB_SDK_OPTIMIZER_PLAN_OK;
 }
 
+int32_t prdb_sdk_optimizer_decode_ordered_composite_group_aggregate_plan_v1(
+    const uint8_t *payload, uint64_t payload_len,
+    prdb_sdk_optimizer_ordered_composite_group_aggregate_plan_v1 *out,
+    uint32_t out_capacity) {
+    prdb_sdk_optimizer_ordered_composite_group_aggregate_plan_v1 decoded = {0};
+    plan_reader reader;
+    uint16_t version, scan_count;
+    uint8_t kind, reserved, tag, aggregate_kind, key_count, flag;
+    uint16_t seen_keys = 0;
+    uint32_t seen_aggregate = 0;
+    const uint8_t *bytes;
+    if (payload == NULL || out == NULL || out_capacity < sizeof(*out) ||
+        payload_len > PRDB_SDK_OPTIMIZER_MAX_PLAN_BYTES ||
+        ranges_overlap(payload, payload_len, out, sizeof(*out)))
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
+    reader.bytes = payload;
+    reader.length = payload_len;
+    reader.offset = 0;
+    if (!prdb_decode_optimizer_plan_header_record(
+            payload, PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES,
+            &version, &kind, &reserved) ||
+        version != 1 || kind != 14 || reserved != 0)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    reader.offset = PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
+    if (!read_name(&reader, &decoded.plan.schema_name,
+                   &decoded.plan.schema_name_len) ||
+        !take(&reader, PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES,
+              &bytes) ||
+        !prdb_decode_optimizer_plan_schema_reference_record(
+            bytes, PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES,
+            decoded.plan.schema_id, &decoded.plan.schema_version) ||
+        all_zero(decoded.plan.schema_id, 16) || decoded.plan.schema_version == 0 ||
+        !read_name(&reader, &decoded.plan.relation_name,
+                   &decoded.plan.relation_name_len) ||
+        !take(&reader, PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES,
+              &bytes) ||
+        !prdb_decode_optimizer_plan_relation_reference_record(
+            bytes, PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES,
+            decoded.plan.relation_id, &decoded.plan.table_epoch) ||
+        all_zero(decoded.plan.relation_id, 16) || decoded.plan.table_epoch == 0 ||
+        !take(&reader, 2, &bytes))
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    scan_count = read_be_u16(bytes);
+    if (scan_count < PRDB_SDK_SQL_V13_MIN_GROUP_KEYS ||
+        scan_count > PRDB_SDK_SQL_V13_MAX_GROUP_KEYS + 1 ||
+        scan_count > PRDB_SDK_OPTIMIZER_PLAN_MAX_SCAN_COLUMNS)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    for (uint32_t index = 0; index < scan_count; ++index) {
+        if (!read_column(&reader, &decoded.plan.scan_columns[index]) ||
+            (index != 0 && decoded.plan.scan_columns[index - 1].ordinal >=
+                               decoded.plan.scan_columns[index].ordinal))
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    }
+    if (!read_u8(&reader, &tag) || tag != 14 ||
+        !read_u8(&reader, &aggregate_kind) || aggregate_kind < 1 ||
+        aggregate_kind > 5 || !read_u8(&reader, &key_count) ||
+        key_count < PRDB_SDK_SQL_V13_MIN_GROUP_KEYS ||
+        key_count > PRDB_SDK_SQL_V13_MAX_GROUP_KEYS)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    decoded.group_key_count = key_count;
+    decoded.aggregate_kind = aggregate_kind;
+    for (uint32_t index = 0; index < key_count; ++index) {
+        if (!read_column(&reader, &decoded.group_keys[index]))
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        for (uint32_t prior = 0; prior < index; ++prior)
+            if (decoded.group_keys[prior].ordinal ==
+                decoded.group_keys[index].ordinal)
+                return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    }
+    if (!read_u8(&reader, &flag) || flag > 1 ||
+        flag != (aggregate_kind == 1 ? 0 : 1))
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    decoded.has_aggregate_column = flag;
+    if (flag && !read_column(&reader, &decoded.aggregate_column))
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    if (flag && (aggregate_kind == 4 || aggregate_kind == 5) &&
+        decoded.aggregate_column.type_code != PRDB_SDK_VALUE_TYPE_SMALLINT &&
+        decoded.aggregate_column.type_code != PRDB_SDK_VALUE_TYPE_INTEGER &&
+        decoded.aggregate_column.type_code != PRDB_SDK_VALUE_TYPE_BIGINT &&
+        decoded.aggregate_column.type_code != PRDB_SDK_VALUE_TYPE_DECIMAL)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    uint32_t expected_scan = 0;
+    uint32_t aggregate_in_keys = 0;
+    for (uint32_t index = 0; index < scan_count; ++index) {
+        for (uint32_t key = 0; key < key_count; ++key) {
+            if (columns_equal(&decoded.plan.scan_columns[index],
+                              &decoded.group_keys[key])) {
+                expected_scan |= UINT32_C(1) << key;
+                if (flag && columns_equal(&decoded.group_keys[key],
+                                          &decoded.aggregate_column))
+                    aggregate_in_keys = 1;
+            }
+        }
+        if (flag && columns_equal(&decoded.plan.scan_columns[index],
+                                  &decoded.aggregate_column))
+            expected_scan |= UINT32_C(1) << 8;
+    }
+    if ((expected_scan & ((UINT32_C(1) << key_count) - 1)) !=
+            ((UINT32_C(1) << key_count) - 1) ||
+        (flag && !(expected_scan & (UINT32_C(1) << 8))) ||
+        (flag && !aggregate_in_keys && scan_count != key_count + 1) ||
+        ((!flag || aggregate_in_keys) && scan_count != key_count))
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    if (!read_u8(&reader, &tag) || tag != 14 || !read_u8(&reader, &tag) ||
+        tag < 1 || tag > 9)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    decoded.order_count = tag;
+    for (uint32_t index = 0; index < decoded.order_count; ++index) {
+        uint8_t source, key_index = UINT8_MAX, descending, nulls_first;
+        if (!read_u8(&reader, &source) || source > 1 ||
+            (source == 0 && !read_u8(&reader, &key_index)) ||
+            !read_u8(&reader, &descending) || descending > 1 ||
+            !read_u8(&reader, &nulls_first) || nulls_first > 1)
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        if (source == 0) {
+            if (key_index >= key_count || (seen_keys & (1u << key_index)))
+                return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+            seen_keys |= (uint16_t)(1u << key_index);
+        } else if (seen_aggregate || key_index != UINT8_MAX) {
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        } else {
+            seen_aggregate = 1;
+        }
+        decoded.order_items[index].source = source;
+        decoded.order_items[index].group_key_index =
+            source == 0 ? key_index : UINT32_MAX;
+        decoded.order_items[index].descending = descending;
+        decoded.order_items[index].nulls_first = nulls_first;
+    }
+    if (!read_u8(&reader, &flag) || flag > 1)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    decoded.plan.has_limit = flag;
+    if (flag) {
+        if (!take(&reader, 4, &bytes))
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+        decoded.plan.limit = ((uint32_t)bytes[0] << 24) |
+                             ((uint32_t)bytes[1] << 16) |
+                             ((uint32_t)bytes[2] << 8) | bytes[3];
+    }
+    if (reader.offset != reader.length)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD;
+    decoded.plan.scan_column_count = scan_count;
+    decoded.plan.projection_count = key_count;
+    decoded.plan.plan_kind = 14;
+    for (uint32_t index = 0; index < key_count; ++index)
+        decoded.plan.projections[index] = decoded.group_keys[index];
+    decoded.plan.struct_size = sizeof(decoded.plan);
+    decoded.plan.abi_version = PRDB_SDK_OPTIMIZER_PLAN_ABI_V1_VERSION;
+    decoded.struct_size = sizeof(decoded);
+    decoded.abi_version = PRDB_SDK_OPTIMIZER_PLAN_ABI_V1_VERSION;
+    *out = decoded;
+    return PRDB_SDK_OPTIMIZER_PLAN_OK;
+}
+
 int32_t prdb_sdk_optimizer_decode_ordered_group_aggregate_plan_v1(
     const uint8_t *payload, uint64_t payload_len,
     prdb_sdk_optimizer_ordered_group_aggregate_plan_v1 *out,
@@ -2621,6 +2775,108 @@ int32_t prdb_sdk_optimizer_match_ordered_composite_group_count_plan_v1(
         uint32_t nulls_first = item->null_order == PRDB_SDK_SQL_V11_NULL_ORDER_DEFAULT || item->null_order == PRDB_SDK_SQL_V11_NULLS_FIRST;
         if (planned->source != source || planned->descending != (item->direction == PRDB_SDK_SQL_V10_ORDER_DESCENDING) || planned->nulls_first != nulls_first ||
             (source == 0 && planned->group_key_index != item->group_key_index)) return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+    }
+    return PRDB_SDK_OPTIMIZER_PLAN_OK;
+}
+
+int32_t prdb_sdk_optimizer_match_ordered_composite_group_aggregate_plan_v1(
+    const prdb_sdk_select_v15 *statement,
+    const prdb_sdk_select_binding_v15 *binding,
+    const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *plan_payload, uint64_t plan_payload_len) {
+    prdb_sdk_optimizer_ordered_composite_group_aggregate_plan_v1 plan = {0};
+    const prdb_sdk_select_v2 *base;
+    const uint8_t *sql;
+    uint64_t sql_len;
+    int32_t status;
+    if (statement == NULL || binding == NULL || schema == NULL ||
+        plan_payload == NULL || schema_len == 0 || schema_len > 63 ||
+        statement->struct_size != sizeof(*statement) ||
+        statement->abi_version != PRDB_SDK_SQL_ABI_V15_VERSION ||
+        statement->base.struct_size != sizeof(statement->base) ||
+        statement->base.abi_version != PRDB_SDK_SQL_ABI_V14_VERSION ||
+        statement->base.base.struct_size != sizeof(statement->base.base) ||
+        statement->base.base.abi_version != PRDB_SDK_SQL_ABI_V13_VERSION ||
+        statement->base.base.group_key_count < 2 ||
+        statement->base.base.group_key_count > 8 ||
+        statement->base.base.base.aggregate_kind <
+            PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR ||
+        statement->base.base.base.aggregate_kind >
+            PRDB_SDK_SQL_V7_AGGREGATE_AVG ||
+        statement->base.base.base.base.projection_count != 1 ||
+        statement->base.base.base.base.projection_star != 0 ||
+        statement->base.base.base.base.predicate_count != 0 ||
+        statement->base.has_having != 0 || statement->order_count == 0 ||
+        statement->order_count > PRDB_SDK_SQL_V15_MAX_ORDER_KEYS ||
+        binding->struct_size != sizeof(*binding) ||
+        binding->abi_version != PRDB_SDK_SQL_ABI_V15_VERSION ||
+        binding->order_count != statement->order_count ||
+        binding->base.has_having != 0 ||
+        binding->base.base.group_key_count !=
+            statement->base.base.group_key_count ||
+        binding->base.base.base.aggregate_kind !=
+            statement->base.base.base.aggregate_kind)
+        return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
+    status = prdb_sdk_optimizer_decode_ordered_composite_group_aggregate_plan_v1(
+        plan_payload, plan_payload_len, &plan, sizeof(plan));
+    if (status != PRDB_SDK_OPTIMIZER_PLAN_OK) return status;
+    base = &statement->base.base.base.base;
+    sql = base->sql;
+    sql_len = base->sql_len;
+    if (base->relation.offset > sql_len ||
+        base->relation.length > sql_len - base->relation.offset ||
+        base->has_limit != plan.plan.has_limit ||
+        (base->has_limit && base->limit != plan.plan.limit) ||
+        base->relation.length != plan.plan.relation_name_len ||
+        memcmp(sql + base->relation.offset, plan.plan.relation_name,
+               base->relation.length) != 0 ||
+        schema_len != plan.plan.schema_name_len ||
+        memcmp(schema, plan.plan.schema_name, schema_len) != 0 ||
+        plan.aggregate_kind != statement->base.base.base.aggregate_kind ||
+        plan.group_key_count != binding->base.base.group_key_count ||
+        plan.has_aggregate_column !=
+            (statement->base.base.base.aggregate_kind ==
+                     PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR
+                 ? 0
+                 : 1))
+        return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+    for (uint32_t index = 0; index < plan.group_key_count; ++index) {
+        if (!plan_spans_equal(sql, sql_len,
+                              statement->base.base.group_keys[index],
+                              statement->base.base.projection_keys[index]) ||
+            !plan_column_matches_bound(
+                &plan.group_keys[index],
+                &binding->base.base.group_keys[index]))
+            return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+        for (uint32_t prior = 0; prior < index; ++prior)
+            if (plan_spans_equal(sql, sql_len,
+                                 statement->base.base.group_keys[index],
+                                 statement->base.base.group_keys[prior]))
+                return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+    }
+    if (plan.has_aggregate_column &&
+        !plan_column_matches_bound(
+            &plan.aggregate_column,
+            &binding->base.base.base.aggregate_column))
+        return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+    if (plan.order_count != statement->order_count)
+        return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
+    for (uint32_t index = 0; index < plan.order_count; ++index) {
+        const prdb_sdk_sql_order_item_v15 *item = &statement->order_items[index];
+        const prdb_sdk_optimizer_composite_order_item_v1 *planned =
+            &plan.order_items[index];
+        uint32_t source =
+            item->kind == PRDB_SDK_SQL_V10_ORDER_GROUP_KEY ? 0 : 1;
+        uint32_t nulls_first =
+            item->null_order == PRDB_SDK_SQL_V11_NULL_ORDER_DEFAULT ||
+            item->null_order == PRDB_SDK_SQL_V11_NULLS_FIRST;
+        if (planned->source != source ||
+            planned->descending !=
+                (item->direction == PRDB_SDK_SQL_V10_ORDER_DESCENDING) ||
+            planned->nulls_first != nulls_first ||
+            (source == 0 &&
+             planned->group_key_index != item->group_key_index))
+            return PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH;
     }
     return PRDB_SDK_OPTIMIZER_PLAN_OK;
 }
@@ -3653,6 +3909,24 @@ static int32_t decode_any_optimizer_plan_v1(
             return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
         int32_t status =
             prdb_sdk_optimizer_decode_composite_group_aggregate_plan_v1(
+                payload, payload_len, &group, sizeof(group));
+        if (status != PRDB_SDK_OPTIMIZER_PLAN_OK) return status;
+        *plan = group.plan;
+        memset(filter, 0, sizeof(*filter));
+        filter->struct_size = sizeof(*filter);
+        filter->abi_version = PRDB_SDK_OPTIMIZER_PLAN_ABI_V1_VERSION;
+        return PRDB_SDK_OPTIMIZER_PLAN_OK;
+    }
+    if (payload[2] == 14) {
+        prdb_sdk_optimizer_ordered_composite_group_aggregate_plan_v1 group = {0};
+        if (plan == NULL || plan_capacity < sizeof(*plan) || filter == NULL ||
+            filter_capacity < sizeof(*filter) ||
+            ranges_overlap(payload, payload_len, plan, sizeof(*plan)) ||
+            ranges_overlap(payload, payload_len, filter, sizeof(*filter)) ||
+            ranges_overlap(plan, sizeof(*plan), filter, sizeof(*filter)))
+            return PRDB_SDK_OPTIMIZER_PLAN_INVALID_ARGUMENT;
+        int32_t status =
+            prdb_sdk_optimizer_decode_ordered_composite_group_aggregate_plan_v1(
                 payload, payload_len, &group, sizeof(group));
         if (status != PRDB_SDK_OPTIMIZER_PLAN_OK) return status;
         *plan = group.plan;

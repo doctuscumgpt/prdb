@@ -438,6 +438,11 @@ typedef struct composite_aggregate_expectation {
     uint32_t aggregate_kind;
 } composite_aggregate_expectation;
 
+typedef struct ordered_composite_aggregate_expectation {
+    composite_aggregate_expectation aggregate;
+    uint32_t next_group;
+} ordered_composite_aggregate_expectation;
+
 static int32_t decimal_value_matches_coefficient(
     const prdb_sdk_value_v1 *value, uint64_t expected_coefficient) {
     uint64_t observed_coefficient = 0;
@@ -626,6 +631,39 @@ static int32_t write_grouped_composite_aggregate_optimizer(
     }
     ++context->row_count;
     return 0;
+}
+
+static int32_t write_ordered_composite_group_aggregate_optimizer(
+    void *opaque, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v15 *binding) {
+    ordered_composite_aggregate_expectation *expectation = opaque;
+    int32_t left_key = 0, right_key = 0;
+    if (expectation == NULL || binding == NULL || group_keys == NULL ||
+        group_key_count != 2 || binding->order_count != 2 ||
+        binding->order_items[0].item.kind !=
+            PRDB_SDK_SQL_V10_ORDER_AGGREGATE ||
+        binding->order_items[0].item.direction !=
+            PRDB_SDK_SQL_V10_ORDER_DESCENDING ||
+        binding->order_items[1].item.kind !=
+            PRDB_SDK_SQL_V10_ORDER_GROUP_KEY ||
+        binding->order_items[1].item.group_key_index != 0 ||
+        !decode_range_integer(&group_keys[0], &left_key) ||
+        !decode_range_integer(&group_keys[1], &right_key)) {
+        return 1;
+    }
+    if ((expectation->next_group == 0 &&
+         (left_key != 2 || right_key != 9 || matching_row_count != 3)) ||
+        (expectation->next_group == 1 &&
+         (left_key != 1 || right_key != 7 || matching_row_count != 2)) ||
+        expectation->next_group > 1) {
+        return 1;
+    }
+    ++expectation->next_group;
+    return write_grouped_composite_aggregate_optimizer(
+        &expectation->aggregate, group_keys, group_key_count, aggregate_value,
+        matching_row_count, &binding->base.base);
 }
 
 static int32_t write_grouped_composite_sum_optimizer(
@@ -1203,7 +1241,9 @@ static int32_t run_write_read_fixture(
         "FROM decimal_grouped_records GROUP BY left_key, right_key LIMIT 2";
     static const uint8_t select_composite_decimal_sum_optimizer_sql[] =
         "SELECT left_key, right_key, SUM(decimal_value) "
-        "FROM decimal_grouped_records GROUP BY left_key, right_key LIMIT 2";
+        "FROM decimal_grouped_records GROUP BY left_key, right_key "
+        "ORDER BY SUM(decimal_value) DESC NULLS LAST, left_key ASC NULLS FIRST "
+        "LIMIT 2";
     static const uint8_t select_composite_bigint_sum_optimizer_sql[] =
         "SELECT left_key, right_key, SUM(measure) "
         "FROM bigint_grouped_records GROUP BY left_key, right_key LIMIT 2";
@@ -1762,23 +1802,43 @@ static int32_t run_write_read_fixture(
         for (uint32_t index = first_aggregate; index < aggregate_end; ++index) {
             composite_aggregate_expectation expectation = {
                 &composite_grouped_results, optimizer_kinds[index]};
+            ordered_composite_aggregate_expectation ordered_expectation = {
+                expectation, 0};
             composite_grouped_results.row_count = 0;
             composite_grouped_results.output_len = 0;
-            status = prdb_sdk_sql_execute_group_composite_aggregate_optimizer_v1(
-                optimizer_host_v5, schema, sizeof(schema) - 1,
-                optimizer_sql[index], optimizer_sql_len[index], 16,
-                sizeof(batch_response), group_count_optimizer_request,
-                sizeof(group_count_optimizer_request),
-                group_count_optimizer_response,
-                sizeof(group_count_optimizer_response), planner_response,
-                sizeof(planner_response), executor_response,
-                sizeof(executor_response), batch_response,
-                sizeof(batch_response), planner_columns, 9, executor_columns, 9,
-                cell_scratch, 9, grouped_materialized,
-                sizeof(grouped_materialized),
-                write_grouped_composite_aggregate_optimizer, &expectation);
+            if (index == 5) {
+                status = prdb_sdk_sql_execute_ordered_composite_aggregate_optimizer_v1(
+                    optimizer_host_v5, schema, sizeof(schema) - 1,
+                    optimizer_sql[index], optimizer_sql_len[index], 16,
+                    sizeof(batch_response), group_count_optimizer_request,
+                    sizeof(group_count_optimizer_request),
+                    group_count_optimizer_response,
+                    sizeof(group_count_optimizer_response), planner_response,
+                    sizeof(planner_response), executor_response,
+                    sizeof(executor_response), batch_response,
+                    sizeof(batch_response), planner_columns, 9,
+                    executor_columns, 9, cell_scratch, 9,
+                    grouped_materialized, sizeof(grouped_materialized),
+                    write_ordered_composite_group_aggregate_optimizer,
+                    &ordered_expectation);
+            } else {
+                status = prdb_sdk_sql_execute_group_composite_aggregate_optimizer_v1(
+                    optimizer_host_v5, schema, sizeof(schema) - 1,
+                    optimizer_sql[index], optimizer_sql_len[index], 16,
+                    sizeof(batch_response), group_count_optimizer_request,
+                    sizeof(group_count_optimizer_request),
+                    group_count_optimizer_response,
+                    sizeof(group_count_optimizer_response), planner_response,
+                    sizeof(planner_response), executor_response,
+                    sizeof(executor_response), batch_response,
+                    sizeof(batch_response), planner_columns, 9,
+                    executor_columns, 9, cell_scratch, 9,
+                    grouped_materialized, sizeof(grouped_materialized),
+                    write_grouped_composite_aggregate_optimizer, &expectation);
+            }
             if (status != PRDB_SDK_SQL_EXEC_OK ||
-                composite_grouped_results.row_count != 2) {
+                composite_grouped_results.row_count != 2 ||
+                (index == 5 && ordered_expectation.next_group != 2)) {
                 if (invocation->parameters[0] == 'R') {
                     if (status == PRDB_SDK_SQL_EXEC_EVALUATION_ERROR &&
                         composite_grouped_results.row_count == 0) {

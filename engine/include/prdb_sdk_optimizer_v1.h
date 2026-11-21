@@ -125,6 +125,13 @@ int32_t prdb_sdk_optimizer_encode_ordered_composite_group_count_v1(
     const uint8_t *schema, uint32_t schema_len,
     uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
 
+/* Encode composite GROUP BY with an aggregate and v15 ORDER BY as
+ * statement 14. HAVING remains outside this request subset. */
+int32_t prdb_sdk_optimizer_encode_ordered_composite_group_aggregate_v1(
+    const prdb_sdk_select_v15 *statement,
+    const uint8_t *schema, uint32_t schema_len,
+    uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
+
 int32_t prdb_sdk_optimizer_encode_group_aggregate_v1(
     const prdb_sdk_select_v7 *statement,
     const uint8_t *schema, uint32_t schema_len,

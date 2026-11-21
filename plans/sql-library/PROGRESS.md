@@ -1,11 +1,12 @@
 # SQL Library Progress
 
-## SQL-7 follow-up: ordered composite aggregate optimizer protocol — implemented slice
+## SQL-7 follow-up: ordered composite aggregate optimizer execution — verified
 
 - Contract: add an optimizer request and validated plan for composite `GROUP BY` with COUNT, MIN, MAX, SUM, or AVG, sorted by up to nine distinct selected group-key/aggregate expressions with explicit direction, NULL order, and LIMIT.
-- Implementation: optimizer statement 14 now has bounded decoding, authorized relation binding, scan-column derivation, canonical plan encoding/decoding, and optimizer-process dispatch. Plan validation rejects duplicate or out-of-range sort sources.
-- Verification: Rust request, binding, plan round-trip/rejection, and optimizer-process family tests passed; all 339 library unit tests passed. Format, warning-denied all-target Clippy, and `git diff --check` passed.
-- Remaining: add the TinyCC request encoder and independent plan matcher, connect the v15 composite grouped runner, and verify exact result frames through confined acceptance.
+- Implementation: optimizer statement 14 now has bounded decoding, authorized relation binding, scan-column derivation, canonical plan encoding/decoding, and optimizer-process dispatch. The C SDK encodes requests, decodes and matches plan kind 14 to the v15 parsed/bound statement, validates the executor relation, and invokes the ordered composite runner. The confined Decimal SUM matrix case orders groups by aggregate DESC then the first group key ASC and relays exact SQLR rows.
+- Regression: Rust tests cover request decoding, authorized binding, plan round trips/rejections, optimizer process dispatch, and response validation. Maintained TinyCC fixtures verify request bytes and the executor path; the C plan decoder consumes both composite aggregate and ordered-sort node markers.
+- Verification: `make -f engine/sdk/Makefile test`, `make -f engine/sdk/Makefile release-profile`, locked workspace build, format check, warning-denied all-target Clippy, the focused delegated-cgroup `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance, and the full serial delegated-cgroup workspace test suite all passed. The suite reported 205 commit tests and all other workspace test targets passing.
+- Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
 
 ## SQL-8 follow-up: redacted aggregate input aborts confined query — verified
 
