@@ -838,6 +838,15 @@
 - Verification: focused v21 parser/binder and grouped runner TinyCC fixtures passed with `-Wall -Wextra -Werror`.
 - Remaining: broader analytical type/workload, spill, and mixed-workload measurements remain open.
 
+## SQL-8 follow-up: v2 SELECT request budget and terminal cancellation — verified
+
+- Contract: the v2 SELECT runner bounds all executor requests, including one cancellation check per fetched page, and observes cancellation raised by the terminal batch even when WHERE filters out every row.
+- Regression: the maintained fixture uses a no-match predicate to raise cancellation on the post-scan poll, asserting zero callbacks and a latched statement failure. A second case exhausts the 126-page ceiling and checks the active cursor closes with exactly 255 executor requests.
+- Implementation: v2 now caps scans at 126 pages, polls cancellation after scan completion and cursor cleanup, and keeps both the page-limit and full-scan paths within the 256-request ceiling.
+- Specification: [`sql-library.md`](../../specs/sql-library.md) records the request budget and terminal checkpoint.
+- Verification: focused `sdk-sql-execute-v2` fixture and `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed under TinyCC; `git diff --check` passed.
+- Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
+
 ## SQL-7 / WI-7 follow-up: v21 HAVING fuzz seeds exercise successful binding — verified
 
 - Correction: the v21 fuzz corpus previously used `category` and `scores`, which did not match the harness's bound `id`/`score` shape. Those seeds could parse but did not reach successful binding. Replaced them with schema-matched statements and added a compound Decimal seed covering signed exponent literals, Boolean precedence, ORDER BY, and LIMIT.

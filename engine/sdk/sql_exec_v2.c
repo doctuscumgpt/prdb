@@ -256,7 +256,7 @@ static int32_t execute_select_internal(
     cursor_open = 1;
 
     for (;;) {
-        if (page_count >= PRDB_SDK_SQL_EXEC_MAX_NEXT_REQUESTS) {
+        if (page_count >= PRDB_SDK_SQL_EXEC_SELECT_MAX_SCAN_PAGES) {
             final_status = PRDB_SDK_SQL_EXEC_REQUEST_LIMIT;
             break;
         }
@@ -352,6 +352,13 @@ static int32_t execute_select_internal(
             host, cursor, executor_response, executor_response_capacity,
             &executor_response_len);
         if (status != PRDB_SDK_EXECUTOR_OK && final_status == PRDB_SDK_SQL_EXEC_OK) {
+            final_status = PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR;
+        }
+    }
+    if (final_status == PRDB_SDK_SQL_EXEC_OK) {
+        int32_t cancelled = 0;
+        status = prdb_sdk_executor_check_cancelled_v1(host, &cancelled);
+        if (status != PRDB_SDK_EXECUTOR_OK || cancelled) {
             final_status = PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR;
         }
     }

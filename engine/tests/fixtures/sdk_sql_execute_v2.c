@@ -529,6 +529,8 @@ static int32_t on_row(void *context, const prdb_sdk_row_v1 *row,
 int main(void) {
     static const uint8_t sql[] = "SELECT id FROM widgets WHERE id >= $1 LIMIT 1";
     static const uint8_t zero_limit_sql[] = "SELECT id FROM widgets LIMIT 0";
+    static const uint8_t no_match_sql[] =
+        "SELECT id FROM widgets WHERE id < $1";
     static const uint8_t sort_limit_sql[] =
         "SELECT id FROM widgets ORDER BY id DESC LIMIT 1";
     static const uint8_t sort_all_sql[] =
@@ -635,6 +637,47 @@ int main(void) {
                       sizeof(expected_result)) == 0);
     }
     assert(mock.statement_failed == 0);
+
+    mock.stream_pages = 1;
+    mock.stream_next_calls = 0;
+    mock.executor_requests = 0;
+    mock.executor_calls = 0;
+    mock.cancellation_checks = 0;
+    mock.cancel_after_checks = 3;
+    mock.statement_failed = 0;
+    result.calls = 0;
+    result.fail = 0;
+    assert(prdb_sdk_sql_execute_select_v2(
+               &host, schema, sizeof(schema) - 1, no_match_sql,
+               sizeof(no_match_sql) - 1, &parameter, 1, 1, 1024,
+               planner_response, sizeof(planner_response), executor_response,
+               sizeof(executor_response), batch_response,
+               sizeof(batch_response), planner_columns, 1, executor_columns,
+               1, cell_scratch, 1, on_row, &result) ==
+           PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+    assert(result.calls == 0 && mock.cancellation_checks == 3 &&
+           mock.statement_failed == 1);
+
+    mock.stream_pages = 126;
+    mock.stream_next_calls = 0;
+    mock.executor_requests = 0;
+    mock.executor_calls = 0;
+    mock.cancellation_checks = 0;
+    mock.cancel_after_checks = 0;
+    mock.statement_failed = 0;
+    result.calls = 0;
+    assert(prdb_sdk_sql_execute_select_v2(
+               &host, schema, sizeof(schema) - 1, no_match_sql,
+               sizeof(no_match_sql) - 1, &parameter, 1, 1, 1024,
+               planner_response, sizeof(planner_response), executor_response,
+               sizeof(executor_response), batch_response,
+               sizeof(batch_response), planner_columns, 1, executor_columns,
+               1, cell_scratch, 1, on_row, &result) ==
+           PRDB_SDK_SQL_EXEC_REQUEST_LIMIT);
+    assert(mock.stream_next_calls == 126 && mock.cancellation_checks == 126 &&
+           mock.executor_requests == 255 && result.calls == 0 &&
+           mock.statement_failed == 1);
+    mock.stream_pages = 0;
 
     {
         uint8_t sort_batch[128] = {0};
