@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 / SQL-8 follow-up: optimizer-backed INTEGER aggregate NULL matrix — verified
+
+- Contract: optimizer-backed composite grouping preserves INTEGER `MIN`/`MAX` result metadata, emits `AVG` as `DECIMAL(38,6)`, skips NULL inputs, and sorts the all-NULL group last for explicit `NULLS LAST`.
+- Regression: the confined authorized numeric relation now includes a nullable INTEGER measure alongside BIGINT and SMALLINT. Optimizer plan kind 14 executes ordered `MIN`, `MAX`, and `AVG` over three composite groups, including a singleton all-NULL group. The gateway acceptance compares every relayed SQLR row byte-for-byte: INTEGER MIN/MAX values retain type code 3, AVG uses type code 5 with scale 6, and all three NULL outputs retain their declared type metadata and sort last.
+- Verification: the focused delegated-cgroup `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed; the maintained TinyCC SDK suite passed; `cargo fmt --all -- --check`, warning-denied all-target Clippy, and `git diff --check` passed. The full serial delegated-cgroup workspace suite passed, including all 205 commit tests.
+- Remaining: broader analytical workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+
 ## SQL-8 follow-up: ordered composite aggregate NULL placement — verified
 
 - Contract: composite aggregate ordering with `NULLS LAST` places an all-NULL aggregate result after every non-NULL group while preserving the aggregate's declared SQLR type metadata.

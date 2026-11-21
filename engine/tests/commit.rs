@@ -44470,6 +44470,13 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                         generated_uuid_identity: false,
                         default: None,
                     },
+                    TableColumnDefinition {
+                        name: "integer_measure".to_owned(),
+                        scalar_type: ScalarType::Integer,
+                        nullable: true,
+                        generated_uuid_identity: false,
+                        default: None,
+                    },
                 ],
                 retention_deadline_us: now + 3_600_000_000,
                 audit_event: bigint_table_audit,
@@ -44561,8 +44568,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             })
             .map_err(|error| format!("create confined BIGINT aggregate policy: {error:?}"))?;
         for (column_index, column_id) in bigint_table.column_ids.iter().enumerate() {
-            let invocation_byte = [0xf3, 0xf5, 0xf7, 0xaa][column_index];
-            let audit_byte = [0xf2, 0xf3, 0xf5, 0xab][column_index];
+            let invocation_byte = [0xf3, 0xf5, 0xf7, 0xaa, 0xb9][column_index];
+            let audit_byte = [0xf2, 0xf3, 0xf5, 0xab, 0xba][column_index];
             let invocation_id = id(invocation_byte);
             let mut audit_event = identity_audit_event(audit_byte, user_id, *column_id);
             audit_event.correlation_id = invocation_id;
@@ -44607,32 +44614,39 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 scalar_type: ScalarType::SmallInt,
                 nullable: true,
             },
+            ColumnSchema {
+                scalar_type: ScalarType::Integer,
+                nullable: true,
+            },
         ];
         let bigint_rows = [
-            (0x92, 1, 7, Some(2i64), Some(2i16)),
-            (0x93, 1, 7, None, Some(4)),
-            (0x94, 2, 9, Some(6i64), Some(6)),
-            (0x95, 2, 9, Some(9i64), Some(9)),
-            (0x96, 2, 9, Some(12i64), Some(12)),
-            (0x97, 3, 11, None, None),
+            (0x92, 1, 7, Some(2i64), Some(2i16), Some(2i32)),
+            (0x93, 1, 7, None, Some(4), Some(3)),
+            (0x94, 2, 9, Some(6i64), Some(6), Some(6)),
+            (0x95, 2, 9, Some(9i64), Some(9), Some(9)),
+            (0x96, 2, 9, Some(12i64), Some(12), Some(12)),
+            (0x97, 3, 11, None, None, None),
         ]
         .into_iter()
-        .map(|(row_id, left, right, measure, small_measure)| {
-            Ok(RowWrite {
-                key: table_row_key(bigint_table.table_id, id(row_id)),
-                expected_version: None,
-                payload: Some(encode_tuple(
-                    &bigint_schema,
-                    1,
-                    &[
-                        Some(ScalarValue::Integer(left)),
-                        Some(ScalarValue::Integer(right)),
-                        measure.map(ScalarValue::BigInt),
-                        small_measure.map(ScalarValue::SmallInt),
-                    ],
-                )?),
-            })
-        })
+        .map(
+            |(row_id, left, right, measure, small_measure, integer_measure)| {
+                Ok(RowWrite {
+                    key: table_row_key(bigint_table.table_id, id(row_id)),
+                    expected_version: None,
+                    payload: Some(encode_tuple(
+                        &bigint_schema,
+                        1,
+                        &[
+                            Some(ScalarValue::Integer(left)),
+                            Some(ScalarValue::Integer(right)),
+                            measure.map(ScalarValue::BigInt),
+                            small_measure.map(ScalarValue::SmallInt),
+                            integer_measure.map(ScalarValue::Integer),
+                        ],
+                    )?),
+                })
+            },
+        )
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
         commit_rows(
             &database,
@@ -45339,6 +45353,74 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             let frame = bigint_frames
                 .next()
                 .ok_or("missing optimizer-backed composite SMALLINT AVG row")?;
+            assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+            assert_eq!(frame.request_id, bigint_accepted.request_id);
+            assert_eq!(
+                frame.payload,
+                average.map_or_else(
+                    || expected_null_aggregate_row(b"avg", 5, 38, 6, left_key, right_key),
+                    |average| {
+                        expected_aggregate_row(
+                            b"avg",
+                            5,
+                            38,
+                            6,
+                            left_key,
+                            right_key,
+                            &average.to_be_bytes(),
+                        )
+                    },
+                )
+            );
+        }
+        for (aggregate_name, values) in [
+            (
+                b"min".as_slice(),
+                [(2i32, 9i32, Some(6i32)), (1, 7, Some(2)), (3, 11, None)],
+            ),
+            (
+                b"max".as_slice(),
+                [(2i32, 9i32, Some(12i32)), (1, 7, Some(3)), (3, 11, None)],
+            ),
+        ] {
+            for (left_key, right_key, value) in values {
+                let frame = bigint_frames
+                    .next()
+                    .ok_or("missing optimizer-backed composite INTEGER MIN/MAX row")?;
+                assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+                assert_eq!(frame.request_id, bigint_accepted.request_id);
+                assert_eq!(
+                    frame.payload,
+                    value.map_or_else(
+                        || expected_null_aggregate_row(
+                            aggregate_name,
+                            3,
+                            0,
+                            0,
+                            left_key,
+                            right_key
+                        ),
+                        |value| expected_aggregate_row(
+                            aggregate_name,
+                            3,
+                            0,
+                            0,
+                            left_key,
+                            right_key,
+                            &value.to_be_bytes(),
+                        ),
+                    )
+                );
+            }
+        }
+        for (left_key, right_key, average) in [
+            (2i32, 9i32, Some(9_000_000u128)),
+            (1, 7, Some(2_500_000)),
+            (3, 11, None),
+        ] {
+            let frame = bigint_frames
+                .next()
+                .ok_or("missing optimizer-backed composite INTEGER AVG row")?;
             assert_eq!(frame.operation, Operation::GatewayResultData as u16);
             assert_eq!(frame.request_id, bigint_accepted.request_id);
             assert_eq!(

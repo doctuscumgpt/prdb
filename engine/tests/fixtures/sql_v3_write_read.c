@@ -646,6 +646,46 @@ static int32_t write_grouped_composite_aggregate_optimizer(
         } else {
             return 1;
         }
+    } else if (binding->base.aggregate_column.type_code ==
+                   PRDB_SDK_VALUE_TYPE_INTEGER &&
+               binding->base.aggregate_column.ordinal == 4) {
+        if ((left_key == 1 && (right_key != 7 || matching_row_count != 2)) ||
+            (left_key == 2 && (right_key != 9 || matching_row_count != 3)) ||
+            (left_key == 3 && (right_key != 11 || matching_row_count != 1)) ||
+            (left_key != 1 && left_key != 2 && left_key != 3)) {
+            return 1;
+        }
+        if (left_key == 3) {
+            if (aggregate_value->state != PRDB_SDK_VALUE_STATE_NULL ||
+                aggregate_value->type_code != 0 || aggregate_value->data != NULL ||
+                aggregate_value->data_len != 0) {
+                return 1;
+            }
+        } else if (expectation->aggregate_kind ==
+                   PRDB_SDK_SQL_V7_AGGREGATE_AVG) {
+            uint64_t expected_coefficient = left_key == 1 ? 2500000 : 9000000;
+            if (!decimal_value_matches_coefficient(aggregate_value,
+                                                   expected_coefficient)) {
+                return 1;
+            }
+        } else if (expectation->aggregate_kind ==
+                       PRDB_SDK_SQL_V7_AGGREGATE_MIN ||
+                   expectation->aggregate_kind ==
+                       PRDB_SDK_SQL_V7_AGGREGATE_MAX) {
+            int32_t observed_value = 0;
+            int32_t expected_value =
+                expectation->aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_MIN
+                    ? (left_key == 1 ? 2 : 6)
+                    : (left_key == 1 ? 3 : 12);
+            if (aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_INTEGER ||
+                prdb_sdk_value_get_integer_v1(aggregate_value, &observed_value) !=
+                    PRDB_SDK_VALUE_ACCESS_OK ||
+                observed_value != expected_value) {
+                return 1;
+            }
+        } else {
+            return 1;
+        }
     } else if (expectation->aggregate_kind !=
                    PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR &&
                ((left_key == 4 &&
@@ -657,6 +697,7 @@ static int32_t write_grouped_composite_aggregate_optimizer(
     }
     if (binding->base.aggregate_column.type_code ==
             PRDB_SDK_VALUE_TYPE_INTEGER &&
+        binding->base.aggregate_column.ordinal != 4 &&
         expectation->aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_AVG &&
         (aggregate_value->state != PRDB_SDK_VALUE_STATE_VALUE ||
                aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_INTEGER ||
@@ -1364,6 +1405,21 @@ static int32_t run_write_read_fixture(
         "FROM bigint_grouped_records GROUP BY left_key, right_key "
         "ORDER BY AVG(small_measure) DESC NULLS LAST, "
         "left_key ASC NULLS FIRST LIMIT 3";
+    static const uint8_t select_composite_integer_min_optimizer_sql[] =
+        "SELECT left_key, right_key, MIN(integer_measure) "
+        "FROM bigint_grouped_records GROUP BY left_key, right_key "
+        "ORDER BY MIN(integer_measure) DESC NULLS LAST, "
+        "left_key ASC NULLS FIRST LIMIT 3";
+    static const uint8_t select_composite_integer_max_optimizer_sql[] =
+        "SELECT left_key, right_key, MAX(integer_measure) "
+        "FROM bigint_grouped_records GROUP BY left_key, right_key "
+        "ORDER BY MAX(integer_measure) DESC NULLS LAST, "
+        "left_key ASC NULLS FIRST LIMIT 3";
+    static const uint8_t select_composite_integer_avg_optimizer_sql[] =
+        "SELECT left_key, right_key, AVG(integer_measure) "
+        "FROM bigint_grouped_records GROUP BY left_key, right_key "
+        "ORDER BY AVG(integer_measure) DESC NULLS LAST, "
+        "left_key ASC NULLS FIRST LIMIT 3";
     static const uint8_t select_analytical_pressure_sql[] =
         "SELECT group_key, SUM(measure) FROM analytics_pressure_records "
         "GROUP BY group_key";
@@ -1800,7 +1856,10 @@ static int32_t run_write_read_fixture(
             select_composite_smallint_sum_optimizer_sql,
             select_composite_smallint_min_optimizer_sql,
             select_composite_smallint_max_optimizer_sql,
-            select_composite_smallint_avg_optimizer_sql};
+            select_composite_smallint_avg_optimizer_sql,
+            select_composite_integer_min_optimizer_sql,
+            select_composite_integer_max_optimizer_sql,
+            select_composite_integer_avg_optimizer_sql};
         static const uint32_t optimizer_sql_len[] = {
             sizeof(select_composite_min_optimizer_sql) - 1,
             sizeof(select_composite_max_optimizer_sql) - 1,
@@ -1816,7 +1875,10 @@ static int32_t run_write_read_fixture(
             sizeof(select_composite_smallint_sum_optimizer_sql) - 1,
             sizeof(select_composite_smallint_min_optimizer_sql) - 1,
             sizeof(select_composite_smallint_max_optimizer_sql) - 1,
-            sizeof(select_composite_smallint_avg_optimizer_sql) - 1};
+            sizeof(select_composite_smallint_avg_optimizer_sql) - 1,
+            sizeof(select_composite_integer_min_optimizer_sql) - 1,
+            sizeof(select_composite_integer_max_optimizer_sql) - 1,
+            sizeof(select_composite_integer_avg_optimizer_sql) - 1};
         static const uint32_t optimizer_kinds[] = {
             PRDB_SDK_SQL_V7_AGGREGATE_MIN,
             PRDB_SDK_SQL_V7_AGGREGATE_MAX,
@@ -1830,6 +1892,9 @@ static int32_t run_write_read_fixture(
             PRDB_SDK_SQL_V7_AGGREGATE_MAX,
             PRDB_SDK_SQL_V7_AGGREGATE_AVG,
             PRDB_SDK_SQL_V7_AGGREGATE_SUM,
+            PRDB_SDK_SQL_V7_AGGREGATE_MIN,
+            PRDB_SDK_SQL_V7_AGGREGATE_MAX,
+            PRDB_SDK_SQL_V7_AGGREGATE_AVG,
             PRDB_SDK_SQL_V7_AGGREGATE_MIN,
             PRDB_SDK_SQL_V7_AGGREGATE_MAX,
             PRDB_SDK_SQL_V7_AGGREGATE_AVG};
@@ -1894,7 +1959,7 @@ static int32_t run_write_read_fixture(
                                       : invocation->parameters[0] == 'B' ? 7 : 0;
         uint32_t aggregate_end = invocation->parameters[0] == 'R'
                                      ? 4
-                                     : invocation->parameters[0] == 'B' ? 15 : 7;
+                                     : invocation->parameters[0] == 'B' ? 18 : 7;
         for (uint32_t index = first_aggregate; index < aggregate_end; ++index) {
             composite_aggregate_expectation expectation = {
                 &composite_grouped_results, optimizer_kinds[index]};
@@ -1923,7 +1988,7 @@ static int32_t run_write_read_fixture(
                 ordered_expectation.second_matching_row_count = 2;
             }
             ordered_expectation.expected_group_count =
-                index >= 3 && index <= 14 ? 3 : 2;
+                index >= 3 && index <= 17 ? 3 : 2;
             if (ordered_expectation.expected_group_count == 3) {
                 ordered_expectation.third_left_key = 3;
                 ordered_expectation.third_right_key = 11;
@@ -1931,7 +1996,7 @@ static int32_t run_write_read_fixture(
             }
             composite_grouped_results.row_count = 0;
             composite_grouped_results.output_len = 0;
-            if (index <= 14) {
+            if (index <= 17) {
                 status = prdb_sdk_sql_execute_ordered_composite_aggregate_optimizer_v1(
                     optimizer_host_v5, schema, sizeof(schema) - 1,
                     optimizer_sql[index], optimizer_sql_len[index], 16,
