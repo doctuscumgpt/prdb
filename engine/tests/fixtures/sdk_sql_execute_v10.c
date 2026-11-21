@@ -2325,12 +2325,12 @@ int main(void) {
         mock.executor_len = make_relation(mock.executor, 6, 0x22,
                                           PRDB_SDK_VALUE_TYPE_TEXT);
         mock.batch_len = make_text_grouped_sum_rows(
-            mock.batch, 0, 0, 64, 8172);
+            mock.batch, 0, 0, 64, 8188);
         mock.continued_batch_len = make_text_grouped_sum_rows(
-            mock.continued_batch, 1, 64, 64, 8172);
+            mock.continued_batch, 1, 64, 64, 8188);
         mock.streamed_pages = 2;
         mock.max_candidates = 64;
-        capture.text_key_bytes = 8172;
+        capture.text_key_bytes = 8188;
         capture.text_sum_tie_order_mode = 1;
         reset_scan(&mock, &capture, 1);
         assert(run_query_v12(&mock, ordered_grouped_sum_tie_sql,
@@ -2346,6 +2346,20 @@ int main(void) {
             assert(capture.row_counts[group] == 2);
         }
         assert(mock.executor_requests <= 256);
+
+        mock.batch_len = make_text_grouped_sum_rows(
+            mock.batch, 0, 0, 64, 8189);
+        mock.continued_batch_len = make_text_grouped_sum_rows(
+            mock.continued_batch, 1, 64, 64, 8189);
+        capture.text_key_bytes = 8189;
+        reset_scan(&mock, &capture, 1);
+        assert(run_query_v12(&mock, ordered_grouped_sum_tie_sql,
+                             sizeof(ordered_grouped_sum_tie_sql) - 1,
+                             PRDB_SDK_SQL_EXEC_V7_MAX_MATERIALIZED_BYTES,
+                             &capture) ==
+               PRDB_SDK_SQL_EXEC_MATERIALIZATION_LIMIT);
+        assert(capture.calls == 0 && mock.statement_failed == 1);
+
         mock.text_key_mode = 0;
         mock.max_candidates = 0;
         mock.streamed_pages = 0;
