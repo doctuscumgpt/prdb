@@ -7,6 +7,13 @@
 - Verification: the focused `sdk-sql-execute-v10` fixture and complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` suite passed with the pinned TinyCC toolchain; `git diff --check` passed.
 - Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
 
+## SQL-7 follow-up: hidden COUNT with grouped MIN/MAX — verified
+
+- Contract: v22 supports hidden `COUNT(*)` HAVING comparisons with every selected aggregate family.
+- Regression: the composite grouped executor fixture now checks `COUNT(*) >= 2` with selected Decimal `MIN(score)` and `MAX(score)`, validating each comparison, the shared composite key, matching row count, and exact result coefficient. Together with the SUM and AVG cases, this exercises hidden COUNT against all supported aggregate families.
+- Verification: focused `sdk-sql-execute-v10` and complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed with the pinned TinyCC toolchain; `git diff --check` passed.
+- Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+
 ## SQL-4 / AU-5: explicit INSERT column lists — implemented slice
 
 - Added INSERT AST v3 for optional unique explicit column names, retaining the schema-order v2 AST/parser behavior. The v2 executor now maps those names against the resolved executor relation shape, binds values by target ordinal, and passes DEFAULT for omitted fields to trusted storage materialization.
