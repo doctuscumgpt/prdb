@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 follow-up: ordered composite aggregate numeric type matrix — verified
+
+- Contract: optimizer-backed composite `GROUP BY` retains the requested aggregate-descending order with an explicit group-key tie-breaker for each supported BIGINT and SMALLINT aggregate result.
+- Regression: the confined SQL fixture now executes BIGINT and SMALLINT SUM, MIN, MAX, and AVG through the ordered composite optimizer runner. Gateway acceptance checks both group order and exact integer or DECIMAL(38,6) SQLR values; the existing Decimal MIN/MAX/SUM/AVG/COUNT(*) cases remain covered.
+- Verification: TinyCC sandbox fixture build, focused delegated-cgroup SQL acceptance, SDK test suite, format check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace test suite passed.
+- Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+
 ## SQL-7 follow-up: ordered composite aggregate optimizer execution — verified
 
 - Contract: add an optimizer request and validated plan for composite `GROUP BY` with COUNT, MIN, MAX, SUM, or AVG, sorted by up to nine distinct selected group-key/aggregate expressions with explicit direction, NULL order, and LIMIT.
@@ -72,7 +79,7 @@
 - Contract: the v13 composite grouping runner computes COUNT(*), MIN, MAX, SUM, and AVG over the same authorized group tuple, preserving each aggregate's declared result type and exact numeric representation.
 - Regression: the maintained v10 executor fixture now runs all five aggregate kinds over duplicate two-key groups. It checks COUNT row totals, integer MIN/MAX, BIGINT SUM, and exact DECIMAL(38,6) AVG coefficients for INTEGER inputs.
 - Verification: focused `sdk-sql-execute-v10` and the complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` suite passed with the pinned TinyCC toolchain; `git diff --check` passed.
-- Remaining: optimizer-gated confined execution now covers all five ordered aggregate families over Decimal input; broader optimizer/runtime pairing across types, analytical workloads, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+- Remaining: broader optimizer/runtime pairing across types, analytical workloads, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
 
 ## SQL-7 follow-up: hidden COUNT with grouped AVG — verified
 

@@ -45107,7 +45107,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         }
         bigint_staging.finish_started(bigint_owner, bigint_reservation.invocation_id)?;
         let mut bigint_frames = bigint_frames.into_iter();
-        for (left_key, right_key, sum) in [(1i32, 7i32, 2i64), (2, 9, 27)] {
+        for (left_key, right_key, sum) in [(2i32, 9i32, 27i64), (1, 7, 2)] {
             let frame = bigint_frames
                 .next()
                 .ok_or("missing optimizer-backed composite BIGINT SUM row")?;
@@ -45119,8 +45119,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             );
         }
         for (aggregate, values) in [
-            (b"min".as_slice(), [(1i32, 7i32, 2i64), (2, 9, 6)]),
-            (b"max".as_slice(), [(1i32, 7i32, 2i64), (2, 9, 12)]),
+            (b"min".as_slice(), [(2i32, 9i32, 6i64), (1, 7, 2)]),
+            (b"max".as_slice(), [(2i32, 9i32, 12i64), (1, 7, 2)]),
         ] {
             for (left_key, right_key, value) in values {
                 let frame = bigint_frames
@@ -45142,7 +45142,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 );
             }
         }
-        for (left_key, right_key, average) in [(1i32, 7i32, 2_000_000u128), (2, 9, 9_000_000u128)] {
+        for (left_key, right_key, average) in [(2i32, 9i32, 9_000_000u128), (1, 7, 2_000_000)] {
             let frame = bigint_frames
                 .next()
                 .ok_or("missing optimizer-backed composite BIGINT AVG row")?;
@@ -45161,7 +45161,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 )
             );
         }
-        for (left_key, right_key, sum) in [(1i32, 7i32, 6i64), (2, 9, 27)] {
+        for (left_key, right_key, sum) in [(2i32, 9i32, 27i64), (1, 7, 6)] {
             let frame = bigint_frames
                 .next()
                 .ok_or("missing optimizer-backed composite SMALLINT SUM row")?;
@@ -45173,8 +45173,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             );
         }
         for (aggregate, values) in [
-            (b"min".as_slice(), [(1i32, 7i32, 2i16), (2, 9, 6)]),
-            (b"max".as_slice(), [(1i32, 7i32, 4i16), (2, 9, 12)]),
+            (b"min".as_slice(), [(2i32, 9i32, 6i16), (1, 7, 2)]),
+            (b"max".as_slice(), [(2i32, 9i32, 12i16), (1, 7, 4)]),
         ] {
             for (left_key, right_key, value) in values {
                 let frame = bigint_frames
@@ -45196,7 +45196,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 );
             }
         }
-        for (left_key, right_key, average) in [(1i32, 7i32, 3_000_000u128), (2, 9, 9_000_000u128)] {
+        for (left_key, right_key, average) in [(2i32, 9i32, 9_000_000u128), (1, 7, 3_000_000)] {
             let frame = bigint_frames
                 .next()
                 .ok_or("missing optimizer-backed composite SMALLINT AVG row")?;
