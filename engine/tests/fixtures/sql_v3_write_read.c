@@ -2298,8 +2298,8 @@ static int32_t run_write_read_fixture(
             sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
             optimizer_parameter_bytes, sizeof(optimizer_parameter_bytes)};
-        uint8_t optimizer_large_range_lower_bytes[4] = {0, 0, 0, 0};
-        uint8_t optimizer_large_range_upper_bytes[4] = {0, 0, 0, 1};
+        uint8_t optimizer_large_range_lower_bytes[4] = {0, 0, 0, 3};
+        uint8_t optimizer_large_range_upper_bytes[4] = {0, 0, 0, 4};
         uint8_t optimizer_small_estimate_parameter_bytes[4] = {0, 0, 0, 42};
         prdb_sdk_value_v1 optimizer_small_estimate_parameter = {
             sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
@@ -2440,7 +2440,7 @@ static int32_t run_write_read_fixture(
                 prdb_sdk_optimizer_execute_select_ast_with_parameters_v1(
                     &range_observer_host, &optimizer_statement,
                     optimizer_large_range_parameters, 2,
-                    schema, sizeof(schema) - 1, 16, sizeof(optimizer_batch),
+                    schema, sizeof(schema) - 1, 32, sizeof(optimizer_batch),
                     optimizer_request, sizeof(optimizer_request),
                     optimizer_response, sizeof(optimizer_response),
                     relation_response, sizeof(relation_response),
@@ -2461,7 +2461,7 @@ static int32_t run_write_read_fixture(
                 return report_failure(host, message, sizeof(message) - 1);
             }
             for (uint32_t index = 0; index < 8; ++index) {
-                if (benchmark_optimizer_results.values[index] != 0) {
+                if (benchmark_optimizer_results.values[index] != 3) {
                     static const uint8_t message[] =
                         "fixture-error-range-benchmark-optimizer-values";
                     return report_failure(host, message, sizeof(message) - 1);
@@ -2477,7 +2477,7 @@ static int32_t run_write_read_fixture(
                 host, schema, sizeof(schema) - 1,
                 optimizer_large_range_select_sql,
                 sizeof(optimizer_large_range_select_sql) - 1,
-                optimizer_large_range_parameters, 2, 16,
+                optimizer_large_range_parameters, 2, 32,
                 sizeof(optimizer_batch), planner_response,
                 sizeof(planner_response), executor_response,
                 sizeof(executor_response), optimizer_batch,
@@ -2496,7 +2496,7 @@ static int32_t run_write_read_fixture(
                 return report_failure(host, message, sizeof(message) - 1);
             }
             for (uint32_t index = 0; index < 8; ++index) {
-                if (benchmark_reference_results.values[index] != 0) {
+                if (benchmark_reference_results.values[index] != 3) {
                     static const uint8_t message[] =
                         "fixture-error-range-benchmark-reference-values";
                     return report_failure(host, message, sizeof(message) - 1);
