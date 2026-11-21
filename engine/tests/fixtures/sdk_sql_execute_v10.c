@@ -914,6 +914,41 @@ static int32_t on_group_v21_decimal(
     return 0;
 }
 
+static int32_t on_group_v21_min_decimal(
+    void *context, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v21 *binding) {
+    group_capture *capture = (group_capture *)context;
+    assert(binding->abi_version == PRDB_SDK_SQL_ABI_V21_VERSION);
+    assert(binding->base.having_type_code == PRDB_SDK_VALUE_TYPE_DECIMAL);
+    assert(binding->base.having_decimal_scale == 2);
+    assert(binding->base.having_node_count == 1);
+    assert(binding->having_nodes[0].scale == 2);
+    assert(binding->having_nodes[0].base.operand_kind ==
+           PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL);
+    assert(binding->having_nodes[0].coefficient[14] == 1 &&
+           binding->having_nodes[0].coefficient[15] == 44);
+    assert(group_key_count == 2 && aggregate_value != NULL);
+    assert(matching_row_count == 1 && capture->mock->batch_finished != 0);
+    assert(prdb_sdk_value_get_integer_v1(&group_keys[0],
+                                         &capture->keys[capture->calls]) ==
+           PRDB_SDK_VALUE_ACCESS_OK);
+    assert(group_keys[1].type_code == PRDB_SDK_VALUE_TYPE_DECIMAL &&
+           group_keys[1].data_len == 16 && group_keys[1].data[14] == 1 &&
+           group_keys[1].data[15] == 44);
+    assert(aggregate_value->state == PRDB_SDK_VALUE_STATE_VALUE &&
+           aggregate_value->type_code == PRDB_SDK_VALUE_TYPE_DECIMAL &&
+           aggregate_value->data_len == 16);
+    for (uint32_t index = 0; index < 14; ++index)
+        assert(aggregate_value->data[index] == 0);
+    assert(aggregate_value->data[14] == 1 &&
+           aggregate_value->data[15] == 44);
+    capture->aggregates[capture->calls] = 300;
+    ++capture->calls;
+    return 0;
+}
+
 static int32_t run_query_v21_decimal(mock_state *mock, const uint8_t *sql,
                                      uint64_t sql_len,
                                      group_capture *capture) {
@@ -941,6 +976,35 @@ static int32_t run_query_v21_decimal(mock_state *mock, const uint8_t *sql,
         planner_columns, 2, executor_columns, 2, cell_scratch, 2,
         materialized_bytes, sizeof(materialized_bytes), on_group_v21_decimal,
         capture);
+}
+
+static int32_t run_query_v21_min_decimal(mock_state *mock, const uint8_t *sql,
+                                         uint64_t sql_len,
+                                         group_capture *capture) {
+    static const uint8_t schema[] = "app";
+    static const uint8_t id_name[] = "id";
+    static const uint8_t score_name[] = "score";
+    uint8_t planner_response[256] = {0};
+    uint8_t executor_response[256] = {0};
+    uint8_t batch_response[512] = {0};
+    uint8_t materialized_bytes[2048] = {0};
+    prdb_sdk_sql_column_shape_v2 planner_columns[2] = {
+        {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
+        {score_name, 5, 1, PRDB_SDK_VALUE_TYPE_DECIMAL, 10, 2}};
+    prdb_sdk_sql_column_shape_v2 executor_columns[2] = {
+        {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
+        {score_name, 5, 1, PRDB_SDK_VALUE_TYPE_DECIMAL, 10, 2}};
+    prdb_sdk_value_v1 cell_scratch[2] = {{0}};
+    prdb_host_api_v3 host = {sizeof(host), PRDB_QUERY_ABI_V3_VERSION,
+                             mock, executor_request, planner_request, NULL,
+                             statement_failure};
+    return prdb_sdk_sql_execute_group_v21(
+        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0, 4, 512,
+        planner_response, sizeof(planner_response), executor_response,
+        sizeof(executor_response), batch_response, sizeof(batch_response),
+        planner_columns, 2, executor_columns, 2, cell_scratch, 2,
+        materialized_bytes, sizeof(materialized_bytes),
+        on_group_v21_min_decimal, capture);
 }
 
 static void reset_scan(mock_state *mock, group_capture *capture,
@@ -1053,6 +1117,9 @@ int main(void) {
     static const uint8_t v21_decimal_literal_sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
         "HAVING SUM(score) >= 4.50e0";
+    static const uint8_t v21_decimal_min_literal_sql[] =
+        "SELECT id, score, MIN(score) FROM widgets GROUP BY id, score "
+        "HAVING MIN(score) <= 3.00e0";
     static const uint8_t v13_many_groups_sql[] =
         "SELECT id, score, COUNT(*) FROM widgets GROUP BY id, score";
     static const uint8_t parameter_bytes[] = {0, 0, 0, 5};
@@ -1684,6 +1751,16 @@ int main(void) {
         assert(capture.calls == 2 && capture.keys[0] == 1 &&
                capture.aggregates[0] == 9 && capture.keys[1] == 2 &&
                capture.aggregates[1] == 5 && mock.statement_failed == 0);
+
+        mock.batch_len = make_decimal_rows(mock.batch, 1, keys,
+                                           decimal_coefficients, 3);
+        reset_scan(&mock, &capture, 1);
+        assert(run_query_v21_min_decimal(
+                   &mock, v21_decimal_min_literal_sql,
+                   sizeof(v21_decimal_min_literal_sql) - 1, &capture) ==
+               PRDB_SDK_SQL_EXEC_OK);
+        assert(capture.calls == 1 && capture.keys[0] == 1 &&
+               capture.aggregates[0] == 300 && mock.statement_failed == 0);
     }
     return 0;
 }

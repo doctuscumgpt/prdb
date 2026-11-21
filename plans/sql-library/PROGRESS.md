@@ -35,6 +35,13 @@
 - Verification: focused TinyCC fixture and the complete maintained `make -f engine/sdk/Makefile test` suite passed in the pinned Nix shell using TinyCC 0.9.27-unstable-2025-01-06. `git diff --check` passed.
 - Scope: this protects exact decimal coercion boundaries; broader analytical type/workload coverage, spill support, and end-to-end pressure testing remain open.
 
+## SQL-7 follow-up: v21 Decimal MIN HAVING execution — verified
+
+- Contract: v21's exact Decimal literal binding and composite grouped runner apply to each supported aggregate result shape, including Decimal MIN.
+- Regression: the maintained grouped executor fixture runs `MIN(score) <= 3.00e0` over Decimal rows, checks the bound v21 literal and MIN metadata in the callback, and verifies only the qualifying group is emitted with the expected Decimal coefficient.
+- Verification: focused `sdk-sql-execute-v10` and the full `make -f engine/sdk/Makefile test` suite passed with the pinned TinyCC toolchain. `git diff --check` passed.
+- Scope: this covers v21 Decimal MIN comparison in the bounded runner; broader workload coverage and confined end-to-end result verification remain open.
+
 ## SQL-5 follow-up: confined indexed-range equivalence — verified
 
 - Contract: [SQL library](../../specs/sql-library.md) and [planner/compiler](../../specs/planner-compiler.md). A validated two-sided leading-key range over an authorized non-unique index must return the same projected rows as the normal authorized SQL scan on the invocation snapshot.
