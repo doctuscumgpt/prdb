@@ -820,6 +820,15 @@
 - Verification: the focused `sdk-sql-execute-v2` fixture and full TinyCC SDK suite passed; `git diff --check` passed.
 - Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
 
+## SQL-8 follow-up: v8 join shares its scan budget and observes terminal cancellation — verified
+
+- Contract: the v8 two-relation join runner shares one page budget across both scans and observes cancellation after pair generation, including when the join has no matches. Long result emission also polls cancellation at a bounded interval.
+- Regression: the maintained fixture raises cancellation during the terminal right-side batch of a no-match join and verifies zero callbacks plus a latched statement failure. It also exhausts the shared 121-page limit on the left scan and verifies the active cursor closes before another fetch or the right scan begins.
+- Implementation: v8 now shares a 121-page ceiling across both relations, polls before each page, polls after pair generation, and polls every 2,048 emitted pairs. At the page and pair limits, the runner uses at most 254 executor requests within the 256-request ceiling.
+- Specification: [`sql-library.md`](../../specs/sql-library.md) records the shared budget, cancellation checkpoints, and request bound.
+- Verification: focused `sdk-sql-execute-v8` fixture and `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed with TinyCC; `git diff --check` passed.
+- Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
+
 ## SQL-7 / WI-7 follow-up: v21 HAVING fuzz seeds exercise successful binding — verified
 
 - Correction: the v21 fuzz corpus previously used `category` and `scores`, which did not match the harness's bound `id`/`score` shape. Those seeds could parse but did not reach successful binding. Replaced them with schema-matched statements and added a compound Decimal seed covering signed exponent literals, Boolean precedence, ORDER BY, and LIMIT.

@@ -486,6 +486,28 @@ int main(void) {
     assert(capture.calls == 1 && mock.statement_failed == 1);
 
     {
+        const int32_t no_match_right_keys[] = {11, 12, 13};
+        mock.batch_len[1] = make_batch(mock.batch[1], no_match_right_keys,
+                                       left_states, right_values, 3);
+        reset(&mock, &capture);
+        mock.cancel_after_check = 3;
+        assert(run_query(&mock, &capture, sql, sizeof(sql) - 1, 1024) ==
+               PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+        assert(capture.calls == 0 && mock.check_cancel_calls == 3 &&
+               mock.statement_failed == 1);
+
+        mock.batch_len[1] = make_batch(mock.batch[1], right_keys, right_states,
+                                       right_values, 3);
+        reset(&mock, &capture);
+        mock.empty_pages[0] = 121;
+        assert(run_query(&mock, &capture, sql, sizeof(sql) - 1, 1024) ==
+               PRDB_SDK_SQL_EXEC_REQUEST_LIMIT);
+        assert(mock.next_calls[0] == 121 && mock.next_calls[1] == 0 &&
+               mock.close_calls == 1 && mock.executor_requests == 246 &&
+               capture.calls == 0 && mock.statement_failed == 1);
+    }
+
+    {
         const int32_t composite_left_values[] = {10, 20, 30};
         const int32_t composite_right_values[] = {20, 10, 30};
         mock.batch_len[0] = make_batch(mock.batch[0], left_keys, left_states,

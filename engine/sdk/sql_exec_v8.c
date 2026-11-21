@@ -2,7 +2,8 @@
 
 #include <string.h>
 
-#define SQL_EXEC_V8_MAX_NEXT_REQUESTS UINT32_C(252)
+#define SQL_EXEC_V8_MAX_SCAN_PAGES UINT32_C(121)
+#define SQL_EXEC_V8_JOIN_POLL_INTERVAL UINT32_C(2048)
 
 static int32_t fail_statement_v8(const prdb_host_api_v3 *host,
                                  int32_t status) {
@@ -76,13 +77,14 @@ static int32_t materialize_relation_v8(
     uint8_t *batch_response, uint64_t batch_response_capacity,
     prdb_sdk_value_v1 *cell_scratch, uint32_t cell_scratch_capacity,
     prdb_sdk_sql_join_materialized_row_v8 *rows, uint32_t row_capacity,
-    uint32_t *row_count_out, uint8_t *materialized_bytes,
+    uint32_t *row_count_out, uint32_t *total_pages,
+    uint8_t *materialized_bytes,
     uint64_t materialized_bytes_capacity, uint64_t *materialized_used) {
     uint8_t cursor[16] = {0};
     uint8_t close_response[8] = {0};
     uint64_t executor_response_len = 0, batch_response_len = 0;
     uint64_t close_response_len = 0;
-    uint32_t page_count = 0, row_count = 0;
+    uint32_t row_count = 0;
     int cursor_open = 0;
     int32_t status = prdb_sdk_executor_open_full_scan_v1(
         host, relation->executor_handle, executor_response,
@@ -96,7 +98,7 @@ static int32_t materialize_relation_v8(
     for (;;) {
         prdb_sdk_batch_v1 batch = {0};
         prdb_sdk_row_iterator_v1 row_iterator = {0};
-        if (page_count >= SQL_EXEC_V8_MAX_NEXT_REQUESTS) {
+        if (*total_pages >= SQL_EXEC_V8_MAX_SCAN_PAGES) {
             final_status = PRDB_SDK_SQL_EXEC_REQUEST_LIMIT;
             break;
         }
@@ -114,7 +116,7 @@ static int32_t materialize_relation_v8(
             final_status = PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR;
             break;
         }
-        ++page_count;
+        ++*total_pages;
         if (batch.finished) {
             cursor_open = 0;
         } else {
@@ -241,6 +243,7 @@ int32_t prdb_sdk_sql_execute_inner_join_v8(
     prdb_sdk_sql_join_pair_v1 pairs[PRDB_SDK_SQL_JOIN_MAX_PAIRS];
     prdb_sdk_value_v1 projected_values[PRDB_SDK_SQL_MAX_PROJECTION_COLUMNS];
     uint32_t left_row_count = 0, right_row_count = 0, pair_count = 0;
+    uint32_t total_pages = 0;
     uint64_t left_planner_response_len = 0, right_planner_response_len = 0;
     uint64_t left_executor_response_len = 0, right_executor_response_len = 0;
     uint64_t materialized_used = 0;
@@ -363,6 +366,7 @@ int32_t prdb_sdk_sql_execute_inner_join_v8(
         left_executor_response, left_executor_response_capacity,
         batch_response, batch_response_capacity, cell_scratch,
         cell_scratch_capacity, left_rows, left_row_capacity, &left_row_count,
+        &total_pages,
         materialized_bytes, materialized_bytes_capacity, &materialized_used);
     if (status != PRDB_SDK_SQL_EXEC_OK) {
         return fail_statement_v8(host_v3, status);
@@ -373,7 +377,8 @@ int32_t prdb_sdk_sql_execute_inner_join_v8(
         right_executor_response, right_executor_response_capacity,
         batch_response, batch_response_capacity, cell_scratch,
         cell_scratch_capacity, right_rows, right_row_capacity,
-        &right_row_count, materialized_bytes, materialized_bytes_capacity,
+        &right_row_count, &total_pages, materialized_bytes,
+        materialized_bytes_capacity,
         &materialized_used);
     if (status != PRDB_SDK_SQL_EXEC_OK) {
         return fail_statement_v8(host_v3, status);
@@ -394,7 +399,24 @@ int32_t prdb_sdk_sql_execute_inner_join_v8(
         return fail_statement_v8(host_v3,
                                  PRDB_SDK_SQL_EXEC_EVALUATION_ERROR);
     }
+    {
+        int32_t cancelled = 0;
+        status = prdb_sdk_executor_check_cancelled_v1(host, &cancelled);
+        if (status != PRDB_SDK_EXECUTOR_OK || cancelled) {
+            return fail_statement_v8(host_v3,
+                                     PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+        }
+    }
     for (uint32_t pair_index = 0; pair_index < pair_count; ++pair_index) {
+        if (pair_index != 0 &&
+            pair_index % SQL_EXEC_V8_JOIN_POLL_INTERVAL == 0) {
+            int32_t cancelled = 0;
+            status = prdb_sdk_executor_check_cancelled_v1(host, &cancelled);
+            if (status != PRDB_SDK_EXECUTOR_OK || cancelled) {
+                return fail_statement_v8(host_v3,
+                                         PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+            }
+        }
         const prdb_sdk_sql_join_pair_v1 *pair = &pairs[pair_index];
         for (uint32_t projection = 0;
              projection < binding.projection_count; ++projection) {
