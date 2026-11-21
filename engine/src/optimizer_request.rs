@@ -9,6 +9,7 @@ use crate::query_abi::{
     OPTIMIZER_COMPOSITE_GROUP_AGGREGATE_STATEMENT, OPTIMIZER_COMPOSITE_GROUP_COUNT_STATEMENT,
     OPTIMIZER_DELETE_STATEMENT, OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT,
     OPTIMIZER_GROUP_COUNT_STATEMENT, OPTIMIZER_JOIN_SELECT_STATEMENT,
+    OPTIMIZER_ORDERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT,
     OPTIMIZER_ORDERED_GROUP_AGGREGATE_STATEMENT, OPTIMIZER_ORDERED_SELECT_STATEMENT,
     OPTIMIZER_REQUEST_VERSION, OPTIMIZER_SELECT_REQUEST_HEADER_BYTES,
     OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET, OPTIMIZER_SELECT_STATEMENT,
@@ -170,6 +171,20 @@ pub struct OrderedCompositeGroupCountRequest {
     pub schema_name: String,
     pub relation_name: String,
     pub group_key_names: Vec<String>,
+    pub order_items: Vec<CompositeGroupCountOrderItem>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderedCompositeGroupAggregateRequest {
+    pub schema_name: String,
+    pub relation_name: String,
+    pub group_key_names: Vec<String>,
+    /// 1 COUNT(*), 2 MIN, 3 MAX, 4 SUM, 5 AVG.
+    pub aggregate_kind: u8,
+    /// Absent only for COUNT(*).
+    pub aggregate_column_name: Option<String>,
+    /// Source 0 sorts by a group key; source 1 sorts by the selected aggregate.
     pub order_items: Vec<CompositeGroupCountOrderItem>,
     pub limit: Option<u32>,
 }
@@ -939,6 +954,117 @@ pub fn decode_ordered_composite_group_count_request(
     })
 }
 
+pub fn decode_ordered_composite_group_aggregate_request(
+    bytes: &[u8],
+) -> Result<OrderedCompositeGroupAggregateRequest, RequestError> {
+    if bytes.len() > MAX_REQUEST_BYTES {
+        return Err(RequestError::TooLarge);
+    }
+    let header_bytes = OPTIMIZER_SELECT_REQUEST_HEADER_BYTES as usize;
+    if bytes.len() < header_bytes {
+        return Err(RequestError::Truncated);
+    }
+    let version_offset = OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET as usize;
+    let version = u16::from_be_bytes([bytes[version_offset], bytes[version_offset + 1]]);
+    if version != OPTIMIZER_REQUEST_VERSION {
+        return Err(RequestError::UnsupportedVersion(version));
+    }
+    let (statement, flags) =
+        decode_optimizer_select_request(bytes).ok_or(RequestError::Truncated)?;
+    if statement != OPTIMIZER_ORDERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT {
+        return Err(RequestError::UnsupportedStatement(statement));
+    }
+    if flags != 0 {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut cursor = Cursor {
+        bytes,
+        offset: header_bytes,
+    };
+    let schema_name = cursor.identifier()?;
+    let relation_name = cursor.identifier()?;
+    let key_count = usize::from(cursor.u8()?);
+    if !(MIN_GROUP_KEYS..=MAX_GROUP_KEYS).contains(&key_count) {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut group_key_names = Vec::with_capacity(key_count);
+    for _ in 0..key_count {
+        let name = cursor.identifier()?;
+        if group_key_names
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&name))
+        {
+            return Err(RequestError::InvalidValue);
+        }
+        group_key_names.push(name);
+    }
+    let aggregate_kind = cursor.u8()?;
+    if !(1..=5).contains(&aggregate_kind) {
+        return Err(RequestError::InvalidValue);
+    }
+    let aggregate_column_name = if aggregate_kind == 1 {
+        None
+    } else {
+        Some(cursor.identifier()?)
+    };
+    let order_count = usize::from(cursor.u8()?);
+    if !(1..=MAX_GROUP_KEYS + 1).contains(&order_count) {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut order_items = Vec::with_capacity(order_count);
+    let mut seen_group_keys = 0u8;
+    let mut seen_aggregate = false;
+    for _ in 0..order_count {
+        let source = cursor.u8()?;
+        let group_key_index = if source == 0 {
+            let key_index = cursor.u8()?;
+            if usize::from(key_index) >= key_count || seen_group_keys & (1 << key_index) != 0 {
+                return Err(RequestError::InvalidValue);
+            }
+            seen_group_keys |= 1 << key_index;
+            Some(key_index)
+        } else if source == 1 && !seen_aggregate {
+            seen_aggregate = true;
+            None
+        } else {
+            return Err(RequestError::InvalidValue);
+        };
+        let descending = match cursor.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(RequestError::InvalidValue),
+        };
+        let nulls_first = match cursor.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(RequestError::InvalidValue),
+        };
+        order_items.push(CompositeGroupCountOrderItem {
+            source,
+            group_key_index,
+            descending,
+            nulls_first,
+        });
+    }
+    let limit = match cursor.u8()? {
+        0 => None,
+        1 => Some(cursor.u32()?),
+        _ => return Err(RequestError::InvalidValue),
+    };
+    if !cursor.is_empty() {
+        return Err(RequestError::TrailingBytes);
+    }
+    Ok(OrderedCompositeGroupAggregateRequest {
+        schema_name,
+        relation_name,
+        group_key_names,
+        aggregate_kind,
+        aggregate_column_name,
+        order_items,
+        limit,
+    })
+}
+
 /// Decode a canonical composite COUNT(*) request with an optional post-group
 /// LIMIT. Column names remain untrusted until bound against authorized metadata.
 pub fn decode_composite_group_count_request(
@@ -1502,6 +1628,32 @@ mod tests {
         bytes
     }
 
+    fn ordered_composite_group_aggregate_request(kind: u8) -> Vec<u8> {
+        let mut bytes = vec![
+            0,
+            OPTIMIZER_REQUEST_VERSION as u8,
+            OPTIMIZER_ORDERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT,
+            0,
+        ];
+        name("public", &mut bytes);
+        name("items", &mut bytes);
+        bytes.push(2);
+        name("region", &mut bytes);
+        name("category", &mut bytes);
+        bytes.push(kind);
+        if kind != 1 {
+            name("amount", &mut bytes);
+        }
+        bytes.extend_from_slice(&[
+            3, // order count
+            1, 1, 0, // selected aggregate DESC NULLS LAST
+            0, 1, 0, 1, // group key 1 ASC NULLS FIRST
+            0, 0, 1, 0, // group key 0 DESC NULLS LAST
+            1, 0, 0, 0, 4, // LIMIT 4
+        ]);
+        bytes
+    }
+
     #[test]
     fn decodes_bounded_single_key_group_count_request() {
         let request = decode_group_count_request(&group_count_request()).unwrap();
@@ -1699,6 +1851,48 @@ mod tests {
         assert_eq!(
             decode_ordered_composite_group_count_request(&trailing),
             Err(RequestError::TrailingBytes)
+        );
+    }
+
+    #[test]
+    fn decodes_ordered_composite_aggregate_requests_for_every_aggregate_kind() {
+        for kind in 1..=5 {
+            let request = decode_ordered_composite_group_aggregate_request(
+                &ordered_composite_group_aggregate_request(kind),
+            )
+            .unwrap();
+            assert_eq!(request.group_key_names, ["region", "category"]);
+            assert_eq!(request.aggregate_kind, kind);
+            assert_eq!(request.aggregate_column_name.is_some(), kind != 1);
+            assert_eq!(request.order_items.len(), 3);
+            assert_eq!(request.order_items[0].source, 1);
+            assert_eq!(request.order_items[0].group_key_index, None);
+            assert_eq!(request.order_items[1].group_key_index, Some(1));
+            assert_eq!(request.order_items[2].group_key_index, Some(0));
+            assert_eq!(request.limit, Some(4));
+        }
+
+        let mut duplicate_order = ordered_composite_group_aggregate_request(3);
+        let first_key_index = duplicate_order
+            .windows(4)
+            .position(|window| window == [0, 1, 0, 1])
+            .unwrap();
+        duplicate_order[first_key_index + 1] = 0;
+        assert_eq!(
+            decode_ordered_composite_group_aggregate_request(&duplicate_order),
+            Err(RequestError::InvalidValue)
+        );
+
+        let mut invalid_aggregate = ordered_composite_group_aggregate_request(3);
+        let aggregate_offset = invalid_aggregate
+            .windows(7)
+            .position(|window| window == [6, b'a', b'm', b'o', b'u', b'n', b't'])
+            .unwrap()
+            + 7;
+        invalid_aggregate[aggregate_offset] = 6;
+        assert_eq!(
+            decode_ordered_composite_group_aggregate_request(&invalid_aggregate),
+            Err(RequestError::InvalidValue)
         );
     }
 

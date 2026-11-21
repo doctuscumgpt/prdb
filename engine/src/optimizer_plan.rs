@@ -2,9 +2,9 @@
 
 use crate::optimizer_binding::{
     BoundColumn, BoundCompositeGroupAggregate, BoundCompositeGroupCount, BoundGroupAggregate,
-    BoundGroupCount, BoundJoinFilter, BoundJoinSelect, BoundOrderedCompositeGroupCount,
-    BoundOrderedGroupAggregate, BoundOrderedGroupCount, BoundOrderedSelect, BoundPredicate,
-    BoundSelect, BoundUpdateAssignment, BoundUpdateValue,
+    BoundGroupCount, BoundJoinFilter, BoundJoinSelect, BoundOrderedCompositeGroupAggregate,
+    BoundOrderedCompositeGroupCount, BoundOrderedGroupAggregate, BoundOrderedGroupCount,
+    BoundOrderedSelect, BoundPredicate, BoundSelect, BoundUpdateAssignment, BoundUpdateValue,
 };
 use crate::optimizer_request::JoinRelationSide;
 use crate::optimizer_request::{CompositeGroupCountOrderItem, GroupCountOrderItem};
@@ -154,6 +154,12 @@ pub struct CompositeGroupAggregatePlanV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderedCompositeGroupAggregatePlanV1 {
+    pub aggregate_plan: CompositeGroupAggregatePlanV1,
+    pub order_items: Vec<CompositeGroupCountOrderItem>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrderedGroupAggregatePlanV1 {
     pub aggregate_plan: GroupAggregatePlanV1,
     pub order_items: Vec<GroupCountOrderItem>,
@@ -213,6 +219,7 @@ const PLAN_KIND_ORDERED_COMPOSITE_GROUP_COUNT: u8 = 9;
 const PLAN_KIND_GROUP_AGGREGATE: u8 = 10;
 const PLAN_KIND_ORDERED_GROUP_AGGREGATE: u8 = 11;
 const PLAN_KIND_COMPOSITE_GROUP_AGGREGATE: u8 = 13;
+const PLAN_KIND_ORDERED_COMPOSITE_GROUP_AGGREGATE: u8 = 14;
 const GROUP_COUNT_NODE: u8 = 7;
 const COMPOSITE_GROUP_COUNT_NODE: u8 = 8;
 const ORDER_BY_NODE: u8 = 9;
@@ -220,6 +227,7 @@ const ORDERED_COMPOSITE_GROUP_COUNT_NODE: u8 = 10;
 const GROUP_AGGREGATE_NODE: u8 = 11;
 const ORDERED_GROUP_AGGREGATE_NODE: u8 = 12;
 const COMPOSITE_GROUP_AGGREGATE_NODE: u8 = 13;
+const ORDERED_COMPOSITE_GROUP_AGGREGATE_NODE: u8 = 14;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlanError {
@@ -2207,6 +2215,221 @@ pub fn decode_composite_group_aggregate_plan_v1(
     Ok(plan)
 }
 
+pub fn plan_ordered_composite_group_aggregate_v1(
+    bound: BoundOrderedCompositeGroupAggregate,
+) -> Result<OrderedCompositeGroupAggregatePlanV1, PlanError> {
+    let aggregate_plan = plan_composite_group_aggregate_v1(BoundCompositeGroupAggregate {
+        schema_name: bound.schema_name,
+        schema_id: bound.schema_id,
+        schema_version: bound.schema_version,
+        table_epoch: bound.table_epoch,
+        relation_id: bound.relation_id,
+        relation_name: bound.relation_name,
+        group_keys: bound.group_keys,
+        aggregate_kind: bound.aggregate_kind,
+        aggregate_column: bound.aggregate_column,
+        limit: bound.limit,
+    })?;
+    let plan = OrderedCompositeGroupAggregatePlanV1 {
+        aggregate_plan,
+        order_items: bound.order_items,
+    };
+    validate_ordered_composite_group_aggregate_plan_v1(&plan)?;
+    Ok(plan)
+}
+
+pub fn validate_ordered_composite_group_aggregate_plan_v1(
+    plan: &OrderedCompositeGroupAggregatePlanV1,
+) -> Result<(), PlanError> {
+    validate_composite_group_aggregate_plan_v1(&plan.aggregate_plan)?;
+    if !(1..=9).contains(&plan.order_items.len()) {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    let mut seen_keys = HashSet::new();
+    let mut aggregate_seen = false;
+    for item in &plan.order_items {
+        match (item.source, item.group_key_index) {
+            (0, Some(index))
+                if usize::from(index) < plan.aggregate_plan.group_keys.len()
+                    && seen_keys.insert(index) => {}
+            (1, None) if !aggregate_seen => aggregate_seen = true,
+            _ => return Err(PlanError::InvalidColumnReference),
+        }
+    }
+    Ok(())
+}
+
+pub fn encode_ordered_composite_group_aggregate_plan_v1(
+    plan: &OrderedCompositeGroupAggregatePlanV1,
+) -> Result<Vec<u8>, PlanError> {
+    validate_ordered_composite_group_aggregate_plan_v1(plan)?;
+    let mut output = encode_composite_group_aggregate_plan_v1(&plan.aggregate_plan)?;
+    let mut reader = PlanReader {
+        bytes: &output,
+        offset: crate::query_abi::OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES as usize,
+    };
+    reader.name()?;
+    reader.take(crate::query_abi::OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES as usize)?;
+    reader.name()?;
+    reader
+        .take(crate::query_abi::OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES as usize)?;
+    let scan_count = usize::from(reader.u16()?);
+    for _ in 0..scan_count {
+        reader.column()?;
+    }
+    let node_offset = reader.offset;
+    reader.u8()?;
+    reader.u8()?;
+    let key_count = usize::from(reader.u8()?);
+    for _ in 0..key_count {
+        reader.column()?;
+    }
+    match reader.u8()? {
+        0 => {}
+        1 => {
+            reader.column()?;
+        }
+        _ => return Err(PlanError::InvalidEncoding),
+    }
+    let limit_offset = reader.offset;
+    output.truncate(limit_offset);
+    output.extend_from_slice(&[
+        ORDERED_COMPOSITE_GROUP_AGGREGATE_NODE,
+        plan.order_items.len() as u8,
+    ]);
+    for item in &plan.order_items {
+        output.push(item.source);
+        if let Some(index) = item.group_key_index {
+            output.push(index);
+        }
+        output.extend_from_slice(&[u8::from(item.descending), u8::from(item.nulls_first)]);
+    }
+    match plan.aggregate_plan.limit {
+        None => output.push(0),
+        Some(limit) => {
+            output.push(1);
+            output.extend_from_slice(&limit.to_be_bytes());
+        }
+    }
+    output[2] = PLAN_KIND_ORDERED_COMPOSITE_GROUP_AGGREGATE;
+    output[node_offset] = ORDERED_COMPOSITE_GROUP_AGGREGATE_NODE;
+    if output.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    Ok(output)
+}
+
+pub fn decode_ordered_composite_group_aggregate_plan_v1(
+    bytes: &[u8],
+) -> Result<OrderedCompositeGroupAggregatePlanV1, PlanError> {
+    if bytes.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    let (version, kind, reserved) =
+        crate::query_abi::decode_optimizer_plan_header_record(bytes).ok_or(PlanError::Truncated)?;
+    if version != 1 {
+        return Err(PlanError::UnsupportedVersion(version));
+    }
+    if kind != PLAN_KIND_ORDERED_COMPOSITE_GROUP_AGGREGATE || reserved != 0 {
+        return Err(PlanError::InvalidEncoding);
+    }
+    let mut reader = PlanReader {
+        bytes,
+        offset: crate::query_abi::OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES as usize,
+    };
+    reader.name()?;
+    reader.take(crate::query_abi::OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES as usize)?;
+    reader.name()?;
+    reader
+        .take(crate::query_abi::OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES as usize)?;
+    let scan_count = usize::from(reader.u16()?);
+    if !(crate::optimizer_request::MIN_GROUP_KEYS..=crate::optimizer_request::MAX_GROUP_KEYS + 1)
+        .contains(&scan_count)
+    {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    for _ in 0..scan_count {
+        reader.column()?;
+    }
+    let node_offset = reader.offset;
+    if reader.u8()? != ORDERED_COMPOSITE_GROUP_AGGREGATE_NODE {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let aggregate_kind = reader.u8()?;
+    let key_count = usize::from(reader.u8()?);
+    if !(crate::optimizer_request::MIN_GROUP_KEYS..=crate::optimizer_request::MAX_GROUP_KEYS)
+        .contains(&key_count)
+    {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    for _ in 0..key_count {
+        reader.column()?;
+    }
+    match reader.u8()? {
+        0 => {}
+        1 => {
+            reader.column()?;
+        }
+        _ => return Err(PlanError::InvalidEncoding),
+    }
+    let base_prefix_end = reader.offset;
+    if reader.u8()? != ORDERED_COMPOSITE_GROUP_AGGREGATE_NODE {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let order_count = usize::from(reader.u8()?);
+    if !(1..=9).contains(&order_count) {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    let mut order_items = Vec::with_capacity(order_count);
+    for _ in 0..order_count {
+        let source = reader.u8()?;
+        let group_key_index = match source {
+            0 => Some(reader.u8()?),
+            1 => None,
+            _ => return Err(PlanError::InvalidColumnReference),
+        };
+        let descending = match reader.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(PlanError::InvalidEncoding),
+        };
+        let nulls_first = match reader.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(PlanError::InvalidEncoding),
+        };
+        order_items.push(CompositeGroupCountOrderItem {
+            source,
+            group_key_index,
+            descending,
+            nulls_first,
+        });
+    }
+    let limit_offset = reader.offset;
+    let limit = match reader.u8()? {
+        0 => None,
+        1 => Some(reader.u32()?),
+        _ => return Err(PlanError::InvalidEncoding),
+    };
+    if reader.offset != bytes.len() {
+        return Err(PlanError::TrailingBytes);
+    }
+    let mut base_bytes = bytes[..base_prefix_end].to_vec();
+    base_bytes.extend_from_slice(&bytes[limit_offset..]);
+    base_bytes[2] = PLAN_KIND_COMPOSITE_GROUP_AGGREGATE;
+    base_bytes[node_offset] = COMPOSITE_GROUP_AGGREGATE_NODE;
+    let aggregate_plan = decode_composite_group_aggregate_plan_v1(&base_bytes)?;
+    if aggregate_plan.aggregate_kind != aggregate_kind || aggregate_plan.limit != limit {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    let plan = OrderedCompositeGroupAggregatePlanV1 {
+        aggregate_plan,
+        order_items,
+    };
+    validate_ordered_composite_group_aggregate_plan_v1(&plan)?;
+    Ok(plan)
+}
+
 pub fn plan_ordered_select_v1(bound: BoundOrderedSelect) -> Result<OrderedSelectPlanV1, PlanError> {
     let relation = RelationReference {
         schema_name: bound.schema_name,
@@ -2994,6 +3217,18 @@ impl PlanReader<'_> {
 
     fn u8(&mut self) -> Result<u8, PlanError> {
         Ok(self.take(1)?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16, PlanError> {
+        Ok(u16::from_be_bytes(
+            self.take(2)?.try_into().map_err(|_| PlanError::Truncated)?,
+        ))
+    }
+
+    fn u32(&mut self) -> Result<u32, PlanError> {
+        Ok(u32::from_be_bytes(
+            self.take(4)?.try_into().map_err(|_| PlanError::Truncated)?,
+        ))
     }
 
     fn name(&mut self) -> Result<String, PlanError> {
@@ -5047,6 +5282,61 @@ mod tests {
         invalid.scan_columns.pop();
         assert_eq!(
             validate_composite_group_aggregate_plan_v1(&invalid),
+            Err(PlanError::InvalidColumnReference)
+        );
+    }
+
+    #[test]
+    fn ordered_composite_group_aggregate_plan_roundtrips_and_checks_sort_items() {
+        let keys = vec![
+            column(4, 1, ScalarType::Text),
+            column(3, 0, ScalarType::Integer),
+        ];
+        let amount = column(5, 2, ScalarType::BigInt);
+        let plan = plan_ordered_composite_group_aggregate_v1(BoundOrderedCompositeGroupAggregate {
+            schema_name: "sales".into(),
+            schema_id: [0x10; 16],
+            schema_version: 4,
+            table_epoch: 6,
+            relation_id: [0x20; 16],
+            relation_name: "orders".into(),
+            group_keys: keys,
+            aggregate_kind: 4,
+            aggregate_column: Some(amount),
+            order_items: vec![
+                CompositeGroupCountOrderItem {
+                    source: 1,
+                    group_key_index: None,
+                    descending: true,
+                    nulls_first: false,
+                },
+                CompositeGroupCountOrderItem {
+                    source: 0,
+                    group_key_index: Some(1),
+                    descending: false,
+                    nulls_first: true,
+                },
+            ],
+            limit: Some(4),
+        })
+        .unwrap();
+        let bytes = encode_ordered_composite_group_aggregate_plan_v1(&plan).unwrap();
+        assert_eq!(&bytes[..4], &[0, 1, 14, 0]);
+        assert_eq!(
+            decode_ordered_composite_group_aggregate_plan_v1(&bytes).unwrap(),
+            plan
+        );
+
+        let mut invalid = plan;
+        invalid.order_items[1].group_key_index = Some(0);
+        invalid.order_items.push(CompositeGroupCountOrderItem {
+            source: 0,
+            group_key_index: Some(0),
+            descending: false,
+            nulls_first: false,
+        });
+        assert_eq!(
+            validate_ordered_composite_group_aggregate_plan_v1(&invalid),
             Err(PlanError::InvalidColumnReference)
         );
     }

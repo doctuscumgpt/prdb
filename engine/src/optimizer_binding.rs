@@ -7,11 +7,12 @@ use crate::metadata_discovery::{
 use crate::optimizer_request::{
     Comparison, CompositeGroupAggregateRequest, CompositeGroupCountOrderItem,
     CompositeGroupCountRequest, GroupAggregateRequest, GroupCountOrderItem, GroupCountRequest,
-    JoinFilterExpression, JoinRelationSide, OrderedGroupAggregateRequest, OrderedGroupCountRequest,
-    OrderedSelectRequest, Predicate, RequestError, UpdateValue,
-    decode_composite_group_aggregate_request, decode_composite_group_count_request,
-    decode_delete_request, decode_group_aggregate_request, decode_group_count_request,
-    decode_join_select_request, decode_ordered_composite_group_count_request,
+    JoinFilterExpression, JoinRelationSide, OrderedCompositeGroupAggregateRequest,
+    OrderedGroupAggregateRequest, OrderedGroupCountRequest, OrderedSelectRequest, Predicate,
+    RequestError, UpdateValue, decode_composite_group_aggregate_request,
+    decode_composite_group_count_request, decode_delete_request, decode_group_aggregate_request,
+    decode_group_count_request, decode_join_select_request,
+    decode_ordered_composite_group_aggregate_request, decode_ordered_composite_group_count_request,
     decode_ordered_group_aggregate_request, decode_ordered_group_count_request,
     decode_ordered_select_request, decode_select_request, decode_update_request,
 };
@@ -148,6 +149,21 @@ pub struct BoundOrderedCompositeGroupCount {
     pub relation_id: [u8; 16],
     pub relation_name: String,
     pub group_keys: Vec<BoundColumn>,
+    pub order_items: Vec<CompositeGroupCountOrderItem>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundOrderedCompositeGroupAggregate {
+    pub schema_name: String,
+    pub schema_id: [u8; 16],
+    pub schema_version: u64,
+    pub table_epoch: u64,
+    pub relation_id: [u8; 16],
+    pub relation_name: String,
+    pub group_keys: Vec<BoundColumn>,
+    pub aggregate_kind: u8,
+    pub aggregate_column: Option<BoundColumn>,
     pub order_items: Vec<CompositeGroupCountOrderItem>,
     pub limit: Option<u32>,
 }
@@ -505,6 +521,80 @@ fn bind_decoded_composite_group_aggregate(
         group_keys,
         aggregate_kind: request.aggregate_kind,
         aggregate_column: aggregate_column.map(Into::into),
+        limit: request.limit,
+    })
+}
+
+pub fn bind_ordered_composite_group_aggregate_request(
+    request_bytes: &[u8],
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundOrderedCompositeGroupAggregate, BindError> {
+    let request = decode_ordered_composite_group_aggregate_request(request_bytes)?;
+    bind_decoded_ordered_composite_group_aggregate(request, relation)
+}
+
+pub fn bind_ordered_composite_group_aggregate_request_via_metadata(
+    request_bytes: &[u8],
+    connection: &mut PlannerMetadataConnection<'_, '_>,
+) -> Result<BoundOrderedCompositeGroupAggregate, MetadataBindError> {
+    let request =
+        decode_ordered_composite_group_aggregate_request(request_bytes).map_err(BindError::from)?;
+    let relation = connection
+        .resolve_relation_for_plan(&request.schema_name, &request.relation_name)
+        .map_err(MetadataBindError::Transaction)?
+        .map(|(_, relation)| relation);
+    bind_decoded_ordered_composite_group_aggregate(request, relation)
+        .map_err(MetadataBindError::Bind)
+}
+
+fn bind_decoded_ordered_composite_group_aggregate(
+    request: OrderedCompositeGroupAggregateRequest,
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundOrderedCompositeGroupAggregate, BindError> {
+    let relation = authorized_relation(&request.relation_name, relation)?;
+    let group_keys = request
+        .group_key_names
+        .iter()
+        .map(|name| resolve_column(&relation.relation.columns, name).map(Into::into))
+        .collect::<Result<Vec<BoundColumn>, _>>()?;
+    let mut seen = HashSet::with_capacity(group_keys.len());
+    if group_keys.iter().any(|column| !seen.insert(column.ordinal)) {
+        return Err(BindError::InvalidQuery);
+    }
+    let aggregate_column = request
+        .aggregate_column_name
+        .as_deref()
+        .map(|name| resolve_column(&relation.relation.columns, name))
+        .transpose()?;
+    if request.aggregate_kind == 1 && aggregate_column.is_some()
+        || request.aggregate_kind != 1 && aggregate_column.is_none()
+    {
+        return Err(BindError::InvalidQuery);
+    }
+    if matches!(request.aggregate_kind, 4 | 5)
+        && !matches!(
+            aggregate_column.as_ref().map(|column| column.scalar_type),
+            Some(
+                ScalarType::SmallInt
+                    | ScalarType::Integer
+                    | ScalarType::BigInt
+                    | ScalarType::Decimal { .. }
+            )
+        )
+    {
+        return Err(BindError::InvalidQuery);
+    }
+    Ok(BoundOrderedCompositeGroupAggregate {
+        schema_name: request.schema_name,
+        schema_id: relation.schema_id,
+        schema_version: relation.schema_version,
+        table_epoch: relation.table_epoch,
+        relation_id: relation.relation.relation_id,
+        relation_name: relation.relation.name,
+        group_keys,
+        aggregate_kind: request.aggregate_kind,
+        aggregate_column: aggregate_column.map(Into::into),
+        order_items: request.order_items,
         limit: request.limit,
     })
 }
@@ -1279,6 +1369,26 @@ mod tests {
         bytes
     }
 
+    fn ordered_composite_group_aggregate_request(kind: u8) -> Vec<u8> {
+        let mut bytes = vec![
+            0,
+            crate::query_abi::OPTIMIZER_REQUEST_VERSION as u8,
+            crate::query_abi::OPTIMIZER_ORDERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT,
+            0,
+        ];
+        put_name(&mut bytes, "public");
+        put_name(&mut bytes, "items");
+        bytes.push(2);
+        put_name(&mut bytes, "active");
+        put_name(&mut bytes, "id");
+        bytes.push(kind);
+        if kind != 1 {
+            put_name(&mut bytes, "amount");
+        }
+        bytes.extend_from_slice(&[2, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 4]);
+        bytes
+    }
+
     fn relation() -> AuthorizedPlanRelation {
         AuthorizedPlanRelation {
             schema_id: [0x10; 16],
@@ -1574,6 +1684,41 @@ mod tests {
                 Some(relation()),
             ),
             Err(BindError::Request(RequestError::InvalidValue))
+        );
+    }
+
+    #[test]
+    fn binds_ordered_composite_aggregates_to_authorized_columns() {
+        for kind in 1..=5 {
+            let bound = bind_ordered_composite_group_aggregate_request(
+                &ordered_composite_group_aggregate_request(kind),
+                Some(relation()),
+            )
+            .unwrap();
+            assert_eq!(
+                bound
+                    .group_keys
+                    .iter()
+                    .map(|key| key.ordinal)
+                    .collect::<Vec<_>>(),
+                [1, 0]
+            );
+            assert_eq!(bound.aggregate_kind, kind);
+            assert_eq!(bound.aggregate_column.is_some(), kind != 1);
+            assert_eq!(bound.order_items[0].source, 1);
+            assert_eq!(bound.order_items[1].group_key_index, Some(0));
+            assert_eq!(bound.limit, Some(4));
+        }
+        assert_eq!(
+            bind_ordered_composite_group_aggregate_request(
+                &ordered_composite_group_aggregate_request(4),
+                Some({
+                    let mut invalid = relation();
+                    invalid.relation.columns[2].scalar_type = ScalarType::Text;
+                    invalid
+                }),
+            ),
+            Err(BindError::InvalidQuery)
         );
     }
 

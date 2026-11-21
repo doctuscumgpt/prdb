@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 follow-up: ordered composite aggregate optimizer protocol — implemented slice
+
+- Contract: add an optimizer request and validated plan for composite `GROUP BY` with COUNT, MIN, MAX, SUM, or AVG, sorted by up to nine distinct selected group-key/aggregate expressions with explicit direction, NULL order, and LIMIT.
+- Implementation: optimizer statement 14 now has bounded decoding, authorized relation binding, scan-column derivation, canonical plan encoding/decoding, and optimizer-process dispatch. Plan validation rejects duplicate or out-of-range sort sources.
+- Verification: Rust request, binding, plan round-trip/rejection, and optimizer-process family tests passed; all 339 library unit tests passed. Format, warning-denied all-target Clippy, and `git diff --check` passed.
+- Remaining: add the TinyCC request encoder and independent plan matcher, connect the v15 composite grouped runner, and verify exact result frames through confined acceptance.
+
 ## SQL-8 follow-up: redacted aggregate input aborts confined query — verified
 
 - Contract: a required redacted aggregate operand fails the statement; the gateway must not publish partial SQLR group results and must durably abort the invocation.

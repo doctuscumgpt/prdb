@@ -107,6 +107,15 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             }),
             Operation::OptimizeGroupCount => {
                 if request.payload.get(2)
+                    == Some(
+                        &crate::query_abi::OPTIMIZER_ORDERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT,
+                    )
+                {
+                    crate::optimizer_request::decode_ordered_composite_group_aggregate_request(
+                        &request.payload,
+                    )
+                    .map(|decoded| vec![(decoded.schema_name, decoded.relation_name)])
+                } else if request.payload.get(2)
                     == Some(&crate::query_abi::OPTIMIZER_COMPOSITE_GROUP_AGGREGATE_STATEMENT)
                 {
                     crate::optimizer_request::decode_composite_group_aggregate_request(
@@ -238,6 +247,15 @@ pub fn serve_optimizer_process<S: Read + Write, P: Read + Write>(
             }
             Operation::OptimizeGroupCount => {
                 if request.payload.get(2)
+                    == Some(
+                        &crate::query_abi::OPTIMIZER_ORDERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT,
+                    )
+                {
+                    crate::optimizer_service::optimize_ordered_composite_group_aggregate_v1_with_relation(
+                        &request.payload,
+                        relations.remove(0),
+                    )
+                } else if request.payload.get(2)
                     == Some(&crate::query_abi::OPTIMIZER_COMPOSITE_GROUP_AGGREGATE_STATEMENT)
                 {
                     crate::optimizer_service::optimize_composite_group_aggregate_v1_with_relation(
@@ -726,6 +744,35 @@ mod tests {
             bytes.extend_from_slice(b"amount");
         }
         bytes.extend_from_slice(&[1, 0, 0, 0, 5]);
+        bytes
+    }
+
+    fn ordered_composite_group_aggregate_request(kind: u8) -> Vec<u8> {
+        let mut bytes = vec![
+            0,
+            1,
+            crate::query_abi::OPTIMIZER_ORDERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT,
+            0,
+        ];
+        for name in ["public", "items"] {
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.push(2);
+        for name in ["active", "id"] {
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.push(kind);
+        if kind != 1 {
+            bytes.push(6);
+            bytes.extend_from_slice(b"amount");
+        }
+        bytes.extend_from_slice(&[
+            2, 1, 1, 0, // selected aggregate DESC NULLS LAST
+            0, 0, 1, 1, // first group key ASC NULLS FIRST
+            1, 0, 0, 0, 5, // LIMIT 5
+        ]);
         bytes
     }
 
@@ -1838,11 +1885,22 @@ mod tests {
 
     #[test]
     fn process_protocol_dispatches_composite_aggregate_families_and_returns_validated_plans() {
+        for kind in 1..=5 {
+            assert!(
+                crate::optimizer_request::decode_ordered_composite_group_aggregate_request(
+                    &ordered_composite_group_aggregate_request(kind)
+                )
+                .is_ok()
+            );
+        }
         let (mut submission_client, mut submission_server) = UnixStream::pair().unwrap();
         let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
         std::thread::scope(|scope| {
             let planner_thread = scope.spawn(|| {
-                for expected_request_id in 257..262 {
+                planner_server
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                for expected_request_id in 257..267 {
                     let request = crate::ipc::read_frame(&mut planner_server)
                         .unwrap()
                         .expect("optimizer must resolve composite aggregate relation");
@@ -1938,6 +1996,34 @@ mod tests {
                     if kind == 1 { vec![0, 1] } else { vec![0, 1, 2] }
                 );
                 assert_eq!(plan.limit, Some(5));
+            }
+            for kind in 1..=5 {
+                crate::ipc::write_frame(
+                    &mut submission_client,
+                    &IpcFrame {
+                        operation: Operation::OptimizeGroupCount as u16,
+                        request_id: 25 + u64::from(kind),
+                        payload: ordered_composite_group_aggregate_request(kind),
+                    },
+                )
+                .unwrap();
+                let response = crate::ipc::read_frame(&mut submission_client)
+                    .unwrap()
+                    .expect("optimizer must return ordered composite aggregate plan");
+                assert_eq!(response.request_id, 25 + u64::from(kind));
+                let response = OptimizerResponse::decode(&response.payload).unwrap();
+                assert_eq!(response.status, OptimizerStatus::Success);
+                let plan = crate::optimizer_plan::decode_ordered_composite_group_aggregate_plan_v1(
+                    response.plan.as_deref().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(plan.aggregate_plan.aggregate_kind, kind);
+                assert_eq!(plan.aggregate_plan.group_keys[0].ordinal, 0);
+                assert_eq!(plan.aggregate_plan.group_keys[1].ordinal, 1);
+                assert_eq!(plan.order_items.len(), 2);
+                assert_eq!(plan.order_items[0].source, 1);
+                assert_eq!(plan.order_items[1].group_key_index, Some(0));
+                assert_eq!(plan.aggregate_plan.limit, Some(5));
             }
             submission_client.shutdown(Shutdown::Write).unwrap();
             planner_thread.join().unwrap();
