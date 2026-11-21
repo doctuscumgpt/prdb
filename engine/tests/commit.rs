@@ -40699,7 +40699,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                     precision: 4,
                     scale: 2,
                 },
-                nullable: false,
+                nullable: true,
                 generated_uuid_identity: false,
                 default: None,
             },
@@ -40790,15 +40790,15 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 precision: 4,
                 scale: 2,
             },
-            nullable: false,
+            nullable: true,
         },
     ];
     let decimal_rows = [
-        (0xf3, 1, 7, 100),
-        (0xf4, 1, 7, 125),
-        (0xf5, 2, 9, 100),
-        (0xf6, 2, 9, 125),
-        (0xf7, 2, 9, 225),
+        (0xf3, 1, 7, Some(100)),
+        (0xf4, 1, 7, None),
+        (0xf5, 2, 9, Some(100)),
+        (0xf6, 2, 9, Some(125)),
+        (0xf7, 2, 9, Some(225)),
     ]
     .into_iter()
     .map(|(row_id, left, right, decimal_value)| {
@@ -40811,7 +40811,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 &[
                     Some(ScalarValue::Integer(left)),
                     Some(ScalarValue::Integer(right)),
-                    Some(ScalarValue::Decimal(decimal_value)),
+                    decimal_value.map(ScalarValue::Decimal),
                 ],
             )?),
         })
@@ -44778,9 +44778,9 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         }
         for (aggregate_name, precision, scale, coefficients) in [
             (b"min".as_slice(), 4, 2, [100u128, 100]),
-            (b"max".as_slice(), 4, 2, [125u128, 225]),
-            (b"sum".as_slice(), 38, 2, [225u128, 450]),
-            (b"avg".as_slice(), 38, 8, [112_500_000u128, 150_000_000]),
+            (b"max".as_slice(), 4, 2, [100u128, 225]),
+            (b"sum".as_slice(), 38, 2, [100u128, 450]),
+            (b"avg".as_slice(), 38, 8, [100_000_000u128, 150_000_000]),
         ] {
             for (index, (left_key, right_key)) in [(1i32, 7i32), (2, 9)].into_iter().enumerate() {
                 let frame = aggregate_frames.next().ok_or_else(|| {

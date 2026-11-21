@@ -484,13 +484,13 @@ static int32_t write_grouped_composite_aggregate_optimizer(
             expected_coefficient = 100;
         } else if (expectation->aggregate_kind ==
                    PRDB_SDK_SQL_V7_AGGREGATE_MAX) {
-            expected_coefficient = left_key == 1 ? 125 : 225;
+            expected_coefficient = left_key == 1 ? 100 : 225;
         } else if (expectation->aggregate_kind ==
                    PRDB_SDK_SQL_V7_AGGREGATE_SUM) {
-            expected_coefficient = left_key == 1 ? 225 : 450;
+            expected_coefficient = left_key == 1 ? 100 : 450;
         } else if (expectation->aggregate_kind ==
                    PRDB_SDK_SQL_V7_AGGREGATE_AVG) {
-            expected_coefficient = left_key == 1 ? 112500000 : 150000000;
+            expected_coefficient = left_key == 1 ? 100000000 : 150000000;
         } else {
             return 1;
         }
