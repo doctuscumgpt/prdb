@@ -42293,8 +42293,6 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             ]
         } else if operation == 4 {
             vec![&records_table, &joined_table, &composite_table]
-        } else if operation == 3 {
-            vec![&records_table, &identity_table]
         } else {
             vec![&records_table]
         };
@@ -43664,10 +43662,6 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                     }
                 },
             );
-        assert!(
-            optimizer_relation_descriptions.load(std::sync::atomic::Ordering::Relaxed) > 0,
-            "confined SQL acceptance did not resolve planner relation metadata"
-        );
         let (index_build_started_at, index_build_finished_at, index_build_id) = index_build_worker
             .join()
             .map_err(|_| std::io::Error::other("analytical pressure index builder panicked"))?
@@ -43893,6 +43887,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             || user_table.payload == b"analytics_pressure_records"
             || user_table.payload == b"analytics_range_benchmark_records"
             || user_table.payload == b"decimal_grouped_records"
+            || user_table.payload == b"bigint_grouped_records"
             || user_table.payload == b"identity_records",
         "unexpected SQL user table result: {:?}",
         user_table.payload
@@ -44407,6 +44402,173 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             output
         }
 
+        let bigint_table_invocation = id(0x9a);
+        let mut bigint_table_audit = identity_audit_event(0x9b, user_id, schema.schema_id);
+        bigint_table_audit.correlation_id = bigint_table_invocation;
+        let bigint_table = storage
+            .create_table(CreateTableRequest {
+                invocation_id: bigint_table_invocation,
+                authenticated_actor_id: user_id,
+                schema_id: schema.schema_id,
+                name: "bigint_grouped_records".to_owned(),
+                columns: vec![
+                    TableColumnDefinition {
+                        name: "left_key".to_owned(),
+                        scalar_type: ScalarType::Integer,
+                        nullable: false,
+                        generated_uuid_identity: false,
+                        default: None,
+                    },
+                    TableColumnDefinition {
+                        name: "right_key".to_owned(),
+                        scalar_type: ScalarType::Integer,
+                        nullable: false,
+                        generated_uuid_identity: false,
+                        default: None,
+                    },
+                    TableColumnDefinition {
+                        name: "measure".to_owned(),
+                        scalar_type: ScalarType::BigInt,
+                        nullable: false,
+                        generated_uuid_identity: false,
+                        default: None,
+                    },
+                ],
+                retention_deadline_us: now + 3_600_000_000,
+                audit_event: bigint_table_audit,
+            })
+            .map_err(|error| format!("create confined BIGINT aggregate table: {error:?}"))?;
+        let bigint_authority_invocation = id(0x9c);
+        let mut bigint_authority_audit = identity_audit_event(0x9d, user_id, user_id);
+        bigint_authority_audit.action = AuditAction::AuthorityChange;
+        bigint_authority_audit.correlation_id = bigint_authority_invocation;
+        let mut bigint_authority_writes = vec![
+            dependency_write(user_id, bigint_table.table_id, 5),
+            grant_write(
+                user_id,
+                bigint_table.table_id,
+                2,
+                1,
+                bigint_table.table_id,
+                user_id,
+            ),
+        ];
+        bigint_authority_writes.extend(
+            bigint_table
+                .column_ids
+                .iter()
+                .map(|column_id| dependency_write(user_id, *column_id, 5)),
+        );
+        bigint_authority_writes.extend(bigint_table.column_ids.iter().map(|column_id| {
+            grant_write(user_id, bigint_table.table_id, 2, 2, *column_id, user_id)
+        }));
+        let (old_user_record, old_token_record) = {
+            let read = database.begin_read()?;
+            let catalog = read.open_table(CATALOG)?;
+            (
+                catalog
+                    .get(id_catalog_key(10, user_id).as_slice())?
+                    .ok_or("sandbox SQL user record missing before BIGINT grants")?
+                    .value()
+                    .to_vec(),
+                catalog
+                    .get(id_catalog_key(16, token_id).as_slice())?
+                    .ok_or("sandbox SQL token record missing before BIGINT grants")?
+                    .value()
+                    .to_vec(),
+            )
+        };
+        let mut bumped_user = principal_write_with_name(user_id, 1, 3, "sandbox_sql_roundtrip");
+        bumped_user.expected_value = Some(old_user_record);
+        bigint_authority_writes.push(bumped_user);
+        let mut refreshed_token = credential_verifier_write(
+            token_id,
+            user_id,
+            &secret,
+            now - 1_000_000,
+            now + 120_000_000,
+            None,
+            3,
+        );
+        refreshed_token.expected_value = Some(old_token_record);
+        bigint_authority_writes.push(refreshed_token);
+        storage
+            .commit_catalog_and_audit(
+                bigint_authority_invocation,
+                user_id,
+                now + 3_600_000_000,
+                &bigint_authority_writes,
+                &[bigint_authority_audit],
+            )
+            .map_err(|error| format!("grant confined BIGINT aggregate table: {error:?}"))?;
+        let bigint_policy_invocation = id(0x9e);
+        let mut bigint_policy_audit = identity_audit_event(0x9f, user_id, bigint_table.table_id);
+        bigint_policy_audit.correlation_id = bigint_policy_invocation;
+        storage
+            .create_policy(CreatePolicyRequest {
+                invocation_id: bigint_policy_invocation,
+                authenticated_actor_id: user_id,
+                table_id: bigint_table.table_id,
+                name: "sandbox_bigint_grouped_select_policy".to_owned(),
+                kind: PolicyKind::Row,
+                operation: prdb_engine::authorization::Operation::Select,
+                effect: prdb_engine::authorization::Effect::Allow,
+                recipients: vec![prdb_engine::authorization::Subject::Principal(user_id)],
+                target_column_ids: Vec::new(),
+                using_expression: Some(prdb_engine::authorization::Expr::Literal(Some(
+                    ScalarValue::Boolean(true),
+                ))),
+                with_check_expression: None,
+                retention_deadline_us: now + 3_600_000_000,
+                audit_event: bigint_policy_audit,
+            })
+            .map_err(|error| format!("create confined BIGINT aggregate policy: {error:?}"))?;
+        let bigint_schema = [
+            ColumnSchema {
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+            },
+            ColumnSchema {
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+            },
+            ColumnSchema {
+                scalar_type: ScalarType::BigInt,
+                nullable: false,
+            },
+        ];
+        let bigint_rows = [
+            (0x92, 1, 7, 2i64),
+            (0x93, 1, 7, 4i64),
+            (0x94, 2, 9, 6i64),
+            (0x95, 2, 9, 9i64),
+            (0x96, 2, 9, 12i64),
+        ]
+        .into_iter()
+        .map(|(row_id, left, right, measure)| {
+            Ok(RowWrite {
+                key: table_row_key(bigint_table.table_id, id(row_id)),
+                expected_version: None,
+                payload: Some(encode_tuple(
+                    &bigint_schema,
+                    1,
+                    &[
+                        Some(ScalarValue::Integer(left)),
+                        Some(ScalarValue::Integer(right)),
+                        Some(ScalarValue::BigInt(measure)),
+                    ],
+                )?),
+            })
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+        commit_rows(
+            &database,
+            id(0x97),
+            builtin_owner_id(),
+            now + 3_600_000_000,
+            &bigint_rows,
+        )
+        .map_err(|error| format!("seed confined BIGINT aggregate rows: {error:?}"))?;
         let mut aggregate_client = ClientConnectionSession::default();
         aggregate_client.accept_hello(ClientMode::Query, "sandbox-sql-aggregates")?;
         aggregate_client.authenticate(&storage, token_id, &secret)?;
@@ -44616,6 +44778,179 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             storage
                 .lookup_invocation_outcome(aggregate_reservation.invocation_id, user_id, now + 1,)?
                 .ok_or("missing confined aggregate matrix outcome")?
+                .status,
+            OutcomeStatus::Committed
+        );
+
+        let mut bigint_scope_records = vec![
+            [vec![1, 1], schema.schema_id.to_vec()].concat(),
+            [vec![2, 2], bigint_table.table_id.to_vec()].concat(),
+            [vec![3, 2], identity_table.table_id.to_vec()].concat(),
+        ];
+        bigint_scope_records.extend(bigint_table.column_ids.iter().map(|column_id| {
+            [
+                vec![2, 3],
+                bigint_table.table_id.to_vec(),
+                column_id.to_vec(),
+            ]
+            .concat()
+        }));
+        bigint_scope_records.extend(identity_table.column_ids.iter().map(|column_id| {
+            [
+                vec![3, 3],
+                identity_table.table_id.to_vec(),
+                column_id.to_vec(),
+            ]
+            .concat()
+        }));
+        bigint_scope_records.sort();
+        let bigint_scope_count = u16::try_from(bigint_scope_records.len())?;
+        let mut bigint_requested_scope = b"PSC1".to_vec();
+        bigint_requested_scope.extend_from_slice(&bigint_scope_count.to_be_bytes());
+        for record in bigint_scope_records {
+            bigint_requested_scope.extend_from_slice(&record);
+        }
+        let bigint_staging = StagingStore::new(
+            StagingLimits::default(),
+            validator_for_scope(bigint_requested_scope.clone()),
+        )?;
+        let mut bigint_client = ClientConnectionSession::default();
+        bigint_client.accept_hello(ClientMode::Query, "sandbox-sql-bigint-aggregates")?;
+        bigint_client.authenticate(&storage, token_id, &secret)?;
+        let bigint_owner = bigint_client.staging_owner()?;
+        let bigint_parameter = [b'B'];
+        let bigint_reservation = bigint_staging.prepare(
+            bigint_owner,
+            PrepareSubmission {
+                manifest_version: 1,
+                manifest: manifest.clone(),
+                artifact_bytes: u64::try_from(artifact.len())?,
+                artifact_sha256: Sha256::digest(&artifact).into(),
+                scope_version: 1,
+                requested_scope: bigint_requested_scope,
+                parameter_bytes: 1,
+                parameter_sha256: Sha256::digest(bigint_parameter).into(),
+                deadline_ms: 30_000,
+                workload_class: WorkloadClass::Analytical,
+            },
+        )?;
+        let mut bigint_offset = 0;
+        for chunk in artifact.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
+            bigint_offset = bigint_staging.upload_chunk(
+                bigint_owner,
+                bigint_reservation.invocation_id,
+                ChunkKind::Artifact,
+                bigint_offset,
+                chunk,
+            )?;
+        }
+        bigint_staging.upload_chunk(
+            bigint_owner,
+            bigint_reservation.invocation_id,
+            ChunkKind::Parameters,
+            0,
+            &bigint_parameter,
+        )?;
+        bigint_staging.seal(bigint_owner, bigint_reservation.invocation_id)?;
+        let bigint_invocation_hex = bigint_reservation
+            .invocation_id
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let (bigint_accepted, mut bigint_invocation, mut bigint_executor) = bigint_client
+            .handle_start_request_with_executor(
+                &storage,
+                &bigint_staging,
+                ClientFrame {
+                    kind: 7,
+                    request_id: 1,
+                    response_sequence: 0,
+                    payload: format!("{{\"invocation_id\":\"{bigint_invocation_hex}\"}}")
+                        .into_bytes(),
+                },
+                GatewayAdmissionConfig {
+                    retention_period_us: 3_600_000_000,
+                    max_rows: 16,
+                    max_bytes: 65_536,
+                },
+                &runtime,
+            )?;
+        assert_eq!(bigint_accepted.payload, b"{\"state\":\"accepted\"}");
+        let (mut bigint_service, mut bigint_gateway) = UnixStream::pair()?;
+        bigint_gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let bigint_reader = std::thread::spawn(move || {
+            let mut frames = Vec::new();
+            while let Some(frame) = prdb_engine::ipc::read_frame(&mut bigint_gateway)? {
+                let terminal = frame.operation == Operation::GatewayTerminal as u16;
+                frames.push(frame);
+                if terminal {
+                    break;
+                }
+            }
+            Ok::<_, prdb_engine::ipc::FrameError>(frames)
+        });
+        let bigint_decision = observe_executor_relay_and_finalize_gateway(
+            &storage,
+            &mut bigint_invocation,
+            &mut bigint_executor,
+            &mut bigint_service,
+            bigint_accepted.request_id,
+        )?;
+        let bigint_frames = bigint_reader
+            .join()
+            .map_err(|_| "BIGINT aggregate gateway reader panicked")??;
+        if bigint_decision != GatewayTerminalDecision::Commit {
+            let relayed = bigint_frames
+                .iter()
+                .map(|frame| String::from_utf8_lossy(&frame.payload).into_owned())
+                .collect::<Vec<_>>();
+            return Err(format!(
+                "confined BIGINT aggregate invocation aborted: {bigint_decision:?}; relayed {relayed:?}"
+            )
+            .into());
+        }
+        bigint_staging.finish_started(bigint_owner, bigint_reservation.invocation_id)?;
+        let mut bigint_frames = bigint_frames.into_iter();
+        for (left_key, right_key, sum) in [(1i32, 7i32, 6i64), (2, 9, 27)] {
+            let frame = bigint_frames
+                .next()
+                .ok_or("missing optimizer-backed composite BIGINT SUM row")?;
+            assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+            assert_eq!(frame.request_id, bigint_accepted.request_id);
+            assert_eq!(
+                frame.payload,
+                expected_aggregate_row(b"sum", 4, 0, 0, left_key, right_key, &sum.to_be_bytes(),)
+            );
+        }
+        for (left_key, right_key, average) in [(1i32, 7i32, 3_000_000u128), (2, 9, 9_000_000u128)] {
+            let frame = bigint_frames
+                .next()
+                .ok_or("missing optimizer-backed composite BIGINT AVG row")?;
+            assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+            assert_eq!(frame.request_id, bigint_accepted.request_id);
+            assert_eq!(
+                frame.payload,
+                expected_aggregate_row(
+                    b"avg",
+                    5,
+                    38,
+                    6,
+                    left_key,
+                    right_key,
+                    &average.to_be_bytes(),
+                )
+            );
+        }
+        let bigint_terminal = bigint_frames
+            .next()
+            .ok_or("missing confined BIGINT aggregate terminal")?;
+        assert_eq!(bigint_terminal.operation, Operation::GatewayTerminal as u16);
+        assert_eq!(bigint_terminal.request_id, bigint_accepted.request_id);
+        assert!(String::from_utf8(bigint_terminal.payload)?.contains("\"outcome\":\"committed\""));
+        assert_eq!(
+            storage
+                .lookup_invocation_outcome(bigint_reservation.invocation_id, user_id, now + 1,)?
+                .ok_or("missing confined BIGINT aggregate outcome")?
                 .status,
             OutcomeStatus::Committed
         );

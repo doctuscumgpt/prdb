@@ -503,13 +503,40 @@ static int32_t write_grouped_composite_aggregate_optimizer(
                                                expected_coefficient)) {
             return 1;
         }
+    } else if (binding->base.aggregate_column.type_code ==
+               PRDB_SDK_VALUE_TYPE_BIGINT) {
+        uint64_t expected_coefficient;
+        if ((left_key == 1 && (right_key != 7 || matching_row_count != 2)) ||
+            (left_key == 2 && (right_key != 9 || matching_row_count != 3)) ||
+            (left_key != 1 && left_key != 2)) {
+            return 1;
+        }
+        if (expectation->aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_SUM) {
+            int64_t observed_sum = 0;
+            int64_t expected_sum = left_key == 1 ? 6 : 27;
+            if (aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_BIGINT ||
+                prdb_sdk_value_get_bigint_v1(aggregate_value, &observed_sum) !=
+                    PRDB_SDK_VALUE_ACCESS_OK ||
+                observed_sum != expected_sum) {
+                return 1;
+            }
+        } else if (expectation->aggregate_kind ==
+                   PRDB_SDK_SQL_V7_AGGREGATE_AVG) {
+            expected_coefficient = left_key == 1 ? 3000000 : 9000000;
+            if (!decimal_value_matches_coefficient(aggregate_value,
+                                                   expected_coefficient)) {
+                return 1;
+            }
+        } else {
+            return 1;
+        }
     } else if ((left_key == 4 && (right_key != 9 || matching_row_count != 2)) ||
                (left_key == 2 && (right_key != 9 || matching_row_count != 3)) ||
                (left_key != 4 && left_key != 2)) {
         return 1;
     }
-    if (binding->base.aggregate_column.type_code !=
-            PRDB_SDK_VALUE_TYPE_DECIMAL &&
+    if (binding->base.aggregate_column.type_code ==
+            PRDB_SDK_VALUE_TYPE_INTEGER &&
         expectation->aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_AVG &&
         (aggregate_value->state != PRDB_SDK_VALUE_STATE_VALUE ||
                aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_INTEGER ||
@@ -1112,6 +1139,12 @@ static int32_t run_write_read_fixture(
     static const uint8_t select_composite_decimal_sum_optimizer_sql[] =
         "SELECT left_key, right_key, SUM(decimal_value) "
         "FROM decimal_grouped_records GROUP BY left_key, right_key LIMIT 2";
+    static const uint8_t select_composite_bigint_sum_optimizer_sql[] =
+        "SELECT left_key, right_key, SUM(measure) "
+        "FROM bigint_grouped_records GROUP BY left_key, right_key LIMIT 2";
+    static const uint8_t select_composite_bigint_avg_optimizer_sql[] =
+        "SELECT left_key, right_key, AVG(measure) "
+        "FROM bigint_grouped_records GROUP BY left_key, right_key LIMIT 2";
     static const uint8_t select_analytical_pressure_sql[] =
         "SELECT group_key, SUM(measure) FROM analytics_pressure_records "
         "GROUP BY group_key";
@@ -1531,7 +1564,8 @@ static int32_t run_write_read_fixture(
         return 1;
     }
     if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
-        (invocation->parameters[0] == 'A' || invocation->parameters[0] == 'W')) {
+        (invocation->parameters[0] == 'A' || invocation->parameters[0] == 'B' ||
+         invocation->parameters[0] == 'W')) {
         static const uint8_t *const optimizer_sql[] = {
             select_composite_min_optimizer_sql,
             select_composite_max_optimizer_sql,
@@ -1539,7 +1573,9 @@ static int32_t run_write_read_fixture(
             select_composite_decimal_min_optimizer_sql,
             select_composite_decimal_max_optimizer_sql,
             select_composite_decimal_sum_optimizer_sql,
-            select_composite_decimal_avg_optimizer_sql};
+            select_composite_decimal_avg_optimizer_sql,
+            select_composite_bigint_sum_optimizer_sql,
+            select_composite_bigint_avg_optimizer_sql};
         static const uint32_t optimizer_sql_len[] = {
             sizeof(select_composite_min_optimizer_sql) - 1,
             sizeof(select_composite_max_optimizer_sql) - 1,
@@ -1547,7 +1583,9 @@ static int32_t run_write_read_fixture(
             sizeof(select_composite_decimal_min_optimizer_sql) - 1,
             sizeof(select_composite_decimal_max_optimizer_sql) - 1,
             sizeof(select_composite_decimal_sum_optimizer_sql) - 1,
-            sizeof(select_composite_decimal_avg_optimizer_sql) - 1};
+            sizeof(select_composite_decimal_avg_optimizer_sql) - 1,
+            sizeof(select_composite_bigint_sum_optimizer_sql) - 1,
+            sizeof(select_composite_bigint_avg_optimizer_sql) - 1};
         static const uint32_t optimizer_kinds[] = {
             PRDB_SDK_SQL_V7_AGGREGATE_MIN,
             PRDB_SDK_SQL_V7_AGGREGATE_MAX,
@@ -1555,44 +1593,67 @@ static int32_t run_write_read_fixture(
             PRDB_SDK_SQL_V7_AGGREGATE_MIN,
             PRDB_SDK_SQL_V7_AGGREGATE_MAX,
             PRDB_SDK_SQL_V7_AGGREGATE_SUM,
+            PRDB_SDK_SQL_V7_AGGREGATE_AVG,
+            PRDB_SDK_SQL_V7_AGGREGATE_SUM,
             PRDB_SDK_SQL_V7_AGGREGATE_AVG};
         if (optimizer_host_v5 == NULL ||
             optimizer_host_v5->optimizer_request == NULL) {
             return 1;
         }
-        grouped_results.group_column = &planner_columns[0];
-        grouped_results.aggregate_column = &planner_columns[1];
-        grouped_results.output = ordered_pressure_result;
-        grouped_results.output_capacity = sizeof(ordered_pressure_result);
-        grouped_results.output_len = 0;
-        grouped_results.row_count = 0;
-        status = prdb_sdk_sql_execute_group_v12(
-            host, schema, sizeof(schema) - 1,
-            select_ordered_analytical_pressure_sql,
-            sizeof(select_ordered_analytical_pressure_sql) - 1, NULL, 0, 128,
-            sizeof(ordered_pressure_batch_response), planner_response,
-            sizeof(planner_response), executor_response,
-            sizeof(executor_response), ordered_pressure_batch_response,
-            sizeof(ordered_pressure_batch_response), planner_columns, 9,
-            executor_columns, 9,
-            cell_scratch, 9, analytical_pressure_group_key_bytes,
-            sizeof(analytical_pressure_group_key_bytes),
-            write_ordered_analytical_pressure_sum, &grouped_results);
-        if (status != PRDB_SDK_SQL_EXEC_OK) {
-            static uint8_t message[] =
-                "fixture-error-ordered-sum-status-0";
-            if (status >= 0 && status <= 9) {
-                message[sizeof(message) - 2] = (uint8_t)('0' + status);
+        if (invocation->parameters[0] == 'B') {
+            generated_inserted_count = 0;
+            status = prdb_sdk_sql_execute_insert_v2(
+                host, schema, sizeof(schema) - 1,
+                generated_identity_insert_sql,
+                sizeof(generated_identity_insert_sql) - 1, NULL, 0,
+                planner_response, sizeof(planner_response), executor_response,
+                sizeof(executor_response), insert_request,
+                sizeof(insert_request), planner_columns, 9, executor_columns,
+                9, insert_values, 2, &generated_inserted_count);
+            if (status != PRDB_SDK_SQL_EXEC_OK ||
+                generated_inserted_count != 1) {
+                static const uint8_t message[] =
+                    "fixture-error-generated-identity-insert";
+                return report_failure(host, message, sizeof(message) - 1);
             }
-            return report_failure(host, message, sizeof(message) - 1);
         }
-        if (grouped_results.row_count != 64) {
-            static const uint8_t message[] =
-                "fixture-error-confined-ordered-analytical-pressure-sum-rows";
-            return report_failure(host, message, sizeof(message) - 1);
+        if (invocation->parameters[0] != 'B') {
+            grouped_results.group_column = &planner_columns[0];
+            grouped_results.aggregate_column = &planner_columns[1];
+            grouped_results.output = ordered_pressure_result;
+            grouped_results.output_capacity = sizeof(ordered_pressure_result);
+            grouped_results.output_len = 0;
+            grouped_results.row_count = 0;
+            status = prdb_sdk_sql_execute_group_v12(
+                host, schema, sizeof(schema) - 1,
+                select_ordered_analytical_pressure_sql,
+                sizeof(select_ordered_analytical_pressure_sql) - 1, NULL, 0,
+                128, sizeof(ordered_pressure_batch_response), planner_response,
+                sizeof(planner_response), executor_response,
+                sizeof(executor_response), ordered_pressure_batch_response,
+                sizeof(ordered_pressure_batch_response), planner_columns, 9,
+                executor_columns, 9, cell_scratch, 9,
+                analytical_pressure_group_key_bytes,
+                sizeof(analytical_pressure_group_key_bytes),
+                write_ordered_analytical_pressure_sum, &grouped_results);
+            if (status != PRDB_SDK_SQL_EXEC_OK) {
+                static uint8_t message[] =
+                    "fixture-error-ordered-sum-status-0";
+                if (status >= 0 && status <= 9) {
+                    message[sizeof(message) - 2] = (uint8_t)('0' + status);
+                }
+                return report_failure(host, message, sizeof(message) - 1);
+            }
+            if (grouped_results.row_count != 64) {
+                static const uint8_t message[] =
+                    "fixture-error-confined-ordered-analytical-pressure-sum-rows";
+                return report_failure(host, message, sizeof(message) - 1);
+            }
+            if (invocation->parameters[0] == 'W') return 0;
         }
-        if (invocation->parameters[0] == 'W') return 0;
-        for (uint32_t index = 0; index < 7; ++index) {
+        uint32_t first_aggregate = invocation->parameters[0] == 'B' ? 7 : 0;
+        uint32_t aggregate_end = invocation->parameters[0] == 'B' ? 9 : 7;
+        for (uint32_t index = first_aggregate; index < aggregate_end; ++index) {
             composite_aggregate_expectation expectation = {
                 &composite_grouped_results, optimizer_kinds[index]};
             composite_grouped_results.row_count = 0;
@@ -3129,17 +3190,6 @@ static int32_t run_write_read_fixture(
                 "fixture-error-optimizer-delete-visible";
             return report_failure(host, message, sizeof(message) - 1);
         }
-    }
-    status = prdb_sdk_sql_execute_insert_v2(
-        host, schema, sizeof(schema) - 1, generated_identity_insert_sql,
-        sizeof(generated_identity_insert_sql) - 1, NULL, 0,
-        planner_response, sizeof(planner_response), executor_response,
-        sizeof(executor_response), insert_request, sizeof(insert_request),
-        planner_columns, 9, executor_columns, 9, insert_values, 2,
-        &generated_inserted_count);
-    if (status != PRDB_SDK_SQL_EXEC_OK || generated_inserted_count != 1) {
-        static const uint8_t message[] = "fixture-error-generated-identity-insert";
-        return report_failure(host, message, sizeof(message) - 1);
     }
     return 0;
 }
