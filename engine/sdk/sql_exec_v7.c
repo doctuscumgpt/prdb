@@ -935,7 +935,8 @@ static int32_t execute_group_internal(
             }
             if (enable_boolean_having) {
                 status = evaluate_having_node_v18(
-                    &binding_v18, binding_v18.having_root, comparison_value,
+                    &binding_v18, binding_v18.having_root,
+                    aggregate == NULL ? &count_value : aggregate,
                     &count_value, having_operands, having_count_mask, 0,
                     &truth);
             } else {

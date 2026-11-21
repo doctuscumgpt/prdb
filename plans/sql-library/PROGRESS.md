@@ -884,6 +884,14 @@
 - Verification: TinyCC compiled both modified SDK sources with `-Wall -Wextra -Werror`; the v21/v22 parser-binder fixtures and grouped executor fixture passed. The full pinned-shell SDK `make test` suite passed, including release metadata checks. `make -f engine/sdk/Makefile fuzz-sql-v22` completed 10,000 ASan/UBSan/libFuzzer runs without findings (1,502 coverage counters, 3,354 features).
 - Remaining: broader analytical type/workload coverage, secure spill, and mixed-workload measurements remain open.
 
+## SQL-7 follow-up: grouped SELECT through statement dispatcher — implemented
+
+- Contract: [`sql-library.md`](../../specs/sql-library.md). The statement dispatcher accepts supported composite grouped SELECT statements alongside row SELECT and DML, and writes grouped output using the existing SQLR composite result schema.
+- Regression: the dispatch fixture first demonstrated that grouped SQL did not reach the planner through `prdb_sdk_sql_run_statement_v1`. The successful scan case now checks a grouped row result for `SELECT id, score, SUM(score) ... GROUP BY id, score HAVING COUNT(*) >= 2 AND SUM(score) >= 4`.
+- Implementation: `prdb_sdk_sql_run_v1` recognizes v22 statements and invokes the v22 grouped runner with bounded materialization storage. The result callback reuses the composite grouped SQLR writer. The end-to-end case also exposed and fixed evaluation of selected SUM comparisons when a hidden COUNT comparison appears in the same Boolean HAVING tree.
+- Verification: focused `target/sdk-v1/sdk-sql-dispatch-v1` fixture passed. `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed, including the release metadata checks. `git diff --check` passed.
+- Remaining: broader analytical type/workload coverage, secure spill, and mixed-workload measurements remain open.
+
 ## SDK release linker: keep Nix Clang wrapper paths out of the artifact — fixed
 
 - Finding: the development shell exports `CC=clang`; using that value as the SDK shared linker caused the Nix Clang wrapper to embed libc/GCC RUNPATH entries even after the Makefile cleared `NIX_LDFLAGS`.

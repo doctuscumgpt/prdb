@@ -1,4 +1,6 @@
 #include "prdb_sdk_sql_dispatch_v1.h"
+#include "prdb_sdk_executor_v1.h"
+#include "prdb_sdk_planner_v1.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -6,7 +8,80 @@
 typedef struct dispatch_test_context {
     uint32_t planner_calls;
     uint32_t failure_calls;
+    uint32_t group_success;
+    uint32_t next_calls;
+    uint32_t result_calls;
+    uint32_t result_len;
+    uint8_t planner_reply[256];
+    uint32_t planner_reply_len;
+    uint8_t executor_reply[256];
+    uint32_t executor_reply_len;
+    uint8_t batch_reply[512];
+    uint32_t batch_reply_len;
+    uint8_t result_bytes[512];
 } dispatch_test_context;
+
+static void put_u16(uint8_t *bytes, uint32_t *offset, uint16_t value) {
+    bytes[(*offset)++] = (uint8_t)(value >> 8);
+    bytes[(*offset)++] = (uint8_t)value;
+}
+
+static void put_u32_at(uint8_t *bytes, uint32_t *offset, uint32_t value) {
+    bytes[(*offset)++] = (uint8_t)(value >> 24);
+    bytes[(*offset)++] = (uint8_t)(value >> 16);
+    bytes[(*offset)++] = (uint8_t)(value >> 8);
+    bytes[(*offset)++] = (uint8_t)value;
+}
+
+static void put_name(uint8_t *bytes, uint32_t *offset, const char *name) {
+    uint16_t length = (uint16_t)strlen(name);
+    put_u16(bytes, offset, length);
+    memcpy(bytes + *offset, name, length);
+    *offset += length;
+}
+
+static uint32_t make_integer_relation(uint8_t *bytes, uint8_t handle_kind,
+                                      uint8_t handle_fill) {
+    uint32_t offset = 0;
+    put_u16(bytes, &offset, 1);
+    bytes[offset++] = 0;
+    memset(bytes + offset, 0x11, 16); offset += 16;
+    bytes[offset++] = handle_kind;
+    memset(bytes + offset, handle_fill, 15); offset += 15;
+    put_name(bytes, &offset, "widgets");
+    put_u16(bytes, &offset, 2);
+    for (uint32_t index = 0; index < 2; ++index) {
+        memset(bytes + offset, (int)(0x33 + index), 16); offset += 16;
+        put_u32_at(bytes, &offset, index);
+        bytes[offset++] = 1;
+        bytes[offset++] = PRDB_SDK_VALUE_TYPE_INTEGER;
+        bytes[offset++] = 0;
+        bytes[offset++] = 0;
+        bytes[offset++] = 0;
+        bytes[offset++] = 0;
+        put_name(bytes, &offset, index == 0 ? "id" : "score");
+    }
+    return offset;
+}
+
+static uint32_t make_group_rows(uint8_t *bytes) {
+    uint32_t offset = 0;
+    put_u16(bytes, &offset, 1);
+    bytes[offset++] = 1;
+    put_u16(bytes, &offset, 2);
+    for (uint32_t row = 0; row < 2; ++row) {
+        bytes[offset++] = 8;
+        memset(bytes + offset, (int)(row + 1), 15); offset += 15;
+        put_u16(bytes, &offset, 2);
+        for (uint32_t cell = 0; cell < 2; ++cell) {
+            bytes[offset++] = PRDB_SDK_VALUE_STATE_VALUE;
+            bytes[offset++] = PRDB_SDK_VALUE_TYPE_INTEGER;
+            put_u32_at(bytes, &offset, 4);
+            put_u32_at(bytes, &offset, cell == 0 ? 1 : 3);
+        }
+    }
+    return offset;
+}
 
 static int32_t fail_planner_request(
     void *opaque, uint16_t operation, const uint8_t *request,
@@ -16,10 +91,16 @@ static int32_t fail_planner_request(
     (void)operation;
     (void)request;
     (void)request_len;
-    (void)response;
-    (void)response_capacity;
     if (context == NULL || response_len == NULL) return PRDB_QUERY_CALLBACK_INVALID_ARGUMENT;
     ++context->planner_calls;
+    if (context->group_success &&
+        operation == PRDB_SDK_PLANNER_OP_DESCRIBE_RELATION) {
+        if (context->planner_reply_len > response_capacity)
+            return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
+        memcpy(response, context->planner_reply, context->planner_reply_len);
+        *response_len = context->planner_reply_len;
+        return PRDB_QUERY_CALLBACK_OK;
+    }
     *response_len = 0;
     return PRDB_QUERY_CALLBACK_IO_ERROR;
 }
@@ -28,22 +109,68 @@ static int32_t unused_executor_request(
     void *opaque, uint16_t operation, const uint8_t *request,
     uint64_t request_len, uint8_t *response, uint64_t response_capacity,
     uint64_t *response_len) {
-    (void)opaque;
-    (void)operation;
+    dispatch_test_context *context = (dispatch_test_context *)opaque;
+    if (context == NULL || response_len == NULL)
+        return PRDB_QUERY_CALLBACK_INVALID_ARGUMENT;
+    if (!context->group_success) {
+        *response_len = 0;
+        return PRDB_QUERY_CALLBACK_IO_ERROR;
+    }
+    if (operation == PRDB_SDK_EXECUTOR_OP_RESOLVE_RELATION) {
+        if (context->executor_reply_len > response_capacity)
+            return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
+        memcpy(response, context->executor_reply, context->executor_reply_len);
+        *response_len = context->executor_reply_len;
+    } else if (operation == PRDB_SDK_EXECUTOR_OP_CHECK_CANCELLATION) {
+        static const uint8_t reply[] = {0, 1, 0};
+        if (request_len != 0 || sizeof(reply) > response_capacity)
+            return PRDB_QUERY_CALLBACK_INVALID_ARGUMENT;
+        memcpy(response, reply, sizeof(reply));
+        *response_len = sizeof(reply);
+    } else if (operation == PRDB_SDK_EXECUTOR_OP_OPEN_SCAN) {
+        uint8_t reply[18] = {0, 1, 7};
+        memset(reply + 3, 0x44, 15);
+        if (request_len == 0 || sizeof(reply) > response_capacity)
+            return PRDB_QUERY_CALLBACK_INVALID_ARGUMENT;
+        memcpy(response, reply, sizeof(reply));
+        *response_len = sizeof(reply);
+    } else if (operation == PRDB_SDK_EXECUTOR_OP_NEXT_BATCH) {
+        if (context->next_calls++ == 0) {
+            if (context->batch_reply_len > response_capacity)
+                return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
+            memcpy(response, context->batch_reply, context->batch_reply_len);
+            *response_len = context->batch_reply_len;
+        } else {
+            static const uint8_t finished[] = {0, 1, 1, 0, 0};
+            if (sizeof(finished) > response_capacity)
+                return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
+            memcpy(response, finished, sizeof(finished));
+            *response_len = sizeof(finished);
+        }
+    } else if (operation == PRDB_SDK_EXECUTOR_OP_CLOSE_CURSOR) {
+        static const uint8_t reply[] = {0, 1, 0};
+        if (sizeof(reply) > response_capacity)
+            return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
+        memcpy(response, reply, sizeof(reply));
+        *response_len = sizeof(reply);
+    } else {
+        return PRDB_QUERY_CALLBACK_IO_ERROR;
+    }
     (void)request;
-    (void)request_len;
-    (void)response;
-    (void)response_capacity;
-    if (response_len == NULL) return PRDB_QUERY_CALLBACK_INVALID_ARGUMENT;
-    *response_len = 0;
-    return PRDB_QUERY_CALLBACK_IO_ERROR;
+    return PRDB_QUERY_CALLBACK_OK;
 }
 
 static int32_t discard_result(void *opaque, const uint8_t *bytes,
                               uint64_t bytes_len) {
-    (void)opaque;
-    (void)bytes;
-    (void)bytes_len;
+    dispatch_test_context *context = (dispatch_test_context *)opaque;
+    if (context != NULL && context->group_success) {
+        if (bytes_len > sizeof(context->result_bytes) - context->result_len)
+            return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
+        memcpy(context->result_bytes + context->result_len, bytes,
+               (size_t)bytes_len);
+        context->result_len += (uint32_t)bytes_len;
+        ++context->result_calls;
+    }
     return PRDB_QUERY_CALLBACK_OK;
 }
 
@@ -60,6 +187,8 @@ static int test_statement_dispatch_routes_supported_dml(void) {
         "INSERT INTO t VALUES ($1)",
         "UPDATE t SET x = NULL WHERE id = $1",
         "DELETE FROM t WHERE id = $1",
+        "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
+        "HAVING COUNT(*) >= 2 AND SUM(score) >= 4.50",
     };
     dispatch_test_context context = {0};
     prdb_host_api_v3 host = {0};
@@ -82,6 +211,89 @@ static int test_statement_dispatch_routes_supported_dml(void) {
             return 1;
         }
     }
+    return 0;
+}
+
+static uint32_t read_u32(const uint8_t *bytes) {
+    return ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) |
+           ((uint32_t)bytes[2] << 8) | bytes[3];
+}
+
+static int test_dispatch_grouped_select_emits_sqlr(void) {
+    static const uint8_t sql[] =
+        "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
+        "HAVING COUNT(*) >= 2 AND SUM(score) >= 4";
+    dispatch_test_context context = {0};
+    prdb_host_api_v3 host = {0};
+    uint32_t offset = 0;
+    uint16_t name_len;
+
+    context.group_success = 1;
+    context.planner_reply_len = make_integer_relation(
+        context.planner_reply, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x22);
+    context.executor_reply_len = make_integer_relation(
+        context.executor_reply, 6, 0x22);
+    context.batch_reply_len = make_group_rows(context.batch_reply);
+    host.struct_size = sizeof(host);
+    host.abi_version = PRDB_QUERY_ABI_V3_VERSION;
+    host.context = &context;
+    host.executor_request = unused_executor_request;
+    host.planner_request = fail_planner_request;
+    host.write_result = discard_result;
+    host.statement_failure = count_statement_failure;
+    if (prdb_sdk_sql_run_statement_v1(
+            &host, (const uint8_t *)"app", 3, sql, sizeof(sql) - 1,
+            NULL, 0) != PRDB_SDK_SQL_DISPATCH_OK ||
+        context.planner_calls != 1 || context.failure_calls != 0 ||
+        context.result_calls != 1 || context.result_len < 8 ||
+        memcmp(context.result_bytes, "SQLR", 4) != 0) return 1;
+    offset = 4;
+    if (context.result_bytes[offset++] != 0 ||
+        context.result_bytes[offset++] != 1 ||
+        context.result_bytes[offset++] != 0 ||
+        context.result_bytes[offset++] != 3) return 1;
+    name_len = (uint16_t)(((uint16_t)context.result_bytes[offset] << 8) |
+                         context.result_bytes[offset + 1]);
+    offset += 2;
+    if (name_len != 2 || memcmp(context.result_bytes + offset, "id", 2) != 0)
+        return 1;
+    offset += name_len;
+    if (read_u32(context.result_bytes + offset) !=
+            PRDB_SDK_VALUE_TYPE_INTEGER) return 1;
+    offset += 6;
+    if (context.result_bytes[offset++] != PRDB_SDK_VALUE_STATE_VALUE ||
+        read_u32(context.result_bytes + offset) != 4) return 1;
+    offset += 4;
+    if (read_u32(context.result_bytes + offset) != 1) return 1;
+    offset += 4;
+
+    name_len = (uint16_t)(((uint16_t)context.result_bytes[offset] << 8) |
+                         context.result_bytes[offset + 1]);
+    offset += 2;
+    if (name_len != 5 || memcmp(context.result_bytes + offset, "score", 5) != 0)
+        return 1;
+    offset += name_len + 6;
+    if (context.result_bytes[offset++] != PRDB_SDK_VALUE_STATE_VALUE ||
+        read_u32(context.result_bytes + offset) != 4) return 1;
+    offset += 4;
+    if (read_u32(context.result_bytes + offset) != 3) return 1;
+    offset += 4;
+
+    name_len = (uint16_t)(((uint16_t)context.result_bytes[offset] << 8) |
+                         context.result_bytes[offset + 1]);
+    offset += 2;
+    if (name_len != 3 || memcmp(context.result_bytes + offset, "sum", 3) != 0)
+        return 1;
+    offset += name_len;
+    if (read_u32(context.result_bytes + offset) != PRDB_SDK_VALUE_TYPE_BIGINT)
+        return 1;
+    offset += 6;
+    if (context.result_bytes[offset++] != PRDB_SDK_VALUE_STATE_VALUE ||
+        read_u32(context.result_bytes + offset) != 8) return 1;
+    offset += 4;
+    if (read_u32(context.result_bytes + offset + 4) != 6) return 1;
+    offset += 8;
+    if (offset != context.result_len) return 1;
     return 0;
 }
 
@@ -148,6 +360,10 @@ int main(void) {
     }
     if (test_statement_dispatch_routes_supported_dml() != 0) {
         fputs("interactive statement dispatcher did not route supported DML\n", stderr);
+        return 1;
+    }
+    if (test_dispatch_grouped_select_emits_sqlr() != 0) {
+        fputs("grouped SELECT dispatch did not emit expected SQLR\n", stderr);
         return 1;
     }
     if (test_typed_values_and_null() != 0) {

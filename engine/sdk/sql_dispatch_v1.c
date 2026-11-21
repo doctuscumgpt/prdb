@@ -1,5 +1,6 @@
 #include "prdb_sdk_sql_dispatch_v1.h"
 #include "prdb_sdk_sql_dml_v3.h"
+#include "prdb_sdk_sql_exec_v22.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -183,6 +184,28 @@ static int32_t write_sqlr_row(
                : 1;
 }
 
+static int32_t write_group_sqlr_row_v22(
+    void *opaque, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v21 *binding) {
+    sql_result_context *context = (sql_result_context *)opaque;
+    const prdb_sdk_select_binding_v13 *composite_binding;
+    uint64_t output_len = 0;
+    if (context == NULL || binding == NULL) return 1;
+    composite_binding = &binding->base.base.base.base;
+    context->column_count = binding->base.base.base.base.base.base
+                                .relation_column_count;
+    return prdb_sdk_sql_write_group_composite_result_v1(
+               context->host, composite_binding, context->columns,
+               context->column_count, group_keys, group_key_count,
+               aggregate_value, matching_row_count, context->output,
+               context->output_capacity, &output_len) ==
+                   PRDB_SDK_SQL_RESULT_OK
+               ? 0
+               : 1;
+}
+
 static int32_t latch_sql_failure(const prdb_host_api_v3 *host, int32_t status) {
     if (host != NULL && host->statement_failure != NULL) {
         (void)host->statement_failure(host->context,
@@ -201,10 +224,13 @@ int32_t prdb_sdk_sql_run_v1(
     uint8_t *executor_response = NULL;
     uint8_t *batch_response = NULL;
     uint8_t *output = NULL;
+    uint8_t *materialized_bytes = NULL;
     prdb_sdk_sql_column_shape_v2 *planner_columns = NULL;
     prdb_sdk_sql_column_shape_v2 *executor_columns = NULL;
     prdb_sdk_value_v1 *cell_scratch = NULL;
     sql_result_context result = {0};
+    prdb_sdk_select_v22 grouped_statement = {0};
+    int is_grouped = 0;
     uint32_t parameter_count = 0;
     uint32_t declared_count = 0;
     int32_t status;
@@ -221,6 +247,16 @@ int32_t prdb_sdk_sql_run_v1(
         (parameters_len != 0 && parameters == NULL)) {
         return latch_sql_failure(host,
                                  PRDB_SDK_SQL_DISPATCH_INVALID_ARGUMENT);
+    }
+    is_grouped = prdb_sdk_sql_parse_select_v22(
+                     sql, sql_len, &grouped_statement,
+                     sizeof(grouped_statement), NULL) == PRDB_SDK_SQL_OK;
+    if (is_grouped) {
+        materialized_bytes = (uint8_t *)calloc(1, SQL_DISPATCH_BATCH_BYTES);
+        if (materialized_bytes == NULL) {
+            return latch_sql_failure(host,
+                                     PRDB_SDK_SQL_DISPATCH_RESOURCE_ERROR);
+        }
     }
     if (parameters_len >= 8 && memcmp(parameters, "PSP1", 4) == 0) {
         declared_count = read_u16_be(parameters + 4);
@@ -262,14 +298,28 @@ int32_t prdb_sdk_sql_run_v1(
     result.cell_scratch_capacity = PRDB_SDK_SQL_MAX_RELATION_COLUMNS;
     result.output = output;
     result.output_capacity = PRDB_SDK_SQL_RESULT_MAX_BYTES;
-    status = prdb_sdk_sql_execute_select_typed_v1(
-        host, schema, schema_len, sql, sql_len, values, metadata,
-        parameter_count, SQL_DISPATCH_CANDIDATES, SQL_DISPATCH_BATCH_BYTES,
-        planner_response, SQL_DISPATCH_RESPONSE_BYTES, executor_response,
-        SQL_DISPATCH_RESPONSE_BYTES, batch_response, SQL_DISPATCH_BATCH_BYTES,
-        planner_columns, PRDB_SDK_SQL_MAX_RELATION_COLUMNS, executor_columns,
-        PRDB_SDK_SQL_MAX_RELATION_COLUMNS, cell_scratch,
-        PRDB_SDK_SQL_MAX_RELATION_COLUMNS, write_sqlr_row, &result);
+    if (is_grouped) {
+        status = prdb_sdk_sql_execute_group_v22(
+            host, schema, schema_len, sql, sql_len, values, parameter_count,
+            SQL_DISPATCH_CANDIDATES, SQL_DISPATCH_BATCH_BYTES,
+            planner_response, SQL_DISPATCH_RESPONSE_BYTES, executor_response,
+            SQL_DISPATCH_RESPONSE_BYTES, batch_response,
+            SQL_DISPATCH_BATCH_BYTES, planner_columns,
+            PRDB_SDK_SQL_MAX_RELATION_COLUMNS, executor_columns,
+            PRDB_SDK_SQL_MAX_RELATION_COLUMNS, cell_scratch,
+            PRDB_SDK_SQL_MAX_RELATION_COLUMNS, materialized_bytes,
+            SQL_DISPATCH_BATCH_BYTES, write_group_sqlr_row_v22, &result);
+    } else {
+        status = prdb_sdk_sql_execute_select_typed_v1(
+            host, schema, schema_len, sql, sql_len, values, metadata,
+            parameter_count, SQL_DISPATCH_CANDIDATES, SQL_DISPATCH_BATCH_BYTES,
+            planner_response, SQL_DISPATCH_RESPONSE_BYTES, executor_response,
+            SQL_DISPATCH_RESPONSE_BYTES, batch_response,
+            SQL_DISPATCH_BATCH_BYTES, planner_columns,
+            PRDB_SDK_SQL_MAX_RELATION_COLUMNS, executor_columns,
+            PRDB_SDK_SQL_MAX_RELATION_COLUMNS, cell_scratch,
+            PRDB_SDK_SQL_MAX_RELATION_COLUMNS, write_sqlr_row, &result);
+    }
     if (status != PRDB_SDK_SQL_EXEC_OK) {
         status = PRDB_SDK_SQL_DISPATCH_EXECUTION_ERROR;
     } else {
@@ -283,6 +333,7 @@ cleanup:
     free(executor_response);
     free(batch_response);
     free(output);
+    free(materialized_bytes);
     free(planner_columns);
     free(executor_columns);
     free(cell_scratch);
