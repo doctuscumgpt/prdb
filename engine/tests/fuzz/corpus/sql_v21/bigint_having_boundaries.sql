@@ -1,0 +1,1 @@
+SELECT id, score, SUM(score) FROM widgets GROUP BY id, score HAVING SUM(score) >= -9223372036854775808 AND SUM(score) <= 9223372036854775807

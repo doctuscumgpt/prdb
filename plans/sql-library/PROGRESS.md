@@ -850,8 +850,15 @@
 ## SQL-7 / WI-7 follow-up: v21 HAVING fuzz seeds exercise successful binding — verified
 
 - Correction: the v21 fuzz corpus previously used `category` and `scores`, which did not match the harness's bound `id`/`score` shape. Those seeds could parse but did not reach successful binding. Replaced them with schema-matched statements and added a compound Decimal seed covering signed exponent literals, Boolean precedence, ORDER BY, and LIMIT.
-- Oracle: after successful binding, the fuzz target now checks numeric HAVING operands remain comparison nodes with cleared parameter/literal fields, Decimal literal scale matches the bound aggregate scale, and BIGINT coefficients are correctly sign-extended.
+- Oracle: under its Decimal(10,2) shape, the fuzz target checks numeric HAVING operands remain comparison nodes with cleared parameter/literal fields and Decimal literal scale matches the bound aggregate scale.
 - Verification: all three seed statements passed an explicit v21 parse/bind check. `make -f engine/sdk/Makefile fuzz-sql-v21` completed 10,000 ASan/UBSan/libFuzzer runs without findings (1,572 coverage counters, 3,822 features).
+- Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
+
+## SQL-7 / WI-7 correction: v21 BIGINT binding now reaches the fuzz oracle — verified
+
+- Correction: the prior v21 fuzz target bound every input only against a Decimal(10,2) aggregate shape. Its BIGINT sign-extension oracle was unreachable, despite the existing exact-boundary fixture testing the binder directly.
+- Change: the fuzz target now binds each successfully parsed statement against both Decimal and INTEGER aggregate shapes, checks the derived result type for each successful binding, and applies the corresponding scale or signed-extension oracle. Added a schema-matched seed comparing the exact signed BIGINT endpoints.
+- Verification: `make -f engine/sdk/Makefile fuzz-sql-v21` completed 10,000 ASan/UBSan/libFuzzer runs without findings (1,637 coverage counters, 4,234 features). The seed uses the maintained `id`/`score` schema and reaches successful BIGINT binding.
 - Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
 
 ## SQL-7 / WI-7 follow-up: v21 malformed input preserves outputs under fuzzing — verified
