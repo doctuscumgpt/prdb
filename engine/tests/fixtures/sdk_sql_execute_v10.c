@@ -1249,6 +1249,9 @@ int main(void) {
     static const uint8_t v21_decimal_literal_sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
         "HAVING SUM(score) >= 4.50e0";
+    static const uint8_t v21_decimal_equal_literal_sql[] =
+        "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
+        "HAVING SUM(score) = 4.50e0";
     static const uint8_t v21_decimal_min_literal_sql[] =
         "SELECT id, score, MIN(score) FROM widgets GROUP BY id, score "
         "HAVING MIN(score) <= 3.00e0 ORDER BY id ASC LIMIT 1";
@@ -1915,6 +1918,19 @@ int main(void) {
         assert(capture.calls == 2 && capture.keys[0] == 1 &&
                capture.aggregates[0] == 9 && capture.keys[1] == 2 &&
                capture.aggregates[1] == 5 && mock.statement_failed == 0);
+
+        {
+            const int64_t exact_coefficients[] = {450, 449, 500};
+            mock.batch_len = make_decimal_rows(mock.batch, 1, keys,
+                                               exact_coefficients, NULL, 3);
+            reset_scan(&mock, &capture, 1);
+            assert(run_query_v21_decimal(
+                       &mock, v21_decimal_equal_literal_sql,
+                       sizeof(v21_decimal_equal_literal_sql) - 1, &capture) ==
+                   PRDB_SDK_SQL_EXEC_OK);
+            assert(capture.calls == 1 && capture.keys[0] == 1 &&
+                   capture.aggregates[0] == 4 && mock.statement_failed == 0);
+        }
 
         reset_scan(&mock, &capture, 1);
         assert(run_query_v21_decimal(

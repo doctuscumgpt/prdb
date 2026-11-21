@@ -788,6 +788,13 @@
 - Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed, including the focused `sdk-sql-execute-v10` fixture under TinyCC with `-Wall -Wextra -Werror`.
 - Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
 
+## SQL-7 follow-up: v21 Decimal HAVING equality filters exact group — verified
+
+- Contract: Decimal HAVING comparisons use the exact bound scale and filter groups after aggregation, before callbacks.
+- Regression: the v21 grouped Decimal runner now evaluates `SUM(score) = 4.50e0` over group totals 4.50, 4.49, and 5.00, emitting only the exact-match group with its composite key and aggregate value.
+- Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed, including the focused `sdk-sql-execute-v10` fixture under TinyCC with `-Wall -Wextra -Werror`.
+- Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
+
 ## SQL-7 / WI-7 follow-up: v21 HAVING fuzz seeds exercise successful binding — verified
 
 - Correction: the v21 fuzz corpus previously used `category` and `scores`, which did not match the harness's bound `id`/`score` shape. Those seeds could parse but did not reach successful binding. Replaced them with schema-matched statements and added a compound Decimal seed covering signed exponent literals, Boolean precedence, ORDER BY, and LIMIT.
