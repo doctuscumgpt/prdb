@@ -3,6 +3,10 @@
 #include <string.h>
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+    static const uint8_t bigint_boundary_seed[] =
+        "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
+        "HAVING SUM(score) >= -9223372036854775808 AND "
+        "SUM(score) <= 9223372036854775807\n";
     static const uint8_t id_name[] = "id";
     static const uint8_t score_name[] = "score";
     prdb_sdk_sql_column_shape_v2 decimal_columns[2] = {
@@ -15,6 +19,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     prdb_sdk_select_binding_v21 binding;
     uint32_t error_offset = 0;
     int32_t status;
+    int is_bigint_boundary_seed =
+        size == sizeof(bigint_boundary_seed) - 1 &&
+        memcmp(data, bigint_boundary_seed, sizeof(bigint_boundary_seed) - 1) ==
+            0;
 
     if (size > PRDB_SDK_SQL_MAX_QUERY_BYTES) return 0;
     memset(&statement, 0xa5, sizeof(statement));
@@ -53,12 +61,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             const uint8_t *bytes = (const uint8_t *)&binding;
             for (size_t index = 0; index < sizeof(binding); ++index)
                 if (bytes[index] != 0x5a) __builtin_trap();
+            if (is_bigint_boundary_seed && shape_index == 1)
+                __builtin_trap();
             continue;
         }
         if (binding.struct_size != sizeof(binding) ||
             binding.abi_version != PRDB_SDK_SQL_ABI_V21_VERSION ||
             binding.base.having_node_count !=
-                statement.base.having_node_count ||
+                statement.base.having_node_count)
+            __builtin_trap();
+        if (binding.base.having_node_count != 0 &&
             binding.base.having_type_code != expected_having_types[shape_index])
             __builtin_trap();
         for (uint32_t index = 0; index < binding.base.having_node_count;

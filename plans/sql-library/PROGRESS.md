@@ -857,8 +857,8 @@
 ## SQL-7 / WI-7 correction: v21 BIGINT binding now reaches the fuzz oracle — verified
 
 - Correction: the prior v21 fuzz target bound every input only against a Decimal(10,2) aggregate shape. Its BIGINT sign-extension oracle was unreachable, despite the existing exact-boundary fixture testing the binder directly.
-- Change: the fuzz target now binds each successfully parsed statement against both Decimal and INTEGER aggregate shapes, checks the derived result type for each successful binding, and applies the corresponding scale or signed-extension oracle. Added a schema-matched seed comparing the exact signed BIGINT endpoints.
-- Verification: `make -f engine/sdk/Makefile fuzz-sql-v21` completed 10,000 ASan/UBSan/libFuzzer runs without findings (1,637 coverage counters, 4,234 features). The seed uses the maintained `id`/`score` schema and reaches successful BIGINT binding.
+- Change: the fuzz target now binds each successfully parsed statement against both Decimal and INTEGER aggregate shapes, checks the derived result type for each HAVING binding, and applies the corresponding scale or signed-extension oracle. It requires the schema-matched boundary seed to bind successfully as BIGINT; statements without HAVING correctly have no HAVING result type.
+- Verification: `make -f engine/sdk/Makefile fuzz-sql-v21` completed 10,000 ASan/UBSan/libFuzzer runs without findings (1,582 coverage counters, 3,994 features). The exact signed BIGINT endpoint seed bound successfully.
 - Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
 
 ## SQL-7 / WI-7 follow-up: v21 malformed input preserves outputs under fuzzing — verified
