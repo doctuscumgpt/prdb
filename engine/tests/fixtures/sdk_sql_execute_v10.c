@@ -803,6 +803,34 @@ static uint32_t make_expected_group_count_sqlr(
     return offset;
 }
 
+static uint32_t make_expected_group_sum_sqlr(
+    uint8_t *output, const uint8_t *group_key, uint32_t group_key_len,
+    uint64_t sum) {
+    uint32_t offset = 0;
+    memcpy(output + offset, "SQLR", 4);
+    offset += 4;
+    put_u16(output, &offset, 1);
+    put_u16(output, &offset, 2);
+    put_name(output, &offset, "group_key");
+    put_u32(output, &offset, PRDB_SDK_VALUE_TYPE_TEXT);
+    output[offset++] = 0;
+    output[offset++] = 0;
+    output[offset++] = PRDB_SDK_VALUE_STATE_VALUE;
+    put_u32(output, &offset, group_key_len);
+    memcpy(output + offset, group_key, group_key_len);
+    offset += group_key_len;
+    put_name(output, &offset, "sum");
+    put_u32(output, &offset, PRDB_SDK_VALUE_TYPE_BIGINT);
+    output[offset++] = 0;
+    output[offset++] = 0;
+    output[offset++] = PRDB_SDK_VALUE_STATE_VALUE;
+    put_u32(output, &offset, 8);
+    for (uint32_t byte = 0; byte < 8; ++byte) {
+        output[offset + 7 - byte] = (uint8_t)(sum >> (byte * 8));
+    }
+    return offset + 8;
+}
+
 static int32_t on_group_v12(void *context,
                             const prdb_sdk_value_v1 *group_key,
                             const prdb_sdk_value_v1 *aggregate_value,
@@ -888,6 +916,18 @@ static int32_t on_group_v12(void *context,
                                     capture->calls % 2;
             uint32_t sum = 300 + (key_index / 2) * 2;
             int64_t actual_sum = 0;
+            uint8_t actual_sqlr[16384] = {0};
+            uint8_t expected_sqlr[16384] = {0};
+            uint64_t actual_sqlr_len = 0;
+            uint32_t expected_sqlr_len;
+            static const uint8_t group_name[] = "group_key";
+            static const uint8_t measure_name[] = "measure";
+            const prdb_sdk_sql_column_shape_v2 group_column = {
+                group_name, sizeof(group_name) - 1, 0,
+                PRDB_SDK_VALUE_TYPE_TEXT, 0, 0};
+            const prdb_sdk_sql_column_shape_v2 measure_column = {
+                measure_name, sizeof(measure_name) - 1, 1,
+                PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0};
             assert(binding->base.base.base.base.aggregate_kind ==
                    PRDB_SDK_SQL_V7_AGGREGATE_SUM);
             assert(binding->base.base.base.base.aggregate_column.type_code ==
@@ -918,6 +958,14 @@ static int32_t on_group_v12(void *context,
             for (uint32_t index = 0; index < group_key->data_len - 3; ++index) {
                 assert(group_key->data[index] == 'a');
             }
+            expected_sqlr_len = make_expected_group_sum_sqlr(
+                expected_sqlr, group_key->data, group_key->data_len, sum);
+            assert(prdb_sdk_sql_encode_group_sum_result_v1(
+                       &group_column, group_key, &measure_column,
+                       aggregate_value, actual_sqlr, sizeof(actual_sqlr),
+                       &actual_sqlr_len) == PRDB_SDK_SQL_RESULT_OK);
+            assert(actual_sqlr_len == expected_sqlr_len &&
+                   memcmp(actual_sqlr, expected_sqlr, expected_sqlr_len) == 0);
             capture->aggregates[capture->calls] = (int32_t)actual_sum;
         } else {
             capture->aggregates[capture->calls] = 1;
