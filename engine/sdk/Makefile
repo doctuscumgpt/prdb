@@ -1,6 +1,6 @@
 TCC ?= tcc
 TCC_AR ?= $(TCC) -ar
-SHARED_LINKER ?= $(CC)
+SHARED_LINKER ?= cc
 PYTHON ?= python3
 TAR ?= tar
 GZIP ?= gzip

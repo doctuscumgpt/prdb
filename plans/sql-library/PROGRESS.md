@@ -881,5 +881,11 @@
 - Contract: [SQL library](../../specs/sql-library.md). V22 adds `COUNT(*)` comparisons when the selected aggregate is another expression, records the hidden-count comparison nodes in a new sized AST/binding, and coerces those operands to BIGINT while retaining v21 coercion for selected-aggregate comparisons.
 - Implementation: [`prdb_sdk_sql_v22.h`](../../engine/include/prdb_sdk_sql_v22.h) and [`prdb_sdk_sql_exec_v22.h`](../../engine/include/prdb_sdk_sql_exec_v22.h) add the versioned parser, binder, and runner API. The shared bounded grouped runner validates hidden count parameters before scanning, derives the visible group row count, and evaluates hidden COUNT comparisons with SQL three-valued logic.
 - Regression: [`sdk_sql_select_v22.c`](../../engine/tests/fixtures/sdk_sql_select_v22.c) checks a mixed COUNT/SUM predicate, BIGINT coercion for the hidden count literal, Decimal coercion for the selected SUM literal, parameter marking, and v21 rejection. The grouped executor fixture checks that a hidden COUNT threshold filters groups independently of their selected SUM values.
-- Verification: TinyCC compiled both modified SDK sources with `-Wall -Wextra -Werror`; the v21 and v22 parser/binder fixtures and grouped executor fixture passed. The full SDK `make test` invocation reached release metadata validation but failed because the generated shared library contained RPATH/RUNPATH.
-- Remaining: resolve the SDK release RPATH packaging failure before full SDK suite acceptance.
+- Verification: TinyCC compiled both modified SDK sources with `-Wall -Wextra -Werror`; the v21 and v22 parser/binder fixtures and grouped executor fixture passed. After correcting the release linker default described below, the full pinned-shell SDK `make test` suite passed, including the release metadata checks.
+- Remaining: broader analytical type/workload coverage, secure spill, and mixed-workload measurements remain open.
+
+## SDK release linker: keep Nix Clang wrapper paths out of the artifact — fixed
+
+- Finding: the development shell exports `CC=clang`; using that value as the SDK shared linker caused the Nix Clang wrapper to embed libc/GCC RUNPATH entries even after the Makefile cleared `NIX_LDFLAGS`.
+- Change: the SDK Makefile now defaults `SHARED_LINKER` to GNU `cc`, as required for the SDK's executable-stack linker flags and release profile. Explicit `SHARED_LINKER` overrides remain supported. The toolchain spec records the separation between Rust's `CC` and the SDK linker.
+- Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed the full maintained TinyCC suite and shared-library metadata tests. `readelf -d` on the resulting SDK library showed only the libc NEEDED entry and no RPATH/RUNPATH.
