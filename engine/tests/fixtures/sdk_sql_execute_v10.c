@@ -239,6 +239,31 @@ static uint32_t make_decimal_relation(uint8_t *p, uint8_t handle_kind,
     return offset;
 }
 
+static uint32_t make_bigint_relation(uint8_t *p, uint8_t handle_kind,
+                                     uint8_t handle_fill) {
+    uint32_t offset = 0;
+    put_u16(p, &offset, 1);
+    p[offset++] = 0;
+    memset(p + offset, 0x11, 16); offset += 16;
+    p[offset++] = handle_kind;
+    memset(p + offset, handle_fill, 15); offset += 15;
+    put_name(p, &offset, "widgets");
+    put_u16(p, &offset, 2);
+    for (uint32_t index = 0; index < 2; ++index) {
+        memset(p + offset, (int)(0x33 + index), 16); offset += 16;
+        put_u32(p, &offset, index);
+        p[offset++] = 1;
+        p[offset++] = index == 0 ? PRDB_SDK_VALUE_TYPE_INTEGER
+                                 : PRDB_SDK_VALUE_TYPE_BIGINT;
+        p[offset++] = 0;
+        p[offset++] = 0;
+        p[offset++] = 0;
+        p[offset++] = 0;
+        put_name(p, &offset, index == 0 ? "id" : "score");
+    }
+    return offset;
+}
+
 static void append_integer_cell(uint8_t *p, uint32_t *offset, int32_t value) {
     uint32_t bits = (uint32_t)value;
     p[(*offset)++] = PRDB_SDK_VALUE_STATE_VALUE;
@@ -293,6 +318,39 @@ static void append_decimal_cell(uint8_t *p, uint32_t *offset,
         bits >>= 8;
     }
     *offset += 16;
+}
+
+static void append_bigint_cell(uint8_t *p, uint32_t *offset, int64_t value) {
+    uint64_t bits = (uint64_t)value;
+    p[(*offset)++] = PRDB_SDK_VALUE_STATE_VALUE;
+    p[(*offset)++] = PRDB_SDK_VALUE_TYPE_BIGINT;
+    put_u32(p, offset, 8);
+    for (uint32_t index = 0; index < 8; ++index) {
+        p[*offset + 7 - index] = (uint8_t)bits;
+        bits >>= 8;
+    }
+    *offset += 8;
+}
+
+static uint32_t make_bigint_rows(uint8_t *p, uint32_t finished,
+                                 const int32_t *keys, const int64_t *scores,
+                                 uint16_t row_count) {
+    uint32_t offset = 0;
+    put_u16(p, &offset, 1);
+    p[offset++] = (uint8_t)finished;
+    if (!finished) {
+        p[offset++] = 7;
+        memset(p + offset, 0x55, 15); offset += 15;
+    }
+    put_u16(p, &offset, row_count);
+    for (uint32_t index = 0; index < row_count; ++index) {
+        p[offset++] = 8;
+        memset(p + offset, (int)(index + 1), 15); offset += 15;
+        put_u16(p, &offset, 2);
+        append_integer_cell(p, &offset, keys[index]);
+        append_bigint_cell(p, &offset, scores[index]);
+    }
+    return offset;
 }
 
 static void append_text_cell(uint8_t *p, uint32_t *offset,
@@ -1873,6 +1931,48 @@ static int32_t run_query_v21_decimal_wide_sum(
         capture);
 }
 
+static int32_t on_group_v7_integer_sum_unexpected(
+    void *context, const prdb_sdk_value_v1 *group_key,
+    const prdb_sdk_value_v1 *aggregate_value, uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v7 *binding) {
+    (void)context;
+    (void)group_key;
+    (void)aggregate_value;
+    (void)matching_row_count;
+    (void)binding;
+    assert(!"overflowing BIGINT SUM must not publish a group");
+    return 1;
+}
+
+static int32_t run_query_v7_integer_sum(
+    mock_state *mock, const uint8_t *sql, uint64_t sql_len,
+    group_capture *capture) {
+    static const uint8_t schema[] = "app";
+    static const uint8_t id_name[] = "id";
+    static const uint8_t score_name[] = "score";
+    uint8_t planner_response[256] = {0};
+    uint8_t executor_response[256] = {0};
+    uint8_t batch_response[512] = {0};
+    uint8_t materialized_bytes[2048] = {0};
+    prdb_sdk_sql_column_shape_v2 planner_columns[2] = {
+        {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
+        {score_name, 5, 1, PRDB_SDK_VALUE_TYPE_BIGINT, 0, 0}};
+    prdb_sdk_sql_column_shape_v2 executor_columns[2] = {
+        {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
+        {score_name, 5, 1, PRDB_SDK_VALUE_TYPE_BIGINT, 0, 0}};
+    prdb_sdk_value_v1 cell_scratch[2] = {{0}};
+    prdb_host_api_v3 host = {sizeof(host), PRDB_QUERY_ABI_V3_VERSION,
+                             mock, executor_request, planner_request, NULL,
+                             statement_failure};
+    return prdb_sdk_sql_execute_group_v7(
+        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0, 4, 512,
+        planner_response, sizeof(planner_response), executor_response,
+        sizeof(executor_response), batch_response, sizeof(batch_response),
+        planner_columns, 2, executor_columns, 2, cell_scratch, 2,
+        materialized_bytes, sizeof(materialized_bytes),
+        on_group_v7_integer_sum_unexpected, capture);
+}
+
 static int32_t run_query_v21_min_decimal(mock_state *mock, const uint8_t *sql,
                                          uint64_t sql_len,
                                          group_capture *capture) {
@@ -2058,6 +2158,8 @@ int main(void) {
     static const uint8_t v21_decimal_literal_sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
         "HAVING SUM(score) >= 4.50e0";
+    static const uint8_t bigint_sum_overflow_sql[] =
+        "SELECT id, SUM(score) FROM widgets GROUP BY id";
     static const uint8_t v22_hidden_count_sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
         "HAVING COUNT(*) >= 2 AND SUM(score) >= 4.50e0";
@@ -3093,6 +3195,23 @@ int main(void) {
             assert(run_query_v21_decimal_wide_sum(
                        &mock, v21_decimal_sum_overflow_sql,
                        sizeof(v21_decimal_sum_overflow_sql) - 1, &capture) ==
+                   PRDB_SDK_SQL_EXEC_EVALUATION_ERROR);
+            assert(capture.calls == 0 && mock.executor_calls > 0 &&
+                   mock.statement_failed == 1);
+        }
+
+        {
+            const int32_t overflow_keys[] = {1, 1};
+            const int64_t overflow_scores[] = {INT64_MAX, 1};
+            mock.planner_len = make_bigint_relation(
+                mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99);
+            mock.executor_len = make_bigint_relation(mock.executor, 6, 0x22);
+            mock.batch_len = make_bigint_rows(
+                mock.batch, 1, overflow_keys, overflow_scores, 2);
+            reset_scan(&mock, &capture, 1);
+            assert(run_query_v7_integer_sum(
+                       &mock, bigint_sum_overflow_sql,
+                       sizeof(bigint_sum_overflow_sql) - 1, &capture) ==
                    PRDB_SDK_SQL_EXEC_EVALUATION_ERROR);
             assert(capture.calls == 0 && mock.executor_calls > 0 &&
                    mock.statement_failed == 1);

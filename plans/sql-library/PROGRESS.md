@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 / SQL-8 follow-up: BIGINT SUM overflow through grouped SQL — verified
+
+- Contract: integer `SUM` widens to BIGINT, and a sum outside the signed 64-bit range fails before any group callback; the invocation latches statement failure.
+- Regression: the maintained grouped runner fixture feeds `INT64_MAX` and `1` into one BIGINT group and asserts evaluation error, zero callbacks, and a latched statement failure.
+- Verification: the focused `sdk-sql-execute-v10` TinyCC fixture and complete `make -f engine/sdk/Makefile test` suite passed.
+- Remaining: secure spill, wider workload and host measurements, and mixed-workload optimization remain open.
+
 ## SQL-8 follow-up: confined high-cardinality ordered grouped SUM — implemented slice
 
 - Contract: exercise v12 grouped `ORDER BY SUM(measure) DESC NULLS LAST, group_key ASC NULLS FIRST` over the live authorized view, keeping the 128-row and 1 MiB materialization bounds and relaying exact SQLR records through durable commit.
