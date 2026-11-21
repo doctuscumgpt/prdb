@@ -3,7 +3,8 @@
 ## SQL-7 / WI-7 follow-up: seed v22 AVG and negative exponent HAVING fuzz path — verified
 
 - Regression input: the v22 parser corpus now includes a compound predicate that compares hidden `COUNT(*)` and selected `AVG(score)` through OR, with a negative fractional exponent literal. This complements the existing hidden-count SUM seeds and exercises both BIGINT and Decimal operand binding paths under the v22 AST mask oracle.
-- Verification: the maintained ASan/UBSan/libFuzzer target `make -f engine/sdk/Makefile fuzz-sql-v22` passed all 10,000 configured runs with the new seed; no crash or sanitizer finding occurred. A separate 60-second campaign over the prior two-seed corpus completed 1,762,546 runs with no finding.
+- Regression: the maintained v22 parser/binder fixture checks the comparison mask, COUNT literal coercion to BIGINT, and exact AVG literal rescaling to `DECIMAL(38,8)` coefficient `-1250000`.
+- Verification: the full maintained SDK suite and ASan/UBSan/libFuzzer target `make -f engine/sdk/Makefile fuzz-sql-v22` passed; the fuzzer completed all 10,000 configured runs with the new seed and no crash or sanitizer finding. A separate 60-second campaign over the prior two-seed corpus completed 1,762,546 runs with no finding.
 - Remaining: broader analytical workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
 
 ## SQL-7 / SQL-8 follow-up: optimizer-backed INTEGER aggregate NULL matrix — verified
