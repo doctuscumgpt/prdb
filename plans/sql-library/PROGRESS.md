@@ -781,6 +781,13 @@
 - Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed, including the focused `sdk-sql-execute-v10` fixture under TinyCC with `-Wall -Wextra -Werror`.
 - Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
 
+## SQL-7 / SQL-8 follow-up: v21 Decimal exponent overflow fails before scan — verified
+
+- Contract: a v21 Decimal HAVING literal outside the aggregate result precision is rejected during binding, before the grouped runner requests scan batches.
+- Regression: the maintained v21 Decimal runner now checks `SUM(score) >= 1e36` against its `DECIMAL(38,2)` aggregate result. It returns `BIND_ERROR`, publishes no groups, requests no batches, and latches statement failure.
+- Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed, including the focused `sdk-sql-execute-v10` fixture under TinyCC with `-Wall -Wextra -Werror`.
+- Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
+
 ## SQL-7 / WI-7 follow-up: v21 HAVING fuzz seeds exercise successful binding — verified
 
 - Correction: the v21 fuzz corpus previously used `category` and `scores`, which did not match the harness's bound `id`/`score` shape. Those seeds could parse but did not reach successful binding. Replaced them with schema-matched statements and added a compound Decimal seed covering signed exponent literals, Boolean precedence, ORDER BY, and LIMIT.
