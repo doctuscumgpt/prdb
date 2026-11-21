@@ -1119,7 +1119,7 @@ int main(void) {
         "HAVING SUM(score) >= 4.50e0";
     static const uint8_t v21_decimal_min_literal_sql[] =
         "SELECT id, score, MIN(score) FROM widgets GROUP BY id, score "
-        "HAVING MIN(score) <= 3.00e0";
+        "HAVING MIN(score) <= 3.00e0 ORDER BY id ASC LIMIT 1";
     static const uint8_t v13_many_groups_sql[] =
         "SELECT id, score, COUNT(*) FROM widgets GROUP BY id, score";
     static const uint8_t parameter_bytes[] = {0, 0, 0, 5};

@@ -599,6 +599,58 @@ static int32_t write_grouped_composite_avg_v21(
     return 0;
 }
 
+static int32_t write_grouped_composite_min_v21(
+    void *opaque, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v21 *binding) {
+    composite_grouped_result_context *context =
+        (composite_grouped_result_context *)opaque;
+    const prdb_sdk_select_binding_v7 *aggregate_binding;
+    int32_t status;
+    if (context == NULL || binding == NULL || aggregate_value == NULL ||
+        group_key_count != 2 || matching_row_count == 0) {
+        return 1;
+    }
+    if (aggregate_value->state != PRDB_SDK_VALUE_STATE_VALUE ||
+        aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_DECIMAL ||
+        aggregate_value->data_len != 16) {
+        return 1;
+    }
+    if (binding->base.having_node_count != 1 ||
+        binding->base.having_type_code != PRDB_SDK_VALUE_TYPE_DECIMAL ||
+        binding->base.having_decimal_precision != 4 ||
+        binding->base.having_decimal_scale != 2 ||
+        binding->having_nodes[0].base.operand_kind !=
+            PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL ||
+        binding->having_nodes[0].scale != 2 ||
+        binding->having_nodes[0].coefficient[15] != 100) {
+        return 1;
+    }
+    for (uint32_t index = 0; index < 15; ++index) {
+        if (binding->having_nodes[0].coefficient[index] != 0) {
+            return 1;
+        }
+    }
+    aggregate_binding = &binding->base.base.base.base.base;
+    if (aggregate_binding->aggregate_kind !=
+            PRDB_SDK_SQL_V7_AGGREGATE_MIN ||
+        aggregate_binding->aggregate_column.type_code !=
+            PRDB_SDK_VALUE_TYPE_DECIMAL ||
+        aggregate_binding->aggregate_column.decimal_precision != 4 ||
+        aggregate_binding->aggregate_column.decimal_scale != 2) {
+        return 1;
+    }
+    status = prdb_sdk_sql_write_group_composite_result_v1(
+        context->host, &binding->base.base.base.base, context->columns,
+        context->column_count, group_keys, group_key_count, aggregate_value,
+        matching_row_count, context->output, context->output_capacity,
+        &context->output_len);
+    if (status != PRDB_SDK_SQL_RESULT_OK) return 1;
+    ++context->row_count;
+    return 0;
+}
+
 static int32_t write_joined_row(void *opaque,
                                 const prdb_sdk_value_v1 *projected_values,
                                 uint32_t projection_count,
@@ -997,6 +1049,12 @@ static int32_t run_write_read_fixture(
         "SELECT left_key, right_key, AVG(decimal_value) "
         "FROM decimal_grouped_records "
         "GROUP BY left_key, right_key HAVING AVG(decimal_value) >= 1.40e0";
+    static const uint8_t select_composite_min_numeric_v21_sql[] =
+        "SELECT left_key, right_key, MIN(decimal_value) "
+        "FROM decimal_grouped_records "
+        "GROUP BY left_key, right_key "
+        "HAVING MIN(decimal_value) <= 1.00e0 "
+        "ORDER BY left_key ASC LIMIT 1";
     static const uint8_t select_join_sql[] =
         "SELECT records.id, linked_records.id FROM records INNER JOIN "
         "linked_records ON records.id = linked_records.id LIMIT 1";
@@ -2062,6 +2120,30 @@ static int32_t run_write_read_fixture(
     if (composite_grouped_results.row_count != 1) {
         static const uint8_t message[] =
             "fixture-error-composite-avg-numeric-v21-row-count";
+        return report_failure(host, message, sizeof(message) - 1);
+    }
+
+    composite_grouped_results.row_count = 0;
+    composite_grouped_results.output_len = 0;
+    status = prdb_sdk_sql_execute_group_v21(
+        host, schema, sizeof(schema) - 1, select_composite_min_numeric_v21_sql,
+        sizeof(select_composite_min_numeric_v21_sql) - 1, NULL, 0, 16,
+        sizeof(batch_response), planner_response, sizeof(planner_response),
+        executor_response, sizeof(executor_response), batch_response,
+        sizeof(batch_response), planner_columns, 9, executor_columns, 9,
+        cell_scratch, 9, grouped_materialized, sizeof(grouped_materialized),
+        write_grouped_composite_min_v21, &composite_grouped_results);
+    if (status != PRDB_SDK_SQL_EXEC_OK) {
+        return report_failure(host, (const uint8_t *)
+                                       "fixture-error-composite-min-v21",
+                              sizeof("fixture-error-composite-min-v21") - 1);
+    }
+    if (composite_grouped_results.row_count != 1) {
+        uint8_t message[] = "fixture-error-composite-min-v21-count-00";
+        uint32_t count = composite_grouped_results.row_count;
+        if (count > 99) count = 99;
+        message[sizeof(message) - 3] = (uint8_t)('0' + count / 10);
+        message[sizeof(message) - 2] = (uint8_t)('0' + count % 10);
         return report_failure(host, message, sizeof(message) - 1);
     }
     composite_grouped_results.column_count = 2;

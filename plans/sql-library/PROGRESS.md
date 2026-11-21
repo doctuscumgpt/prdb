@@ -730,3 +730,11 @@
 - Evidence: exact typed literal conversion and the control-session serialization path are covered by the DS-8 default follow-up in [schema DDL progress](../ddl-schema/PROGRESS.md).
 - Verification: the full serial workspace suite passed under delegated cgroups with all confined/process tests enabled and zero ignored tests.
 - Next: generated UUID identity SQL syntax remains the next parser extension.
+
+## SQL-8 follow-up: Decimal MIN through confined SQL — verified
+
+- Contract: v21 numeric-literal HAVING binds Decimal thresholds to the aggregate's result shape; MIN preserves its input precision and scale. The bounded composite grouping runner applies ORDER BY and LIMIT before publishing its result.
+- Regression: the sandbox SQL artifact runs `MIN(decimal_value) <= 1.00e0 ORDER BY left_key ASC LIMIT 1` over DECIMAL(4,2) rows, validates the v21 binding and literal coefficient, and writes one composite-key SQLR row. The confined acceptance checks the exact relayed record bytes. The maintained v10 runner fixture also covers Decimal MIN with ORDER BY and LIMIT.
+- Verification: `make -f engine/sdk/Makefile test sandbox-query-fixture`, `cargo fmt --all -- --check`, and the focused `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed. The acceptance ran inside the delegated user cgroup service and exercised its live analytics/operational workload.
+- Red/green evidence: the first acceptance exposed that the fixture had incorrectly expected SUM's widened Decimal precision for MIN HAVING metadata; correcting the assertion to input precision 4 made execution pass. Exact SQLR comparison then exposed and corrected one extra expected zero byte.
+- Remaining: broader SQL/API parity, spill support, and mixed-workload analytical measurements remain open.
