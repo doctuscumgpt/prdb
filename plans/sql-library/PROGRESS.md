@@ -739,6 +739,13 @@
 - Red/green evidence: the first acceptance exposed that the fixture had incorrectly expected SUM's widened Decimal precision for MIN HAVING metadata; correcting the assertion to input precision 4 made execution pass. Exact SQLR comparison then exposed and corrected one extra expected zero byte.
 - Remaining: broader SQL/API parity, spill support, and mixed-workload analytical measurements remain open.
 
+## SQL-7 follow-up: grouped MAX NULL and redaction behavior — verified
+
+- Contract: `MAX` ignores NULL inputs, returns NULL for an all-NULL group, and fails the statement when a required aggregate input is REDACTED. No partial group callbacks are published on that evaluation failure.
+- Regression: the maintained grouped runner fixture now checks all-NULL MAX groups, a grouped input with one all-NULL group and one VALUE group, and a REDACTED input that fails before any callback. This complements the existing corresponding MIN, SUM, and AVG cases.
+- Verification: the focused `sdk-sql-execute-v10` fixture passed under TinyCC with `-Wall -Wextra -Werror`.
+- Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
+
 ## SQL-7 follow-up: Decimal MAX through v21 and confined SQL — verified
 
 - Contract: composite Decimal MAX retains the source DECIMAL precision and scale for HAVING comparison, and applies exact numeric-literal coercion before scanning. ORDER BY and LIMIT run after HAVING.

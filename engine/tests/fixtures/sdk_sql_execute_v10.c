@@ -1723,6 +1723,12 @@ int main(void) {
         assert(capture.calls == 2 &&
                capture.aggregate_states[0] == PRDB_SDK_VALUE_STATE_NULL &&
                capture.aggregate_states[1] == PRDB_SDK_VALUE_STATE_NULL);
+        reset_scan(&mock, &capture, 1);
+        assert(run_query(&mock, max_sql, sizeof(max_sql) - 1, NULL, 0, 64,
+                         &capture) == PRDB_SDK_SQL_EXEC_OK);
+        assert(capture.calls == 2 &&
+               capture.aggregate_states[0] == PRDB_SDK_VALUE_STATE_NULL &&
+               capture.aggregate_states[1] == PRDB_SDK_VALUE_STATE_NULL);
         {
             const uint8_t partly_null_states[] = {
                 PRDB_SDK_VALUE_STATE_NULL,
@@ -1737,6 +1743,13 @@ int main(void) {
             assert(capture.calls == 1 && capture.keys[0] == 1 &&
                    capture.aggregate_states[0] ==
                        PRDB_SDK_VALUE_STATE_NULL);
+            reset_scan(&mock, &capture, 1);
+            assert(run_query(&mock, max_sql, sizeof(max_sql) - 1, NULL, 0, 64,
+                             &capture) == PRDB_SDK_SQL_EXEC_OK);
+            assert(capture.calls == 2 &&
+                   capture.aggregate_states[0] == PRDB_SDK_VALUE_STATE_NULL &&
+                   capture.aggregate_states[1] == PRDB_SDK_VALUE_STATE_VALUE &&
+                   capture.aggregates[1] == 5);
             mock.batch_len = make_rows(mock.batch, 1, keys, scores,
                                        null_states, 3);
         }
@@ -1763,6 +1776,12 @@ int main(void) {
                                    redacted_states, 3);
         reset_scan(&mock, &capture, 0);
         assert(run_query(&mock, min_sql, sizeof(min_sql) - 1, NULL, 0, 64,
+                         &capture) ==
+               PRDB_SDK_SQL_EXEC_EVALUATION_ERROR);
+        assert(capture.calls == 0 && mock.executor_calls == 4 &&
+               mock.statement_failed == 1);
+        reset_scan(&mock, &capture, 0);
+        assert(run_query(&mock, max_sql, sizeof(max_sql) - 1, NULL, 0, 64,
                          &capture) ==
                PRDB_SDK_SQL_EXEC_EVALUATION_ERROR);
         assert(capture.calls == 0 && mock.executor_calls == 4 &&
