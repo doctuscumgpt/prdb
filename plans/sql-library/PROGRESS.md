@@ -1,5 +1,13 @@
 # SQL Library Progress
 
+## SQL-8 follow-up: high-cardinality ordered grouped SUM ties — verified
+
+- Contract: the v12 grouped runner sorts selected aggregate results and group keys lexicographically, honoring each key's direction and NULL placement while retaining the 128-row and 1 MiB materialization bounds.
+- Regression: the maintained `sdk-sql-execute-v10` fixture now streams 128 rows over two scan pages, forming 64 two-row groups with 8,172-byte text keys. Their widened BIGINT SUM values tie in adjacent pairs. The callback checks the bound v12 sort metadata, every key byte, exact sum and row count, descending aggregate order, ascending group-key tie order, and all 64 emitted groups. Copied key and operand data totals 1,046,528 bytes.
+- Verification: the focused TinyCC executor fixture passed, followed by the complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` suite with the pinned TinyCC toolchain.
+- Scope finding: adding the sorted high-cardinality query to the existing live write/read invocation exceeded that invocation's cumulative executor scan budget at a later optimizer-backed DELETE, with both direct and optimizer-backed runners. That experiment was reverted. The confined live-pressure acceptance remains the verified grouped SUM workload; a sorted live-pressure query needs its own invocation budget.
+- Remaining: broader analytical workload diversity, secure spill, target-hardware measurements, and mixed-workload optimization remain open.
+
 ## SQL-7 follow-up: optimizer-backed composite aggregates — implemented slice
 
 - Contract: the bounded v13 optimizer subset accepts `COUNT(*)`, `MIN`, `MAX`, `SUM`, or `AVG` with two to eight GROUP BY keys and an optional LIMIT. The optimizer request is rejected for unsupported WHERE, HAVING, or ORDER BY clauses; v13 retains its existing bounded execution semantics.

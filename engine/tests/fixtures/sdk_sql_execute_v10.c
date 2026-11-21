@@ -61,6 +61,7 @@ typedef struct group_capture {
     uint8_t scalar_order_precision;
     uint8_t scalar_order_scale;
     uint32_t scalar_order_descending;
+    uint32_t text_sum_tie_order_mode;
     const uint8_t *scalar_order_expected[3];
     uint32_t scalar_order_expected_len[3];
     uint8_t scalar_order_sqlr[3][128];
@@ -326,6 +327,35 @@ static uint32_t make_text_rows(uint8_t *p, uint32_t finished,
         put_u16(p, &offset, 2);
         append_text_cell(p, &offset, first_key + index, key_bytes);
         append_integer_cell(p, &offset, 1);
+    }
+    return offset;
+}
+
+static uint32_t make_text_grouped_sum_rows(uint8_t *p, uint32_t finished,
+                                           uint32_t first_row,
+                                           uint16_t row_count,
+                                           uint32_t key_bytes) {
+    uint32_t offset = 0;
+    put_u16(p, &offset, 1);
+    p[offset++] = (uint8_t)finished;
+    if (!finished) {
+        p[offset++] = 7;
+        memset(p + offset, 0x55, 15);
+        offset += 15;
+    }
+    put_u16(p, &offset, row_count);
+    for (uint32_t index = 0; index < row_count; ++index) {
+        uint32_t row_index = first_row + index;
+        uint32_t group_index = row_index / 2;
+        uint32_t bucket = group_index / 2;
+        p[offset++] = 8;
+        memset(p + offset, (int)(row_index + 1), 15);
+        offset += 15;
+        put_u16(p, &offset, 2);
+        append_text_cell(p, &offset, group_index, key_bytes);
+        append_integer_cell(p, &offset,
+                            (int32_t)(row_index % 2 == 0 ? 100 + bucket
+                                                        : 200 + bucket));
     }
     return offset;
 }
@@ -852,9 +882,47 @@ static int32_t on_group_v12(void *context,
                         (uint32_t)(group_key->data[index] - '0');
         }
         assert(capture->calls < 128 && key_index < 128 &&
-               matching_row_count == 1);
+               matching_row_count == (capture->text_sum_tie_order_mode ? 2 : 1));
+        if (capture->text_sum_tie_order_mode) {
+            uint32_t expected_key = 62 - 2 * (capture->calls / 2) +
+                                    capture->calls % 2;
+            uint32_t sum = 300 + (key_index / 2) * 2;
+            int64_t actual_sum = 0;
+            assert(binding->base.base.base.base.aggregate_kind ==
+                   PRDB_SDK_SQL_V7_AGGREGATE_SUM);
+            assert(binding->base.base.base.base.aggregate_column.type_code ==
+                   PRDB_SDK_VALUE_TYPE_INTEGER);
+            assert(binding->order_count == 2);
+            assert(binding->order_items[0].item.kind ==
+                   PRDB_SDK_SQL_V10_ORDER_AGGREGATE);
+            assert(binding->order_items[0].item.direction ==
+                   PRDB_SDK_SQL_V10_ORDER_DESCENDING);
+            assert(binding->order_items[0].item.null_order ==
+                   PRDB_SDK_SQL_V11_NULLS_LAST);
+            assert(binding->order_items[0].type_code ==
+                   PRDB_SDK_VALUE_TYPE_BIGINT);
+            assert(binding->order_items[1].item.kind ==
+                   PRDB_SDK_SQL_V10_ORDER_GROUP_KEY);
+            assert(binding->order_items[1].item.direction ==
+                   PRDB_SDK_SQL_V10_ORDER_ASCENDING);
+            assert(binding->order_items[1].item.null_order ==
+                   PRDB_SDK_SQL_V11_NULLS_FIRST);
+            assert(binding->order_items[1].type_code ==
+                   PRDB_SDK_VALUE_TYPE_TEXT);
+            assert(key_index == expected_key);
+            assert(aggregate_value != NULL &&
+                   aggregate_value->type_code == PRDB_SDK_VALUE_TYPE_BIGINT &&
+                   prdb_sdk_value_get_bigint_v1(aggregate_value, &actual_sum) ==
+                       PRDB_SDK_VALUE_ACCESS_OK &&
+                   actual_sum == (int64_t)sum);
+            for (uint32_t index = 0; index < group_key->data_len - 3; ++index) {
+                assert(group_key->data[index] == 'a');
+            }
+            capture->aggregates[capture->calls] = (int32_t)actual_sum;
+        } else {
+            capture->aggregates[capture->calls] = 1;
+        }
         capture->keys[capture->calls] = (int32_t)key_index;
-        capture->aggregates[capture->calls] = 1;
         capture->row_counts[capture->calls] = matching_row_count;
         ++capture->calls;
         if (capture->mock->cancel_after_group_callbacks == capture->calls) {
@@ -1868,6 +1936,9 @@ int main(void) {
     static const uint8_t ordered_group_text_budget_sql[] =
         "SELECT id, COUNT(*) FROM widgets GROUP BY id "
         "ORDER BY COUNT(*) DESC, id ASC LIMIT 128";
+    static const uint8_t ordered_grouped_sum_tie_sql[] =
+        "SELECT id, SUM(score) FROM widgets GROUP BY id "
+        "ORDER BY SUM(score) DESC NULLS LAST, id ASC NULLS FIRST";
     static const uint8_t *const ordered_aggregate_matrix_sql[] = {
         (const uint8_t *)"SELECT id, COUNT(*) FROM widgets GROUP BY id "
                          "ORDER BY COUNT(*) DESC NULLS LAST, id ASC NULLS FIRST",
@@ -2237,6 +2308,50 @@ int main(void) {
         mock.streamed_pages = 0;
         mock.continued_batch_len = 0;
         capture.text_key_bytes = 0;
+        mock.planner_len = make_relation(
+            mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99,
+            PRDB_SDK_VALUE_TYPE_INTEGER);
+        mock.executor_len = make_relation(mock.executor, 6, 0x22,
+                                          PRDB_SDK_VALUE_TYPE_INTEGER);
+        mock.batch_len = make_rows(mock.batch, 1, keys, scores,
+                                   value_states, 3);
+    }
+
+    {
+        mock.text_key_mode = 1;
+        mock.planner_len = make_relation(
+            mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99,
+            PRDB_SDK_VALUE_TYPE_TEXT);
+        mock.executor_len = make_relation(mock.executor, 6, 0x22,
+                                          PRDB_SDK_VALUE_TYPE_TEXT);
+        mock.batch_len = make_text_grouped_sum_rows(
+            mock.batch, 0, 0, 64, 8172);
+        mock.continued_batch_len = make_text_grouped_sum_rows(
+            mock.continued_batch, 1, 64, 64, 8172);
+        mock.streamed_pages = 2;
+        mock.max_candidates = 64;
+        capture.text_key_bytes = 8172;
+        capture.text_sum_tie_order_mode = 1;
+        reset_scan(&mock, &capture, 1);
+        assert(run_query_v12(&mock, ordered_grouped_sum_tie_sql,
+                             sizeof(ordered_grouped_sum_tie_sql) - 1,
+                             PRDB_SDK_SQL_EXEC_V7_MAX_MATERIALIZED_BYTES,
+                             &capture) == PRDB_SDK_SQL_EXEC_OK);
+        assert(capture.calls == 64 && mock.statement_failed == 0);
+        for (uint32_t group = 0; group < 64; ++group) {
+            uint32_t expected_key = 62 - 2 * (group / 2) + group % 2;
+            assert(capture.keys[group] == (int32_t)expected_key);
+            assert(capture.aggregates[group] ==
+                   (int32_t)(300 + (expected_key / 2) * 2));
+            assert(capture.row_counts[group] == 2);
+        }
+        assert(mock.executor_requests <= 256);
+        mock.text_key_mode = 0;
+        mock.max_candidates = 0;
+        mock.streamed_pages = 0;
+        mock.continued_batch_len = 0;
+        capture.text_key_bytes = 0;
+        capture.text_sum_tie_order_mode = 0;
         mock.planner_len = make_relation(
             mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99,
             PRDB_SDK_VALUE_TYPE_INTEGER);
