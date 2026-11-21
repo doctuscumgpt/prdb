@@ -10,7 +10,7 @@
 
 - `metadata.indexes.list` now accepts constraint-owned index object records whose optional schema ID is absent. The index catalog record binds each index to the selected table, and the table record binds that table to the authorized schema; a present schema ID must still match.
 - The delegated gateway/supervisor regression lists 130 UNIQUE constraints and their constraint-owned indexes across metadata pages. It first failed with `CorruptCatalog` on the valid omitted-schema-ID shape; after the validation fix, the focused process test passed.
-- Contracts: [client protocol](../../specs/client-protocol.md), [metadata discovery](../../specs/metadata-discovery.md), and the [client SQL command](../../specs/client-sql-command.md).
+- Contracts: [client protocol](../../specs/client-protocol.md), [metadata discovery](../../specs/metadata-discovery.md), and the [administrative SQL input](../../specs/admin-sql.md).
 - Verification: focused delegated process test passed (1 passed, 0 failed). Workspace build, format check, warning-denied Clippy, and `git diff --check` pass; `Cargo.lock` is unchanged.
 
 ## DP-SQL-3 follow-up: policy-scoped identity lookup — verified locally
@@ -209,12 +209,12 @@ Migrated component-owned progress entries from [storage-manager progress](../sto
 
 ## Grant provenance `prdb-client` projection — verified
 
-- The existing authorized `metadata.grants.list` client page now has a `grant-list` CLI projection that follows connection-local pages and returns direct grants with grantor IDs, without principal names or inherited-grant expansion. The production process regression verifies a real column grant. The focused gateway/supervisor CLI regression passed and verifies direct grantor/grantee provenance without names. Workspace build, format, warning-denied Clippy, cgroup probe, full serial delegated-cgroup workspace suite, and `git diff --check` passed; see [client SQL command progress](../client-sql-command/PROGRESS.md). Cargo.lock is unchanged.
+- The existing authorized `metadata.grants.list` client page now has a `grant-list` CLI projection that follows connection-local pages and returns direct grants with grantor IDs, without principal names or inherited-grant expansion. The production process regression verifies a real column grant. The focused gateway/supervisor CLI regression passed and verifies direct grantor/grantee provenance without names. Workspace build, format, warning-denied Clippy, cgroup probe, full serial delegated-cgroup workspace suite, and `git diff --check` passed; see [client SDK progress](../client-sdk/PROGRESS.md). Cargo.lock is unchanged.
 
 ## Policy summary `prdb-client` projection — verified
 
 - The existing `metadata.policies.list` page now has a `policy-list` CLI projection that follows connection-local pages and preserves the API's recipient redaction. It never returns expression identifiers or bodies. A production process regression exercises administrator visibility, including row/cell summaries, recipient IDs, and omission of expression bodies; a table-owner attempt receives the server's empty result.
-- The focused process regression, workspace build, format, warning-denied Clippy, delegated cgroup probe, and full serial delegated-cgroup suite passed; see [client SQL command progress](../client-sql-command/PROGRESS.md). Cargo.lock is unchanged.
+- The focused process regression, workspace build, format, warning-denied Clippy, delegated cgroup probe, and full serial delegated-cgroup suite passed; see [client SDK progress](../client-sdk/PROGRESS.md). Cargo.lock is unchanged.
 
 ## Scoped grant target resolution type — implemented slice
 

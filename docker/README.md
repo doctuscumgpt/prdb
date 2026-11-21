@@ -59,19 +59,21 @@ For a gateway on another host, replace `127.0.0.1` with its numeric IP address
 reachable from the client container. `prdb-client` does not accept DNS names
 for `--address`.
 
-To run SQL, mount the SQL file and writable output directory. The SDK shared
-library and headers are already in the image:
+To run an SQL script, mount the script, requested scope, and any parameter file.
+The interactive SQL client supports scripts and terminal sessions; the SDK
+shared library and headers are already in the image:
 
 ```sh
 podman run --rm --network=host \
   --userns=keep-id:uid=10001,gid=10001 \
   --volume "$PWD/prdb-data:/var/lib/prdb:ro" \
   --volume "$PWD/client-files:/work:rw" \
-  localhost/prdb-client:latest run-sql \
+  localhost/prdb-client:latest interactive-sql \
     --address 127.0.0.1:8765 \
     --credentials /var/lib/prdb/admin.credentials \
+    --default-user admin \
     --sql-file /work/query.sql --schema public \
-    --scope /work/scope.json --receipt /work/receipt.json \
+    --scope /work/scope.psc1 \
     --sdk-library /opt/prdb/sdk/releases/linux-x86_64/x86_64-v1/debian-bookworm-glibc-2.36/sdk-1-abis1,2,3,4,5/libprdb_sql.so.1 \
     --include-dir /opt/prdb/include \
     --sdk-release 1 --cpu-baseline x86_64-v1 \

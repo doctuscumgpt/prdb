@@ -690,7 +690,7 @@
 - Contract: [client SDK](../../specs/client-sdk.md). SQL DDL is exposed only by the authenticated `AdminClient`; no administrative credential or capability is added to query artifacts.
 - Implementation/evidence: `AdminClient::execute_create_table_sql` maps exact typed SQL defaults to `AdminColumnDefinition` and uses the existing PREPARE/START client method. The owning schema DDL progress records parser and control-session coverage.
 - Verification: workspace build, formatting, warning-denied Clippy, maintained TinyCC tests, release-profile validation, delegated-cgroup preflight, and the complete serial delegated-cgroup workspace suite passed; zero tests were ignored.
-- Follow-up: `prdb-client admin-sql` now exposes the bounded helper through a local SQL-file/stdin command. Its process tests verify typed control-mode PREPARE/START and reject unsupported SQL before credentials or network; see [client SQL command progress](../client-sql-command/PROGRESS.md).
+- Follow-up: `prdb-client admin-sql` now exposes the bounded helper through a local SQL-file/stdin command. Its process tests verify typed control-mode PREPARE/START and reject unsupported SQL before credentials or network; see [administrative SQL input](../../specs/admin-sql.md).
 
 ## SDK-5 follow-up: generated UUID identity through SQL DDL — implemented
 
@@ -700,7 +700,7 @@
 
 ## SDK-5 follow-up: explicit-owner CREATE SCHEMA SQL — implemented
 
-- Contract: [client SDK](../../specs/client-sdk.md), [schema DDL](../../specs/ddl-schema.md), and [client SQL command](../../specs/client-sql-command.md). `AdminClient::execute_create_schema_sql` maps bounded local SQL to the existing authenticated `schemas.create` operation.
+- Contract: [client SDK](../../specs/client-sdk.md), [schema DDL](../../specs/ddl-schema.md), and [administrative SQL input](../../specs/admin-sql.md). `AdminClient::execute_create_schema_sql` maps bounded local SQL to the existing authenticated `schemas.create` operation.
 - Regression: mock control-session coverage verifies UUID owner text becomes the same typed owner ID used by `create_schema`; the CLI process test verifies authenticated PREPARE/START and the committed schema ID.
 - Verification: the authenticated AdminClient schema lifecycle control-session test passed with SQL owner UUID mapped to the expected typed owner ID. Workspace formatting, locked offline build, warning-denied all-target Clippy, and the complete serial delegated-cgroup workspace suite passed; sandbox and process tests ran with zero ignored tests. Details are in [schema DDL progress](../ddl-schema/PROGRESS.md).
 

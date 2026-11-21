@@ -6,7 +6,7 @@ Implement the proposed [interactive SQL sessions and transactions contract](../.
 
 Preserve the current v1 one-package/one-transaction protocol and behavior. The new feature requires a separately versioned client protocol/API, supervisor/storage-owned transaction state, and a SQL SDK batch entry point. Keep SQL text parsing and native execution in the existing trusted client and confined SDK boundaries; no SQL is sent to the gateway and no user artifact receives credentials or transaction-control authority.
 
-Coordinate with [client protocol](../client-protocol/README.md), [client gateway](../client-gateway/README.md), [client SDK](../client-sdk/README.md), [`prdb-client` SQL input](../client-sql-command/README.md), [SQL library](../sql-library/README.md), [supervisor](../supervisor/README.md), [transactions/MVCC](../concurrency-mvcc/README.md), [storage manager](../storage-manager/README.md), [authorization](../authorization/README.md), [identity/authentication](../ddl-identity/README.md), and [sandbox](../linux-sandbox/README.md). Update normative specs before implementation when a decision below changes the current proposal.
+Coordinate with [client protocol](../client-protocol/README.md), [client gateway](../client-gateway/README.md), [client SDK](../client-sdk/README.md), [administrative SQL contract](../../specs/admin-sql.md), [SQL library](../sql-library/README.md), [supervisor](../supervisor/README.md), [transactions/MVCC](../concurrency-mvcc/README.md), [storage manager](../storage-manager/README.md), [authorization](../authorization/README.md), [identity/authentication](../ddl-identity/README.md), and [sandbox](../linux-sandbox/README.md). Update normative specs before implementation when a decision below changes the current proposal.
 
 ## Decisions Before Implementation
 
@@ -24,7 +24,7 @@ The existing spec chooses that possession of the target user's valid token authe
 
 ## Client Delivery Sequence
 
-The user-facing command is a composition layer over the parser, credential loader, package builder, query protocol, and typed DDL client. It must not keep a socket open to keep MVCC state alive. Keep the existing `submit`, `run-sql`, and `admin-sql` commands unchanged; add a distinct `interactive-sql` command and make script mode use the same dispatcher as the REPL.
+The user-facing command is a composition layer over the parser, credential loader, package builder, query protocol, and typed DDL client. It must not keep a socket open to keep MVCC state alive. Keep the existing `submit` and `admin-sql` commands unchanged; add a distinct `interactive-sql` command and make script mode use the same dispatcher as the REPL.
 
 Implement the client in this order, after the protocol and storage prerequisites in ISQL-1 through ISQL-6 expose stable typed APIs:
 

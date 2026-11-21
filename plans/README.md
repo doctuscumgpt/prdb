@@ -15,7 +15,6 @@ These plans cover every component and supporting contract in the [specification 
 | [Client gateway](client-gateway/README.md) | Dedicated TCP process and bounded gateway-service adapter |
 | [Client SDK](client-sdk/README.md) | C runtime bindings, compiler wrapper and separate submission/admin helpers |
 | [SDK library repository](sdk-library-repository/README.md) | Administrator-installed immutable SDK releases, repository API, persistent client config and query-only submission |
-| [`prdb-client` SQL input](client-sql-command/README.md) | SQL file/stdin input, generated C wrapper, packaging and authenticated submission |
 | [SQL library](sql-library/README.md) | C frontend, expressions, interpreter, writes and required analytics |
 | [Interactive SQL client](interactive-sql/README.md) | Multi-credential RUNAS blocks, explicit transactions across connections, and typed DDL routing |
 | [Optimizer](planner-compiler/README.md) | Isolated Rust binding/planning with scoped metadata and estimates |
@@ -87,7 +86,7 @@ Each specification has a primary owning plan. Other plans link adjacent contract
 | [Executor](../specs/query-worker.md) | [Executor](query-worker/README.md) |
 | [Client SDK](../specs/client-sdk.md) | [Client SDK](client-sdk/README.md) |
 | [SDK library repository](../specs/sdk-library-repository.md) | [SDK library repository](sdk-library-repository/README.md) |
-| [`prdb-client` SQL input](../specs/client-sql-command.md) | [`prdb-client` SQL input](client-sql-command/README.md) |
+| [Administrative SQL input](../specs/admin-sql.md) | [Client SDK](client-sdk/README.md) |
 | [SQL library](../specs/sql-library.md) | [SQL library](sql-library/README.md) |
 | [Interactive SQL sessions](../specs/interactive-sql.md) | [Interactive SQL client](interactive-sql/README.md) |
 | [IPC](../specs/ipc-protocol.md) | [Internal IPC](ipc-protocol/README.md) |

@@ -34,7 +34,7 @@ These documents capture the current research design for an operational database 
 - [Executor](query-worker.md): untrusted execution and the native extension contract.
 - [Client SDK](client-sdk.md): TinyCC compilation, component contracts, and artifact packaging.
 - [SDK library repository](sdk-library-repository.md): administrator-installed immutable SDK libraries, authenticated repository operations, and persistent client release selection.
-- [`prdb-client` SQL input command](client-sql-command.md): local SQL input, generated C wrapper, SDK packaging, and submission composition.
+- [Administrative SQL input](admin-sql.md): bounded local DDL input and typed authenticated control operations.
 - [Interactive SQL sessions and transactions](interactive-sql.md): proposed higher-level client with explicit transactions spanning sequential query packages and separately routed autocommit DDL.
 - [Separate SQL library implementation plan](../plans/client-sdk/SEPARATE_SQL_LIBRARY.md): historical implementation plan for versioned SDK shared libraries; repository behavior is specified in [SDK library repository](sdk-library-repository.md).
 - [SQL library](sql-library.md): SDK SQL frontend, initial language subset, and plan execution.

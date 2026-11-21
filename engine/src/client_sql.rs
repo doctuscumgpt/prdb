@@ -1,4 +1,4 @@
-//! Local SQL input and PSP1 parameter packaging for `prdb-client run-sql`.
+//! Local SQL input and PSP1 parameter packaging for the interactive SQL client.
 
 use crate::client_submit::{ResponseValue, parse_bounded_json_value};
 use std::collections::HashMap;
@@ -30,7 +30,7 @@ impl std::fmt::Display for SqlInputError {
             Self::InvalidSql => "SQL input must be nonempty UTF-8 without NUL bytes",
             Self::InvalidSchema => "schema must be a normalized identifier",
             Self::UnsupportedInteractiveStatement => {
-                "interactive statement is not a query supported by run-sql"
+                "interactive batch contains a statement that cannot be packaged as a query"
             }
             Self::TooLarge => "SQL input or parameters exceed their size limit",
             Self::Io => "could not read SQL input",
@@ -89,27 +89,6 @@ pub fn validate_schema_name(schema: &str) -> Result<(), SqlInputError> {
     Ok(())
 }
 
-/// Generate a fixed C wrapper. User-controlled SQL and schema bytes are emitted
-/// as numeric constants so their contents cannot alter the C translation unit.
-pub fn generate_query_source(schema: &str, sql: &[u8]) -> Result<Vec<u8>, SqlInputError> {
-    validate_schema_name(schema)?;
-    if sql.is_empty() || sql.len() > MAX_SQL_BYTES || sql.contains(&0) {
-        return Err(SqlInputError::InvalidSql);
-    }
-    std::str::from_utf8(sql).map_err(|_| SqlInputError::InvalidSql)?;
-    let mut source = String::from(
-        "#include <stddef.h>\n#include \"prdb_query_abi_v3.h\"\n#include \"prdb_sdk_sql_dispatch_v1.h\"\n\n",
-    );
-    source.push_str("static const uint8_t sql_schema[] = {");
-    append_c_bytes(&mut source, schema.as_bytes());
-    source.push_str("};\nstatic const uint8_t sql_text[] = {");
-    append_c_bytes(&mut source, sql);
-    source.push_str(
-        "};\n\nconst prdb_query_descriptor_v3_record prdb_query_descriptor_v3 = { sizeof(prdb_query_descriptor_v3_record), PRDB_QUERY_ABI_V3_VERSION, sizeof(prdb_host_api_v3), sizeof(prdb_invocation_v3) };\n\nint32_t prdb_query_main_v3(const prdb_host_api_v3 *host, const prdb_invocation_v3 *invocation) {\n    if (invocation == NULL || invocation->struct_size < sizeof(*invocation) || invocation->abi_version != PRDB_QUERY_ABI_V3_VERSION) return 1;\n    return prdb_sdk_sql_run_v1(host, sql_schema, sizeof(sql_schema), sql_text, sizeof(sql_text), invocation->parameters, invocation->parameters_len) == PRDB_SDK_SQL_DISPATCH_OK ? 0 : 1;\n}\n",
-    );
-    Ok(source.into_bytes())
-}
-
 /// Generate a fixed C wrapper for a lexed sequence of ordinary query or DML
 /// statements. Transaction control, DDL, and RUNAS blocks are handled by the
 /// higher-level dispatcher and cannot enter this package helper.
@@ -147,7 +126,7 @@ pub fn generate_query_batch_source(schema: &str, sql: &[u8]) -> Result<Vec<u8>, 
         append_c_bytes(&mut source, query.as_bytes());
         source.push_str("};\n");
     }
-    source.push_str("\nstatic int32_t run_sql_batch_statement(const prdb_host_api_v3 *host, const uint8_t *schema, uint32_t schema_len, const prdb_sdk_sql_batch_statement_v1 *statement) {\n    int32_t status = prdb_sdk_sql_run_statement_v1(host, schema, schema_len, statement->sql, statement->sql_len, statement->parameters, statement->parameters_len);\n    return status == PRDB_SDK_SQL_DISPATCH_OK ? 0 : status;\n}\n\n");
+    source.push_str("\nstatic int32_t dispatch_batch_statement(const prdb_host_api_v3 *host, const uint8_t *schema, uint32_t schema_len, const prdb_sdk_sql_batch_statement_v1 *statement) {\n    int32_t status = prdb_sdk_sql_run_statement_v1(host, schema, schema_len, statement->sql, statement->sql_len, statement->parameters, statement->parameters_len);\n    return status == PRDB_SDK_SQL_DISPATCH_OK ? 0 : status;\n}\n\n");
     source.push_str("const prdb_query_descriptor_v3_record prdb_query_descriptor_v3 = { sizeof(prdb_query_descriptor_v3_record), PRDB_QUERY_ABI_V3_VERSION, sizeof(prdb_host_api_v3), sizeof(prdb_invocation_v3) };\n\nint32_t prdb_query_main_v3(const prdb_host_api_v3 *host, const prdb_invocation_v3 *invocation) {\n    if (invocation == NULL || invocation->struct_size < sizeof(*invocation) || invocation->abi_version != PRDB_QUERY_ABI_V3_VERSION) return 1;\n    prdb_sdk_sql_batch_statement_v1 statements[] = {\n");
     for (index, (_, has_parameters)) in queries.iter().enumerate() {
         use std::fmt::Write as _;
@@ -166,7 +145,7 @@ pub fn generate_query_batch_source(schema: &str, sql: &[u8]) -> Result<Vec<u8>, 
     use std::fmt::Write as _;
     let _ = writeln!(
         source,
-        "    }};\n    return prdb_sdk_sql_run_batch_v1(host, sql_schema, sizeof(sql_schema), {}, statements, run_sql_batch_statement) == PRDB_SDK_SQL_BATCH_OK ? 0 : 1;\n}}",
+        "    }};\n    return prdb_sdk_sql_run_batch_v1(host, sql_schema, sizeof(sql_schema), {}, statements, dispatch_batch_statement) == PRDB_SDK_SQL_BATCH_OK ? 0 : 1;\n}}",
         queries.len()
     );
     Ok(source.into_bytes())
@@ -457,7 +436,7 @@ fn lower_hex_nibble(byte: u8) -> Result<u8, SqlInputError> {
 mod tests {
     use super::{
         MAX_SQL_BYTES, SqlInputError, encode_parameter_file, generate_query_batch_source,
-        generate_query_source, read_sql_from, validate_schema_name,
+        read_sql_from, validate_schema_name,
     };
     use crate::client_submit::ResponseValue;
     use std::collections::HashMap;
@@ -637,30 +616,6 @@ mod tests {
         assert!(validate_schema_name("_stage2").is_ok());
         assert!(validate_schema_name("Public").is_err());
         assert!(validate_schema_name("schema-name").is_err());
-    }
-
-    #[test]
-    fn generated_wrapper_preserves_adversarial_utf8_sql_as_exact_numeric_data() {
-        let sql = "SELECT 'q\\\"; #include <evil.h> é'".as_bytes();
-        let source = generate_query_source("public", sql).unwrap();
-        let source = std::str::from_utf8(&source).unwrap();
-        assert!(
-            source.contains("static const uint8_t sql_schema[] = {0x70,0x75,0x62,0x6c,0x69,0x63};")
-        );
-        assert!(source.contains(
-            "static const uint8_t sql_text[] = {0x53,0x45,0x4c,0x45,0x43,0x54,0x20,0x27,0x71,0x5c,0x22,0x3b,0x20,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x65,0x76,0x69,0x6c,0x2e,0x68,0x3e,0x20,0xc3,0xa9,0x27};"
-        ));
-        assert!(source.contains("const prdb_query_descriptor_v3_record prdb_query_descriptor_v3"));
-        assert!(source.contains(
-            "prdb_sdk_sql_run_v1(host, sql_schema, sizeof(sql_schema), sql_text, sizeof(sql_text)"
-        ));
-        assert!(!source.contains("#include <evil.h>"));
-        assert!(!source.contains('é'));
-        assert!(generate_query_source("public", b"SELECT\\0 1").is_ok());
-        assert_eq!(
-            generate_query_source("public", b"SELECT\0 1"),
-            Err(SqlInputError::InvalidSql)
-        );
     }
 
     #[test]

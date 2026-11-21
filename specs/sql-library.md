@@ -167,7 +167,7 @@ The versioned parser APIs are [`prdb_sdk_sql_v1.h`](../engine/include/prdb_sdk_s
 
 Use opaque handles, explicit buffer lengths/ownership, and compatible layouts; never exchange Rust-owned containers or trait objects across the ABI. No language exception or panic may unwind across the C boundary. Translate failures into reported transaction-aborting errors when possible; crashes or unrecoverable failures terminate the executor.
 
-The `prdb-client run-sql` command requires a versioned C SDK statement-dispatch API that accepts SQL bytes plus typed invocation parameters and routes through these existing statement parsers, binders, and runners. The command contract and PSP1 parameter block are defined in [client-sql-command](client-sql-command.md). The dispatch API does not replace or weaken statement-specific APIs, and SQL parsing remains inside the confined executor.
+The versioned C SDK statement-dispatch API accepts SQL bytes plus typed invocation parameters and routes through these existing statement parsers, binders, and runners. It does not replace or weaken statement-specific APIs, and SQL parsing remains inside the confined executor.
 
 The library has no direct statistics-maintenance interface. Host callbacks are an integration contract, not a security boundary within the process: malicious code can bypass them. Planner and storage servers independently enforce roles, grants, validation, and budgets.
 

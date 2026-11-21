@@ -13,7 +13,7 @@ The compatibility retirement is complete: client SDK upload fields and chunks, l
 - **SLR-3 — Query-only protocol:** capability negotiation is mandatory; PREPARE carries no SDK size/digest, SDK chunks are rejected, and peers cannot downgrade silently.
 - **SLR-4 — Resolve and stage:** START resolves the exact SDK release/ABI before storage admission. Executor preparation stages the pinned library under its SONAME and retains the repository pin until worker cleanup.
 - **SLR-5 — Client config and repository commands:** strict private atomic config files include default instance, IP/port, credential profiles, SDK selection, and local compiler/linker paths; `instance` and `sdk-library` commands manage selections and releases.
-- **SLR-6 — SQL client migration:** package submit, run-sql, and interactive SQL use configured settings and local SDK build inputs while transferring only the query package; active interactive transactions lock SDK selection.
+- **SLR-6 — SQL client migration:** package submission and interactive SQL use configured settings and local SDK build inputs while transferring only the query package; active interactive transactions lock SDK selection.
 - **SLR-7 — Retirement:** all legacy upload/cache/static fallback paths and server cache flags are removed. Docker/systemd guidance and migration instructions use repository installs.
 
 ## Verification

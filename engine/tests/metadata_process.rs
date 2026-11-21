@@ -5,7 +5,7 @@ use prdb_engine::bootstrap::initialize;
 use prdb_engine::client_credentials::{
     read_client_credentials, remove_client_credentials, write_client_credentials,
 };
-use prdb_engine::client_protocol::{ClientCredentials, ClientFrame, ClientFrameDecoder};
+use prdb_engine::client_protocol::ClientCredentials;
 use prdb_engine::client_submit::{
     AdminClient, AdminColumnDefinition, AdminCreatePolicyRequest, AdminObjectGrantTarget,
     AdminObjectPrivilege, AdminPolicyEffect, AdminPolicyKind, AdminPolicyOperation,
@@ -52,23 +52,6 @@ fn install_test_sdk_repository(
     Ok(())
 }
 
-fn read_client_frame(stream: &mut std::net::TcpStream) -> std::io::Result<Option<ClientFrame>> {
-    let mut decoder = ClientFrameDecoder::negotiating();
-    let mut input = [0u8; 8192];
-    loop {
-        let bytes = stream.read(&mut input)?;
-        if bytes == 0 {
-            return Ok(None);
-        }
-        let mut frames = decoder
-            .push(&input[..bytes])
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        if !frames.is_empty() {
-            return Ok(Some(frames.remove(0)));
-        }
-    }
-}
-
 fn read_raw_client_frame(
     stream: &mut std::net::TcpStream,
 ) -> std::io::Result<Option<(Vec<u8>, u16)>> {
@@ -99,46 +82,6 @@ fn read_raw_client_frame(
     raw.resize(header.len() + payload_bytes, 0);
     stream.read_exact(&mut raw[header.len()..])?;
     Ok(Some((raw, kind)))
-}
-
-fn start_response_dropping_proxy(
-    gateway_address: std::net::SocketAddr,
-) -> std::io::Result<(
-    std::net::SocketAddr,
-    std::thread::JoinHandle<std::io::Result<usize>>,
-)> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let proxy_address = listener.local_addr()?;
-    let handle =
-        std::thread::spawn(move || {
-            let (mut client, _) = listener.accept()?;
-            let mut gateway = std::net::TcpStream::connect(gateway_address)?;
-            client.set_read_timeout(Some(Duration::from_secs(10)))?;
-            client.set_write_timeout(Some(Duration::from_secs(10)))?;
-            gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
-            gateway.set_write_timeout(Some(Duration::from_secs(10)))?;
-            let mut starts = 0;
-            while let Some(request) = read_client_frame(&mut client)? {
-                if request.kind == 7 {
-                    starts += 1;
-                }
-                gateway.write_all(&request.encode().map_err(|error| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, error)
-                })?)?;
-                let Some(response) = read_client_frame(&mut gateway)? else {
-                    break;
-                };
-                if request.kind == 7 && response.kind == 100 {
-                    // The gateway accepted START, but the client loses its reply.
-                    return Ok(starts);
-                }
-                client.write_all(&response.encode().map_err(|error| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, error)
-                })?)?;
-            }
-            Ok(starts)
-        });
-    Ok((proxy_address, handle))
 }
 
 type InteractiveResponseDropStats = (usize, usize, usize, usize);
@@ -272,8 +215,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
     let committed_invocation_id = [0xa3; 16];
     let restricted_token;
     let mut restricted_secret;
-    let scope_reader_token;
-    let scope_reader_secret;
     let owner_token;
     let mut owner_secret;
     let restricted_schema_id;
@@ -312,21 +253,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 event_id: [0xad; 16],
                 actor_id: Some(admin_user_id),
                 correlation_id: [0xac; 16],
-                occurred_at_us: now_us,
-                action: AuditAction::Ddl,
-                result: AuditResult::Succeeded,
-                target_ids: Vec::new(),
-            },
-        )?;
-        let scope_reader = storage.create_user(
-            [0xc0; 16],
-            admin_user_id,
-            "sql_scope_reader",
-            retention_deadline_us,
-            AuditEvent {
-                event_id: [0xc1; 16],
-                actor_id: Some(admin_user_id),
-                correlation_id: [0xc0; 16],
                 occurred_at_us: now_us,
                 action: AuditAction::Ddl,
                 result: AuditResult::Succeeded,
@@ -449,40 +375,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             },
         })?;
         restricted_table_id = private_table.table_id;
-        for (invocation_id, event_id, object_id, privilege) in [
-            (
-                [0xc2; 16],
-                [0xc3; 16],
-                restricted_schema_id,
-                ObjectGrantPrivilege::Usage,
-            ),
-            (
-                [0xc4; 16],
-                [0xc5; 16],
-                private_table.table_id,
-                ObjectGrantPrivilege::Select,
-            ),
-        ] {
-            storage.set_object_grant(SetObjectGrantRequest {
-                invocation_id,
-                authenticated_actor_id: admin_user_id,
-                grantee_id: scope_reader.user_id,
-                object_id,
-                privilege,
-                target: ObjectGrantTarget::Object,
-                grant: true,
-                retention_deadline_us,
-                audit_event: AuditEvent {
-                    event_id,
-                    actor_id: Some(admin_user_id),
-                    correlation_id: invocation_id,
-                    occurred_at_us: now_us,
-                    action: AuditAction::AuthorityChange,
-                    result: AuditResult::Succeeded,
-                    target_ids: vec![scope_reader.user_id, object_id],
-                },
-            })?;
-        }
         let index_invocation = [0x8a; 16];
         let mut index_audit = AuditEvent {
             event_id: [0x8b; 16],
@@ -548,28 +440,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         owner_secret = owner_issued
             .take_secret()
             .ok_or("schema owner token secret missing")?;
-        let mut scope_reader_issued = storage.issue_token(TokenIssueRequest {
-            invocation_id: [0xc6; 16],
-            authenticated_actor_id: admin_user_id,
-            user_id: scope_reader.user_id,
-            label: "SQL scope reader",
-            expires_at_us: now_us.saturating_add(1_800_000_000),
-            retention_deadline_us,
-            audit_event: AuditEvent {
-                event_id: [0xc7; 16],
-                actor_id: Some(admin_user_id),
-                correlation_id: [0xc6; 16],
-                occurred_at_us: now_us,
-                action: AuditAction::TokenLifecycle,
-                result: AuditResult::Succeeded,
-                target_ids: vec![scope_reader.user_id],
-            },
-        })?;
-        scope_reader_token = scope_reader_issued.token_id;
-        scope_reader_secret = scope_reader_issued
-            .take_secret()
-            .ok_or("SQL scope reader token secret missing")?;
-
         let (mut admin_query, _) = storage.begin_token_authenticated_invocation(
             [0xb2; 16],
             token_id,
@@ -838,7 +708,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                         break;
                     }
                     prdb_engine::client_submit::ClientResultEvent::PackageTerminal { .. } => {
-                        panic!("expected one-shot invocation terminal")
+                        panic!("expected invocation terminal")
                     }
                 }
             }
@@ -855,7 +725,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             CancellationResult::Terminal(TerminalOutcome::Committed)
         );
 
-        let credentials_path = root.join("run-sql-restricted.cred");
+        let credentials_path = root.join("interactive-reader.cred");
         write_client_credentials(
             &credentials_path,
             &ClientCredentials {
@@ -863,19 +733,22 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 token_secret: restricted_secret,
             },
         )?;
-        let sql_path = root.join("run-sql.sql");
-        std::fs::write(
-            &sql_path,
-            "SELECT schema_name FROM schemata WHERE schema_name = $1 LIMIT 1",
-        )?;
-        std::fs::set_permissions(&sql_path, std::fs::Permissions::from_mode(0o600))?;
-        let parameters_path = root.join("run-sql.parameters.json");
+        let parameters_path = root.join("interactive.parameters.json");
         std::fs::write(
             &parameters_path,
             r#"{"format":"PDB-SQL-PARAMETERS-1","values":[{"type":"text","value":"empty_roundtrip"}]}"#,
         )?;
         std::fs::set_permissions(&parameters_path, std::fs::Permissions::from_mode(0o600))?;
-        let requested_scope_path = root.join("run-sql.scope.psc1");
+        let interactive_query_path = root.join("interactive-query.sql");
+        std::fs::write(
+            &interactive_query_path,
+            "SELECT schema_name FROM schemata WHERE schema_name = $1 LIMIT 1",
+        )?;
+        std::fs::set_permissions(
+            &interactive_query_path,
+            std::fs::Permissions::from_mode(0o600),
+        )?;
+        let requested_scope_path = root.join("interactive.scope.psc1");
         let mut requested_scope = b"PSC1\0\x01\x01\x01".to_vec();
         requested_scope.extend_from_slice(&sql_visible_schema_id);
         std::fs::write(&requested_scope_path, requested_scope)?;
@@ -883,188 +756,12 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             &requested_scope_path,
             std::fs::Permissions::from_mode(0o600),
         )?;
-        let receipt_path = root.join("run-sql.receipt");
         let sql_address = address.to_string();
         let sdk_release_dir = std::env::var_os("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR")
             .map(std::path::PathBuf::from)
-            .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR is required for run-sql")?;
+            .ok_or("PRDB_TEST_INSTALLED_SDK_RELEASE_DIR is required for interactive SQL")?;
         let sql_sdk = sdk_release_dir.join("libprdb_sql.so.1");
         let include_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
-        let invoke_run_sql = |address: &str,
-                              credentials: &std::path::Path,
-                              schema: &str,
-                              sql_path: &std::path::Path,
-                              parameters_path: &std::path::Path,
-                              receipt_path: &std::path::Path|
-         -> Result<std::process::Output, Box<dyn std::error::Error>> {
-            Ok(Command::new(env!("CARGO_BIN_EXE_prdb-client"))
-                .args([
-                    "run-sql",
-                    "--address",
-                    address,
-                    "--credentials",
-                    credentials
-                        .to_str()
-                        .ok_or("run-sql credentials path is not UTF-8")?,
-                    "--sql-file",
-                    sql_path.to_str().ok_or("run-sql SQL path is not UTF-8")?,
-                    "--schema",
-                    schema,
-                    "--scope",
-                    requested_scope_path
-                        .to_str()
-                        .ok_or("run-sql scope path is not UTF-8")?,
-                    "--receipt",
-                    receipt_path
-                        .to_str()
-                        .ok_or("run-sql receipt path is not UTF-8")?,
-                    "--sdk-library",
-                    sql_sdk.to_str().ok_or("SQL SDK path is not UTF-8")?,
-                    "--include-dir",
-                    include_dir
-                        .to_str()
-                        .ok_or("SQL SDK include path is not UTF-8")?,
-                    "--sdk-release",
-                    "1",
-                    "--cpu-baseline",
-                    "x86_64-v1",
-                    "--runtime-profile",
-                    "nixos-x86_64-glibc-2.42",
-                    "--compiler-identity",
-                    "TinyCC process integration fixture",
-                    "--parameters",
-                    parameters_path
-                        .to_str()
-                        .ok_or("run-sql parameter path is not UTF-8")?,
-                ])
-                .output()?)
-        };
-        let run_sql = invoke_run_sql(
-            &sql_address,
-            &credentials_path,
-            "information_schema",
-            &sql_path,
-            &parameters_path,
-            &receipt_path,
-        )?;
-        assert!(
-            run_sql.status.success(),
-            "run-sql failed: {}",
-            String::from_utf8_lossy(&run_sql.stderr)
-        );
-        assert!(String::from_utf8_lossy(&run_sql.stderr).contains("outcome=Committed"));
-        let sqlr = &run_sql.stdout;
-        assert!(sqlr.len() >= 32);
-        assert_eq!(&sqlr[..4], b"SQLR");
-        assert_eq!(u16::from_be_bytes([sqlr[4], sqlr[5]]), 1);
-        assert_eq!(u16::from_be_bytes([sqlr[6], sqlr[7]]), 1);
-        let column_name_len = usize::from(u16::from_be_bytes([sqlr[8], sqlr[9]]));
-        assert_eq!(&sqlr[10..10 + column_name_len], b"schema_name");
-        let type_offset = 10 + column_name_len;
-        assert_eq!(
-            u32::from_be_bytes(sqlr[type_offset..type_offset + 4].try_into()?),
-            6
-        );
-        assert_eq!(sqlr[type_offset + 6], 0);
-        let value_len_offset = type_offset + 7;
-        let value_len =
-            u32::from_be_bytes(sqlr[value_len_offset..value_len_offset + 4].try_into()?) as usize;
-        let value_start = value_len_offset + 4;
-        assert_eq!(value_len, b"empty_roundtrip".len());
-        assert_eq!(
-            &sqlr[value_start..value_start + value_len],
-            b"empty_roundtrip"
-        );
-        assert_eq!(value_start + value_len, sqlr.len());
-        let receipt_text = std::fs::read_to_string(&receipt_path)?;
-        let receipt_id = receipt_text
-            .strip_prefix("PDBR1 ")
-            .and_then(|value| decode_id_hex(value.trim()))
-            .ok_or("run-sql wrote a malformed invocation receipt")?;
-        let mut status_secret = restricted_secret;
-        let mut status_client =
-            SubmissionClient::connect_authenticated(address, restricted_token, &mut status_secret)?;
-        assert_eq!(status_secret, [0; 32]);
-        assert_eq!(
-            status_client.status(receipt_id)?,
-            InvocationStatus::Committed
-        );
-
-        let invalid_sql_path = root.join("run-sql-invalid.sql");
-        std::fs::write(&invalid_sql_path, "SELECT FROM schemata")?;
-        std::fs::set_permissions(&invalid_sql_path, std::fs::Permissions::from_mode(0o600))?;
-        let empty_parameters_path = root.join("run-sql-empty.parameters.json");
-        std::fs::write(
-            &empty_parameters_path,
-            r#"{"format":"PDB-SQL-PARAMETERS-1","values":[]}"#,
-        )?;
-        std::fs::set_permissions(
-            &empty_parameters_path,
-            std::fs::Permissions::from_mode(0o600),
-        )?;
-        let aborted_receipt_path = root.join("run-sql-aborted.receipt");
-        let aborted_run_sql = invoke_run_sql(
-            &sql_address,
-            &credentials_path,
-            "information_schema",
-            &invalid_sql_path,
-            &empty_parameters_path,
-            &aborted_receipt_path,
-        )?;
-        assert!(
-            !aborted_run_sql.status.success(),
-            "malformed SQL unexpectedly succeeded: {}",
-            String::from_utf8_lossy(&aborted_run_sql.stderr)
-        );
-        assert!(aborted_run_sql.stdout.is_empty());
-        assert!(String::from_utf8_lossy(&aborted_run_sql.stderr).contains("outcome=Aborted"));
-        let aborted_receipt_text = std::fs::read_to_string(&aborted_receipt_path)?;
-        let aborted_receipt_id = aborted_receipt_text
-            .strip_prefix("PDBR1 ")
-            .and_then(|value| decode_id_hex(value.trim()))
-            .ok_or("aborted run-sql wrote a malformed invocation receipt")?;
-        assert_eq!(
-            status_client.status(aborted_receipt_id)?,
-            InvocationStatus::Aborted
-        );
-
-        let multiple_statement_sql_path = root.join("run-sql-multiple-statements.sql");
-        std::fs::write(
-            &multiple_statement_sql_path,
-            "SELECT schema_name FROM schemata; SELECT schema_name FROM schemata",
-        )?;
-        std::fs::set_permissions(
-            &multiple_statement_sql_path,
-            std::fs::Permissions::from_mode(0o600),
-        )?;
-        let multiple_statement_receipt_path = root.join("run-sql-multiple-statements.receipt");
-        let multiple_statement_run_sql = invoke_run_sql(
-            &sql_address,
-            &credentials_path,
-            "information_schema",
-            &multiple_statement_sql_path,
-            &empty_parameters_path,
-            &multiple_statement_receipt_path,
-        )?;
-        assert!(
-            !multiple_statement_run_sql.status.success(),
-            "multiple SQL statements unexpectedly succeeded: {}",
-            String::from_utf8_lossy(&multiple_statement_run_sql.stderr)
-        );
-        assert!(multiple_statement_run_sql.stdout.is_empty());
-        assert!(
-            String::from_utf8_lossy(&multiple_statement_run_sql.stderr).contains("outcome=Aborted")
-        );
-        let multiple_statement_receipt_text =
-            std::fs::read_to_string(&multiple_statement_receipt_path)?;
-        let multiple_statement_receipt_id = multiple_statement_receipt_text
-            .strip_prefix("PDBR1 ")
-            .and_then(|value| decode_id_hex(value.trim()))
-            .ok_or("multiple-statement run-sql wrote a malformed invocation receipt")?;
-        assert_eq!(
-            status_client.status(multiple_statement_receipt_id)?,
-            InvocationStatus::Aborted
-        );
 
         let interactive_admin_credentials_path = root.join("interactive-admin.cred");
         write_client_credentials(
@@ -1266,7 +963,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
                 "--default-user",
                 "metadata_reader",
                 "--sql-file",
-                sql_path
+                interactive_query_path
                     .to_str()
                     .ok_or("interactive query path is not UTF-8")?,
                 "--schema",
@@ -1567,108 +1264,6 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             .find(|schema| schema.name == "interactive_ddl_uncertain_probe")
             .ok_or("uncertain DDL operation was not committed")?;
         schema_verify.drop_schema(created_uncertain_schema.schema_id)?;
-
-        let scope_reader_credentials_path = root.join("run-sql-scope-reader.cred");
-        write_client_credentials(
-            &scope_reader_credentials_path,
-            &ClientCredentials {
-                token_id: scope_reader_token,
-                token_secret: scope_reader_secret,
-            },
-        )?;
-        let outside_scope_sql_path = root.join("run-sql-outside-scope.sql");
-        std::fs::write(
-            &outside_scope_sql_path,
-            "SELECT payload FROM private_records LIMIT 1",
-        )?;
-        std::fs::set_permissions(
-            &outside_scope_sql_path,
-            std::fs::Permissions::from_mode(0o600),
-        )?;
-        let outside_scope_receipt_path = root.join("run-sql-outside-scope.receipt");
-        let outside_scope_run_sql = invoke_run_sql(
-            &sql_address,
-            &scope_reader_credentials_path,
-            "admin_private",
-            &outside_scope_sql_path,
-            &empty_parameters_path,
-            &outside_scope_receipt_path,
-        )?;
-        assert!(
-            !outside_scope_run_sql.status.success(),
-            "run-sql widened PSC1 to include a separately authorized schema"
-        );
-        assert!(outside_scope_run_sql.stdout.is_empty());
-        assert!(String::from_utf8_lossy(&outside_scope_run_sql.stderr).contains("outcome=Aborted"));
-        let outside_scope_receipt_text = std::fs::read_to_string(&outside_scope_receipt_path)?;
-        let outside_scope_receipt_id = outside_scope_receipt_text
-            .strip_prefix("PDBR1 ")
-            .and_then(|value| decode_id_hex(value.trim()))
-            .ok_or("out-of-scope run-sql wrote a malformed invocation receipt")?;
-        let mut scope_status_secret = scope_reader_secret;
-        let mut scope_status_client = SubmissionClient::connect_authenticated(
-            address,
-            scope_reader_token,
-            &mut scope_status_secret,
-        )?;
-        assert_eq!(scope_status_secret, [0; 32]);
-        assert_eq!(
-            scope_status_client.status(outside_scope_receipt_id)?,
-            InvocationStatus::Aborted
-        );
-
-        let uncertain_receipt_path = root.join("run-sql-uncertain.receipt");
-        let (proxy_address, proxy) = start_response_dropping_proxy(address)?;
-        let uncertain_run_sql = invoke_run_sql(
-            &proxy_address.to_string(),
-            &credentials_path,
-            "information_schema",
-            &sql_path,
-            &parameters_path,
-            &uncertain_receipt_path,
-        )?;
-        assert!(
-            !uncertain_run_sql.status.success(),
-            "run-sql reported success after its START response was dropped"
-        );
-        assert!(uncertain_run_sql.stdout.is_empty());
-        let start_count = proxy
-            .join()
-            .map_err(|_| "START response proxy panicked")??;
-        assert_eq!(start_count, 1, "run-sql must send START exactly once");
-        let uncertain_receipt_text = std::fs::read_to_string(&uncertain_receipt_path)?;
-        let uncertain_receipt_id = uncertain_receipt_text
-            .strip_prefix("PDBR1 ")
-            .and_then(|value| decode_id_hex(value.trim()))
-            .ok_or("uncertain run-sql did not preserve its START receipt")?;
-        let mut uncertain_status_secret = restricted_secret;
-        let mut uncertain_status_client = SubmissionClient::connect_authenticated(
-            address,
-            restricted_token,
-            &mut uncertain_status_secret,
-        )?;
-        assert_eq!(uncertain_status_secret, [0; 32]);
-        let status_deadline = Instant::now() + Duration::from_secs(5);
-        let uncertain_status = loop {
-            let status = uncertain_status_client.status(uncertain_receipt_id)?;
-            if matches!(
-                status,
-                InvocationStatus::Committed | InvocationStatus::Aborted
-            ) {
-                break status;
-            }
-            if Instant::now() >= status_deadline {
-                return Err(
-                    format!("lost START outcome did not become terminal: {status:?}").into(),
-                );
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        assert!(matches!(
-            uncertain_status,
-            InvocationStatus::Committed | InvocationStatus::Aborted
-        ));
-        remove_client_credentials(&credentials_path)?;
 
         let cancel_credentials_path = root.join("cancel-owner.cred");
         let cancel_credentials = ClientCredentials {

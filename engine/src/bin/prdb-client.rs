@@ -10,8 +10,7 @@ use prdb_engine::client_credentials::{
 use prdb_engine::client_package::{PackageOptions, package_query_repository};
 use prdb_engine::client_protocol::ClientCredentials;
 use prdb_engine::client_sql::{
-    MAX_SQL_PARAMETER_BYTES, encode_parameter_file, generate_query_source, read_sql_input,
-    validate_schema_name,
+    MAX_SQL_PARAMETER_BYTES, encode_parameter_file, read_sql_input, validate_schema_name,
 };
 use prdb_engine::client_submit::MetadataClient;
 use prdb_engine::client_submit::{
@@ -40,11 +39,6 @@ const USAGE: &str = "Usage:\n\
   prdb-client instance set --instance NAME --address IP --port N [SDK options] \\\n    --default-credential PROFILE --username USER --credentials FILE \\\n    [--include-dir DIR --tcc FILE --shared-linker FILE --patchelf FILE] \\\n    [--make-default true|false] [--config FILE]\n\
   prdb-client sdk-library list|select|install|remove --instance NAME [options]\n\
   prdb-client submit --address IP:PORT --credentials FILE --package DIR --receipt FILE \\\n    [--parameters FILE] [--deadline-ms N] [--workload operational|analytical]\n\
-  prdb-client run-sql --address IP:PORT --credentials FILE --sql-file FILE|- --schema NAME \\
-    --scope FILE --receipt FILE --sdk-library FILE --include-dir DIR --sdk-release N \\
-    --cpu-baseline NAME --runtime-profile NAME --compiler-identity TEXT [--parameters FILE] \\
-    [--tcc FILE] [--shared-linker FILE] [--patchelf FILE] \\
-    [--deadline-ms N] [--workload operational|analytical]\n\
   prdb-client interactive-sql --address LOOPBACK:PORT --credentials FILE --default-user USER \\
     [--credential-profile USER=FILE ...] [--sql-file FILE|-] --schema NAME --scope FILE \\
     --sdk-library FILE --include-dir DIR --sdk-release N --cpu-baseline NAME \\
@@ -189,13 +183,13 @@ fn run() -> Result<(), String> {
         return run_client_config_command(&command, &mut fields, &credential_profile_options);
     }
 
-    if (command == "submit" || command == "run-sql")
+    if command == "submit"
         && (fields.contains_key("--instance")
             || fields.contains_key("--config")
             || !fields.contains_key("--address")
             || !fields.contains_key("--credentials"))
     {
-        return run_configured_query_command(&command, &mut fields);
+        return run_configured_submission(&mut fields);
     }
 
     if command == "interactive-sql"
@@ -256,7 +250,6 @@ fn run() -> Result<(), String> {
     let credentials_path = take_path(&mut fields, "--credentials")?;
     match command.as_str() {
         "submit" => submit(address, credentials_path, &mut fields),
-        "run-sql" => run_sql(address, credentials_path, &mut fields),
         "admin-sql" => admin_sql(address, credentials_path, &mut fields),
         "status" => status(address, credentials_path, &mut fields),
         "cancel" => cancel(address, credentials_path, &mut fields),
@@ -686,8 +679,7 @@ fn client_credential_from_file(
     Ok(credential)
 }
 
-fn run_configured_query_command(
-    command: &str,
+fn run_configured_submission(
     fields: &mut HashMap<String, std::ffi::OsString>,
 ) -> Result<(), String> {
     let config_path = fields
@@ -757,97 +749,30 @@ fn run_configured_query_command(
         token_secret,
     };
 
-    match command {
-        "submit" => {
-            let package = take_path(fields, "--package")?;
-            let receipt = take_path(fields, "--receipt")?;
-            let parameters_path = fields.remove("--parameters").map(PathBuf::from);
-            let deadline_ms = fields
-                .remove("--deadline-ms")
-                .map(|value| parse_number(value, "--deadline-ms"))
-                .transpose()?
-                .unwrap_or(30_000u64);
-            let workload = parse_workload(fields)?;
-            reject_unknown(fields)?;
-            validate_package_selection(&package, &instance.sdk)?;
-            let mut parameters = read_parameters(parameters_path.as_ref())?;
-            let result = submit_package_and_stream_with_profile(
-                configured_address,
-                credentials,
-                &package,
-                &receipt,
-                &mut parameters,
-                deadline_ms,
-                workload,
-                true,
-            );
-            parameters.fill(0);
-            result
-        }
-        "run-sql" => {
-            let sql_path = take_path(fields, "--sql-file")?;
-            let schema = take_text(fields, "--schema")?;
-            validate_schema_name(&schema).map_err(|error| error.to_string())?;
-            let scope = take_path(fields, "--scope")?;
-            let receipt = take_path(fields, "--receipt")?;
-            let parameters_path = fields.remove("--parameters").map(PathBuf::from);
-            let deadline_ms = fields
-                .remove("--deadline-ms")
-                .map(|value| parse_number(value, "--deadline-ms"))
-                .transpose()?
-                .unwrap_or(30_000u64);
-            let workload = parse_workload(fields)?;
-            reject_unknown(fields)?;
-            if instance.sdk.native_abi != 3 {
-                return Err("run-sql currently generates native ABI 3 queries; select ABI 3 for this instance".to_owned());
-            }
-            let tools = config
-                .client_tools
-                .as_ref()
-                .ok_or_else(|| "client_tools must be configured before run-sql".to_owned())?;
-            let (include_dir, sdk_library) = local_sdk_paths(&config_path, tools, &instance.sdk)?;
-            let tcc = resolve_client_program(&config_path, &tools.tcc);
-            let shared_linker = resolve_client_program(&config_path, &tools.shared_linker);
-            let patchelf = resolve_client_program(&config_path, &tools.patchelf);
-            let sql = read_sql_input(&sql_path).map_err(|error| error.to_string())?;
-            let generated_source =
-                generate_query_source(&schema, &sql).map_err(|error| error.to_string())?;
-            let mut parameters = read_sql_parameters(parameters_path.as_deref())?;
-            let workspace = SqlWorkspace::create()?;
-            let source_path = workspace.path.join("query.c");
-            write_private_file(&source_path, &generated_source)?;
-            let package_dir = workspace.path.join("package");
-            package_query_repository(&PackageOptions {
-                tcc,
-                shared_linker,
-                patchelf,
-                source: source_path,
-                sdk_library,
-                include_dir,
-                requested_scope: scope,
-                output_dir: package_dir.clone(),
-                native_abi_version: instance.sdk.native_abi,
-                sdk_release: instance.sdk.release,
-                cpu_baseline: instance.sdk.cpu_baseline,
-                runtime_profile: instance.sdk.runtime_profile,
-                compiler_identity: "prdb-client/tcc".to_owned(),
-            })
-            .map_err(|error| error.to_string())?;
-            let result = submit_package_and_stream_with_profile(
-                configured_address,
-                credentials,
-                &package_dir,
-                &receipt,
-                &mut parameters,
-                deadline_ms,
-                workload,
-                true,
-            );
-            parameters.fill(0);
-            result
-        }
-        _ => Err(format!("unsupported configured query command {command}")),
-    }
+    let package = take_path(fields, "--package")?;
+    let receipt = take_path(fields, "--receipt")?;
+    let parameters_path = fields.remove("--parameters").map(PathBuf::from);
+    let deadline_ms = fields
+        .remove("--deadline-ms")
+        .map(|value| parse_number(value, "--deadline-ms"))
+        .transpose()?
+        .unwrap_or(30_000u64);
+    let workload = parse_workload(fields)?;
+    reject_unknown(fields)?;
+    validate_package_selection(&package, &instance.sdk)?;
+    let mut parameters = read_parameters(parameters_path.as_ref())?;
+    let result = submit_package_and_stream_with_profile(
+        configured_address,
+        credentials,
+        &package,
+        &receipt,
+        &mut parameters,
+        deadline_ms,
+        workload,
+        true,
+    );
+    parameters.fill(0);
+    result
 }
 
 fn run_configured_interactive(
@@ -3221,87 +3146,6 @@ fn submit_package_and_stream_with_profile(
     result
 }
 
-fn run_sql(
-    address: SocketAddr,
-    credentials_path: PathBuf,
-    fields: &mut HashMap<String, std::ffi::OsString>,
-) -> Result<(), String> {
-    let sql_path = take_path(fields, "--sql-file")?;
-    let schema = take_text(fields, "--schema")?;
-    validate_schema_name(&schema).map_err(|error| error.to_string())?;
-    let requested_scope = take_path(fields, "--scope")?;
-    let receipt = take_path(fields, "--receipt")?;
-    let sdk_library = take_path(fields, "--sdk-library")?;
-    let include_dir = take_path(fields, "--include-dir")?;
-    let sdk_release = take_text(fields, "--sdk-release")?
-        .parse::<u32>()
-        .map_err(|_| "invalid numeric value for --sdk-release".to_owned())?;
-    let cpu_baseline = take_text(fields, "--cpu-baseline")?;
-    let runtime_profile = take_text(fields, "--runtime-profile")?;
-    let compiler_identity = take_text(fields, "--compiler-identity")?;
-    let tcc = fields
-        .remove("--tcc")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("tcc"));
-    let shared_linker = fields
-        .remove("--shared-linker")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("cc"));
-    let patchelf = fields
-        .remove("--patchelf")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("patchelf"));
-    let parameters_path = fields.remove("--parameters").map(PathBuf::from);
-    let deadline_ms = fields
-        .remove("--deadline-ms")
-        .map(|value| parse_number(value, "--deadline-ms"))
-        .transpose()?
-        .unwrap_or(30_000u64);
-    let workload = match fields.remove("--workload") {
-        None => WorkloadClass::Operational,
-        Some(value) if value == "operational" => WorkloadClass::Operational,
-        Some(value) if value == "analytical" => WorkloadClass::Analytical,
-        Some(_) => return Err("--workload must be operational or analytical".to_owned()),
-    };
-    reject_unknown(fields)?;
-
-    // Local parsing and compilation finish before credentials are read or a
-    // SubmissionClient connection can be opened.
-    let sql = read_sql_input(&sql_path).map_err(|error| error.to_string())?;
-    let generated_source =
-        generate_query_source(&schema, &sql).map_err(|error| error.to_string())?;
-    let mut parameters = read_sql_parameters(parameters_path.as_deref())?;
-    let workspace = SqlWorkspace::create()?;
-    let source_path = workspace.path.join("query.c");
-    write_private_file(&source_path, &generated_source)?;
-    let package_dir = workspace.path.join("package");
-    package_query_repository(&PackageOptions {
-        tcc,
-        shared_linker,
-        patchelf,
-        source: source_path,
-        sdk_library,
-        include_dir,
-        requested_scope,
-        output_dir: package_dir.clone(),
-        native_abi_version: 3,
-        sdk_release,
-        cpu_baseline,
-        runtime_profile,
-        compiler_identity,
-    })
-    .map_err(|error| error.to_string())?;
-    submit_package_and_stream(
-        address,
-        credentials_path,
-        &package_dir,
-        &receipt,
-        parameters.as_mut_slice(),
-        deadline_ms,
-        workload,
-    )
-}
-
 struct InteractiveClientOptions {
     default_credentials_path: PathBuf,
     default_user: String,
@@ -4306,7 +4150,7 @@ impl SqlWorkspace {
             let mut random = [0u8; 16];
             getrandom::fill(&mut random).map_err(|error| error.to_string())?;
             let path = parent.join(format!(
-                "prdb-run-sql-{}-{}",
+                "prdb-interactive-sql-{}-{}",
                 std::process::id(),
                 lower_hex(&random)
             ));

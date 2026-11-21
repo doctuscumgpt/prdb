@@ -6,7 +6,7 @@ This document specifies the higher-level SQL client and server behavior. The fea
 
 The executor remains untrusted. It does not receive administrative credentials, does not own transaction state, and cannot commit or roll back storage directly. The trusted supervisor and storage manager own the transaction across package executions. Administrative DDL remains a separate control operation.
 
-This extension does not promise transactional DDL. DDL is permitted only when the SQL client has no active explicit transaction and is not inside a `RUNAS` block; each DDL operation is an independent durable administrative operation. DDL inside `BEGIN` or `RUNAS` is rejected before dispatch. Rejected DDL inside `BEGIN` leaves the transaction active. The current v1 protocol and `prdb-client run-sql` behavior remain unchanged; this feature requires a separately versioned protocol/API that cannot silently fall back to v1.
+This extension does not promise transactional DDL. DDL is permitted only when the SQL client has no active explicit transaction and is not inside a `RUNAS` block; each DDL operation is an independent durable administrative operation. DDL inside `BEGIN` or `RUNAS` is rejected before dispatch. Rejected DDL inside `BEGIN` leaves the transaction active. Interactive SQL requires a separately versioned protocol/API and cannot silently fall back to v1.
 
 ## Client Statement Routing
 
