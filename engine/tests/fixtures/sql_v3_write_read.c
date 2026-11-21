@@ -426,6 +426,23 @@ typedef struct composite_aggregate_expectation {
     uint32_t aggregate_kind;
 } composite_aggregate_expectation;
 
+static int32_t decimal_value_matches_coefficient(
+    const prdb_sdk_value_v1 *value, uint64_t expected_coefficient) {
+    uint64_t observed_coefficient = 0;
+    if (value == NULL || value->state != PRDB_SDK_VALUE_STATE_VALUE ||
+        value->type_code != PRDB_SDK_VALUE_TYPE_DECIMAL ||
+        value->data == NULL || value->data_len != 16) {
+        return 0;
+    }
+    for (uint32_t index = 0; index < 8; ++index) {
+        if (value->data[index] != 0) return 0;
+    }
+    for (uint32_t index = 8; index < 16; ++index) {
+        observed_coefficient = (observed_coefficient << 8) | value->data[index];
+    }
+    return observed_coefficient == expected_coefficient;
+}
+
 static int32_t write_grouped_composite_aggregate_optimizer(
     void *opaque, const prdb_sdk_value_v1 *group_keys,
     uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
@@ -434,10 +451,6 @@ static int32_t write_grouped_composite_aggregate_optimizer(
     composite_aggregate_expectation *expectation = opaque;
     composite_grouped_result_context *context;
     int32_t left_key, right_key, aggregate_integer = 0;
-    static const uint8_t decimal_avg_125[16] = {
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0xb4, 0x9d, 0x20};
-    static const uint8_t decimal_avg_150[16] = {
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0xf0, 0xd1, 0x80};
     if (expectation == NULL || expectation->results == NULL || binding == NULL ||
         group_keys == NULL || aggregate_value == NULL) {
         return 1;
@@ -454,17 +467,28 @@ static int32_t write_grouped_composite_aggregate_optimizer(
     }
     if (binding->base.aggregate_column.type_code ==
         PRDB_SDK_VALUE_TYPE_DECIMAL) {
-        if (expectation->aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_AVG ||
-            binding->base.aggregate_column.decimal_precision != 4 ||
+        uint64_t expected_coefficient;
+        if (expectation->aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_MIN) {
+            expected_coefficient = 100;
+        } else if (expectation->aggregate_kind ==
+                   PRDB_SDK_SQL_V7_AGGREGATE_MAX) {
+            expected_coefficient = left_key == 1 ? 125 : 225;
+        } else if (expectation->aggregate_kind ==
+                   PRDB_SDK_SQL_V7_AGGREGATE_SUM) {
+            expected_coefficient = left_key == 1 ? 225 : 450;
+        } else if (expectation->aggregate_kind ==
+                   PRDB_SDK_SQL_V7_AGGREGATE_AVG) {
+            expected_coefficient = left_key == 1 ? 112500000 : 150000000;
+        } else {
+            return 1;
+        }
+        if (binding->base.aggregate_column.decimal_precision != 4 ||
             binding->base.aggregate_column.decimal_scale != 2 ||
             (left_key == 1 && (right_key != 7 || matching_row_count != 2)) ||
             (left_key == 2 && (right_key != 9 || matching_row_count != 3)) ||
             (left_key != 1 && left_key != 2) ||
-            aggregate_value->state != PRDB_SDK_VALUE_STATE_VALUE ||
-            aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_DECIMAL ||
-            aggregate_value->data == NULL || aggregate_value->data_len != 16 ||
-            memcmp(aggregate_value->data,
-                   left_key == 1 ? decimal_avg_125 : decimal_avg_150, 16) != 0) {
+            !decimal_value_matches_coefficient(aggregate_value,
+                                               expected_coefficient)) {
             return 1;
         }
     } else if ((left_key == 4 && (right_key != 9 || matching_row_count != 2)) ||
@@ -472,7 +496,9 @@ static int32_t write_grouped_composite_aggregate_optimizer(
                (left_key != 4 && left_key != 2)) {
         return 1;
     }
-    if (expectation->aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_AVG &&
+    if (binding->base.aggregate_column.type_code !=
+            PRDB_SDK_VALUE_TYPE_DECIMAL &&
+        expectation->aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_AVG &&
         (aggregate_value->state != PRDB_SDK_VALUE_STATE_VALUE ||
                aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_INTEGER ||
                prdb_sdk_value_get_integer_v1(aggregate_value,
@@ -1010,6 +1036,15 @@ static int32_t run_write_read_fixture(
     static const uint8_t select_composite_decimal_avg_optimizer_sql[] =
         "SELECT left_key, right_key, AVG(decimal_value) "
         "FROM decimal_grouped_records GROUP BY left_key, right_key LIMIT 2";
+    static const uint8_t select_composite_decimal_min_optimizer_sql[] =
+        "SELECT left_key, right_key, MIN(decimal_value) "
+        "FROM decimal_grouped_records GROUP BY left_key, right_key LIMIT 2";
+    static const uint8_t select_composite_decimal_max_optimizer_sql[] =
+        "SELECT left_key, right_key, MAX(decimal_value) "
+        "FROM decimal_grouped_records GROUP BY left_key, right_key LIMIT 2";
+    static const uint8_t select_composite_decimal_sum_optimizer_sql[] =
+        "SELECT left_key, right_key, SUM(decimal_value) "
+        "FROM decimal_grouped_records GROUP BY left_key, right_key LIMIT 2";
     static const uint8_t select_analytical_pressure_sql[] =
         "SELECT group_key, COUNT(*) FROM analytics_pressure_records "
         "GROUP BY group_key";
@@ -1426,22 +1461,31 @@ static int32_t run_write_read_fixture(
             select_composite_min_optimizer_sql,
             select_composite_max_optimizer_sql,
             select_composite_avg_optimizer_sql,
+            select_composite_decimal_min_optimizer_sql,
+            select_composite_decimal_max_optimizer_sql,
+            select_composite_decimal_sum_optimizer_sql,
             select_composite_decimal_avg_optimizer_sql};
         static const uint32_t optimizer_sql_len[] = {
             sizeof(select_composite_min_optimizer_sql) - 1,
             sizeof(select_composite_max_optimizer_sql) - 1,
             sizeof(select_composite_avg_optimizer_sql) - 1,
+            sizeof(select_composite_decimal_min_optimizer_sql) - 1,
+            sizeof(select_composite_decimal_max_optimizer_sql) - 1,
+            sizeof(select_composite_decimal_sum_optimizer_sql) - 1,
             sizeof(select_composite_decimal_avg_optimizer_sql) - 1};
         static const uint32_t optimizer_kinds[] = {
             PRDB_SDK_SQL_V7_AGGREGATE_MIN,
             PRDB_SDK_SQL_V7_AGGREGATE_MAX,
             PRDB_SDK_SQL_V7_AGGREGATE_AVG,
+            PRDB_SDK_SQL_V7_AGGREGATE_MIN,
+            PRDB_SDK_SQL_V7_AGGREGATE_MAX,
+            PRDB_SDK_SQL_V7_AGGREGATE_SUM,
             PRDB_SDK_SQL_V7_AGGREGATE_AVG};
         if (optimizer_host_v5 == NULL ||
             optimizer_host_v5->optimizer_request == NULL) {
             return 1;
         }
-        for (uint32_t index = 0; index < 4; ++index) {
+        for (uint32_t index = 0; index < 7; ++index) {
             composite_aggregate_expectation expectation = {
                 &composite_grouped_results, optimizer_kinds[index]};
             composite_grouped_results.row_count = 0;

@@ -44340,25 +44340,34 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 );
             }
         }
-        for (left_key, right_key, coefficient) in
-            [(1i32, 7i32, 112_500_000u128), (2, 9, 150_000_000)]
-        {
-            let frame = read_frame(&mut aggregate_gateway)?
-                .ok_or("missing optimizer-backed composite Decimal AVG SQLR row")?;
-            assert_eq!(frame.operation, Operation::GatewayResultData as u16);
-            assert_eq!(frame.request_id, aggregate_accepted.request_id);
-            assert_eq!(
-                frame.payload,
-                expected_aggregate_row(
-                    b"avg",
-                    5,
-                    38,
-                    8,
-                    left_key,
-                    right_key,
-                    &coefficient.to_be_bytes(),
-                )
-            );
+        for (aggregate_name, precision, scale, coefficients) in [
+            (b"min".as_slice(), 4, 2, [100u128, 100]),
+            (b"max".as_slice(), 4, 2, [125u128, 225]),
+            (b"sum".as_slice(), 38, 2, [225u128, 450]),
+            (b"avg".as_slice(), 38, 8, [112_500_000u128, 150_000_000]),
+        ] {
+            for (index, (left_key, right_key)) in [(1i32, 7i32), (2, 9)].into_iter().enumerate() {
+                let frame = read_frame(&mut aggregate_gateway)?.ok_or_else(|| {
+                    format!(
+                        "missing optimizer-backed composite Decimal {} SQLR row",
+                        String::from_utf8_lossy(aggregate_name)
+                    )
+                })?;
+                assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+                assert_eq!(frame.request_id, aggregate_accepted.request_id);
+                assert_eq!(
+                    frame.payload,
+                    expected_aggregate_row(
+                        aggregate_name,
+                        5,
+                        precision,
+                        scale,
+                        left_key,
+                        right_key,
+                        &coefficients[index].to_be_bytes(),
+                    )
+                );
+            }
         }
         let aggregate_terminal = read_frame(&mut aggregate_gateway)?
             .ok_or("missing confined aggregate matrix terminal")?;
