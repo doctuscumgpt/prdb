@@ -442,6 +442,11 @@ typedef struct ordered_composite_aggregate_expectation {
     composite_aggregate_expectation aggregate;
     uint32_t next_group;
     int32_t first_left_key;
+    int32_t first_right_key;
+    int32_t second_left_key;
+    int32_t second_right_key;
+    uint64_t first_matching_row_count;
+    uint64_t second_matching_row_count;
 } ordered_composite_aggregate_expectation;
 
 static int32_t decimal_value_matches_coefficient(
@@ -678,15 +683,15 @@ static int32_t write_ordered_composite_group_aggregate_optimizer(
         return 1;
     }
     int32_t first_left = expectation->first_left_key;
-    int32_t second_left = first_left == 1 ? 2 : 1;
-    int32_t first_right = first_left == 1 ? 7 : 9;
-    int32_t second_right = second_left == 1 ? 7 : 9;
+    int32_t first_right = expectation->first_right_key;
+    int32_t second_left = expectation->second_left_key;
+    int32_t second_right = expectation->second_right_key;
     if ((expectation->next_group == 0 &&
          (left_key != first_left || right_key != first_right ||
-          matching_row_count != (first_left == 1 ? 2 : 3))) ||
+          matching_row_count != expectation->first_matching_row_count)) ||
         (expectation->next_group == 1 &&
          (left_key != second_left || right_key != second_right ||
-          matching_row_count != (second_left == 1 ? 2 : 3))) ||
+          matching_row_count != expectation->second_matching_row_count)) ||
         expectation->next_group > 1) {
         return 1;
     }
@@ -1253,13 +1258,16 @@ static int32_t run_write_read_fixture(
         "GROUP BY left_key, right_key LIMIT 2";
     static const uint8_t select_composite_min_optimizer_sql[] =
         "SELECT left_key, right_key, MIN(left_key) FROM grouped_records "
-        "GROUP BY left_key, right_key LIMIT 2";
+        "GROUP BY left_key, right_key ORDER BY MIN(left_key) DESC NULLS LAST, "
+        "left_key ASC NULLS FIRST LIMIT 2";
     static const uint8_t select_composite_max_optimizer_sql[] =
         "SELECT left_key, right_key, MAX(left_key) FROM grouped_records "
-        "GROUP BY left_key, right_key LIMIT 2";
+        "GROUP BY left_key, right_key ORDER BY MAX(left_key) DESC NULLS LAST, "
+        "left_key ASC NULLS FIRST LIMIT 2";
     static const uint8_t select_composite_avg_optimizer_sql[] =
         "SELECT left_key, right_key, AVG(left_key) FROM grouped_records "
-        "GROUP BY left_key, right_key LIMIT 2";
+        "GROUP BY left_key, right_key ORDER BY AVG(left_key) DESC NULLS LAST, "
+        "left_key ASC NULLS FIRST LIMIT 2";
     static const uint8_t select_composite_decimal_avg_optimizer_sql[] =
         "SELECT left_key, right_key, AVG(decimal_value) "
         "FROM decimal_grouped_records GROUP BY left_key, right_key "
@@ -1858,11 +1866,33 @@ static int32_t run_write_read_fixture(
         for (uint32_t index = first_aggregate; index < aggregate_end; ++index) {
             composite_aggregate_expectation expectation = {
                 &composite_grouped_results, optimizer_kinds[index]};
-            ordered_composite_aggregate_expectation ordered_expectation = {
-                expectation, 0, index == 3 ? 1 : 2};
+            ordered_composite_aggregate_expectation ordered_expectation = {0};
+            ordered_expectation.aggregate = expectation;
+            if (index < 3) {
+                ordered_expectation.first_left_key = 4;
+                ordered_expectation.first_right_key = 9;
+                ordered_expectation.second_left_key = 2;
+                ordered_expectation.second_right_key = 9;
+                ordered_expectation.first_matching_row_count = 2;
+                ordered_expectation.second_matching_row_count = 3;
+            } else if (index == 3) {
+                ordered_expectation.first_left_key = 1;
+                ordered_expectation.first_right_key = 7;
+                ordered_expectation.second_left_key = 2;
+                ordered_expectation.second_right_key = 9;
+                ordered_expectation.first_matching_row_count = 2;
+                ordered_expectation.second_matching_row_count = 3;
+            } else {
+                ordered_expectation.first_left_key = 2;
+                ordered_expectation.first_right_key = 9;
+                ordered_expectation.second_left_key = 1;
+                ordered_expectation.second_right_key = 7;
+                ordered_expectation.first_matching_row_count = 3;
+                ordered_expectation.second_matching_row_count = 2;
+            }
             composite_grouped_results.row_count = 0;
             composite_grouped_results.output_len = 0;
-            if (index >= 3 && index <= 14) {
+            if (index <= 14) {
                 status = prdb_sdk_sql_execute_ordered_composite_aggregate_optimizer_v1(
                     optimizer_host_v5, schema, sizeof(schema) - 1,
                     optimizer_sql[index], optimizer_sql_len[index], 16,
@@ -1894,7 +1924,7 @@ static int32_t run_write_read_fixture(
             }
             if (status != PRDB_SDK_SQL_EXEC_OK ||
                 composite_grouped_results.row_count != 2 ||
-                (index >= 3 && index <= 14 &&
+                (index <= 14 &&
                  ordered_expectation.next_group != 2)) {
                 if (invocation->parameters[0] == 'R') {
                     if (status == PRDB_SDK_SQL_EXEC_EVALUATION_ERROR &&
@@ -1959,7 +1989,7 @@ static int32_t run_write_read_fixture(
                 &composite_grouped_results,
                 PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR};
             ordered_composite_aggregate_expectation ordered_count_expectation = {
-                count_expectation, 0, 2};
+                count_expectation, 0, 2, 9, 1, 7, 3, 2};
             composite_grouped_results.row_count = 0;
             composite_grouped_results.output_len = 0;
             status = prdb_sdk_sql_execute_ordered_composite_aggregate_optimizer_v1(

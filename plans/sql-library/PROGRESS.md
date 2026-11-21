@@ -2,8 +2,8 @@
 
 ## SQL-7 follow-up: ordered composite aggregate numeric type matrix — verified
 
-- Contract: optimizer-backed composite `GROUP BY` retains the requested aggregate-descending order with an explicit group-key tie-breaker for each supported BIGINT and SMALLINT aggregate result.
-- Regression: the confined SQL fixture now executes BIGINT and SMALLINT SUM, MIN, MAX, and AVG through the ordered composite optimizer runner. Gateway acceptance checks both group order and exact integer or DECIMAL(38,6) SQLR values; the existing Decimal MIN/MAX/SUM/AVG/COUNT(*) cases remain covered.
+- Contract: optimizer-backed composite `GROUP BY` retains the requested aggregate-descending order with an explicit group-key tie-breaker for INTEGER, BIGINT, and SMALLINT aggregate results.
+- Regression: the confined SQL fixture now executes INTEGER MIN/MAX/AVG and BIGINT/SMALLINT SUM/MIN/MAX/AVG through the ordered composite optimizer runner. Gateway acceptance checks both group order and exact integer or DECIMAL(38,6) SQLR values; the existing Decimal MIN/MAX/SUM/AVG/COUNT(*) cases remain covered.
 - Verification: TinyCC sandbox fixture build, focused delegated-cgroup SQL acceptance, SDK test suite, format check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace test suite passed.
 - Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
 
