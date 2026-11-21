@@ -103,6 +103,7 @@ fn start_interactive_response_dropping_proxy(
     gateway_address: std::net::SocketAddr,
     dropped_request_kind: u16,
     dropped_request_occurrence: usize,
+    drop_stream_data: bool,
 ) -> std::io::Result<(std::net::SocketAddr, InteractiveResponseDropHandle)> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
@@ -149,6 +150,24 @@ fn start_interactive_response_dropping_proxy(
                 let Some((response, response_kind)) = read_raw_client_frame(&mut gateway)? else {
                     break;
                 };
+                if drop_stream_data && request_kind == 7 && response_kind == 100 {
+                    client.write_all(&response)?;
+                    let mut client_connected = true;
+                    while let Some((event, event_kind)) = read_raw_client_frame(&mut gateway)? {
+                        if event_kind == 102 && dropped == 0 && dropped_request_occurrence == 1 {
+                            dropped += 1;
+                            last_activity = Instant::now();
+                            continue;
+                        }
+                        if client_connected && client.write_all(&event).is_err() {
+                            client_connected = false;
+                        }
+                        if event_kind == 103 {
+                            break;
+                        }
+                    }
+                    break;
+                }
                 if request_kind == dropped_request_kind
                     && matching_requests == dropped_request_occurrence
                     && response_kind == 100
@@ -902,6 +921,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             address,
             prdb_engine::client_protocol::CLIENT_V2_TX_COMMIT_KIND,
             1,
+            false,
         )?;
         let uncertain_commit = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
             .args([
@@ -961,7 +981,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         assert!(uncertain_commit.stdout.is_empty());
 
         let (start_proxy_address, start_proxy) =
-            start_interactive_response_dropping_proxy(address, 7, 1)?;
+            start_interactive_response_dropping_proxy(address, 7, 1, false)?;
         let uncertain_start = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
             .args([
                 "interactive-sql",
@@ -1029,7 +1049,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             std::fs::Permissions::from_mode(0o600),
         )?;
         let (package_proxy_address, package_proxy) =
-            start_interactive_response_dropping_proxy(address, 7, 1)?;
+            start_interactive_response_dropping_proxy(address, 7, 1, true)?;
         let uncertain_package = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
             .args([
                 "interactive-sql",
@@ -1102,6 +1122,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             address,
             prdb_engine::client_protocol::CLIENT_V2_TX_BEGIN_KIND,
             1,
+            false,
         )?;
         let uncertain_begin = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
             .args([
@@ -1161,6 +1182,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             address,
             prdb_engine::client_protocol::CLIENT_V2_TX_ROLLBACK_KIND,
             1,
+            false,
         )?;
         let uncertain_rollback = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
             .args([
@@ -1220,7 +1242,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             std::fs::Permissions::from_mode(0o600),
         )?;
         let (ddl_proxy_address, ddl_proxy) =
-            start_interactive_response_dropping_proxy(address, 10, 2)?;
+            start_interactive_response_dropping_proxy(address, 10, 2, false)?;
         let uncertain_ddl = Command::new(env!("CARGO_BIN_EXE_prdb-client"))
             .args([
                 "interactive-sql",
