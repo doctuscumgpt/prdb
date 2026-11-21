@@ -30,6 +30,12 @@ int main(void) {
     static const uint8_t inexact_decimal_sql[] =
         "SELECT a, b, SUM(c) FROM records GROUP BY a, b "
         "HAVING SUM(c) >= 1.251";
+    static const uint8_t decimal_overflow_sql[] =
+        "SELECT a, b, SUM(c) FROM records GROUP BY a, b "
+        "HAVING SUM(c) >= 1e36";
+    static const uint8_t decimal_underflow_sql[] =
+        "SELECT a, b, SUM(c) FROM records GROUP BY a, b "
+        "HAVING SUM(c) >= 1e-100";
     static const uint8_t v18_decimal_sql[] =
         "SELECT a, b, SUM(c) FROM records GROUP BY a, b "
         "HAVING SUM(c) >= 1.25";
@@ -106,6 +112,18 @@ int main(void) {
                &statement, relation, sizeof(relation) - 1, decimal_columns, 3,
                &binding, sizeof(binding)) ==
            PRDB_SDK_SQL_BIND_V21_LITERAL_TYPE_MISMATCH);
+    assert(prdb_sdk_sql_parse_select_v21(
+               decimal_overflow_sql, sizeof(decimal_overflow_sql) - 1,
+               &statement, sizeof(statement), &error_offset) ==
+           PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_sql_bind_select_v21(
+               &statement, relation, sizeof(relation) - 1, decimal_columns, 3,
+               &binding, sizeof(binding)) ==
+           PRDB_SDK_SQL_BIND_V21_LITERAL_TYPE_MISMATCH);
+    assert(prdb_sdk_sql_parse_select_v21(
+               decimal_underflow_sql, sizeof(decimal_underflow_sql) - 1,
+               &statement, sizeof(statement), &error_offset) ==
+           PRDB_SDK_SQL_LIMIT_EXCEEDED);
     assert(prdb_sdk_sql_parse_select_v18(
                v18_decimal_sql, sizeof(v18_decimal_sql) - 1, &legacy,
                sizeof(legacy), &error_offset) != PRDB_SDK_SQL_OK);

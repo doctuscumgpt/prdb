@@ -28,6 +28,13 @@
 - Verification: maintained TinyCC SDK suite, shared-library ABI fixture, sandbox query artifact build, and 10,000 ASan/UBSan/libFuzzer runs passed. Locked workspace build, format check, warning-denied Clippy, and the full serial locked workspace test suite passed inside the delegated service with all confined/process tests enabled. The v21 COUNT, Decimal SUM, and Decimal AVG SQLR frames matched exactly; all enabled test targets reported zero ignored cases. `git diff --check` passed.
 - Remaining: broader analytical type/workload coverage, spill support, and end-to-end pressure testing remain open.
 
+## SQL-7 follow-up: v21 Decimal literal boundary coercion — verified
+
+- Contract: [SQL library](../../specs/sql-library.md). V21 rejects literals beyond its 38-digit/scale parse bounds and rejects exact Decimal rescaling that would exceed precision 38 before any scan.
+- Regression: the maintained v21 parser/binder fixture now verifies that `1e36` parses but fails to bind against a `DECIMAL(38,2)` SUM result because rescaling requires 39 digits. It also verifies that `1e-100` exceeds the literal scale bound and returns `LIMIT_EXCEEDED` during parsing.
+- Verification: focused TinyCC fixture and the complete maintained `make -f engine/sdk/Makefile test` suite passed in the pinned Nix shell using TinyCC 0.9.27-unstable-2025-01-06. `git diff --check` passed.
+- Scope: this protects exact decimal coercion boundaries; broader analytical type/workload coverage, spill support, and end-to-end pressure testing remain open.
+
 ## SQL-5 follow-up: confined indexed-range equivalence — verified
 
 - Contract: [SQL library](../../specs/sql-library.md) and [planner/compiler](../../specs/planner-compiler.md). A validated two-sided leading-key range over an authorized non-unique index must return the same projected rows as the normal authorized SQL scan on the invocation snapshot.
