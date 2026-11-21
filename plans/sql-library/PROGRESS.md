@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 / SQL-8 follow-up: v21 BIGINT literal HAVING and overflow — verified
+
+- Contract: v21 coerces exact integer HAVING literals to BIGINT aggregate results, and grouped integer SUM overflow fails before callbacks while latching statement failure.
+- Regression: the maintained composite runner fixture groups two `INT64_MAX` BIGINT values, applies `HAVING SUM(score) >= 0`, and asserts evaluation error, zero callbacks, and a latched failure.
+- Verification: the focused `sdk-sql-execute-v10` TinyCC fixture passed; this runs the literal through v21 parse, bind, and runner execution before detecting SUM overflow.
+- Remaining: secure spill, wider workload and host measurements, and mixed-workload optimization remain open.
+
 ## SQL-7 / SQL-8 follow-up: BIGINT SUM overflow through grouped SQL — verified
 
 - Contract: integer `SUM` widens to BIGINT, and a sum outside the signed 64-bit range fails before any group callback; the invocation latches statement failure.
