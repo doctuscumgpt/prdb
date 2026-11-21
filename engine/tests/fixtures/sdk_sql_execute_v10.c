@@ -1169,6 +1169,14 @@ static int32_t on_group_scalar_minmax(
     scalar_minmax_capture *capture = (scalar_minmax_capture *)context;
     int32_t key = 0;
     uint32_t index = capture->calls;
+    static const uint8_t id_name[] = "id";
+    static const uint8_t score_name[] = "score";
+    prdb_sdk_sql_column_shape_v2 group_column = {
+        id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0};
+    prdb_sdk_sql_column_shape_v2 aggregate_column = {
+        score_name, 5, 1, capture->type, capture->precision, capture->scale};
+    uint8_t encoded[128] = {0};
+    uint64_t encoded_len = 0;
     assert(index < 2 && capture->mock->batch_finished != 0);
     assert(binding->aggregate_kind == capture->aggregate_kind);
     assert(binding->aggregate_column.type_code == capture->type &&
@@ -1183,6 +1191,26 @@ static int32_t on_group_scalar_minmax(
            aggregate_value->type_code == capture->type &&
            aggregate_value->data_len == capture->expected_len[index]);
     assert(memcmp(aggregate_value->data, capture->expected[index],
+                  capture->expected_len[index]) == 0);
+    assert(prdb_sdk_sql_encode_group_minmax_result_v1(
+               &group_column, group_key, &aggregate_column, aggregate_value,
+               capture->aggregate_kind, encoded, sizeof(encoded),
+               &encoded_len) == PRDB_SDK_SQL_RESULT_OK);
+    assert(encoded_len == 43 + capture->expected_len[index] &&
+           memcmp(encoded, "SQLR\0\1\0\2", 8) == 0 &&
+           encoded[27] == 0 && encoded[28] == 3 &&
+           memcmp(encoded + 29,
+                  capture->aggregate_kind == PRDB_SDK_SQL_V5_AGGREGATE_MIN
+                      ? "min"
+                      : "max",
+                  3) == 0 &&
+           encoded[32] == 0 && encoded[33] == 0 && encoded[34] == 0 &&
+           encoded[35] == capture->type &&
+           encoded[36] == capture->precision &&
+           encoded[37] == capture->scale &&
+           encoded[38] == PRDB_SDK_VALUE_STATE_VALUE &&
+           encoded[42] == capture->expected_len[index] &&
+           memcmp(encoded + 43, capture->expected[index],
                   capture->expected_len[index]) == 0);
     ++capture->calls;
     return 0;
