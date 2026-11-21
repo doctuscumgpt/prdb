@@ -759,3 +759,10 @@
 - Regression: the v21 Decimal runner now checks an all-NULL MAX query with numeric HAVING returns success and no rows, and a REDACTED Decimal row returns evaluation failure with no callbacks and statement failure latched.
 - Verification: the focused `sdk-sql-execute-v10` TinyCC fixture passed with `-Wall -Wextra -Werror`.
 - Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
+
+## SQL-7 / SQL-8 follow-up: Decimal SUM overflow through grouped SQL — verified
+
+- Contract: grouped Decimal SUM returns DECIMAL(38,s), but an exact sum outside the result precision fails before publishing group callbacks; statement failure is latched for the invocation.
+- Regression: the maintained v21 runner fixture supplies two rows with the maximum DECIMAL(38,2) coefficient in the same group. `SUM(score) >= 0.00e0` overflows the aggregate and must return evaluation error with zero callbacks and a latched statement failure.
+- Verification: focused `sdk-sql-execute-v10` TinyCC fixture passed with `-Wall -Wextra -Werror`.
+- Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
