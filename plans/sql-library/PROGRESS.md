@@ -1006,3 +1006,10 @@
 - Regression: `sdk-sql-execute-v10` now runs the v12 grouped COUNT runner for ascending and descending `ORDER BY id` over all 11 scalar types. It supplies keys in unsorted order, checks the callback's exact sorted key sequence, and compares each encoded group-count SQLR row byte-for-byte with an independently constructed expected record, including Decimal precision/scale and source type metadata.
 - Verification: focused `sdk-sql-execute-v10` fixture and the complete pinned-toolchain `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` suite passed; `git diff --check` passed.
 - Remaining: broader analytical workload coverage, secure spill, target-hardware measurements, and mixed-workload optimization remain open.
+
+## SQL-7 follow-up: composite aggregate optimizer wrapper matrix — verified
+
+- Contract: `sql-library.md` defines optimizer-gated composite grouping for COUNT, MIN, MAX, SUM, and AVG. The SDK must validate the returned plan against the bound query and re-resolve the planned relation before execution.
+- Regression: `sdk_sql_execute_v10.c` now drives the public v13 optimizer wrapper through mock optimizer and executor callbacks for all five aggregate kinds. Each case checks the encoded request kind, a kind-specific plan, plan matching, plan-relation identity/column metadata re-resolution, grouped callback values, and row counts.
+- Verification: the focused `sdk-sql-execute-v10` fixture and the complete pinned-shell `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` suite passed; `git diff --check` passed.
+- Remaining: confined process-level end-to-end optimizer coverage still exercises SUM only; broader analytical workload coverage, secure spill, target-hardware measurements, and mixed-workload optimization remain open.
