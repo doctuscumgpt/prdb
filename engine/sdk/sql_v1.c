@@ -7159,6 +7159,7 @@ static int32_t rescale_numeric_literal_v21(
         uint8_t fill = negative ? 0xff : 0;
         for (size_t index = 0; index < 8; ++index)
             if (magnitude[index] != fill) return 0;
+        if (((magnitude[8] & 0x80) != 0) != negative) return 0;
     } else if (!decimal_fits_precision(magnitude, 38)) {
         return 0;
     }

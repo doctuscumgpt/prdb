@@ -24,6 +24,18 @@ int main(void) {
     static const uint8_t exact_integer_sql[] =
         "SELECT a, b, SUM(c) FROM records GROUP BY a, b "
         "HAVING SUM(c) >= 1.000e0";
+    static const uint8_t bigint_min_sql[] =
+        "SELECT a, b, SUM(c) FROM records GROUP BY a, b "
+        "HAVING SUM(c) >= -9223372036854775808";
+    static const uint8_t bigint_max_sql[] =
+        "SELECT a, b, SUM(c) FROM records GROUP BY a, b "
+        "HAVING SUM(c) <= 9223372036854775807";
+    static const uint8_t bigint_positive_overflow_sql[] =
+        "SELECT a, b, SUM(c) FROM records GROUP BY a, b "
+        "HAVING SUM(c) >= 9223372036854775808";
+    static const uint8_t bigint_negative_overflow_sql[] =
+        "SELECT a, b, SUM(c) FROM records GROUP BY a, b "
+        "HAVING SUM(c) >= -9223372036854775809";
     static const uint8_t inexact_integer_sql[] =
         "SELECT a, b, SUM(c) FROM records GROUP BY a, b "
         "HAVING SUM(c) >= 1.25";
@@ -95,6 +107,41 @@ int main(void) {
     assert(binding.base.having_type_code == PRDB_SDK_VALUE_TYPE_BIGINT);
     assert(coefficient_equals(binding.having_nodes[0].coefficient, 1));
     assert(binding.having_nodes[0].scale == 0);
+
+    assert(prdb_sdk_sql_parse_select_v21(
+               bigint_min_sql, sizeof(bigint_min_sql) - 1, &statement,
+               sizeof(statement), &error_offset) == PRDB_SDK_SQL_OK);
+    assert(coefficient_equals(statement.having_nodes[0].coefficient,
+                              INT64_MIN));
+    assert(prdb_sdk_sql_bind_select_v21(
+               &statement, relation, sizeof(relation) - 1, integer_columns, 3,
+               &binding, sizeof(binding)) == PRDB_SDK_SQL_BIND_OK);
+    assert(coefficient_equals(binding.having_nodes[0].coefficient,
+                              INT64_MIN));
+    assert(prdb_sdk_sql_parse_select_v21(
+               bigint_max_sql, sizeof(bigint_max_sql) - 1, &statement,
+               sizeof(statement), &error_offset) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_sql_bind_select_v21(
+               &statement, relation, sizeof(relation) - 1, integer_columns, 3,
+               &binding, sizeof(binding)) == PRDB_SDK_SQL_BIND_OK);
+    assert(coefficient_equals(binding.having_nodes[0].coefficient,
+                              INT64_MAX));
+    assert(prdb_sdk_sql_parse_select_v21(
+               bigint_positive_overflow_sql,
+               sizeof(bigint_positive_overflow_sql) - 1, &statement,
+               sizeof(statement), &error_offset) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_sql_bind_select_v21(
+               &statement, relation, sizeof(relation) - 1, integer_columns, 3,
+               &binding, sizeof(binding)) ==
+           PRDB_SDK_SQL_BIND_V21_LITERAL_TYPE_MISMATCH);
+    assert(prdb_sdk_sql_parse_select_v21(
+               bigint_negative_overflow_sql,
+               sizeof(bigint_negative_overflow_sql) - 1, &statement,
+               sizeof(statement), &error_offset) == PRDB_SDK_SQL_OK);
+    assert(prdb_sdk_sql_bind_select_v21(
+               &statement, relation, sizeof(relation) - 1, integer_columns, 3,
+               &binding, sizeof(binding)) ==
+           PRDB_SDK_SQL_BIND_V21_LITERAL_TYPE_MISMATCH);
 
     assert(prdb_sdk_sql_parse_select_v21(
                inexact_integer_sql, sizeof(inexact_integer_sql) - 1,

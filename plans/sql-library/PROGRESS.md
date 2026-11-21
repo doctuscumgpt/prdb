@@ -829,6 +829,15 @@
 - Verification: focused `sdk-sql-execute-v8` fixture and `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed with TinyCC; `git diff --check` passed.
 - Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
 
+## SQL-7 follow-up: v21 HAVING enforces signed BIGINT literal bounds — verified
+
+- Contract: v21 numeric HAVING literals bound to BIGINT aggregates only when exact rescaling produces a signed 64-bit value; both signed endpoints are valid.
+- Red/green evidence: the v21 parser/binder fixture now checks `INT64_MIN` and `INT64_MAX` bind exactly and rejects each adjacent overflow value. The positive overflow regression failed before the fix because the binder checked upper-byte sign extension without validating the sign bit of the retained 64-bit value.
+- Implementation: BIGINT coercion now verifies that the retained value's sign bit agrees with the source sign after rescaling and sign extension.
+- Specification: [`sql-library.md`](../../specs/sql-library.md) already specifies exact signed 64-bit range checking for v21 HAVING literals.
+- Verification: focused v21 parser/binder and grouped runner TinyCC fixtures passed with `-Wall -Wextra -Werror`.
+- Remaining: broader analytical type/workload, spill, and mixed-workload measurements remain open.
+
 ## SQL-7 / WI-7 follow-up: v21 HAVING fuzz seeds exercise successful binding — verified
 
 - Correction: the v21 fuzz corpus previously used `category` and `scores`, which did not match the harness's bound `id`/`score` shape. Those seeds could parse but did not reach successful binding. Replaced them with schema-matched statements and added a compound Decimal seed covering signed exponent literals, Boolean precedence, ORDER BY, and LIMIT.
