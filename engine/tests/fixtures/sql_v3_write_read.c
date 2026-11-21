@@ -2428,8 +2428,8 @@ static int32_t run_write_read_fixture(
             sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
             PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
             optimizer_parameter_bytes, sizeof(optimizer_parameter_bytes)};
-        uint8_t optimizer_large_range_lower_bytes[4] = {0, 0, 0, 3};
-        uint8_t optimizer_large_range_upper_bytes[4] = {0, 0, 0, 4};
+        uint8_t optimizer_large_range_lower_bytes[4] = {0, 0, 0, 10};
+        uint8_t optimizer_large_range_upper_bytes[4] = {0, 0, 0, 11};
         uint8_t optimizer_small_estimate_parameter_bytes[4] = {0, 0, 0, 42};
         prdb_sdk_value_v1 optimizer_small_estimate_parameter = {
             sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
@@ -2591,7 +2591,7 @@ static int32_t run_write_read_fixture(
                 return report_failure(host, message, sizeof(message) - 1);
             }
             for (uint32_t index = 0; index < 8; ++index) {
-                if (benchmark_optimizer_results.values[index] != 3) {
+                if (benchmark_optimizer_results.values[index] != 10) {
                     static const uint8_t message[] =
                         "fixture-error-range-benchmark-optimizer-values";
                     return report_failure(host, message, sizeof(message) - 1);
@@ -2626,7 +2626,7 @@ static int32_t run_write_read_fixture(
                 return report_failure(host, message, sizeof(message) - 1);
             }
             for (uint32_t index = 0; index < 8; ++index) {
-                if (benchmark_reference_results.values[index] != 3) {
+                if (benchmark_reference_results.values[index] != 10) {
                     static const uint8_t message[] =
                         "fixture-error-range-benchmark-reference-values";
                     return report_failure(host, message, sizeof(message) - 1);
