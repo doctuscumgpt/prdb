@@ -963,3 +963,10 @@
 - Regression: the maintained aggregate fixture now sums `2 + 4` for each integral input type and checks widened BIGINT `6`; it averages the same values and checks the exact DECIMAL coefficient for `3.000000` and result scale 6. Existing Decimal SUM and AVG cases continue to cover Decimal precision/scale handling.
 - Verification: focused `sdk-sql-group-v1` and the complete pinned-toolchain `make -f engine/sdk/Makefile test` suite passed; `git diff --check` passed.
 - Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload optimization remain open.
+
+## SQL-7 follow-up: ORDER BY scalar comparator matrix — verified
+
+- Contract: [`sql-library.md`](../../specs/sql-library.md) defines signed fixed-width numeric comparison, Decimal scale-aware comparison, Boolean order, UTF-8 text order, and bytewise UUID/BYTEA order for SQL sorting.
+- Regression: the maintained stable-order fixture now checks ascending and descending permutations for BOOLEAN, SMALLINT, INTEGER, BIGINT, DECIMAL, TEXT, VARCHAR, BYTEA, UUID, DATE, and TIMESTAMPTZ values. The cases include signed extrema, negative Decimal, multibyte UTF-8, and binary/fixed-width values.
+- Verification: focused `sdk-sql-order-v1` fixture and `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed with the pinned TinyCC toolchain; `git diff --check` passed.
+- Remaining: grouped-runner SQLR ordering parity across the full scalar matrix and broader analytical type/workload coverage remain open.

@@ -17,6 +17,28 @@ static prdb_sdk_value_v1 integer_value(uint8_t bytes[4], int32_t value) {
                                4};
 }
 
+static void assert_scalar_order(uint32_t type, uint8_t decimal_scale,
+                                const uint8_t *lower, uint32_t lower_len,
+                                const uint8_t *higher, uint32_t higher_len) {
+    prdb_sdk_value_v1 values[2] = {
+        {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+         PRDB_SDK_VALUE_STATE_VALUE, type, (uint8_t *)higher, higher_len},
+        {sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+         PRDB_SDK_VALUE_STATE_VALUE, type, (uint8_t *)lower, lower_len}};
+    uint32_t order[2] = {UINT32_MAX, UINT32_MAX};
+    static const uint32_t ascending[] = {1, 0};
+    static const uint32_t descending[] = {0, 1};
+
+    assert(prdb_sdk_sql_order_row_indices_v1(
+               values, 2, type, decimal_scale, 0, order, 2) ==
+           PRDB_SDK_SQL_ORDER_OK);
+    assert(memcmp(order, ascending, sizeof(ascending)) == 0);
+    assert(prdb_sdk_sql_order_row_indices_v1(
+               values, 2, type, decimal_scale, 1, order, 2) ==
+           PRDB_SDK_SQL_ORDER_OK);
+    assert(memcmp(order, descending, sizeof(descending)) == 0);
+}
+
 static prdb_sdk_value_v1 null_value(void) {
     return (prdb_sdk_value_v1){sizeof(prdb_sdk_value_v1),
                                PRDB_SDK_VALUE_ABI_V1_VERSION,
@@ -27,6 +49,71 @@ static prdb_sdk_value_v1 null_value(void) {
 }
 
 int main(void) {
+    static const uint8_t boolean_lower[] = {0};
+    static const uint8_t boolean_higher[] = {1};
+    static const uint8_t smallint_lower[] = {0x80, 0};
+    static const uint8_t smallint_higher[] = {0x7F, 0xFF};
+    static const uint8_t integer_lower[] = {0x80, 0, 0, 0};
+    static const uint8_t integer_higher[] = {0x7F, 0xFF, 0xFF, 0xFF};
+    static const uint8_t bigint_lower[] = {0x80, 0, 0, 0, 0, 0, 0, 0};
+    static const uint8_t bigint_higher[] = {0x7F, 0xFF, 0xFF, 0xFF,
+                                             0xFF, 0xFF, 0xFF, 0xFF};
+    static const uint8_t decimal_lower[] = {0xFF, 0xFF, 0xFF, 0xFF,
+                                             0xFF, 0xFF, 0xFF, 0xFF,
+                                             0xFF, 0xFF, 0xFF, 0xFF,
+                                             0xFF, 0xFF, 0xFF, 0x9C};
+    static const uint8_t decimal_higher[] = {0, 0, 0, 0, 0, 0, 0, 0,
+                                              0, 0, 0, 0, 0, 0, 0, 0x64};
+    static const uint8_t text_lower[] = {'a'};
+    static const uint8_t text_higher[] = {'b'};
+    static const uint8_t varchar_lower[] = {0xC3, 0xA9};
+    static const uint8_t varchar_higher[] = {0xE2, 0x82, 0xAC};
+    static const uint8_t bytea_lower[] = {0, 0xFF};
+    static const uint8_t bytea_higher[] = {1, 0};
+    static const uint8_t uuid_lower[] = {0, 1, 2, 3, 4, 5, 6, 7,
+                                          8, 9, 10, 11, 12, 13, 14, 15};
+    static const uint8_t uuid_higher[] = {0, 1, 2, 3, 4, 5, 6, 7,
+                                           8, 9, 10, 11, 12, 13, 14, 16};
+    static const uint8_t date_lower[] = {0xFF, 0xFF, 0xFF, 0xFF};
+    static const uint8_t date_higher[] = {0, 0, 0, 0};
+    static const uint8_t timestamp_lower[] = {0xFF, 0xFF, 0xFF, 0xFF,
+                                               0xFF, 0xFF, 0xFF, 0xFF};
+    static const uint8_t timestamp_higher[] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+    assert_scalar_order(PRDB_SDK_VALUE_TYPE_BOOLEAN, 0, boolean_lower,
+                        sizeof(boolean_lower), boolean_higher,
+                        sizeof(boolean_higher));
+    assert_scalar_order(PRDB_SDK_VALUE_TYPE_SMALLINT, 0, smallint_lower,
+                        sizeof(smallint_lower), smallint_higher,
+                        sizeof(smallint_higher));
+    assert_scalar_order(PRDB_SDK_VALUE_TYPE_INTEGER, 0, integer_lower,
+                        sizeof(integer_lower), integer_higher,
+                        sizeof(integer_higher));
+    assert_scalar_order(PRDB_SDK_VALUE_TYPE_BIGINT, 0, bigint_lower,
+                        sizeof(bigint_lower), bigint_higher,
+                        sizeof(bigint_higher));
+    assert_scalar_order(PRDB_SDK_VALUE_TYPE_DECIMAL, 2, decimal_lower,
+                        sizeof(decimal_lower), decimal_higher,
+                        sizeof(decimal_higher));
+    assert_scalar_order(PRDB_SDK_VALUE_TYPE_TEXT, 0, text_lower,
+                        sizeof(text_lower), text_higher,
+                        sizeof(text_higher));
+    assert_scalar_order(PRDB_SDK_VALUE_TYPE_VARCHAR, 0, varchar_lower,
+                        sizeof(varchar_lower), varchar_higher,
+                        sizeof(varchar_higher));
+    assert_scalar_order(PRDB_SDK_VALUE_TYPE_BYTEA, 0, bytea_lower,
+                        sizeof(bytea_lower), bytea_higher,
+                        sizeof(bytea_higher));
+    assert_scalar_order(PRDB_SDK_VALUE_TYPE_UUID, 0, uuid_lower,
+                        sizeof(uuid_lower), uuid_higher,
+                        sizeof(uuid_higher));
+    assert_scalar_order(PRDB_SDK_VALUE_TYPE_DATE, 0, date_lower,
+                        sizeof(date_lower), date_higher,
+                        sizeof(date_higher));
+    assert_scalar_order(PRDB_SDK_VALUE_TYPE_TIMESTAMPTZ, 0, timestamp_lower,
+                        sizeof(timestamp_lower), timestamp_higher,
+                        sizeof(timestamp_higher));
+
     uint8_t data[4][4];
     prdb_sdk_value_v1 keys[] = {
         integer_value(data[0], 4), integer_value(data[1], 1), null_value(),
