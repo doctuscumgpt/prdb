@@ -860,3 +860,11 @@
 - Oracle: the v21 fuzzer initializes outputs with sentinel bytes and traps if either API changes them on failure. Successful bindings continue to be checked for sized ABI fields and canonical numeric literal metadata.
 - Verification: `make -f engine/sdk/Makefile fuzz-sql-v21` completed 10,000 ASan/UBSan/libFuzzer runs without findings (1,574 coverage counters, 3,766 features).
 - Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
+
+## SQL-8 follow-up: confined analytical acceptance under operational load — verified
+
+- Acceptance: `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` passed through the delegated user cgroup with the current TinyCC SDK, release library, and Linux x86_64 NixOS glibc 2.42 runtime. The test ran the maintained SQL artifact in the confined executor and completed durable commit.
+- Pressure evidence: eight analytical invocations remained active through the measured 30-second interval while 64 operational workers continued reads and commits; 2,599 operational commits completed. The live analytics cgroup reported 13,088 KiB current and 17,432 KiB peak memory.
+- Local latency sample: baseline versus concurrent SQL p99 was 2.713 ms versus 78.173 ms for point reads and 26.346 ms versus 298.472 ms for durable commits (64 baseline and 3,022 concurrent samples). The optimizer range query measured 85.1 ms versus 48.6 ms for the reference scan. This is one host/run comparison, not a performance target; the operational tail and range-query overhead remain optimization signals.
+- Verification: host cgroup v2 probe reported writable `cpu memory pids` delegation; the focused confined acceptance passed in 39.49 seconds.
+- Remaining: repeatable multi-run and target-hardware measurements, broader client saturation, and secure spill support remain open.
