@@ -2341,9 +2341,43 @@ static int32_t on_group_v21_integer_sum_unexpected(
     return 1;
 }
 
+static int32_t on_group_v21_integer_sum_literal(
+    void *context, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v21 *binding) {
+    group_capture *capture = (group_capture *)context;
+    int32_t id = 0;
+    int64_t score = 0;
+    int64_t sum = 0;
+    uint32_t index = capture->calls;
+    assert(index < 2 && binding->abi_version == PRDB_SDK_SQL_ABI_V21_VERSION);
+    assert(binding->base.having_type_code == PRDB_SDK_VALUE_TYPE_BIGINT &&
+           binding->base.having_node_count == 1 &&
+           binding->having_nodes[0].base.operand_kind ==
+               PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL &&
+           binding->having_nodes[0].coefficient[15] == 6 &&
+           binding->having_nodes[0].scale == 0);
+    assert(group_key_count == 2 &&
+           prdb_sdk_value_get_integer_v1(&group_keys[0], &id) ==
+               PRDB_SDK_VALUE_ACCESS_OK &&
+           prdb_sdk_value_get_bigint_v1(&group_keys[1], &score) ==
+               PRDB_SDK_VALUE_ACCESS_OK);
+    assert(id == (index == 0 ? 1 : 2) &&
+           score == (index == 0 ? 3 : 6));
+    assert(matching_row_count == (index == 0 ? 2 : 1) &&
+           aggregate_value != NULL &&
+           aggregate_value->type_code == PRDB_SDK_VALUE_TYPE_BIGINT &&
+           prdb_sdk_value_get_bigint_v1(aggregate_value, &sum) ==
+               PRDB_SDK_VALUE_ACCESS_OK &&
+           sum == 6);
+    ++capture->calls;
+    return 0;
+}
+
 static int32_t run_query_v21_integer_sum(
     mock_state *mock, const uint8_t *sql, uint64_t sql_len,
-    group_capture *capture) {
+    prdb_sdk_sql_group_row_v21_fn on_group, void *capture) {
     static const uint8_t schema[] = "app";
     static const uint8_t id_name[] = "id";
     static const uint8_t score_name[] = "score";
@@ -2367,7 +2401,7 @@ static int32_t run_query_v21_integer_sum(
         sizeof(executor_response), batch_response, sizeof(batch_response),
         planner_columns, 2, executor_columns, 2, cell_scratch, 2,
         materialized_bytes, sizeof(materialized_bytes),
-        on_group_v21_integer_sum_unexpected, capture);
+        on_group, capture);
 }
 
 static int32_t run_query_v21_min_decimal(mock_state *mock, const uint8_t *sql,
@@ -2558,6 +2592,9 @@ int main(void) {
     static const uint8_t bigint_sum_overflow_sql[] =
         "SELECT id, SUM(score) FROM widgets GROUP BY id";
     static const uint8_t v21_bigint_sum_literal_sql[] =
+        "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
+        "HAVING SUM(score) >= 6";
+    static const uint8_t v21_bigint_sum_overflow_sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
         "HAVING SUM(score) >= 0";
     static const uint8_t v22_hidden_count_sql[] =
@@ -3627,11 +3664,31 @@ int main(void) {
                 mock.batch, 1, overflow_keys, overflow_scores, 2);
             reset_scan(&mock, &capture, 1);
             assert(run_query_v21_integer_sum(
-                       &mock, v21_bigint_sum_literal_sql,
-                       sizeof(v21_bigint_sum_literal_sql) - 1, &capture) ==
+                       &mock, v21_bigint_sum_overflow_sql,
+                       sizeof(v21_bigint_sum_overflow_sql) - 1,
+                       on_group_v21_integer_sum_unexpected, &capture) ==
                    PRDB_SDK_SQL_EXEC_EVALUATION_ERROR);
             assert(capture.calls == 0 && mock.executor_calls > 0 &&
                    mock.statement_failed == 1);
+        }
+
+        {
+            const int32_t keys_with_filtered_group[] = {1, 1, 2};
+            const int64_t scores_with_filtered_group[] = {3, 3, 6};
+            mock.planner_len = make_bigint_relation(
+                mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99);
+            mock.executor_len = make_bigint_relation(mock.executor, 6, 0x22);
+            mock.batch_len = make_bigint_rows(
+                mock.batch, 1, keys_with_filtered_group,
+                scores_with_filtered_group, 3);
+            reset_scan(&mock, &capture, 1);
+            assert(run_query_v21_integer_sum(
+                       &mock, v21_bigint_sum_literal_sql,
+                       sizeof(v21_bigint_sum_literal_sql) - 1,
+                       on_group_v21_integer_sum_literal, &capture) ==
+                   PRDB_SDK_SQL_EXEC_OK);
+            assert(capture.calls == 2 && mock.executor_calls > 0 &&
+                   mock.statement_failed == 0);
         }
     }
     run_grouped_scalar_order_matrix(&mock);
