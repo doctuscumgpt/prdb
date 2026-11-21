@@ -1013,3 +1013,9 @@
 - Regression: `sdk_sql_execute_v10.c` now drives the public v13 optimizer wrapper through mock optimizer and executor callbacks for all five aggregate kinds. Each case checks the encoded request kind, a kind-specific plan, plan matching, plan-relation identity/column metadata re-resolution, grouped callback values, and row counts.
 - Verification: the focused `sdk-sql-execute-v10` fixture and the complete pinned-shell `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` suite passed; `git diff --check` passed.
 - Remaining: confined process-level end-to-end optimizer coverage still exercises SUM only; broader analytical workload coverage, secure spill, target-hardware measurements, and mixed-workload optimization remain open.
+
+## SQL-7 follow-up: confined composite COUNT optimizer execution — verified
+
+- Change: the confined write/read artifact now runs its existing two-key v13 `COUNT(*)` case through `prdb_sdk_sql_execute_group_composite_aggregate_optimizer_v1` (plan kind 13) instead of the separate composite-count plan path. This keeps the same query and SQLR assertion while exercising the real optimizer process, AST/plan validation, executor-side relation re-resolution, authorized scan, and result relay.
+- Verification: rebuilt `sandbox-query-fixture` and `release-profile`; the focused `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance passed in the delegated cgroup service, including its live mixed-load checks and durable commit. The full serial `cargo test --workspace --locked -- --test-threads=1` suite also passed in the delegated service.
+- Remaining: confined process-level optimizer-backed composite aggregate coverage now includes COUNT and SUM; MIN, MAX, and AVG remain covered by SDK wrapper tests but not this process acceptance. Broader analytical workload coverage, secure spill, target-hardware measurements, and mixed-workload optimization remain open.

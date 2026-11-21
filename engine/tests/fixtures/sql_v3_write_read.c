@@ -1834,7 +1834,7 @@ static int32_t run_write_read_fixture(
     composite_grouped_results.row_count = 0;
     composite_grouped_results.output_len = 0;
     if (optimizer_host_v5 != NULL) {
-        status = prdb_sdk_sql_execute_composite_count_optimizer_v1(
+        status = prdb_sdk_sql_execute_group_composite_aggregate_optimizer_v1(
             optimizer_host_v5, schema, sizeof(schema) - 1,
             select_composite_group_sql,
             sizeof(select_composite_group_sql) - 1, 16,
