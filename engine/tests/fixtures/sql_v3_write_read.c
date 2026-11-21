@@ -1648,7 +1648,7 @@ static int32_t run_write_read_fixture(
     }
     if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
         (invocation->parameters[0] == 'A' || invocation->parameters[0] == 'B' ||
-         invocation->parameters[0] == 'W')) {
+         invocation->parameters[0] == 'R' || invocation->parameters[0] == 'W')) {
         static const uint8_t *const optimizer_sql[] = {
             select_composite_min_optimizer_sql,
             select_composite_max_optimizer_sql,
@@ -1718,7 +1718,8 @@ static int32_t run_write_read_fixture(
                 return report_failure(host, message, sizeof(message) - 1);
             }
         }
-        if (invocation->parameters[0] != 'B') {
+        if (invocation->parameters[0] == 'A' ||
+            invocation->parameters[0] == 'W') {
             grouped_results.group_column = &planner_columns[0];
             grouped_results.aggregate_column = &planner_columns[1];
             grouped_results.output = ordered_pressure_result;
@@ -1752,8 +1753,12 @@ static int32_t run_write_read_fixture(
             }
             if (invocation->parameters[0] == 'W') return 0;
         }
-        uint32_t first_aggregate = invocation->parameters[0] == 'B' ? 7 : 0;
-        uint32_t aggregate_end = invocation->parameters[0] == 'B' ? 15 : 7;
+        uint32_t first_aggregate = invocation->parameters[0] == 'R'
+                                      ? 3
+                                      : invocation->parameters[0] == 'B' ? 7 : 0;
+        uint32_t aggregate_end = invocation->parameters[0] == 'R'
+                                     ? 4
+                                     : invocation->parameters[0] == 'B' ? 15 : 7;
         for (uint32_t index = first_aggregate; index < aggregate_end; ++index) {
             composite_aggregate_expectation expectation = {
                 &composite_grouped_results, optimizer_kinds[index]};
@@ -1774,6 +1779,15 @@ static int32_t run_write_read_fixture(
                 write_grouped_composite_aggregate_optimizer, &expectation);
             if (status != PRDB_SDK_SQL_EXEC_OK ||
                 composite_grouped_results.row_count != 2) {
+                if (invocation->parameters[0] == 'R') {
+                    if (status == PRDB_SDK_SQL_EXEC_EVALUATION_ERROR &&
+                        composite_grouped_results.row_count == 0) {
+                        return 1;
+                    }
+                    static const uint8_t message[] =
+                        "fixture-error-redacted-aggregate-not-rejected";
+                    return report_failure(host, message, sizeof(message) - 1);
+                }
                 if (status != PRDB_SDK_SQL_EXEC_OK) {
                     static uint8_t message[] =
                         "fixture-error-composite-aggregate-status-0";
