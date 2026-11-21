@@ -72,7 +72,7 @@ SDK_SQL_SONAME := libprdb_sql.so.$(SDK_RELEASE)
 SDK_SQL_SHARED_LIBRARY := $(SDK_RELEASE_DIR)/$(SDK_SQL_SONAME)
 SDK_RELEASE_METADATA := $(SDK_RELEASE_DIR)/sdk-release.json
 SDK_RELEASE_CHECKSUM := $(SDK_RELEASE_DIR)/sdk-release.sha256
-SDK_SHARED_TEST_FIXTURES := sdk_value_v1 sdk_sql_select_v20 sdk_sql_select_v21 sdk_optimizer_update_v1 sdk_sql_dispatch_v1
+SDK_SHARED_TEST_FIXTURES := sdk_value_v1 sdk_sql_select_v20 sdk_sql_select_v21 sdk_sql_select_v22 sdk_optimizer_update_v1 sdk_sql_dispatch_v1
 SDK_SHARED_TESTS := $(addprefix $(SDK_RELEASE_DIR)/shared-test-,$(SDK_SHARED_TEST_FIXTURES))
 SDK_VALUE_TEST := $(BUILD_DIR)/sdk-value-v1
 SDK_BATCH_TEST := $(BUILD_DIR)/sdk-batch-v1
@@ -102,6 +102,7 @@ SDK_SQL_V18_TEST := $(BUILD_DIR)/sdk-sql-select-v18
 SDK_SQL_V19_TEST := $(BUILD_DIR)/sdk-sql-select-v19
 SDK_SQL_V20_TEST := $(BUILD_DIR)/sdk-sql-select-v20
 SDK_SQL_V21_TEST := $(BUILD_DIR)/sdk-sql-select-v21
+SDK_SQL_V22_TEST := $(BUILD_DIR)/sdk-sql-select-v22
 SDK_SQL_EXEC_V19_TEST := $(BUILD_DIR)/sdk-sql-execute-v19
 SDK_SQL_V18_FUZZER := $(BUILD_DIR)/fuzz-sql-v18
 SDK_SQL_V19_FUZZER := $(BUILD_DIR)/fuzz-sql-v19
@@ -365,6 +366,9 @@ $(SDK_SQL_V20_TEST): engine/tests/fixtures/sdk_sql_select_v20.c $(SDK_ARCHIVE) $
 $(SDK_SQL_V21_TEST): engine/tests/fixtures/sdk_sql_select_v21.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_sql_v21.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
 
+$(SDK_SQL_V22_TEST): engine/tests/fixtures/sdk_sql_select_v22.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_sql_v22.h | $(BUILD_DIR)
+	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
+
 $(SDK_SQL_EXEC_V19_TEST): engine/tests/fixtures/sdk_sql_execute_v19.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v19.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v20.h $(INCLUDE_DIR)/prdb_sdk_sql_v19.h $(INCLUDE_DIR)/prdb_sdk_sql_v20.h $(INCLUDE_DIR)/prdb_sdk_optimizer_v1.h $(INCLUDE_DIR)/prdb_sdk_optimizer_plan_v1.h $(INCLUDE_DIR)/prdb_query_abi_v5.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
 
@@ -442,7 +446,7 @@ $(SDK_SQL_EXEC_V8_TEST): engine/tests/fixtures/sdk_sql_execute_v8.c $(SDK_ARCHIV
 $(SDK_SQL_EXEC_V9_TEST): engine/tests/fixtures/sdk_sql_execute_v9.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v9.h $(INCLUDE_DIR)/prdb_sdk_sql_v9.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
 
-$(SDK_SQL_EXEC_V10_TEST): engine/tests/fixtures/sdk_sql_execute_v10.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v10.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v11.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v12.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v13.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v14.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v15.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v17.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v18.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v19.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v21.h $(INCLUDE_DIR)/prdb_sdk_sql_v19.h $(INCLUDE_DIR)/prdb_sdk_sql_v10.h $(INCLUDE_DIR)/prdb_sdk_sql_v11.h $(INCLUDE_DIR)/prdb_sdk_sql_v12.h $(INCLUDE_DIR)/prdb_sdk_sql_v13.h $(INCLUDE_DIR)/prdb_sdk_sql_v14.h $(INCLUDE_DIR)/prdb_sdk_sql_v15.h $(INCLUDE_DIR)/prdb_sdk_sql_v17.h $(INCLUDE_DIR)/prdb_sdk_sql_v18.h $(INCLUDE_DIR)/prdb_sdk_sql_v21.h | $(BUILD_DIR)
+$(SDK_SQL_EXEC_V10_TEST): engine/tests/fixtures/sdk_sql_execute_v10.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v10.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v11.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v12.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v13.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v14.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v15.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v17.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v18.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v19.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v21.h $(INCLUDE_DIR)/prdb_sdk_sql_exec_v22.h $(INCLUDE_DIR)/prdb_sdk_sql_v22.h $(INCLUDE_DIR)/prdb_sdk_sql_v19.h $(INCLUDE_DIR)/prdb_sdk_sql_v10.h $(INCLUDE_DIR)/prdb_sdk_sql_v11.h $(INCLUDE_DIR)/prdb_sdk_sql_v12.h $(INCLUDE_DIR)/prdb_sdk_sql_v13.h $(INCLUDE_DIR)/prdb_sdk_sql_v14.h $(INCLUDE_DIR)/prdb_sdk_sql_v15.h $(INCLUDE_DIR)/prdb_sdk_sql_v17.h $(INCLUDE_DIR)/prdb_sdk_sql_v18.h $(INCLUDE_DIR)/prdb_sdk_sql_v21.h | $(BUILD_DIR)
 	$(TCC) -Wall -Wextra -Werror -I"$(INCLUDE_DIR)" "$<" "$(SDK_ARCHIVE)" -o "$@"
 
 $(SDK_SQL_INFORMATION_SCHEMA_TEST): engine/tests/fixtures/sdk_sql_information_schema_v2.c $(SDK_ARCHIVE) $(INCLUDE_DIR)/prdb_sdk_sql_exec_v2.h $(INCLUDE_DIR)/prdb_sdk_executor_v1.h $(INCLUDE_DIR)/prdb_sdk_planner_v1.h | $(BUILD_DIR)
@@ -617,7 +621,7 @@ run-sdk-optimizer-delete: $(SDK_OPTIMIZER_DELETE_TEST)
 run-sdk-optimizer-update: $(SDK_OPTIMIZER_UPDATE_TEST)
 	"$(SDK_OPTIMIZER_UPDATE_TEST)"
 
-test: abi-constants-check abi-constants-test $(QUERY_ABI_V4_TEST) $(SDK_VALUE_TEST) $(SDK_BATCH_TEST) $(SDK_SQL_TEST) $(SDK_SQL_EXPRESSION_TEST) $(SDK_SQL_V2_TEST) $(SDK_SQL_ORDER_TEST) $(SDK_SQL_GROUP_TEST) $(SDK_SQL_JOIN_TEST) $(SDK_SQL_JOIN_V2_TEST) $(SDK_SQL_V3_TEST) $(SDK_SQL_V4_TEST) $(SDK_SQL_V5_TEST) $(SDK_SQL_V6_TEST) $(SDK_SQL_V7_TEST) $(SDK_SQL_V8_TEST) $(SDK_SQL_V9_TEST) $(SDK_SQL_V10_TEST) $(SDK_SQL_V11_TEST) $(SDK_SQL_V12_TEST) $(SDK_SQL_V13_TEST) $(SDK_SQL_V14_TEST) $(SDK_SQL_V15_TEST) $(SDK_SQL_V16_TEST) $(SDK_SQL_V17_TEST) $(SDK_SQL_V18_TEST) $(SDK_SQL_V19_TEST) $(SDK_SQL_V20_TEST) $(SDK_SQL_V21_TEST) $(SDK_PLANNER_TEST) $(SDK_EXECUTOR_TEST) $(SDK_SQL_EXEC_TEST) $(SDK_SQL_DISPATCH_TEST) $(SDK_SQL_BATCH_TEST) $(SDK_SQL_EXEC_V5_TEST) $(SDK_SQL_EXEC_V6_TEST) $(SDK_SQL_EXEC_V7_TEST) $(SDK_SQL_EXEC_V8_TEST) $(SDK_SQL_EXEC_V9_TEST) $(SDK_SQL_EXEC_V10_TEST) $(SDK_SQL_EXEC_V19_TEST) $(SDK_SQL_INFORMATION_SCHEMA_TEST) $(SDK_SQL_RESULT_TEST) $(SDK_SQL_RESULT_V13_TEST) $(SDK_SQL_DML_TEST) $(SDK_MANIFEST_TEST) $(SDK_SCOPE_TEST) $(SDK_IPC_FRAME_TEST) $(SDK_IPC_PAYLOAD_CODEC_TEST)
+test: abi-constants-check abi-constants-test $(QUERY_ABI_V4_TEST) $(SDK_VALUE_TEST) $(SDK_BATCH_TEST) $(SDK_SQL_TEST) $(SDK_SQL_EXPRESSION_TEST) $(SDK_SQL_V2_TEST) $(SDK_SQL_ORDER_TEST) $(SDK_SQL_GROUP_TEST) $(SDK_SQL_JOIN_TEST) $(SDK_SQL_JOIN_V2_TEST) $(SDK_SQL_V3_TEST) $(SDK_SQL_V4_TEST) $(SDK_SQL_V5_TEST) $(SDK_SQL_V6_TEST) $(SDK_SQL_V7_TEST) $(SDK_SQL_V8_TEST) $(SDK_SQL_V9_TEST) $(SDK_SQL_V10_TEST) $(SDK_SQL_V11_TEST) $(SDK_SQL_V12_TEST) $(SDK_SQL_V13_TEST) $(SDK_SQL_V14_TEST) $(SDK_SQL_V15_TEST) $(SDK_SQL_V16_TEST) $(SDK_SQL_V17_TEST) $(SDK_SQL_V18_TEST) $(SDK_SQL_V19_TEST) $(SDK_SQL_V20_TEST) $(SDK_SQL_V21_TEST) $(SDK_SQL_V22_TEST) $(SDK_PLANNER_TEST) $(SDK_EXECUTOR_TEST) $(SDK_SQL_EXEC_TEST) $(SDK_SQL_DISPATCH_TEST) $(SDK_SQL_BATCH_TEST) $(SDK_SQL_EXEC_V5_TEST) $(SDK_SQL_EXEC_V6_TEST) $(SDK_SQL_EXEC_V7_TEST) $(SDK_SQL_EXEC_V8_TEST) $(SDK_SQL_EXEC_V9_TEST) $(SDK_SQL_EXEC_V10_TEST) $(SDK_SQL_EXEC_V19_TEST) $(SDK_SQL_INFORMATION_SCHEMA_TEST) $(SDK_SQL_RESULT_TEST) $(SDK_SQL_RESULT_V13_TEST) $(SDK_SQL_DML_TEST) $(SDK_MANIFEST_TEST) $(SDK_SCOPE_TEST) $(SDK_IPC_FRAME_TEST) $(SDK_IPC_PAYLOAD_CODEC_TEST)
 	"$(SDK_OPTIMIZER_TEST)"
 	"$(SDK_OPTIMIZER_PLAN_TEST)"
 	"$(QUERY_ABI_V4_TEST)"
@@ -649,6 +653,7 @@ test: abi-constants-check abi-constants-test $(QUERY_ABI_V4_TEST) $(SDK_VALUE_TE
 	"$(SDK_SQL_V19_TEST)"
 	"$(SDK_SQL_V20_TEST)"
 	"$(SDK_SQL_V21_TEST)"
+	"$(SDK_SQL_V22_TEST)"
 	"$(SDK_PLANNER_TEST)"
 	"$(SDK_EXECUTOR_TEST)"
 	"$(SDK_SQL_EXEC_TEST)"
