@@ -1,1 +1,1 @@
-SELECT category, SUM(score) FROM scores GROUP BY category HAVING SUM(score) >= -12
+SELECT id, score, SUM(score) FROM widgets GROUP BY id, score HAVING SUM(score) >= -12

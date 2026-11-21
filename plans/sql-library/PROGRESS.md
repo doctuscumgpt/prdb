@@ -766,3 +766,10 @@
 - Regression: the maintained v21 runner fixture supplies two rows with the maximum DECIMAL(38,2) coefficient in the same group. `SUM(score) >= 0.00e0` overflows the aggregate and must return evaluation error with zero callbacks and a latched statement failure.
 - Verification: focused `sdk-sql-execute-v10` TinyCC fixture passed with `-Wall -Wextra -Werror`.
 - Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
+
+## SQL-7 / WI-7 follow-up: v21 HAVING fuzz seeds exercise successful binding — verified
+
+- Correction: the v21 fuzz corpus previously used `category` and `scores`, which did not match the harness's bound `id`/`score` shape. Those seeds could parse but did not reach successful binding. Replaced them with schema-matched statements and added a compound Decimal seed covering signed exponent literals, Boolean precedence, ORDER BY, and LIMIT.
+- Oracle: after successful binding, the fuzz target now checks numeric HAVING operands remain comparison nodes with cleared parameter/literal fields, Decimal literal scale matches the bound aggregate scale, and BIGINT coefficients are correctly sign-extended.
+- Verification: all three seed statements passed an explicit v21 parse/bind check. `make -f engine/sdk/Makefile fuzz-sql-v21` completed 10,000 ASan/UBSan/libFuzzer runs without findings (1,572 coverage counters, 3,822 features).
+- Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
