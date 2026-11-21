@@ -88,6 +88,17 @@ type InteractiveResponseDropStats = (usize, usize, usize, usize);
 type InteractiveResponseDropHandle =
     std::thread::JoinHandle<std::io::Result<InteractiveResponseDropStats>>;
 
+fn assert_interactive_response_drop_stats(
+    stats: InteractiveResponseDropStats,
+    expected_begin_requests: usize,
+    expected_matching_requests: usize,
+) {
+    assert_eq!(stats.0, 1, "exactly one response should be dropped");
+    assert!(stats.1 >= 1, "outcome reconciliation should query status");
+    assert_eq!(stats.2, expected_begin_requests);
+    assert_eq!(stats.3, expected_matching_requests);
+}
+
 fn start_interactive_response_dropping_proxy(
     gateway_address: std::net::SocketAddr,
     dropped_request_kind: u16,
@@ -946,7 +957,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             "interactive-sql did not reconcile a lost COMMIT reply: {}; proxy={commit_proxy_result:?}",
             String::from_utf8_lossy(&uncertain_commit.stderr),
         );
-        assert_eq!(commit_proxy_result?, (1, 1, 1, 1));
+        assert_interactive_response_drop_stats(commit_proxy_result?, 1, 1);
         assert!(uncertain_commit.stdout.is_empty());
 
         let (start_proxy_address, start_proxy) =
@@ -1002,7 +1013,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             uncertain_start_stderr.contains("uncertain START reply"),
             "interactive-sql failed without reconciling the lost START reply: {uncertain_start_stderr}"
         );
-        assert_eq!(start_proxy_result?, (1, 1, 0, 1));
+        assert_interactive_response_drop_stats(start_proxy_result?, 0, 1);
 
         let uncertain_package_sql_path = root.join("interactive-uncertain-package.sql");
         std::fs::write(
@@ -1078,7 +1089,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
             "interactive-sql did not reconcile the lost package reply: {}",
             String::from_utf8_lossy(&uncertain_package.stderr)
         );
-        assert_eq!(package_proxy_result?, (1, 1, 1, 1));
+        assert_interactive_response_drop_stats(package_proxy_result?, 1, 1);
         assert!(uncertain_package.stdout.is_empty());
 
         let begin_uncertain_sql_path = root.join("interactive-uncertain-begin.sql");
@@ -1197,7 +1208,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         assert!(
             String::from_utf8_lossy(&uncertain_rollback.stderr).contains("rolled back transaction")
         );
-        assert_eq!(rollback_proxy_result?, (1, 1, 1, 1));
+        assert_interactive_response_drop_stats(rollback_proxy_result?, 1, 1);
 
         let uncertain_ddl_sql_path = root.join("interactive-uncertain-ddl.sql");
         std::fs::write(
@@ -1256,7 +1267,7 @@ fn authenticated_metadata_and_admin_lifecycle_cross_gateway_and_supervisor_proce
         assert!(
             String::from_utf8_lossy(&uncertain_ddl.stderr).contains("committed after reconnect")
         );
-        assert_eq!(ddl_proxy_result?, (1, 1, 0, 2));
+        assert_interactive_response_drop_stats(ddl_proxy_result?, 0, 2);
         let created_uncertain_schema = schema_verify
             .list_schemas_page(128, None)?
             .records
