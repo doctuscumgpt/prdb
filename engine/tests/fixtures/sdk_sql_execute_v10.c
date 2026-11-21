@@ -946,6 +946,8 @@ static int32_t on_group_v21_decimal(
     capture->keys[capture->calls] = key;
     capture->aggregates[capture->calls] = (int32_t)(aggregate_coefficient / 100);
     ++capture->calls;
+    if (capture->mock->cancel_after_group_callbacks == capture->calls)
+        capture->mock->cancelled = 1;
     return 0;
 }
 
@@ -1028,8 +1030,8 @@ static int32_t run_query_v21_decimal(mock_state *mock, const uint8_t *sql,
     static const uint8_t score_name[] = "score";
     uint8_t planner_response[256] = {0};
     uint8_t executor_response[256] = {0};
-    uint8_t batch_response[512] = {0};
-    uint8_t materialized_bytes[2048] = {0};
+    uint8_t batch_response[8192] = {0};
+    uint8_t materialized_bytes[4096] = {0};
     prdb_sdk_sql_column_shape_v2 planner_columns[2] = {
         {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
         {score_name, 5, 1, PRDB_SDK_VALUE_TYPE_DECIMAL, 10, 2}};
@@ -1041,7 +1043,8 @@ static int32_t run_query_v21_decimal(mock_state *mock, const uint8_t *sql,
                              mock, executor_request, planner_request, NULL,
                              statement_failure};
     return prdb_sdk_sql_execute_group_v21(
-        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0, 4, 512,
+        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0,
+        mock->max_candidates == 0 ? 4 : (uint16_t)mock->max_candidates, 8192,
         planner_response, sizeof(planner_response), executor_response,
         sizeof(executor_response), batch_response, sizeof(batch_response),
         planner_columns, 2, executor_columns, 2, cell_scratch, 2,
@@ -1906,6 +1909,49 @@ int main(void) {
         assert(capture.calls == 2 && capture.keys[0] == 1 &&
                capture.aggregates[0] == 9 && capture.keys[1] == 2 &&
                capture.aggregates[1] == 5 && mock.statement_failed == 0);
+
+        reset_scan(&mock, &capture, 1);
+        mock.cancelled = 1;
+        assert(run_query_v21_decimal(
+                   &mock, v21_decimal_literal_sql,
+                   sizeof(v21_decimal_literal_sql) - 1, &capture) ==
+               PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+        assert(capture.calls == 0 && mock.next_calls == 0 &&
+               mock.statement_failed == 1);
+
+        reset_scan(&mock, &capture, 1);
+        mock.cancel_after_first_batch = 1;
+        assert(run_query_v21_decimal(
+                   &mock, v21_decimal_literal_sql,
+                   sizeof(v21_decimal_literal_sql) - 1, &capture) ==
+               PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+        assert(capture.calls == 0 && mock.next_calls == 1 &&
+               mock.statement_failed == 1);
+
+        {
+            int32_t many_decimal_keys[40];
+            int64_t many_decimal_coefficients[40];
+            for (uint32_t index = 0; index < 40; ++index) {
+                many_decimal_keys[index] = (int32_t)(index + 1);
+                many_decimal_coefficients[index] = 900;
+            }
+            mock.batch_len = make_decimal_rows(
+                mock.batch, 1, many_decimal_keys,
+                many_decimal_coefficients, NULL, 40);
+            mock.max_candidates = 40;
+            reset_scan(&mock, &capture, 1);
+            mock.cancel_after_group_callbacks = 32;
+            assert(run_query_v21_decimal(
+                       &mock, v21_decimal_literal_sql,
+                       sizeof(v21_decimal_literal_sql) - 1, &capture) ==
+                   PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
+            assert(capture.calls == 32 && mock.cancelled == 1 &&
+                   mock.statement_failed == 1);
+            mock.cancel_after_group_callbacks = 0;
+            mock.max_candidates = 0;
+            mock.batch_len = make_decimal_rows(mock.batch, 1, keys,
+                                               decimal_coefficients, NULL, 3);
+        }
 
         mock.batch_len = make_decimal_rows(mock.batch, 1, keys,
                                            decimal_coefficients, NULL, 3);

@@ -767,6 +767,13 @@
 - Verification: focused `sdk-sql-execute-v10` TinyCC fixture passed with `-Wall -Wextra -Werror`.
 - Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
 
+## SQL-8 follow-up: v21 grouped cancellation checkpoints — verified
+
+- Contract: the v21 composite grouping entry point inherits bounded runner cancellation before scanning, during scans, and during group result publication; cancellation latches statement failure and stops later callbacks.
+- Regression: the v21 Decimal runner fixture now checks cancellation before the first batch, cancellation after one fetched batch, and callback-triggered cancellation after 32 of 40 qualifying groups. The last case confirms the shared checkpoint prevents callback 33.
+- Verification: focused `sdk-sql-execute-v10` TinyCC fixture passed with `-Wall -Wextra -Werror`.
+- Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
+
 ## SQL-7 / WI-7 follow-up: v21 HAVING fuzz seeds exercise successful binding — verified
 
 - Correction: the v21 fuzz corpus previously used `category` and `scores`, which did not match the harness's bound `id`/`score` shape. Those seeds could parse but did not reach successful binding. Replaced them with schema-matched statements and added a compound Decimal seed covering signed exponent literals, Boolean precedence, ORDER BY, and LIMIT.
