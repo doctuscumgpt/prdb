@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 follow-up: grouped SQL MIN/MAX scalar-type matrix — verified
+
+- Contract: grouped `MIN` and `MAX` bind their argument to the declared scalar type and preserve that type and Decimal metadata in the aggregate result.
+- Regression: `sdk_sql_execute_v10.c` now executes the maintained v5 grouped SQL runner for MIN and MAX over BOOLEAN, SMALLINT, INTEGER, BIGINT, DECIMAL, TEXT, VARCHAR, BYTEA, UUID, DATE, and TIMESTAMPTZ. It verifies binding metadata, stable groups and row counts, and exact result bytes.
+- Verification: focused `sdk-sql-execute-v10` TinyCC fixture and the complete `make -f engine/sdk/Makefile test` suite passed; `git diff --check` passed.
+- Remaining: secure spill, broader workload coverage, target-hardware measurements, and mixed-workload optimization remain open.
+
 ## SQL-7 / SQL-8 follow-up: v21 BIGINT literal HAVING and overflow — verified
 
 - Contract: v21 coerces exact integer HAVING literals to BIGINT aggregate results, and grouped integer SUM overflow fails before callbacks while latching statement failure.

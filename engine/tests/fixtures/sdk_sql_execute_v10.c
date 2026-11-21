@@ -1,4 +1,5 @@
 #include "prdb_sdk_sql_exec_v10.h"
+#include "prdb_sdk_sql_exec_v5.h"
 #include "prdb_sdk_sql_exec_v11.h"
 #include "prdb_sdk_sql_exec_v12.h"
 #include "prdb_sdk_sql_exec_v13.h"
@@ -1093,6 +1094,130 @@ typedef struct scalar_order_case {
     uint32_t higher_len;
 } scalar_order_case;
 
+typedef struct scalar_minmax_capture {
+    mock_state *mock;
+    uint32_t type;
+    uint8_t precision;
+    uint8_t scale;
+    uint32_t aggregate_kind;
+    const uint8_t *expected[2];
+    uint32_t expected_len[2];
+    uint32_t calls;
+} scalar_minmax_capture;
+
+static uint32_t make_typed_score_relation(uint8_t *p, uint8_t handle_kind,
+                                          uint8_t handle_fill,
+                                          const scalar_order_case *test) {
+    static const uint8_t id_name[] = "id";
+    static const uint8_t score_name[] = "score";
+    uint32_t offset = 0;
+    put_u16(p, &offset, 1);
+    p[offset++] = 0;
+    memset(p + offset, 0x11, 16); offset += 16;
+    p[offset++] = handle_kind;
+    memset(p + offset, handle_fill, 15); offset += 15;
+    put_name(p, &offset, "widgets");
+    put_u16(p, &offset, 2);
+    for (uint32_t index = 0; index < 2; ++index) {
+        memset(p + offset, (int)(0x33 + index), 16); offset += 16;
+        put_u32(p, &offset, index);
+        p[offset++] = 1;
+        p[offset++] = index == 0 ? PRDB_SDK_VALUE_TYPE_INTEGER
+                                 : (uint8_t)test->type;
+        if (index == 1 && test->type == PRDB_SDK_VALUE_TYPE_DECIMAL) {
+            p[offset++] = test->precision;
+            p[offset++] = test->scale;
+            p[offset++] = 0;
+            p[offset++] = 0;
+        } else if (index == 1 && test->type == PRDB_SDK_VALUE_TYPE_VARCHAR) {
+            put_u32(p, &offset, 128);
+        } else {
+            p[offset++] = 0;
+            p[offset++] = 0;
+            p[offset++] = 0;
+            p[offset++] = 0;
+        }
+        put_name(p, &offset, index == 0 ? (const char *)id_name
+                                        : (const char *)score_name);
+    }
+    return offset;
+}
+
+static uint32_t make_typed_score_rows(
+    uint8_t *p, const scalar_order_case *test,
+    const uint8_t *const scores[3], const uint32_t score_lengths[3]) {
+    static const int32_t keys[3] = {1, 1, 2};
+    uint32_t offset = 0;
+    put_u16(p, &offset, 1);
+    p[offset++] = 1;
+    put_u16(p, &offset, 3);
+    for (uint32_t index = 0; index < 3; ++index) {
+        p[offset++] = 8;
+        memset(p + offset, (int)(index + 1), 15); offset += 15;
+        put_u16(p, &offset, 2);
+        append_integer_cell(p, &offset, keys[index]);
+        append_typed_cell(p, &offset, test->type, scores[index],
+                          score_lengths[index]);
+    }
+    return offset;
+}
+
+static int32_t on_group_scalar_minmax(
+    void *context, const prdb_sdk_value_v1 *group_key,
+    const prdb_sdk_value_v1 *aggregate_value, uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v5 *binding) {
+    scalar_minmax_capture *capture = (scalar_minmax_capture *)context;
+    int32_t key = 0;
+    uint32_t index = capture->calls;
+    assert(index < 2 && capture->mock->batch_finished != 0);
+    assert(binding->aggregate_kind == capture->aggregate_kind);
+    assert(binding->aggregate_column.type_code == capture->type &&
+           binding->aggregate_column.decimal_precision == capture->precision &&
+           binding->aggregate_column.decimal_scale == capture->scale);
+    assert(prdb_sdk_value_get_integer_v1(group_key, &key) ==
+           PRDB_SDK_VALUE_ACCESS_OK);
+    assert(key == (index == 0 ? 1 : 2));
+    assert(matching_row_count == (index == 0 ? 2 : 1));
+    assert(aggregate_value != NULL &&
+           aggregate_value->state == PRDB_SDK_VALUE_STATE_VALUE &&
+           aggregate_value->type_code == capture->type &&
+           aggregate_value->data_len == capture->expected_len[index]);
+    assert(memcmp(aggregate_value->data, capture->expected[index],
+                  capture->expected_len[index]) == 0);
+    ++capture->calls;
+    return 0;
+}
+
+static int32_t run_scalar_minmax(mock_state *mock, const uint8_t *sql,
+                                 uint64_t sql_len,
+                                 const scalar_order_case *test,
+                                 prdb_sdk_sql_group_row_v5_fn on_group,
+                                 void *capture) {
+    static const uint8_t schema[] = "app";
+    static const uint8_t id_name[] = "id";
+    static const uint8_t score_name[] = "score";
+    uint8_t planner_response[256] = {0};
+    uint8_t executor_response[256] = {0};
+    uint8_t batch_response[512] = {0};
+    uint8_t materialized_bytes[2048] = {0};
+    prdb_sdk_sql_column_shape_v2 planner_columns[2] = {
+        {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
+        {score_name, 5, 1, test->type, test->precision, test->scale}};
+    prdb_sdk_sql_column_shape_v2 executor_columns[2] = {
+        {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
+        {score_name, 5, 1, test->type, test->precision, test->scale}};
+    prdb_sdk_value_v1 cell_scratch[2] = {{0}};
+    prdb_host_api_v3 host = {sizeof(host), PRDB_QUERY_ABI_V3_VERSION,
+                             mock, executor_request, planner_request, NULL,
+                             statement_failure};
+    return prdb_sdk_sql_execute_group_v5(
+        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0, 4, 512,
+        planner_response, sizeof(planner_response), executor_response,
+        sizeof(executor_response), batch_response, sizeof(batch_response),
+        planner_columns, 2, executor_columns, 2, cell_scratch, 2,
+        materialized_bytes, sizeof(materialized_bytes), on_group, capture);
+}
+
 static void reset_scan(mock_state *mock, group_capture *capture,
                        uint32_t finished);
 
@@ -1101,6 +1226,10 @@ static void run_grouped_scalar_order_matrix(mock_state *mock) {
         "SELECT id, COUNT(*) FROM widgets GROUP BY id ORDER BY id ASC";
     static const uint8_t desc_sql[] =
         "SELECT id, COUNT(*) FROM widgets GROUP BY id ORDER BY id DESC";
+    static const uint8_t min_sql[] =
+        "SELECT id, MIN(score) FROM widgets GROUP BY id";
+    static const uint8_t max_sql[] =
+        "SELECT id, MAX(score) FROM widgets GROUP BY id";
     static const uint8_t boolean_lower[] = {0};
     static const uint8_t boolean_higher[] = {1};
     static const uint8_t smallint_lower[] = {0x80, 0};
@@ -1239,6 +1368,51 @@ static void run_grouped_scalar_order_matrix(mock_state *mock) {
                    mock->statement_failed == 0);
             for (uint32_t row = 0; row < capture.calls; ++row) {
                 assert(capture.scalar_order_sqlr_len[row] > 0);
+            }
+        }
+
+        {
+            const uint8_t *middle = test->middle != NULL
+                                        ? test->middle
+                                        : test->lower;
+            uint32_t middle_len = test->middle != NULL
+                                      ? test->middle_len
+                                      : test->lower_len;
+            const uint8_t *score_values[3] = {
+                test->higher, test->lower, middle};
+            const uint32_t score_lengths[3] = {
+                test->higher_len, test->lower_len, middle_len};
+            mock->planner_len = make_typed_score_relation(
+                mock->planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99,
+                test);
+            mock->executor_len = make_typed_score_relation(
+                mock->executor, 6, 0x22, test);
+            mock->batch_len = make_typed_score_rows(
+                mock->batch, test, score_values, score_lengths);
+            for (uint32_t aggregate = 0; aggregate < 2; ++aggregate) {
+                scalar_minmax_capture capture = {0};
+                capture.mock = mock;
+                capture.type = test->type;
+                capture.precision = test->precision;
+                capture.scale = test->scale;
+                capture.aggregate_kind = aggregate == 0
+                    ? PRDB_SDK_SQL_V5_AGGREGATE_MIN
+                    : PRDB_SDK_SQL_V5_AGGREGATE_MAX;
+                capture.expected[0] = aggregate == 0
+                    ? test->lower : test->higher;
+                capture.expected_len[0] = aggregate == 0
+                    ? test->lower_len : test->higher_len;
+                capture.expected[1] = middle;
+                capture.expected_len[1] = middle_len;
+                group_capture reset_capture = {0};
+                reset_scan(mock, &reset_capture, 1);
+                int32_t status = run_scalar_minmax(
+                    mock, aggregate == 0 ? min_sql : max_sql,
+                    aggregate == 0 ? sizeof(min_sql) - 1
+                                   : sizeof(max_sql) - 1,
+                    test, on_group_scalar_minmax, &capture);
+                assert(status == PRDB_SDK_SQL_EXEC_OK &&
+                       capture.calls == 2 && mock->statement_failed == 0);
             }
         }
     }
