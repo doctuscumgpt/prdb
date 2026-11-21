@@ -543,10 +543,18 @@ static int32_t write_grouped_composite_aggregate_optimizer(
         uint64_t expected_coefficient;
         if ((left_key == 1 && (right_key != 7 || matching_row_count != 2)) ||
             (left_key == 2 && (right_key != 9 || matching_row_count != 3)) ||
-            (left_key != 1 && left_key != 2)) {
+            (left_key == 3 && (right_key != 11 || matching_row_count != 1)) ||
+            (left_key != 1 && left_key != 2 && left_key != 3)) {
             return 1;
         }
-        if (expectation->aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_SUM) {
+        if (left_key == 3) {
+            if (aggregate_value->state != PRDB_SDK_VALUE_STATE_NULL ||
+                aggregate_value->type_code != 0 || aggregate_value->data != NULL ||
+                aggregate_value->data_len != 0) {
+                return 1;
+            }
+        } else if (expectation->aggregate_kind ==
+                   PRDB_SDK_SQL_V7_AGGREGATE_SUM) {
             int64_t observed_sum = 0;
             int64_t expected_sum = left_key == 1 ? 2 : 27;
             if (aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_BIGINT ||
@@ -588,10 +596,18 @@ static int32_t write_grouped_composite_aggregate_optimizer(
                PRDB_SDK_VALUE_TYPE_SMALLINT) {
         if ((left_key == 1 && (right_key != 7 || matching_row_count != 2)) ||
             (left_key == 2 && (right_key != 9 || matching_row_count != 3)) ||
-            (left_key != 1 && left_key != 2)) {
+            (left_key == 3 && (right_key != 11 || matching_row_count != 1)) ||
+            (left_key != 1 && left_key != 2 && left_key != 3)) {
             return 1;
         }
-        if (expectation->aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_SUM) {
+        if (left_key == 3) {
+            if (aggregate_value->state != PRDB_SDK_VALUE_STATE_NULL ||
+                aggregate_value->type_code != 0 || aggregate_value->data != NULL ||
+                aggregate_value->data_len != 0) {
+                return 1;
+            }
+        } else if (expectation->aggregate_kind ==
+                   PRDB_SDK_SQL_V7_AGGREGATE_SUM) {
             int64_t observed_sum = 0;
             int64_t expected_sum = left_key == 1 ? 6 : 27;
             if (aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_BIGINT ||
@@ -1312,42 +1328,42 @@ static int32_t run_write_read_fixture(
         "SELECT left_key, right_key, SUM(measure) "
         "FROM bigint_grouped_records GROUP BY left_key, right_key "
         "ORDER BY SUM(measure) DESC NULLS LAST, "
-        "left_key ASC NULLS FIRST LIMIT 2";
+        "left_key ASC NULLS FIRST LIMIT 3";
     static const uint8_t select_composite_bigint_min_optimizer_sql[] =
         "SELECT left_key, right_key, MIN(measure) "
         "FROM bigint_grouped_records GROUP BY left_key, right_key "
         "ORDER BY MIN(measure) DESC NULLS LAST, "
-        "left_key ASC NULLS FIRST LIMIT 2";
+        "left_key ASC NULLS FIRST LIMIT 3";
     static const uint8_t select_composite_bigint_max_optimizer_sql[] =
         "SELECT left_key, right_key, MAX(measure) "
         "FROM bigint_grouped_records GROUP BY left_key, right_key "
         "ORDER BY MAX(measure) DESC NULLS LAST, "
-        "left_key ASC NULLS FIRST LIMIT 2";
+        "left_key ASC NULLS FIRST LIMIT 3";
     static const uint8_t select_composite_bigint_avg_optimizer_sql[] =
         "SELECT left_key, right_key, AVG(measure) "
         "FROM bigint_grouped_records GROUP BY left_key, right_key "
         "ORDER BY AVG(measure) DESC NULLS LAST, "
-        "left_key ASC NULLS FIRST LIMIT 2";
+        "left_key ASC NULLS FIRST LIMIT 3";
     static const uint8_t select_composite_smallint_sum_optimizer_sql[] =
         "SELECT left_key, right_key, SUM(small_measure) "
         "FROM bigint_grouped_records GROUP BY left_key, right_key "
         "ORDER BY SUM(small_measure) DESC NULLS LAST, "
-        "left_key ASC NULLS FIRST LIMIT 2";
+        "left_key ASC NULLS FIRST LIMIT 3";
     static const uint8_t select_composite_smallint_min_optimizer_sql[] =
         "SELECT left_key, right_key, MIN(small_measure) "
         "FROM bigint_grouped_records GROUP BY left_key, right_key "
         "ORDER BY MIN(small_measure) DESC NULLS LAST, "
-        "left_key ASC NULLS FIRST LIMIT 2";
+        "left_key ASC NULLS FIRST LIMIT 3";
     static const uint8_t select_composite_smallint_max_optimizer_sql[] =
         "SELECT left_key, right_key, MAX(small_measure) "
         "FROM bigint_grouped_records GROUP BY left_key, right_key "
         "ORDER BY MAX(small_measure) DESC NULLS LAST, "
-        "left_key ASC NULLS FIRST LIMIT 2";
+        "left_key ASC NULLS FIRST LIMIT 3";
     static const uint8_t select_composite_smallint_avg_optimizer_sql[] =
         "SELECT left_key, right_key, AVG(small_measure) "
         "FROM bigint_grouped_records GROUP BY left_key, right_key "
         "ORDER BY AVG(small_measure) DESC NULLS LAST, "
-        "left_key ASC NULLS FIRST LIMIT 2";
+        "left_key ASC NULLS FIRST LIMIT 3";
     static const uint8_t select_analytical_pressure_sql[] =
         "SELECT group_key, SUM(measure) FROM analytics_pressure_records "
         "GROUP BY group_key";
@@ -1907,7 +1923,7 @@ static int32_t run_write_read_fixture(
                 ordered_expectation.second_matching_row_count = 2;
             }
             ordered_expectation.expected_group_count =
-                index >= 3 && index <= 6 ? 3 : 2;
+                index >= 3 && index <= 14 ? 3 : 2;
             if (ordered_expectation.expected_group_count == 3) {
                 ordered_expectation.third_left_key = 3;
                 ordered_expectation.third_right_key = 11;

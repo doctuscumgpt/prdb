@@ -1760,7 +1760,11 @@ fn packager_validates_abi_v4_exports_on_the_maintained_optimizer_fixture() {
     let artifact = fs::read(package.join("query.so")).unwrap();
     // The maintained fixture now includes the high-cardinality ordered
     // analytical query while remaining dynamically linked to the SDK.
-    assert!(artifact.len() < 150_000);
+    assert!(
+        artifact.len() < 152_000,
+        "maintained optimizer fixture grew to {} bytes",
+        artifact.len()
+    );
     let dynamic = decode_elf_dynamic_info(&artifact).unwrap();
     assert_eq!(dynamic.runpath.as_deref(), Some("$ORIGIN"));
     assert!(dynamic.rpath.is_none());

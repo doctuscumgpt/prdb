@@ -3,8 +3,8 @@
 ## SQL-8 follow-up: ordered composite aggregate NULL placement — verified
 
 - Contract: composite aggregate ordering with `NULLS LAST` places an all-NULL aggregate result after every non-NULL group while preserving the aggregate's declared SQLR type metadata.
-- Regression: the confined Decimal fixture includes a third `(3,11)` group with one NULL measure. Optimizer-backed MIN, MAX, SUM, and AVG emit that group last with canonical NULL SQLR fields; COUNT(*) still sorts the three groups by row count. Rust checks all relayed SQLR bytes and the durable COMMITTED outcome.
-- Verification: TinyCC sandbox fixture build, focused delegated-cgroup SQL acceptance, SDK test suite, format check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace test suite passed.
+- Regression: confined Decimal, BIGINT, and SMALLINT fixtures each include a third `(3,11)` all-NULL aggregate group. Optimizer-backed MIN, MAX, SUM, and AVG emit it last with canonical NULL SQLR fields and declared result metadata; Decimal COUNT(*) still sorts the three groups by row count. Rust checks every relayed SQLR row and the durable COMMITTED outcome.
+- Verification: TinyCC sandbox fixture build, focused delegated-cgroup SQL acceptance, SDK test suite, format check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace test suite passed. The maintained optimizer fixture package is 150,520 bytes and remains under its updated 152,000-byte regression bound.
 - Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
 
 ## SQL-7 follow-up: ordered composite aggregate numeric type matrix — verified
