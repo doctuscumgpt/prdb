@@ -48,6 +48,122 @@ static prdb_sdk_value_v1 bigint_value(uint8_t bytes[8], int64_t value) {
                                8};
 }
 
+static prdb_sdk_value_v1 scalar_value(uint32_t type, const uint8_t *bytes,
+                                     uint32_t length) {
+    return (prdb_sdk_value_v1){sizeof(prdb_sdk_value_v1),
+                               PRDB_SDK_VALUE_ABI_V1_VERSION,
+                               PRDB_SDK_VALUE_STATE_VALUE, type, bytes, length};
+}
+
+static void assert_scalar_aggregate_type(uint32_t type, uint8_t decimal_scale,
+                                         const uint8_t *lower,
+                                         uint32_t lower_len,
+                                         const uint8_t *higher,
+                                         uint32_t higher_len) {
+    prdb_sdk_value_v1 values[3] = {
+        scalar_value(type, higher, higher_len),
+        null_value(),
+        scalar_value(type, lower, lower_len)};
+    prdb_sdk_value_v1 result = {0};
+    uint8_t group_bytes[3][16] = {{0}};
+    prdb_sdk_value_v1 group_keys[3] = {
+        scalar_value(type, higher, higher_len),
+        scalar_value(type, lower, lower_len),
+        scalar_value(type, higher, higher_len)};
+    prdb_sdk_sql_count_group_v1 groups[3] = {{0}};
+    uint32_t group_count = 0;
+
+    assert(prdb_sdk_sql_minmax_v1(values, 3, type, decimal_scale,
+                                  PRDB_SDK_SQL_MINMAX_MIN, &result,
+                                  sizeof(result)) == PRDB_SDK_SQL_EVAL_OK);
+    assert(result.type_code == type && result.data_len == lower_len &&
+           memcmp(result.data, lower, lower_len) == 0);
+    assert(prdb_sdk_sql_minmax_v1(values, 3, type, decimal_scale,
+                                  PRDB_SDK_SQL_MINMAX_MAX, &result,
+                                  sizeof(result)) == PRDB_SDK_SQL_EVAL_OK);
+    assert(result.type_code == type && result.data_len == higher_len &&
+           memcmp(result.data, higher, higher_len) == 0);
+
+    /* Include distinct storage for each state so each row is an independent
+     * value view, including the repeated value used for the equality group. */
+    memcpy(group_bytes[0], higher, higher_len);
+    memcpy(group_bytes[1], lower, lower_len);
+    memcpy(group_bytes[2], higher, higher_len);
+    group_keys[0] = scalar_value(type, group_bytes[0], higher_len);
+    group_keys[1] = scalar_value(type, group_bytes[1], lower_len);
+    group_keys[2] = scalar_value(type, group_bytes[2], higher_len);
+    assert(prdb_sdk_sql_group_count_v1(
+               group_keys, 3, type, decimal_scale, groups, 3,
+               &group_count) == PRDB_SDK_SQL_GROUP_OK);
+    assert(group_count == 2 && groups[0].representative_row == 0 &&
+           groups[0].count == 2 && groups[1].representative_row == 1 &&
+           groups[1].count == 1);
+}
+
+static void test_analytical_scalar_type_matrix(void) {
+    static const uint8_t bool_false[] = {0};
+    static const uint8_t bool_true[] = {1};
+    static const uint8_t smallint_lower[] = {0xFF, 0xFF};
+    static const uint8_t smallint_higher[] = {0, 1};
+    static const uint8_t integer_lower[] = {0xFF, 0xFF, 0xFF, 0xFF};
+    static const uint8_t integer_higher[] = {0, 0, 0, 1};
+    static const uint8_t bigint_lower[] = {0xFF, 0xFF, 0xFF, 0xFF,
+                                           0xFF, 0xFF, 0xFF, 0xFF};
+    static const uint8_t bigint_higher[] = {0, 0, 0, 0, 0, 0, 0, 1};
+    static const uint8_t decimal_lower[] = {0, 0, 0, 0, 0, 0, 0, 0,
+                                            0, 0, 0, 0, 0, 0, 0, 100};
+    static const uint8_t decimal_higher[] = {0, 0, 0, 0, 0, 0, 0, 0,
+                                             0, 0, 0, 0, 0, 0, 0, 200};
+    static const uint8_t text_lower[] = {'a'};
+    static const uint8_t text_higher[] = {'b'};
+    static const uint8_t varchar_lower[] = {0xC3, 0xA9};
+    static const uint8_t varchar_higher[] = {0xE2, 0x82, 0xAC};
+    static const uint8_t bytea_lower[] = {0, 0xFF};
+    static const uint8_t bytea_higher[] = {1, 0};
+    static const uint8_t uuid_lower[] = {0, 1, 2, 3, 4, 5, 6, 7,
+                                         8, 9, 10, 11, 12, 13, 14, 15};
+    static const uint8_t uuid_higher[] = {0, 1, 2, 3, 4, 5, 6, 7,
+                                          8, 9, 10, 11, 12, 13, 14, 16};
+    static const uint8_t date_lower[] = {0, 0, 0, 0};
+    static const uint8_t date_higher[] = {0, 0, 0, 1};
+    static const uint8_t timestamp_lower[] = {0, 0, 0, 0, 0, 0, 0, 0};
+    static const uint8_t timestamp_higher[] = {0, 0, 0, 0, 0, 0, 0, 1};
+
+    assert_scalar_aggregate_type(PRDB_SDK_VALUE_TYPE_BOOLEAN, 0,
+                                 bool_false, sizeof(bool_false), bool_true,
+                                 sizeof(bool_true));
+    assert_scalar_aggregate_type(PRDB_SDK_VALUE_TYPE_SMALLINT, 0,
+                                 smallint_lower, sizeof(smallint_lower),
+                                 smallint_higher, sizeof(smallint_higher));
+    assert_scalar_aggregate_type(PRDB_SDK_VALUE_TYPE_INTEGER, 0,
+                                 integer_lower, sizeof(integer_lower),
+                                 integer_higher, sizeof(integer_higher));
+    assert_scalar_aggregate_type(PRDB_SDK_VALUE_TYPE_BIGINT, 0,
+                                 bigint_lower, sizeof(bigint_lower),
+                                 bigint_higher, sizeof(bigint_higher));
+    assert_scalar_aggregate_type(PRDB_SDK_VALUE_TYPE_DECIMAL, 2,
+                                 decimal_lower, sizeof(decimal_lower),
+                                 decimal_higher, sizeof(decimal_higher));
+    assert_scalar_aggregate_type(PRDB_SDK_VALUE_TYPE_TEXT, 0, text_lower,
+                                 sizeof(text_lower), text_higher,
+                                 sizeof(text_higher));
+    assert_scalar_aggregate_type(PRDB_SDK_VALUE_TYPE_VARCHAR, 0,
+                                 varchar_lower, sizeof(varchar_lower),
+                                 varchar_higher, sizeof(varchar_higher));
+    assert_scalar_aggregate_type(PRDB_SDK_VALUE_TYPE_BYTEA, 0, bytea_lower,
+                                 sizeof(bytea_lower), bytea_higher,
+                                 sizeof(bytea_higher));
+    assert_scalar_aggregate_type(PRDB_SDK_VALUE_TYPE_UUID, 0, uuid_lower,
+                                 sizeof(uuid_lower), uuid_higher,
+                                 sizeof(uuid_higher));
+    assert_scalar_aggregate_type(PRDB_SDK_VALUE_TYPE_DATE, 0, date_lower,
+                                 sizeof(date_lower), date_higher,
+                                 sizeof(date_higher));
+    assert_scalar_aggregate_type(PRDB_SDK_VALUE_TYPE_TIMESTAMPTZ, 0,
+                                 timestamp_lower, sizeof(timestamp_lower),
+                                 timestamp_higher, sizeof(timestamp_higher));
+}
+
 int main(void) {
     uint8_t bytes[3][4];
     prdb_sdk_value_v1 keys[] = {
@@ -55,6 +171,8 @@ int main(void) {
         integer_value(bytes[2], 8), null_value(), null_value()};
     prdb_sdk_sql_count_group_v1 groups[5] = {{0}};
     uint32_t group_count = 999;
+
+    test_analytical_scalar_type_matrix();
 
     assert(prdb_sdk_sql_group_count_v1(
                keys, 5, PRDB_SDK_VALUE_TYPE_INTEGER, 0, groups, 5,

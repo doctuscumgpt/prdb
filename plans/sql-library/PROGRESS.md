@@ -931,3 +931,10 @@
 - Implementation: `prdb_sdk_sql_run_v1` classifies the v8 form after v20 JOIN detection, allocates separate bounded planner/executor response and relation-shape buffers, and routes result rows through the established joined SQLR writer. The confined write/read fixture now uses the standard statement dispatcher for its linked-table JOIN.
 - Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` and `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile sandbox-query-fixture release-profile` passed. The exact `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed inside the delegated `systemd --user` service in 39.25 seconds, checking the dispatched join result through the confined relay.
 - Remaining: broader analytical type/workload coverage, secure spill, repeatable pressure measurements, and mixed-workload measurements remain open.
+
+## SQL-7 follow-up: aggregate scalar type matrix — verified
+
+- Contract: [`sql-library.md`](../../specs/sql-library.md). The bounded MIN/MAX kernel supports all declared scalar types; grouping uses the same typed comparator and Decimal scale rules.
+- Regression: `sdk_sql_group_v1.c` now exercises MIN and MAX for BOOLEAN, SMALLINT, INTEGER, BIGINT, DECIMAL, TEXT, VARCHAR, BYTEA, UUID, DATE, and TIMESTAMPTZ. It checks signed numeric encodings, UTF-8 and binary ordering, fixed-width UUID and temporal ordering, NULL omission from MIN/MAX, and grouping equal values into one stable group for each type.
+- Verification: focused `sdk-sql-group-v1` fixture passed with the pinned TinyCC toolchain. `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed the complete maintained SDK suite, including ABI and release metadata checks; `git diff --check` passed.
+- Remaining: broader analytical type/workload coverage, secure spill, repeatable pressure measurements, and mixed-workload measurements remain open.
