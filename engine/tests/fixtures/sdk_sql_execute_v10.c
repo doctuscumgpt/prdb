@@ -1100,6 +1100,8 @@ static int32_t run_query_v21_decimal(mock_state *mock, const uint8_t *sql,
 
 static int32_t run_query_v22_decimal(mock_state *mock, const uint8_t *sql,
                                      uint64_t sql_len,
+                                     const prdb_sdk_value_v1 *parameters,
+                                     uint32_t parameter_count,
                                      prdb_sdk_sql_group_row_v22_fn on_group,
                                      group_capture *capture) {
     static const uint8_t schema[] = "app";
@@ -1120,7 +1122,8 @@ static int32_t run_query_v22_decimal(mock_state *mock, const uint8_t *sql,
                              mock, executor_request, planner_request, NULL,
                              statement_failure};
     return prdb_sdk_sql_execute_group_v22(
-        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0,
+        &host, schema, sizeof(schema) - 1, sql, sql_len, parameters,
+        parameter_count,
         mock->max_candidates == 0 ? 4 : (uint16_t)mock->max_candidates, 8192,
         planner_response, sizeof(planner_response), executor_response,
         sizeof(executor_response), batch_response, sizeof(batch_response),
@@ -1331,6 +1334,9 @@ int main(void) {
     static const uint8_t v22_null_count_sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
         "HAVING COUNT(*) >= 2 OR SUM(score) >= 4.50e0";
+    static const uint8_t v22_parameter_count_sql[] =
+        "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
+        "HAVING COUNT(*) >= $1 AND SUM(score) >= 4.50e0";
     static const uint8_t v21_decimal_equal_literal_sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
         "HAVING SUM(score) = 4.50e0";
@@ -1998,8 +2004,8 @@ int main(void) {
         reset_scan(&mock, &capture, 1);
         assert(run_query_v22_decimal(
                    &mock, v22_hidden_count_sql,
-                   sizeof(v22_hidden_count_sql) - 1, on_group_v21_decimal,
-                   &capture) ==
+                   sizeof(v22_hidden_count_sql) - 1, NULL, 0,
+                   on_group_v21_decimal, &capture) ==
                PRDB_SDK_SQL_EXEC_OK);
         assert(capture.calls == 0 && mock.statement_failed == 0);
 
@@ -2014,12 +2020,41 @@ int main(void) {
             reset_scan(&mock, &capture, 1);
             assert(run_query_v22_decimal(
                        &mock, v22_null_count_sql,
-                       sizeof(v22_null_count_sql) - 1, on_group_v22_null_sum,
-                       &capture) == PRDB_SDK_SQL_EXEC_OK);
+                       sizeof(v22_null_count_sql) - 1, NULL, 0,
+                       on_group_v22_null_sum, &capture) ==
+                   PRDB_SDK_SQL_EXEC_OK);
             assert(capture.calls == 1 && capture.keys[0] == 1 &&
                    capture.aggregates[0] == -1 && mock.statement_failed == 0);
             mock.batch_len = make_decimal_rows(mock.batch, 1, keys,
                                                decimal_coefficients, NULL, 3);
+        }
+
+        {
+            const uint8_t threshold_bytes[8] = {0, 0, 0, 0, 0, 0, 0, 2};
+            const uint8_t decimal_bytes[16] = {0};
+            prdb_sdk_value_v1 count_parameter = {
+                sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+                PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_BIGINT,
+                threshold_bytes, sizeof(threshold_bytes)};
+            prdb_sdk_value_v1 wrong_parameter = {
+                sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+                PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_DECIMAL,
+                decimal_bytes, sizeof(decimal_bytes)};
+            reset_scan(&mock, &capture, 1);
+            assert(run_query_v22_decimal(
+                       &mock, v22_parameter_count_sql,
+                       sizeof(v22_parameter_count_sql) - 1, &count_parameter,
+                       1, on_group_v21_decimal, &capture) ==
+                   PRDB_SDK_SQL_EXEC_OK);
+            assert(capture.calls == 0 && mock.statement_failed == 0);
+            reset_scan(&mock, &capture, 1);
+            assert(run_query_v22_decimal(
+                       &mock, v22_parameter_count_sql,
+                       sizeof(v22_parameter_count_sql) - 1, &wrong_parameter,
+                       1, on_group_v21_decimal, &capture) ==
+                   PRDB_SDK_SQL_EXEC_BIND_ERROR);
+            assert(capture.calls == 0 && mock.next_calls == 0 &&
+                   mock.statement_failed == 1);
         }
 
         reset_scan(&mock, &capture, 1);
