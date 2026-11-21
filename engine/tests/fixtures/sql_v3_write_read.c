@@ -1673,8 +1673,22 @@ static int32_t run_write_read_fixture(
                 write_grouped_composite_aggregate_optimizer, &expectation);
             if (status != PRDB_SDK_SQL_EXEC_OK ||
                 composite_grouped_results.row_count != 2) {
+                if (status != PRDB_SDK_SQL_EXEC_OK) {
+                    static uint8_t message[] =
+                        "fixture-error-composite-aggregate-status-0";
+                    if (status >= 0 && status <= 9) {
+                        message[sizeof(message) - 2] =
+                            (uint8_t)('0' + status);
+                    }
+                    return report_failure(host, message, sizeof(message) - 1);
+                }
+                if (index == 7) {
+                    static const uint8_t message[] =
+                        "fixture-error-confined-bigint-sum-rows";
+                    return report_failure(host, message, sizeof(message) - 1);
+                }
                 static const uint8_t message[] =
-                    "fixture-error-confined-composite-aggregate-matrix";
+                    "fixture-error-confined-bigint-avg-rows";
                 return report_failure(host, message, sizeof(message) - 1);
             }
         }

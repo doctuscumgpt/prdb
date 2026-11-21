@@ -44486,7 +44486,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             user_id,
             &secret,
             now - 1_000_000,
-            now + 120_000_000,
+            now + 60_000_000,
             None,
             3,
         );
@@ -44523,6 +44523,36 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 audit_event: bigint_policy_audit,
             })
             .map_err(|error| format!("create confined BIGINT aggregate policy: {error:?}"))?;
+        for (column_index, column_id) in bigint_table.column_ids.iter().enumerate() {
+            let invocation_byte = [0xf3, 0xf5, 0xf7][column_index];
+            let audit_byte = [0xf2, 0xf3, 0xf5][column_index];
+            let invocation_id = id(invocation_byte);
+            let mut audit_event = identity_audit_event(audit_byte, user_id, *column_id);
+            audit_event.correlation_id = invocation_id;
+            storage
+                .create_policy(CreatePolicyRequest {
+                    invocation_id,
+                    authenticated_actor_id: user_id,
+                    table_id: bigint_table.table_id,
+                    name: format!("sandbox_bigint_grouped_column_{column_index}_select_policy"),
+                    kind: PolicyKind::Cell,
+                    operation: prdb_engine::authorization::Operation::Select,
+                    effect: prdb_engine::authorization::Effect::Allow,
+                    recipients: vec![prdb_engine::authorization::Subject::Principal(user_id)],
+                    target_column_ids: vec![*column_id],
+                    using_expression: Some(prdb_engine::authorization::Expr::Literal(Some(
+                        ScalarValue::Boolean(true),
+                    ))),
+                    with_check_expression: None,
+                    retention_deadline_us: now + 3_600_000_000,
+                    audit_event,
+                })
+                .map_err(|error| {
+                    format!(
+                        "create confined BIGINT cell policy for column {column_index}: {error:?}"
+                    )
+                })?;
+        }
         let bigint_schema = [
             ColumnSchema {
                 scalar_type: ScalarType::Integer,
