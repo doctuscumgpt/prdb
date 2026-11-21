@@ -795,6 +795,22 @@
 - Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed, including the focused `sdk-sql-execute-v10` fixture under TinyCC with `-Wall -Wextra -Werror`.
 - Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
 
+## SQL-7 follow-up: v21 Decimal AVG literal HAVING — verified
+
+- Contract: Decimal AVG returns `DECIMAL(38,r)` with `r=min(max(6,s+6),38-(p-s))`; v21 HAVING literals must bind exactly to that output scale before comparison.
+- Regression: the v21 grouped runner now evaluates `AVG(score) >= 1.40000000e0` against Decimal(10,2) groups, verifies the bound Decimal(38,8) literal coefficient, and emits only groups with averages 1.50 and 2.50, filtering 1.30.
+- Verification: the maintained TinyCC `sdk-sql-execute-v10` fixture passed as part of `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test`.
+- Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
+
+## SQL-8 follow-up: catch cancellation after the final grouped scan batch — verified
+
+- Contract: the shared grouped runner must observe cancellation raised during the final scan batch before it starts local grouping/aggregation, even when HAVING will remove every group and no result callback will run.
+- Red/green evidence: the v21 Decimal fixture now raises cancellation from the final batch callback while its SUM/HAVING threshold filters all groups. Before the final scan checkpoint, that invocation returned success because no group callback polled cancellation; after the change it returns executor error with zero callbacks and statement failure latched.
+- Implementation: the shared v5-v21 runner polls cancellation once after scan completion and cursor cleanup, before grouping or aggregate evaluation. At the 124-page scan ceiling this keeps a full scan with the final checkpoint and up to four callback polls within 255 of the executor's 256 requests.
+- Specification: [`sql-library.md`](../../specs/sql-library.md) records the final checkpoint and request ceiling.
+- Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed with TinyCC 0.9.27-unstable-2025-01-06; `git diff --check` passed.
+- Remaining: broader analytical pressure, spill, and mixed-workload measurements remain open.
+
 ## SQL-7 / WI-7 follow-up: v21 HAVING fuzz seeds exercise successful binding — verified
 
 - Correction: the v21 fuzz corpus previously used `category` and `scores`, which did not match the harness's bound `id`/`score` shape. Those seeds could parse but did not reach successful binding. Replaced them with schema-matched statements and added a compound Decimal seed covering signed exponent literals, Boolean precedence, ORDER BY, and LIMIT.

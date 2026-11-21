@@ -925,13 +925,21 @@ static int32_t on_group_v21_decimal(
     int64_t aggregate_coefficient;
     assert(binding->abi_version == PRDB_SDK_SQL_ABI_V21_VERSION);
     assert(binding->base.having_type_code == PRDB_SDK_VALUE_TYPE_DECIMAL);
-    assert(binding->base.having_decimal_scale == 2);
     assert(binding->base.having_node_count == 1);
-    assert(binding->having_nodes[0].scale == 2);
     assert(binding->having_nodes[0].base.operand_kind ==
            PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL);
-    assert(binding->having_nodes[0].coefficient[14] == 1 &&
-           binding->having_nodes[0].coefficient[15] == 0xc2);
+    if (binding->base.having_decimal_scale == 2) {
+        assert(binding->having_nodes[0].scale == 2);
+        assert(binding->having_nodes[0].coefficient[14] == 1 &&
+               binding->having_nodes[0].coefficient[15] == 0xc2);
+    } else {
+        assert(binding->base.having_decimal_scale == 8);
+        assert(binding->having_nodes[0].scale == 8);
+        assert(binding->having_nodes[0].coefficient[12] == 0x08 &&
+               binding->having_nodes[0].coefficient[13] == 0x58 &&
+               binding->having_nodes[0].coefficient[14] == 0x3b &&
+               binding->having_nodes[0].coefficient[15] == 0x00);
+    }
     assert(group_key_count == 2 && aggregate_value != NULL);
     assert(matching_row_count == 1 && capture->mock->batch_finished != 0);
     assert(prdb_sdk_value_get_integer_v1(&group_keys[0], &key) ==
@@ -944,7 +952,10 @@ static int32_t on_group_v21_decimal(
         aggregate_bits = (aggregate_bits << 8) | aggregate_value->data[index + 8];
     aggregate_coefficient = (int64_t)aggregate_bits;
     capture->keys[capture->calls] = key;
-    capture->aggregates[capture->calls] = (int32_t)(aggregate_coefficient / 100);
+    capture->aggregates[capture->calls] = binding->base.having_decimal_scale == 2
+                                              ? (int32_t)(aggregate_coefficient / 100)
+                                              : (int32_t)(aggregate_coefficient /
+                                                          1000000);
     ++capture->calls;
     if (capture->mock->cancel_after_group_callbacks == capture->calls)
         capture->mock->cancelled = 1;
@@ -1252,6 +1263,9 @@ int main(void) {
     static const uint8_t v21_decimal_equal_literal_sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
         "HAVING SUM(score) = 4.50e0";
+    static const uint8_t v21_decimal_avg_literal_sql[] =
+        "SELECT id, score, AVG(score) FROM widgets GROUP BY id, score "
+        "HAVING AVG(score) >= 1.40000000e0";
     static const uint8_t v21_decimal_min_literal_sql[] =
         "SELECT id, score, MIN(score) FROM widgets GROUP BY id, score "
         "HAVING MIN(score) <= 3.00e0 ORDER BY id ASC LIMIT 1";
@@ -1653,7 +1667,7 @@ int main(void) {
                 4096, &capture);
             assert(status == PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
             assert(capture.calls == 32 && mock.cancelled == 1);
-            assert(mock.executor_requests == 6 && mock.statement_failed == 1);
+            assert(mock.executor_requests == 7 && mock.statement_failed == 1);
             mock.cancel_after_group_callbacks = 0;
             mock.max_candidates = 0;
         }
@@ -1930,6 +1944,20 @@ int main(void) {
                    PRDB_SDK_SQL_EXEC_OK);
             assert(capture.calls == 1 && capture.keys[0] == 1 &&
                    capture.aggregates[0] == 4 && mock.statement_failed == 0);
+        }
+
+        {
+            const int64_t average_coefficients[] = {150, 130, 250};
+            mock.batch_len = make_decimal_rows(mock.batch, 1, keys,
+                                               average_coefficients, NULL, 3);
+            reset_scan(&mock, &capture, 1);
+            assert(run_query_v21_decimal(
+                       &mock, v21_decimal_avg_literal_sql,
+                       sizeof(v21_decimal_avg_literal_sql) - 1, &capture) ==
+                   PRDB_SDK_SQL_EXEC_OK);
+            assert(capture.calls == 2 && capture.keys[0] == 1 &&
+                   capture.aggregates[0] == 150 && capture.keys[1] == 2 &&
+                   capture.aggregates[1] == 250 && mock.statement_failed == 0);
         }
 
         reset_scan(&mock, &capture, 1);
