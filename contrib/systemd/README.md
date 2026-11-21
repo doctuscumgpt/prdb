@@ -1,5 +1,49 @@
 # systemd units
 
+## Install a named per-user instance
+
+`../install-user-instance.sh` installs the release executables under
+`~/.local/libexec/prdb/`, initializes one database, writes per-instance
+systemd user units and mode-0600 configuration, then enables and starts the
+gateway. Each instance has separate named supervisor/gateway units, database
+and scratch directories, runtime socket, audit log, and TCP listener. The
+gateway and control listener bind to loopback; by default the control listener
+uses the next port after the ordinary listener. Pick distinct, unused ports
+for every instance.
+
+Build the release binaries first. Supply the host-validated runtime profile
+and its actual absolute runtime file paths; the installer cannot safely infer
+those from the build machine or select a runtime profile for another host.
+For example, replace all profile and file values below with the values
+validated for the target host:
+
+```sh
+contrib/install-user-instance.sh \
+  --name analytics --port 8765 --administrator first_admin \
+  --runtime-profile nixos-x86_64-glibc-2.42 --cpu-baseline x86_64-v1 \
+  --runtime-read-execute /usr/lib64/ld-linux-x86-64.so.2 \
+  --runtime-read-execute /usr/lib64/libc.so.6 \
+  --allowed-dependency libc.so.6
+```
+
+The script prints the path to the initial administrator credential file; it
+does not print the secret. The client connects to `127.0.0.1:8765`. The
+per-instance units are named `prdb-analytics-supervisor.service` and
+`prdb-analytics-gateway.service`. Their profile and Landlock paths are saved
+in `~/.config/prdb/instances/`. Paths containing whitespace are not supported.
+
+Remove an instance and permanently delete its database, audit log, and
+bootstrap credential with:
+
+```sh
+contrib/remove-user-instance.sh --name analytics
+```
+
+The removal script prompts before deleting. Pass `--yes` for a scripted
+removal, or `--keep-data` to stop and remove the services/configuration while
+preserving the instance data directory. Shared executables remain available
+for other instances.
+
 The unit files in `user/` and `system/` run the supervisor and TCP gateway as
 separate services. Both supervisors request delegation of `cpu`, `memory`, and
 `pids`; the launcher moves itself into a child cgroup, enables those
