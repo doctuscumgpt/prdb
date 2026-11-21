@@ -883,6 +883,61 @@ static int32_t write_ordered_grouped_avg(
     return 0;
 }
 
+static int32_t write_ordered_analytical_pressure_sum(
+    void *opaque, const prdb_sdk_value_v1 *group_key,
+    const prdb_sdk_value_v1 *aggregate_value, uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v12 *binding) {
+    grouped_result_context *context = opaque;
+    uint32_t group = 0;
+    int64_t sum = 0;
+    if (context == NULL || binding == NULL || group_key == NULL ||
+        aggregate_value == NULL || context->row_count >= 64 ||
+        group_key->state != PRDB_SDK_VALUE_STATE_VALUE ||
+        group_key->type_code != PRDB_SDK_VALUE_TYPE_TEXT ||
+        group_key->data == NULL || group_key->data_len != 8172 ||
+        binding->order_count != 2 ||
+        binding->base.base.base.base.aggregate_kind !=
+            PRDB_SDK_SQL_V7_AGGREGATE_SUM ||
+        binding->order_items[0].item.kind !=
+            PRDB_SDK_SQL_V10_ORDER_AGGREGATE ||
+        binding->order_items[0].item.direction !=
+            PRDB_SDK_SQL_V10_ORDER_DESCENDING ||
+        binding->order_items[0].item.null_order !=
+            PRDB_SDK_SQL_V11_NULLS_LAST ||
+        binding->order_items[1].item.kind !=
+            PRDB_SDK_SQL_V10_ORDER_GROUP_KEY ||
+        binding->order_items[1].item.direction !=
+            PRDB_SDK_SQL_V10_ORDER_ASCENDING ||
+        binding->order_items[1].item.null_order !=
+            PRDB_SDK_SQL_V11_NULLS_FIRST ||
+        prdb_sdk_value_get_bigint_v1(aggregate_value, &sum) !=
+            PRDB_SDK_VALUE_ACCESS_OK ||
+        group_key->data[0] < '0' || group_key->data[0] > '9' ||
+        group_key->data[1] < '0' || group_key->data[1] > '9' ||
+        group_key->data[2] < '0' || group_key->data[2] > '9' ||
+        group_key->data[3] < '0' || group_key->data[3] > '9' ||
+        matching_row_count != 2) {
+        return 1;
+    }
+    group = (uint32_t)(group_key->data[0] - '0') * 1000 +
+            (uint32_t)(group_key->data[1] - '0') * 100 +
+            (uint32_t)(group_key->data[2] - '0') * 10 +
+            (uint32_t)(group_key->data[3] - '0');
+    if (group != 63 - context->row_count || sum != 300 + 2 * group) {
+        return 1;
+    }
+    for (uint32_t offset = 4; offset < 8172; ++offset) {
+        if (group_key->data[offset] != 'a') return 1;
+    }
+    int32_t status = prdb_sdk_sql_write_group_sum_result_v1(
+        context->host, context->group_column, group_key,
+        context->aggregate_column, aggregate_value, context->output,
+        context->output_capacity, &context->output_len);
+    if (status != PRDB_SDK_SQL_RESULT_OK) return 1;
+    ++context->row_count;
+    return 0;
+}
+
 static int32_t write_grouped_ordered_count(
     void *opaque, const prdb_sdk_value_v1 *group_key,
     const prdb_sdk_value_v1 *aggregate_value, uint64_t matching_row_count,
@@ -1060,6 +1115,10 @@ static int32_t run_write_read_fixture(
     static const uint8_t select_analytical_pressure_sql[] =
         "SELECT group_key, SUM(measure) FROM analytics_pressure_records "
         "GROUP BY group_key";
+    static const uint8_t select_ordered_analytical_pressure_sql[] =
+        "SELECT group_key, SUM(measure) FROM analytics_pressure_records "
+        "GROUP BY group_key ORDER BY SUM(measure) DESC NULLS LAST, "
+        "group_key ASC NULLS FIRST";
     static const uint8_t select_ordered_grouped_avg_sql[] =
         "SELECT right_key, AVG(left_key) FROM grouped_records "
         "GROUP BY right_key ORDER BY AVG(left_key) DESC NULLS LAST, "
@@ -1145,8 +1204,12 @@ static int32_t run_write_read_fixture(
     uint8_t planner_response[1024] = {0};
     uint8_t executor_response[1024] = {0};
     uint8_t batch_response[4096] = {0};
+    /* Large text rows need multiple rows per batch to stay below the v12
+     * runner's 124-page scan ceiling for this 128-row workload. */
+    static uint8_t ordered_pressure_batch_response[32 * 1024] = {0};
     uint8_t grouped_materialized[128] = {0};
     uint8_t grouped_result[256] = {0};
+    static uint8_t ordered_pressure_result[16 * 1024] = {0};
     uint8_t composite_grouped_result[256] = {0};
     uint8_t join_result[128] = {0};
     uint8_t insert_request[256] = {0};
@@ -1468,7 +1531,7 @@ static int32_t run_write_read_fixture(
         return 1;
     }
     if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
-        invocation->parameters[0] == 'A') {
+        (invocation->parameters[0] == 'A' || invocation->parameters[0] == 'W')) {
         static const uint8_t *const optimizer_sql[] = {
             select_composite_min_optimizer_sql,
             select_composite_max_optimizer_sql,
@@ -1497,6 +1560,38 @@ static int32_t run_write_read_fixture(
             optimizer_host_v5->optimizer_request == NULL) {
             return 1;
         }
+        grouped_results.group_column = &planner_columns[0];
+        grouped_results.aggregate_column = &planner_columns[1];
+        grouped_results.output = ordered_pressure_result;
+        grouped_results.output_capacity = sizeof(ordered_pressure_result);
+        grouped_results.output_len = 0;
+        grouped_results.row_count = 0;
+        status = prdb_sdk_sql_execute_group_v12(
+            host, schema, sizeof(schema) - 1,
+            select_ordered_analytical_pressure_sql,
+            sizeof(select_ordered_analytical_pressure_sql) - 1, NULL, 0, 128,
+            sizeof(ordered_pressure_batch_response), planner_response,
+            sizeof(planner_response), executor_response,
+            sizeof(executor_response), ordered_pressure_batch_response,
+            sizeof(ordered_pressure_batch_response), planner_columns, 9,
+            executor_columns, 9,
+            cell_scratch, 9, analytical_pressure_group_key_bytes,
+            sizeof(analytical_pressure_group_key_bytes),
+            write_ordered_analytical_pressure_sum, &grouped_results);
+        if (status != PRDB_SDK_SQL_EXEC_OK) {
+            static uint8_t message[] =
+                "fixture-error-ordered-sum-status-0";
+            if (status >= 0 && status <= 9) {
+                message[sizeof(message) - 2] = (uint8_t)('0' + status);
+            }
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+        if (grouped_results.row_count != 64) {
+            static const uint8_t message[] =
+                "fixture-error-confined-ordered-analytical-pressure-sum-rows";
+            return report_failure(host, message, sizeof(message) - 1);
+        }
+        if (invocation->parameters[0] == 'W') return 0;
         for (uint32_t index = 0; index < 7; ++index) {
             composite_aggregate_expectation expectation = {
                 &composite_grouped_results, optimizer_kinds[index]};

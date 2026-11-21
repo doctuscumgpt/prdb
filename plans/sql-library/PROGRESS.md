@@ -1,5 +1,13 @@
 # SQL Library Progress
 
+## SQL-8 follow-up: confined high-cardinality ordered grouped SUM — implemented slice
+
+- Contract: exercise v12 grouped `ORDER BY SUM(measure) DESC NULLS LAST, group_key ASC NULLS FIRST` over the live authorized view, keeping the 128-row and 1 MiB materialization bounds and relaying exact SQLR records through durable commit.
+- Implementation: the confined write/read fixture runs the ordered SUM in its separate analytical invocation before the existing composite aggregate matrix. Its 32 KiB scan batch carries multiple 8,172-byte text rows per page, staying below the v12 runner's 124-page ceiling for the 128-row input. A focused `W` fixture parameter runs only this query so the same sandboxed acceptance can isolate its result checks.
+- Regression: the C callback validates both sort items, every group-key byte, the exact BIGINT sum and two-row group count. Rust compares all 64 relayed SQLR records byte-for-byte in descending aggregate order and verifies the committed terminal outcome.
+- Verification: the focused delegated-cgroup `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` run passed; `make -f engine/sdk/Makefile test`, locked workspace build, format check, and warning-denied all-target Clippy passed. The normal acceptance has passed standalone once, but repeated runs and full workspace runs have also hit `ScanBudgetExceeded` in its earlier primary write/read workload before this new aggregate invocation; the ordered branch is covered separately by the focused mode.
+- Remaining: full serial workspace acceptance is still sensitive to the primary fixture's cumulative scan budget under suite load. Broader analytical workload diversity, secure spill, target-hardware measurements, and mixed-workload optimization remain open.
+
 ## SQL-8 follow-up: high-cardinality ordered grouped SUM ties — verified
 
 - Contract: the v12 grouped runner sorts selected aggregate results and group keys lexicographically, honoring each key's direction and NULL placement while retaining the 128-row and 1 MiB materialization bounds.

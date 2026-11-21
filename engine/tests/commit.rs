@@ -42399,6 +42399,138 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             cleanup_timeout: Duration::from_secs(2),
         },
     };
+    if std::env::var_os("PRDB_TEST_ORDERED_ANALYTICAL_ONLY").is_some() {
+        let mut ordered_client = ClientConnectionSession::default();
+        ordered_client.accept_hello(ClientMode::Query, "sandbox-ordered-analytical-sum")?;
+        ordered_client.authenticate(&storage, token_id, &secret)?;
+        let ordered_owner = ordered_client.staging_owner()?;
+        let ordered_parameter = [b'W'];
+        let ordered_reservation = staging.prepare(
+            ordered_owner,
+            PrepareSubmission {
+                manifest_version: 1,
+                manifest: manifest.clone(),
+                artifact_bytes: u64::try_from(artifact.len())?,
+                artifact_sha256: Sha256::digest(&artifact).into(),
+                scope_version: 1,
+                requested_scope: requested_scope.clone(),
+                parameter_bytes: 1,
+                parameter_sha256: Sha256::digest(ordered_parameter).into(),
+                deadline_ms: 30_000,
+                workload_class: WorkloadClass::Analytical,
+            },
+        )?;
+        let mut ordered_offset = 0;
+        for chunk in artifact.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
+            ordered_offset = staging.upload_chunk(
+                ordered_owner,
+                ordered_reservation.invocation_id,
+                ChunkKind::Artifact,
+                ordered_offset,
+                chunk,
+            )?;
+        }
+        staging.upload_chunk(
+            ordered_owner,
+            ordered_reservation.invocation_id,
+            ChunkKind::Parameters,
+            0,
+            &ordered_parameter,
+        )?;
+        staging.seal(ordered_owner, ordered_reservation.invocation_id)?;
+        let ordered_invocation_hex = ordered_reservation
+            .invocation_id
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let (ordered_accepted, mut ordered_invocation, mut ordered_executor) = ordered_client
+            .handle_start_request_with_executor(
+                &storage,
+                &staging,
+                ClientFrame {
+                    kind: 7,
+                    request_id: 90,
+                    response_sequence: 0,
+                    payload: format!("{{\"invocation_id\":\"{ordered_invocation_hex}\"}}")
+                        .into_bytes(),
+                },
+                GatewayAdmissionConfig {
+                    retention_period_us: 3_600_000_000,
+                    max_rows: 128,
+                    max_bytes: 1_048_576,
+                },
+                &runtime,
+            )?;
+        assert_eq!(ordered_accepted.payload, b"{\"state\":\"accepted\"}");
+        let (mut ordered_service, mut ordered_gateway) = UnixStream::pair()?;
+        ordered_gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let ordered_reader = std::thread::spawn(move || {
+            let mut frames = Vec::new();
+            while let Some(frame) = prdb_engine::ipc::read_frame(&mut ordered_gateway)? {
+                let terminal = frame.operation == Operation::GatewayTerminal as u16;
+                frames.push(frame);
+                if terminal {
+                    break;
+                }
+            }
+            Ok::<_, prdb_engine::ipc::FrameError>(frames)
+        });
+        let ordered_decision = observe_executor_relay_and_finalize_gateway(
+            &storage,
+            &mut ordered_invocation,
+            &mut ordered_executor,
+            &mut ordered_service,
+            ordered_accepted.request_id,
+        )?;
+        let ordered_frames = ordered_reader
+            .join()
+            .map_err(|_| "ordered analytical gateway reader panicked")??;
+        assert_eq!(ordered_decision, GatewayTerminalDecision::Commit);
+        staging.finish_started(ordered_owner, ordered_reservation.invocation_id)?;
+        let mut ordered_frames = ordered_frames.into_iter();
+        for group in (0i32..64).rev() {
+            let mut group_key = format!("{group:04}").into_bytes();
+            group_key.extend(std::iter::repeat_n(b'a', 8_168));
+            let mut expected = b"SQLR".to_vec();
+            expected.extend_from_slice(&1u16.to_be_bytes());
+            expected.extend_from_slice(&2u16.to_be_bytes());
+            expected.extend_from_slice(&(b"group_key".len() as u16).to_be_bytes());
+            expected.extend_from_slice(b"group_key");
+            expected.extend_from_slice(&6u32.to_be_bytes());
+            expected.extend_from_slice(&[0, 0, 0]);
+            expected.extend_from_slice(&(group_key.len() as u32).to_be_bytes());
+            expected.extend_from_slice(&group_key);
+            expected.extend_from_slice(&(b"sum".len() as u16).to_be_bytes());
+            expected.extend_from_slice(b"sum");
+            expected.extend_from_slice(&4u32.to_be_bytes());
+            expected.extend_from_slice(&[0, 0, 0]);
+            expected.extend_from_slice(&8u32.to_be_bytes());
+            expected.extend_from_slice(&(300i64 + 2 * i64::from(group)).to_be_bytes());
+            let frame = ordered_frames
+                .next()
+                .ok_or_else(|| format!("missing ordered analytical SUM group {group}"))?;
+            assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+            assert_eq!(frame.request_id, ordered_accepted.request_id);
+            assert_eq!(
+                frame.payload, expected,
+                "ordered analytical SUM group {group}"
+            );
+        }
+        let terminal = ordered_frames
+            .next()
+            .ok_or("missing ordered SUM terminal")?;
+        assert_eq!(terminal.operation, Operation::GatewayTerminal as u16);
+        assert_eq!(terminal.request_id, ordered_accepted.request_id);
+        assert!(String::from_utf8(terminal.payload)?.contains("\"outcome\":\"committed\""));
+        assert_eq!(
+            storage
+                .lookup_invocation_outcome(ordered_reservation.invocation_id, user_id, now + 1)?
+                .ok_or("missing ordered SUM outcome")?
+                .status,
+            OutcomeStatus::Committed
+        );
+        return Ok(());
+    }
     let (accepted, mut invocation, mut executor) = client.handle_start_request_with_executor(
         &storage,
         &staging,
@@ -44331,14 +44463,25 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 },
                 GatewayAdmissionConfig {
                     retention_period_us: 3_600_000_000,
-                    max_rows: 8,
-                    max_bytes: 4096,
+                    max_rows: 128,
+                    max_bytes: 1_048_576,
                 },
                 &runtime,
             )?;
         assert_eq!(aggregate_accepted.payload, b"{\"state\":\"accepted\"}");
         let (mut aggregate_service, mut aggregate_gateway) = UnixStream::pair()?;
         aggregate_gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let aggregate_reader = std::thread::spawn(move || {
+            let mut frames = Vec::new();
+            while let Some(frame) = prdb_engine::ipc::read_frame(&mut aggregate_gateway)? {
+                let terminal = frame.operation == Operation::GatewayTerminal as u16;
+                frames.push(frame);
+                if terminal {
+                    break;
+                }
+            }
+            Ok::<_, prdb_engine::ipc::FrameError>(frames)
+        });
         let aggregate_decision = observe_executor_relay_and_finalize_gateway(
             &storage,
             &mut aggregate_invocation,
@@ -44346,21 +44489,56 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             &mut aggregate_service,
             aggregate_accepted.request_id,
         )?;
+        let aggregate_frames = aggregate_reader
+            .join()
+            .map_err(|_| "aggregate gateway reader panicked")??;
         if aggregate_decision != GatewayTerminalDecision::Commit {
-            let mut relayed = Vec::new();
-            while let Some(frame) = read_frame(&mut aggregate_gateway)? {
-                let terminal = frame.operation == Operation::GatewayTerminal as u16;
-                relayed.push((frame.operation, frame.payload));
-                if terminal {
-                    break;
-                }
-            }
+            let relayed = aggregate_frames
+                .iter()
+                .map(|frame| {
+                    (
+                        frame.operation,
+                        frame.payload.len(),
+                        String::from_utf8_lossy(&frame.payload[..frame.payload.len().min(80)])
+                            .into_owned(),
+                    )
+                })
+                .collect::<Vec<_>>();
             return Err(format!(
                 "confined aggregate matrix aborted: {aggregate_decision:?}; relayed {relayed:?}"
             )
             .into());
         }
         staging.finish_started(aggregate_owner, aggregate_reservation.invocation_id)?;
+        let mut aggregate_frames = aggregate_frames.into_iter();
+        for group in (0i32..64).rev() {
+            let mut group_key = format!("{group:04}").into_bytes();
+            group_key.extend(std::iter::repeat_n(b'a', 8_168));
+            let mut expected = b"SQLR".to_vec();
+            expected.extend_from_slice(&1u16.to_be_bytes());
+            expected.extend_from_slice(&2u16.to_be_bytes());
+            expected.extend_from_slice(&(b"group_key".len() as u16).to_be_bytes());
+            expected.extend_from_slice(b"group_key");
+            expected.extend_from_slice(&6u32.to_be_bytes());
+            expected.extend_from_slice(&[0, 0, 0]);
+            expected.extend_from_slice(&(group_key.len() as u32).to_be_bytes());
+            expected.extend_from_slice(&group_key);
+            expected.extend_from_slice(&(b"sum".len() as u16).to_be_bytes());
+            expected.extend_from_slice(b"sum");
+            expected.extend_from_slice(&4u32.to_be_bytes());
+            expected.extend_from_slice(&[0, 0, 0]);
+            expected.extend_from_slice(&8u32.to_be_bytes());
+            expected.extend_from_slice(&(300i64 + 2 * i64::from(group)).to_be_bytes());
+            let frame = aggregate_frames
+                .next()
+                .ok_or_else(|| format!("missing ordered analytical SUM group {group}"))?;
+            assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+            assert_eq!(frame.request_id, aggregate_accepted.request_id);
+            assert_eq!(
+                frame.payload, expected,
+                "ordered analytical SUM group {group}"
+            );
+        }
         for (aggregate_name, aggregate_type, precision, scale) in [
             (b"min".as_slice(), 3u32, 0u8, 0u8),
             (b"max".as_slice(), 3u32, 0u8, 0u8),
@@ -44372,7 +44550,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 } else {
                     left_key.to_be_bytes().to_vec()
                 };
-                let frame = read_frame(&mut aggregate_gateway)?.ok_or_else(|| {
+                let frame = aggregate_frames.next().ok_or_else(|| {
                     format!(
                         "missing optimizer-backed composite {} SQLR row",
                         String::from_utf8_lossy(aggregate_name)
@@ -44401,7 +44579,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             (b"avg".as_slice(), 38, 8, [112_500_000u128, 150_000_000]),
         ] {
             for (index, (left_key, right_key)) in [(1i32, 7i32), (2, 9)].into_iter().enumerate() {
-                let frame = read_frame(&mut aggregate_gateway)?.ok_or_else(|| {
+                let frame = aggregate_frames.next().ok_or_else(|| {
                     format!(
                         "missing optimizer-backed composite Decimal {} SQLR row",
                         String::from_utf8_lossy(aggregate_name)
@@ -44423,7 +44601,8 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 );
             }
         }
-        let aggregate_terminal = read_frame(&mut aggregate_gateway)?
+        let aggregate_terminal = aggregate_frames
+            .next()
             .ok_or("missing confined aggregate matrix terminal")?;
         assert_eq!(
             aggregate_terminal.operation,

@@ -1758,7 +1758,9 @@ fn packager_validates_abi_v4_exports_on_the_maintained_optimizer_fixture() {
     assert_eq!(manifest.descriptor_symbol, "prdb_query_descriptor_v4");
     assert_eq!(manifest.entry_point_symbol, "prdb_query_main_v4");
     let artifact = fs::read(package.join("query.so")).unwrap();
-    assert!(artifact.len() < 100_000);
+    // The maintained fixture now includes the high-cardinality ordered
+    // analytical query while remaining dynamically linked to the SDK.
+    assert!(artifact.len() < 150_000);
     let dynamic = decode_elf_dynamic_info(&artifact).unwrap();
     assert_eq!(dynamic.runpath.as_deref(), Some("$ORIGIN"));
     assert!(dynamic.rpath.is_none());
