@@ -44952,6 +44952,30 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 expected_aggregate_row(b"sum", 4, 0, 0, left_key, right_key, &sum.to_be_bytes(),)
             );
         }
+        for (aggregate, values) in [
+            (b"min".as_slice(), [(1i32, 7i32, 2i64), (2, 9, 6)]),
+            (b"max".as_slice(), [(1i32, 7i32, 4i64), (2, 9, 12)]),
+        ] {
+            for (left_key, right_key, value) in values {
+                let frame = bigint_frames
+                    .next()
+                    .ok_or("missing optimizer-backed composite BIGINT MIN/MAX row")?;
+                assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+                assert_eq!(frame.request_id, bigint_accepted.request_id);
+                assert_eq!(
+                    frame.payload,
+                    expected_aggregate_row(
+                        aggregate,
+                        4,
+                        0,
+                        0,
+                        left_key,
+                        right_key,
+                        &value.to_be_bytes(),
+                    )
+                );
+            }
+        }
         for (left_key, right_key, average) in [(1i32, 7i32, 3_000_000u128), (2, 9, 9_000_000u128)] {
             let frame = bigint_frames
                 .next()

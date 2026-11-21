@@ -527,6 +527,25 @@ static int32_t write_grouped_composite_aggregate_optimizer(
                                                    expected_coefficient)) {
                 return 1;
             }
+        } else if (expectation->aggregate_kind ==
+                       PRDB_SDK_SQL_V7_AGGREGATE_MIN ||
+                   expectation->aggregate_kind ==
+                       PRDB_SDK_SQL_V7_AGGREGATE_MAX) {
+            int64_t observed_value = 0;
+            int64_t expected_value;
+            if (expectation->aggregate_kind ==
+                PRDB_SDK_SQL_V7_AGGREGATE_MIN) {
+                expected_value = left_key == 1 ? 2 : 6;
+            } else {
+                expected_value = left_key == 1 ? 4 : 12;
+            }
+            if (aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_BIGINT ||
+                prdb_sdk_value_get_bigint_v1(aggregate_value,
+                                             &observed_value) !=
+                    PRDB_SDK_VALUE_ACCESS_OK ||
+                observed_value != expected_value) {
+                return 1;
+            }
         } else {
             return 1;
         }
@@ -1142,6 +1161,12 @@ static int32_t run_write_read_fixture(
     static const uint8_t select_composite_bigint_sum_optimizer_sql[] =
         "SELECT left_key, right_key, SUM(measure) "
         "FROM bigint_grouped_records GROUP BY left_key, right_key LIMIT 2";
+    static const uint8_t select_composite_bigint_min_optimizer_sql[] =
+        "SELECT left_key, right_key, MIN(measure) "
+        "FROM bigint_grouped_records GROUP BY left_key, right_key LIMIT 2";
+    static const uint8_t select_composite_bigint_max_optimizer_sql[] =
+        "SELECT left_key, right_key, MAX(measure) "
+        "FROM bigint_grouped_records GROUP BY left_key, right_key LIMIT 2";
     static const uint8_t select_composite_bigint_avg_optimizer_sql[] =
         "SELECT left_key, right_key, AVG(measure) "
         "FROM bigint_grouped_records GROUP BY left_key, right_key LIMIT 2";
@@ -1575,6 +1600,8 @@ static int32_t run_write_read_fixture(
             select_composite_decimal_sum_optimizer_sql,
             select_composite_decimal_avg_optimizer_sql,
             select_composite_bigint_sum_optimizer_sql,
+            select_composite_bigint_min_optimizer_sql,
+            select_composite_bigint_max_optimizer_sql,
             select_composite_bigint_avg_optimizer_sql};
         static const uint32_t optimizer_sql_len[] = {
             sizeof(select_composite_min_optimizer_sql) - 1,
@@ -1585,6 +1612,8 @@ static int32_t run_write_read_fixture(
             sizeof(select_composite_decimal_sum_optimizer_sql) - 1,
             sizeof(select_composite_decimal_avg_optimizer_sql) - 1,
             sizeof(select_composite_bigint_sum_optimizer_sql) - 1,
+            sizeof(select_composite_bigint_min_optimizer_sql) - 1,
+            sizeof(select_composite_bigint_max_optimizer_sql) - 1,
             sizeof(select_composite_bigint_avg_optimizer_sql) - 1};
         static const uint32_t optimizer_kinds[] = {
             PRDB_SDK_SQL_V7_AGGREGATE_MIN,
@@ -1595,6 +1624,8 @@ static int32_t run_write_read_fixture(
             PRDB_SDK_SQL_V7_AGGREGATE_SUM,
             PRDB_SDK_SQL_V7_AGGREGATE_AVG,
             PRDB_SDK_SQL_V7_AGGREGATE_SUM,
+            PRDB_SDK_SQL_V7_AGGREGATE_MIN,
+            PRDB_SDK_SQL_V7_AGGREGATE_MAX,
             PRDB_SDK_SQL_V7_AGGREGATE_AVG};
         if (optimizer_host_v5 == NULL ||
             optimizer_host_v5->optimizer_request == NULL) {
@@ -1652,7 +1683,7 @@ static int32_t run_write_read_fixture(
             if (invocation->parameters[0] == 'W') return 0;
         }
         uint32_t first_aggregate = invocation->parameters[0] == 'B' ? 7 : 0;
-        uint32_t aggregate_end = invocation->parameters[0] == 'B' ? 9 : 7;
+        uint32_t aggregate_end = invocation->parameters[0] == 'B' ? 11 : 7;
         for (uint32_t index = first_aggregate; index < aggregate_end; ++index) {
             composite_aggregate_expectation expectation = {
                 &composite_grouped_results, optimizer_kinds[index]};
@@ -1685,6 +1716,16 @@ static int32_t run_write_read_fixture(
                 if (index == 7) {
                     static const uint8_t message[] =
                         "fixture-error-confined-bigint-sum-rows";
+                    return report_failure(host, message, sizeof(message) - 1);
+                }
+                if (index == 8) {
+                    static const uint8_t message[] =
+                        "fixture-error-confined-bigint-min-rows";
+                    return report_failure(host, message, sizeof(message) - 1);
+                }
+                if (index == 9) {
+                    static const uint8_t message[] =
+                        "fixture-error-confined-bigint-max-rows";
                     return report_failure(host, message, sizeof(message) - 1);
                 }
                 static const uint8_t message[] =
