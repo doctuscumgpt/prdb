@@ -40715,13 +40715,22 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         authenticated_actor_id: user_id,
         schema_id: schema.schema_id,
         name: "analytics_pressure_records".to_owned(),
-        columns: vec![TableColumnDefinition {
-            name: "group_key".to_owned(),
-            scalar_type: ScalarType::Text,
-            nullable: false,
-            generated_uuid_identity: false,
-            default: None,
-        }],
+        columns: vec![
+            TableColumnDefinition {
+                name: "group_key".to_owned(),
+                scalar_type: ScalarType::Text,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            },
+            TableColumnDefinition {
+                name: "measure".to_owned(),
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+                generated_uuid_identity: false,
+                default: None,
+            },
+        ],
         retention_deadline_us: now + 3_600_000_000,
         audit_event: pressure_table_audit,
     })?;
@@ -40815,21 +40824,37 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         now + 3_600_000_000,
         &decimal_rows,
     )?;
-    let pressure_schema = [ColumnSchema {
-        scalar_type: ScalarType::Text,
-        nullable: false,
-    }];
-    let pressure_key = "a".repeat(8_188);
+    let pressure_schema = [
+        ColumnSchema {
+            scalar_type: ScalarType::Text,
+            nullable: false,
+        },
+        ColumnSchema {
+            scalar_type: ScalarType::Integer,
+            nullable: false,
+        },
+    ];
+    let pressure_key = "a".repeat(8_168);
     let pressure_rows = (0..128u16)
         .map(|index| {
-            let value = format!("{index:04}{pressure_key}");
+            let group = index / 2;
+            let value = format!("{group:04}{pressure_key}");
+            let mut row_id = id(0);
+            row_id[14..].copy_from_slice(&(index + 1).to_be_bytes());
             Ok(RowWrite {
-                key: table_row_key(pressure_table.table_id, id((index + 1) as u8)),
+                key: table_row_key(pressure_table.table_id, row_id),
                 expected_version: None,
                 payload: Some(encode_tuple(
                     &pressure_schema,
                     1,
-                    &[Some(ScalarValue::Text(value))],
+                    &[
+                        Some(ScalarValue::Text(value)),
+                        Some(ScalarValue::Integer(if index % 2 == 0 {
+                            100 + i32::from(group)
+                        } else {
+                            200 + i32::from(group)
+                        })),
+                    ],
                 )?),
             })
         })
@@ -41120,6 +41145,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         dependency_write(user_id, decimal_table.column_ids[2], 5),
         dependency_write(user_id, pressure_table.table_id, 5),
         dependency_write(user_id, pressure_table.column_ids[0], 5),
+        dependency_write(user_id, pressure_table.column_ids[1], 5),
         dependency_write(user_id, range_benchmark_table.table_id, 5),
         dependency_write(user_id, range_benchmark_table.column_ids[0], 5),
         dependency_write(user_id, operational_pressure_table.table_id, 5),
@@ -41217,6 +41243,14 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             2,
             2,
             pressure_table.column_ids[0],
+            user_id,
+        ),
+        grant_write(
+            user_id,
+            pressure_table.table_id,
+            2,
+            2,
+            pressure_table.column_ids[1],
             user_id,
         ),
         grant_write(
@@ -41969,6 +42003,26 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         None,
         true,
         "sandbox_analytics_pressure_cell_select_policy",
+    )?;
+    add_table_policy(
+        pressure_table.table_id,
+        pressure_table.column_ids[1],
+        id(0xa8),
+        1,
+        Some(select_using_id),
+        None,
+        false,
+        "sandbox_analytics_pressure_measure_select_policy",
+    )?;
+    add_table_policy(
+        pressure_table.table_id,
+        pressure_table.column_ids[1],
+        id(0xa9),
+        1,
+        Some(select_using_id),
+        None,
+        true,
+        "sandbox_analytics_pressure_measure_cell_select_policy",
     )?;
     add_table_policy(
         range_benchmark_table.table_id,

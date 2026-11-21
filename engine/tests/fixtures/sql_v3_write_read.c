@@ -339,21 +339,32 @@ typedef struct grouped_result_context {
 
 typedef struct analytical_pressure_result_context {
     const prdb_host_api_v3 *host;
-    uint8_t seen[128];
+    uint8_t seen[64];
     uint32_t group_count;
 } analytical_pressure_result_context;
 
-static int32_t verify_analytical_pressure_group(
-    void *opaque, const prdb_sdk_value_v1 *group_key, uint64_t count,
-    const prdb_sdk_sql_bound_column_v2 *group_by_column) {
+static int32_t verify_analytical_pressure_sum(
+    void *opaque, const prdb_sdk_value_v1 *group_key,
+    const prdb_sdk_value_v1 *aggregate_value, uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v6 *binding) {
     analytical_pressure_result_context *context = opaque;
     static const uint8_t started[] = "ANALYTICAL_GROUP_STARTED";
     static const uint8_t resumed[] = "ANALYTICAL_GROUP_RESUMED";
+    int64_t sum_value = 0;
     uint32_t index;
     if (context == NULL || context->host == NULL || group_key == NULL ||
-        group_by_column == NULL || group_key->state != PRDB_SDK_VALUE_STATE_VALUE ||
+        aggregate_value == NULL || binding == NULL ||
+        binding->aggregate_kind != PRDB_SDK_SQL_V6_AGGREGATE_SUM ||
+        binding->group_by_column.type_code != PRDB_SDK_VALUE_TYPE_TEXT ||
+        binding->aggregate_column.type_code != PRDB_SDK_VALUE_TYPE_INTEGER ||
+        group_key->state != PRDB_SDK_VALUE_STATE_VALUE ||
         group_key->type_code != PRDB_SDK_VALUE_TYPE_TEXT ||
-        group_key->data == NULL || group_key->data_len != 8192 || count != 1) {
+        group_key->data == NULL || group_key->data_len != 8172 ||
+        matching_row_count != 2 ||
+        aggregate_value->state != PRDB_SDK_VALUE_STATE_VALUE ||
+        aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_BIGINT ||
+        prdb_sdk_value_get_bigint_v1(aggregate_value, &sum_value) !=
+            PRDB_SDK_VALUE_ACCESS_OK) {
         return 1;
     }
     if (group_key->data[0] < '0' || group_key->data[0] > '9' ||
@@ -366,10 +377,11 @@ static int32_t verify_analytical_pressure_group(
             (uint32_t)(group_key->data[1] - '0') * 100 +
             (uint32_t)(group_key->data[2] - '0') * 10 +
             (uint32_t)(group_key->data[3] - '0');
-    if (index >= 128 || context->seen[index] != 0) {
+    if (index >= 64 || context->seen[index] != 0 ||
+        sum_value != 300 + (int64_t)index * 2) {
         return 1;
     }
-    for (uint32_t offset = 4; offset < 8192; ++offset) {
+    for (uint32_t offset = 4; offset < 8172; ++offset) {
         if (group_key->data[offset] != 'a') {
             return 1;
         }
@@ -1046,7 +1058,7 @@ static int32_t run_write_read_fixture(
         "SELECT left_key, right_key, SUM(decimal_value) "
         "FROM decimal_grouped_records GROUP BY left_key, right_key LIMIT 2";
     static const uint8_t select_analytical_pressure_sql[] =
-        "SELECT group_key, COUNT(*) FROM analytics_pressure_records "
+        "SELECT group_key, SUM(measure) FROM analytics_pressure_records "
         "GROUP BY group_key";
     static const uint8_t select_ordered_grouped_avg_sql[] =
         "SELECT right_key, AVG(left_key) FROM grouped_records "
@@ -1513,7 +1525,7 @@ static int32_t run_write_read_fixture(
         return 0;
     }
     results.host = host;
-    status = prdb_sdk_sql_execute_group_count_v4(
+    status = prdb_sdk_sql_execute_group_v6(
         host, schema, sizeof(schema) - 1, select_analytical_pressure_sql,
         sizeof(select_analytical_pressure_sql) - 1, NULL, 0, 128,
         PRDB_SDK_BATCH_MAX_BYTES, planner_response, sizeof(planner_response),
@@ -1522,9 +1534,9 @@ static int32_t run_write_read_fixture(
         sizeof(analytical_pressure_batch_response), planner_columns, 9,
         executor_columns, 9, cell_scratch, 9, analytical_pressure_group_key_bytes,
         sizeof(analytical_pressure_group_key_bytes),
-        verify_analytical_pressure_group, &analytical_pressure_results);
+        verify_analytical_pressure_sum, &analytical_pressure_results);
     if (status != PRDB_SDK_SQL_EXEC_OK ||
-        analytical_pressure_results.group_count != 128) {
+        analytical_pressure_results.group_count != 64) {
         static const uint8_t message[] = "fixture-error-analytical-pressure-group";
         return report_failure(host, message, sizeof(message) - 1);
     }
