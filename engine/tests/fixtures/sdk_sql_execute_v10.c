@@ -1,5 +1,7 @@
 #include "prdb_sdk_sql_exec_v10.h"
 #include "prdb_sdk_sql_exec_v5.h"
+#include "prdb_sdk_sql_exec_v6.h"
+#include "prdb_sdk_sql_exec_v7.h"
 #include "prdb_sdk_sql_exec_v11.h"
 #include "prdb_sdk_sql_exec_v12.h"
 #include "prdb_sdk_sql_exec_v13.h"
@@ -1246,6 +1248,103 @@ static int32_t run_scalar_minmax(mock_state *mock, const uint8_t *sql,
         materialized_bytes, sizeof(materialized_bytes), on_group, capture);
 }
 
+typedef struct scalar_integral_aggregate_capture {
+    uint32_t input_type;
+    uint32_t calls;
+} scalar_integral_aggregate_capture;
+
+static int32_t on_group_scalar_sum(
+    void *context, const prdb_sdk_value_v1 *group_key,
+    const prdb_sdk_value_v1 *aggregate_value, uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v6 *binding) {
+    scalar_integral_aggregate_capture *capture =
+        (scalar_integral_aggregate_capture *)context;
+    int32_t key = 0;
+    int64_t sum = 0;
+    assert(capture->calls < 2 &&
+           binding->aggregate_kind == PRDB_SDK_SQL_V6_AGGREGATE_SUM &&
+           binding->aggregate_column.type_code == capture->input_type);
+    assert(prdb_sdk_value_get_integer_v1(group_key, &key) ==
+           PRDB_SDK_VALUE_ACCESS_OK);
+    assert(key == (capture->calls == 0 ? 1 : 2));
+    assert(matching_row_count == (capture->calls == 0 ? 2 : 1));
+    assert(aggregate_value != NULL &&
+           aggregate_value->state == PRDB_SDK_VALUE_STATE_VALUE &&
+           aggregate_value->type_code == PRDB_SDK_VALUE_TYPE_BIGINT &&
+           prdb_sdk_value_get_bigint_v1(aggregate_value, &sum) ==
+               PRDB_SDK_VALUE_ACCESS_OK &&
+           sum == 6);
+    ++capture->calls;
+    return 0;
+}
+
+static int32_t on_group_scalar_avg(
+    void *context, const prdb_sdk_value_v1 *group_key,
+    const prdb_sdk_value_v1 *aggregate_value, uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v7 *binding) {
+    static const uint8_t average_three[16] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x2D, 0xC6, 0xC0};
+    static const uint8_t average_six[16] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x5B, 0x8D, 0x80};
+    scalar_integral_aggregate_capture *capture =
+        (scalar_integral_aggregate_capture *)context;
+    const uint8_t *expected = capture->calls == 0 ? average_three : average_six;
+    int32_t key = 0;
+    assert(capture->calls < 2 &&
+           binding->aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_AVG &&
+           binding->aggregate_column.type_code == capture->input_type);
+    assert(prdb_sdk_value_get_integer_v1(group_key, &key) ==
+           PRDB_SDK_VALUE_ACCESS_OK);
+    assert(key == (capture->calls == 0 ? 1 : 2));
+    assert(matching_row_count == (capture->calls == 0 ? 2 : 1));
+    assert(aggregate_value != NULL &&
+           aggregate_value->state == PRDB_SDK_VALUE_STATE_VALUE &&
+           aggregate_value->type_code == PRDB_SDK_VALUE_TYPE_DECIMAL &&
+           aggregate_value->data_len == sizeof(average_three) &&
+           memcmp(aggregate_value->data, expected, sizeof(average_three)) == 0);
+    ++capture->calls;
+    return 0;
+}
+
+static int32_t run_scalar_sum_or_avg(
+    mock_state *mock, const uint8_t *sql, uint64_t sql_len,
+    const scalar_order_case *test, uint32_t average,
+    scalar_integral_aggregate_capture *capture) {
+    static const uint8_t schema[] = "app";
+    static const uint8_t id_name[] = "id";
+    static const uint8_t score_name[] = "score";
+    uint8_t planner_response[256] = {0};
+    uint8_t executor_response[256] = {0};
+    uint8_t batch_response[512] = {0};
+    uint8_t materialized_bytes[2048] = {0};
+    prdb_sdk_sql_column_shape_v2 planner_columns[2] = {
+        {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
+        {score_name, 5, 1, test->type, test->precision, test->scale}};
+    prdb_sdk_sql_column_shape_v2 executor_columns[2] = {
+        {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
+        {score_name, 5, 1, test->type, test->precision, test->scale}};
+    prdb_sdk_value_v1 cell_scratch[2] = {{0}};
+    prdb_host_api_v3 host = {sizeof(host), PRDB_QUERY_ABI_V3_VERSION,
+                             mock, executor_request, planner_request, NULL,
+                             statement_failure};
+    if (average) {
+        return prdb_sdk_sql_execute_group_v7(
+            &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0, 4, 512,
+            planner_response, sizeof(planner_response), executor_response,
+            sizeof(executor_response), batch_response, sizeof(batch_response),
+            planner_columns, 2, executor_columns, 2, cell_scratch, 2,
+            materialized_bytes, sizeof(materialized_bytes), on_group_scalar_avg,
+            capture);
+    }
+    return prdb_sdk_sql_execute_group_v6(
+        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0, 4, 512,
+        planner_response, sizeof(planner_response), executor_response,
+        sizeof(executor_response), batch_response, sizeof(batch_response),
+        planner_columns, 2, executor_columns, 2, cell_scratch, 2,
+        materialized_bytes, sizeof(materialized_bytes), on_group_scalar_sum,
+        capture);
+}
+
 static void reset_scan(mock_state *mock, group_capture *capture,
                        uint32_t finished);
 
@@ -1442,6 +1541,58 @@ static void run_grouped_scalar_order_matrix(mock_state *mock) {
                 assert(status == PRDB_SDK_SQL_EXEC_OK &&
                        capture.calls == 2 && mock->statement_failed == 0);
             }
+        }
+    }
+}
+
+static void run_integral_aggregate_runner_matrix(mock_state *mock) {
+    static const uint8_t sum_sql[] =
+        "SELECT id, SUM(score) FROM widgets GROUP BY id";
+    static const uint8_t avg_sql[] =
+        "SELECT id, AVG(score) FROM widgets GROUP BY id";
+    static const uint8_t smallint_two[] = {0, 2};
+    static const uint8_t smallint_four[] = {0, 4};
+    static const uint8_t smallint_six[] = {0, 6};
+    static const uint8_t integer_two[] = {0, 0, 0, 2};
+    static const uint8_t integer_four[] = {0, 0, 0, 4};
+    static const uint8_t integer_six[] = {0, 0, 0, 6};
+    static const uint8_t bigint_two[] = {0, 0, 0, 0, 0, 0, 0, 2};
+    static const uint8_t bigint_four[] = {0, 0, 0, 0, 0, 0, 0, 4};
+    static const uint8_t bigint_six[] = {0, 0, 0, 0, 0, 0, 0, 6};
+    static const scalar_order_case cases[] = {
+        {PRDB_SDK_VALUE_TYPE_SMALLINT, 0, 0, 3, smallint_two,
+         sizeof(smallint_two), smallint_six, sizeof(smallint_six),
+         smallint_four, sizeof(smallint_four)},
+        {PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0, 3, integer_two,
+         sizeof(integer_two), integer_six, sizeof(integer_six), integer_four,
+         sizeof(integer_four)},
+        {PRDB_SDK_VALUE_TYPE_BIGINT, 0, 0, 3, bigint_two, sizeof(bigint_two),
+         bigint_six, sizeof(bigint_six), bigint_four, sizeof(bigint_four)},
+    };
+
+    for (uint32_t index = 0; index < sizeof(cases) / sizeof(cases[0]);
+         ++index) {
+        const scalar_order_case *test = &cases[index];
+        const uint8_t *scores[3] = {test->higher, test->lower, test->middle};
+        const uint32_t score_lengths[3] = {
+            test->higher_len, test->lower_len, test->middle_len};
+        mock->planner_len = make_typed_score_relation(
+            mock->planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99, test);
+        mock->executor_len = make_typed_score_relation(
+            mock->executor, 6, 0x22, test);
+        mock->batch_len = make_typed_score_rows(
+            mock->batch, test, scores, score_lengths);
+
+        for (uint32_t average = 0; average < 2; ++average) {
+            scalar_integral_aggregate_capture capture = {test->type, 0};
+            group_capture reset_capture = {0};
+            reset_scan(mock, &reset_capture, 1);
+            int32_t status = run_scalar_sum_or_avg(
+                mock, average ? avg_sql : sum_sql,
+                average ? sizeof(avg_sql) - 1 : sizeof(sum_sql) - 1,
+                test, average, &capture);
+            assert(status == PRDB_SDK_SQL_EXEC_OK && capture.calls == 2 &&
+                   mock->statement_failed == 0);
         }
     }
 }
@@ -3484,5 +3635,6 @@ int main(void) {
         }
     }
     run_grouped_scalar_order_matrix(&mock);
+    run_integral_aggregate_runner_matrix(&mock);
     return 0;
 }

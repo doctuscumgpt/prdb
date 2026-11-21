@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 follow-up: grouped integral SUM/AVG runner matrix — verified
+
+- Contract: grouped `SUM` and `AVG` accept SMALLINT, INTEGER, and BIGINT inputs; SUM widens to BIGINT and AVG produces exact DECIMAL(38,6).
+- Regression: the maintained v6/v7 SQL runner fixture executes both aggregates for all three integral input types across duplicate and singleton groups. It checks binding input types, row counts, widened result type, and exact average coefficients.
+- Verification: focused `sdk-sql-execute-v10` TinyCC fixture and the complete `make -f engine/sdk/Makefile test` suite passed.
+- Remaining: secure spill, broader workload coverage, target-hardware measurements, and mixed-workload optimization remain open.
+
 ## SQL-7 follow-up: grouped SQL MIN/MAX scalar-type matrix — verified
 
 - Contract: grouped `MIN` and `MAX` bind their argument to the declared scalar type and preserve that type and Decimal metadata in the aggregate result.
