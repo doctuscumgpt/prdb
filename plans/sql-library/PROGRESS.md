@@ -938,3 +938,19 @@
 - Regression: `sdk_sql_group_v1.c` now exercises MIN and MAX for BOOLEAN, SMALLINT, INTEGER, BIGINT, DECIMAL, TEXT, VARCHAR, BYTEA, UUID, DATE, and TIMESTAMPTZ. It checks signed numeric encodings, UTF-8 and binary ordering, fixed-width UUID and temporal ordering, NULL omission from MIN/MAX, and grouping equal values into one stable group for each type.
 - Verification: focused `sdk-sql-group-v1` fixture passed with the pinned TinyCC toolchain. `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed the complete maintained SDK suite, including ABI and release metadata checks; `git diff --check` passed.
 - Remaining: broader analytical type/workload coverage, secure spill, repeatable pressure measurements, and mixed-workload measurements remain open.
+
+## SQL-8 follow-up: five-run confined analytical pressure sample — verified
+
+- Setup: ran `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` five times sequentially in one delegated `systemd --user` service, with a fresh test database per run, the current TinyCC artifact and installed SDK release, eight simultaneous analytical invocations, 64 operational threads, and the built-in 30-second saturation interval. Every run passed, including SQL relay, cancellation, result backpressure, and durable commit checks.
+- Measurements: the test's 64-sample operational-only baseline and roughly 2,700–3,000 concurrent samples report p99 values in microseconds. Range measurements compare the optimizer path and reference scan in milliseconds.
+
+| Run | Operational commits / 30 s | Analytical cgroup current / peak (KiB) | Point read p99 baseline / concurrent (µs) | Commit p99 baseline / concurrent (µs) | Optimizer / reference range (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 2,603 | 13,648 / 17,952 | 3,580 / 73,325 | 28,317 / 331,032 | 90.1 / 56.9 |
+| 2 | 2,406 | 13,396 / 17,516 | 5,891 / 83,457 | 31,998 / 318,433 | 87.9 / 54.5 |
+| 3 | 2,378 | 13,152 / 17,608 | 3,847 / 77,592 | 20,398 / 293,987 | 69.8 / 51.1 |
+| 4 | 2,426 | 13,148 / 17,400 | 3,795 / 83,633 | 32,034 / 347,047 | 50.4 / 23.6 |
+| 5 | 2,414 | 13,240 / 17,280 | 4,043 / 88,441 | 24,267 / 356,153 | 91.7 / 72.1 |
+
+- Finding: all five runs sustained the required operational work and stayed far below the configured 256 MiB per-worker ceiling. Concurrent point-read and durable-commit p99s were substantially higher than their 64-sample baselines, and the optimizer range path was slower than the reference scan in each run. These local comparisons expose tail-latency and range-path optimization work; they do not establish hardware-independent targets.
+- Remaining: target-hardware measurements, broader client saturation, analytical workload diversity, optimizer range-path investigation, and secure spill remain open.
