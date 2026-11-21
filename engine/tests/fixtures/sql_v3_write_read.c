@@ -15,6 +15,7 @@
 #include "prdb_sdk_sql_exec_v19.h"
 #include "prdb_sdk_sql_exec_v20.h"
 #include "prdb_sdk_sql_exec_v21.h"
+#include "prdb_sdk_sql_dispatch_v1.h"
 #include "prdb_sdk_sql_exec_v4.h"
 #include "prdb_sdk_sql_result_v1.h"
 #include "prdb_sdk_executor_v1.h"
@@ -494,72 +495,6 @@ static int32_t write_grouped_composite_count_v18(
         matching_row_count, &binding->base.base.base);
 }
 
-static int32_t write_grouped_composite_count_v21(
-    void *opaque, const prdb_sdk_value_v1 *group_keys,
-    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
-    uint64_t matching_row_count,
-    const prdb_sdk_select_binding_v21 *binding) {
-    const prdb_sdk_sql_having_node_v21 *literal;
-    if (binding == NULL || binding->base.having_node_count != 1 ||
-        binding->base.having_type_code != PRDB_SDK_VALUE_TYPE_BIGINT ||
-        binding->having_nodes[0].base.operand_kind !=
-            PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL ||
-        binding->having_nodes[0].scale != 0)
-        return 1;
-    literal = &binding->having_nodes[0];
-    for (uint32_t index = 0; index < sizeof(literal->coefficient) - 1; ++index)
-        if (literal->coefficient[index] != 0) return 1;
-    if (literal->coefficient[15] != 2) return 1;
-    return write_grouped_composite_count(
-        opaque, group_keys, group_key_count, aggregate_value,
-        matching_row_count, &binding->base.base.base.base);
-}
-
-static int32_t write_grouped_composite_sum_v21(
-    void *opaque, const prdb_sdk_value_v1 *group_keys,
-    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
-    uint64_t matching_row_count,
-    const prdb_sdk_select_binding_v21 *binding) {
-    composite_grouped_result_context *context =
-        (composite_grouped_result_context *)opaque;
-    const prdb_sdk_select_binding_v7 *aggregate_binding;
-    int32_t status;
-    if (context == NULL || binding == NULL || aggregate_value == NULL ||
-        group_key_count != 2 || matching_row_count == 0 ||
-        aggregate_value->state != PRDB_SDK_VALUE_STATE_VALUE ||
-        aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_DECIMAL ||
-        binding->base.having_node_count != 1 ||
-        binding->base.having_type_code != PRDB_SDK_VALUE_TYPE_DECIMAL ||
-        binding->having_nodes[0].base.operand_kind !=
-            PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL ||
-        binding->having_nodes[0].scale != 2) {
-        return 1;
-    }
-    aggregate_binding = &binding->base.base.base.base.base;
-    if (aggregate_binding->aggregate_kind !=
-            PRDB_SDK_SQL_V7_AGGREGATE_SUM ||
-        aggregate_binding->aggregate_column.type_code !=
-            PRDB_SDK_VALUE_TYPE_DECIMAL ||
-        aggregate_binding->aggregate_column.decimal_precision != 4 ||
-        aggregate_binding->aggregate_column.decimal_scale != 2 ||
-        binding->base.having_decimal_precision != 38 ||
-        binding->base.having_decimal_scale != 2 ||
-        binding->having_nodes[0].coefficient[14] != 1 ||
-        binding->having_nodes[0].coefficient[15] != 0xc2) {
-        return 1;
-    }
-    for (uint32_t index = 0; index < 14; ++index)
-        if (binding->having_nodes[0].coefficient[index] != 0) return 1;
-    status = prdb_sdk_sql_write_group_composite_result_v1(
-        context->host, &binding->base.base.base.base, context->columns,
-        context->column_count, group_keys, group_key_count, aggregate_value,
-        matching_row_count, context->output, context->output_capacity,
-        &context->output_len);
-    if (status != PRDB_SDK_SQL_RESULT_OK) return 1;
-    ++context->row_count;
-    return 0;
-}
-
 static int32_t write_grouped_composite_avg_v21(
     void *opaque, const prdb_sdk_value_v1 *group_keys,
     uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
@@ -635,54 +570,6 @@ static int32_t write_grouped_composite_min_v21(
     aggregate_binding = &binding->base.base.base.base.base;
     if (aggregate_binding->aggregate_kind !=
             PRDB_SDK_SQL_V7_AGGREGATE_MIN ||
-        aggregate_binding->aggregate_column.type_code !=
-            PRDB_SDK_VALUE_TYPE_DECIMAL ||
-        aggregate_binding->aggregate_column.decimal_precision != 4 ||
-        aggregate_binding->aggregate_column.decimal_scale != 2) {
-        return 1;
-    }
-    status = prdb_sdk_sql_write_group_composite_result_v1(
-        context->host, &binding->base.base.base.base, context->columns,
-        context->column_count, group_keys, group_key_count, aggregate_value,
-        matching_row_count, context->output, context->output_capacity,
-        &context->output_len);
-    if (status != PRDB_SDK_SQL_RESULT_OK) return 1;
-    ++context->row_count;
-    return 0;
-}
-
-static int32_t write_grouped_composite_max_v21(
-    void *opaque, const prdb_sdk_value_v1 *group_keys,
-    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
-    uint64_t matching_row_count,
-    const prdb_sdk_select_binding_v21 *binding) {
-    composite_grouped_result_context *context =
-        (composite_grouped_result_context *)opaque;
-    const prdb_sdk_select_binding_v7 *aggregate_binding;
-    int32_t status;
-    if (context == NULL || binding == NULL || aggregate_value == NULL ||
-        group_key_count != 2 || matching_row_count == 0 ||
-        aggregate_value->state != PRDB_SDK_VALUE_STATE_VALUE ||
-        aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_DECIMAL ||
-        aggregate_value->data_len != 16) {
-        return 1;
-    }
-    if (binding->base.having_node_count != 1 ||
-        binding->base.having_type_code != PRDB_SDK_VALUE_TYPE_DECIMAL ||
-        binding->base.having_decimal_precision != 4 ||
-        binding->base.having_decimal_scale != 2 ||
-        binding->having_nodes[0].base.operand_kind !=
-            PRDB_SDK_SQL_V21_OPERAND_NUMERIC_LITERAL ||
-        binding->having_nodes[0].scale != 2 ||
-        binding->having_nodes[0].coefficient[15] != 200) {
-        return 1;
-    }
-    for (uint32_t index = 0; index < 15; ++index) {
-        if (binding->having_nodes[0].coefficient[index] != 0) return 1;
-    }
-    aggregate_binding = &binding->base.base.base.base.base;
-    if (aggregate_binding->aggregate_kind !=
-            PRDB_SDK_SQL_V7_AGGREGATE_MAX ||
         aggregate_binding->aggregate_column.type_code !=
             PRDB_SDK_VALUE_TYPE_DECIMAL ||
         aggregate_binding->aggregate_column.decimal_precision != 4 ||
@@ -1086,13 +973,10 @@ static int32_t run_write_read_fixture(
         "(COUNT(*) >= 2 OR COUNT(*) = 3) AND NOT COUNT(*) < 2 "
         "ORDER BY right_key DESC NULLS LAST, COUNT(*) DESC, "
         "left_key ASC NULLS LAST LIMIT 2";
-    static const uint8_t select_composite_numeric_v21_sql[] =
-        "SELECT left_key, right_key, COUNT(*) FROM grouped_records "
-        "GROUP BY left_key, right_key HAVING COUNT(*) >= 2.0e0";
-    static const uint8_t select_composite_sum_numeric_v21_sql[] =
+    static const uint8_t select_composite_hidden_count_dispatch_sql[] =
         "SELECT left_key, right_key, SUM(decimal_value) "
-        "FROM decimal_grouped_records "
-        "GROUP BY left_key, right_key HAVING SUM(decimal_value) >= 4.50e0";
+        "FROM decimal_grouped_records GROUP BY left_key, right_key "
+        "HAVING COUNT(*) >= 2 AND SUM(decimal_value) >= 4.50e0";
     static const uint8_t select_composite_avg_numeric_v21_sql[] =
         "SELECT left_key, right_key, AVG(decimal_value) "
         "FROM decimal_grouped_records "
@@ -1102,12 +986,6 @@ static int32_t run_write_read_fixture(
         "FROM decimal_grouped_records "
         "GROUP BY left_key, right_key "
         "HAVING MIN(decimal_value) <= 1.00e0 "
-        "ORDER BY left_key ASC LIMIT 1";
-    static const uint8_t select_composite_max_numeric_v21_sql[] =
-        "SELECT left_key, right_key, MAX(decimal_value) "
-        "FROM decimal_grouped_records "
-        "GROUP BY left_key, right_key "
-        "HAVING MAX(decimal_value) >= 2.00e0 "
         "ORDER BY left_key ASC LIMIT 1";
     static const uint8_t select_join_sql[] =
         "SELECT records.id, linked_records.id FROM records INNER JOIN "
@@ -2117,43 +1995,6 @@ static int32_t run_write_read_fixture(
     composite_grouped_results.row_count = 0;
     composite_grouped_results.output_len = 0;
     composite_grouped_results.column_count = 3;
-    status = prdb_sdk_sql_execute_group_v21(
-        host, schema, sizeof(schema) - 1, select_composite_numeric_v21_sql,
-        sizeof(select_composite_numeric_v21_sql) - 1, NULL, 0, 16,
-        sizeof(batch_response), planner_response, sizeof(planner_response),
-        executor_response, sizeof(executor_response), batch_response,
-        sizeof(batch_response), planner_columns, 9, executor_columns, 9,
-        cell_scratch, 9, grouped_materialized, sizeof(grouped_materialized),
-        write_grouped_composite_count_v21, &composite_grouped_results);
-    if (status != PRDB_SDK_SQL_EXEC_OK ||
-        composite_grouped_results.row_count != 2) {
-        static const uint8_t message[] = "fixture-error-composite-numeric-v21";
-        return report_failure(host, message, sizeof(message) - 1);
-    }
-
-    composite_grouped_results.row_count = 0;
-    composite_grouped_results.output_len = 0;
-    status = prdb_sdk_sql_execute_group_v21(
-        host, schema, sizeof(schema) - 1,
-        select_composite_sum_numeric_v21_sql,
-        sizeof(select_composite_sum_numeric_v21_sql) - 1, NULL, 0, 16,
-        sizeof(batch_response), planner_response, sizeof(planner_response),
-        executor_response, sizeof(executor_response), batch_response,
-        sizeof(batch_response), planner_columns, 9, executor_columns, 9,
-        cell_scratch, 9, grouped_materialized, sizeof(grouped_materialized),
-        write_grouped_composite_sum_v21, &composite_grouped_results);
-    if (status != PRDB_SDK_SQL_EXEC_OK) {
-        uint8_t message[] = "fixture-error-v21-sum-status-0";
-        if (status >= 0 && status <= 9)
-            message[sizeof(message) - 2] = (uint8_t)('0' + status);
-        return report_failure(host, message, sizeof(message) - 1);
-    }
-    if (composite_grouped_results.row_count != 1) {
-        static const uint8_t message[] =
-            "fixture-error-composite-sum-numeric-v21-row-count";
-        return report_failure(host, message, sizeof(message) - 1);
-    }
-
     composite_grouped_results.row_count = 0;
     composite_grouped_results.output_len = 0;
     status = prdb_sdk_sql_execute_group_v21(
@@ -2201,30 +2042,17 @@ static int32_t run_write_read_fixture(
         return report_failure(host, message, sizeof(message) - 1);
     }
 
-    composite_grouped_results.row_count = 0;
-    composite_grouped_results.output_len = 0;
-    status = prdb_sdk_sql_execute_group_v21(
-        host, schema, sizeof(schema) - 1, select_composite_max_numeric_v21_sql,
-        sizeof(select_composite_max_numeric_v21_sql) - 1, NULL, 0, 16,
-        sizeof(batch_response), planner_response, sizeof(planner_response),
-        executor_response, sizeof(executor_response), batch_response,
-        sizeof(batch_response), planner_columns, 9, executor_columns, 9,
-        cell_scratch, 9, grouped_materialized, sizeof(grouped_materialized),
-        write_grouped_composite_max_v21, &composite_grouped_results);
-    if (status != PRDB_SDK_SQL_EXEC_OK) {
-        return report_failure(host, (const uint8_t *)
-                                       "fixture-error-composite-max-v21",
-                              sizeof("fixture-error-composite-max-v21") - 1);
-    }
-    if (composite_grouped_results.row_count != 1) {
-        uint8_t message[] = "fixture-error-composite-max-v21-count-00";
-        uint32_t count = composite_grouped_results.row_count;
-        if (count > 99) count = 99;
-        message[sizeof(message) - 3] = (uint8_t)('0' + count / 10);
-        message[sizeof(message) - 2] = (uint8_t)('0' + count % 10);
+    composite_grouped_results.column_count = 2;
+
+    status = prdb_sdk_sql_run_statement_v1(
+        host, schema, sizeof(schema) - 1,
+        select_composite_hidden_count_dispatch_sql,
+        sizeof(select_composite_hidden_count_dispatch_sql) - 1, NULL, 0);
+    if (status != PRDB_SDK_SQL_DISPATCH_OK) {
+        static const uint8_t message[] =
+            "fixture-error-composite-hidden-count-dispatch";
         return report_failure(host, message, sizeof(message) - 1);
     }
-    composite_grouped_results.column_count = 2;
 
     grouped_results.row_count = 0;
     grouped_results.output_len = 0;

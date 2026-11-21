@@ -897,3 +897,11 @@
 - Finding: the development shell exports `CC=clang`; using that value as the SDK shared linker caused the Nix Clang wrapper to embed libc/GCC RUNPATH entries even after the Makefile cleared `NIX_LDFLAGS`.
 - Change: the SDK Makefile now defaults `SHARED_LINKER` to GNU `cc`, as required for the SDK's executable-stack linker flags and release profile. Explicit `SHARED_LINKER` overrides remain supported. The toolchain spec records the separation between Rust's `CC` and the SDK linker.
 - Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed the full maintained TinyCC suite and shared-library metadata tests. `readelf -d` on the resulting SDK library showed only the libc NEEDED entry and no RPATH/RUNPATH.
+
+## SQL-7 / SQL-8 follow-up: v22 grouped dispatcher through confined SQL — verified
+
+- Contract: [`sql-library.md`](../../specs/sql-library.md). The SQL statement dispatcher must carry composite grouped v22 SELECT through the installed SDK, authorized executor scan, SQLR writer, and normal confined result relay.
+- Regression: the maintained query artifact now calls `prdb_sdk_sql_run_statement_v1` for `SELECT left_key, right_key, SUM(decimal_value) ... HAVING COUNT(*) >= 2 AND SUM(decimal_value) >= 4.50e0`. The delegated acceptance checks the exact relayed SQLR record for `(2,9,4.50)`.
+- Integration finding: the first run used a stale staged SDK release and failed at dispatch. Rebuilding `release-profile` loaded the current dispatcher and produced the expected SQLR, then exposed the artifact's shared 256-request ceiling. The confined fixture now uses the dispatcher query in place of the separate Decimal SUM runner and drops redundant selected-COUNT and Decimal MAX scans; the TinyCC parser/binder/runner suite retains that v21 coverage.
+- Verification: `make -f engine/sdk/Makefile sandbox-query-fixture`, `make -f engine/sdk/Makefile release-profile`, and `cargo fmt --all -- --check` passed. The exact `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed inside the delegated `systemd --user` service in 39.47 seconds with the operational-load scenario active.
+- Remaining: broader analytical type/workload coverage, secure spill, repeatable pressure measurements, and mixed-workload measurements remain open.
