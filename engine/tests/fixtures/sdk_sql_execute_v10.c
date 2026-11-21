@@ -916,12 +916,15 @@ static int32_t on_group_v13(void *context,
            PRDB_SDK_VALUE_ACCESS_OK);
     assert(binding->base.aggregate_kind ==
                PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR ||
-           binding->base.aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_SUM);
+           binding->base.aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_MIN ||
+           binding->base.aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_MAX ||
+           binding->base.aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_SUM ||
+           binding->base.aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_AVG);
     if (binding->base.aggregate_kind ==
         PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR) {
         assert(aggregate_value == NULL);
         capture->aggregates[capture->calls] = (int32_t)matching_row_count;
-    } else {
+    } else if (binding->base.aggregate_kind == PRDB_SDK_SQL_V7_AGGREGATE_SUM) {
         int64_t sum = 0;
         assert(aggregate_value != NULL &&
                aggregate_value->type_code == PRDB_SDK_VALUE_TYPE_BIGINT);
@@ -929,6 +932,29 @@ static int32_t on_group_v13(void *context,
                PRDB_SDK_VALUE_ACCESS_OK);
         capture->aggregates[capture->calls] = (int32_t)sum;
         assert((int64_t)capture->aggregates[capture->calls] == sum);
+    } else if (binding->base.aggregate_kind ==
+                   PRDB_SDK_SQL_V7_AGGREGATE_MIN ||
+               binding->base.aggregate_kind ==
+                   PRDB_SDK_SQL_V7_AGGREGATE_MAX) {
+        int32_t value = 0;
+        assert(aggregate_value != NULL &&
+               aggregate_value->type_code == PRDB_SDK_VALUE_TYPE_INTEGER);
+        assert(prdb_sdk_value_get_integer_v1(aggregate_value, &value) ==
+               PRDB_SDK_VALUE_ACCESS_OK);
+        capture->aggregates[capture->calls] = value;
+    } else {
+        static const uint8_t average_nine[16] = {
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x89, 0x54, 0x40};
+        static const uint8_t average_five[16] = {
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x4c, 0x4b, 0x40};
+        const uint8_t *expected = first == 1 ? average_nine : average_five;
+        assert(binding->base.aggregate_kind ==
+               PRDB_SDK_SQL_V7_AGGREGATE_AVG);
+        assert(aggregate_value != NULL &&
+               aggregate_value->type_code == PRDB_SDK_VALUE_TYPE_DECIMAL &&
+               aggregate_value->data_len == 16 &&
+               memcmp(aggregate_value->data, expected, 16) == 0);
+        capture->aggregates[capture->calls] = first == 1 ? 9 : 5;
     }
     capture->keys[capture->calls] = first;
     capture->second_keys[capture->calls] = second;
@@ -1655,6 +1681,12 @@ int main(void) {
         "SELECT id, score, COUNT(*) FROM widgets GROUP BY id, score";
     static const uint8_t v13_sum_sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score";
+    static const uint8_t v13_min_sql[] =
+        "SELECT id, score, MIN(score) FROM widgets GROUP BY id, score";
+    static const uint8_t v13_max_sql[] =
+        "SELECT id, score, MAX(score) FROM widgets GROUP BY id, score";
+    static const uint8_t v13_avg_sql[] =
+        "SELECT id, score, AVG(score) FROM widgets GROUP BY id, score";
     static const uint8_t v14_having_sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
         "HAVING SUM(score) >= $1";
@@ -2008,6 +2040,24 @@ int main(void) {
                              sizeof(v13_sum_sql) - 1, 64,
                              &capture) == PRDB_SDK_SQL_EXEC_OK);
         assert(capture.calls == 2 && capture.aggregates[0] == 18 &&
+               capture.aggregates[1] == 5 && mock.statement_failed == 0);
+        reset_scan(&mock, &capture, 1);
+        assert(run_query_v13(&mock, v13_min_sql,
+                             sizeof(v13_min_sql) - 1, 64,
+                             &capture) == PRDB_SDK_SQL_EXEC_OK);
+        assert(capture.calls == 2 && capture.aggregates[0] == 9 &&
+               capture.aggregates[1] == 5 && mock.statement_failed == 0);
+        reset_scan(&mock, &capture, 1);
+        assert(run_query_v13(&mock, v13_max_sql,
+                             sizeof(v13_max_sql) - 1, 64,
+                             &capture) == PRDB_SDK_SQL_EXEC_OK);
+        assert(capture.calls == 2 && capture.aggregates[0] == 9 &&
+               capture.aggregates[1] == 5 && mock.statement_failed == 0);
+        reset_scan(&mock, &capture, 1);
+        assert(run_query_v13(&mock, v13_avg_sql,
+                             sizeof(v13_avg_sql) - 1, 64,
+                             &capture) == PRDB_SDK_SQL_EXEC_OK);
+        assert(capture.calls == 2 && capture.aggregates[0] == 9 &&
                capture.aggregates[1] == 5 && mock.statement_failed == 0);
         reset_scan(&mock, &capture, 1);
         assert(run_query_v14(&mock, v14_having_sql,
