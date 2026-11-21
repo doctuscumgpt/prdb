@@ -44567,6 +44567,32 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 audit_event: bigint_policy_audit,
             })
             .map_err(|error| format!("create confined BIGINT aggregate policy: {error:?}"))?;
+        let hidden_row_policy_invocation = id(0xcc);
+        let mut hidden_row_policy_audit =
+            identity_audit_event(0xcd, user_id, bigint_table.table_id);
+        hidden_row_policy_audit.correlation_id = hidden_row_policy_invocation;
+        storage
+            .create_policy(CreatePolicyRequest {
+                invocation_id: hidden_row_policy_invocation,
+                authenticated_actor_id: user_id,
+                table_id: bigint_table.table_id,
+                name: "sandbox_bigint_grouped_restrict_high_key_rows".to_owned(),
+                kind: PolicyKind::Row,
+                operation: prdb_engine::authorization::Operation::Select,
+                effect: prdb_engine::authorization::Effect::Restrict,
+                recipients: vec![prdb_engine::authorization::Subject::Principal(user_id)],
+                target_column_ids: Vec::new(),
+                using_expression: Some(prdb_engine::authorization::Expr::LessEqual(
+                    Box::new(prdb_engine::authorization::Expr::Field(0)),
+                    Box::new(prdb_engine::authorization::Expr::Literal(Some(
+                        ScalarValue::Integer(3),
+                    ))),
+                )),
+                with_check_expression: None,
+                retention_deadline_us: now + 3_600_000_000,
+                audit_event: hidden_row_policy_audit,
+            })
+            .map_err(|error| format!("create confined BIGINT row restriction: {error:?}"))?;
         for (column_index, column_id) in bigint_table.column_ids.iter().enumerate() {
             let invocation_byte = [0xf3, 0xf5, 0xf7, 0xaa, 0xb9][column_index];
             let audit_byte = [0xf2, 0xf3, 0xf5, 0xab, 0xba][column_index];
@@ -44626,6 +44652,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             (0x95, 2, 9, Some(9i64), Some(9), Some(9)),
             (0x96, 2, 9, Some(12i64), Some(12), Some(12)),
             (0x97, 3, 11, None, None, None),
+            (0x98, 4, 13, Some(44i64), Some(44), Some(44)),
         ]
         .into_iter()
         .map(
@@ -45438,6 +45465,25 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                             &average.to_be_bytes(),
                         )
                     },
+                )
+            );
+        }
+        for (left_key, right_key, count) in [(2i32, 9i32, 3u64), (1, 7, 2), (3, 11, 1)] {
+            let frame = bigint_frames
+                .next()
+                .ok_or("missing policy-filtered BIGINT COUNT(*) row")?;
+            assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+            assert_eq!(frame.request_id, bigint_accepted.request_id);
+            assert_eq!(
+                frame.payload,
+                expected_aggregate_row(
+                    b"count",
+                    4,
+                    0,
+                    0,
+                    left_key,
+                    right_key,
+                    &count.to_be_bytes(),
                 )
             );
         }

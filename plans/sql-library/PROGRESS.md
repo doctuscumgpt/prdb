@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-8 follow-up: COUNT(*) excludes policy-hidden rows — verified
+
+- Contract: aggregate groups and `COUNT(*)` operate only on rows visible through the authorized, row-policy-filtered scan.
+- Regression: the confined numeric relation includes a fourth `(4,13)` group denied by the principal's restrictive SELECT policy. An optimizer-backed ordered composite `COUNT(*)` query returns only `(2,9)=3`, `(1,7)=2`, and `(3,11)=1`; the Rust gateway acceptance checks the exact SQLR rows and confirms the hidden group never reaches the result stream.
+- Verification: the TinyCC sandbox fixture and release profile built; the focused delegated-cgroup SQL acceptance passed; `make -f engine/sdk/Makefile test`, `cargo fmt --all -- --check`, warning-denied all-target Clippy, and the full serial delegated-cgroup `cargo test --workspace --locked -- --test-threads=1` suite passed. `git diff --check` passed.
+- Remaining: broader analytical workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+
 ## SQL-7 / WI-7 follow-up: seed v22 AVG and negative exponent HAVING fuzz path — verified
 
 - Regression input: the v22 parser corpus now includes a compound predicate that compares hidden `COUNT(*)` and selected `AVG(score)` through OR, with a negative fractional exponent literal. This complements the existing hidden-count SUM seeds and exercises both BIGINT and Decimal operand binding paths under the v22 AST mask oracle.

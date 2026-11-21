@@ -1420,6 +1420,10 @@ static int32_t run_write_read_fixture(
         "FROM bigint_grouped_records GROUP BY left_key, right_key "
         "ORDER BY AVG(integer_measure) DESC NULLS LAST, "
         "left_key ASC NULLS FIRST LIMIT 3";
+    static const uint8_t select_bigint_visible_count_optimizer_sql[] =
+        "SELECT left_key, right_key, COUNT(*) "
+        "FROM bigint_grouped_records GROUP BY left_key, right_key "
+        "ORDER BY COUNT(*) DESC NULLS LAST, left_key ASC NULLS FIRST LIMIT 3";
     static const uint8_t select_analytical_pressure_sql[] =
         "SELECT group_key, SUM(measure) FROM analytics_pressure_records "
         "GROUP BY group_key";
@@ -2086,6 +2090,50 @@ static int32_t run_write_read_fixture(
                 }
                 static const uint8_t message[] =
                     "fixture-error-confined-bigint-avg-rows";
+                return report_failure(host, message, sizeof(message) - 1);
+            }
+        }
+        if (invocation->parameters[0] == 'B') {
+            composite_aggregate_expectation count_expectation = {
+                &composite_grouped_results,
+                PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR};
+            ordered_composite_aggregate_expectation ordered_count_expectation = {
+                .aggregate = count_expectation,
+                .first_left_key = 2,
+                .first_right_key = 9,
+                .second_left_key = 1,
+                .second_right_key = 7,
+                .third_left_key = 3,
+                .third_right_key = 11,
+                .first_matching_row_count = 3,
+                .second_matching_row_count = 2,
+                .third_matching_row_count = 1,
+                .expected_group_count = 3};
+            composite_grouped_results.row_count = 0;
+            composite_grouped_results.output_len = 0;
+            status = prdb_sdk_sql_execute_ordered_composite_aggregate_optimizer_v1(
+                optimizer_host_v5, schema, sizeof(schema) - 1,
+                select_bigint_visible_count_optimizer_sql,
+                sizeof(select_bigint_visible_count_optimizer_sql) - 1, 16,
+                sizeof(batch_response), group_count_optimizer_request,
+                sizeof(group_count_optimizer_request),
+                group_count_optimizer_response,
+                sizeof(group_count_optimizer_response), planner_response,
+                sizeof(planner_response), executor_response,
+                sizeof(executor_response), batch_response,
+                sizeof(batch_response), planner_columns, 9, executor_columns, 9,
+                cell_scratch, 9, grouped_materialized,
+                sizeof(grouped_materialized),
+                write_ordered_composite_group_aggregate_optimizer,
+                &ordered_count_expectation);
+            if (status != PRDB_SDK_SQL_EXEC_OK ||
+                composite_grouped_results.row_count != 3 ||
+                ordered_count_expectation.next_group != 3) {
+                static uint8_t message[] =
+                    "fixture-error-bigint-visible-count-status-0";
+                if (status >= 0 && status <= 9) {
+                    message[sizeof(message) - 2] = (uint8_t)('0' + status);
+                }
                 return report_failure(host, message, sizeof(message) - 1);
             }
         }
