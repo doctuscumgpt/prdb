@@ -913,3 +913,11 @@
 - Implementation: `prdb_sdk_sql_run_v1` now classifies v22 composite grouping first and then v10 single-key grouping; both paths share bounded materialization storage. The single-key callback selects the existing COUNT, MIN/MAX, SUM, or AVG SQLR writer from the v7 binding.
 - Verification: focused dispatch fixture and full TinyCC SDK suite passed. `git diff --check` passed.
 - Remaining: broader analytical type/workload coverage, secure spill, repeatable pressure measurements, and mixed-workload measurements remain open.
+
+## SQL-7 follow-up: filtered aliased INNER JOIN through statement dispatcher — implemented
+
+- Contract: [`sql-library.md`](../../specs/sql-library.md). The general statement dispatcher carries supported v20 alias-aware INNER JOIN statements with qualified WHERE comparisons through the existing bounded two-scan runner and SQLR writer.
+- Regression: the dispatcher fixture executes a self-join with two equality keys, a typed qualified filter parameter, and LIMIT. It checks both relation descriptions and scans, then verifies the emitted SQLR projection values.
+- Implementation: `prdb_sdk_sql_run_v1` recognizes v20 JOIN statements before the single-key grouped and row SELECT routes, allocates disjoint bounded two-relation response, shape, row, and materialization buffers, and reuses the established joined SQLR writer.
+- Verification: the focused dispatcher fixture and full TinyCC SDK suite passed. `git diff --check` passed.
+- Remaining: broader analytical type/workload coverage, secure spill, repeatable pressure measurements, and mixed-workload measurements remain open.

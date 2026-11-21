@@ -1,6 +1,7 @@
 #include "prdb_sdk_sql_dispatch_v1.h"
 #include "prdb_sdk_executor_v1.h"
 #include "prdb_sdk_planner_v1.h"
+#include "prdb_sdk_sql_exec_v20.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -12,6 +13,8 @@ typedef struct dispatch_test_context {
     uint32_t next_calls;
     uint32_t result_calls;
     uint32_t result_len;
+    uint32_t join_open_calls;
+    uint32_t join_next_calls[2];
     uint8_t planner_reply[256];
     uint32_t planner_reply_len;
     uint8_t executor_reply[256];
@@ -20,6 +23,62 @@ typedef struct dispatch_test_context {
     uint32_t batch_reply_len;
     uint8_t result_bytes[512];
 } dispatch_test_context;
+
+static int32_t join_executor_request(
+    void *opaque, uint16_t operation, const uint8_t *request,
+    uint64_t request_len, uint8_t *response, uint64_t response_capacity,
+    uint64_t *response_len) {
+    dispatch_test_context *context = (dispatch_test_context *)opaque;
+    static const uint8_t ready[] = {0, 1, 0};
+    static const uint8_t finished[] = {0, 1, 1, 0, 0};
+    if (context == NULL || response_len == NULL || !context->group_success)
+        return PRDB_QUERY_CALLBACK_IO_ERROR;
+    if (operation == PRDB_SDK_EXECUTOR_OP_RESOLVE_RELATION) {
+        if (context->executor_reply_len > response_capacity)
+            return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
+        memcpy(response, context->executor_reply, context->executor_reply_len);
+        *response_len = context->executor_reply_len;
+    } else if (operation == PRDB_SDK_EXECUTOR_OP_CHECK_CANCELLATION) {
+        if (request_len != 0 || sizeof(ready) > response_capacity)
+            return PRDB_QUERY_CALLBACK_INVALID_ARGUMENT;
+        memcpy(response, ready, sizeof(ready));
+        *response_len = sizeof(ready);
+    } else if (operation == PRDB_SDK_EXECUTOR_OP_OPEN_SCAN) {
+        uint8_t opened[18] = {0, 1, 7};
+        if (request_len == 0 || sizeof(opened) > response_capacity ||
+            context->join_open_calls >= 2)
+            return PRDB_QUERY_CALLBACK_INVALID_ARGUMENT;
+        memset(opened + 3, context->join_open_calls == 0 ? 0x44 : 0x55, 15);
+        ++context->join_open_calls;
+        memcpy(response, opened, sizeof(opened));
+        *response_len = sizeof(opened);
+    } else if (operation == PRDB_SDK_EXECUTOR_OP_NEXT_BATCH) {
+        uint32_t scan;
+        if (context->join_open_calls == 0 || context->join_open_calls > 2)
+            return PRDB_QUERY_CALLBACK_INVALID_ARGUMENT;
+        scan = context->join_open_calls - 1;
+        if (context->join_next_calls[scan]++ == 0) {
+            if (context->batch_reply_len > response_capacity)
+                return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
+            memcpy(response, context->batch_reply, context->batch_reply_len);
+            *response_len = context->batch_reply_len;
+        } else {
+            if (sizeof(finished) > response_capacity)
+                return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
+            memcpy(response, finished, sizeof(finished));
+            *response_len = sizeof(finished);
+        }
+    } else if (operation == PRDB_SDK_EXECUTOR_OP_CLOSE_CURSOR) {
+        if (sizeof(ready) > response_capacity)
+            return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
+        memcpy(response, ready, sizeof(ready));
+        *response_len = sizeof(ready);
+    } else {
+        return PRDB_QUERY_CALLBACK_IO_ERROR;
+    }
+    (void)request;
+    return PRDB_QUERY_CALLBACK_OK;
+}
 
 static void put_u16(uint8_t *bytes, uint32_t *offset, uint16_t value) {
     bytes[(*offset)++] = (uint8_t)(value >> 8);
@@ -361,6 +420,87 @@ static int test_dispatch_single_key_grouped_select_emits_sqlr(void) {
     return 0;
 }
 
+static int test_dispatch_filtered_join_emits_sqlr(void) {
+    static const uint8_t sql[] =
+        "SELECT l.id, r.score FROM widgets AS l INNER JOIN widgets AS r "
+        "ON l.id = r.id AND l.score = r.score "
+        "WHERE l.score >= $1 LIMIT 1";
+    static const uint8_t parameters[] = {
+        'P', 'S', 'P', '1', 0, 1, 0, 0,
+        0, 0, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0, 0, 0,
+        0, 0, 0, 4, 0, 0, 0, 3
+    };
+    dispatch_test_context context = {0};
+    prdb_host_api_v3 host = {0};
+    int32_t status;
+    uint32_t offset = 0;
+    uint16_t name_len;
+
+    context.group_success = 1;
+    context.planner_reply_len = make_integer_relation(
+        context.planner_reply, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x22);
+    context.executor_reply_len = make_integer_relation(
+        context.executor_reply, 6, 0x22);
+    context.batch_reply_len = make_group_rows(context.batch_reply);
+    host.struct_size = sizeof(host);
+    host.abi_version = PRDB_QUERY_ABI_V3_VERSION;
+    host.context = &context;
+    host.executor_request = join_executor_request;
+    host.planner_request = fail_planner_request;
+    host.write_result = discard_result;
+    host.statement_failure = count_statement_failure;
+    status = prdb_sdk_sql_run_statement_v1(
+            &host, (const uint8_t *)"app", 3, sql, sizeof(sql) - 1,
+            parameters, sizeof(parameters));
+    if (status != PRDB_SDK_SQL_DISPATCH_OK ||
+        context.planner_calls != 4 || context.failure_calls != 0 ||
+        context.join_open_calls != 2 || context.result_calls != 1 ||
+        context.result_len < 8 || memcmp(context.result_bytes, "SQLR", 4) != 0) {
+        fprintf(stderr, "join dispatch status=%d planner=%u failed=%u open=%u results=%u len=%u\n",
+                status, context.planner_calls, context.failure_calls,
+                context.join_open_calls, context.result_calls,
+                context.result_len);
+        return 1;
+    }
+    if (context.join_next_calls[0] != 1 || context.join_next_calls[1] != 1)
+        return 1;
+    offset = 4;
+    if (context.result_bytes[offset++] != 0 ||
+        context.result_bytes[offset++] != 1 ||
+        context.result_bytes[offset++] != 0 ||
+        context.result_bytes[offset++] != 2) return 1;
+    name_len = (uint16_t)(((uint16_t)context.result_bytes[offset] << 8) |
+                         context.result_bytes[offset + 1]);
+    offset += 2;
+    if (name_len != 2 || memcmp(context.result_bytes + offset, "id", 2) != 0)
+        return 1;
+    offset += name_len;
+    if (read_u32(context.result_bytes + offset) !=
+        PRDB_SDK_VALUE_TYPE_INTEGER) return 1;
+    offset += 6;
+    if (context.result_bytes[offset++] != PRDB_SDK_VALUE_STATE_VALUE ||
+        read_u32(context.result_bytes + offset) != 4) return 1;
+    offset += 4;
+    if (read_u32(context.result_bytes + offset) != 1) return 1;
+    offset += 4;
+    name_len = (uint16_t)(((uint16_t)context.result_bytes[offset] << 8) |
+                         context.result_bytes[offset + 1]);
+    offset += 2;
+    if (name_len != 5 ||
+        memcmp(context.result_bytes + offset, "score", 5) != 0) return 1;
+    offset += name_len;
+    if (read_u32(context.result_bytes + offset) !=
+        PRDB_SDK_VALUE_TYPE_INTEGER) return 1;
+    offset += 6;
+    if (context.result_bytes[offset++] != PRDB_SDK_VALUE_STATE_VALUE ||
+        read_u32(context.result_bytes + offset) != 4) return 1;
+    offset += 4;
+    if (read_u32(context.result_bytes + offset) != 3) return 1;
+    offset += 4;
+    if (offset != context.result_len) return 1;
+    return 0;
+}
+
 static void put_u32(uint8_t *out, uint32_t value) {
     out[0] = (uint8_t)(value >> 24);
     out[1] = (uint8_t)(value >> 16);
@@ -432,6 +572,10 @@ int main(void) {
     }
     if (test_dispatch_single_key_grouped_select_emits_sqlr() != 0) {
         fputs("single-key grouped SELECT dispatch did not emit expected SQLR\n", stderr);
+        return 1;
+    }
+    if (test_dispatch_filtered_join_emits_sqlr() != 0) {
+        fputs("filtered JOIN dispatch did not emit expected SQLR\n", stderr);
         return 1;
     }
     if (test_typed_values_and_null() != 0) {
