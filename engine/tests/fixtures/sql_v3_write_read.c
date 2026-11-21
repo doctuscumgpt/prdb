@@ -586,24 +586,6 @@ static int32_t write_grouped_composite_min_v21(
     return 0;
 }
 
-static int32_t write_joined_row(void *opaque,
-                                const prdb_sdk_value_v1 *projected_values,
-                                uint32_t projection_count,
-                                const prdb_sdk_select_binding_v8 *binding) {
-    joined_result_context *context = (joined_result_context *)opaque;
-    if (context == NULL || binding == NULL || projection_count != 2 ||
-        binding->projection_count != 2) {
-        return 1;
-    }
-    int32_t status = prdb_sdk_sql_write_join_result_v1(
-        context->host, binding, context->left_columns, 1,
-        context->right_columns, 2, projected_values, projection_count,
-        context->output, context->output_capacity, &context->output_len);
-    if (status != PRDB_SDK_SQL_RESULT_OK) return 1;
-    ++context->row_count;
-    return 0;
-}
-
 static int32_t write_composite_joined_row(
     void *opaque, const prdb_sdk_value_v1 *projected_values,
     uint32_t projection_count, const prdb_sdk_select_binding_v16 *binding) {
@@ -1043,18 +1025,6 @@ static int32_t run_write_read_fixture(
     uint8_t update_targets[PRDB_SDK_SQL_EXEC_MAX_MUTATION_TARGETS * 16] = {0};
     prdb_sdk_sql_column_shape_v2 planner_columns[9] = {{0}};
     prdb_sdk_sql_column_shape_v2 executor_columns[9] = {{0}};
-    uint8_t join_left_planner_response[1024] = {0};
-    uint8_t join_right_planner_response[1024] = {0};
-    uint8_t join_left_executor_response[1024] = {0};
-    uint8_t join_right_executor_response[1024] = {0};
-    prdb_sdk_sql_column_shape_v2 join_left_planner_columns[9] = {{0}};
-    prdb_sdk_sql_column_shape_v2 join_right_planner_columns[9] = {{0}};
-    prdb_sdk_sql_column_shape_v2 join_left_executor_columns[9] = {{0}};
-    prdb_sdk_sql_column_shape_v2 join_right_executor_columns[9] = {{0}};
-    static prdb_sdk_sql_join_materialized_row_v8 join_left_rows[128];
-    static prdb_sdk_sql_join_materialized_row_v8 join_right_rows[128];
-    static uint8_t join_materialized_bytes[
-        PRDB_SDK_SQL_EXEC_V8_MAX_MATERIALIZED_BYTES];
     uint8_t composite_join_left_planner_response[1024] = {0};
     uint8_t composite_join_right_planner_response[1024] = {0};
     uint8_t composite_join_left_executor_response[1024] = {0};
@@ -1107,7 +1077,7 @@ static int32_t run_write_read_fixture(
         host, executor_columns, 2, composite_grouped_result,
         sizeof(composite_grouped_result), 0, 0};
     joined_result_context joined_results = {
-        host, join_left_executor_columns, join_right_executor_columns,
+        host, NULL, NULL,
         join_result, sizeof(join_result), 0, 0};
     uint32_t updated_count = 0;
     uint32_t deleted_count = 0;
@@ -2178,19 +2148,10 @@ static int32_t run_write_read_fixture(
         return report_failure(host, message, sizeof(message) - 1);
     }
 
-    status = prdb_sdk_sql_execute_inner_join_v8(
+    status = prdb_sdk_sql_run_statement_v1(
         host, schema, sizeof(schema) - 1, select_join_sql,
-        sizeof(select_join_sql) - 1, 16, sizeof(batch_response),
-        join_left_planner_response, sizeof(join_left_planner_response),
-        join_right_planner_response, sizeof(join_right_planner_response),
-        join_left_executor_response, sizeof(join_left_executor_response),
-        join_right_executor_response, sizeof(join_right_executor_response),
-        batch_response, sizeof(batch_response), join_left_planner_columns, 9,
-        join_right_planner_columns, 9, join_left_executor_columns, 9,
-        join_right_executor_columns, 9, cell_scratch, 9, join_left_rows, 128,
-        join_right_rows, 128, join_materialized_bytes,
-        sizeof(join_materialized_bytes), write_joined_row, &joined_results);
-    if (status != PRDB_SDK_SQL_EXEC_OK || joined_results.row_count != 1) {
+        sizeof(select_join_sql) - 1, NULL, 0);
+    if (status != PRDB_SDK_SQL_DISPATCH_OK) {
         static const uint8_t message[] = "fixture-error-inner-join";
         return report_failure(host, message, sizeof(message) - 1);
     }

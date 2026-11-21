@@ -922,3 +922,12 @@
 - Confined acceptance: the maintained `sql_v3_write_read.c` artifact now routes its parameterized v20 filtered join through `prdb_sdk_sql_run_statement_v1`. The delegated `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed and checked the exact relayed SQLR frame before durable commit.
 - Verification: `make -f engine/sdk/Makefile test`, `make -f engine/sdk/Makefile sandbox-query-fixture release-profile`, the focused dispatch fixture, and `git diff --check` passed. The confined acceptance passed inside the delegated `systemd --user` service in 39.00 seconds.
 - Remaining: broader analytical type/workload coverage, secure spill, repeatable pressure measurements, and mixed-workload measurements remain open.
+
+
+## SQL-7 follow-up: single-key INNER JOIN through statement dispatcher — implemented
+
+- Contract: [`sql-library.md`](../../specs/sql-library.md). The SQL statement dispatcher accepts v8 single-key INNER JOIN statements through the existing planner, bounded two-scan executor, and joined SQLR writer.
+- Regression: the dispatcher fixture first demonstrated that a v8 JOIN did not reach planner resolution through `prdb_sdk_sql_run_statement_v1`; it now checks independent resolution and scans for both relations and the exact SQLR row.
+- Implementation: `prdb_sdk_sql_run_v1` classifies the v8 form after v20 JOIN detection, allocates separate bounded planner/executor response and relation-shape buffers, and routes result rows through the established joined SQLR writer. The confined write/read fixture now uses the standard statement dispatcher for its linked-table JOIN.
+- Verification: `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` and `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile sandbox-query-fixture release-profile` passed. The exact `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` test passed inside the delegated `systemd --user` service in 39.25 seconds, checking the dispatched join result through the confined relay.
+- Remaining: broader analytical type/workload coverage, secure spill, repeatable pressure measurements, and mixed-workload measurements remain open.

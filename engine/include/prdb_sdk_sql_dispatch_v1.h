@@ -21,17 +21,18 @@ int32_t prdb_sdk_sql_decode_parameters_v1(
     prdb_sdk_sql_parameter_metadata_v1 *metadata,
     uint32_t metadata_capacity, uint32_t *parameter_count_out);
 
-/* Runs one row SELECT, supported single-key/composite grouped SELECT, or
- * alias-aware filtered INNER JOIN through bounded executor APIs. Invalid
- * PSP1/SQL input and execution errors latch failure. */
+/* Runs one row SELECT, supported single-key/composite grouped SELECT, a
+ * single-key INNER JOIN, or an alias-aware filtered INNER JOIN through
+ * bounded executor APIs. Invalid PSP1/SQL input and execution errors latch
+ * failure. */
 int32_t prdb_sdk_sql_run_v1(
     const prdb_host_api_v3 *host, const uint8_t *schema,
     uint32_t schema_len, const uint8_t *sql, uint64_t sql_len,
     const uint8_t *parameters, uint64_t parameters_len);
 
-/* Runs one supported row/grouped SELECT or DML statement. INSERT v3, UPDATE
- * v1, and DELETE v1 use bounded mutation APIs; SELECT input is delegated to
- * the SELECT entry point. Errors latch statement failure. */
+/* Runs one supported row/grouped/joined SELECT or DML statement. INSERT v3,
+ * UPDATE v1, and DELETE v1 use bounded mutation APIs; SELECT input is
+ * delegated to the SELECT entry point. Errors latch statement failure. */
 int32_t prdb_sdk_sql_run_statement_v1(
     const prdb_host_api_v3 *host, const uint8_t *schema,
     uint32_t schema_len, const uint8_t *sql, uint64_t sql_len,
