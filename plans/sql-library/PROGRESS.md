@@ -969,4 +969,11 @@
 - Contract: [`sql-library.md`](../../specs/sql-library.md) defines signed fixed-width numeric comparison, Decimal scale-aware comparison, Boolean order, UTF-8 text order, and bytewise UUID/BYTEA order for SQL sorting.
 - Regression: the maintained stable-order fixture now checks ascending and descending permutations for BOOLEAN, SMALLINT, INTEGER, BIGINT, DECIMAL, TEXT, VARCHAR, BYTEA, UUID, DATE, and TIMESTAMPTZ values. The cases include signed extrema, negative Decimal, multibyte UTF-8, and binary/fixed-width values.
 - Verification: focused `sdk-sql-order-v1` fixture and `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed with the pinned TinyCC toolchain; `git diff --check` passed.
-- Remaining: grouped-runner SQLR ordering parity across the full scalar matrix and broader analytical type/workload coverage remain open.
+- Remaining: broader analytical type/workload coverage remains open.
+
+## SQL-7 follow-up: grouped ORDER BY and SQLR across scalar types — verified
+
+- Contract: `sql-library.md` requires typed stable ordering for supported GROUP BY keys and preserves each key's declared type metadata in SQLR output.
+- Regression: `sdk-sql-execute-v10` now runs the v12 grouped COUNT runner for ascending and descending `ORDER BY id` over all 11 scalar types. It supplies keys in unsorted order, checks the callback's exact sorted key sequence, and compares each encoded group-count SQLR row byte-for-byte with an independently constructed expected record, including Decimal precision/scale and source type metadata.
+- Verification: focused `sdk-sql-execute-v10` fixture and the complete pinned-toolchain `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` suite passed; `git diff --check` passed.
+- Remaining: broader analytical workload coverage, secure spill, target-hardware measurements, and mixed-workload optimization remain open.

@@ -8,6 +8,7 @@
 #include "prdb_sdk_sql_exec_v18.h"
 #include "prdb_sdk_sql_exec_v21.h"
 #include "prdb_sdk_sql_exec_v22.h"
+#include "prdb_sdk_sql_result_v1.h"
 
 #include <assert.h>
 #include <string.h>
@@ -47,6 +48,15 @@ typedef struct group_capture {
     uint32_t aggregate_states[128];
     uint64_t row_counts[128];
     uint32_t text_key_bytes;
+    uint32_t scalar_order_mode;
+    uint32_t scalar_order_type;
+    uint8_t scalar_order_precision;
+    uint8_t scalar_order_scale;
+    uint32_t scalar_order_descending;
+    const uint8_t *scalar_order_expected[3];
+    uint32_t scalar_order_expected_len[3];
+    uint8_t scalar_order_sqlr[3][128];
+    uint64_t scalar_order_sqlr_len[3];
 } group_capture;
 
 static void put_u16(uint8_t *p, uint32_t *offset, uint16_t value) {
@@ -84,10 +94,20 @@ static uint32_t make_relation(uint8_t *p, uint8_t handle_kind,
         put_u32(p, &offset, index);
         p[offset++] = 1;
         p[offset++] = index == 0 ? key_type : PRDB_SDK_VALUE_TYPE_INTEGER;
-        p[offset++] = 0;
-        p[offset++] = 0;
-        p[offset++] = 0;
-        p[offset++] = 0;
+        if (index == 0 && key_type == PRDB_SDK_VALUE_TYPE_DECIMAL) {
+            p[offset++] = 38;
+            p[offset++] = 2;
+            p[offset++] = 0;
+            p[offset++] = 0;
+        } else if (index == 0 &&
+                   key_type == PRDB_SDK_VALUE_TYPE_VARCHAR) {
+            put_u32(p, &offset, 128);
+        } else {
+            p[offset++] = 0;
+            p[offset++] = 0;
+            p[offset++] = 0;
+            p[offset++] = 0;
+        }
         put_name(p, &offset, names[index]);
     }
     return offset;
@@ -126,6 +146,40 @@ static void append_integer_cell(uint8_t *p, uint32_t *offset, int32_t value) {
     p[(*offset)++] = PRDB_SDK_VALUE_TYPE_INTEGER;
     put_u32(p, offset, 4);
     put_u32(p, offset, bits);
+}
+
+static void append_typed_cell(uint8_t *p, uint32_t *offset, uint32_t type,
+                              const uint8_t *bytes, uint32_t byte_count) {
+    p[(*offset)++] = PRDB_SDK_VALUE_STATE_VALUE;
+    p[(*offset)++] = (uint8_t)type;
+    put_u32(p, offset, byte_count);
+    memcpy(p + *offset, bytes, byte_count);
+    *offset += byte_count;
+}
+
+static uint32_t make_typed_key_rows(
+    uint8_t *p, uint32_t finished, uint32_t key_type,
+    const uint8_t *const key_values[3], const uint32_t key_lengths[3],
+    uint32_t row_count) {
+    uint32_t offset = 0;
+    put_u16(p, &offset, 1);
+    p[offset++] = (uint8_t)finished;
+    if (!finished) {
+        p[offset++] = 7;
+        memset(p + offset, 0x55, 15);
+        offset += 15;
+    }
+    put_u16(p, &offset, (uint16_t)row_count);
+    for (uint32_t index = 0; index < row_count; ++index) {
+        p[offset++] = 8;
+        memset(p + offset, (int)(index + 1), 15);
+        offset += 15;
+        put_u16(p, &offset, 2);
+        append_typed_cell(p, &offset, key_type, key_values[index],
+                          key_lengths[index]);
+        append_integer_cell(p, &offset, 1);
+    }
+    return offset;
 }
 
 static void append_decimal_cell(uint8_t *p, uint32_t *offset,
@@ -518,6 +572,34 @@ static int32_t run_query_v11(mock_state *mock, const uint8_t *sql,
         materialized_bytes, arena_capacity, on_group_v11, capture);
 }
 
+static uint32_t make_expected_group_count_sqlr(
+    uint8_t *output, uint32_t key_type, uint8_t decimal_precision,
+    uint8_t decimal_scale, const uint8_t *key_bytes, uint32_t key_len) {
+    uint32_t offset = 0;
+    memcpy(output + offset, "SQLR", 4);
+    offset += 4;
+    put_u16(output, &offset, 1);
+    put_u16(output, &offset, 2);
+    put_name(output, &offset, "id");
+    put_u32(output, &offset, key_type);
+    output[offset++] = decimal_precision;
+    output[offset++] = decimal_scale;
+    output[offset++] = PRDB_SDK_VALUE_STATE_VALUE;
+    put_u32(output, &offset, key_len);
+    memcpy(output + offset, key_bytes, key_len);
+    offset += key_len;
+    put_name(output, &offset, "count");
+    put_u32(output, &offset, PRDB_SDK_VALUE_TYPE_BIGINT);
+    output[offset++] = 0;
+    output[offset++] = 0;
+    output[offset++] = PRDB_SDK_VALUE_STATE_VALUE;
+    put_u32(output, &offset, 8);
+    memset(output + offset, 0, 7);
+    output[offset + 7] = 1;
+    offset += 8;
+    return offset;
+}
+
 static int32_t on_group_v12(void *context,
                             const prdb_sdk_value_v1 *group_key,
                             const prdb_sdk_value_v1 *aggregate_value,
@@ -526,6 +608,47 @@ static int32_t on_group_v12(void *context,
     group_capture *capture = (group_capture *)context;
     assert(binding->abi_version == PRDB_SDK_SQL_ABI_V12_VERSION);
     assert(binding->order_count <= PRDB_SDK_SQL_V12_MAX_ORDER_KEYS);
+    if (capture->scalar_order_mode) {
+        uint32_t row = capture->calls;
+        static const uint8_t id_name[] = "id";
+        prdb_sdk_sql_column_shape_v2 group_column = {
+            id_name, 2, 0, capture->scalar_order_type,
+            capture->scalar_order_precision, capture->scalar_order_scale};
+        uint8_t expected[128] = {0};
+        uint32_t expected_len;
+        assert(row < 3 && group_key != NULL && aggregate_value == NULL &&
+               matching_row_count == 1);
+        assert(binding->order_count == 1 &&
+               binding->order_items[0].item.kind ==
+                   PRDB_SDK_SQL_V10_ORDER_GROUP_KEY &&
+               binding->order_items[0].item.direction ==
+                   (capture->scalar_order_descending
+                        ? PRDB_SDK_SQL_V10_ORDER_DESCENDING
+                        : PRDB_SDK_SQL_V10_ORDER_ASCENDING) &&
+               binding->order_items[0].type_code ==
+                   capture->scalar_order_type);
+        assert(group_key->state == PRDB_SDK_VALUE_STATE_VALUE &&
+               group_key->type_code == capture->scalar_order_type &&
+               group_key->data_len == capture->scalar_order_expected_len[row]);
+        assert(memcmp(group_key->data, capture->scalar_order_expected[row],
+                      group_key->data_len) == 0);
+        expected_len = make_expected_group_count_sqlr(
+            expected, capture->scalar_order_type,
+            capture->scalar_order_precision, capture->scalar_order_scale,
+            capture->scalar_order_expected[row],
+            capture->scalar_order_expected_len[row]);
+        assert(prdb_sdk_sql_encode_group_count_result_v1(
+                   &group_column, group_key, matching_row_count,
+                   capture->scalar_order_sqlr[row],
+                   sizeof(capture->scalar_order_sqlr[row]),
+                   &capture->scalar_order_sqlr_len[row]) ==
+               PRDB_SDK_SQL_RESULT_OK);
+        assert(capture->scalar_order_sqlr_len[row] == expected_len &&
+               memcmp(capture->scalar_order_sqlr[row], expected,
+                      expected_len) == 0);
+        ++capture->calls;
+        return 0;
+    }
     if (binding->order_count == 2) {
         uint32_t expected_aggregate_type = PRDB_SDK_VALUE_TYPE_INTEGER;
         if (binding->base.base.base.base.aggregate_kind ==
@@ -580,17 +703,21 @@ static int32_t run_query_v12(mock_state *mock, const uint8_t *sql,
     uint8_t materialized_bytes[1048576] = {0};
     static const uint8_t id_name[] = "id";
     static const uint8_t score_name[] = "score";
+    uint32_t key_type = capture->scalar_order_mode
+                            ? capture->scalar_order_type
+                            : mock->text_key_mode ? PRDB_SDK_VALUE_TYPE_TEXT
+                                                  : PRDB_SDK_VALUE_TYPE_INTEGER;
+    uint8_t key_precision = capture->scalar_order_mode
+                                ? capture->scalar_order_precision
+                                : 0;
+    uint8_t key_scale = capture->scalar_order_mode
+                            ? capture->scalar_order_scale
+                            : 0;
     prdb_sdk_sql_column_shape_v2 planner_columns[2] = {
-        {id_name, 2, 0,
-         mock->text_key_mode ? PRDB_SDK_VALUE_TYPE_TEXT
-                             : PRDB_SDK_VALUE_TYPE_INTEGER,
-         0, 0},
+        {id_name, 2, 0, key_type, key_precision, key_scale},
         {score_name, 5, 1, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0}};
     prdb_sdk_sql_column_shape_v2 executor_columns[2] = {
-        {id_name, 2, 0,
-         mock->text_key_mode ? PRDB_SDK_VALUE_TYPE_TEXT
-                             : PRDB_SDK_VALUE_TYPE_INTEGER,
-         0, 0},
+        {id_name, 2, 0, key_type, key_precision, key_scale},
         {score_name, 5, 1, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0}};
     prdb_sdk_value_v1 cell_scratch[2] = {{0}};
     prdb_host_api_v3 host = {sizeof(host), PRDB_QUERY_ABI_V3_VERSION,
@@ -604,6 +731,170 @@ static int32_t run_query_v12(mock_state *mock, const uint8_t *sql,
         sizeof(executor_response), batch_response, sizeof(batch_response),
         planner_columns, 2, executor_columns, 2, cell_scratch, 2,
         materialized_bytes, arena_capacity, on_group_v12, capture);
+}
+
+typedef struct scalar_order_case {
+    uint32_t type;
+    uint8_t precision;
+    uint8_t scale;
+    uint32_t row_count;
+    const uint8_t *lower;
+    uint32_t lower_len;
+    const uint8_t *middle;
+    uint32_t middle_len;
+    const uint8_t *higher;
+    uint32_t higher_len;
+} scalar_order_case;
+
+static void reset_scan(mock_state *mock, group_capture *capture,
+                       uint32_t finished);
+
+static void run_grouped_scalar_order_matrix(mock_state *mock) {
+    static const uint8_t asc_sql[] =
+        "SELECT id, COUNT(*) FROM widgets GROUP BY id ORDER BY id ASC";
+    static const uint8_t desc_sql[] =
+        "SELECT id, COUNT(*) FROM widgets GROUP BY id ORDER BY id DESC";
+    static const uint8_t boolean_lower[] = {0};
+    static const uint8_t boolean_higher[] = {1};
+    static const uint8_t smallint_lower[] = {0x80, 0};
+    static const uint8_t smallint_middle[] = {0, 0};
+    static const uint8_t smallint_higher[] = {0x7F, 0xFF};
+    static const uint8_t integer_lower[] = {0x80, 0, 0, 0};
+    static const uint8_t integer_middle[] = {0, 0, 0, 0};
+    static const uint8_t integer_higher[] = {0x7F, 0xFF, 0xFF, 0xFF};
+    static const uint8_t bigint_lower[] = {0x80, 0, 0, 0, 0, 0, 0, 0};
+    static const uint8_t bigint_middle[] = {0, 0, 0, 0, 0, 0, 0, 0};
+    static const uint8_t bigint_higher[] = {0x7F, 0xFF, 0xFF, 0xFF,
+                                             0xFF, 0xFF, 0xFF, 0xFF};
+    static const uint8_t decimal_lower[] = {0xFF, 0xFF, 0xFF, 0xFF,
+                                             0xFF, 0xFF, 0xFF, 0xFF,
+                                             0xFF, 0xFF, 0xFF, 0xFF,
+                                             0xFF, 0xFF, 0xFF, 0x9C};
+    static const uint8_t decimal_middle[16] = {0};
+    static const uint8_t decimal_higher[] = {0, 0, 0, 0, 0, 0, 0, 0,
+                                              0, 0, 0, 0, 0, 0, 0, 0x64};
+    static const uint8_t text_lower[] = {'a'};
+    static const uint8_t text_middle[] = {'b'};
+    static const uint8_t text_higher[] = {'c'};
+    static const uint8_t varchar_lower[] = {0xC2, 0xA2};
+    static const uint8_t varchar_middle[] = {0xC3, 0xA9};
+    static const uint8_t varchar_higher[] = {0xE2, 0x82, 0xAC};
+    static const uint8_t bytea_lower[] = {0, 0};
+    static const uint8_t bytea_middle[] = {0, 1};
+    static const uint8_t bytea_higher[] = {1, 0};
+    static const uint8_t uuid_lower[] = {0, 1, 2, 3, 4, 5, 6, 7,
+                                          8, 9, 10, 11, 12, 13, 14, 15};
+    static const uint8_t uuid_middle[] = {0, 1, 2, 3, 4, 5, 6, 7,
+                                           8, 9, 10, 11, 12, 13, 14, 16};
+    static const uint8_t uuid_higher[] = {0, 1, 2, 3, 4, 5, 6, 7,
+                                           8, 9, 10, 11, 12, 13, 14, 17};
+    static const uint8_t date_lower[] = {0xFF, 0xFF, 0xFF, 0xFF};
+    static const uint8_t date_middle[] = {0, 0, 0, 0};
+    static const uint8_t date_higher[] = {0, 0, 0, 1};
+    static const uint8_t timestamp_lower[] = {0xFF, 0xFF, 0xFF, 0xFF,
+                                               0xFF, 0xFF, 0xFF, 0xFF};
+    static const uint8_t timestamp_middle[] = {0, 0, 0, 0, 0, 0, 0, 0};
+    static const uint8_t timestamp_higher[] = {0, 0, 0, 0, 0, 0, 0, 1};
+    static const scalar_order_case cases[] = {
+        {PRDB_SDK_VALUE_TYPE_BOOLEAN, 0, 0, 2,
+         boolean_lower, sizeof(boolean_lower), NULL, 0,
+         boolean_higher, sizeof(boolean_higher)},
+        {PRDB_SDK_VALUE_TYPE_SMALLINT, 0, 0, 3,
+         smallint_lower, sizeof(smallint_lower), smallint_middle,
+         sizeof(smallint_middle), smallint_higher, sizeof(smallint_higher)},
+        {PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0, 3,
+         integer_lower, sizeof(integer_lower), integer_middle,
+         sizeof(integer_middle), integer_higher, sizeof(integer_higher)},
+        {PRDB_SDK_VALUE_TYPE_BIGINT, 0, 0, 3,
+         bigint_lower, sizeof(bigint_lower), bigint_middle,
+         sizeof(bigint_middle), bigint_higher, sizeof(bigint_higher)},
+        {PRDB_SDK_VALUE_TYPE_DECIMAL, 38, 2, 3,
+         decimal_lower, sizeof(decimal_lower), decimal_middle,
+         sizeof(decimal_middle), decimal_higher, sizeof(decimal_higher)},
+        {PRDB_SDK_VALUE_TYPE_TEXT, 0, 0, 3,
+         text_lower, sizeof(text_lower), text_middle, sizeof(text_middle),
+         text_higher, sizeof(text_higher)},
+        {PRDB_SDK_VALUE_TYPE_VARCHAR, 0, 0, 3,
+         varchar_lower, sizeof(varchar_lower), varchar_middle,
+         sizeof(varchar_middle), varchar_higher, sizeof(varchar_higher)},
+        {PRDB_SDK_VALUE_TYPE_BYTEA, 0, 0, 3,
+         bytea_lower, sizeof(bytea_lower), bytea_middle, sizeof(bytea_middle),
+         bytea_higher, sizeof(bytea_higher)},
+        {PRDB_SDK_VALUE_TYPE_UUID, 0, 0, 3,
+         uuid_lower, sizeof(uuid_lower), uuid_middle, sizeof(uuid_middle),
+         uuid_higher, sizeof(uuid_higher)},
+        {PRDB_SDK_VALUE_TYPE_DATE, 0, 0, 3,
+         date_lower, sizeof(date_lower), date_middle, sizeof(date_middle),
+         date_higher, sizeof(date_higher)},
+        {PRDB_SDK_VALUE_TYPE_TIMESTAMPTZ, 0, 0, 3,
+         timestamp_lower, sizeof(timestamp_lower), timestamp_middle,
+         sizeof(timestamp_middle), timestamp_higher, sizeof(timestamp_higher)},
+    };
+
+    for (uint32_t case_index = 0;
+         case_index < sizeof(cases) / sizeof(cases[0]); ++case_index) {
+        const scalar_order_case *test = &cases[case_index];
+        const uint8_t *input_values[3] = {
+            test->higher, test->lower, test->middle};
+        uint32_t input_lengths[3] = {
+            test->higher_len, test->lower_len, test->middle_len};
+        const uint8_t *ascending_values[3] = {
+            test->lower, test->middle, test->higher};
+        uint32_t ascending_lengths[3] = {
+            test->lower_len, test->middle_len, test->higher_len};
+        const uint8_t *descending_values[3] = {
+            test->higher, test->middle, test->lower};
+        uint32_t descending_lengths[3] = {
+            test->higher_len, test->middle_len, test->lower_len};
+
+        mock->text_key_mode = 0;
+        mock->max_candidates = 0;
+        mock->planner_len = make_relation(
+            mock->planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99,
+            test->type);
+        mock->executor_len = make_relation(mock->executor, 6, 0x22,
+                                           test->type);
+        mock->batch_len = make_typed_key_rows(
+            mock->batch, 1, test->type, input_values, input_lengths,
+            test->row_count);
+        for (uint32_t direction = 0; direction < 2; ++direction) {
+            group_capture capture = {0};
+            capture.mock = mock;
+            capture.scalar_order_mode = 1;
+            capture.scalar_order_type = test->type;
+            capture.scalar_order_precision = test->precision;
+            capture.scalar_order_scale = test->scale;
+            capture.scalar_order_descending = direction;
+            for (uint32_t row = 0; row < test->row_count; ++row) {
+                if (test->row_count == 2) {
+                    capture.scalar_order_expected[row] = direction
+                        ? (row == 0 ? test->higher : test->lower)
+                        : (row == 0 ? test->lower : test->higher);
+                    capture.scalar_order_expected_len[row] = direction
+                        ? (row == 0 ? test->higher_len : test->lower_len)
+                        : (row == 0 ? test->lower_len : test->higher_len);
+                } else {
+                    capture.scalar_order_expected[row] = direction
+                        ? descending_values[row]
+                        : ascending_values[row];
+                    capture.scalar_order_expected_len[row] = direction
+                        ? descending_lengths[row]
+                        : ascending_lengths[row];
+                }
+            }
+            reset_scan(mock, &capture, 1);
+            int32_t status = run_query_v12(
+                mock, direction ? desc_sql : asc_sql,
+                direction ? sizeof(desc_sql) - 1 : sizeof(asc_sql) - 1, 1024,
+                &capture);
+            assert(status == PRDB_SDK_SQL_EXEC_OK);
+            assert(capture.calls == test->row_count &&
+                   mock->statement_failed == 0);
+            for (uint32_t row = 0; row < capture.calls; ++row) {
+                assert(capture.scalar_order_sqlr_len[row] > 0);
+            }
+        }
+    }
 }
 
 static int32_t on_group_v13(void *context,
@@ -2224,5 +2515,6 @@ int main(void) {
                    mock.statement_failed == 1);
         }
     }
+    run_grouped_scalar_order_matrix(&mock);
     return 0;
 }
