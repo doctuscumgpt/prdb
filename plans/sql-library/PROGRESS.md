@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-8 follow-up: ordered composite aggregate NULL placement — verified
+
+- Contract: composite aggregate ordering with `NULLS LAST` places an all-NULL aggregate result after every non-NULL group while preserving the aggregate's declared SQLR type metadata.
+- Regression: the confined Decimal fixture includes a third `(3,11)` group with one NULL measure. Optimizer-backed MIN, MAX, SUM, and AVG emit that group last with canonical NULL SQLR fields; COUNT(*) still sorts the three groups by row count. Rust checks all relayed SQLR bytes and the durable COMMITTED outcome.
+- Verification: TinyCC sandbox fixture build, focused delegated-cgroup SQL acceptance, SDK test suite, format check, warning-denied all-target Clippy, and full serial delegated-cgroup workspace test suite passed.
+- Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+
 ## SQL-7 follow-up: ordered composite aggregate numeric type matrix — verified
 
 - Contract: optimizer-backed composite `GROUP BY` retains the requested aggregate-descending order with an explicit group-key tie-breaker for INTEGER, BIGINT, and SMALLINT aggregate results.
@@ -1127,4 +1134,4 @@
 
 - Change: the confined `decimal_grouped_records` relation now permits a NULL aggregate input. The `(1,7)` group has two visible rows with one NULL Decimal measure; the `(2,9)` group retains three non-NULL measures.
 - Regression: optimizer-backed MIN, MAX, SUM, and AVG ignore the NULL measure while preserving the two-row group count. Exact relayed SQLR values are `1.00`, `1.00`, `1.00`, and `1.00000000` for the `(1,7)` group; prior non-NULL values for `(2,9)` remain unchanged.
-- Verification: the focused `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance passed inside the delegated user service, including SQLR relay and durable commit. The full serial workspace suite is being rerun after this Decimal NULL extension. The TinyCC fixture build, formatting, warning-denied Clippy, and `git diff --check` passed.
+- Verification: the focused `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance and full serial delegated-cgroup workspace suite passed after this Decimal NULL extension. The TinyCC fixture build, formatting, warning-denied Clippy, and `git diff --check` passed.

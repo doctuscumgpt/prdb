@@ -40799,6 +40799,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         (0xf5, 2, 9, Some(100)),
         (0xf6, 2, 9, Some(125)),
         (0xf7, 2, 9, Some(225)),
+        (0xf8, 3, 11, None),
     ]
     .into_iter()
     .map(|(row_id, left, right, decimal_value)| {
@@ -44402,6 +44403,35 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             output
         }
 
+        fn expected_null_aggregate_row(
+            aggregate_name: &[u8],
+            aggregate_type: u32,
+            precision: u8,
+            scale: u8,
+            left_key: i32,
+            right_key: i32,
+        ) -> Vec<u8> {
+            fn append_value_field(output: &mut Vec<u8>, name: &[u8], type_code: u32, value: &[u8]) {
+                output.extend_from_slice(&(name.len() as u16).to_be_bytes());
+                output.extend_from_slice(name);
+                output.extend_from_slice(&type_code.to_be_bytes());
+                output.extend_from_slice(&[0, 0, 0]);
+                output.extend_from_slice(&(value.len() as u32).to_be_bytes());
+                output.extend_from_slice(value);
+            }
+            let mut output = b"SQLR".to_vec();
+            output.extend_from_slice(&1u16.to_be_bytes());
+            output.extend_from_slice(&3u16.to_be_bytes());
+            append_value_field(&mut output, b"left_key", 3, &left_key.to_be_bytes());
+            append_value_field(&mut output, b"right_key", 3, &right_key.to_be_bytes());
+            output.extend_from_slice(&(aggregate_name.len() as u16).to_be_bytes());
+            output.extend_from_slice(aggregate_name);
+            output.extend_from_slice(&aggregate_type.to_be_bytes());
+            output.extend_from_slice(&[precision, scale, 1]);
+            output.extend_from_slice(&0u32.to_be_bytes());
+            output
+        }
+
         let bigint_table_invocation = id(0x9a);
         let mut bigint_table_audit = identity_audit_event(0x9b, user_id, schema.schema_id);
         bigint_table_audit.correlation_id = bigint_table_invocation;
@@ -44776,18 +44806,49 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 );
             }
         }
-        for (aggregate_name, precision, scale, coefficients) in [
-            (b"min".as_slice(), 4, 2, [100u128, 100]),
-            (b"max".as_slice(), 4, 2, [225u128, 100]),
-            (b"sum".as_slice(), 38, 2, [450u128, 100]),
-            (b"avg".as_slice(), 38, 8, [150_000_000u128, 100_000_000]),
+        for (aggregate_name, precision, scale, values) in [
+            (
+                b"min".as_slice(),
+                4,
+                2,
+                [
+                    (1i32, 7i32, Some(100u128)),
+                    (2, 9, Some(100)),
+                    (3, 11, None),
+                ],
+            ),
+            (
+                b"max".as_slice(),
+                4,
+                2,
+                [
+                    (2i32, 9i32, Some(225u128)),
+                    (1, 7, Some(100)),
+                    (3, 11, None),
+                ],
+            ),
+            (
+                b"sum".as_slice(),
+                38,
+                2,
+                [
+                    (2i32, 9i32, Some(450u128)),
+                    (1, 7, Some(100)),
+                    (3, 11, None),
+                ],
+            ),
+            (
+                b"avg".as_slice(),
+                38,
+                8,
+                [
+                    (2i32, 9i32, Some(150_000_000u128)),
+                    (1, 7, Some(100_000_000)),
+                    (3, 11, None),
+                ],
+            ),
         ] {
-            let groups = if aggregate_name == b"min" {
-                [(1i32, 7i32), (2, 9)]
-            } else {
-                [(2i32, 9i32), (1, 7)]
-            };
-            for (index, (left_key, right_key)) in groups.into_iter().enumerate() {
+            for (left_key, right_key, coefficient) in values {
                 let frame = aggregate_frames.next().ok_or_else(|| {
                     format!(
                         "missing optimizer-backed composite Decimal {} SQLR row",
@@ -44796,21 +44857,33 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 })?;
                 assert_eq!(frame.operation, Operation::GatewayResultData as u16);
                 assert_eq!(frame.request_id, aggregate_accepted.request_id);
-                assert_eq!(
-                    frame.payload,
-                    expected_aggregate_row(
-                        aggregate_name,
-                        5,
-                        precision,
-                        scale,
-                        left_key,
-                        right_key,
-                        &coefficients[index].to_be_bytes(),
-                    )
+                let expected = coefficient.map_or_else(
+                    || {
+                        expected_null_aggregate_row(
+                            aggregate_name,
+                            5,
+                            precision,
+                            scale,
+                            left_key,
+                            right_key,
+                        )
+                    },
+                    |coefficient| {
+                        expected_aggregate_row(
+                            aggregate_name,
+                            5,
+                            precision,
+                            scale,
+                            left_key,
+                            right_key,
+                            &coefficient.to_be_bytes(),
+                        )
+                    },
                 );
+                assert_eq!(frame.payload, expected);
             }
         }
-        for (left_key, right_key, count) in [(2i32, 9i32, 3u64), (1, 7, 2)] {
+        for (left_key, right_key, count) in [(2i32, 9i32, 3u64), (1, 7, 2), (3, 11, 1)] {
             let frame = aggregate_frames
                 .next()
                 .ok_or("missing optimizer-backed composite Decimal COUNT SQLR row")?;
