@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-8 follow-up: redacted aggregate input aborts confined query — verified
+
+- Contract: a required redacted aggregate operand fails the statement; the gateway must not publish partial SQLR group results and must durably abort the invocation.
+- Regression: the confined SQL fixture runs Decimal `MIN` under a restrictive cell SELECT policy. It expects the SDK evaluation error before any group callback, and the Rust process acceptance checks for zero result-data frames, an aborted terminal, and a durable ABORTED outcome.
+- Verification: focused delegated-cgroup acceptance and the complete serial delegated-cgroup workspace suite passed. The maintained TinyCC fixture build and SDK test suite, format check, warning-denied all-target Clippy, and `git diff --check` passed.
+- Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+
 ## SQL-7 follow-up: grouped integral SUM/AVG runner matrix — verified
 
 - Contract: grouped `SUM` and `AVG` accept SMALLINT, INTEGER, and BIGINT inputs; SUM widens to BIGINT and AVG produces exact DECIMAL(38,6).
