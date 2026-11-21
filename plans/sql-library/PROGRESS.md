@@ -1,5 +1,13 @@
 # SQL Library Progress
 
+## SQL-7 follow-up: optimizer-backed composite aggregates — implemented slice
+
+- Contract: the bounded v13 optimizer subset accepts `COUNT(*)`, `MIN`, `MAX`, `SUM`, or `AVG` with two to eight GROUP BY keys and an optional LIMIT. The optimizer request is rejected for unsupported WHERE, HAVING, or ORDER BY clauses; v13 retains its existing bounded execution semantics.
+- Implementation: statement kind 13 now decodes and binds the composite group keys and aggregate argument against authorized relation metadata, builds canonical plan kind 13, and validates the plan union of grouping and aggregate scan columns. The C SDK encodes the request, decodes and matches the optimizer plan to its parsed and bound v13 statement, independently resolves executor relation identity, and invokes the bounded v13 grouping runner.
+- Regression: Rust tests cover request decoding, authorized binding, plan round trips and scan-union checks, optimizer process dispatch, and generic response validation. Maintained TinyCC fixtures verify request bytes, plan decoding, and AST/binding-to-plan matching.
+- Verification: locked workspace build, format check, warning-denied Clippy, and the complete maintained TinyCC SDK suite passed. All 19 optimizer process tests passed in the delegated service. The confined SQL DML acceptance passed alone with the documented cgroup and runtime configuration. Full serial Cargo workspace runs were attempted in the delegated service; one run failed the metadata process test's lost-package-reply assertion and a later run failed the load-sensitive SQL DML acceptance with `Executor(RequestLimitExceeded)`. Each acceptance passed when rerun alone. The full suite therefore remains without a clean end-to-end pass for this change.
+- Remaining: add a confined fixture call through the optimizer-gated composite aggregate runner. Broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+
 ## SQL-7 follow-up: hidden COUNT with grouped AVG — verified
 
 - Contract: v22 permits an unselected `COUNT(*)` comparison in HAVING while the selected aggregate remains COUNT, MIN, MAX, SUM, or AVG.

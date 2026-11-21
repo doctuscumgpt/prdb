@@ -113,6 +113,13 @@ int32_t prdb_sdk_optimizer_encode_composite_group_count_v1(
     const uint8_t *schema, uint32_t schema_len,
     uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
 
+/* Encode composite GROUP BY with one COUNT/MIN/MAX/SUM/AVG aggregate as
+ * statement 13. WHERE, HAVING, and ORDER BY remain unsupported. */
+int32_t prdb_sdk_optimizer_encode_composite_group_aggregate_v1(
+    const prdb_sdk_select_v13 *statement,
+    const uint8_t *schema, uint32_t schema_len,
+    uint8_t *request, uint64_t request_capacity, uint64_t *request_len);
+
 int32_t prdb_sdk_optimizer_encode_ordered_composite_group_count_v1(
     const prdb_sdk_select_v15 *statement,
     const uint8_t *schema, uint32_t schema_len,
