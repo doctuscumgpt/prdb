@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 follow-up: all aggregate families at eight grouping keys — verified
+
+- Contract: optimizer statement 13 supports eight composite grouping keys for `COUNT(*)`, `MIN`, `MAX`, `SUM`, and `AVG`; each plan scans exactly the grouping keys plus the selected aggregate input when one exists.
+- Regression: the optimizer-process test now exercises all five aggregate kinds against a nine-column authorized relation at the eight-key boundary, checks each ordered key set, scan-column union, aggregate argument ordinal, and LIMIT, and retains the maximum-shape ordered SUM plan check.
+- Verification: the focused locked optimizer-process test, formatting, locked workspace build, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. All sandbox/process targets ran with zero ignored tests.
+- Remaining: broader analytical workload, secure spill, target-hardware, and mixed-workload evidence remains open.
+
 ## SQL-7 / SQL-8 follow-up: C optimizer wrapper at eight keys and nine sort items — verified
 
 - Contract: the maintained C SDK optimizer wrapper accepts the maximum composite key and ORDER BY shape, resolves the optimizer's nine-column relation, and executes the matched ordered plan.

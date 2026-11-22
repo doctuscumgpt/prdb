@@ -2087,7 +2087,7 @@ mod tests {
     }
 
     #[test]
-    fn process_protocol_accepts_eight_key_count_and_sum_plans() {
+    fn process_protocol_accepts_all_eight_key_composite_aggregate_plans() {
         let (mut submission_client, mut submission_server) = UnixStream::pair().unwrap();
         let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
         std::thread::scope(|scope| {
@@ -2095,7 +2095,7 @@ mod tests {
                 planner_server
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                     .unwrap();
-                for expected_request_id in [257, 258, 259] {
+                for expected_request_id in 257..=262 {
                     let request = crate::ipc::read_frame(&mut planner_server)
                         .unwrap()
                         .expect("optimizer must resolve eight-key aggregate relation");
@@ -2151,7 +2151,8 @@ mod tests {
             submission_client
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
-            for (request_id, kind) in [(701, 1), (702, 4)] {
+            for kind in 1..=5 {
+                let request_id = 700 + u64::from(kind);
                 crate::ipc::write_frame(
                     &mut submission_client,
                     &IpcFrame {
@@ -2200,7 +2201,7 @@ mod tests {
                 &mut submission_client,
                 &IpcFrame {
                     operation: Operation::OptimizeGroupCount as u16,
-                    request_id: 703,
+                    request_id: 706,
                     payload: eight_key_ordered_group_aggregate_request(),
                 },
             )
@@ -2208,7 +2209,7 @@ mod tests {
             let response = crate::ipc::read_frame(&mut submission_client)
                 .unwrap()
                 .expect("optimizer must return an ordered eight-key aggregate plan");
-            assert_eq!(response.request_id, 703);
+            assert_eq!(response.request_id, 706);
             let response = OptimizerResponse::decode(&response.payload).unwrap();
             assert_eq!(response.status, OptimizerStatus::Success);
             let plan = crate::optimizer_plan::decode_ordered_composite_group_aggregate_plan_v1(
