@@ -63,7 +63,7 @@ Configure these environment variables in the shell command run by the unit:
 - `PRDB_TEST_INSTALLED_SDK_RELEASE_DIR`: absolute path to the normal SDK release in `target/release-profile`; process tests install these artifacts into a temporary instance repository.
 - `PRDB_TEST_WRITE_READ_QUERY_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-write-read.so`.
 - `PRDB_TEST_ORDERED_ANALYTICAL_ONLY`: optionally set to `1` to isolate the high-cardinality ordered SUM branch of the confined write/read acceptance.
-- `PRDB_TEST_FILTERED_COMPOSITE_ONLY`: optionally set to `1` to isolate the statement-15 filtered composite aggregate branch. It submits `SUM(decimal_value)` grouped by two keys with `WHERE left_key = $1`, and verifies the filtered `(2,9)` group and exact DECIMAL(38,2) SQLR result through the gateway before commit.
+- `PRDB_TEST_FILTERED_COMPOSITE_ONLY`: optionally set to `1` to isolate the statement-15 filtered composite aggregate branch. It submits `SUM(decimal_value)` grouped by two keys with `WHERE decimal_value IS NOT NULL AND left_key = $1`, binding `$1` to `1`. It verifies that the NULL measure is removed from `(1,7)`, leaving one matching row and an exact DECIMAL(38,2) sum of `1.00` through the gateway before commit.
 - `PRDB_TEST_RESTRICTED_METADATA_QUERY_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-restricted-metadata.so`, used by the restricted-principal metadata acceptance.
 - `PRDB_TEST_NETWORK_CONSTRUCTOR_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-network-constructor.so`.
 - `PRDB_TEST_FORGED_HANDLE_QUERY_ARTIFACT`: absolute path to `target/sdk-v1/sql-v3-forged-relation-handle.so`.

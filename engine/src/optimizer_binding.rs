@@ -267,6 +267,8 @@ pub enum BoundPredicate {
         left: Box<BoundPredicate>,
         right: Box<BoundPredicate>,
     },
+    IsNull(Box<BoundPredicate>),
+    IsNotNull(Box<BoundPredicate>),
     And(Vec<BoundPredicate>),
     Or(Vec<BoundPredicate>),
     Not(Box<BoundPredicate>),
@@ -1260,6 +1262,18 @@ fn bind_predicate(
                 Some(ScalarType::Boolean),
             ))
         }
+        Predicate::IsNull(child) | Predicate::IsNotNull(child) => {
+            let (child, _) = bind_predicate(child, columns)?;
+            if !matches!(child, BoundPredicate::Column(_)) {
+                return Err(BindError::InvalidQuery);
+            }
+            let node = match predicate {
+                Predicate::IsNull(_) => BoundPredicate::IsNull(Box::new(child)),
+                Predicate::IsNotNull(_) => BoundPredicate::IsNotNull(Box::new(child)),
+                _ => return Err(BindError::InvalidQuery),
+            };
+            Ok((node, Some(ScalarType::Boolean)))
+        }
         Predicate::And(children) | Predicate::Or(children) => {
             if !(2..=16).contains(&children.len()) {
                 return Err(BindError::InvalidQuery);
@@ -1468,6 +1482,27 @@ mod tests {
         let predicate = [
             0x20, 0, 0x10, 5, b'a', b'u', b'd', b'i', b't', 0x02, 0, 0, 0, 0, 0, 0, 0, 7,
         ];
+        let mut bytes = vec![
+            0,
+            crate::query_abi::OPTIMIZER_REQUEST_VERSION as u8,
+            crate::query_abi::OPTIMIZER_FILTERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT,
+            0,
+        ];
+        put_name(&mut bytes, "public");
+        put_name(&mut bytes, "items");
+        bytes.push(2);
+        put_name(&mut bytes, "active");
+        put_name(&mut bytes, "id");
+        bytes.push(4);
+        put_name(&mut bytes, "amount");
+        bytes.extend_from_slice(&(predicate.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&predicate);
+        bytes.extend_from_slice(&[1, 0, 0, 0, 4]);
+        bytes
+    }
+
+    fn filtered_composite_group_aggregate_is_not_null_request() -> Vec<u8> {
+        let predicate = [0x41, 0x10, 6, b'a', b'm', b'o', b'u', b'n', b't'];
         let mut bytes = vec![
             0,
             crate::query_abi::OPTIMIZER_REQUEST_VERSION as u8,
@@ -1833,6 +1868,20 @@ mod tests {
             ),
             Err(BindError::InvalidQuery)
         );
+    }
+
+    #[test]
+    fn binds_filtered_composite_is_not_null_to_authorized_column() {
+        let bound = bind_filtered_composite_group_aggregate_request(
+            &filtered_composite_group_aggregate_is_not_null_request(),
+            Some(relation()),
+        )
+        .unwrap();
+        assert!(matches!(
+            bound.predicate,
+            BoundPredicate::IsNotNull(child)
+                if matches!(child.as_ref(), BoundPredicate::Column(column) if column.ordinal == 2)
+        ));
     }
 
     #[test]

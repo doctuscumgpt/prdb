@@ -1,5 +1,13 @@
 # SQL Library Progress
 
+## SQL-7 follow-up: filtered composite aggregate supports NULL predicates — verified
+
+- Contract: statement 15 accepts bounded `IS NULL` and `IS NOT NULL` predicates over direct columns, while preserving redaction as an evaluation error.
+- Implementation: request and plan codecs, invocation binding, SQL encoding, AST-to-plan matching, and predicate evaluation carry the two null-test nodes. The confined Decimal SUM query combines `decimal_value IS NOT NULL` with its parameterized group filter.
+- Regression: Rust request/binder and plan round-trip coverage now include null tests; the focused confined SQL acceptance targets `(1,7)`, whose NULL Decimal measure is removed before aggregation, leaving one row and a sum of `1.00`.
+- Verification: focused statement-15 acceptance and full serial delegated-cgroup workspace suite passed; the TinyCC SDK suite, locked workspace build, format check, warning-denied all-target Clippy, release-profile validation, and `git diff --check` passed.
+- Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+
 ## SQL-7 follow-up: confined filtered composite aggregate acceptance — verified
 
 - Contract: statement 15 filters rows before composite aggregation, counts the matching rows after filtering, and returns only groups satisfying a parameterized predicate over the authorized view.

@@ -509,6 +509,17 @@ static int decode_predicate(plan_reader *reader,
             type.type_code = 1;
             break;
         }
+        case 0x40: case 0x41: {
+            predicate_type child;
+            if (reader->offset >= reader->length ||
+                reader->bytes[reader->offset] != 0x10 ||
+                !decode_predicate(reader, columns, column_count, depth + 1,
+                                  nodes, references, &child)) {
+                return 0;
+            }
+            type.type_code = 1;
+            break;
+        }
         default:
             return 0;
     }
@@ -1022,6 +1033,10 @@ static int skip_predicate_node(plan_reader *reader, uint32_t depth) {
     case 0x32:
         return read_not_predicate_tag(reader, tag_offset) &&
                skip_predicate_node(reader, depth + 1);
+    case 0x40: case 0x41:
+        return reader->offset < reader->length &&
+               reader->bytes[reader->offset] == 0x10 &&
+               skip_predicate_node(reader, depth + 1);
     default:
         return 0;
     }
@@ -1177,6 +1192,27 @@ static int32_t evaluate_predicate_node(
         if (status != PRDB_SDK_SQL_EVAL_OK) return status;
         out->is_truth = 1;
         out->truth = truth;
+        return PRDB_SDK_SQL_EVAL_OK;
+    }
+    case 0x40: case 0x41: {
+        predicate_value child = {0};
+        int32_t status;
+        if (reader->offset >= reader->length ||
+            reader->bytes[reader->offset] != 0x10)
+            return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
+        status = evaluate_predicate_node(reader, plan, source_cells, &child,
+                                         depth + 1, nodes);
+        if (status != PRDB_SDK_SQL_EVAL_OK) return status;
+        if (child.value.state == PRDB_SDK_VALUE_STATE_REDACTED)
+            return PRDB_SDK_SQL_EVAL_REDACTED_INPUT;
+        if (child.value.state != PRDB_SDK_VALUE_STATE_NULL &&
+            child.value.state != PRDB_SDK_VALUE_STATE_VALUE)
+            return PRDB_SDK_SQL_EVAL_INVALID_VALUE;
+        out->is_truth = 1;
+        out->truth = ((tag == 0x40) ==
+                      (child.value.state == PRDB_SDK_VALUE_STATE_NULL))
+                         ? PRDB_SDK_SQL_TRUTH_TRUE
+                         : PRDB_SDK_SQL_TRUTH_FALSE;
         return PRDB_SDK_SQL_EVAL_OK;
     }
     default:
@@ -2983,6 +3019,29 @@ static int encode_bound_sql_predicate(
                encode_bound_sql_predicate(statement, binding, parameters,
                    parameter_count, scan_columns, scan_count, node->left_child,
                    depth + 1, seen, output, capacity, offset);
+    case PRDB_SDK_SQL_PREDICATE_IS_NULL:
+    case PRDB_SDK_SQL_PREDICATE_IS_NOT_NULL: {
+        const prdb_sdk_optimizer_plan_column_v1 *column = NULL;
+        uint32_t ordinal;
+        if (node->left_child != 0 || node->right_child != 0 ||
+            node->parameter_index != 0 ||
+            node->comparison != 0 ||
+            node_index >= binding->base.base.predicate_count)
+            return 0;
+        ordinal = binding->base.base.predicate_columns[node_index].ordinal;
+        for (uint32_t index = 0; index < scan_count; ++index)
+            if (scan_columns[index].ordinal == ordinal)
+                column = &scan_columns[index];
+        if (column == NULL) return 0;
+        record[0] = node->node_kind == PRDB_SDK_SQL_PREDICATE_IS_NULL
+                        ? 0x40
+                        : 0x41;
+        if (!append_bytes(output, capacity, offset, record, 1)) return 0;
+        prdb_encode_optimizer_plan_column_predicate_record(
+            record, 0x10, column->column_id);
+        return append_bytes(output, capacity, offset, record,
+                            PRDB_OPTIMIZER_PLAN_COLUMN_PREDICATE_RECORD_HEADER_BYTES);
+    }
     default:
         return 0;
     }
@@ -5507,6 +5566,41 @@ static int match_optimizer_filter_node(
                    reader, plan, metadata_response, metadata_response_len,
                    statement, parameters, parameter_count, node->left_child,
                    seen, depth + 1);
+    case PRDB_SDK_SQL_PREDICATE_IS_NULL:
+    case PRDB_SDK_SQL_PREDICATE_IS_NOT_NULL: {
+        uint8_t column_tag;
+        uint8_t column_id[16];
+        const uint8_t *column_name = NULL;
+        uint32_t column_name_len = 0;
+        uint32_t ordinal = UINT32_MAX;
+        uint8_t expected_tag =
+            node->node_kind == PRDB_SDK_SQL_PREDICATE_IS_NULL ? 0x40 : 0x41;
+        if (tag != expected_tag || node->left_child != 0 ||
+            node->right_child != 0 || node->parameter_index != 0 ||
+            node->comparison != 0 ||
+            node->column.offset > statement->sql_len ||
+            node->column.length == 0 ||
+            node->column.length > statement->sql_len - node->column.offset ||
+            !valid_identifier(statement->sql + node->column.offset,
+                              node->column.length) ||
+            !read_u8(reader, &column_tag) || column_tag != 0x10 ||
+            !read_column_predicate_record(reader, reader->offset - 1,
+                                          column_id))
+            return 0;
+        for (uint32_t index = 0; index < plan->scan_column_count; ++index) {
+            if (memcmp(column_id, plan->scan_columns[index].column_id, 16) == 0) {
+                ordinal = plan->scan_columns[index].ordinal;
+                break;
+            }
+        }
+        return ordinal != UINT32_MAX &&
+               response_column_name(metadata_response, metadata_response_len,
+                                    ordinal, &column_name, &column_name_len) &&
+               column_name_len == node->column.length &&
+               identifier_equal_ascii_casefold(
+                   column_name, statement->sql + node->column.offset,
+                   node->column.length);
+    }
     default:
         return 0;
     }

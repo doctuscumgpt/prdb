@@ -176,8 +176,23 @@ static int encode_optimizer_predicate_node(
             statement, parameters, parameter_count, node->left_child,
             depth + 1, seen, output, capacity, offset);
     case PRDB_SDK_SQL_PREDICATE_IS_NULL:
-    case PRDB_SDK_SQL_PREDICATE_IS_NOT_NULL:
-        return 2;
+    case PRDB_SDK_SQL_PREDICATE_IS_NOT_NULL: {
+        prdb_sdk_sql_span_v1 column = node->column;
+        uint8_t tag = node->node_kind == PRDB_SDK_SQL_PREDICATE_IS_NULL
+                          ? 0x40
+                          : 0x41;
+        if (node->comparison != 0 || node->left_child != 0 ||
+            node->right_child != 0 || node->parameter_index != 0 ||
+            !span_is_identifier(statement, column))
+            return 0;
+        return predicate_append_u8(output, capacity, offset, tag) &&
+               predicate_append_u8(output, capacity, offset, 0x10) &&
+               predicate_append_u8(output, capacity, offset,
+                                   (uint8_t)column.length) &&
+               predicate_append(output, capacity, offset,
+                                statement->sql + column.offset,
+                                column.length);
+    }
     default:
         return 0;
     }

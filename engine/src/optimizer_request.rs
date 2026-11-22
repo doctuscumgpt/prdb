@@ -251,6 +251,8 @@ pub enum Predicate {
         left: Box<Predicate>,
         right: Box<Predicate>,
     },
+    IsNull(Box<Predicate>),
+    IsNotNull(Box<Predicate>),
     And(Vec<Predicate>),
     Or(Vec<Predicate>),
     Not(Box<Predicate>),
@@ -1468,6 +1470,8 @@ impl<'a> PredicateParser<'a> {
                     right,
                 })
             }
+            0x40 => Ok(Predicate::IsNull(Box::new(self.node(depth + 1)?))),
+            0x41 => Ok(Predicate::IsNotNull(Box::new(self.node(depth + 1)?))),
             0x30 | 0x31 => {
                 let count = usize::from(self.cursor.u8()?);
                 if !(2..=16).contains(&count) {
@@ -1709,6 +1713,25 @@ mod tests {
                 &filtered_composite_group_aggregate_request(&[]),
             ),
             Err(RequestError::InvalidPredicate)
+        );
+
+        let null_predicate = [0x40, 0x10, 6, b'a', b'm', b'o', b'u', b'n', b't'];
+        let null_request = decode_filtered_composite_group_aggregate_request(
+            &filtered_composite_group_aggregate_request(&null_predicate),
+        )
+        .unwrap();
+        assert_eq!(
+            null_request.predicate,
+            Predicate::IsNull(Box::new(Predicate::Column("amount".to_owned())))
+        );
+        let not_null_predicate = [0x41, 0x10, 6, b'a', b'm', b'o', b'u', b'n', b't'];
+        let not_null_request = decode_filtered_composite_group_aggregate_request(
+            &filtered_composite_group_aggregate_request(&not_null_predicate),
+        )
+        .unwrap();
+        assert_eq!(
+            not_null_request.predicate,
+            Predicate::IsNotNull(Box::new(Predicate::Column("amount".to_owned())))
         );
     }
 

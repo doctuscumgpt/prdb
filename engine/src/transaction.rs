@@ -10550,6 +10550,10 @@ fn valid_estimate_predicate(
             BoundPredicate::Not(child) => {
                 visit(child, projection, depth + 1, remaining_nodes, maximum_depth)
             }
+            BoundPredicate::IsNull(child) | BoundPredicate::IsNotNull(child) => {
+                matches!(child.as_ref(), BoundPredicate::Column(_))
+                    && visit(child, projection, depth + 1, remaining_nodes, maximum_depth)
+            }
         }
     }
 
@@ -10610,6 +10614,10 @@ fn estimate_predicate_kind(
                 matches!(kind, EstimateValueKind::Boolean | EstimateValueKind::Null)
             })
             .then_some(EstimateValueKind::Boolean),
+        BoundPredicate::IsNull(child) | BoundPredicate::IsNotNull(child) => {
+            matches!(child.as_ref(), BoundPredicate::Column(_))
+                .then_some(EstimateValueKind::Boolean)
+        }
     }
 }
 
@@ -10705,6 +10713,29 @@ fn evaluate_estimate_predicate(
                     EstimateValue::Boolean(value) => Some(EstimateValue::Boolean(!value)),
                     EstimateValue::Null => Some(EstimateValue::Null),
                     EstimateValue::Integer(_) | EstimateValue::Text(_) => None,
+                }
+            }
+            BoundPredicate::IsNull(child) | BoundPredicate::IsNotNull(child) => {
+                let BoundPredicate::Column(column) = child.as_ref() else {
+                    return None;
+                };
+                let ordinal = usize::try_from(column.ordinal).ok()?;
+                if projection.column_ids.get(ordinal) != Some(&column.column_id)
+                    || projection.columns.get(ordinal)?.scalar_type != column.scalar_type
+                    || projection.columns.get(ordinal)?.nullable != column.nullable
+                {
+                    return None;
+                }
+                match cells.get(ordinal)? {
+                    SanitizedCell::Value(_) => Some(EstimateValue::Boolean(matches!(
+                        predicate,
+                        BoundPredicate::IsNotNull(_)
+                    ))),
+                    SanitizedCell::Null => Some(EstimateValue::Boolean(matches!(
+                        predicate,
+                        BoundPredicate::IsNull(_)
+                    ))),
+                    SanitizedCell::Redacted => None,
                 }
             }
         }

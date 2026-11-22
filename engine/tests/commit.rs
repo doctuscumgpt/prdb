@@ -42529,7 +42529,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 output
             }
             {
-                let (left_key, right_key, coefficient) = (2i32, 9i32, 450u128);
+                let (left_key, right_key, coefficient) = (1i32, 7i32, 100u128);
                 let frame = ordered_frames
                     .next()
                     .ok_or("missing filtered composite Decimal SUM SQLR row")?;
@@ -45000,7 +45000,7 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             );
         }
         {
-            let (left_key, right_key, coefficient) = (2i32, 9i32, 450u128);
+            let (left_key, right_key, coefficient) = (1i32, 7i32, 100u128);
             let frame = aggregate_frames
                 .next()
                 .ok_or("missing filtered composite Decimal SUM SQLR row")?;

@@ -111,7 +111,9 @@ int main(void) {
     assert(prdb_sdk_optimizer_encode_delete_v1(
                &unsupported, NULL, 0, schema, sizeof(schema) - 1, request,
                sizeof(request), &request_len) ==
-           PRDB_SDK_OPTIMIZER_ENCODE_UNSUPPORTED);
+           PRDB_SDK_OPTIMIZER_ENCODE_OK);
+    assert(request_len == 26 && request[21] == 0x40 && request[22] == 0x10 &&
+           request[23] == 2 && request[24] == 'i' && request[25] == 'd');
 
     assert(prdb_sdk_optimizer_encode_delete_v1(
                &statement, parameters, 1, schema, sizeof(schema) - 1, request,

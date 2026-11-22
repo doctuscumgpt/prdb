@@ -740,9 +740,9 @@ static int32_t write_filtered_composite_decimal_sum_optimizer(
         binding->base.aggregate_column.decimal_precision != 4 ||
         binding->base.aggregate_column.decimal_scale != 2 ||
         !decode_range_integer(&group_keys[0], &left_key) ||
-        !decode_range_integer(&group_keys[1], &right_key) || left_key != 2 ||
-        right_key != 9 || matching_row_count != 3 || context->row_count != 0 ||
-        !decimal_value_matches_coefficient(aggregate_value, 450) ||
+        !decode_range_integer(&group_keys[1], &right_key) || left_key != 1 ||
+        right_key != 7 || matching_row_count != 1 || context->row_count != 0 ||
+        !decimal_value_matches_coefficient(aggregate_value, 100) ||
         prdb_sdk_sql_write_group_composite_result_v1(
             context->host, binding, context->columns, 3, group_keys,
             group_key_count, aggregate_value, matching_row_count,
@@ -1397,7 +1397,8 @@ static int32_t run_write_read_fixture(
         "ORDER BY COUNT(*) DESC NULLS LAST, left_key ASC NULLS FIRST LIMIT 3";
     static const uint8_t select_filtered_composite_decimal_sum_sql[] =
         "SELECT left_key, right_key, SUM(decimal_value) "
-        "FROM decimal_grouped_records WHERE left_key = $1 "
+        "FROM decimal_grouped_records "
+        "WHERE decimal_value IS NOT NULL AND left_key = $1 "
         "GROUP BY left_key, right_key LIMIT 3";
     static const uint8_t select_composite_bigint_sum_optimizer_sql[] =
         "SELECT left_key, right_key, SUM(measure) "
@@ -1605,7 +1606,7 @@ static int32_t run_write_read_fixture(
         sizeof(count_parameter), PRDB_SDK_VALUE_ABI_V1_VERSION,
         PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_BIGINT,
         count_parameter_bytes, sizeof(count_parameter_bytes)};
-    static const uint8_t filtered_group_key_bytes[4] = {0, 0, 0, 2};
+    static const uint8_t filtered_group_key_bytes[4] = {0, 0, 0, 1};
     prdb_sdk_value_v1 filtered_group_key_parameter = {
         sizeof(filtered_group_key_parameter), PRDB_SDK_VALUE_ABI_V1_VERSION,
         PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,

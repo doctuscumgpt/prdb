@@ -3380,6 +3380,18 @@ fn put_predicate(output: &mut Vec<u8>, predicate: &BoundPredicate) -> Result<(),
             put_predicate(output, left)?;
             put_predicate(output, right)?;
         }
+        BoundPredicate::IsNull(child) | BoundPredicate::IsNotNull(child) => {
+            let tag = if matches!(predicate, BoundPredicate::IsNull(_)) {
+                0x40
+            } else {
+                0x41
+            };
+            if !matches!(child.as_ref(), BoundPredicate::Column(_)) {
+                return Err(PlanError::InvalidPredicate);
+            }
+            output.push(tag);
+            put_predicate(output, child)?;
+        }
         BoundPredicate::And(children) | BoundPredicate::Or(children) => {
             let is_and = matches!(predicate, BoundPredicate::And(_));
             output.extend_from_slice(
@@ -3753,7 +3765,8 @@ impl PlanReader<'_> {
             return Err(PlanError::InvalidPredicate);
         }
         let tag_offset = self.offset;
-        match self.u8()? {
+        let tag = self.u8()?;
+        match tag {
             0x00 => {
                 self.null_predicate_tag(tag_offset)?;
                 Ok(BoundPredicate::Null)
@@ -3799,6 +3812,17 @@ impl PlanReader<'_> {
                     left,
                     right,
                 })
+            }
+            0x40 | 0x41 => {
+                let child = Box::new(self.predicate_at_depth(scan_columns, depth + 1, nodes)?);
+                if !matches!(child.as_ref(), BoundPredicate::Column(_)) {
+                    return Err(PlanError::InvalidPredicate);
+                }
+                if tag == 0x40 {
+                    Ok(BoundPredicate::IsNull(child))
+                } else {
+                    Ok(BoundPredicate::IsNotNull(child))
+                }
             }
             0x30 | 0x31 => {
                 let (tag, child_count) = self.boolean_predicate_header(tag_offset)?;
@@ -4366,7 +4390,9 @@ fn collect_predicate_columns_at_depth(
             }
             Ok(())
         }
-        BoundPredicate::Not(child) => {
+        BoundPredicate::Not(child)
+        | BoundPredicate::IsNull(child)
+        | BoundPredicate::IsNotNull(child) => {
             collect_predicate_columns_at_depth(child, columns, depth + 1, nodes)
         }
         BoundPredicate::Null
@@ -4438,6 +4464,14 @@ fn predicate_type_at_depth(
         BoundPredicate::Not(child) => {
             if predicate_type_at_depth(child, scan_columns, depth + 1, nodes)?
                 != Some(ScalarType::Boolean)
+            {
+                return Err(PlanError::InvalidPredicate);
+            }
+            Ok(Some(ScalarType::Boolean))
+        }
+        BoundPredicate::IsNull(child) | BoundPredicate::IsNotNull(child) => {
+            if !matches!(child.as_ref(), BoundPredicate::Column(_))
+                || predicate_type_at_depth(child, scan_columns, depth + 1, nodes)?.is_none()
             {
                 return Err(PlanError::InvalidPredicate);
             }
@@ -5528,16 +5562,19 @@ mod tests {
         let first = column(4, 1, ScalarType::Text);
         let second = column(3, 0, ScalarType::Integer);
         let amount = column(5, 2, ScalarType::BigInt);
-        let predicate = BoundPredicate::Compare {
-            operator: Comparison::Greater,
-            left: Box::new(BoundPredicate::Column(BoundColumn {
-                column_id: [0x26; 16],
-                ordinal: 3,
-                scalar_type: ScalarType::Integer,
-                nullable: false,
-            })),
-            right: Box::new(BoundPredicate::Integer(7)),
-        };
+        let predicate = BoundPredicate::And(vec![
+            BoundPredicate::IsNotNull(Box::new(BoundPredicate::Column(amount.clone()))),
+            BoundPredicate::Compare {
+                operator: Comparison::Greater,
+                left: Box::new(BoundPredicate::Column(BoundColumn {
+                    column_id: [0x26; 16],
+                    ordinal: 3,
+                    scalar_type: ScalarType::Integer,
+                    nullable: false,
+                })),
+                right: Box::new(BoundPredicate::Integer(7)),
+            },
+        ]);
         let plan =
             plan_filtered_composite_group_aggregate_v1(BoundFilteredCompositeGroupAggregate {
                 schema_name: "sales".to_owned(),
