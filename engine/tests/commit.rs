@@ -45168,6 +45168,117 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         );
         staging.finish_started(redacted_owner, redacted_reservation.invocation_id)?;
 
+        let mut redacted_null_client = ClientConnectionSession::default();
+        redacted_null_client.accept_hello(ClientMode::Query, "sandbox-sql-redacted-null-filter")?;
+        redacted_null_client.authenticate(&storage, token_id, &secret)?;
+        let redacted_null_owner = redacted_null_client.staging_owner()?;
+        let redacted_null_parameter = [b'N'];
+        let redacted_null_reservation = staging.prepare(
+            redacted_null_owner,
+            PrepareSubmission {
+                manifest_version: 1,
+                manifest: manifest.clone(),
+                artifact_bytes: u64::try_from(artifact.len())?,
+                artifact_sha256: Sha256::digest(&artifact).into(),
+                scope_version: 1,
+                requested_scope: requested_scope.clone(),
+                parameter_bytes: 1,
+                parameter_sha256: Sha256::digest(redacted_null_parameter).into(),
+                deadline_ms: 30_000,
+                workload_class: WorkloadClass::Analytical,
+            },
+        )?;
+        let mut redacted_null_offset = 0;
+        for chunk in artifact.chunks(prdb_engine::supervisor::MAX_CHUNK_BYTES) {
+            redacted_null_offset = staging.upload_chunk(
+                redacted_null_owner,
+                redacted_null_reservation.invocation_id,
+                ChunkKind::Artifact,
+                redacted_null_offset,
+                chunk,
+            )?;
+        }
+        staging.upload_chunk(
+            redacted_null_owner,
+            redacted_null_reservation.invocation_id,
+            ChunkKind::Parameters,
+            0,
+            &redacted_null_parameter,
+        )?;
+        staging.seal(redacted_null_owner, redacted_null_reservation.invocation_id)?;
+        let redacted_null_invocation_hex = redacted_null_reservation
+            .invocation_id
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let (redacted_null_accepted, mut redacted_null_invocation, mut redacted_null_executor) =
+            redacted_null_client.handle_start_request_with_executor(
+                &storage,
+                &staging,
+                ClientFrame {
+                    kind: 7,
+                    request_id: 1,
+                    response_sequence: 0,
+                    payload: format!("{{\"invocation_id\":\"{redacted_null_invocation_hex}\"}}")
+                        .into_bytes(),
+                },
+                GatewayAdmissionConfig {
+                    retention_period_us: 3_600_000_000,
+                    max_rows: 128,
+                    max_bytes: 1_048_576,
+                },
+                &runtime,
+            )?;
+        assert_eq!(redacted_null_accepted.payload, b"{\"state\":\"accepted\"}");
+        let (mut redacted_null_service, mut redacted_null_gateway) = UnixStream::pair()?;
+        redacted_null_gateway.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let redacted_null_reader = std::thread::spawn(move || {
+            let mut frames = Vec::new();
+            while let Some(frame) = prdb_engine::ipc::read_frame(&mut redacted_null_gateway)? {
+                let terminal = frame.operation == Operation::GatewayTerminal as u16;
+                frames.push(frame);
+                if terminal {
+                    break;
+                }
+            }
+            Ok::<_, prdb_engine::ipc::FrameError>(frames)
+        });
+        let redacted_null_decision = observe_executor_relay_and_finalize_gateway(
+            &storage,
+            &mut redacted_null_invocation,
+            &mut redacted_null_executor,
+            &mut redacted_null_service,
+            redacted_null_accepted.request_id,
+        )?;
+        let redacted_null_frames = redacted_null_reader
+            .join()
+            .map_err(|_| "redacted NULL filter gateway reader panicked")??;
+        assert_eq!(
+            redacted_null_decision,
+            GatewayTerminalDecision::Abort(GatewayAbortReason::WorkerFailure)
+        );
+        assert!(
+            !redacted_null_frames
+                .iter()
+                .any(|frame| frame.operation == Operation::GatewayResultData as u16)
+        );
+        assert!(redacted_null_frames.iter().any(|frame| {
+            frame.operation == Operation::GatewayTerminal as u16
+                && String::from_utf8_lossy(&frame.payload).contains("\"outcome\":\"aborted\"")
+        }));
+        assert_eq!(
+            storage
+                .lookup_invocation_outcome(
+                    redacted_null_reservation.invocation_id,
+                    user_id,
+                    now + 1,
+                )?
+                .ok_or("missing confined redacted NULL filter outcome")?
+                .status,
+            OutcomeStatus::Aborted
+        );
+        staging.finish_started(redacted_null_owner, redacted_null_reservation.invocation_id)?;
+
         let mut bigint_scope_records = vec![
             [vec![1, 1], schema.schema_id.to_vec()].concat(),
             [vec![2, 2], bigint_table.table_id.to_vec()].concat(),

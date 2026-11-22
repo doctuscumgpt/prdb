@@ -1401,6 +1401,10 @@ static int32_t run_write_read_fixture(
         "WHERE left_key = $1 AND "
         "(decimal_value IS NULL OR decimal_value IS NOT NULL) "
         "GROUP BY left_key, right_key LIMIT 3";
+    static const uint8_t select_redacted_null_filter_sql[] =
+        "SELECT left_key, right_key, SUM(decimal_value) "
+        "FROM decimal_grouped_records WHERE decimal_value IS NULL "
+        "GROUP BY left_key, right_key LIMIT 3";
     static const uint8_t select_composite_bigint_sum_optimizer_sql[] =
         "SELECT left_key, right_key, SUM(measure) "
         "FROM bigint_grouped_records GROUP BY left_key, right_key "
@@ -1886,7 +1890,7 @@ static int32_t run_write_read_fixture(
     if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
         (invocation->parameters[0] == 'A' || invocation->parameters[0] == 'B' ||
          invocation->parameters[0] == 'R' || invocation->parameters[0] == 'W' ||
-         invocation->parameters[0] == 'Q')) {
+         invocation->parameters[0] == 'Q' || invocation->parameters[0] == 'N')) {
         static const uint8_t *const optimizer_sql[] = {
             select_composite_min_optimizer_sql,
             select_composite_max_optimizer_sql,
@@ -2030,6 +2034,36 @@ static int32_t run_write_read_fixture(
                 return report_failure(host, message, sizeof(message) - 1);
             }
             return 0;
+        }
+        if (invocation->parameters[0] == 'N') {
+            composite_grouped_results.row_count = 0;
+            composite_grouped_results.output_len = 0;
+            composite_grouped_results.column_count = 3;
+            status = prdb_sdk_sql_execute_filtered_group_composite_aggregate_optimizer_v1(
+                optimizer_host_v5, schema, sizeof(schema) - 1,
+                select_redacted_null_filter_sql,
+                sizeof(select_redacted_null_filter_sql) - 1, NULL, 0, 16,
+                sizeof(batch_response), group_count_optimizer_request,
+                sizeof(group_count_optimizer_request),
+                group_count_optimizer_response,
+                sizeof(group_count_optimizer_response), planner_response,
+                sizeof(planner_response), executor_response,
+                sizeof(executor_response), batch_response,
+                sizeof(batch_response), planner_columns, 9, executor_columns,
+                9, cell_scratch, 9, grouped_materialized,
+                sizeof(grouped_materialized),
+                write_filtered_composite_decimal_sum_optimizer,
+                &composite_grouped_results);
+            return status == PRDB_SDK_SQL_EXEC_EVALUATION_ERROR &&
+                           composite_grouped_results.row_count == 0 &&
+                           composite_grouped_results.output_len == 0
+                       ? 1
+                       : report_failure(
+                             host,
+                             (const uint8_t *)
+                                 "fixture-error-redacted-null-filter-not-rejected",
+                             sizeof("fixture-error-redacted-null-filter-not-rejected") -
+                                 1);
         }
         uint32_t first_aggregate = invocation->parameters[0] == 'R'
                                       ? 3

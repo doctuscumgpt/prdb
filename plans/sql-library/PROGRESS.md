@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-8 follow-up: redacted NULL filter aborts confined SQL — verified
+
+- Contract: optimizer-backed filtered aggregation must fail when `IS NULL` evaluates a REDACTED cell, emit no partial SQLR output, and durably abort the invocation.
+- Regression: the confined SQL acceptance installs a restrictive cell policy on the Decimal aggregate column, then submits a separate filtered composite aggregate using `decimal_value IS NULL`. The executor must fail before any result frame; the gateway confirms ABORTED. The existing redacted aggregate-input case remains separate.
+- Verification: the focused delegated-cgroup acceptance passed, followed by the full serial delegated-cgroup workspace suite with zero ignored tests. The sandbox query artifact build, locked workspace build, format check, warning-denied all-target Clippy, full maintained TinyCC SDK suite, and `git diff --check` passed.
+- Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+
 ## SQL-8 follow-up: NULL predicates reject redacted cells — verified
 
 - Contract: optimizer-backed `IS NULL` and `IS NOT NULL` evaluate VALUE and NULL cells according to SQL semantics and fail the query on REDACTED operands.
