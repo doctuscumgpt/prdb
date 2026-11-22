@@ -954,6 +954,26 @@ int main(void) {
                          sizeof(redacted_filter_sql) - 1, 1024, &threshold,
                          1) == PRDB_SDK_SQL_EXEC_EVALUATION_ERROR);
     assert(capture.calls == 0 && mock.statement_failed == 1);
+
+    {
+        const uint8_t value_state[] = {PRDB_SDK_VALUE_STATE_VALUE};
+        const uint8_t null_value_state[] = {PRDB_SDK_VALUE_STATE_NULL};
+        const int32_t left_value[] = {102};
+        const int32_t right_value[] = {202};
+        mock.batch_len[0] = make_batch_with_column_states(
+            mock.batch[0], matching_key, matching_state, left_value,
+            value_state, 1);
+        mock.batch_len[1] = make_batch_with_column_states(
+            mock.batch[1], matching_key, matching_state, right_value,
+            null_value_state, 1);
+        reset(&mock, &capture);
+        assert(run_query_v20(&mock, &capture, filtered_sql,
+                             sizeof(filtered_sql) - 1, 1024, &threshold, 1) ==
+               PRDB_SDK_SQL_EXEC_OK);
+        assert(capture.calls == 0 && mock.open_calls == 2 &&
+               mock.scan_finished[0] == 1 && mock.scan_finished[1] == 1 &&
+               mock.statement_failed == 0);
+    }
     mock.batch_len[0] = make_batch(mock.batch[0], left_keys, left_states,
                                    left_values, 3);
     mock.batch_len[1] = make_batch(mock.batch[1], right_keys, right_states,

@@ -1212,3 +1212,10 @@
 - Regression: the maintained v19 executor fixture now supplies both relations with the same non-NULL first key and NULL second key, then runs a two-key join. It verifies zero callbacks, both scans closed, and no statement failure. The fixture helper retains the existing 129-row malformed response case.
 - Verification: focused `sdk-sql-execute-v19` and complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed under the pinned TinyCC toolchain; `git diff --check` passed.
 - Remaining: broader analytical workload diversity, secure spill, target-hardware measurements, and mixed-workload optimization remain open.
+
+## SQL-7 follow-up: filtered join preserves NULL as UNKNOWN — verified
+
+- Contract: a joined row with a NULL filter operand does not pass a comparison WHERE predicate; NULL remains distinct from FALSE and REDACTED.
+- Regression: the maintained v20 executor fixture creates a row pair that satisfies the composite join keys but has NULL in the filtered right-side value. A parameterized `>=` filter emits no callback, closes both scans, and leaves the statement successful. The existing REDACTED-input case continues to require statement failure.
+- Verification: focused `sdk-sql-execute-v19` and complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed under the pinned TinyCC toolchain; `git diff --check` passed.
+- Remaining: broader analytical workload diversity, secure spill, target-hardware measurements, and mixed-workload optimization remain open.
