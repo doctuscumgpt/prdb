@@ -45019,17 +45019,71 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                 )
             );
         }
-        let aggregate_terminal = aggregate_frames
-            .next()
-            .ok_or("missing confined aggregate matrix terminal")?;
-        assert_eq!(
-            aggregate_terminal.operation,
-            Operation::GatewayTerminal as u16
-        );
-        assert_eq!(aggregate_terminal.request_id, aggregate_accepted.request_id);
-        assert!(
-            String::from_utf8(aggregate_terminal.payload)?.contains("\"outcome\":\"committed\"")
-        );
+        {
+            let mut group_key = b"0000".to_vec();
+            group_key.extend(std::iter::repeat_n(b'a', 8_168));
+            let mut expected = b"SQLR".to_vec();
+            expected.extend_from_slice(&1u16.to_be_bytes());
+            expected.extend_from_slice(&3u16.to_be_bytes());
+            expected.extend_from_slice(&(b"group_key".len() as u16).to_be_bytes());
+            expected.extend_from_slice(b"group_key");
+            expected.extend_from_slice(&6u32.to_be_bytes());
+            expected.extend_from_slice(&[0, 0, 0]);
+            expected.extend_from_slice(&(group_key.len() as u32).to_be_bytes());
+            expected.extend_from_slice(&group_key);
+            expected.extend_from_slice(&(b"measure".len() as u16).to_be_bytes());
+            expected.extend_from_slice(b"measure");
+            expected.extend_from_slice(&3u32.to_be_bytes());
+            expected.extend_from_slice(&[0, 0, 0]);
+            expected.extend_from_slice(&4u32.to_be_bytes());
+            expected.extend_from_slice(&100i32.to_be_bytes());
+            expected.extend_from_slice(&(b"min".len() as u16).to_be_bytes());
+            expected.extend_from_slice(b"min");
+            expected.extend_from_slice(&6u32.to_be_bytes());
+            expected.extend_from_slice(&[0, 0, 0]);
+            expected.extend_from_slice(&(group_key.len() as u32).to_be_bytes());
+            expected.extend_from_slice(&group_key);
+            let frame = aggregate_frames
+                .next()
+                .ok_or("missing filtered optimizer-backed TEXT MIN SQLR row")?;
+            assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+            assert_eq!(frame.request_id, aggregate_accepted.request_id);
+            let mut actual = frame.payload;
+            let aggregate_terminal = loop {
+                let frame = aggregate_frames
+                    .next()
+                    .ok_or("missing confined aggregate matrix terminal")?;
+                if frame.operation == Operation::GatewayResultData as u16 {
+                    assert_eq!(frame.request_id, aggregate_accepted.request_id);
+                    actual.extend_from_slice(&frame.payload);
+                } else {
+                    break frame;
+                }
+            };
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "filtered TEXT MIN SQLR length"
+            );
+            assert_eq!(
+                actual
+                    .iter()
+                    .zip(&expected)
+                    .position(|(left, right)| left != right),
+                None,
+                "filtered TEXT MIN SQLR bytes"
+            );
+            assert_eq!(
+                aggregate_terminal.operation,
+                Operation::GatewayTerminal as u16
+            );
+            assert_eq!(aggregate_terminal.request_id, aggregate_accepted.request_id);
+            assert!(
+                String::from_utf8(aggregate_terminal.payload.clone())?
+                    .contains("\"outcome\":\"committed\"")
+            );
+            assert_eq!(actual, expected, "filtered TEXT MIN SQLR bytes");
+        }
         assert_eq!(
             storage
                 .lookup_invocation_outcome(aggregate_reservation.invocation_id, user_id, now + 1,)?

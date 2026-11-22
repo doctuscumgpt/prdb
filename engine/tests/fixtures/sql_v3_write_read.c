@@ -754,6 +754,50 @@ static int32_t write_filtered_composite_decimal_sum_optimizer(
     return 0;
 }
 
+static int32_t write_filtered_composite_text_min_optimizer(
+    void *opaque, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v13 *binding) {
+    composite_grouped_result_context *context = opaque;
+    int32_t measure = 0;
+    if (context == NULL || binding == NULL || group_keys == NULL ||
+        aggregate_value == NULL || group_key_count != 2 ||
+        binding->group_key_count != 2 ||
+        binding->base.aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_MIN ||
+        binding->base.aggregate_column.type_code != PRDB_SDK_VALUE_TYPE_TEXT ||
+        group_keys[0].state != PRDB_SDK_VALUE_STATE_VALUE ||
+        group_keys[0].type_code != PRDB_SDK_VALUE_TYPE_TEXT ||
+        group_keys[0].data == NULL || group_keys[0].data_len != 8172 ||
+        group_keys[1].type_code != PRDB_SDK_VALUE_TYPE_INTEGER ||
+        !decode_range_integer(&group_keys[1], &measure) || measure != 100 ||
+        aggregate_value->state != PRDB_SDK_VALUE_STATE_VALUE ||
+        aggregate_value->type_code != PRDB_SDK_VALUE_TYPE_TEXT ||
+        aggregate_value->data == NULL ||
+        aggregate_value->data_len != group_keys[0].data_len ||
+        matching_row_count != 1 || context->row_count != 0) {
+        return 1;
+    }
+    const uint8_t *key = group_keys[0].data;
+    const uint8_t *minimum = aggregate_value->data;
+    if (memcmp(key, "0000", 4) != 0 ||
+        memcmp(key, minimum, group_keys[0].data_len) != 0) {
+        return 1;
+    }
+    for (uint32_t index = 4; index < group_keys[0].data_len; ++index) {
+        if (key[index] != 'a') return 1;
+    }
+    if (prdb_sdk_sql_write_group_composite_result_v1(
+            context->host, binding, context->columns, 3, group_keys,
+            group_key_count, aggregate_value, matching_row_count,
+            context->output, context->output_capacity,
+            &context->output_len) != PRDB_SDK_SQL_RESULT_OK) {
+        return 1;
+    }
+    ++context->row_count;
+    return 0;
+}
+
 static int32_t write_ordered_composite_group_aggregate_optimizer(
     void *opaque, const prdb_sdk_value_v1 *group_keys,
     uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
@@ -1401,6 +1445,10 @@ static int32_t run_write_read_fixture(
         "WHERE left_key = $1 AND "
         "(decimal_value IS NULL OR decimal_value IS NOT NULL) "
         "GROUP BY left_key, right_key LIMIT 3";
+    static const uint8_t select_filtered_composite_text_min_sql[] =
+        "SELECT group_key, measure, MIN(group_key) "
+        "FROM analytics_pressure_records WHERE measure = $1 "
+        "GROUP BY group_key, measure LIMIT 2";
     static const uint8_t select_redacted_null_filter_sql[] =
         "SELECT left_key, right_key, SUM(decimal_value) "
         "FROM decimal_grouped_records WHERE decimal_value IS NULL "
@@ -2311,6 +2359,43 @@ static int32_t run_write_read_fixture(
                 composite_grouped_results.row_count != 1) {
                 static uint8_t message[] =
                     "fixture-error-filtered-composite-sum-status-0";
+                if (status >= 0 && status <= 9) {
+                    message[sizeof(message) - 2] = (uint8_t)('0' + status);
+                }
+                return report_failure(host, message, sizeof(message) - 1);
+            }
+        }
+        if (invocation->parameters[0] == 'A') {
+            static const uint8_t measure_100_bytes[4] = {0, 0, 0, 100};
+            prdb_sdk_value_v1 measure_100 = {
+                sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+                PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+                measure_100_bytes, sizeof(measure_100_bytes)};
+            composite_grouped_result_context text_min_results = {
+                host, executor_columns, 3, analytical_pressure_group_key_bytes,
+                sizeof(analytical_pressure_group_key_bytes), 0, 0};
+            status = prdb_sdk_sql_execute_filtered_group_composite_aggregate_optimizer_v1(
+                optimizer_host_v5, schema, sizeof(schema) - 1,
+                select_filtered_composite_text_min_sql,
+                sizeof(select_filtered_composite_text_min_sql) - 1,
+                &measure_100, 1, 16, sizeof(ordered_pressure_batch_response),
+                group_count_optimizer_request,
+                sizeof(group_count_optimizer_request),
+                group_count_optimizer_response,
+                sizeof(group_count_optimizer_response), planner_response,
+                sizeof(planner_response), executor_response,
+                sizeof(executor_response), ordered_pressure_batch_response,
+                sizeof(ordered_pressure_batch_response), planner_columns, 9,
+                executor_columns, 9, cell_scratch, 9,
+                composite_join_materialized_bytes,
+                sizeof(composite_join_materialized_bytes),
+                write_filtered_composite_text_min_optimizer,
+                &text_min_results);
+            if (status != PRDB_SDK_SQL_EXEC_OK ||
+                text_min_results.row_count != 1 ||
+                text_min_results.output_len == 0) {
+                static uint8_t message[] =
+                    "fixture-error-filtered-composite-text-min-status-0";
                 if (status >= 0 && status <= 9) {
                     message[sizeof(message) - 2] = (uint8_t)('0' + status);
                 }

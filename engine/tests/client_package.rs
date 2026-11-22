@@ -1759,9 +1759,10 @@ fn packager_validates_abi_v4_exports_on_the_maintained_optimizer_fixture() {
     assert_eq!(manifest.entry_point_symbol, "prdb_query_main_v4");
     let artifact = fs::read(package.join("query.so")).unwrap();
     // The maintained fixture includes ordered and filtered composite
-    // analytics while remaining dynamically linked to the SDK.
+    // analytics, including a large TEXT MIN result, while remaining
+    // dynamically linked to the SDK.
     assert!(
-        artifact.len() < 153_000,
+        artifact.len() < 160_000,
         "maintained optimizer fixture grew to {} bytes",
         artifact.len()
     );

@@ -1263,3 +1263,11 @@
 - Regression: the maintained v20 executor fixture creates a row pair that satisfies the composite join keys but has NULL in the filtered right-side value. A parameterized `>=` filter emits no callback, closes both scans, and leaves the statement successful. The existing REDACTED-input case continues to require statement failure.
 - Verification: focused `sdk-sql-execute-v19` and complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed under the pinned TinyCC toolchain; `git diff --check` passed.
 - Remaining: broader analytical workload diversity, secure spill, target-hardware measurements, and mixed-workload optimization remain open.
+
+## SQL-7 follow-up: confined optimizer-backed filtered MIN(TEXT) — verified
+
+- Change: the separate confined aggregate invocation now filters the existing 128-row pressure relation by a typed INTEGER parameter and computes composite `MIN(group_key)` over the visible large TEXT value. The callback checks the two group keys, TEXT aggregate input/result, exact 8,172-byte key contents, and one matching row.
+- Result contract: the process acceptance independently constructs the three-column SQLR row and checks its bytes after reassembling the two bounded gateway result chunks. This exercises optimizer request validation, executor relation re-resolution, authorized filtered scan, TEXT comparison/aggregation, SQLR encoding, and result relay in one confined invocation.
+- Packaging: the additional confined case brought the maintained dynamically linked fixture to 157,160 bytes, above its previous 153,000-byte guard. The guard is now 160,000 bytes; the fixture reuses existing bounded buffers so the query artifact's static memory footprint does not grow for this case.
+- Verification: `make -f engine/sdk/Makefile test`, `make ... release-profile`, workspace build, format check, warning-denied Clippy, and `git diff --check` passed. The focused `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance passed inside the delegated user service, and the full serial locked workspace suite passed there as well. The acceptance confirms durable COMMITTED status and exact SQLR output.
+- Remaining: broader analytical workload coverage, secure spill, target-hardware measurements, and mixed-workload optimization remain open.
