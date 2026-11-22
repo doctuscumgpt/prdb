@@ -1516,9 +1516,11 @@ int32_t prdb_sdk_sql_execute_composite_count_optimizer_v1(
         materialized_bytes_capacity, on_group, result_context);
 }
 
-int32_t prdb_sdk_sql_execute_group_composite_aggregate_optimizer_v1(
+static int32_t execute_group_composite_aggregate_optimizer_internal(
     const prdb_host_api_v5 *host, const uint8_t *schema, uint32_t schema_len,
-    const uint8_t *sql, uint64_t sql_len, uint16_t max_candidates,
+    const uint8_t *sql, uint64_t sql_len,
+    const prdb_sdk_value_v1 *parameters, uint32_t parameter_count,
+    uint32_t filtered, uint16_t max_candidates,
     uint32_t max_batch_bytes, uint8_t *optimizer_request,
     uint64_t optimizer_request_capacity, uint8_t *optimizer_response,
     uint64_t optimizer_response_capacity, uint8_t *planner_response,
@@ -1577,9 +1579,15 @@ int32_t prdb_sdk_sql_execute_group_composite_aggregate_optimizer_v1(
         planned.column_count, &binding, sizeof(binding));
     if (status != PRDB_SDK_SQL_BIND_OK)
         return fail_statement(&host->v4.v3, PRDB_SDK_SQL_EXEC_BIND_ERROR);
-    status = prdb_sdk_optimizer_encode_composite_group_aggregate_v1(
-        &statement, schema, schema_len, optimizer_request,
-        optimizer_request_capacity, &request_len);
+    if (filtered) {
+        status = prdb_sdk_optimizer_encode_filtered_composite_group_aggregate_v1(
+            &statement, parameters, parameter_count, schema, schema_len,
+            optimizer_request, optimizer_request_capacity, &request_len);
+    } else {
+        status = prdb_sdk_optimizer_encode_composite_group_aggregate_v1(
+            &statement, schema, schema_len, optimizer_request,
+            optimizer_request_capacity, &request_len);
+    }
     if (status != PRDB_SDK_OPTIMIZER_ENCODE_OK)
         return fail_statement(&host->v4.v3, PRDB_SDK_SQL_EXEC_BIND_ERROR);
     status = prdb_sdk_optimizer_submit_group_count_v1(
@@ -1588,9 +1596,15 @@ int32_t prdb_sdk_sql_execute_group_composite_aggregate_optimizer_v1(
         sizeof(optimizer));
     if (status != PRDB_SDK_OPTIMIZER_RESULT_OK)
         return fail_statement(&host->v4.v3, PRDB_SDK_SQL_EXEC_PLANNER_ERROR);
-    status = prdb_sdk_optimizer_match_composite_group_aggregate_plan_v1(
-        &statement, &binding, schema, schema_len, optimizer.plan,
-        optimizer.plan_len);
+    if (filtered) {
+        status = prdb_sdk_optimizer_match_filtered_composite_group_aggregate_plan_v1(
+            &statement, &binding, parameters, parameter_count, schema,
+            schema_len, optimizer.plan, optimizer.plan_len);
+    } else {
+        status = prdb_sdk_optimizer_match_composite_group_aggregate_plan_v1(
+            &statement, &binding, schema, schema_len, optimizer.plan,
+            optimizer.plan_len);
+    }
     if (status != PRDB_SDK_OPTIMIZER_PLAN_OK)
         return fail_statement(&host->v4.v3, PRDB_SDK_SQL_EXEC_SHAPE_MISMATCH);
     status = prdb_sdk_optimizer_validate_executor_relation_v1(
@@ -1599,8 +1613,67 @@ int32_t prdb_sdk_sql_execute_group_composite_aggregate_optimizer_v1(
     if (status != PRDB_SDK_OPTIMIZER_PLAN_OK)
         return fail_statement(&host->v4.v3, PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
     return prdb_sdk_sql_execute_group_v13(
-        &host->v4.v3, schema, schema_len, sql, sql_len, NULL, 0,
+        &host->v4.v3, schema, schema_len, sql, sql_len, parameters,
+        parameter_count,
         max_candidates, max_batch_bytes, planner_response,
+        planner_response_capacity, executor_response,
+        executor_response_capacity, batch_response, batch_response_capacity,
+        planner_columns, planner_column_capacity, executor_columns,
+        executor_column_capacity, cell_scratch, cell_scratch_capacity,
+        materialized_bytes, materialized_bytes_capacity, on_group,
+        result_context);
+}
+
+int32_t prdb_sdk_sql_execute_group_composite_aggregate_optimizer_v1(
+    const prdb_host_api_v5 *host, const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *sql, uint64_t sql_len, uint16_t max_candidates,
+    uint32_t max_batch_bytes, uint8_t *optimizer_request,
+    uint64_t optimizer_request_capacity, uint8_t *optimizer_response,
+    uint64_t optimizer_response_capacity, uint8_t *planner_response,
+    uint64_t planner_response_capacity, uint8_t *executor_response,
+    uint64_t executor_response_capacity, uint8_t *batch_response,
+    uint64_t batch_response_capacity,
+    prdb_sdk_sql_column_shape_v2 *planner_columns,
+    uint32_t planner_column_capacity,
+    prdb_sdk_sql_column_shape_v2 *executor_columns,
+    uint32_t executor_column_capacity, prdb_sdk_value_v1 *cell_scratch,
+    uint32_t cell_scratch_capacity, uint8_t *materialized_bytes,
+    uint64_t materialized_bytes_capacity,
+    prdb_sdk_sql_group_row_v13_fn on_group, void *result_context) {
+    return execute_group_composite_aggregate_optimizer_internal(
+        host, schema, schema_len, sql, sql_len, NULL, 0, 0, max_candidates,
+        max_batch_bytes, optimizer_request, optimizer_request_capacity,
+        optimizer_response, optimizer_response_capacity, planner_response,
+        planner_response_capacity, executor_response,
+        executor_response_capacity, batch_response, batch_response_capacity,
+        planner_columns, planner_column_capacity, executor_columns,
+        executor_column_capacity, cell_scratch, cell_scratch_capacity,
+        materialized_bytes, materialized_bytes_capacity, on_group,
+        result_context);
+}
+
+int32_t prdb_sdk_sql_execute_filtered_group_composite_aggregate_optimizer_v1(
+    const prdb_host_api_v5 *host, const uint8_t *schema, uint32_t schema_len,
+    const uint8_t *sql, uint64_t sql_len,
+    const prdb_sdk_value_v1 *parameters, uint32_t parameter_count,
+    uint16_t max_candidates, uint32_t max_batch_bytes,
+    uint8_t *optimizer_request, uint64_t optimizer_request_capacity,
+    uint8_t *optimizer_response, uint64_t optimizer_response_capacity,
+    uint8_t *planner_response, uint64_t planner_response_capacity,
+    uint8_t *executor_response, uint64_t executor_response_capacity,
+    uint8_t *batch_response, uint64_t batch_response_capacity,
+    prdb_sdk_sql_column_shape_v2 *planner_columns,
+    uint32_t planner_column_capacity,
+    prdb_sdk_sql_column_shape_v2 *executor_columns,
+    uint32_t executor_column_capacity, prdb_sdk_value_v1 *cell_scratch,
+    uint32_t cell_scratch_capacity, uint8_t *materialized_bytes,
+    uint64_t materialized_bytes_capacity,
+    prdb_sdk_sql_group_row_v13_fn on_group, void *result_context) {
+    return execute_group_composite_aggregate_optimizer_internal(
+        host, schema, schema_len, sql, sql_len, parameters, parameter_count, 1,
+        max_candidates, max_batch_bytes, optimizer_request,
+        optimizer_request_capacity, optimizer_response,
+        optimizer_response_capacity, planner_response,
         planner_response_capacity, executor_response,
         executor_response_capacity, batch_response, batch_response_capacity,
         planner_columns, planner_column_capacity, executor_columns,

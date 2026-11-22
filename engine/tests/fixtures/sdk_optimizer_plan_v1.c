@@ -293,6 +293,63 @@ static uint32_t build_composite_group_aggregate_plan(uint8_t *bytes,
     return offset;
 }
 
+static uint32_t build_filtered_composite_group_aggregate_plan(uint8_t *bytes) {
+    uint32_t offset = 0;
+    uint8_t identifier[16];
+    uint32_t column;
+    prdb_encode_optimizer_plan_header_record(bytes + offset, 1, 15, 0);
+    offset += PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "public");
+    memset(identifier, 1, sizeof(identifier));
+    prdb_encode_optimizer_plan_schema_reference_record(bytes + offset,
+                                                       identifier, 3);
+    offset += PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES;
+    put_name(bytes, &offset, "items");
+    memset(identifier, 2, sizeof(identifier));
+    prdb_encode_optimizer_plan_relation_reference_record(bytes + offset,
+                                                         identifier, 4);
+    offset += PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES;
+    put_u16(bytes, &offset, 3);
+    column = put_column(bytes, &offset, PRDB_SDK_VALUE_TYPE_INTEGER, 0);
+    bytes[column] = 5;
+    set_column_ordinal(bytes, column, 0);
+    column = put_column(bytes, &offset, PRDB_SDK_VALUE_TYPE_BOOLEAN, 0);
+    bytes[column] = 4;
+    set_column_ordinal(bytes, column, 1);
+    column = put_column(bytes, &offset, PRDB_SDK_VALUE_TYPE_BIGINT, 1);
+    bytes[column] = 6;
+    set_column_ordinal(bytes, column, 2);
+    prdb_encode_optimizer_plan_filter_node_record(bytes + offset, 2);
+    offset += PRDB_OPTIMIZER_PLAN_FILTER_NODE_RECORD_HEADER_BYTES;
+    prdb_encode_optimizer_plan_compare_predicate_header_record(bytes + offset,
+                                                               0x20, 0);
+    offset += PRDB_OPTIMIZER_PLAN_COMPARE_PREDICATE_HEADER_RECORD_HEADER_BYTES;
+    identifier[0] = 4;
+    memset(identifier + 1, 0, 15);
+    prdb_encode_optimizer_plan_column_predicate_record(bytes + offset, 0x10,
+                                                       identifier);
+    offset += PRDB_OPTIMIZER_PLAN_COLUMN_PREDICATE_RECORD_HEADER_BYTES;
+    prdb_encode_optimizer_plan_boolean_literal_predicate_record(bytes + offset,
+                                                                 0x01, 1);
+    offset += PRDB_OPTIMIZER_PLAN_BOOLEAN_LITERAL_PREDICATE_RECORD_HEADER_BYTES;
+    bytes[offset++] = 15;
+    bytes[offset++] = PRDB_SDK_SQL_V7_AGGREGATE_SUM;
+    bytes[offset++] = 2;
+    column = put_column(bytes, &offset, PRDB_SDK_VALUE_TYPE_BOOLEAN, 0);
+    bytes[column] = 4;
+    set_column_ordinal(bytes, column, 1);
+    column = put_column(bytes, &offset, PRDB_SDK_VALUE_TYPE_INTEGER, 0);
+    bytes[column] = 5;
+    set_column_ordinal(bytes, column, 0);
+    bytes[offset++] = 1;
+    column = put_column(bytes, &offset, PRDB_SDK_VALUE_TYPE_BIGINT, 1);
+    bytes[column] = 6;
+    set_column_ordinal(bytes, column, 2);
+    bytes[offset++] = 1;
+    put_u32(bytes, &offset, 5);
+    return offset;
+}
+
 static uint32_t build_ordered_composite_group_count_plan(uint8_t *bytes) {
     uint32_t offset = 0;
     uint8_t identifier[16];
@@ -1265,6 +1322,7 @@ int main(void) {
     uint8_t ordered_group_count_payload[256] = {0};
     uint8_t composite_group_count_payload[512] = {0};
     uint8_t composite_group_aggregate_payload[512] = {0};
+    uint8_t filtered_composite_group_aggregate_payload[512] = {0};
     uint8_t ordered_composite_group_count_payload[512] = {0};
     uint8_t group_aggregate_payload[512] = {0};
     uint8_t ordered_group_aggregate_payload[512] = {0};
@@ -1290,6 +1348,8 @@ int main(void) {
         composite_group_count_decoded;
     static prdb_sdk_optimizer_composite_group_aggregate_plan_v1
         composite_group_aggregate_decoded;
+    static prdb_sdk_optimizer_filtered_composite_group_aggregate_plan_v1
+        filtered_composite_group_aggregate_decoded;
     static prdb_sdk_optimizer_ordered_composite_group_count_plan_v1
         ordered_composite_group_count_decoded;
     static prdb_sdk_optimizer_group_aggregate_plan_v1 group_aggregate_decoded;
@@ -2613,6 +2673,67 @@ int main(void) {
                    composite_group_aggregate_payload,
                    composite_group_aggregate_payload_len) ==
                PRDB_SDK_OPTIMIZER_PLAN_OK);
+    }
+    uint32_t filtered_composite_group_aggregate_payload_len =
+        build_filtered_composite_group_aggregate_plan(
+            filtered_composite_group_aggregate_payload);
+    assert(prdb_sdk_optimizer_decode_filtered_composite_group_aggregate_plan_v1(
+               filtered_composite_group_aggregate_payload,
+               filtered_composite_group_aggregate_payload_len,
+               &filtered_composite_group_aggregate_decoded,
+               sizeof(filtered_composite_group_aggregate_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_OK);
+    assert(filtered_composite_group_aggregate_decoded.plan.plan_kind == 15 &&
+           filtered_composite_group_aggregate_decoded.group_key_count == 2 &&
+           filtered_composite_group_aggregate_decoded.aggregate_kind ==
+               PRDB_SDK_SQL_V7_AGGREGATE_SUM &&
+           filtered_composite_group_aggregate_decoded.filter.present == 1 &&
+           filtered_composite_group_aggregate_decoded.plan.scan_column_count == 3 &&
+           filtered_composite_group_aggregate_decoded.filter.prefix_len == 21 &&
+           filtered_composite_group_aggregate_decoded.plan.limit == 5);
+    memcpy(malformed, filtered_composite_group_aggregate_payload,
+           filtered_composite_group_aggregate_payload_len);
+    malformed[filtered_composite_group_aggregate_payload_len - 32] ^= 1;
+    assert(prdb_sdk_optimizer_decode_filtered_composite_group_aggregate_plan_v1(
+               malformed, filtered_composite_group_aggregate_payload_len,
+               &filtered_composite_group_aggregate_decoded,
+               sizeof(filtered_composite_group_aggregate_decoded)) ==
+           PRDB_SDK_OPTIMIZER_PLAN_INVALID_PAYLOAD);
+    {
+        static const uint8_t filtered_composite_sql[] =
+            "SELECT active, id, SUM(amount) FROM items WHERE active = $1 "
+            "GROUP BY active, id LIMIT 5";
+        uint8_t bool_value = 1;
+        prdb_sdk_value_v1 parameters[1] = {{
+            sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+            PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_BOOLEAN,
+            &bool_value, 1}};
+        static prdb_sdk_select_v13 filtered_statement;
+        static prdb_sdk_select_binding_v13 filtered_binding;
+        assert(prdb_sdk_sql_parse_select_v13(
+                   filtered_composite_sql, sizeof(filtered_composite_sql) - 1,
+                   &filtered_statement, sizeof(filtered_statement), NULL) ==
+               PRDB_SDK_SQL_OK);
+        assert(prdb_sdk_sql_bind_select_v13(
+                   &filtered_statement, (const uint8_t *)"items", 5,
+                   composite_group_aggregate_columns, 3, &filtered_binding,
+                   sizeof(filtered_binding)) == PRDB_SDK_SQL_BIND_OK);
+        assert(prdb_sdk_optimizer_match_filtered_composite_group_aggregate_plan_v1(
+                   &filtered_statement, &filtered_binding, parameters, 1,
+                   (const uint8_t *)"public", 6,
+                   filtered_composite_group_aggregate_payload,
+                   filtered_composite_group_aggregate_payload_len) ==
+               PRDB_SDK_OPTIMIZER_PLAN_OK);
+        filtered_composite_group_aggregate_payload[
+            (uint32_t)(filtered_composite_group_aggregate_decoded.filter.prefix -
+                       filtered_composite_group_aggregate_payload) +
+            filtered_composite_group_aggregate_decoded.filter.prefix_len - 1] ^= 1;
+        assert(prdb_sdk_optimizer_match_filtered_composite_group_aggregate_plan_v1(
+                   &filtered_statement, &filtered_binding, parameters, 1,
+                   (const uint8_t *)"public", 6,
+                   filtered_composite_group_aggregate_payload,
+                   filtered_composite_group_aggregate_payload_len) ==
+               PRDB_SDK_OPTIMIZER_PLAN_IDENTITY_MISMATCH);
     }
     uint32_t ordered_composite_group_count_payload_len =
         build_ordered_composite_group_count_plan(ordered_composite_group_count_payload);

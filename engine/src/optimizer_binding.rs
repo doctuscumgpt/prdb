@@ -6,12 +6,13 @@ use crate::metadata_discovery::{
 };
 use crate::optimizer_request::{
     Comparison, CompositeGroupAggregateRequest, CompositeGroupCountOrderItem,
-    CompositeGroupCountRequest, GroupAggregateRequest, GroupCountOrderItem, GroupCountRequest,
-    JoinFilterExpression, JoinRelationSide, OrderedCompositeGroupAggregateRequest,
-    OrderedGroupAggregateRequest, OrderedGroupCountRequest, OrderedSelectRequest, Predicate,
-    RequestError, UpdateValue, decode_composite_group_aggregate_request,
-    decode_composite_group_count_request, decode_delete_request, decode_group_aggregate_request,
-    decode_group_count_request, decode_join_select_request,
+    CompositeGroupCountRequest, FilteredCompositeGroupAggregateRequest, GroupAggregateRequest,
+    GroupCountOrderItem, GroupCountRequest, JoinFilterExpression, JoinRelationSide,
+    OrderedCompositeGroupAggregateRequest, OrderedGroupAggregateRequest, OrderedGroupCountRequest,
+    OrderedSelectRequest, Predicate, RequestError, UpdateValue,
+    decode_composite_group_aggregate_request, decode_composite_group_count_request,
+    decode_delete_request, decode_filtered_composite_group_aggregate_request,
+    decode_group_aggregate_request, decode_group_count_request, decode_join_select_request,
     decode_ordered_composite_group_aggregate_request, decode_ordered_composite_group_count_request,
     decode_ordered_group_aggregate_request, decode_ordered_group_count_request,
     decode_ordered_select_request, decode_select_request, decode_update_request,
@@ -97,6 +98,21 @@ pub struct BoundCompositeGroupAggregate {
     pub group_keys: Vec<BoundColumn>,
     pub aggregate_kind: u8,
     pub aggregate_column: Option<BoundColumn>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundFilteredCompositeGroupAggregate {
+    pub schema_name: String,
+    pub schema_id: [u8; 16],
+    pub schema_version: u64,
+    pub table_epoch: u64,
+    pub relation_id: [u8; 16],
+    pub relation_name: String,
+    pub group_keys: Vec<BoundColumn>,
+    pub aggregate_kind: u8,
+    pub aggregate_column: Option<BoundColumn>,
+    pub predicate: BoundPredicate,
     pub limit: Option<u32>,
 }
 
@@ -459,6 +475,85 @@ pub fn bind_composite_group_aggregate_request(
 ) -> Result<BoundCompositeGroupAggregate, BindError> {
     let request = decode_composite_group_aggregate_request(request_bytes)?;
     bind_decoded_composite_group_aggregate(request, relation)
+}
+
+pub fn bind_filtered_composite_group_aggregate_request(
+    request_bytes: &[u8],
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundFilteredCompositeGroupAggregate, BindError> {
+    let request = decode_filtered_composite_group_aggregate_request(request_bytes)?;
+    bind_decoded_filtered_composite_group_aggregate(request, relation)
+}
+
+pub fn bind_filtered_composite_group_aggregate_request_via_metadata(
+    request_bytes: &[u8],
+    connection: &mut PlannerMetadataConnection<'_, '_>,
+) -> Result<BoundFilteredCompositeGroupAggregate, MetadataBindError> {
+    let request = decode_filtered_composite_group_aggregate_request(request_bytes)
+        .map_err(BindError::from)?;
+    let relation = connection
+        .resolve_relation_for_plan(&request.schema_name, &request.relation_name)
+        .map_err(MetadataBindError::Transaction)?
+        .map(|(_, relation)| relation);
+    bind_decoded_filtered_composite_group_aggregate(request, relation)
+        .map_err(MetadataBindError::Bind)
+}
+
+fn bind_decoded_filtered_composite_group_aggregate(
+    request: FilteredCompositeGroupAggregateRequest,
+    relation: Option<AuthorizedPlanRelation>,
+) -> Result<BoundFilteredCompositeGroupAggregate, BindError> {
+    let relation = authorized_relation(&request.relation_name, relation)?;
+    let group_keys = request
+        .group_key_names
+        .iter()
+        .map(|name| resolve_column(&relation.relation.columns, name).map(Into::into))
+        .collect::<Result<Vec<BoundColumn>, _>>()?;
+    let mut seen = HashSet::with_capacity(group_keys.len());
+    if group_keys.iter().any(|column| !seen.insert(column.ordinal)) {
+        return Err(BindError::InvalidQuery);
+    }
+    let aggregate_column = request
+        .aggregate_column_name
+        .as_deref()
+        .map(|name| resolve_column(&relation.relation.columns, name))
+        .transpose()?;
+    if request.aggregate_kind == 1 && aggregate_column.is_some()
+        || request.aggregate_kind != 1 && aggregate_column.is_none()
+    {
+        return Err(BindError::InvalidQuery);
+    }
+    if matches!(request.aggregate_kind, 4 | 5)
+        && !matches!(
+            aggregate_column.as_ref().map(|column| column.scalar_type),
+            Some(
+                ScalarType::SmallInt
+                    | ScalarType::Integer
+                    | ScalarType::BigInt
+                    | ScalarType::Decimal { .. }
+            )
+        )
+    {
+        return Err(BindError::InvalidQuery);
+    }
+    let (predicate, predicate_type) =
+        bind_predicate(&request.predicate, &relation.relation.columns)?;
+    if predicate_type != Some(ScalarType::Boolean) {
+        return Err(BindError::InvalidQuery);
+    }
+    Ok(BoundFilteredCompositeGroupAggregate {
+        schema_name: request.schema_name,
+        schema_id: relation.schema_id,
+        schema_version: relation.schema_version,
+        table_epoch: relation.table_epoch,
+        relation_id: relation.relation.relation_id,
+        relation_name: relation.relation.name,
+        group_keys,
+        aggregate_kind: request.aggregate_kind,
+        aggregate_column: aggregate_column.map(Into::into),
+        predicate,
+        limit: request.limit,
+    })
 }
 
 pub fn bind_composite_group_aggregate_request_via_metadata(
@@ -1369,6 +1464,29 @@ mod tests {
         bytes
     }
 
+    fn filtered_composite_group_aggregate_request() -> Vec<u8> {
+        let predicate = [
+            0x20, 0, 0x10, 5, b'a', b'u', b'd', b'i', b't', 0x02, 0, 0, 0, 0, 0, 0, 0, 7,
+        ];
+        let mut bytes = vec![
+            0,
+            crate::query_abi::OPTIMIZER_REQUEST_VERSION as u8,
+            crate::query_abi::OPTIMIZER_FILTERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT,
+            0,
+        ];
+        put_name(&mut bytes, "public");
+        put_name(&mut bytes, "items");
+        bytes.push(2);
+        put_name(&mut bytes, "active");
+        put_name(&mut bytes, "id");
+        bytes.push(4);
+        put_name(&mut bytes, "amount");
+        bytes.extend_from_slice(&(predicate.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&predicate);
+        bytes.extend_from_slice(&[1, 0, 0, 0, 4]);
+        bytes
+    }
+
     fn ordered_composite_group_aggregate_request(kind: u8) -> Vec<u8> {
         let mut bytes = vec![
             0,
@@ -1418,6 +1536,13 @@ mod tests {
                         ordinal: 2,
                         scalar_type: ScalarType::BigInt,
                         nullable: true,
+                    },
+                    VisibleColumn {
+                        column_id: [0x24; 16],
+                        name: "audit".to_owned(),
+                        ordinal: 3,
+                        scalar_type: ScalarType::Integer,
+                        nullable: false,
                     },
                 ],
             },
@@ -1684,6 +1809,29 @@ mod tests {
                 Some(relation()),
             ),
             Err(BindError::Request(RequestError::InvalidValue))
+        );
+    }
+
+    #[test]
+    fn binds_filtered_composite_aggregate_filter_to_authorized_shape() {
+        let bound = bind_filtered_composite_group_aggregate_request(
+            &filtered_composite_group_aggregate_request(),
+            Some(relation()),
+        )
+        .unwrap();
+        assert_eq!(bound.group_keys[0].ordinal, 1);
+        assert_eq!(bound.group_keys[1].ordinal, 0);
+        assert_eq!(bound.aggregate_column.as_ref().unwrap().ordinal, 2);
+        assert!(matches!(bound.predicate, BoundPredicate::Compare { .. }));
+
+        let mut invalid_relation = relation();
+        invalid_relation.relation.columns[2].scalar_type = ScalarType::Text;
+        assert_eq!(
+            bind_filtered_composite_group_aggregate_request(
+                &filtered_composite_group_aggregate_request(),
+                Some(invalid_relation),
+            ),
+            Err(BindError::InvalidQuery)
         );
     }
 

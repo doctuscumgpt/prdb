@@ -1,10 +1,11 @@
 //! Deterministic single-table SELECT plan construction for optimizer v1.
 
 use crate::optimizer_binding::{
-    BoundColumn, BoundCompositeGroupAggregate, BoundCompositeGroupCount, BoundGroupAggregate,
-    BoundGroupCount, BoundJoinFilter, BoundJoinSelect, BoundOrderedCompositeGroupAggregate,
-    BoundOrderedCompositeGroupCount, BoundOrderedGroupAggregate, BoundOrderedGroupCount,
-    BoundOrderedSelect, BoundPredicate, BoundSelect, BoundUpdateAssignment, BoundUpdateValue,
+    BoundColumn, BoundCompositeGroupAggregate, BoundCompositeGroupCount,
+    BoundFilteredCompositeGroupAggregate, BoundGroupAggregate, BoundGroupCount, BoundJoinFilter,
+    BoundJoinSelect, BoundOrderedCompositeGroupAggregate, BoundOrderedCompositeGroupCount,
+    BoundOrderedGroupAggregate, BoundOrderedGroupCount, BoundOrderedSelect, BoundPredicate,
+    BoundSelect, BoundUpdateAssignment, BoundUpdateValue,
 };
 use crate::optimizer_request::JoinRelationSide;
 use crate::optimizer_request::{CompositeGroupCountOrderItem, GroupCountOrderItem};
@@ -154,6 +155,17 @@ pub struct CompositeGroupAggregatePlanV1 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FilteredCompositeGroupAggregatePlanV1 {
+    pub relation: RelationReference,
+    pub scan_columns: Vec<BoundColumn>,
+    pub group_keys: Vec<BoundColumn>,
+    pub aggregate_kind: u8,
+    pub aggregate_column: Option<BoundColumn>,
+    pub predicate: BoundPredicate,
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrderedCompositeGroupAggregatePlanV1 {
     pub aggregate_plan: CompositeGroupAggregatePlanV1,
     pub order_items: Vec<CompositeGroupCountOrderItem>,
@@ -220,6 +232,7 @@ const PLAN_KIND_GROUP_AGGREGATE: u8 = 10;
 const PLAN_KIND_ORDERED_GROUP_AGGREGATE: u8 = 11;
 const PLAN_KIND_COMPOSITE_GROUP_AGGREGATE: u8 = 13;
 const PLAN_KIND_ORDERED_COMPOSITE_GROUP_AGGREGATE: u8 = 14;
+const PLAN_KIND_FILTERED_COMPOSITE_GROUP_AGGREGATE: u8 = 15;
 const GROUP_COUNT_NODE: u8 = 7;
 const COMPOSITE_GROUP_COUNT_NODE: u8 = 8;
 const ORDER_BY_NODE: u8 = 9;
@@ -228,6 +241,7 @@ const GROUP_AGGREGATE_NODE: u8 = 11;
 const ORDERED_GROUP_AGGREGATE_NODE: u8 = 12;
 const COMPOSITE_GROUP_AGGREGATE_NODE: u8 = 13;
 const ORDERED_COMPOSITE_GROUP_AGGREGATE_NODE: u8 = 14;
+const FILTERED_COMPOSITE_GROUP_AGGREGATE_NODE: u8 = 15;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlanError {
@@ -2018,6 +2032,78 @@ pub fn plan_composite_group_aggregate_v1(
     Ok(plan)
 }
 
+pub fn plan_filtered_composite_group_aggregate_v1(
+    bound: BoundFilteredCompositeGroupAggregate,
+) -> Result<FilteredCompositeGroupAggregatePlanV1, PlanError> {
+    let relation = RelationReference {
+        schema_name: bound.schema_name,
+        schema_id: bound.schema_id,
+        schema_version: bound.schema_version,
+        table_epoch: bound.table_epoch,
+        relation_id: bound.relation_id,
+        relation_name: bound.relation_name,
+    };
+    let mut scan_columns = bound.group_keys.clone();
+    if let Some(column) = &bound.aggregate_column {
+        add_column(&mut scan_columns, column)?;
+    }
+    collect_predicate_columns(&bound.predicate, &mut scan_columns)?;
+    scan_columns.sort_by_key(|column| column.ordinal);
+    let plan = FilteredCompositeGroupAggregatePlanV1 {
+        relation,
+        scan_columns,
+        group_keys: bound.group_keys,
+        aggregate_kind: bound.aggregate_kind,
+        aggregate_column: bound.aggregate_column,
+        predicate: bound.predicate,
+        limit: bound.limit,
+    };
+    validate_filtered_composite_group_aggregate_plan_v1(&plan)?;
+    Ok(plan)
+}
+
+pub fn validate_filtered_composite_group_aggregate_plan_v1(
+    plan: &FilteredCompositeGroupAggregatePlanV1,
+) -> Result<(), PlanError> {
+    validate_relation(&plan.relation)?;
+    validate_columns(&plan.scan_columns)?;
+    if !(crate::optimizer_request::MIN_GROUP_KEYS..=crate::optimizer_request::MAX_GROUP_KEYS)
+        .contains(&plan.group_keys.len())
+        || !(1..=5).contains(&plan.aggregate_kind)
+        || plan
+            .group_keys
+            .iter()
+            .any(|key| key.column_id == [0; 16] || !valid_scalar_type(key.scalar_type))
+    {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    let mut expected = plan.group_keys.clone();
+    let mut seen = HashSet::with_capacity(plan.group_keys.len());
+    if plan.group_keys.iter().any(|key| !seen.insert(key.ordinal)) {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    match (plan.aggregate_kind, &plan.aggregate_column) {
+        (1, None) => {}
+        (2..=5, Some(column))
+            if column.column_id != [0; 16] && valid_scalar_type(column.scalar_type) =>
+        {
+            if matches!(plan.aggregate_kind, 4 | 5) && !is_numeric_type(column.scalar_type) {
+                return Err(PlanError::InvalidColumnReference);
+            }
+            add_column(&mut expected, column)?;
+        }
+        _ => return Err(PlanError::InvalidColumnReference),
+    }
+    collect_predicate_columns(&plan.predicate, &mut expected)?;
+    expected.sort_by_key(|column| column.ordinal);
+    if expected != plan.scan_columns
+        || predicate_type(&plan.predicate, &plan.scan_columns)? != Some(ScalarType::Boolean)
+    {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    Ok(())
+}
+
 pub fn validate_composite_group_aggregate_plan_v1(
     plan: &CompositeGroupAggregatePlanV1,
 ) -> Result<(), PlanError> {
@@ -2212,6 +2298,154 @@ pub fn decode_composite_group_aggregate_plan_v1(
         limit,
     };
     validate_composite_group_aggregate_plan_v1(&plan)?;
+    Ok(plan)
+}
+
+pub fn encode_filtered_composite_group_aggregate_plan_v1(
+    plan: &FilteredCompositeGroupAggregatePlanV1,
+) -> Result<Vec<u8>, PlanError> {
+    validate_filtered_composite_group_aggregate_plan_v1(plan)?;
+    let mut output = Vec::with_capacity(1024);
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_header_record(
+        1,
+        PLAN_KIND_FILTERED_COMPOSITE_GROUP_AGGREGATE,
+        0,
+    ));
+    put_name(&mut output, &plan.relation.schema_name)?;
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_schema_reference_record(
+            plan.relation.schema_id,
+            plan.relation.schema_version,
+        ),
+    );
+    put_name(&mut output, &plan.relation.relation_name)?;
+    output.extend_from_slice(
+        &crate::query_abi::encode_optimizer_plan_relation_reference_record(
+            plan.relation.relation_id,
+            plan.relation.table_epoch,
+        ),
+    );
+    output.extend_from_slice(&(plan.scan_columns.len() as u16).to_be_bytes());
+    for column in &plan.scan_columns {
+        put_column(&mut output, column);
+    }
+    output.extend_from_slice(&crate::query_abi::encode_optimizer_plan_filter_node_record(
+        2,
+    ));
+    put_predicate(&mut output, &plan.predicate)?;
+    output.extend_from_slice(&[
+        FILTERED_COMPOSITE_GROUP_AGGREGATE_NODE,
+        plan.aggregate_kind,
+        plan.group_keys.len() as u8,
+    ]);
+    for key in &plan.group_keys {
+        put_column(&mut output, key);
+    }
+    match &plan.aggregate_column {
+        None => output.push(0),
+        Some(column) => {
+            output.push(1);
+            put_column(&mut output, column);
+        }
+    }
+    match plan.limit {
+        None => output.push(0),
+        Some(limit) => {
+            output.push(1);
+            output.extend_from_slice(&limit.to_be_bytes());
+        }
+    }
+    if output.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    Ok(output)
+}
+
+pub fn decode_filtered_composite_group_aggregate_plan_v1(
+    bytes: &[u8],
+) -> Result<FilteredCompositeGroupAggregatePlanV1, PlanError> {
+    if bytes.len() > MAX_PLAN_BYTES {
+        return Err(PlanError::TooLarge);
+    }
+    let (version, kind, reserved) =
+        crate::query_abi::decode_optimizer_plan_header_record(bytes).ok_or(PlanError::Truncated)?;
+    if version != 1 {
+        return Err(PlanError::UnsupportedVersion(version));
+    }
+    if kind != PLAN_KIND_FILTERED_COMPOSITE_GROUP_AGGREGATE || reserved != 0 {
+        return Err(PlanError::InvalidEncoding);
+    }
+    let mut reader = PlanReader {
+        bytes,
+        offset: crate::query_abi::OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES as usize,
+    };
+    let schema_name = reader.name()?;
+    let (schema_id, schema_version) =
+        crate::query_abi::decode_optimizer_plan_schema_reference_record(reader.take(
+            crate::query_abi::OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES as usize,
+        )?)
+        .ok_or(PlanError::Truncated)?;
+    let relation_name = reader.name()?;
+    let (relation_id, table_epoch) =
+        crate::query_abi::decode_optimizer_plan_relation_reference_record(reader.take(
+            crate::query_abi::OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES as usize,
+        )?)
+        .ok_or(PlanError::Truncated)?;
+    let scan_count = usize::from(reader.u16()?);
+    if !(crate::optimizer_request::MIN_GROUP_KEYS..=MAX_PLAN_SCAN_COLUMNS).contains(&scan_count) {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    let mut scan_columns = Vec::with_capacity(scan_count);
+    for _ in 0..scan_count {
+        scan_columns.push(reader.column()?);
+    }
+    let filter_tag_offset = reader.offset;
+    reader.filter_node_tag(filter_tag_offset)?;
+    let predicate = reader.predicate(&scan_columns)?;
+    if reader.u8()? != FILTERED_COMPOSITE_GROUP_AGGREGATE_NODE {
+        return Err(PlanError::InvalidPipeline);
+    }
+    let aggregate_kind = reader.u8()?;
+    let key_count = usize::from(reader.u8()?);
+    if !(crate::optimizer_request::MIN_GROUP_KEYS..=crate::optimizer_request::MAX_GROUP_KEYS)
+        .contains(&key_count)
+    {
+        return Err(PlanError::InvalidColumnReference);
+    }
+    let mut group_keys = Vec::with_capacity(key_count);
+    for _ in 0..key_count {
+        group_keys.push(reader.column()?);
+    }
+    let aggregate_column = match reader.u8()? {
+        0 => None,
+        1 => Some(reader.column()?),
+        _ => return Err(PlanError::InvalidEncoding),
+    };
+    let limit = match reader.u8()? {
+        0 => None,
+        1 => Some(reader.u32()?),
+        _ => return Err(PlanError::InvalidEncoding),
+    };
+    if reader.offset != bytes.len() {
+        return Err(PlanError::TrailingBytes);
+    }
+    let plan = FilteredCompositeGroupAggregatePlanV1 {
+        relation: RelationReference {
+            schema_name,
+            schema_id,
+            schema_version,
+            relation_name,
+            relation_id,
+            table_epoch,
+        },
+        scan_columns,
+        group_keys,
+        aggregate_kind,
+        aggregate_column,
+        predicate,
+        limit,
+    };
+    validate_filtered_composite_group_aggregate_plan_v1(&plan)?;
     Ok(plan)
 }
 
@@ -5282,6 +5516,56 @@ mod tests {
         invalid.scan_columns.pop();
         assert_eq!(
             validate_composite_group_aggregate_plan_v1(&invalid),
+            Err(PlanError::InvalidColumnReference)
+        );
+    }
+
+    #[test]
+    fn filtered_composite_group_aggregate_plan_round_trips_filter_only_columns() {
+        use crate::optimizer_binding::{BoundColumn, BoundPredicate};
+        use crate::optimizer_request::Comparison;
+
+        let first = column(4, 1, ScalarType::Text);
+        let second = column(3, 0, ScalarType::Integer);
+        let amount = column(5, 2, ScalarType::BigInt);
+        let predicate = BoundPredicate::Compare {
+            operator: Comparison::Greater,
+            left: Box::new(BoundPredicate::Column(BoundColumn {
+                column_id: [0x26; 16],
+                ordinal: 3,
+                scalar_type: ScalarType::Integer,
+                nullable: false,
+            })),
+            right: Box::new(BoundPredicate::Integer(7)),
+        };
+        let plan =
+            plan_filtered_composite_group_aggregate_v1(BoundFilteredCompositeGroupAggregate {
+                schema_name: "sales".to_owned(),
+                schema_id: [0x10; 16],
+                schema_version: 4,
+                table_epoch: 6,
+                relation_id: [0x20; 16],
+                relation_name: "orders".to_owned(),
+                group_keys: vec![first.clone(), second.clone()],
+                aggregate_kind: 4,
+                aggregate_column: Some(amount.clone()),
+                predicate,
+                limit: Some(7),
+            })
+            .unwrap();
+        assert_eq!(plan.scan_columns.len(), 4);
+        assert_eq!(plan.scan_columns[3].ordinal, 3);
+        let bytes = encode_filtered_composite_group_aggregate_plan_v1(&plan).unwrap();
+        assert_eq!(&bytes[..4], &[0, 1, 15, 0]);
+        assert_eq!(
+            decode_filtered_composite_group_aggregate_plan_v1(&bytes).unwrap(),
+            plan
+        );
+
+        let mut invalid = plan;
+        invalid.scan_columns.pop();
+        assert_eq!(
+            validate_filtered_composite_group_aggregate_plan_v1(&invalid),
             Err(PlanError::InvalidColumnReference)
         );
     }

@@ -7,9 +7,9 @@
 
 use crate::query_abi::{
     OPTIMIZER_COMPOSITE_GROUP_AGGREGATE_STATEMENT, OPTIMIZER_COMPOSITE_GROUP_COUNT_STATEMENT,
-    OPTIMIZER_DELETE_STATEMENT, OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT,
-    OPTIMIZER_GROUP_COUNT_STATEMENT, OPTIMIZER_JOIN_SELECT_STATEMENT,
-    OPTIMIZER_ORDERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT,
+    OPTIMIZER_DELETE_STATEMENT, OPTIMIZER_FILTERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT,
+    OPTIMIZER_FILTERED_JOIN_SELECT_STATEMENT, OPTIMIZER_GROUP_COUNT_STATEMENT,
+    OPTIMIZER_JOIN_SELECT_STATEMENT, OPTIMIZER_ORDERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT,
     OPTIMIZER_ORDERED_GROUP_AGGREGATE_STATEMENT, OPTIMIZER_ORDERED_SELECT_STATEMENT,
     OPTIMIZER_REQUEST_VERSION, OPTIMIZER_SELECT_REQUEST_HEADER_BYTES,
     OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET, OPTIMIZER_SELECT_STATEMENT,
@@ -122,6 +122,19 @@ pub struct CompositeGroupAggregateRequest {
     pub aggregate_kind: u8,
     /// Absent only for COUNT(*).
     pub aggregate_column_name: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FilteredCompositeGroupAggregateRequest {
+    pub schema_name: String,
+    pub relation_name: String,
+    pub group_key_names: Vec<String>,
+    /// 1 COUNT(*), 2 MIN, 3 MAX, 4 SUM, 5 AVG.
+    pub aggregate_kind: u8,
+    /// Absent only for COUNT(*).
+    pub aggregate_column_name: Option<String>,
+    pub predicate: Predicate,
     pub limit: Option<u32>,
 }
 
@@ -694,6 +707,91 @@ pub fn decode_composite_group_aggregate_request(
         group_key_names,
         aggregate_kind,
         aggregate_column_name,
+        limit,
+    })
+}
+
+pub fn decode_filtered_composite_group_aggregate_request(
+    bytes: &[u8],
+) -> Result<FilteredCompositeGroupAggregateRequest, RequestError> {
+    if bytes.len() > MAX_REQUEST_BYTES {
+        return Err(RequestError::TooLarge);
+    }
+    let header_bytes = OPTIMIZER_SELECT_REQUEST_HEADER_BYTES as usize;
+    if bytes.len() < header_bytes {
+        return Err(RequestError::Truncated);
+    }
+    let version_offset = OPTIMIZER_SELECT_REQUEST_VERSION_OFFSET as usize;
+    let version = u16::from_be_bytes([bytes[version_offset], bytes[version_offset + 1]]);
+    if version != OPTIMIZER_REQUEST_VERSION {
+        return Err(RequestError::UnsupportedVersion(version));
+    }
+    let (statement, flags) =
+        decode_optimizer_select_request(bytes).ok_or(RequestError::Truncated)?;
+    if statement != OPTIMIZER_FILTERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT {
+        return Err(RequestError::UnsupportedStatement(statement));
+    }
+    if flags != 0 {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut cursor = Cursor {
+        bytes,
+        offset: header_bytes,
+    };
+    let schema_name = cursor.identifier()?;
+    let relation_name = cursor.identifier()?;
+    let group_key_count = usize::from(cursor.u8()?);
+    if !(MIN_GROUP_KEYS..=MAX_GROUP_KEYS).contains(&group_key_count) {
+        return Err(RequestError::InvalidValue);
+    }
+    let mut group_key_names = Vec::with_capacity(group_key_count);
+    for _ in 0..group_key_count {
+        let name = cursor.identifier()?;
+        if group_key_names
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&name))
+        {
+            return Err(RequestError::InvalidValue);
+        }
+        group_key_names.push(name);
+    }
+    let aggregate_kind = cursor.u8()?;
+    if !(1..=5).contains(&aggregate_kind) {
+        return Err(RequestError::InvalidValue);
+    }
+    let aggregate_column_name = if aggregate_kind == 1 {
+        None
+    } else {
+        Some(cursor.identifier()?)
+    };
+    let predicate_len = usize::try_from(cursor.u32()?).map_err(|_| RequestError::TooLarge)?;
+    if predicate_len == 0 {
+        return Err(RequestError::InvalidPredicate);
+    }
+    if predicate_len > MAX_PREDICATE_BYTES {
+        return Err(RequestError::PredicateTooLarge);
+    }
+    let predicate_bytes = cursor.take(predicate_len)?;
+    let mut parser = PredicateParser::new(predicate_bytes);
+    let predicate = parser.node(1)?;
+    if !parser.cursor.is_empty() {
+        return Err(RequestError::TrailingBytes);
+    }
+    let limit = match cursor.u8()? {
+        0 => None,
+        1 => Some(cursor.u32()?),
+        _ => return Err(RequestError::InvalidValue),
+    };
+    if !cursor.is_empty() {
+        return Err(RequestError::TrailingBytes);
+    }
+    Ok(FilteredCompositeGroupAggregateRequest {
+        schema_name,
+        relation_name,
+        group_key_names,
+        aggregate_kind,
+        aggregate_column_name,
+        predicate,
         limit,
     })
 }
@@ -1564,6 +1662,54 @@ mod tests {
         }
         bytes.extend_from_slice(&[1, 0, 0, 0, 5]);
         bytes
+    }
+
+    fn filtered_composite_group_aggregate_request(predicate: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![
+            0,
+            OPTIMIZER_REQUEST_VERSION as u8,
+            OPTIMIZER_FILTERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT,
+            0,
+        ];
+        name("public", &mut bytes);
+        name("items", &mut bytes);
+        bytes.push(2);
+        name("category", &mut bytes);
+        name("region", &mut bytes);
+        bytes.push(4);
+        name("amount", &mut bytes);
+        u32_bytes(predicate.len(), &mut bytes);
+        bytes.extend_from_slice(predicate);
+        bytes.extend_from_slice(&[1, 0, 0, 0, 9]);
+        bytes
+    }
+
+    #[test]
+    fn decodes_filtered_composite_group_aggregate_request() {
+        let predicate = [
+            0x20, 0, 0x10, 6, b'a', b'm', b'o', b'u', b'n', b't', 0x02, 0, 0, 0, 0, 0, 0, 0, 7,
+        ];
+        let request = decode_filtered_composite_group_aggregate_request(
+            &filtered_composite_group_aggregate_request(&predicate),
+        )
+        .unwrap();
+        assert_eq!(request.group_key_names, ["category", "region"]);
+        assert_eq!(request.aggregate_kind, 4);
+        assert_eq!(request.aggregate_column_name.as_deref(), Some("amount"));
+        assert_eq!(request.limit, Some(9));
+
+        let mut trailing = filtered_composite_group_aggregate_request(&predicate);
+        trailing.push(0);
+        assert_eq!(
+            decode_filtered_composite_group_aggregate_request(&trailing),
+            Err(RequestError::TrailingBytes)
+        );
+        assert_eq!(
+            decode_filtered_composite_group_aggregate_request(
+                &filtered_composite_group_aggregate_request(&[]),
+            ),
+            Err(RequestError::InvalidPredicate)
+        );
     }
 
     fn ordered_group_aggregate_request(kind: u8) -> Vec<u8> {

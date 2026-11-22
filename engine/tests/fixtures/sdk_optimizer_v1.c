@@ -52,7 +52,9 @@ static int32_t mock_request_v5(void *opaque, uint16_t operation,
              request[2] ==
                  PRDB_OPTIMIZER_ORDERED_GROUP_AGGREGATE_STATEMENT ||
              request[2] ==
-                 PRDB_OPTIMIZER_COMPOSITE_GROUP_AGGREGATE_STATEMENT)));
+                 PRDB_OPTIMIZER_COMPOSITE_GROUP_AGGREGATE_STATEMENT ||
+             request[2] ==
+                 PRDB_OPTIMIZER_FILTERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT)));
     assert(request_len >= 4 && request[0] == 0 && request[1] == 1 &&
            request[3] == 0);
     if (mock->callback_status != PRDB_QUERY_CALLBACK_OK) {
@@ -103,6 +105,9 @@ int main(void) {
         "SELECT active, id, COUNT(*) FROM items GROUP BY active, id LIMIT 5;";
     static const uint8_t composite_group_sum_sql[] =
         "SELECT active, id, SUM(amount) FROM items GROUP BY active, id LIMIT 5;";
+    static const uint8_t filtered_composite_group_sum_sql[] =
+        "SELECT active, id, SUM(amount) FROM items WHERE active = $1 "
+        "GROUP BY active, id LIMIT 5;";
     static const uint8_t ordered_group_count_sql[] =
         "SELECT id, COUNT(*) FROM items GROUP BY id "
         "ORDER BY COUNT(*) DESC NULLS LAST, id ASC NULLS FIRST LIMIT 5;";
@@ -132,6 +137,11 @@ int main(void) {
         0, 1, 13, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'i', 't', 'e', 'm',
         's', 2, 6, 'a', 'c', 't', 'i', 'v', 'e', 2, 'i', 'd', 4, 6, 'a', 'm',
         'o', 'u', 'n', 't', 1, 0, 0, 0, 5};
+    static const uint8_t expected_filtered_composite_group_sum_request[] = {
+        0, 1, 15, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'i', 't', 'e',
+        'm', 's', 2, 6, 'a', 'c', 't', 'i', 'v', 'e', 2, 'i', 'd', 4, 6,
+        'a', 'm', 'o', 'u', 'n', 't', 0, 0, 0, 12, 0x20, 0, 0x10, 6,
+        'a', 'c', 't', 'i', 'v', 'e', 0x01, 1, 1, 0, 0, 0, 5};
     static const uint8_t expected_ordered_group_count_request[] = {
         0, 1, 8, 0, 6, 'p', 'u', 'b', 'l', 'i', 'c', 5, 'i', 't', 'e', 'm',
         's', 2, 'i', 'd', 2, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 5};
@@ -192,6 +202,7 @@ int main(void) {
     prdb_sdk_select_v12 ordered_group_count_statement = {0};
     prdb_sdk_select_v13 composite_group_count_statement = {0};
     prdb_sdk_select_v13 composite_group_sum_statement = {0};
+    prdb_sdk_select_v13 filtered_composite_group_sum_statement = {0};
     prdb_sdk_select_v15 ordered_composite_group_count_statement = {0};
     prdb_sdk_select_v15 ordered_composite_group_sum_statement = {0};
     prdb_sdk_select_v7 group_average_statement = {0};
@@ -380,6 +391,26 @@ int main(void) {
     assert(encoded_len == sizeof(expected_composite_group_sum_request));
     assert(memcmp(encoded, expected_composite_group_sum_request,
                   sizeof(expected_composite_group_sum_request)) == 0);
+    {
+        uint8_t bool_value = 1;
+        prdb_sdk_value_v1 parameters[1] = {{
+            sizeof(prdb_sdk_value_v1), PRDB_SDK_VALUE_ABI_V1_VERSION,
+            PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_BOOLEAN,
+            &bool_value, 1}};
+        assert(prdb_sdk_sql_parse_select_v13(
+                   filtered_composite_group_sum_sql,
+                   sizeof(filtered_composite_group_sum_sql) - 1,
+                   &filtered_composite_group_sum_statement,
+                   sizeof(filtered_composite_group_sum_statement),
+                   &error_offset) == PRDB_SDK_SQL_OK);
+        assert(prdb_sdk_optimizer_encode_filtered_composite_group_aggregate_v1(
+                   &filtered_composite_group_sum_statement, parameters, 1,
+                   schema, sizeof(schema) - 1, encoded, sizeof(encoded),
+                   &encoded_len) == PRDB_SDK_OPTIMIZER_ENCODE_OK);
+        assert(encoded_len == sizeof(expected_filtered_composite_group_sum_request));
+        assert(memcmp(encoded, expected_filtered_composite_group_sum_request,
+                      encoded_len) == 0);
+    }
     assert(prdb_sdk_optimizer_submit_group_count_v1(
                &host_v5, encoded, encoded_len, response, sizeof(response),
                &response_len, &decoded, sizeof(decoded)) ==

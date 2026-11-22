@@ -1,5 +1,13 @@
 # SQL Library Progress
 
+## SQL-7 follow-up: filtered composite aggregate optimizer path — implemented
+
+- Contract: composite `COUNT(*)`, `MIN`, `MAX`, `SUM`, or `AVG` supports a bounded WHERE tree with two to eight grouping keys and optional LIMIT. Statement 15 leaves the existing statement 13 request format unchanged and scans only the sorted union of group keys, aggregate input, and filter columns.
+- Implementation: the SQL SDK encodes parameterized predicates, validates the optimizer filter against the parsed/bound AST, resolves the executor relation again, and passes parameters to the v13 runner so filtering occurs before aggregation and LIMIT.
+- Regression: maintained TinyCC tests cover statement bytes, decoder validation and predicate tampering, plus filtered SUM on a two-key group query; Rust covers request binding, plan validation, and process dispatch.
+- Verification: the TinyCC suite and sandbox fixture build, ABI check, Rust format/build/Clippy checks, and full serial delegated-cgroup workspace suite passed.
+- Remaining: confined SQL artifact acceptance and broader analytic workload, secure spill, target-hardware, and mixed-workload evidence remain open.
+
 ## SQL-7 follow-up: composite runner groups NULL key tuples — verified
 
 - Contract: the v13 composite grouping runner treats NULL components as equal, separates NULL from VALUE, and emits groups in first-seen order.
