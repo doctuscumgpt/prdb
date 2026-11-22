@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-8 follow-up: NULL predicates reject redacted cells — verified
+
+- Contract: optimizer-backed `IS NULL` and `IS NOT NULL` evaluate VALUE and NULL cells according to SQL semantics and fail the query on REDACTED operands.
+- Regression: the maintained TinyCC plan-consumer fixture exercises both predicate tags against all three cell states. It requires the expected row visibility for VALUE/NULL and `FILTER_ERROR` with no callback for REDACTED.
+- Verification: focused optimizer plan fixture and full `make -f engine/sdk/Makefile test` suite passed under the pinned TinyCC toolchain.
+- Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+
 ## SQL-7 follow-up: filtered composite aggregate supports NULL predicates — verified
 
 - Contract: statement 15 accepts bounded `IS NULL` and `IS NOT NULL` predicates over direct columns, while preserving redaction as an evaluation error.

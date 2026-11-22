@@ -634,6 +634,66 @@ static uint32_t build_filter_plan(uint8_t *bytes,
     return offset;
 }
 
+static uint32_t build_null_filter_plan(uint8_t *bytes,
+                                       uint8_t predicate_tag,
+                                       uint32_t *predicate_offset) {
+    uint32_t offset = 0;
+    (void)put_header(bytes, &offset, 4);
+    bytes[offset++] = 1;
+    put_u16(bytes, &offset, 1);
+    uint32_t column_id_offset = put_column(bytes, &offset, 3, 1);
+    bytes[column_id_offset] = 10;
+    set_column_ordinal(bytes, column_id_offset, 0);
+    bytes[offset++] = 2;
+    *predicate_offset = offset;
+    bytes[offset++] = predicate_tag;
+    bytes[offset++] = 0x10;
+    memset(bytes + offset, 0, 16);
+    bytes[offset] = 10;
+    offset += 16;
+    bytes[offset++] = 3;
+    put_u16(bytes, &offset, 1);
+    column_id_offset = put_column(bytes, &offset, 3, 1);
+    bytes[column_id_offset] = 10;
+    set_column_ordinal(bytes, column_id_offset, 0);
+    bytes[offset++] = 4;
+    put_u32(bytes, &offset, 1);
+    return offset;
+}
+
+static uint32_t build_cell_state_row_batch(uint8_t *bytes, uint8_t state) {
+    uint32_t offset = 0;
+    put_u16(bytes, &offset, 1);
+    bytes[offset++] = 1;
+    put_u16(bytes, &offset, 1);
+    bytes[offset++] = 8;
+    memset(bytes + offset, 0, 15);
+    offset += 15;
+    put_u16(bytes, &offset, 4);
+    bytes[offset++] = state;
+    if (state == PRDB_SDK_VALUE_STATE_VALUE) {
+        bytes[offset++] = PRDB_SDK_VALUE_TYPE_INTEGER;
+        put_u32(bytes, &offset, 4);
+        memset(bytes + offset, 0, 3);
+        bytes[offset + 3] = 1;
+        offset += 4;
+    }
+    for (uint32_t ordinal = 1; ordinal < 4; ++ordinal) {
+        bytes[offset++] = PRDB_SDK_VALUE_STATE_VALUE;
+        bytes[offset++] = ordinal == 3 ? PRDB_SDK_VALUE_TYPE_TEXT
+                                       : PRDB_SDK_VALUE_TYPE_INTEGER;
+        put_u32(bytes, &offset, ordinal == 3 ? 1 : 4);
+        if (ordinal == 3) {
+            bytes[offset++] = 'x';
+        } else {
+            memset(bytes + offset, 0, 3);
+            bytes[offset + 3] = (uint8_t)(ordinal + 1);
+            offset += 4;
+        }
+    }
+    return offset;
+}
+
 static uint32_t append_integer_point_hint(uint8_t *bytes, uint32_t offset) {
     bytes[offset++] = 0xa1;
     memset(bytes + offset, 0x77, 16);
@@ -1300,6 +1360,19 @@ static int32_t on_projected_row(
     return 0;
 }
 
+static uint32_t predicate_rows_seen;
+
+static int32_t count_predicate_row(
+    void *context, const prdb_sdk_optimizer_plan_column_v1 *projections,
+    const prdb_sdk_value_v1 *values, uint32_t projection_count) {
+    (void)context;
+    (void)projections;
+    (void)values;
+    assert(projection_count == 1);
+    ++predicate_rows_seen;
+    return 0;
+}
+
 static int32_t fail_projected_row(
     void *context, const prdb_sdk_optimizer_plan_column_v1 *projections,
     const prdb_sdk_value_v1 *values, uint32_t projection_count) {
@@ -1312,6 +1385,7 @@ static int32_t fail_projected_row(
 
 int main(void) {
     uint8_t payload[256] = {0};
+    uint8_t null_filter_payload[512] = {0};
     uint8_t malformed[sizeof(payload)];
     uint8_t join_payload[1024] = {0};
     uint8_t join_malformed[sizeof(join_payload)];
@@ -1334,6 +1408,7 @@ int main(void) {
     uint32_t projected_id_offset;
     uint32_t project_node_offset;
     uint32_t predicate_offset;
+    uint32_t null_predicate_offset;
     uint32_t payload_len = build_plan(payload, &projected_id_offset,
                                       &project_node_offset);
     static prdb_sdk_optimizer_plan_v1 decoded;
@@ -1542,6 +1617,49 @@ int main(void) {
                &delivered_rows) == PRDB_SDK_OPTIMIZER_PLAN_OK);
     assert(delivered_rows == 0 && projected_rows_seen == 1);
     row_batch_bytes[32] = 1;
+    assert(prdb_sdk_batch_open_v1(&row_batch, sizeof(row_batch), row_batch_bytes,
+                                  row_batch_len) == PRDB_SDK_BATCH_OK);
+    for (uint8_t predicate_tag = 0x40; predicate_tag <= 0x41;
+         ++predicate_tag) {
+        uint32_t null_filter_len = build_null_filter_plan(
+            null_filter_payload, predicate_tag, &null_predicate_offset);
+        assert(null_predicate_offset < null_filter_len);
+        for (uint8_t state = PRDB_SDK_VALUE_STATE_VALUE;
+             state <= PRDB_SDK_VALUE_STATE_REDACTED; ++state) {
+            static const uint32_t expected_rows[2][3] = {
+                {0, 1, 0}, /* IS NULL */
+                {1, 0, 0}, /* IS NOT NULL */
+            };
+            uint32_t state_index = state == PRDB_SDK_VALUE_STATE_VALUE
+                                       ? 0
+                                       : state == PRDB_SDK_VALUE_STATE_NULL
+                                             ? 1
+                                             : 2;
+            row_batch_len = build_cell_state_row_batch(row_batch_bytes,
+                                                       state);
+            assert(prdb_sdk_batch_open_v1(
+                       &row_batch, sizeof(row_batch), row_batch_bytes,
+                       row_batch_len) == PRDB_SDK_BATCH_OK);
+            assert(prdb_sdk_optimizer_scan_state_init_v1(
+                       null_filter_payload, null_filter_len, &scan_state,
+                       sizeof(scan_state)) == PRDB_SDK_OPTIMIZER_PLAN_OK);
+            predicate_rows_seen = 0;
+            int32_t filter_status = prdb_sdk_optimizer_consume_plan_batch_v1(
+                null_filter_payload, null_filter_len, &scan_state, &row_batch,
+                4, source_cells, 4, projected_values, 1,
+                count_predicate_row, NULL, &delivered_rows);
+            if (state == PRDB_SDK_VALUE_STATE_REDACTED) {
+                assert(filter_status == PRDB_SDK_OPTIMIZER_PLAN_FILTER_ERROR);
+                assert(delivered_rows == 0 && predicate_rows_seen == 0);
+            } else {
+                uint32_t tag_index = predicate_tag == 0x40 ? 0 : 1;
+                assert(filter_status == PRDB_SDK_OPTIMIZER_PLAN_OK);
+                assert(delivered_rows == expected_rows[tag_index][state_index]);
+                assert(predicate_rows_seen == expected_rows[tag_index][state_index]);
+            }
+        }
+    }
+    row_batch_len = build_row_batch(row_batch_bytes);
     assert(prdb_sdk_batch_open_v1(&row_batch, sizeof(row_batch), row_batch_bytes,
                                   row_batch_len) == PRDB_SDK_BATCH_OK);
     payload_len = build_plan(payload, &projected_id_offset,
