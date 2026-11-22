@@ -26,7 +26,7 @@ typedef struct mock_state {
     uint32_t batch_len;
     uint8_t continued_batch[540000];
     uint32_t continued_batch_len;
-    uint8_t optimizer_plan[512];
+    uint8_t optimizer_plan[1024];
     uint32_t optimizer_plan_len;
     uint8_t optimizer_relation[512];
     uint32_t optimizer_relation_len;
@@ -175,6 +175,83 @@ static uint32_t build_composite_aggregate_plan(mock_state *mock) {
         offset += 4;
         put_name(mock->optimizer_relation, &offset,
                  ordinal == 0 ? "id" : "score");
+    }
+    mock->optimizer_relation_len = offset;
+    return mock->optimizer_plan_len;
+}
+
+static uint32_t build_ordered_eight_key_aggregate_plan(mock_state *mock) {
+    uint32_t offset = 0;
+    uint8_t schema_id[16], relation_id[16];
+    prdb_encode_optimizer_plan_header_record(mock->optimizer_plan + offset,
+                                             1, 14, 0);
+    offset += PRDB_OPTIMIZER_PLAN_HEADER_RECORD_HEADER_BYTES;
+    put_optimizer_name(mock->optimizer_plan, &offset, "app");
+    memset(schema_id, 0x11, sizeof(schema_id));
+    prdb_encode_optimizer_plan_schema_reference_record(
+        mock->optimizer_plan + offset, schema_id, 1);
+    offset += PRDB_OPTIMIZER_PLAN_SCHEMA_REFERENCE_RECORD_HEADER_BYTES;
+    put_optimizer_name(mock->optimizer_plan, &offset, "widgets");
+    memset(relation_id, 0x22, sizeof(relation_id));
+    prdb_encode_optimizer_plan_relation_reference_record(
+        mock->optimizer_plan + offset, relation_id, 1);
+    offset += PRDB_OPTIMIZER_PLAN_RELATION_REFERENCE_RECORD_HEADER_BYTES;
+    put_u16(mock->optimizer_plan, &offset, 9);
+    for (uint32_t index = 0; index < 9; ++index)
+        offset = put_optimizer_column(
+            mock->optimizer_plan, offset, (uint8_t)(0x33 + index), index,
+            PRDB_SDK_VALUE_TYPE_INTEGER, index == 8);
+    mock->optimizer_plan[offset++] = 14;
+    mock->optimizer_plan[offset++] = PRDB_SDK_SQL_V7_AGGREGATE_SUM;
+    mock->optimizer_plan[offset++] = 8;
+    for (uint32_t index = 0; index < 8; ++index)
+        offset = put_optimizer_column(
+            mock->optimizer_plan, offset, (uint8_t)(0x33 + index), index,
+            PRDB_SDK_VALUE_TYPE_INTEGER, 0);
+    mock->optimizer_plan[offset++] = 1;
+    offset = put_optimizer_column(mock->optimizer_plan, offset, 0x3b, 8,
+                                  PRDB_SDK_VALUE_TYPE_INTEGER, 1);
+    mock->optimizer_plan[offset++] = 14;
+    mock->optimizer_plan[offset++] = 9;
+    for (uint32_t index = 0; index < 8; ++index) {
+        mock->optimizer_plan[offset++] = 0;
+        mock->optimizer_plan[offset++] = (uint8_t)index;
+        mock->optimizer_plan[offset++] = 1;
+        mock->optimizer_plan[offset++] = 1;
+    }
+    mock->optimizer_plan[offset++] = 1;
+    mock->optimizer_plan[offset++] = 1;
+    mock->optimizer_plan[offset++] = 1;
+    mock->optimizer_plan[offset++] = 1;
+    put_u32(mock->optimizer_plan, &offset, 5);
+    mock->optimizer_plan_len = offset;
+
+    prdb_encode_planner_describe_plan_relation_available_response(
+        mock->optimizer_relation, 0, schema_id, 1, 1, relation_id);
+    offset = 51;
+    prdb_encode_planner_describe_plan_relation_available_response_relation_name(
+        mock->optimizer_relation + offset,
+        sizeof(mock->optimizer_relation) - offset,
+        (const uint8_t *)"widgets", sizeof("widgets") - 1);
+    offset += 2 + sizeof("widgets") - 1;
+    prdb_encode_planner_describe_plan_relation_available_response_column_count(
+        mock->optimizer_relation + offset, 9);
+    offset += 2;
+    for (uint32_t index = 0; index < 9; ++index) {
+        uint8_t column_id[16];
+        static const char *key_names[8] = {
+            "key_0", "key_1", "key_2", "key_3",
+            "key_4", "key_5", "key_6", "key_7"};
+        memset(column_id, (int)(0x33 + index), sizeof(column_id));
+        memcpy(mock->optimizer_relation + offset, column_id, 16);
+        offset += 16;
+        put_u32(mock->optimizer_relation, &offset, index);
+        mock->optimizer_relation[offset++] = index == 8 ? 1 : 0;
+        mock->optimizer_relation[offset++] = PRDB_SDK_VALUE_TYPE_INTEGER;
+        memset(mock->optimizer_relation + offset, 0, 4);
+        offset += 4;
+        put_name(mock->optimizer_relation, &offset,
+                 index == 8 ? "measure" : key_names[index]);
     }
     mock->optimizer_relation_len = offset;
     return mock->optimizer_plan_len;
@@ -583,10 +660,12 @@ static int32_t optimizer_request(void *context, uint16_t operation,
     uint32_t offset = 4;
     uint8_t schema_len, relation_len;
     uint8_t key_count, aggregate_kind;
+    uint8_t statement_kind;
     if (operation != PRDB_IPC_OP_OPTIMIZE_GROUP_COUNT || request == NULL ||
         request_len < 4 || response == NULL || response_len == NULL) {
         return PRDB_QUERY_CALLBACK_PROTOCOL_ERROR;
     }
+    statement_kind = request[2];
     if (offset >= request_len) return PRDB_QUERY_CALLBACK_PROTOCOL_ERROR;
     schema_len = request[offset++];
     if (schema_len > request_len - offset)
@@ -608,11 +687,39 @@ static int32_t optimizer_request(void *context, uint16_t operation,
         offset += name_len;
     }
     if (offset >= request_len) return PRDB_QUERY_CALLBACK_PROTOCOL_ERROR;
-    aggregate_kind = request[offset];
-    if (key_count != 2 || aggregate_kind != mock->optimizer_aggregate_kind)
+    aggregate_kind = request[offset++];
+    if (statement_kind == 14) {
+        uint8_t aggregate_name_len;
+        if (aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_SUM ||
+            offset >= request_len)
+            return PRDB_QUERY_CALLBACK_PROTOCOL_ERROR;
+        aggregate_name_len = request[offset++];
+        if (aggregate_name_len > request_len - offset)
+            return PRDB_QUERY_CALLBACK_PROTOCOL_ERROR;
+        offset += aggregate_name_len;
+        if (offset >= request_len || request[offset++] != 9)
+            return PRDB_QUERY_CALLBACK_PROTOCOL_ERROR;
+        for (uint32_t index = 0; index < 8; ++index) {
+            if (request_len - offset < 4 || request[offset++] != 0 ||
+                request[offset++] != index || request[offset++] != 1 ||
+                request[offset++] != 1)
+                return PRDB_QUERY_CALLBACK_PROTOCOL_ERROR;
+        }
+        if (request_len - offset < 4 || request[offset++] != 1 ||
+            request[offset++] != 1 || request[offset++] != 1 ||
+            request[offset++] != 1 || request_len - offset != 4 ||
+            request[offset] != 0 || request[offset + 1] != 0 ||
+            request[offset + 2] != 0 || request[offset + 3] != 5 ||
+            key_count != 8)
+            return PRDB_QUERY_CALLBACK_PROTOCOL_ERROR;
+        if (build_ordered_eight_key_aggregate_plan(mock) == 0)
+            return PRDB_QUERY_CALLBACK_INTERNAL_ERROR;
+    } else if (key_count != 2 ||
+               aggregate_kind != mock->optimizer_aggregate_kind) {
         return PRDB_QUERY_CALLBACK_PROTOCOL_ERROR;
-    if (build_composite_aggregate_plan(mock) == 0)
+    } else if (build_composite_aggregate_plan(mock) == 0) {
         return PRDB_QUERY_CALLBACK_INTERNAL_ERROR;
+    }
     if (capacity < 7 + mock->optimizer_plan_len) {
         *response_len = 7 + mock->optimizer_plan_len;
         return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
@@ -1764,7 +1871,8 @@ static int32_t on_ordered_group_eight_keys(
     assert(binding->order_count == 9);
     assert(group_key_count == 8 && capture->calls < 2);
     assert(capture->mock->batch_finished != 0 &&
-           capture->mock->executor_calls == 3);
+           capture->mock->executor_calls ==
+               (capture->mock->optimizer_enabled ? 4u : 3u));
     for (uint32_t index = 0; index < 8; ++index) {
         int32_t value = 0;
         assert(binding->order_items[index].item.kind ==
@@ -1863,6 +1971,49 @@ static int32_t run_query_v13_optimizer(mock_state *mock, const uint8_t *sql,
         batch_response, sizeof(batch_response), planner_columns, 2,
         executor_columns, 2, cell_scratch, 2, materialized_bytes,
         arena_capacity, on_group_v13, capture);
+}
+
+static int32_t run_ordered_eight_key_optimizer(
+    mock_state *mock, const uint8_t *sql, uint64_t sql_len,
+    group_capture *capture) {
+    static const uint8_t schema[] = "app";
+    static const uint8_t *names[9] = {
+        (const uint8_t *)"key_0", (const uint8_t *)"key_1",
+        (const uint8_t *)"key_2", (const uint8_t *)"key_3",
+        (const uint8_t *)"key_4", (const uint8_t *)"key_5",
+        (const uint8_t *)"key_6", (const uint8_t *)"key_7",
+        (const uint8_t *)"measure"};
+    prdb_sdk_sql_column_shape_v2 planner_columns[9] = {{0}};
+    prdb_sdk_sql_column_shape_v2 executor_columns[9] = {{0}};
+    prdb_sdk_value_v1 cell_scratch[9] = {{0}};
+    uint8_t optimizer_request_bytes[4096] = {0};
+    uint8_t optimizer_response[4096] = {0};
+    uint8_t planner_response[512] = {0};
+    uint8_t executor_response[512] = {0};
+    uint8_t batch_response[4096] = {0};
+    uint8_t materialized_bytes[4096] = {0};
+    prdb_host_api_v5 host = {0};
+    for (uint32_t index = 0; index < 9; ++index) {
+        planner_columns[index] = (prdb_sdk_sql_column_shape_v2){
+            names[index], (uint32_t)strlen((const char *)names[index]), index,
+            PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0};
+        executor_columns[index] = planner_columns[index];
+    }
+    host.v4.v3 = (prdb_host_api_v3){
+        sizeof(prdb_host_api_v3), PRDB_QUERY_ABI_V3_VERSION, mock,
+        executor_request, planner_request, NULL, statement_failure};
+    host.v4.optimizer_request = unused_optimizer_request;
+    host.optimizer_request = optimizer_request;
+    mock->optimizer_enabled = 0;
+    int32_t result = prdb_sdk_sql_execute_ordered_composite_aggregate_optimizer_v1(
+        &host, schema, sizeof(schema) - 1, sql, sql_len, 4, 4096,
+        optimizer_request_bytes, sizeof(optimizer_request_bytes),
+        optimizer_response, sizeof(optimizer_response), planner_response,
+        sizeof(planner_response), executor_response, sizeof(executor_response),
+        batch_response, sizeof(batch_response), planner_columns, 9,
+        executor_columns, 9, cell_scratch, 9, materialized_bytes,
+        sizeof(materialized_bytes), on_ordered_group_eight_keys, capture);
+    return result;
 }
 
 static int32_t on_group_v14(void *context,
@@ -3134,7 +3285,7 @@ int main(void) {
             "SUM(measure) FROM widgets GROUP BY key_0, key_1, key_2, key_3, "
             "key_4, key_5, key_6, key_7 ORDER BY key_0 DESC, key_1 DESC, "
             "key_2 DESC, key_3 DESC, key_4 DESC, key_5 DESC, key_6 DESC, "
-            "key_7 DESC, SUM(measure) DESC";
+            "key_7 DESC, SUM(measure) DESC LIMIT 5";
         uint8_t planner_response[512] = {0};
         uint8_t executor_response[512] = {0};
         uint8_t batch_response[4096] = {0};
@@ -3162,6 +3313,20 @@ int main(void) {
                    sizeof(materialized_bytes), on_ordered_group_eight_keys,
                    &capture) == PRDB_SDK_SQL_EXEC_OK);
         assert(capture.calls == 2 && mock.statement_failed == 0);
+        mock.optimizer_aggregate_kind = PRDB_SDK_SQL_V7_AGGREGATE_SUM;
+        mock.optimizer_relation_resolves = 0;
+        mock.planner_len = make_eight_key_relation(
+            mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99);
+        mock.executor_len = make_eight_key_relation(mock.executor, 6, 0x22);
+        mock.batch_len = make_eight_key_rows(mock.batch);
+        reset_scan(&mock, &capture, 1);
+        int32_t ordered_optimizer_status = run_ordered_eight_key_optimizer(
+            &mock, ordered_eight_key_sql,
+            sizeof(ordered_eight_key_sql) - 1, &capture);
+        assert(ordered_optimizer_status == PRDB_SDK_SQL_EXEC_OK);
+        assert(mock.optimizer_enabled == 1 &&
+               mock.optimizer_relation_resolves == 1 &&
+               capture.calls == 2 && mock.statement_failed == 0);
         mock.planner_len = make_relation(
             mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99,
             PRDB_SDK_VALUE_TYPE_INTEGER);

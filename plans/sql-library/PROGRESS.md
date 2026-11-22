@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 / SQL-8 follow-up: C optimizer wrapper at eight keys and nine sort items — verified
+
+- Contract: the maintained C SDK optimizer wrapper accepts the maximum composite key and ORDER BY shape, resolves the optimizer's nine-column relation, and executes the matched ordered plan.
+- Regression: the TinyCC fixture submits eight grouping keys and nine descending sort items through statement kind 14. It validates request encoding, plan matching, executor relation re-resolution, and exact sorted SUM results for both groups.
+- Verification: the focused `sdk-sql-execute-v10` fixture and full `make -f engine/sdk/Makefile test` suite passed under the pinned TinyCC toolchain; `git diff --check` passed.
+- Remaining: broader analytical workload, secure spill, target-hardware, and mixed-workload evidence remains open.
+
 ## SQL-7 / SQL-8 follow-up: optimizer plan at eight keys and nine sort items — verified
 
 - Contract: optimizer-backed ordered composite aggregation accepts eight grouping keys and up to nine selected sort outputs, with scan columns equal to the key/aggregate union.
