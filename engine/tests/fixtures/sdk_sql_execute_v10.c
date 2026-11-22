@@ -1749,6 +1749,52 @@ static int32_t on_group_eight_keys(
     return 0;
 }
 
+static int32_t on_ordered_group_eight_keys(
+    void *context, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v15 *binding) {
+    group_capture *capture = (group_capture *)context;
+    int64_t sum = 0;
+    assert(binding->abi_version == PRDB_SDK_SQL_ABI_V15_VERSION);
+    assert(binding->base.base.group_key_count == 8);
+    assert(binding->base.base.base.aggregate_kind ==
+           PRDB_SDK_SQL_V7_AGGREGATE_SUM);
+    assert(binding->base.base.base.aggregate_column.ordinal == 8);
+    assert(binding->order_count == 9);
+    assert(group_key_count == 8 && capture->calls < 2);
+    assert(capture->mock->batch_finished != 0 &&
+           capture->mock->executor_calls == 3);
+    for (uint32_t index = 0; index < 8; ++index) {
+        int32_t value = 0;
+        assert(binding->order_items[index].item.kind ==
+               PRDB_SDK_SQL_V10_ORDER_GROUP_KEY);
+        assert(binding->order_items[index].item.group_key_index == index);
+        assert(binding->order_items[index].item.direction ==
+               PRDB_SDK_SQL_V10_ORDER_DESCENDING);
+        assert(binding->order_items[index].type_code ==
+               PRDB_SDK_VALUE_TYPE_INTEGER);
+        assert(group_keys[index].type_code == PRDB_SDK_VALUE_TYPE_INTEGER);
+        assert(prdb_sdk_value_get_integer_v1(&group_keys[index], &value) ==
+               PRDB_SDK_VALUE_ACCESS_OK);
+        assert(value == (int32_t)(index + 1) +
+                            (capture->calls == 0 && index == 7 ? 1 : 0));
+    }
+    assert(binding->order_items[8].item.kind ==
+           PRDB_SDK_SQL_V10_ORDER_AGGREGATE);
+    assert(binding->order_items[8].item.direction ==
+           PRDB_SDK_SQL_V10_ORDER_DESCENDING);
+    assert(binding->order_items[8].type_code == PRDB_SDK_VALUE_TYPE_BIGINT);
+    assert(aggregate_value != NULL &&
+           aggregate_value->type_code == PRDB_SDK_VALUE_TYPE_BIGINT);
+    assert(prdb_sdk_value_get_bigint_v1(aggregate_value, &sum) ==
+           PRDB_SDK_VALUE_ACCESS_OK);
+    assert(sum == (capture->calls == 0 ? 8 : 9));
+    assert(matching_row_count == (capture->calls == 0 ? 1 : 2));
+    ++capture->calls;
+    return 0;
+}
+
 static int32_t run_query_v13(mock_state *mock, const uint8_t *sql,
                              uint64_t sql_len, uint64_t arena_capacity,
                              group_capture *capture) {
@@ -3074,6 +3120,47 @@ int main(void) {
             cell_scratch, 9, materialized_bytes, sizeof(materialized_bytes),
             on_group_eight_keys, &capture);
         assert(status == PRDB_SDK_SQL_EXEC_OK);
+        assert(capture.calls == 2 && mock.statement_failed == 0);
+        mock.planner_len = make_relation(
+            mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99,
+            PRDB_SDK_VALUE_TYPE_INTEGER);
+        mock.executor_len = make_relation(mock.executor, 6, 0x22,
+                                          PRDB_SDK_VALUE_TYPE_INTEGER);
+    }
+
+    {
+        static const uint8_t ordered_eight_key_sql[] =
+            "SELECT key_0, key_1, key_2, key_3, key_4, key_5, key_6, key_7, "
+            "SUM(measure) FROM widgets GROUP BY key_0, key_1, key_2, key_3, "
+            "key_4, key_5, key_6, key_7 ORDER BY key_0 DESC, key_1 DESC, "
+            "key_2 DESC, key_3 DESC, key_4 DESC, key_5 DESC, key_6 DESC, "
+            "key_7 DESC, SUM(measure) DESC";
+        uint8_t planner_response[512] = {0};
+        uint8_t executor_response[512] = {0};
+        uint8_t batch_response[4096] = {0};
+        uint8_t materialized_bytes[4096] = {0};
+        prdb_sdk_sql_column_shape_v2 planner_columns[9] = {{0}};
+        prdb_sdk_sql_column_shape_v2 executor_columns[9] = {{0}};
+        prdb_sdk_value_v1 cell_scratch[9] = {{0}};
+        prdb_host_api_v3 host = {
+            sizeof(host), PRDB_QUERY_ABI_V3_VERSION, &mock,
+            executor_request, planner_request, NULL, statement_failure};
+        group_capture capture = {0};
+        capture.mock = &mock;
+        mock.planner_len = make_eight_key_relation(
+            mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99);
+        mock.executor_len = make_eight_key_relation(mock.executor, 6, 0x22);
+        mock.batch_len = make_eight_key_rows(mock.batch);
+        reset_scan(&mock, &capture, 1);
+        assert(prdb_sdk_sql_execute_group_v15(
+                   &host, (const uint8_t *)"app", 3, ordered_eight_key_sql,
+                   sizeof(ordered_eight_key_sql) - 1, NULL, 0, 4, 4096,
+                   planner_response, sizeof(planner_response),
+                   executor_response, sizeof(executor_response), batch_response,
+                   sizeof(batch_response), planner_columns, 9,
+                   executor_columns, 9, cell_scratch, 9, materialized_bytes,
+                   sizeof(materialized_bytes), on_ordered_group_eight_keys,
+                   &capture) == PRDB_SDK_SQL_EXEC_OK);
         assert(capture.calls == 2 && mock.statement_failed == 0);
         mock.planner_len = make_relation(
             mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99,

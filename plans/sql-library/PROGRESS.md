@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 / SQL-8 follow-up: order aggregate groups at the nine-item limit — verified
+
+- Contract: v15 supports up to nine distinct selected ORDER BY outputs: the eight composite group keys plus the selected aggregate, with independent direction and NULL ordering.
+- Regression: the maintained TinyCC runner fixture executes eight-key `SUM(measure)` with all eight group keys and SUM in `ORDER BY ... DESC`. It validates the nine bound sort items and confirms lexicographic output order with exact widened BIGINT sums and group counts.
+- Verification: the focused `sdk-sql-execute-v10` fixture and full `make -f engine/sdk/Makefile test` suite passed under the pinned TinyCC toolchain; `git diff --check` passed.
+- Remaining: broader analytical workload, secure spill, target-hardware, and mixed-workload evidence remains open.
+
 ## SQL-7 / SQL-8 follow-up: execute composite SUM at eight grouping keys — verified
 
 - Contract: the v13 SDK runner supports two through eight ordered GROUP BY keys and validates the complete key tuple before publishing each aggregate result.
