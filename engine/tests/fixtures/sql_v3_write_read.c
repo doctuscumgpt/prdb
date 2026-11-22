@@ -741,7 +741,7 @@ static int32_t write_filtered_composite_decimal_sum_optimizer(
         binding->base.aggregate_column.decimal_scale != 2 ||
         !decode_range_integer(&group_keys[0], &left_key) ||
         !decode_range_integer(&group_keys[1], &right_key) || left_key != 1 ||
-        right_key != 7 || matching_row_count != 1 || context->row_count != 0 ||
+        right_key != 7 || matching_row_count != 2 || context->row_count != 0 ||
         !decimal_value_matches_coefficient(aggregate_value, 100) ||
         prdb_sdk_sql_write_group_composite_result_v1(
             context->host, binding, context->columns, 3, group_keys,
@@ -1398,7 +1398,8 @@ static int32_t run_write_read_fixture(
     static const uint8_t select_filtered_composite_decimal_sum_sql[] =
         "SELECT left_key, right_key, SUM(decimal_value) "
         "FROM decimal_grouped_records "
-        "WHERE decimal_value IS NOT NULL AND left_key = $1 "
+        "WHERE left_key = $1 AND "
+        "(decimal_value IS NULL OR decimal_value IS NOT NULL) "
         "GROUP BY left_key, right_key LIMIT 3";
     static const uint8_t select_composite_bigint_sum_optimizer_sql[] =
         "SELECT left_key, right_key, SUM(measure) "
