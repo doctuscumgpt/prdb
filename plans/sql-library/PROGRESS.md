@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 / SQL-8 follow-up: optimizer plan at eight keys and nine sort items — verified
+
+- Contract: optimizer-backed ordered composite aggregation accepts eight grouping keys and up to nine selected sort outputs, with scan columns equal to the key/aggregate union.
+- Regression: the optimizer process test now submits `SUM(measure)` over eight keys ordered by all eight keys and the aggregate. It verifies the ordered plan contains eight key ordinals, the measure column, all nine direction/NULL-order items, and the requested LIMIT.
+- Verification: the focused locked Rust optimizer process test, formatting, locked workspace build, warning-denied all-target Clippy, and full serial delegated-cgroup workspace suite passed. The suite ran the sandbox and process acceptance targets with zero ignored tests.
+- Remaining: broader analytical workload, secure spill, target-hardware, and mixed-workload evidence remains open.
+
 ## SQL-7 / SQL-8 follow-up: order aggregate groups at the nine-item limit — verified
 
 - Contract: v15 supports up to nine distinct selected ORDER BY outputs: the eight composite group keys plus the selected aggregate, with independent direction and NULL ordering.

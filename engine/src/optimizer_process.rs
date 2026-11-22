@@ -773,6 +773,35 @@ mod tests {
         bytes
     }
 
+    fn eight_key_ordered_group_aggregate_request() -> Vec<u8> {
+        let mut bytes = vec![
+            0,
+            1,
+            crate::query_abi::OPTIMIZER_ORDERED_COMPOSITE_GROUP_AGGREGATE_STATEMENT,
+            0,
+        ];
+        for name in ["public", "items"] {
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.push(8);
+        for ordinal in 0..8 {
+            let name = format!("key_{ordinal}");
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.push(4);
+        bytes.extend_from_slice(&[7]);
+        bytes.extend_from_slice(b"measure");
+        bytes.push(9);
+        for key_index in 0..8 {
+            bytes.extend_from_slice(&[0, key_index, 1, 0]);
+        }
+        bytes.extend_from_slice(&[1, 1, 0]);
+        bytes.extend_from_slice(&[1, 0, 0, 0, 5]);
+        bytes
+    }
+
     fn ordered_composite_group_aggregate_request(kind: u8) -> Vec<u8> {
         let mut bytes = vec![
             0,
@@ -2066,7 +2095,7 @@ mod tests {
                 planner_server
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                     .unwrap();
-                for expected_request_id in [257, 258] {
+                for expected_request_id in [257, 258, 259] {
                     let request = crate::ipc::read_frame(&mut planner_server)
                         .unwrap()
                         .expect("optimizer must resolve eight-key aggregate relation");
@@ -2167,6 +2196,60 @@ mod tests {
                 );
                 assert_eq!(plan.limit, Some(5));
             }
+            crate::ipc::write_frame(
+                &mut submission_client,
+                &IpcFrame {
+                    operation: Operation::OptimizeGroupCount as u16,
+                    request_id: 703,
+                    payload: eight_key_ordered_group_aggregate_request(),
+                },
+            )
+            .unwrap();
+            let response = crate::ipc::read_frame(&mut submission_client)
+                .unwrap()
+                .expect("optimizer must return an ordered eight-key aggregate plan");
+            assert_eq!(response.request_id, 703);
+            let response = OptimizerResponse::decode(&response.payload).unwrap();
+            assert_eq!(response.status, OptimizerStatus::Success);
+            let plan = crate::optimizer_plan::decode_ordered_composite_group_aggregate_plan_v1(
+                response.plan.as_deref().unwrap(),
+            )
+            .unwrap();
+            assert_eq!(plan.aggregate_plan.aggregate_kind, 4);
+            assert_eq!(
+                plan.aggregate_plan
+                    .group_keys
+                    .iter()
+                    .map(|key| key.ordinal)
+                    .collect::<Vec<_>>(),
+                (0..8).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                plan.aggregate_plan
+                    .scan_columns
+                    .iter()
+                    .map(|column| column.ordinal)
+                    .collect::<Vec<_>>(),
+                (0..9).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                plan.aggregate_plan
+                    .aggregate_column
+                    .map(|column| column.ordinal),
+                Some(8)
+            );
+            assert_eq!(plan.order_items.len(), 9);
+            for (index, item) in plan.order_items[..8].iter().enumerate() {
+                assert_eq!(item.source, 0);
+                assert_eq!(item.group_key_index, Some(index as u8));
+                assert!(item.descending);
+                assert!(!item.nulls_first);
+            }
+            assert_eq!(plan.order_items[8].source, 1);
+            assert_eq!(plan.order_items[8].group_key_index, None);
+            assert!(plan.order_items[8].descending);
+            assert!(!plan.order_items[8].nulls_first);
+            assert_eq!(plan.aggregate_plan.limit, Some(5));
             submission_client.shutdown(Shutdown::Write).unwrap();
             planner_thread.join().unwrap();
             optimizer_thread.join().unwrap().unwrap();
