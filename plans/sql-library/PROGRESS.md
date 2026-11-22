@@ -1,12 +1,19 @@
 # SQL Library Progress
 
+## SQL-7 follow-up: confined filtered composite aggregate acceptance — verified
+
+- Contract: statement 15 filters rows before composite aggregation, counts the matching rows after filtering, and returns only groups satisfying a parameterized predicate over the authorized view.
+- Regression: the confined SQL artifact runs `SUM(decimal_value)` grouped by `(left_key, right_key)` with `WHERE left_key = $1` through optimizer planning, plan-to-AST validation, executor relation re-resolution, and the bounded v13 runner. The focused `Q` invocation filters to `(2,9)`, returns its exact DECIMAL(38,2) sum `4.50`, and commits after the gateway verifies the SQLR record byte-for-byte.
+- Verification: the focused delegated-cgroup acceptance and full serial delegated-cgroup workspace suite passed, including the confined SQL acceptance. The maintained TinyCC SDK suite, format check, locked workspace build, warning-denied all-target Clippy, ABI check, and `git diff --check` passed. The maintained optimizer fixture is 152,184 bytes under its adjusted 153,000-byte regression bound.
+- Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+
 ## SQL-7 follow-up: filtered composite aggregate optimizer path — implemented
 
 - Contract: composite `COUNT(*)`, `MIN`, `MAX`, `SUM`, or `AVG` supports a bounded WHERE tree with two to eight grouping keys and optional LIMIT. Statement 15 leaves the existing statement 13 request format unchanged and scans only the sorted union of group keys, aggregate input, and filter columns.
 - Implementation: the SQL SDK encodes parameterized predicates, validates the optimizer filter against the parsed/bound AST, resolves the executor relation again, and passes parameters to the v13 runner so filtering occurs before aggregation and LIMIT.
 - Regression: maintained TinyCC tests cover statement bytes, decoder validation and predicate tampering, plus filtered SUM on a two-key group query; Rust covers request binding, plan validation, and process dispatch.
 - Verification: the TinyCC suite and sandbox fixture build, ABI check, Rust format/build/Clippy checks, and full serial delegated-cgroup workspace suite passed.
-- Remaining: confined SQL artifact acceptance and broader analytic workload, secure spill, target-hardware, and mixed-workload evidence remain open.
+- Remaining: broader analytic workload, secure spill, target-hardware, and mixed-workload evidence remain open.
 
 ## SQL-7 follow-up: composite runner groups NULL key tuples — verified
 

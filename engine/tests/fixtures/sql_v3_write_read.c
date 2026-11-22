@@ -724,6 +724,36 @@ static int32_t write_grouped_composite_aggregate_optimizer(
     return 0;
 }
 
+static int32_t write_filtered_composite_decimal_sum_optimizer(
+    void *opaque, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v13 *binding) {
+    composite_grouped_result_context *context = opaque;
+    int32_t left_key = 0, right_key = 0;
+    if (context == NULL || binding == NULL || group_keys == NULL ||
+        aggregate_value == NULL || group_key_count != 2 ||
+        binding->group_key_count != 2 ||
+        binding->base.aggregate_kind != PRDB_SDK_SQL_V7_AGGREGATE_SUM ||
+        binding->base.aggregate_column.type_code !=
+            PRDB_SDK_VALUE_TYPE_DECIMAL ||
+        binding->base.aggregate_column.decimal_precision != 4 ||
+        binding->base.aggregate_column.decimal_scale != 2 ||
+        !decode_range_integer(&group_keys[0], &left_key) ||
+        !decode_range_integer(&group_keys[1], &right_key) || left_key != 2 ||
+        right_key != 9 || matching_row_count != 3 || context->row_count != 0 ||
+        !decimal_value_matches_coefficient(aggregate_value, 450) ||
+        prdb_sdk_sql_write_group_composite_result_v1(
+            context->host, binding, context->columns, 3, group_keys,
+            group_key_count, aggregate_value, matching_row_count,
+            context->output, context->output_capacity,
+            &context->output_len) != PRDB_SDK_SQL_RESULT_OK) {
+        return 1;
+    }
+    ++context->row_count;
+    return 0;
+}
+
 static int32_t write_ordered_composite_group_aggregate_optimizer(
     void *opaque, const prdb_sdk_value_v1 *group_keys,
     uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
@@ -1365,6 +1395,10 @@ static int32_t run_write_read_fixture(
         "SELECT left_key, right_key, COUNT(*) "
         "FROM decimal_grouped_records GROUP BY left_key, right_key "
         "ORDER BY COUNT(*) DESC NULLS LAST, left_key ASC NULLS FIRST LIMIT 3";
+    static const uint8_t select_filtered_composite_decimal_sum_sql[] =
+        "SELECT left_key, right_key, SUM(decimal_value) "
+        "FROM decimal_grouped_records WHERE left_key = $1 "
+        "GROUP BY left_key, right_key LIMIT 3";
     static const uint8_t select_composite_bigint_sum_optimizer_sql[] =
         "SELECT left_key, right_key, SUM(measure) "
         "FROM bigint_grouped_records GROUP BY left_key, right_key "
@@ -1571,6 +1605,11 @@ static int32_t run_write_read_fixture(
         sizeof(count_parameter), PRDB_SDK_VALUE_ABI_V1_VERSION,
         PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_BIGINT,
         count_parameter_bytes, sizeof(count_parameter_bytes)};
+    static const uint8_t filtered_group_key_bytes[4] = {0, 0, 0, 2};
+    prdb_sdk_value_v1 filtered_group_key_parameter = {
+        sizeof(filtered_group_key_parameter), PRDB_SDK_VALUE_ABI_V1_VERSION,
+        PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+        filtered_group_key_bytes, sizeof(filtered_group_key_bytes)};
     result_context results = {0};
     static const uint8_t id_column_name[] = "id";
     prdb_sdk_sql_column_shape_v2 grouped_column = {
@@ -1844,7 +1883,8 @@ static int32_t run_write_read_fixture(
     }
     if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
         (invocation->parameters[0] == 'A' || invocation->parameters[0] == 'B' ||
-         invocation->parameters[0] == 'R' || invocation->parameters[0] == 'W')) {
+         invocation->parameters[0] == 'R' || invocation->parameters[0] == 'W' ||
+         invocation->parameters[0] == 'Q')) {
         static const uint8_t *const optimizer_sql[] = {
             select_composite_min_optimizer_sql,
             select_composite_max_optimizer_sql,
@@ -1957,6 +1997,37 @@ static int32_t run_write_read_fixture(
                 return report_failure(host, message, sizeof(message) - 1);
             }
             if (invocation->parameters[0] == 'W') return 0;
+        }
+        if (invocation->parameters[0] == 'Q') {
+            composite_grouped_results.row_count = 0;
+            composite_grouped_results.output_len = 0;
+            composite_grouped_results.column_count = 3;
+            status = prdb_sdk_sql_execute_filtered_group_composite_aggregate_optimizer_v1(
+                optimizer_host_v5, schema, sizeof(schema) - 1,
+                select_filtered_composite_decimal_sum_sql,
+                sizeof(select_filtered_composite_decimal_sum_sql) - 1,
+                &filtered_group_key_parameter, 1, 16, sizeof(batch_response),
+                group_count_optimizer_request,
+                sizeof(group_count_optimizer_request),
+                group_count_optimizer_response,
+                sizeof(group_count_optimizer_response), planner_response,
+                sizeof(planner_response), executor_response,
+                sizeof(executor_response), batch_response,
+                sizeof(batch_response), planner_columns, 9, executor_columns,
+                9, cell_scratch, 9, grouped_materialized,
+                sizeof(grouped_materialized),
+                write_filtered_composite_decimal_sum_optimizer,
+                &composite_grouped_results);
+            if (status != PRDB_SDK_SQL_EXEC_OK ||
+                composite_grouped_results.row_count != 1) {
+                static uint8_t message[] =
+                    "fixture-error-filtered-composite-sum-status-0";
+                if (status >= 0 && status <= 9) {
+                    message[sizeof(message) - 2] = (uint8_t)('0' + status);
+                }
+                return report_failure(host, message, sizeof(message) - 1);
+            }
+            return 0;
         }
         uint32_t first_aggregate = invocation->parameters[0] == 'R'
                                       ? 3
@@ -2175,6 +2246,35 @@ static int32_t run_write_read_fixture(
                 ordered_count_expectation.next_group != 3) {
                 static uint8_t message[] =
                     "fixture-error-ordered-composite-count-status-0";
+                if (status >= 0 && status <= 9) {
+                    message[sizeof(message) - 2] = (uint8_t)('0' + status);
+                }
+                return report_failure(host, message, sizeof(message) - 1);
+            }
+
+            composite_grouped_results.row_count = 0;
+            composite_grouped_results.output_len = 0;
+            composite_grouped_results.column_count = 3;
+            status = prdb_sdk_sql_execute_filtered_group_composite_aggregate_optimizer_v1(
+                optimizer_host_v5, schema, sizeof(schema) - 1,
+                select_filtered_composite_decimal_sum_sql,
+                sizeof(select_filtered_composite_decimal_sum_sql) - 1,
+                &filtered_group_key_parameter, 1, 16, sizeof(batch_response),
+                group_count_optimizer_request,
+                sizeof(group_count_optimizer_request),
+                group_count_optimizer_response,
+                sizeof(group_count_optimizer_response), planner_response,
+                sizeof(planner_response), executor_response,
+                sizeof(executor_response), batch_response,
+                sizeof(batch_response), planner_columns, 9, executor_columns,
+                9, cell_scratch, 9, grouped_materialized,
+                sizeof(grouped_materialized),
+                write_filtered_composite_decimal_sum_optimizer,
+                &composite_grouped_results);
+            if (status != PRDB_SDK_SQL_EXEC_OK ||
+                composite_grouped_results.row_count != 1) {
+                static uint8_t message[] =
+                    "fixture-error-filtered-composite-sum-status-0";
                 if (status >= 0 && status <= 9) {
                     message[sizeof(message) - 2] = (uint8_t)('0' + status);
                 }

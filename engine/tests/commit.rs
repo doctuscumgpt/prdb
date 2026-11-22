@@ -42398,12 +42398,13 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             cleanup_timeout: Duration::from_secs(2),
         },
     };
-    if std::env::var_os("PRDB_TEST_ORDERED_ANALYTICAL_ONLY").is_some() {
+    let filtered_composite_only = std::env::var_os("PRDB_TEST_FILTERED_COMPOSITE_ONLY").is_some();
+    if std::env::var_os("PRDB_TEST_ORDERED_ANALYTICAL_ONLY").is_some() || filtered_composite_only {
         let mut ordered_client = ClientConnectionSession::default();
         ordered_client.accept_hello(ClientMode::Query, "sandbox-ordered-analytical-sum")?;
         ordered_client.authenticate(&storage, token_id, &secret)?;
         let ordered_owner = ordered_client.staging_owner()?;
-        let ordered_parameter = [b'W'];
+        let ordered_parameter = [if filtered_composite_only { b'Q' } else { b'W' }];
         let ordered_reservation = staging.prepare(
             ordered_owner,
             PrepareSubmission {
@@ -42484,36 +42485,90 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
         let ordered_frames = ordered_reader
             .join()
             .map_err(|_| "ordered analytical gateway reader panicked")??;
-        assert_eq!(ordered_decision, GatewayTerminalDecision::Commit);
+        assert_eq!(
+            ordered_decision,
+            GatewayTerminalDecision::Commit,
+            "confined analytical fixture failed; frames: {:?}",
+            ordered_frames
+                .iter()
+                .map(|frame| (
+                    frame.operation,
+                    String::from_utf8_lossy(&frame.payload).into_owned()
+                ))
+                .collect::<Vec<_>>()
+        );
         staging.finish_started(ordered_owner, ordered_reservation.invocation_id)?;
         let mut ordered_frames = ordered_frames.into_iter();
-        for group in (0i32..64).rev() {
-            let mut group_key = format!("{group:04}").into_bytes();
-            group_key.extend(std::iter::repeat_n(b'a', 8_168));
-            let mut expected = b"SQLR".to_vec();
-            expected.extend_from_slice(&1u16.to_be_bytes());
-            expected.extend_from_slice(&2u16.to_be_bytes());
-            expected.extend_from_slice(&(b"group_key".len() as u16).to_be_bytes());
-            expected.extend_from_slice(b"group_key");
-            expected.extend_from_slice(&6u32.to_be_bytes());
-            expected.extend_from_slice(&[0, 0, 0]);
-            expected.extend_from_slice(&(group_key.len() as u32).to_be_bytes());
-            expected.extend_from_slice(&group_key);
-            expected.extend_from_slice(&(b"sum".len() as u16).to_be_bytes());
-            expected.extend_from_slice(b"sum");
-            expected.extend_from_slice(&4u32.to_be_bytes());
-            expected.extend_from_slice(&[0, 0, 0]);
-            expected.extend_from_slice(&8u32.to_be_bytes());
-            expected.extend_from_slice(&(300i64 + 2 * i64::from(group)).to_be_bytes());
-            let frame = ordered_frames
-                .next()
-                .ok_or_else(|| format!("missing ordered analytical SUM group {group}"))?;
-            assert_eq!(frame.operation, Operation::GatewayResultData as u16);
-            assert_eq!(frame.request_id, ordered_accepted.request_id);
-            assert_eq!(
-                frame.payload, expected,
-                "ordered analytical SUM group {group}"
-            );
+        if filtered_composite_only {
+            fn expected_filtered_sum_row(
+                left_key: i32,
+                right_key: i32,
+                coefficient: u128,
+            ) -> Vec<u8> {
+                fn append_field(
+                    output: &mut Vec<u8>,
+                    name: &[u8],
+                    type_code: u32,
+                    precision: u8,
+                    scale: u8,
+                    value: &[u8],
+                ) {
+                    output.extend_from_slice(&(name.len() as u16).to_be_bytes());
+                    output.extend_from_slice(name);
+                    output.extend_from_slice(&type_code.to_be_bytes());
+                    output.extend_from_slice(&[precision, scale, 0]);
+                    output.extend_from_slice(&(value.len() as u32).to_be_bytes());
+                    output.extend_from_slice(value);
+                }
+                let mut output = b"SQLR".to_vec();
+                output.extend_from_slice(&1u16.to_be_bytes());
+                output.extend_from_slice(&3u16.to_be_bytes());
+                append_field(&mut output, b"left_key", 3, 0, 0, &left_key.to_be_bytes());
+                append_field(&mut output, b"right_key", 3, 0, 0, &right_key.to_be_bytes());
+                append_field(&mut output, b"sum", 5, 38, 2, &coefficient.to_be_bytes());
+                output
+            }
+            {
+                let (left_key, right_key, coefficient) = (2i32, 9i32, 450u128);
+                let frame = ordered_frames
+                    .next()
+                    .ok_or("missing filtered composite Decimal SUM SQLR row")?;
+                assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+                assert_eq!(frame.request_id, ordered_accepted.request_id);
+                assert_eq!(
+                    frame.payload,
+                    expected_filtered_sum_row(left_key, right_key, coefficient)
+                );
+            }
+        } else {
+            for group in (0i32..64).rev() {
+                let mut group_key = format!("{group:04}").into_bytes();
+                group_key.extend(std::iter::repeat_n(b'a', 8_168));
+                let mut expected = b"SQLR".to_vec();
+                expected.extend_from_slice(&1u16.to_be_bytes());
+                expected.extend_from_slice(&2u16.to_be_bytes());
+                expected.extend_from_slice(&(b"group_key".len() as u16).to_be_bytes());
+                expected.extend_from_slice(b"group_key");
+                expected.extend_from_slice(&6u32.to_be_bytes());
+                expected.extend_from_slice(&[0, 0, 0]);
+                expected.extend_from_slice(&(group_key.len() as u32).to_be_bytes());
+                expected.extend_from_slice(&group_key);
+                expected.extend_from_slice(&(b"sum".len() as u16).to_be_bytes());
+                expected.extend_from_slice(b"sum");
+                expected.extend_from_slice(&4u32.to_be_bytes());
+                expected.extend_from_slice(&[0, 0, 0]);
+                expected.extend_from_slice(&8u32.to_be_bytes());
+                expected.extend_from_slice(&(300i64 + 2 * i64::from(group)).to_be_bytes());
+                let frame = ordered_frames
+                    .next()
+                    .ok_or_else(|| format!("missing ordered analytical SUM group {group}"))?;
+                assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+                assert_eq!(frame.request_id, ordered_accepted.request_id);
+                assert_eq!(
+                    frame.payload, expected,
+                    "ordered analytical SUM group {group}"
+                );
+            }
         }
         let terminal = ordered_frames
             .next()
@@ -44941,6 +44996,26 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
                     left_key,
                     right_key,
                     &count.to_be_bytes(),
+                )
+            );
+        }
+        {
+            let (left_key, right_key, coefficient) = (2i32, 9i32, 450u128);
+            let frame = aggregate_frames
+                .next()
+                .ok_or("missing filtered composite Decimal SUM SQLR row")?;
+            assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+            assert_eq!(frame.request_id, aggregate_accepted.request_id);
+            assert_eq!(
+                frame.payload,
+                expected_aggregate_row(
+                    b"sum",
+                    5,
+                    38,
+                    2,
+                    left_key,
+                    right_key,
+                    &coefficient.to_be_bytes(),
                 )
             );
         }
