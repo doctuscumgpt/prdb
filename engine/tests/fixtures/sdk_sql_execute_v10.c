@@ -2583,6 +2583,35 @@ static int32_t on_group_v22_hidden_count_minmax(
     return 0;
 }
 
+static int32_t on_group_v22_where_and_having(
+    void *context, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v21 *binding) {
+    group_capture *capture = (group_capture *)context;
+    int32_t id = 0;
+    assert(binding->abi_version == PRDB_SDK_SQL_ABI_V21_VERSION);
+    assert(binding->base.having_node_count == 3);
+    assert(binding->base.having_decimal_scale == 2);
+    assert(group_key_count == 2 && matching_row_count == 1);
+    assert(prdb_sdk_value_get_integer_v1(&group_keys[0], &id) ==
+           PRDB_SDK_VALUE_ACCESS_OK && id == 2);
+    assert(group_keys[1].state == PRDB_SDK_VALUE_STATE_VALUE &&
+           group_keys[1].type_code == PRDB_SDK_VALUE_TYPE_DECIMAL &&
+           group_keys[1].data_len == 16 && group_keys[1].data[14] == 1 &&
+           group_keys[1].data[15] == 0xf4);
+    assert(aggregate_value != NULL &&
+           aggregate_value->state == PRDB_SDK_VALUE_STATE_VALUE &&
+           aggregate_value->type_code == PRDB_SDK_VALUE_TYPE_DECIMAL &&
+           aggregate_value->data_len == 16 && aggregate_value->data[14] == 1 &&
+           aggregate_value->data[15] == 0xf4);
+    capture->keys[capture->calls] = id;
+    capture->aggregates[capture->calls] = 5;
+    capture->row_counts[capture->calls] = matching_row_count;
+    ++capture->calls;
+    return 0;
+}
+
 static int32_t on_group_v21_min_decimal(
     void *context, const prdb_sdk_value_v1 *group_keys,
     uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
@@ -3064,6 +3093,10 @@ int main(void) {
     static const uint8_t v22_hidden_count_sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
         "HAVING COUNT(*) >= 2 AND SUM(score) >= 4.50e0";
+    static const uint8_t v22_where_and_having_sql[] =
+        "SELECT id, score, SUM(score) FROM widgets WHERE id >= $1 "
+        "GROUP BY id, score "
+        "HAVING COUNT(*) >= 1 AND SUM(score) >= 5.00";
     static const uint8_t v22_hidden_count_avg_sql[] =
         "SELECT id, score, AVG(score) FROM widgets GROUP BY id, score "
         "HAVING COUNT(*) >= 2 AND AVG(score) >= 3.00000000e0";
@@ -3111,6 +3144,7 @@ int main(void) {
         0, 0, 0, 0, 0, 0, 0, 10};
     static const uint8_t v18_having_parameter_bytes[] = {
         0, 0, 0, 0, 0, 0, 0, 3};
+    static const uint8_t v22_where_parameter_bytes[] = {0, 0, 0, 2};
     const int32_t keys[] = {1, 1, 2};
     const int32_t scores[] = {9, 3, 5};
     const uint8_t value_states[] = {
@@ -3143,6 +3177,10 @@ int main(void) {
         sizeof(v18_having_parameter), PRDB_SDK_VALUE_ABI_V1_VERSION,
         PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_BIGINT,
         v18_having_parameter_bytes, sizeof(v18_having_parameter_bytes)};
+    prdb_sdk_value_v1 v22_where_parameter = {
+        sizeof(v22_where_parameter), PRDB_SDK_VALUE_ABI_V1_VERSION,
+        PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+        v22_where_parameter_bytes, sizeof(v22_where_parameter_bytes)};
     mock.planner_len = make_relation(
         mock.planner, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x99,
         PRDB_SDK_VALUE_TYPE_INTEGER);
@@ -3982,6 +4020,25 @@ int main(void) {
                    on_group_v21_decimal, &capture) ==
                PRDB_SDK_SQL_EXEC_OK);
         assert(capture.calls == 0 && mock.statement_failed == 0);
+
+        {
+            const int32_t where_keys[] = {1, 1, 2};
+            const int64_t where_coefficients[] = {300, 300, 500};
+            mock.batch_len = make_decimal_rows(
+                mock.batch, 1, where_keys, where_coefficients, NULL, 3);
+            reset_scan(&mock, &capture, 1);
+            assert(run_query_v22_decimal(
+                       &mock, v22_where_and_having_sql,
+                       sizeof(v22_where_and_having_sql) - 1,
+                       &v22_where_parameter, 1,
+                       on_group_v22_where_and_having, &capture) ==
+                   PRDB_SDK_SQL_EXEC_OK);
+            assert(capture.calls == 1 && capture.keys[0] == 2 &&
+                   capture.aggregates[0] == 5 && capture.row_counts[0] == 1 &&
+                   mock.statement_failed == 0);
+            mock.batch_len = make_decimal_rows(mock.batch, 1, keys,
+                                               decimal_coefficients, NULL, 3);
+        }
 
         {
             const int32_t avg_keys[] = {2, 2};

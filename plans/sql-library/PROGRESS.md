@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 follow-up: compose WHERE with compound HAVING — verified
+
+- Contract: row filtering runs before grouped aggregation, and the resulting groups then pass through compound HAVING before callbacks.
+- Regression: the v22 TinyCC execution fixture combines `WHERE id >= $1` with `HAVING COUNT(*) >= 1 AND SUM(score) >= 5.00`. An unfiltered `(1, 3.00)` group would qualify but must be absent; only filtered `(2, 5.00)` is delivered with its exact SUM and row count.
+- Verification: focused `sdk-sql-execute-v10` fixture and full maintained TinyCC SDK suite passed with the pinned toolchain; `git diff --check` passed.
+- Remaining: broader analytical type/workload coverage, secure spill, target-hardware measurements, and mixed-workload measurements remain open.
+
 ## SQL-8 follow-up: redacted NULL filter aborts confined SQL — verified
 
 - Contract: optimizer-backed filtered aggregation must fail when `IS NULL` evaluates a REDACTED cell, emit no partial SQLR output, and durably abort the invocation.
