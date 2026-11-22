@@ -747,6 +747,32 @@ mod tests {
         bytes
     }
 
+    fn eight_key_group_aggregate_request(kind: u8) -> Vec<u8> {
+        let mut bytes = vec![
+            0,
+            1,
+            crate::query_abi::OPTIMIZER_COMPOSITE_GROUP_AGGREGATE_STATEMENT,
+            0,
+        ];
+        for name in ["public", "items"] {
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.push(8);
+        for ordinal in 0..8 {
+            let name = format!("key_{ordinal}");
+            bytes.push(name.len() as u8);
+            bytes.extend_from_slice(name.as_bytes());
+        }
+        bytes.push(kind);
+        if kind != 1 {
+            bytes.extend_from_slice(&[7]);
+            bytes.extend_from_slice(b"measure");
+        }
+        bytes.extend_from_slice(&[1, 0, 0, 0, 5]);
+        bytes
+    }
+
     fn ordered_composite_group_aggregate_request(kind: u8) -> Vec<u8> {
         let mut bytes = vec![
             0,
@@ -2024,6 +2050,122 @@ mod tests {
                 assert_eq!(plan.order_items[0].source, 1);
                 assert_eq!(plan.order_items[1].group_key_index, Some(0));
                 assert_eq!(plan.aggregate_plan.limit, Some(5));
+            }
+            submission_client.shutdown(Shutdown::Write).unwrap();
+            planner_thread.join().unwrap();
+            optimizer_thread.join().unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn process_protocol_accepts_eight_key_count_and_sum_plans() {
+        let (mut submission_client, mut submission_server) = UnixStream::pair().unwrap();
+        let (mut planner_client, mut planner_server) = UnixStream::pair().unwrap();
+        std::thread::scope(|scope| {
+            let planner_thread = scope.spawn(|| {
+                planner_server
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                for expected_request_id in [257, 258] {
+                    let request = crate::ipc::read_frame(&mut planner_server)
+                        .unwrap()
+                        .expect("optimizer must resolve eight-key aggregate relation");
+                    assert_eq!(request.request_id, expected_request_id);
+                    let columns = (0..9)
+                        .map(|ordinal| VisibleColumn {
+                            column_id: [u8::try_from(ordinal + 4).unwrap(); 16],
+                            name: if ordinal == 8 {
+                                "measure".to_owned()
+                            } else {
+                                format!("key_{ordinal}")
+                            },
+                            ordinal: u32::try_from(ordinal).unwrap(),
+                            scalar_type: if ordinal == 8 {
+                                ScalarType::BigInt
+                            } else {
+                                ScalarType::Integer
+                            },
+                            nullable: ordinal == 8,
+                        })
+                        .collect();
+                    let relation = AuthorizedPlanRelation {
+                        schema_id: [1; 16],
+                        schema_version: 3,
+                        table_epoch: 7,
+                        relation: AuthorizedRelationDescription {
+                            relation_id: [2; 16],
+                            name: "items".to_owned(),
+                            columns,
+                        },
+                        unique_access_paths: Vec::new(),
+                        range_access_paths: Vec::new(),
+                    };
+                    crate::ipc::write_frame(
+                        &mut planner_server,
+                        &IpcFrame {
+                            operation: request.operation,
+                            request_id: request.request_id,
+                            payload: DescribePlanRelationResponse {
+                                relation: Some(relation),
+                                proven_empty: false,
+                                visible_rows_estimate: None,
+                            }
+                            .encode()
+                            .unwrap(),
+                        },
+                    )
+                    .unwrap();
+                }
+            });
+            let optimizer_thread = scope
+                .spawn(|| serve_optimizer_process(&mut submission_server, &mut planner_client));
+            submission_client
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            for (request_id, kind) in [(701, 1), (702, 4)] {
+                crate::ipc::write_frame(
+                    &mut submission_client,
+                    &IpcFrame {
+                        operation: Operation::OptimizeGroupCount as u16,
+                        request_id,
+                        payload: eight_key_group_aggregate_request(kind),
+                    },
+                )
+                .unwrap();
+                let response = crate::ipc::read_frame(&mut submission_client)
+                    .unwrap()
+                    .expect("optimizer must return an eight-key aggregate plan");
+                assert_eq!(response.request_id, request_id);
+                let response = OptimizerResponse::decode(&response.payload).unwrap();
+                assert_eq!(response.status, OptimizerStatus::Success);
+                let plan = crate::optimizer_plan::decode_composite_group_aggregate_plan_v1(
+                    response.plan.as_deref().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(plan.aggregate_kind, kind);
+                assert_eq!(
+                    plan.group_keys
+                        .iter()
+                        .map(|key| key.ordinal)
+                        .collect::<Vec<_>>(),
+                    (0..8).collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    plan.scan_columns
+                        .iter()
+                        .map(|column| column.ordinal)
+                        .collect::<Vec<_>>(),
+                    if kind == 1 {
+                        (0..8).collect::<Vec<_>>()
+                    } else {
+                        (0..9).collect::<Vec<_>>()
+                    }
+                );
+                assert_eq!(
+                    plan.aggregate_column.map(|column| column.ordinal),
+                    (kind != 1).then_some(8)
+                );
+                assert_eq!(plan.limit, Some(5));
             }
             submission_client.shutdown(Shutdown::Write).unwrap();
             planner_thread.join().unwrap();

@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 / SQL-8 follow-up: eight-key composite aggregate planning — verified
+
+- Contract: optimizer-backed composite aggregation accepts two through eight group keys and derives the scan projection from the keys plus the selected aggregate input.
+- Regression: optimizer process acceptance now submits both `COUNT(*)` and `SUM(measure)` requests at the eight-key boundary. It validates the returned plan's ordered key ordinals, LIMIT, and scan-column union: COUNT scans only the eight keys, while SUM also scans `measure`.
+- Verification: the focused locked Rust optimizer process test, `cargo fmt --all -- --check`, locked workspace build, warning-denied all-target Clippy, and the full serial delegated-cgroup workspace suite passed. The suite ran all sandbox and process acceptance targets with zero ignored tests.
+- Remaining: optimizer-backed composite aggregates still have broader workload, secure spill, target-hardware, and mixed-workload evidence open.
+
 ## SQL-8 follow-up: COUNT(*) excludes policy-hidden rows — verified
 
 - Contract: aggregate groups and `COUNT(*)` operate only on rows visible through the authorized, row-policy-filtered scan.
