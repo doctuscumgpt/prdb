@@ -1205,3 +1205,10 @@
 - Change: the confined `decimal_grouped_records` relation now permits a NULL aggregate input. The `(1,7)` group has two visible rows with one NULL Decimal measure; the `(2,9)` group retains three non-NULL measures.
 - Regression: optimizer-backed MIN, MAX, SUM, and AVG ignore the NULL measure while preserving the two-row group count. Exact relayed SQLR values are `1.00`, `1.00`, `1.00`, and `1.00000000` for the `(1,7)` group; prior non-NULL values for `(2,9)` remain unchanged.
 - Verification: the focused `sandboxed_v3_sql_dml_sequence_is_visible_and_commits` acceptance and full serial delegated-cgroup workspace suite passed after this Decimal NULL extension. The TinyCC fixture build, formatting, warning-denied Clippy, and `git diff --check` passed.
+
+## SQL-7 follow-up: composite INNER JOIN rejects NULL key matches — verified
+
+- Contract: every equality in a composite INNER JOIN must evaluate to TRUE; a NULL comparison yields UNKNOWN, so two rows with NULL in the same join-key position do not match.
+- Regression: the maintained v19 executor fixture now supplies both relations with the same non-NULL first key and NULL second key, then runs a two-key join. It verifies zero callbacks, both scans closed, and no statement failure. The fixture helper retains the existing 129-row malformed response case.
+- Verification: focused `sdk-sql-execute-v19` and complete `nix develop --no-update-lock-file -c make -f engine/sdk/Makefile test` passed under the pinned TinyCC toolchain; `git diff --check` passed.
+- Remaining: broader analytical workload diversity, secure spill, target-hardware measurements, and mixed-workload optimization remain open.

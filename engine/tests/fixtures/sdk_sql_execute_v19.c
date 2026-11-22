@@ -217,9 +217,9 @@ static void append_integer_cell(uint8_t *bytes, uint32_t *offset,
     put_u32(bytes, offset, (uint32_t)value);
 }
 
-static uint32_t make_batch_with_value_state(
+static uint32_t make_batch_with_column_states(
     uint8_t *bytes, const int32_t *keys, const uint8_t *key_states,
-    const int32_t *values, uint8_t value_state, uint16_t row_count) {
+    const int32_t *values, const uint8_t *value_states, uint16_t row_count) {
     uint32_t offset = 0;
     put_u16(bytes, &offset, 1);
     bytes[offset++] = 1;
@@ -233,13 +233,25 @@ static uint32_t make_batch_with_value_state(
         } else {
             bytes[offset++] = key_states[row];
         }
-        if (value_state == PRDB_SDK_VALUE_STATE_VALUE) {
+        if (value_states[row] == PRDB_SDK_VALUE_STATE_VALUE) {
             append_integer_cell(bytes, &offset, values[row]);
         } else {
-            bytes[offset++] = value_state;
+            bytes[offset++] = value_states[row];
         }
     }
     return offset;
+}
+
+static uint32_t make_batch_with_value_state(
+    uint8_t *bytes, const int32_t *keys, const uint8_t *key_states,
+    const int32_t *values, uint8_t value_state, uint16_t row_count) {
+    uint8_t value_states[JOIN_V16_ROW_LIMIT + 1];
+    assert(row_count <= JOIN_V16_ROW_LIMIT + 1);
+    for (uint16_t row = 0; row < row_count; ++row) {
+        value_states[row] = value_state;
+    }
+    return make_batch_with_column_states(bytes, keys, key_states, values,
+                                         value_states, row_count);
 }
 
 static uint32_t make_batch(uint8_t *bytes, const int32_t *keys,
@@ -819,6 +831,32 @@ int main(void) {
     assert(capture.calls == 2 && capture.left_values[0] == 101 &&
            capture.right_values[0] == 201 && capture.left_values[1] == 102 &&
            capture.right_values[1] == 202);
+
+    {
+        const int32_t common_key[] = {5};
+        const uint8_t value_state[] = {PRDB_SDK_VALUE_STATE_VALUE};
+        const uint8_t null_value_state[] = {PRDB_SDK_VALUE_STATE_NULL};
+        const int32_t left_value[] = {105};
+        const int32_t right_value[] = {205};
+        mock.batch_len[0] = make_batch_with_column_states(
+            mock.batch[0], common_key, value_state, left_value,
+            null_value_state, 1);
+        mock.batch_len[1] = make_batch_with_column_states(
+            mock.batch[1], common_key, value_state, right_value,
+            null_value_state, 1);
+        reset(&mock, &capture);
+        assert(run_query_v19(&mock, &capture, composite_sql,
+                             sizeof(composite_sql) - 1, 1024) ==
+               PRDB_SDK_SQL_EXEC_OK);
+        assert(capture.calls == 0 && mock.planner_calls == 2 &&
+               mock.resolve_calls == 2 && mock.open_calls == 2 &&
+               mock.scan_finished[0] == 1 && mock.scan_finished[1] == 1 &&
+               mock.statement_failed == 0);
+        mock.batch_len[0] = make_batch(mock.batch[0], left_keys, left_states,
+                                       left_values, 3);
+        mock.batch_len[1] = make_batch(mock.batch[1], right_keys, right_states,
+                                       right_values, 3);
+    }
 
     {
         const int32_t pair_key[] = {1};
