@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 / SQL-8 follow-up: execute composite SUM at eight grouping keys — verified
+
+- Contract: the v13 SDK runner supports two through eight ordered GROUP BY keys and validates the complete key tuple before publishing each aggregate result.
+- Regression: the maintained TinyCC executor fixture runs an eight-key `SUM(measure)` query over three rows. It checks every value in both output tuples, the exact widened BIGINT sums (9 and 8), group row counts (2 and 1), and the v13 binding's key and measure ordinals. The fixture mock planner/executor response buffers now fit the supported nine-column relation shape.
+- Verification: the focused `sdk-sql-execute-v10` fixture and full `make -f engine/sdk/Makefile test` suite passed under the pinned TinyCC toolchain; `git diff --check` passed.
+- Remaining: broader analytical workload, secure spill, target-hardware, and mixed-workload evidence remains open.
+
 ## SQL-7 / SQL-8 follow-up: eight-key composite aggregate planning — verified
 
 - Contract: optimizer-backed composite aggregation accepts two through eight group keys and derives the scan projection from the keys plus the selected aggregate input.
