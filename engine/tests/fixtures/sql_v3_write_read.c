@@ -1548,7 +1548,9 @@ static int32_t run_write_read_fixture(
     static const uint8_t select_composite_hidden_count_dispatch_sql[] =
         "SELECT left_key, right_key, SUM(decimal_value) "
         "FROM decimal_grouped_records GROUP BY left_key, right_key "
-        "HAVING COUNT(*) >= 2 AND SUM(decimal_value) >= 4.50e0";
+        "HAVING COUNT(*) IS NOT NULL AND COUNT(*) >= 2 "
+        "AND SUM(decimal_value) IS NOT NULL "
+        "AND SUM(decimal_value) >= 4.50e0";
     static const uint8_t select_composite_avg_numeric_v21_sql[] =
         "SELECT left_key, right_key, AVG(decimal_value) "
         "FROM decimal_grouped_records "
@@ -2362,6 +2364,21 @@ static int32_t run_write_read_fixture(
                 if (status >= 0 && status <= 9) {
                     message[sizeof(message) - 2] = (uint8_t)('0' + status);
                 }
+                return report_failure(host, message, sizeof(message) - 1);
+            }
+        }
+        if (invocation->parameters[0] == 'A') {
+            static const uint8_t null_having_sql[] =
+                "SELECT left_key, right_key, SUM(decimal_value) "
+                "FROM decimal_grouped_records GROUP BY left_key, right_key "
+                "HAVING SUM(decimal_value) IS NULL "
+                "AND COUNT(*) IS NOT NULL AND COUNT(*) >= 1 "
+                "ORDER BY left_key LIMIT 1";
+            status = prdb_sdk_sql_run_statement_v1(
+                host, schema, sizeof(schema) - 1, null_having_sql,
+                sizeof(null_having_sql) - 1, NULL, 0);
+            if (status != PRDB_SDK_SQL_DISPATCH_OK) {
+                static const uint8_t message[] = "fixture-error-null-having";
                 return report_failure(host, message, sizeof(message) - 1);
             }
         }

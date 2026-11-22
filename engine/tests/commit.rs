@@ -45020,6 +45020,17 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             );
         }
         {
+            let frame = aggregate_frames
+                .next()
+                .ok_or("missing all-NULL SUM HAVING SQLR row")?;
+            assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+            assert_eq!(frame.request_id, aggregate_accepted.request_id);
+            assert_eq!(
+                frame.payload,
+                expected_null_aggregate_row(b"sum", 5, 38, 2, 3, 11)
+            );
+        }
+        {
             let mut group_key = b"0000".to_vec();
             group_key.extend(std::iter::repeat_n(b'a', 8_168));
             let mut expected = b"SQLR".to_vec();

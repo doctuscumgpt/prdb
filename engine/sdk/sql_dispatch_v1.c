@@ -3,7 +3,7 @@
 #include "prdb_sdk_sql_exec_v10.h"
 #include "prdb_sdk_sql_exec_v8.h"
 #include "prdb_sdk_sql_exec_v20.h"
-#include "prdb_sdk_sql_exec_v22.h"
+#include "prdb_sdk_sql_exec_v23.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -334,7 +334,7 @@ int32_t prdb_sdk_sql_run_v1(
     prdb_sdk_sql_column_shape_v2 *executor_columns = NULL;
     prdb_sdk_value_v1 *cell_scratch = NULL;
     sql_result_context result = {0};
-    prdb_sdk_select_v22 grouped_statement = {0};
+    prdb_sdk_select_v23 grouped_statement = {0};
     prdb_sdk_select_v20 join_statement = {0};
     prdb_sdk_select_v8 single_key_join_statement = {0};
     prdb_sdk_select_v10 single_grouped_statement = {0};
@@ -359,7 +359,7 @@ int32_t prdb_sdk_sql_run_v1(
         return latch_sql_failure(host,
                                  PRDB_SDK_SQL_DISPATCH_INVALID_ARGUMENT);
     }
-    is_grouped = prdb_sdk_sql_parse_select_v22(
+    is_grouped = prdb_sdk_sql_parse_select_v23(
                      sql, sql_len, &grouped_statement,
                      sizeof(grouped_statement), NULL) == PRDB_SDK_SQL_OK;
     if (!is_grouped) {
@@ -462,7 +462,7 @@ int32_t prdb_sdk_sql_run_v1(
     result.output = output;
     result.output_capacity = PRDB_SDK_SQL_RESULT_MAX_BYTES;
     if (is_grouped) {
-        status = prdb_sdk_sql_execute_group_v22(
+        status = prdb_sdk_sql_execute_group_v23(
             host, schema, schema_len, sql, sql_len, values, parameter_count,
             SQL_DISPATCH_CANDIDATES, SQL_DISPATCH_BATCH_BYTES,
             planner_response, SQL_DISPATCH_RESPONSE_BYTES, executor_response,
