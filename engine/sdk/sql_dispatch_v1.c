@@ -501,8 +501,9 @@ int32_t prdb_sdk_sql_run_v1(
     result.output = output;
     result.output_capacity = PRDB_SDK_SQL_RESULT_MAX_BYTES;
     if (is_grouped) {
-        status = prdb_sdk_sql_execute_group_v24(
-            host, schema, schema_len, sql, sql_len, values, parameter_count,
+        status = prdb_sdk_sql_execute_group_typed_v24(
+            host, schema, schema_len, sql, sql_len, values, metadata,
+            parameter_count,
             SQL_DISPATCH_CANDIDATES, SQL_DISPATCH_BATCH_BYTES,
             planner_response, SQL_DISPATCH_RESPONSE_BYTES, executor_response,
             SQL_DISPATCH_RESPONSE_BYTES, batch_response,
@@ -512,8 +513,9 @@ int32_t prdb_sdk_sql_run_v1(
             PRDB_SDK_SQL_MAX_RELATION_COLUMNS, materialized_bytes,
             SQL_DISPATCH_BATCH_BYTES, write_group_sqlr_tuple, &result);
     } else if (is_single_grouped) {
-        status = prdb_sdk_sql_execute_group_v10(
-            host, schema, schema_len, sql, sql_len, values, parameter_count,
+        status = prdb_sdk_sql_execute_group_typed_v10(
+            host, schema, schema_len, sql, sql_len, values, metadata,
+            parameter_count,
             SQL_DISPATCH_CANDIDATES, SQL_DISPATCH_BATCH_BYTES,
             planner_response, SQL_DISPATCH_RESPONSE_BYTES, executor_response,
             SQL_DISPATCH_RESPONSE_BYTES, batch_response,

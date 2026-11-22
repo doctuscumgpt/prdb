@@ -1601,6 +1601,17 @@ static int32_t run_write_read_fixture(
         0, 0, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0, 0, 0,
         0, 0, 0, 4, 42, 0, 0, 0
     };
+    static const uint8_t single_key_having_sql[] =
+        "SELECT right_key, SUM(decimal_value) FROM decimal_grouped_records "
+        "WHERE (decimal_value IS NULL OR decimal_value >= $1) GROUP BY right_key "
+        "HAVING SUM(decimal_value) IS NULL OR "
+        "(COUNT(*) >= 2 AND SUM(decimal_value) >= $1) "
+        "ORDER BY SUM(decimal_value) DESC NULLS LAST, right_key LIMIT 1";
+    static const uint8_t min_amount_parameter[] = {
+        'P', 'S', 'P', '1', 0, 1, 0, 0,
+        0, 0, 0, PRDB_SDK_VALUE_TYPE_DECIMAL, 4, 2, 0, 0,
+        0, 0, 0, 16,
+        125, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     static const uint8_t delete_sql[] = "DELETE FROM records WHERE id = $1";
     static const uint8_t multi_insert_sql[] =
         "INSERT INTO records VALUES ($1), ($2)";
@@ -1951,6 +1962,21 @@ static int32_t run_write_read_fixture(
             return report_failure(host, message, sizeof(message) - 1);
         }
         return 1;
+    }
+    if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
+        invocation->parameters[0] == 'P') {
+        uint8_t mismatched_parameter[sizeof(min_amount_parameter)];
+        memcpy(mismatched_parameter, min_amount_parameter,
+               sizeof(mismatched_parameter));
+        mismatched_parameter[13] = 1; /* Declares 12.5, while the operand scale is 2. */
+        status = prdb_sdk_sql_run_statement_v1(
+            host, schema, sizeof(schema) - 1, single_key_having_sql,
+            sizeof(single_key_having_sql) - 1, mismatched_parameter,
+            sizeof(mismatched_parameter));
+        /* Catch the bind error so only the host latch can abort on success. */
+        if (status == PRDB_SDK_SQL_DISPATCH_EXECUTION_ERROR) return 0;
+        static const uint8_t message[] = "fixture-error-grouped-parameter-scale";
+        return report_failure(host, message, sizeof(message) - 1);
     }
     if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
         invocation->parameters[0] == 'H') {
@@ -2418,16 +2444,6 @@ static int32_t run_write_read_fixture(
                 return report_failure(host, message, sizeof(message) - 1);
             }
 
-            static const uint8_t single_key_having_sql[] =
-                "SELECT right_key, SUM(decimal_value) FROM decimal_grouped_records "
-                "WHERE (decimal_value IS NULL OR decimal_value >= $1) GROUP BY right_key "
-                "HAVING SUM(decimal_value) IS NULL OR COUNT(*) >= 2 "
-                "ORDER BY SUM(decimal_value) DESC NULLS LAST, right_key LIMIT 1";
-            static const uint8_t min_amount_parameter[] = {
-                'P', 'S', 'P', '1', 0, 1, 0, 0,
-                0, 0, 0, PRDB_SDK_VALUE_TYPE_DECIMAL, 4, 2, 0, 0,
-                0, 0, 0, 16,
-                125, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
             status = prdb_sdk_sql_run_statement_v1(
                 host, schema, sizeof(schema) - 1, single_key_having_sql,
                 sizeof(single_key_having_sql) - 1, min_amount_parameter,

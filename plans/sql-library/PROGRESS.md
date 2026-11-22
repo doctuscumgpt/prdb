@@ -1296,3 +1296,12 @@
 - The complete TinyCC SDK suite, sandbox fixture build, release-profile validation, locked workspace build, rustfmt check, and warning-denied Clippy passed. The v24 parser/binder sanitizer harness completed 10,000 cases with seed 24.
 - The full serial workspace suite with `--no-fail-fast` passed in the delegated `prdb-sql24-complete-check.service` run with 1,040 tests passed and zero ignored. Earlier runs recorded a catalog race returning `Commit(InvalidCatalog)` and a gateway-restart connection refusal. Each passed in isolation and in the final full run.
 - Follow-up: match PSP1's declared parameter type and Decimal scale against each bound grouped WHERE and HAVING operand, then extend optimizer and mixed-workload coverage.
+
+
+## SQL-7 follow-up: type declarations in grouped parameters — in progress
+
+- Grouped dispatch carries PSP1 metadata into the v24 runner and the legacy v10 fallback. Every referenced WHERE and HAVING comparison requires the declared scalar type and exact Decimal scale of its bound operand before opening a scan. Hidden COUNT(*) expects BIGINT. The validation also applies to typed NULL, repeated placeholders, short-circuited branches, and LIMIT 0. Row SELECT and grouped runners share the parameter binding check.
+- The initial TinyCC dispatcher fixture accepted a wrong-scale Decimal WHERE parameter under LIMIT 0. It now rejects mismatched WHERE and HAVING declarations before OPEN_SCAN or SQLR output, including a typed NULL with a mismatched declaration and one placeholder used against WHERE and AVG operands with different scales. Matching Decimal scale with smaller declared precision and matching typed NULLs succeed.
+- The confined fixture uses the same typed parameter in WHERE and HAVING and checks the existing DECIMAL(38,2) sum of `3.50`. The mismatch invocation changes only the declaration's scale, before installing a redaction policy. The fixture catches the SQL error and the acceptance requires one terminal ABORTED frame, zero SQLR frames, and a durable ABORTED outcome.
+- The pinned TinyCC SDK suite, shared SDK checks, fixture packaging, release profile, locked Rust build, rustfmt and warning-denied Clippy passed. The full serial workspace suite is running in the delegated user service.
+- Follow-up: extend the optimizer request and plan contract to cover compound HAVING while keeping evaluation over authorized grouped results.

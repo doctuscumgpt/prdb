@@ -45119,34 +45119,38 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             OutcomeStatus::Committed
         );
 
-        let redacted_policy_invocation = id(0xac);
-        let mut redacted_policy_audit =
-            identity_audit_event(0xad, user_id, decimal_table.column_ids[2]);
-        redacted_policy_audit.correlation_id = redacted_policy_invocation;
-        storage
-            .create_policy(CreatePolicyRequest {
-                invocation_id: redacted_policy_invocation,
-                authenticated_actor_id: user_id,
-                table_id: decimal_table.table_id,
-                name: "sandbox_decimal_group_redacted_value_policy".to_owned(),
-                kind: PolicyKind::Cell,
-                operation: prdb_engine::authorization::Operation::Select,
-                effect: prdb_engine::authorization::Effect::Restrict,
-                recipients: vec![prdb_engine::authorization::Subject::Principal(user_id)],
-                target_column_ids: vec![decimal_table.column_ids[2]],
-                using_expression: Some(prdb_engine::authorization::Expr::Literal(Some(
-                    ScalarValue::Boolean(false),
-                ))),
-                with_check_expression: None,
-                retention_deadline_us: now + 3_600_000_000,
-                audit_event: redacted_policy_audit,
-            })
-            .map_err(|error| format!("create confined redaction policy: {error:?}"))?;
         for (mode, client_name) in [
+            (b'P', "sandbox-sql-grouped-parameter-scale"),
             (b'R', "sandbox-sql-redacted-aggregate"),
             (b'N', "sandbox-sql-redacted-null-filter"),
             (b'H', "sandbox-sql-redacted-null-having"),
         ] {
+            // Run the parameter mismatch against visible values first.
+            if mode == b'R' {
+                let redacted_policy_invocation = id(0xac);
+                let mut redacted_policy_audit =
+                    identity_audit_event(0xad, user_id, decimal_table.column_ids[2]);
+                redacted_policy_audit.correlation_id = redacted_policy_invocation;
+                storage
+                    .create_policy(CreatePolicyRequest {
+                        invocation_id: redacted_policy_invocation,
+                        authenticated_actor_id: user_id,
+                        table_id: decimal_table.table_id,
+                        name: "sandbox_decimal_group_redacted_value_policy".to_owned(),
+                        kind: PolicyKind::Cell,
+                        operation: prdb_engine::authorization::Operation::Select,
+                        effect: prdb_engine::authorization::Effect::Restrict,
+                        recipients: vec![prdb_engine::authorization::Subject::Principal(user_id)],
+                        target_column_ids: vec![decimal_table.column_ids[2]],
+                        using_expression: Some(prdb_engine::authorization::Expr::Literal(Some(
+                            ScalarValue::Boolean(false),
+                        ))),
+                        with_check_expression: None,
+                        retention_deadline_us: now + 3_600_000_000,
+                        audit_event: redacted_policy_audit,
+                    })
+                    .map_err(|error| format!("create confined redaction policy: {error:?}"))?;
+            }
             let mut redacted_client = ClientConnectionSession::default();
             redacted_client.accept_hello(ClientMode::Query, client_name)?;
             redacted_client.authenticate(&storage, token_id, &secret)?;
