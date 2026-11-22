@@ -21,6 +21,7 @@
 #include "prdb_sdk_sql_v21.h"
 #include "prdb_sdk_sql_v22.h"
 #include "prdb_sdk_sql_v23.h"
+#include "prdb_sdk_sql_v24.h"
 #include "prdb_sdk_sql_dml_v1.h"
 #include "prdb_sdk_sql_dml_v2.h"
 #include "prdb_sdk_sql_dml_v3.h"
@@ -67,6 +68,7 @@ typedef struct parser {
 
 #define HAVING_HIDDEN_COUNT 1
 #define HAVING_NULL_TESTS 2
+#define GROUP_SINGLE_KEY 4
 
 static int is_space(uint8_t byte) {
     return byte == ' ' || byte == '\t' || byte == '\r' || byte == '\n';
@@ -3572,10 +3574,11 @@ int32_t prdb_sdk_sql_bind_select_v12(
     return PRDB_SDK_SQL_BIND_OK;
 }
 
-int32_t prdb_sdk_sql_parse_select_v13(const uint8_t *sql, uint64_t sql_len,
-                                      prdb_sdk_select_v13 *out,
-                                      uint32_t out_capacity,
-                                      uint32_t *error_offset_out) {
+static int32_t parse_select_v13_mode(const uint8_t *sql, uint64_t sql_len,
+                                    prdb_sdk_select_v13 *out,
+                                    uint32_t out_capacity,
+                                    uint32_t *error_offset_out,
+                                    uint32_t min_group_keys) {
     parser state;
     prdb_sdk_select_v13 result = {0};
     prdb_sdk_sql_span_v1 selected_keys[PRDB_SDK_SQL_V13_MAX_GROUP_KEYS] =
@@ -3650,7 +3653,7 @@ int32_t prdb_sdk_sql_parse_select_v13(const uint8_t *sql, uint64_t sql_len,
             break;
         }
     }
-    if (result.group_key_count < 2) {
+    if (result.group_key_count < min_group_keys) {
         status = PRDB_SDK_SQL_SYNTAX_ERROR;
         state.error_offset = state.current.offset;
         goto failed_v13;
@@ -3821,11 +3824,20 @@ failed_v13:
     return fail_at(&state, status);
 }
 
-int32_t prdb_sdk_sql_bind_select_v13(
+int32_t prdb_sdk_sql_parse_select_v13(const uint8_t *sql, uint64_t sql_len,
+                                      prdb_sdk_select_v13 *out,
+                                      uint32_t out_capacity,
+                                      uint32_t *error_offset_out) {
+    return parse_select_v13_mode(sql, sql_len, out, out_capacity,
+                                  error_offset_out, 2);
+}
+
+static int32_t bind_select_v13_mode(
     const prdb_sdk_select_v13 *statement, const uint8_t *relation_name,
     uint32_t relation_name_len,
     const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
-    prdb_sdk_select_binding_v13 *out, uint32_t out_capacity) {
+    prdb_sdk_select_binding_v13 *out, uint32_t out_capacity,
+    uint32_t min_group_keys) {
     prdb_sdk_select_binding_v13 result = {0};
     int32_t status;
 
@@ -3834,7 +3846,7 @@ int32_t prdb_sdk_sql_bind_select_v13(
     }
     if (statement->struct_size < sizeof(*statement) ||
         statement->abi_version != PRDB_SDK_SQL_ABI_V13_VERSION ||
-        statement->group_key_count < 2 ||
+        statement->group_key_count < min_group_keys ||
         statement->group_key_count > PRDB_SDK_SQL_V13_MAX_GROUP_KEYS ||
         statement->base.base.projection_count != 1 ||
         statement->base.base.projection_star != 0 ||
@@ -3911,10 +3923,20 @@ int32_t prdb_sdk_sql_bind_select_v13(
     return PRDB_SDK_SQL_BIND_OK;
 }
 
-int32_t prdb_sdk_sql_parse_select_v14(const uint8_t *sql, uint64_t sql_len,
-                                      prdb_sdk_select_v14 *out,
-                                      uint32_t out_capacity,
-                                      uint32_t *error_offset_out) {
+int32_t prdb_sdk_sql_bind_select_v13(
+    const prdb_sdk_select_v13 *statement, const uint8_t *relation_name,
+    uint32_t relation_name_len,
+    const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
+    prdb_sdk_select_binding_v13 *out, uint32_t out_capacity) {
+    return bind_select_v13_mode(statement, relation_name, relation_name_len,
+                                columns, column_count, out, out_capacity, 2);
+}
+
+static int32_t parse_select_v14_mode(const uint8_t *sql, uint64_t sql_len,
+                                    prdb_sdk_select_v14 *out,
+                                    uint32_t out_capacity,
+                                    uint32_t *error_offset_out,
+                                    uint32_t min_group_keys) {
     uint8_t base_sql[PRDB_SDK_SQL_MAX_QUERY_BYTES];
     parser scan, having;
     prdb_sdk_select_v14 result = {0};
@@ -3988,9 +4010,9 @@ int32_t prdb_sdk_sql_parse_select_v14(const uint8_t *sql, uint64_t sql_len,
         for (uint32_t index = clause_end; index < (uint32_t)sql_len; ++index) {
             base_sql[index] = sql[index];
         }
-        status = prdb_sdk_sql_parse_select_v13(
+        status = parse_select_v13_mode(
             base_sql, sql_len, &result.base, sizeof(result.base),
-            error_offset_out);
+            error_offset_out, min_group_keys);
         if (status != PRDB_SDK_SQL_OK) return status;
         result.base.base.base.sql = sql;
         result.has_having = 1;
@@ -4093,8 +4115,9 @@ int32_t prdb_sdk_sql_parse_select_v14(const uint8_t *sql, uint64_t sql_len,
         }
     }
     if (having_token.kind == TOKEN_END) {
-        status = prdb_sdk_sql_parse_select_v13(
-            sql, sql_len, &result.base, sizeof(result.base), error_offset_out);
+        status = parse_select_v13_mode(
+            sql, sql_len, &result.base, sizeof(result.base), error_offset_out,
+            min_group_keys);
         if (status != PRDB_SDK_SQL_OK) return status;
     }
     result.struct_size = sizeof(result);
@@ -4110,11 +4133,20 @@ failed_v14:
     return fail_at(&scan, status);
 }
 
-int32_t prdb_sdk_sql_bind_select_v14(
+int32_t prdb_sdk_sql_parse_select_v14(const uint8_t *sql, uint64_t sql_len,
+                                      prdb_sdk_select_v14 *out,
+                                      uint32_t out_capacity,
+                                      uint32_t *error_offset_out) {
+    return parse_select_v14_mode(sql, sql_len, out, out_capacity,
+                                  error_offset_out, 2);
+}
+
+static int32_t bind_select_v14_mode(
     const prdb_sdk_select_v14 *statement, const uint8_t *relation_name,
     uint32_t relation_name_len,
     const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
-    prdb_sdk_select_binding_v14 *out, uint32_t out_capacity) {
+    prdb_sdk_select_binding_v14 *out, uint32_t out_capacity,
+    uint32_t min_group_keys) {
     prdb_sdk_select_binding_v14 result = {0};
     const prdb_sdk_sql_bound_column_v2 *aggregate;
     uint32_t kind;
@@ -4138,9 +4170,9 @@ int32_t prdb_sdk_sql_bind_select_v14(
               PRDB_SDK_SQL_MAX_PARAMETER_INDEX))) {
         return PRDB_SDK_SQL_BIND_INVALID_STATEMENT;
     }
-    status = prdb_sdk_sql_bind_select_v13(
+    status = bind_select_v13_mode(
         &statement->base, relation_name, relation_name_len, columns,
-        column_count, &result.base, sizeof(result.base));
+        column_count, &result.base, sizeof(result.base), min_group_keys);
     if (status != PRDB_SDK_SQL_BIND_OK) return status;
     result.has_having = statement->has_having;
     result.having_comparison = statement->having_comparison;
@@ -4184,6 +4216,15 @@ int32_t prdb_sdk_sql_bind_select_v14(
     result.abi_version = PRDB_SDK_SQL_ABI_V14_VERSION;
     *out = result;
     return PRDB_SDK_SQL_BIND_OK;
+}
+
+int32_t prdb_sdk_sql_bind_select_v14(
+    const prdb_sdk_select_v14 *statement, const uint8_t *relation_name,
+    uint32_t relation_name_len,
+    const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
+    prdb_sdk_select_binding_v14 *out, uint32_t out_capacity) {
+    return bind_select_v14_mode(statement, relation_name, relation_name_len,
+                                columns, column_count, out, out_capacity, 2);
 }
 
 static int32_t parse_order_item_v15(parser *state,
@@ -4260,10 +4301,11 @@ static int32_t parse_order_item_v15(parser *state,
     return PRDB_SDK_SQL_SYNTAX_ERROR;
 }
 
-int32_t prdb_sdk_sql_parse_select_v15(const uint8_t *sql, uint64_t sql_len,
-                                      prdb_sdk_select_v15 *out,
-                                      uint32_t out_capacity,
-                                      uint32_t *error_offset_out) {
+static int32_t parse_select_v15_mode(const uint8_t *sql, uint64_t sql_len,
+                                    prdb_sdk_select_v15 *out,
+                                    uint32_t out_capacity,
+                                    uint32_t *error_offset_out,
+                                    uint32_t min_group_keys) {
     uint8_t base_sql[PRDB_SDK_SQL_MAX_QUERY_BYTES];
     parser scan, order;
     prdb_sdk_select_v15 result = {0};
@@ -4364,9 +4406,9 @@ int32_t prdb_sdk_sql_parse_select_v15(const uint8_t *sql, uint64_t sql_len,
         for (uint32_t index = clause_end; index < (uint32_t)sql_len; ++index) {
             base_sql[index] = sql[index];
         }
-        status = prdb_sdk_sql_parse_select_v14(
+        status = parse_select_v14_mode(
             base_sql, sql_len, &result.base, sizeof(result.base),
-            error_offset_out);
+            error_offset_out, min_group_keys);
         if (status != PRDB_SDK_SQL_OK) return status;
         result.base.base.base.base.sql = sql;
         order = (parser){sql, (uint32_t)sql_len, by_end,
@@ -4432,8 +4474,9 @@ int32_t prdb_sdk_sql_parse_select_v15(const uint8_t *sql, uint64_t sql_len,
             goto failed_order_v15;
         }
     } else {
-        status = prdb_sdk_sql_parse_select_v14(
-            sql, sql_len, &result.base, sizeof(result.base), error_offset_out);
+        status = parse_select_v14_mode(
+            sql, sql_len, &result.base, sizeof(result.base), error_offset_out,
+            min_group_keys);
         if (status != PRDB_SDK_SQL_OK) return status;
         result.base.base.base.base.sql = sql;
     }
@@ -4450,11 +4493,20 @@ failed_v15:
     return fail_at(&scan, status);
 }
 
-int32_t prdb_sdk_sql_bind_select_v15(
+int32_t prdb_sdk_sql_parse_select_v15(const uint8_t *sql, uint64_t sql_len,
+                                      prdb_sdk_select_v15 *out,
+                                      uint32_t out_capacity,
+                                      uint32_t *error_offset_out) {
+    return parse_select_v15_mode(sql, sql_len, out, out_capacity,
+                                  error_offset_out, 2);
+}
+
+static int32_t bind_select_v15_mode(
     const prdb_sdk_select_v15 *statement, const uint8_t *relation_name,
     uint32_t relation_name_len,
     const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
-    prdb_sdk_select_binding_v15 *out, uint32_t out_capacity) {
+    prdb_sdk_select_binding_v15 *out, uint32_t out_capacity,
+    uint32_t min_group_keys) {
     prdb_sdk_select_binding_v15 result = {0};
     int32_t status;
 
@@ -4466,9 +4518,9 @@ int32_t prdb_sdk_sql_bind_select_v15(
         statement->order_count > PRDB_SDK_SQL_V15_MAX_ORDER_KEYS) {
         return PRDB_SDK_SQL_BIND_INVALID_STATEMENT;
     }
-    status = prdb_sdk_sql_bind_select_v14(
+    status = bind_select_v14_mode(
         &statement->base, relation_name, relation_name_len, columns,
-        column_count, &result.base, sizeof(result.base));
+        column_count, &result.base, sizeof(result.base), min_group_keys);
     if (status != PRDB_SDK_SQL_BIND_OK) return status;
     for (uint32_t index = 0; index < statement->order_count; ++index) {
         const prdb_sdk_sql_order_item_v15 *item = &statement->order_items[index];
@@ -4544,6 +4596,15 @@ int32_t prdb_sdk_sql_bind_select_v15(
     result.order_count = statement->order_count;
     *out = result;
     return PRDB_SDK_SQL_BIND_OK;
+}
+
+int32_t prdb_sdk_sql_bind_select_v15(
+    const prdb_sdk_select_v15 *statement, const uint8_t *relation_name,
+    uint32_t relation_name_len,
+    const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
+    prdb_sdk_select_binding_v15 *out, uint32_t out_capacity) {
+    return bind_select_v15_mode(statement, relation_name, relation_name_len,
+                                columns, column_count, out, out_capacity, 2);
 }
 
 int32_t prdb_sdk_sql_bind_select_v5(
@@ -6642,6 +6703,7 @@ static int32_t parse_select_v18_mode(const uint8_t *sql, uint64_t sql_len,
     prdb_sdk_select_v18 result = {0};
     token having_token = {TOKEN_END, 0, 0};
     uint32_t group_by_end = 0, clause_end, root = 0;
+    uint32_t min_group_keys = (having_features & GROUP_SINGLE_KEY) ? 1 : 2;
     int saw_group = 0;
     int32_t status;
 
@@ -6681,8 +6743,9 @@ static int32_t parse_select_v18_mode(const uint8_t *sql, uint64_t sql_len,
         if (status != PRDB_SDK_SQL_OK) goto failed_v18;
     }
     if (having_token.kind == TOKEN_END) {
-        status = prdb_sdk_sql_parse_select_v15(
-            sql, sql_len, &result.base, sizeof(result.base), error_offset_out);
+        status = parse_select_v15_mode(
+            sql, sql_len, &result.base, sizeof(result.base), error_offset_out,
+            min_group_keys);
         if (status != PRDB_SDK_SQL_OK) return status;
         result.base.base.base.base.base.sql = sql;
     } else {
@@ -6711,9 +6774,9 @@ static int32_t parse_select_v18_mode(const uint8_t *sql, uint64_t sql_len,
         }
         for (uint32_t index = having_token.offset; index < clause_end; ++index)
             base_sql[index] = ' ';
-        status = prdb_sdk_sql_parse_select_v15(
+        status = parse_select_v15_mode(
             base_sql, sql_len, &result.base, sizeof(result.base),
-            error_offset_out);
+            error_offset_out, min_group_keys);
         if (status != PRDB_SDK_SQL_OK) return status;
         result.base.base.base.base.base.sql = sql;
         having = (parser){sql, (uint32_t)sql_len,
@@ -6807,7 +6870,7 @@ static int32_t bind_select_v18_mode(
     uint32_t relation_name_len,
     const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
     prdb_sdk_select_binding_v18 *out, uint32_t out_capacity,
-    int allow_null_tests) {
+    int allow_null_tests, uint32_t min_group_keys) {
     prdb_sdk_select_binding_v18 result = {0};
     prdb_sdk_select_v15 base;
     uint8_t visited[PRDB_SDK_SQL_V18_MAX_HAVING_NODES] = {0};
@@ -6845,9 +6908,9 @@ static int32_t bind_select_v18_mode(
         base.base.having_comparison = PRDB_SDK_SQL_COMPARE_EQUAL;
         base.base.having_parameter_index = 1;
     }
-    status = prdb_sdk_sql_bind_select_v15(
+    status = bind_select_v15_mode(
         &base, relation_name, relation_name_len, columns, column_count,
-        &result.base, sizeof(result.base));
+        &result.base, sizeof(result.base), min_group_keys);
     if (status != PRDB_SDK_SQL_BIND_OK) return status;
     if (statement->having_node_count != 0) {
         for (uint32_t index = 0; index < statement->having_node_count; ++index) {
@@ -6883,7 +6946,7 @@ int32_t prdb_sdk_sql_bind_select_v18(
     const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
     prdb_sdk_select_binding_v18 *out, uint32_t out_capacity) {
     return bind_select_v18_mode(statement, relation_name, relation_name_len,
-                                columns, column_count, out, out_capacity, 0);
+                                columns, column_count, out, out_capacity, 0, 2);
 }
 
 typedef struct numeric_literal_v21 {
@@ -7238,7 +7301,7 @@ static int32_t bind_select_v21_mode(
     uint32_t relation_name_len,
     const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
     prdb_sdk_select_binding_v21 *out, uint32_t out_capacity,
-    uint64_t having_count_mask, int allow_null_tests) {
+    uint64_t having_count_mask, int allow_null_tests, uint32_t min_group_keys) {
     prdb_sdk_select_v18 base_statement;
     prdb_sdk_select_binding_v21 result = {0};
     int32_t status;
@@ -7290,7 +7353,7 @@ static int32_t bind_select_v21_mode(
     }
     status = bind_select_v18_mode(
         &base_statement, relation_name, relation_name_len, columns, column_count,
-        &result.base, sizeof(result.base), allow_null_tests);
+        &result.base, sizeof(result.base), allow_null_tests, min_group_keys);
     if (status != PRDB_SDK_SQL_BIND_OK) return status;
     for (uint32_t index = 0; index < statement->base.having_node_count; ++index) {
         const prdb_sdk_sql_having_node_v21 *input =
@@ -7330,7 +7393,7 @@ int32_t prdb_sdk_sql_bind_select_v21(
     const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
     prdb_sdk_select_binding_v21 *out, uint32_t out_capacity) {
     return bind_select_v21_mode(statement, relation_name, relation_name_len,
-                                columns, column_count, out, out_capacity, 0, 0);
+                                columns, column_count, out, out_capacity, 0, 0, 2);
 }
 
 static int32_t parse_select_v22_mode(const uint8_t *sql, uint64_t sql_len,
@@ -7420,7 +7483,7 @@ static int32_t bind_select_v22_mode(
     uint32_t relation_name_len,
     const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
     prdb_sdk_select_binding_v22 *out, uint32_t out_capacity,
-    int allow_null_tests) {
+    int allow_null_tests, uint32_t min_group_keys) {
     prdb_sdk_select_binding_v22 result = {0};
     uint64_t valid_mask = 0;
     int32_t status;
@@ -7446,7 +7509,8 @@ static int32_t bind_select_v22_mode(
     status = bind_select_v21_mode(&statement->base, relation_name,
                                   relation_name_len, columns, column_count,
                                   &result.base, sizeof(result.base),
-                                  statement->having_count_mask, allow_null_tests);
+                                  statement->having_count_mask, allow_null_tests,
+                                  min_group_keys);
     if (status != PRDB_SDK_SQL_BIND_OK) return status;
     result.struct_size = sizeof(result);
     result.abi_version = PRDB_SDK_SQL_ABI_V22_VERSION;
@@ -7469,40 +7533,43 @@ int32_t prdb_sdk_sql_bind_select_v22(
     const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
     prdb_sdk_select_binding_v22 *out, uint32_t out_capacity) {
     return bind_select_v22_mode(statement, relation_name, relation_name_len,
-                                columns, column_count, out, out_capacity, 0);
+                                columns, column_count, out, out_capacity, 0, 2);
 }
 
-int32_t prdb_sdk_sql_parse_select_v23(const uint8_t *sql, uint64_t sql_len,
+static int32_t parse_select_v23_mode(const uint8_t *sql, uint64_t sql_len,
                                       prdb_sdk_select_v23 *out,
                                       uint32_t out_capacity,
-                                      uint32_t *error_offset_out) {
+                                      uint32_t *error_offset_out,
+                                      uint32_t abi_version) {
     prdb_sdk_select_v22 result = {0};
     if (error_offset_out != NULL) *error_offset_out = 0;
     if (out == NULL || out_capacity < sizeof(*out))
         return PRDB_SDK_SQL_INVALID_ARGUMENT;
     int32_t status = parse_select_v22_mode(
         sql, sql_len, &result, sizeof(result), error_offset_out,
-        HAVING_HIDDEN_COUNT | HAVING_NULL_TESTS);
+        HAVING_HIDDEN_COUNT | HAVING_NULL_TESTS |
+            (abi_version == PRDB_SDK_SQL_ABI_V24_VERSION ? GROUP_SINGLE_KEY : 0));
     if (status == PRDB_SDK_SQL_OK) {
         out->struct_size = sizeof(*out);
-        out->abi_version = PRDB_SDK_SQL_ABI_V23_VERSION;
+        out->abi_version = abi_version;
         out->base = result.base;
         out->having_count_mask = result.having_count_mask;
     }
     return status;
 }
 
-int32_t prdb_sdk_sql_bind_select_v23(
+static int32_t bind_select_v23_mode(
     const prdb_sdk_select_v23 *statement, const uint8_t *relation_name,
     uint32_t relation_name_len,
     const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
-    prdb_sdk_select_binding_v23 *out, uint32_t out_capacity) {
+    prdb_sdk_select_binding_v23 *out, uint32_t out_capacity,
+    uint32_t abi_version) {
     prdb_sdk_select_v22 input = {0};
     prdb_sdk_select_binding_v22 result = {0};
     if (statement == NULL || out == NULL || out_capacity < sizeof(*out))
         return PRDB_SDK_SQL_BIND_INVALID_ARGUMENT;
     if (statement->struct_size < sizeof(*statement) ||
-        statement->abi_version != PRDB_SDK_SQL_ABI_V23_VERSION)
+        statement->abi_version != abi_version)
         return PRDB_SDK_SQL_BIND_INVALID_STATEMENT;
     input.struct_size = sizeof(input);
     input.abi_version = PRDB_SDK_SQL_ABI_V22_VERSION;
@@ -7510,11 +7577,48 @@ int32_t prdb_sdk_sql_bind_select_v23(
     input.having_count_mask = statement->having_count_mask;
     int32_t status = bind_select_v22_mode(
         &input, relation_name, relation_name_len, columns, column_count,
-        &result, sizeof(result), 1);
+        &result, sizeof(result), 1,
+        abi_version == PRDB_SDK_SQL_ABI_V24_VERSION ? 1 : 2);
     if (status != PRDB_SDK_SQL_BIND_OK) return status;
     out->struct_size = sizeof(*out);
-    out->abi_version = PRDB_SDK_SQL_ABI_V23_VERSION;
+    out->abi_version = abi_version;
     out->base = result.base;
     out->having_count_mask = result.having_count_mask;
     return PRDB_SDK_SQL_BIND_OK;
+}
+
+int32_t prdb_sdk_sql_parse_select_v23(const uint8_t *sql, uint64_t sql_len,
+                                      prdb_sdk_select_v23 *out,
+                                      uint32_t out_capacity,
+                                      uint32_t *error_offset_out) {
+    return parse_select_v23_mode(sql, sql_len, out, out_capacity,
+                                  error_offset_out, PRDB_SDK_SQL_ABI_V23_VERSION);
+}
+
+int32_t prdb_sdk_sql_bind_select_v23(
+    const prdb_sdk_select_v23 *statement, const uint8_t *relation_name,
+    uint32_t relation_name_len,
+    const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
+    prdb_sdk_select_binding_v23 *out, uint32_t out_capacity) {
+    return bind_select_v23_mode(statement, relation_name, relation_name_len,
+                                columns, column_count, out, out_capacity,
+                                PRDB_SDK_SQL_ABI_V23_VERSION);
+}
+
+int32_t prdb_sdk_sql_parse_select_v24(const uint8_t *sql, uint64_t sql_len,
+                                      prdb_sdk_select_v24 *out,
+                                      uint32_t out_capacity,
+                                      uint32_t *error_offset_out) {
+    return parse_select_v23_mode(sql, sql_len, out, out_capacity,
+                                  error_offset_out, PRDB_SDK_SQL_ABI_V24_VERSION);
+}
+
+int32_t prdb_sdk_sql_bind_select_v24(
+    const prdb_sdk_select_v24 *statement, const uint8_t *relation_name,
+    uint32_t relation_name_len,
+    const prdb_sdk_sql_column_shape_v2 *columns, uint32_t column_count,
+    prdb_sdk_select_binding_v24 *out, uint32_t out_capacity) {
+    return bind_select_v23_mode(statement, relation_name, relation_name_len,
+                                columns, column_count, out, out_capacity,
+                                PRDB_SDK_SQL_ABI_V24_VERSION);
 }

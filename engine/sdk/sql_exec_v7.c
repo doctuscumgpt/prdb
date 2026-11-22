@@ -11,6 +11,7 @@
 #include "prdb_sdk_sql_exec_v21.h"
 #include "prdb_sdk_sql_exec_v22.h"
 #include "prdb_sdk_sql_exec_v23.h"
+#include "prdb_sdk_sql_exec_v24.h"
 #include "prdb_sdk_sql_v22.h"
 #include "prdb_sdk_optimizer_plan_v1.h"
 #include "prdb_sdk_planner_v1.h"
@@ -171,7 +172,7 @@ static int32_t execute_group_internal(
     prdb_sdk_sql_group_row_v17_fn on_group_v17,
     int enable_boolean_having,
     prdb_sdk_sql_group_row_v18_fn on_group_v18,
-    int enable_numeric_literals,
+    uint32_t numeric_having_version,
     prdb_sdk_sql_group_row_v21_fn on_group_v21) {
     prdb_sdk_select_v7 statement = {0};
     prdb_sdk_select_binding_v7 binding = {0};
@@ -273,22 +274,25 @@ static int32_t execute_group_internal(
         return fail_statement(host_v3, PRDB_SDK_SQL_EXEC_INVALID_ARGUMENT);
     }
 
-    if (enable_numeric_literals >= 2) {
-        if (enable_numeric_literals == 3) {
-            status = prdb_sdk_sql_parse_select_v23(
-                sql, sql_len, &statement_v23, sizeof(statement_v23), NULL);
-            statement_v22.base = statement_v23.base;
+    if (numeric_having_version >= PRDB_SDK_SQL_ABI_V22_VERSION) {
+        if (numeric_having_version >= PRDB_SDK_SQL_ABI_V23_VERSION) {
+            status = numeric_having_version == PRDB_SDK_SQL_ABI_V24_VERSION
+                ? prdb_sdk_sql_parse_select_v24(
+                    sql, sql_len, &statement_v23, sizeof(statement_v23), NULL)
+                : prdb_sdk_sql_parse_select_v23(
+                    sql, sql_len, &statement_v23, sizeof(statement_v23), NULL);
+            statement_v21 = statement_v23.base;
         } else {
             status = prdb_sdk_sql_parse_select_v22(
                 sql, sql_len, &statement_v22, sizeof(statement_v22), NULL);
+            statement_v21 = statement_v22.base;
         }
-        statement_v21 = statement_v22.base;
         statement_v18 = statement_v21.base;
         statement_v15 = statement_v18.base;
         statement_v14 = statement_v15.base;
         statement_v13 = statement_v14.base;
         statement = statement_v13.base;
-    } else if (enable_numeric_literals) {
+    } else if (numeric_having_version) {
         status = prdb_sdk_sql_parse_select_v21(
             sql, sql_len, &statement_v21, sizeof(statement_v21), NULL);
         statement_v18 = statement_v21.base;
@@ -379,22 +383,27 @@ static int32_t execute_group_internal(
     if (cell_scratch_capacity < resolved.column_count) {
         return fail_statement(host_v3, PRDB_SDK_SQL_EXEC_INVALID_ARGUMENT);
     }
-    if (enable_numeric_literals >= 2) {
-        if (enable_numeric_literals == 3) {
-            status = prdb_sdk_sql_bind_select_v23(
-                &statement_v23, resolved.name, resolved.name_len,
-                executor_columns, resolved.column_count, &binding_v23,
-                sizeof(binding_v23));
-            binding_v22.base = binding_v23.base;
-            binding_v22.having_count_mask = binding_v23.having_count_mask;
+    if (numeric_having_version >= PRDB_SDK_SQL_ABI_V22_VERSION) {
+        if (numeric_having_version >= PRDB_SDK_SQL_ABI_V23_VERSION) {
+            status = numeric_having_version == PRDB_SDK_SQL_ABI_V24_VERSION
+                ? prdb_sdk_sql_bind_select_v24(
+                    &statement_v23, resolved.name, resolved.name_len,
+                    executor_columns, resolved.column_count, &binding_v23,
+                    sizeof(binding_v23))
+                : prdb_sdk_sql_bind_select_v23(
+                    &statement_v23, resolved.name, resolved.name_len,
+                    executor_columns, resolved.column_count, &binding_v23,
+                    sizeof(binding_v23));
+            binding_v21 = binding_v23.base;
+            having_count_mask = binding_v23.having_count_mask;
         } else {
             status = prdb_sdk_sql_bind_select_v22(
                 &statement_v22, resolved.name, resolved.name_len,
                 executor_columns, resolved.column_count, &binding_v22,
                 sizeof(binding_v22));
+            binding_v21 = binding_v22.base;
+            having_count_mask = binding_v22.having_count_mask;
         }
-        binding_v21 = binding_v22.base;
-        having_count_mask = binding_v22.having_count_mask;
         binding_v18 = binding_v21.base;
         binding_v15 = binding_v18.base;
         binding_v14 = binding_v15.base;
@@ -409,7 +418,7 @@ static int32_t execute_group_internal(
             composite_types[index] = binding_v13.group_keys[index].type_code;
             composite_scales[index] = binding_v13.group_keys[index].decimal_scale;
         }
-    } else if (enable_numeric_literals) {
+    } else if (numeric_having_version) {
         status = prdb_sdk_sql_bind_select_v21(
             &statement_v21, resolved.name, resolved.name_len, executor_columns,
             resolved.column_count, &binding_v21, sizeof(binding_v21));
@@ -565,7 +574,7 @@ static int32_t execute_group_internal(
     if (status != PRDB_SDK_SQL_BIND_OK) {
         return fail_statement(host_v3, PRDB_SDK_SQL_EXEC_BIND_ERROR);
     }
-    if (enable_numeric_literals && has_having) {
+    if (numeric_having_version && has_having) {
         for (uint32_t index = 0; index < binding_v21.base.having_node_count;
              ++index) {
             const prdb_sdk_sql_having_node_v21 *node =
@@ -1209,7 +1218,7 @@ static int32_t execute_group_internal(
                                           PRDB_SDK_SQL_EXEC_EXECUTOR_ERROR);
                 }
             }
-            if (enable_numeric_literals && on_group_v21 != NULL) {
+            if (numeric_having_version && on_group_v21 != NULL) {
                 status = on_group_v21(
                     result_context,
                     &composite_keys[groups[group].representative_row *
@@ -2145,7 +2154,7 @@ int32_t prdb_sdk_sql_execute_group_v21(
         executor_column_capacity, cell_scratch, cell_scratch_capacity,
         materialized_bytes, materialized_bytes_capacity, NULL, NULL, NULL,
         NULL, NULL, NULL, NULL, NULL, result_context, 0, 0, 0, 0, 1, 1, 1,
-        0, NULL, 1, NULL, 1, on_group);
+        0, NULL, 1, NULL, PRDB_SDK_SQL_ABI_V21_VERSION, on_group);
 }
 
 int32_t prdb_sdk_sql_execute_group_v22(
@@ -2172,7 +2181,7 @@ int32_t prdb_sdk_sql_execute_group_v22(
         executor_column_capacity, cell_scratch, cell_scratch_capacity,
         materialized_bytes, materialized_bytes_capacity, NULL, NULL, NULL,
         NULL, NULL, NULL, NULL, NULL, result_context, 0, 0, 0, 0, 1, 1, 1,
-        0, NULL, 1, NULL, 2, on_group);
+        0, NULL, 1, NULL, PRDB_SDK_SQL_ABI_V22_VERSION, on_group);
 }
 
 int32_t prdb_sdk_sql_execute_group_v23(
@@ -2199,5 +2208,32 @@ int32_t prdb_sdk_sql_execute_group_v23(
         executor_column_capacity, cell_scratch, cell_scratch_capacity,
         materialized_bytes, materialized_bytes_capacity, NULL, NULL, NULL,
         NULL, NULL, NULL, NULL, NULL, result_context, 0, 0, 0, 0, 1, 1, 1,
-        0, NULL, 1, NULL, 3, on_group);
+        0, NULL, 1, NULL, PRDB_SDK_SQL_ABI_V23_VERSION, on_group);
+}
+
+int32_t prdb_sdk_sql_execute_group_v24(
+    const prdb_host_api_v3 *host_v3, const uint8_t *schema,
+    uint32_t schema_len, const uint8_t *sql, uint64_t sql_len,
+    const prdb_sdk_value_v1 *parameters, uint32_t parameter_count,
+    uint16_t max_candidates, uint32_t max_batch_bytes,
+    uint8_t *planner_response, uint64_t planner_response_capacity,
+    uint8_t *executor_response, uint64_t executor_response_capacity,
+    uint8_t *batch_response, uint64_t batch_response_capacity,
+    prdb_sdk_sql_column_shape_v2 *planner_columns,
+    uint32_t planner_column_capacity,
+    prdb_sdk_sql_column_shape_v2 *executor_columns,
+    uint32_t executor_column_capacity, prdb_sdk_value_v1 *cell_scratch,
+    uint32_t cell_scratch_capacity, uint8_t *materialized_bytes,
+    uint64_t materialized_bytes_capacity,
+    prdb_sdk_sql_group_row_v24_fn on_group, void *result_context) {
+    return execute_group_internal(
+        host_v3, schema, schema_len, sql, sql_len, parameters, parameter_count,
+        max_candidates, max_batch_bytes, planner_response,
+        planner_response_capacity, executor_response,
+        executor_response_capacity, batch_response, batch_response_capacity,
+        planner_columns, planner_column_capacity, executor_columns,
+        executor_column_capacity, cell_scratch, cell_scratch_capacity,
+        materialized_bytes, materialized_bytes_capacity, NULL, NULL, NULL,
+        NULL, NULL, NULL, NULL, NULL, result_context, 0, 0, 0, 0, 1, 1, 1,
+        0, NULL, 1, NULL, PRDB_SDK_SQL_ABI_V24_VERSION, on_group);
 }

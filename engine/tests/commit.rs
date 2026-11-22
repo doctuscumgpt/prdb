@@ -45031,6 +45031,22 @@ fn sandboxed_v3_sql_dml_sequence_is_visible_and_commits() -> Result<(), Box<dyn 
             );
         }
         {
+            let frame = aggregate_frames
+                .next()
+                .ok_or("missing single-key SUM HAVING SQLR row")?;
+            assert_eq!(frame.operation, Operation::GatewayResultData as u16);
+            assert_eq!(frame.request_id, aggregate_accepted.request_id);
+            let expected = [
+                b"SQLR\x00\x01\x00\x02".as_slice(),
+                b"\x00\x09right_key\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x04",
+                &9i32.to_be_bytes(),
+                b"\x00\x03sum\x00\x00\x00\x05\x26\x02\x00\x00\x00\x00\x10",
+                &350i128.to_be_bytes(),
+            ]
+            .concat();
+            assert_eq!(frame.payload, expected);
+        }
+        {
             let mut group_key = b"0000".to_vec();
             group_key.extend(std::iter::repeat_n(b'a', 8_168));
             let mut expected = b"SQLR".to_vec();

@@ -13,6 +13,7 @@ typedef struct dispatch_test_context {
     uint32_t group_success;
     uint32_t next_calls;
     uint32_t result_calls;
+    uint32_t insert_calls;
     uint32_t result_len;
     uint32_t join_open_calls;
     uint32_t join_next_calls[2];
@@ -248,6 +249,21 @@ static int32_t unused_executor_request(
             return PRDB_QUERY_CALLBACK_RESPONSE_TOO_SMALL;
         memcpy(response, context->executor_reply, context->executor_reply_len);
         *response_len = context->executor_reply_len;
+    } else if (operation == PRDB_SDK_EXECUTOR_OP_STAGE_INSERT) {
+        static const uint8_t insert_cells[] = {
+            0, 2,
+            PRDB_SDK_EXECUTOR_INSERT_VALUE, PRDB_SDK_VALUE_TYPE_INTEGER,
+            0, 0, 0, 4, 0xff, 0xff, 0xff, 0xd6,
+            PRDB_SDK_EXECUTOR_INSERT_NULL};
+        uint8_t reply[18] = {0, 1, 8};
+        if (request_len != 18 + sizeof(insert_cells) ||
+            memcmp(request + 18, insert_cells, sizeof(insert_cells)) != 0 ||
+            sizeof(reply) > response_capacity)
+            return PRDB_QUERY_CALLBACK_INVALID_ARGUMENT;
+        memset(reply + 3, 0x44, 15);
+        memcpy(response, reply, sizeof(reply));
+        *response_len = sizeof(reply);
+        ++context->insert_calls;
     } else if (operation == PRDB_SDK_EXECUTOR_OP_CHECK_CANCELLATION) {
         static const uint8_t reply[] = {0, 1, 0};
         if (request_len != 0 || sizeof(reply) > response_capacity)
@@ -346,6 +362,28 @@ static uint32_t read_u32(const uint8_t *bytes) {
            ((uint32_t)bytes[2] << 8) | bytes[3];
 }
 
+static int test_dispatch_insert_normalizes_signed_parameter(void) {
+    static const uint8_t sql[] = "INSERT INTO widgets VALUES ($1, NULL)";
+    static const uint8_t parameters[] = {
+        'P', 'S', 'P', '1', 0, 1, 0, 0,
+        0, 0, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0, 0, 0,
+        0, 0, 0, 4, 0xd6, 0xff, 0xff, 0xff};
+    dispatch_test_context context = {0};
+    prdb_host_api_v3 host = {
+        sizeof(host), PRDB_QUERY_ABI_V3_VERSION, &context,
+        unused_executor_request, fail_planner_request, discard_result,
+        count_statement_failure};
+    context.group_success = 1;
+    context.planner_reply_len = make_integer_relation(
+        context.planner_reply, PRDB_SDK_PLANNER_TABLE_HANDLE_KIND, 0x22);
+    context.executor_reply_len = make_integer_relation(
+        context.executor_reply, 6, 0x22);
+    return prdb_sdk_sql_run_statement_v1(
+               &host, (const uint8_t *)"app", 3, sql, sizeof(sql) - 1,
+               parameters, sizeof(parameters)) != PRDB_SDK_SQL_DISPATCH_OK ||
+           context.insert_calls != 1 || context.failure_calls != 0;
+}
+
 static int test_dispatch_grouped_select_emits_sqlr(void) {
     static const uint8_t sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score "
@@ -424,9 +462,8 @@ static int test_dispatch_grouped_select_emits_sqlr(void) {
     return 0;
 }
 
-static int test_dispatch_single_key_grouped_select_emits_sqlr(void) {
-    static const uint8_t sql[] =
-        "SELECT id, SUM(score) FROM widgets GROUP BY id";
+static int test_dispatch_single_key_grouped_select_emits_sqlr(
+    const uint8_t *sql, uint64_t sql_len) {
     dispatch_test_context context = {0};
     prdb_host_api_v3 host = {0};
     uint32_t offset = 0;
@@ -446,7 +483,7 @@ static int test_dispatch_single_key_grouped_select_emits_sqlr(void) {
     host.write_result = discard_result;
     host.statement_failure = count_statement_failure;
     if (prdb_sdk_sql_run_statement_v1(
-            &host, (const uint8_t *)"app", 3, sql, sizeof(sql) - 1,
+            &host, (const uint8_t *)"app", 3, sql, sql_len,
             NULL, 0) != PRDB_SDK_SQL_DISPATCH_OK ||
         context.planner_calls != 1 || context.failure_calls != 0 ||
         context.result_calls != 1 || context.result_len < 8 ||
@@ -496,7 +533,7 @@ static int test_dispatch_filtered_join_emits_sqlr(void) {
     static const uint8_t parameters[] = {
         'P', 'S', 'P', '1', 0, 1, 0, 0,
         0, 0, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0, 0, 0,
-        0, 0, 0, 4, 0, 0, 0, 3
+        0, 0, 0, 4, 3, 0, 0, 0
     };
     dispatch_test_context context = {0};
     prdb_host_api_v3 host = {0};
@@ -700,11 +737,24 @@ int main(void) {
         fputs("interactive statement dispatcher did not route supported DML\n", stderr);
         return 1;
     }
+    if (test_dispatch_insert_normalizes_signed_parameter() != 0) {
+        fputs("INSERT dispatcher did not normalize signed PSP1 input\n", stderr);
+        return 1;
+    }
     if (test_dispatch_grouped_select_emits_sqlr() != 0) {
         fputs("grouped SELECT dispatch did not emit expected SQLR\n", stderr);
         return 1;
     }
-    if (test_dispatch_single_key_grouped_select_emits_sqlr() != 0) {
+    static const uint8_t single_key_sql[] =
+        "SELECT id, SUM(score) FROM widgets GROUP BY id";
+    static const uint8_t single_key_having_sql[] =
+        "SELECT id, SUM(score) FROM widgets GROUP BY id "
+        "HAVING SUM(score) IS NOT NULL AND (COUNT(*) >= 2 OR SUM(score) > 10) "
+        "ORDER BY SUM(score) DESC NULLS LAST, id ASC LIMIT 1";
+    if (test_dispatch_single_key_grouped_select_emits_sqlr(
+            single_key_sql, sizeof(single_key_sql) - 1) != 0 ||
+        test_dispatch_single_key_grouped_select_emits_sqlr(
+            single_key_having_sql, sizeof(single_key_having_sql) - 1) != 0) {
         fputs("single-key grouped SELECT dispatch did not emit expected SQLR\n", stderr);
         return 1;
     }
