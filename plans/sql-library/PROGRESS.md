@@ -1,5 +1,12 @@
 # SQL Library Progress
 
+## SQL-7 follow-up: composite runner groups NULL key tuples — verified
+
+- Contract: the v13 composite grouping runner treats NULL components as equal, separates NULL from VALUE, and emits groups in first-seen order.
+- Regression: the maintained C runner fixture executes composite `COUNT(*)` over `(1,NULL)`, `(1,9)`, `(NULL,9)`, and repeated `(NULL,NULL)` tuples. It checks the exact four-group order, NULL states, and row counts `2,1,1,2`.
+- Verification: the focused `sdk-sql-execute-v10` fixture and full `make -f engine/sdk/Makefile test` suite passed under the pinned TinyCC toolchain; `git diff --check` passed.
+- Remaining: broader analytical workload, secure spill, target-hardware, and mixed-workload evidence remains open.
+
 ## SQL-7 follow-up: all aggregate families at eight grouping keys — verified
 
 - Contract: optimizer statement 13 supports eight composite grouping keys for `COUNT(*)`, `MIN`, `MAX`, `SUM`, and `AVG`; each plan scans exactly the grouping keys plus the selected aggregate input when one exists.

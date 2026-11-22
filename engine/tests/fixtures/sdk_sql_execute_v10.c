@@ -553,6 +553,40 @@ static uint32_t make_rows(uint8_t *p, uint32_t finished,
     return offset;
 }
 
+static uint32_t make_nullable_composite_rows(uint8_t *p) {
+    static const uint8_t first_states[] = {
+        PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_STATE_VALUE,
+        PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_STATE_NULL,
+        PRDB_SDK_VALUE_STATE_NULL,
+        PRDB_SDK_VALUE_STATE_NULL};
+    static const uint8_t second_states[] = {
+        PRDB_SDK_VALUE_STATE_NULL, PRDB_SDK_VALUE_STATE_NULL,
+        PRDB_SDK_VALUE_STATE_VALUE, PRDB_SDK_VALUE_STATE_VALUE,
+        PRDB_SDK_VALUE_STATE_NULL,
+        PRDB_SDK_VALUE_STATE_NULL};
+    static const int32_t first_values[] = {1, 1, 1, 0, 0, 0};
+    static const int32_t second_values[] = {0, 0, 9, 9, 0, 0};
+    uint32_t offset = 0;
+    put_u16(p, &offset, 1);
+    p[offset++] = 1;
+    put_u16(p, &offset, 6);
+    for (uint32_t row = 0; row < 6; ++row) {
+        p[offset++] = 8;
+        memset(p + offset, (int)(row + 1), 15);
+        offset += 15;
+        put_u16(p, &offset, 2);
+        if (first_states[row] == PRDB_SDK_VALUE_STATE_VALUE)
+            append_integer_cell(p, &offset, first_values[row]);
+        else
+            p[offset++] = first_states[row];
+        if (second_states[row] == PRDB_SDK_VALUE_STATE_VALUE)
+            append_integer_cell(p, &offset, second_values[row]);
+        else
+            p[offset++] = second_states[row];
+    }
+    return offset;
+}
+
 static uint32_t make_eight_key_rows(uint8_t *p) {
     static const int32_t measures[] = {4, 5, 8};
     uint32_t offset = 0;
@@ -1826,6 +1860,60 @@ static int32_t on_group_v13(void *context,
     return 0;
 }
 
+typedef struct nullable_composite_capture {
+    mock_state *mock;
+    uint32_t calls;
+} nullable_composite_capture;
+
+static int32_t on_nullable_composite_group_v13(
+    void *context, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v13 *binding) {
+    static const uint32_t expected_counts[] = {2, 1, 1, 2};
+    nullable_composite_capture *capture = context;
+    int32_t first = 0, second = 0;
+    uint32_t first_state = 0, second_state = 0;
+    uint32_t index = capture->calls;
+    assert(index < 4 && group_key_count == 2 && aggregate_value == NULL);
+    assert(binding->abi_version == PRDB_SDK_SQL_ABI_V13_VERSION &&
+           binding->base.aggregate_kind ==
+               PRDB_SDK_SQL_V7_AGGREGATE_COUNT_STAR);
+    assert(capture->mock->batch_finished != 0 &&
+           capture->mock->executor_calls == 3);
+    assert(prdb_sdk_value_state_v1(&group_keys[0], &first_state) ==
+           PRDB_SDK_VALUE_ACCESS_OK);
+    assert(prdb_sdk_value_state_v1(&group_keys[1], &second_state) ==
+           PRDB_SDK_VALUE_ACCESS_OK);
+    if (index == 0) {
+        assert(first_state == PRDB_SDK_VALUE_STATE_VALUE &&
+               second_state == PRDB_SDK_VALUE_STATE_NULL);
+        assert(prdb_sdk_value_get_integer_v1(&group_keys[0], &first) ==
+                   PRDB_SDK_VALUE_ACCESS_OK &&
+               first == 1);
+    } else if (index == 1) {
+        assert(first_state == PRDB_SDK_VALUE_STATE_VALUE &&
+               second_state == PRDB_SDK_VALUE_STATE_VALUE);
+        assert(prdb_sdk_value_get_integer_v1(&group_keys[0], &first) ==
+                   PRDB_SDK_VALUE_ACCESS_OK &&
+               prdb_sdk_value_get_integer_v1(&group_keys[1], &second) ==
+                   PRDB_SDK_VALUE_ACCESS_OK &&
+               first == 1 && second == 9);
+    } else if (index == 2) {
+        assert(first_state == PRDB_SDK_VALUE_STATE_NULL &&
+               second_state == PRDB_SDK_VALUE_STATE_VALUE);
+        assert(prdb_sdk_value_get_integer_v1(&group_keys[1], &second) ==
+                   PRDB_SDK_VALUE_ACCESS_OK &&
+               second == 9);
+    } else {
+        assert(first_state == PRDB_SDK_VALUE_STATE_NULL &&
+               second_state == PRDB_SDK_VALUE_STATE_NULL);
+    }
+    assert(matching_row_count == expected_counts[index]);
+    ++capture->calls;
+    return 0;
+}
+
 static int32_t on_group_eight_keys(
     void *context, const prdb_sdk_value_v1 *group_keys,
     uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
@@ -1932,6 +2020,35 @@ static int32_t run_query_v13(mock_state *mock, const uint8_t *sql,
         sizeof(executor_response), batch_response, sizeof(batch_response),
         planner_columns, 2, executor_columns, 2, cell_scratch, 2,
         materialized_bytes, arena_capacity, on_group_v13, capture);
+}
+
+static int32_t run_nullable_composite_count_v13(
+    mock_state *mock, const uint8_t *sql, uint64_t sql_len,
+    nullable_composite_capture *capture) {
+    static const uint8_t schema[] = "app";
+    static const uint8_t id_name[] = "id";
+    static const uint8_t score_name[] = "score";
+    uint8_t planner_response[256] = {0};
+    uint8_t executor_response[256] = {0};
+    uint8_t batch_response[4096] = {0};
+    uint8_t materialized_bytes[4096] = {0};
+    prdb_sdk_sql_column_shape_v2 planner_columns[2] = {
+        {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
+        {score_name, 5, 1, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0}};
+    prdb_sdk_sql_column_shape_v2 executor_columns[2] = {
+        {id_name, 2, 0, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0},
+        {score_name, 5, 1, PRDB_SDK_VALUE_TYPE_INTEGER, 0, 0}};
+    prdb_sdk_value_v1 cell_scratch[2] = {{0}};
+    prdb_host_api_v3 host = {sizeof(host), PRDB_QUERY_ABI_V3_VERSION,
+                             mock, executor_request, planner_request, NULL,
+                             statement_failure};
+    return prdb_sdk_sql_execute_group_v13(
+        &host, schema, sizeof(schema) - 1, sql, sql_len, NULL, 0, 6, 4096,
+        planner_response, sizeof(planner_response), executor_response,
+        sizeof(executor_response), batch_response, sizeof(batch_response),
+        planner_columns, 2, executor_columns, 2, cell_scratch, 2,
+        materialized_bytes, sizeof(materialized_bytes),
+        on_nullable_composite_group_v13, capture);
 }
 
 static int32_t run_query_v13_optimizer(mock_state *mock, const uint8_t *sql,
@@ -2823,6 +2940,8 @@ int main(void) {
         "SELECT id, COUNT(*) FROM widgets GROUP BY id";
     static const uint8_t v13_composite_sql[] =
         "SELECT id, score, COUNT(*) FROM widgets GROUP BY id, score";
+    static const uint8_t v13_nullable_composite_sql[] =
+        "SELECT id, score, COUNT(*) FROM widgets GROUP BY id, score";
     static const uint8_t v13_sum_sql[] =
         "SELECT id, score, SUM(score) FROM widgets GROUP BY id, score";
     static const uint8_t v13_min_sql[] =
@@ -3347,6 +3466,20 @@ int main(void) {
                capture.second_keys[0] == 9 && capture.row_counts[0] == 2 &&
                capture.keys[1] == 2 && capture.second_keys[1] == 5 &&
                capture.row_counts[1] == 1 && mock.statement_failed == 0);
+        {
+            group_capture reset_capture = {0};
+            nullable_composite_capture null_capture = {&mock, 0};
+            mock.cancel_when_batch_finishes = 0;
+            mock.batch_len = make_nullable_composite_rows(mock.batch);
+            reset_scan(&mock, &reset_capture, 1);
+            int32_t nullable_status = run_nullable_composite_count_v13(
+                &mock, v13_nullable_composite_sql,
+                sizeof(v13_nullable_composite_sql) - 1, &null_capture);
+            assert(nullable_status == PRDB_SDK_SQL_EXEC_OK);
+            assert(null_capture.calls == 4 && mock.statement_failed == 0);
+        }
+        mock.batch_len = make_rows(mock.batch, 1, tuple_ids, tuple_scores,
+                                   value_states, 3);
         reset_scan(&mock, &capture, 1);
         assert(run_query_v13(&mock, v13_sum_sql,
                              sizeof(v13_sum_sql) - 1, 64,
