@@ -15,6 +15,7 @@
 #include "prdb_sdk_sql_exec_v19.h"
 #include "prdb_sdk_sql_exec_v20.h"
 #include "prdb_sdk_sql_exec_v21.h"
+#include "prdb_sdk_sql_exec_v23.h"
 #include "prdb_sdk_sql_dispatch_v1.h"
 #include "prdb_sdk_sql_exec_v4.h"
 #include "prdb_sdk_sql_result_v1.h"
@@ -1358,6 +1359,20 @@ static int32_t verify_information_schema_name(
                                        value.data_len);
 }
 
+static int32_t count_unexpected_group(
+    void *context, const prdb_sdk_value_v1 *group_keys,
+    uint32_t group_key_count, const prdb_sdk_value_v1 *aggregate_value,
+    uint64_t matching_row_count,
+    const prdb_sdk_select_binding_v21 *binding) {
+    (void)group_keys;
+    (void)group_key_count;
+    (void)aggregate_value;
+    (void)matching_row_count;
+    (void)binding;
+    ++*(uint32_t *)context;
+    return 0;
+}
+
 static int32_t report_failure(const prdb_host_api_v3 *host,
                               const uint8_t *message, uint64_t length) {
     (void)host->write_result(host->context, message, length);
@@ -1936,6 +1951,27 @@ static int32_t run_write_read_fixture(
             return report_failure(host, message, sizeof(message) - 1);
         }
         return 1;
+    }
+    if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
+        invocation->parameters[0] == 'H') {
+        static const uint8_t redacted_having_sql[] =
+            "SELECT left_key, right_key, SUM(decimal_value) "
+            "FROM decimal_grouped_records GROUP BY left_key, right_key "
+            "HAVING COUNT(*) IS NULL AND SUM(decimal_value) IS NULL";
+        uint32_t callbacks = 0;
+        status = prdb_sdk_sql_execute_group_v23(
+            host, schema, sizeof(schema) - 1, redacted_having_sql,
+            sizeof(redacted_having_sql) - 1, NULL, 0, 16,
+            sizeof(batch_response), planner_response, sizeof(planner_response),
+            executor_response, sizeof(executor_response), batch_response,
+            sizeof(batch_response), planner_columns, 9, executor_columns, 9,
+            cell_scratch, 9, grouped_materialized, sizeof(grouped_materialized),
+            count_unexpected_group, &callbacks);
+        /* Catch the precise error and rely on the host latch to abort. */
+        if (status == PRDB_SDK_SQL_EXEC_EVALUATION_ERROR && callbacks == 0)
+            return 0;
+        static const uint8_t message[] = "fixture-error-redacted-having";
+        return report_failure(host, message, sizeof(message) - 1);
     }
     if (invocation->parameters_len == 1 && invocation->parameters != NULL &&
         (invocation->parameters[0] == 'A' || invocation->parameters[0] == 'B' ||
